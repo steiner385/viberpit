@@ -1089,8 +1089,16 @@ def _rocky_records(caplog):
             if r.getMessage() == "fleet.host_unreachable" and r.fields.get("host") == "rocky"]
 
 
+@pytest.fixture
+def sustained_outage(monkeypatch):
+    """The probe has already seen rocky miss enough times that a miss is news (#2821)."""
+    from server.sessions import host_probe
+    monkeypatch.setitem(host_probe._CONSECUTIVE_UNREACHABLE, "rocky",
+                        host_probe.UNREACHABLE_ESCALATE_AFTER)
+
+
 @pytest.mark.asyncio
-async def test_every_fanout_site_shares_one_unreachable_fingerprint(caplog):
+async def test_every_fanout_site_shares_one_unreachable_fingerprint(caplog, sustained_outage):
     """The fix for the five-issues shape, asserted through the REAL sink signature.
 
     Not "the messages look similar" — the thing that decides how many issues get
@@ -1127,7 +1135,7 @@ async def test_every_fanout_site_shares_one_unreachable_fingerprint(caplog):
 
 
 @pytest.mark.asyncio
-async def test_a_transport_failure_is_summarized_instead_of_carrying_its_traceback(caplog):
+async def test_a_transport_failure_is_summarized_instead_of_carrying_its_traceback(caplog, sustained_outage):
     """httpx's stack says how it failed to connect; the typed exception says that it
     did, which is the whole diagnosis. Only an UNEXPECTED type keeps its stack."""
     import logging
@@ -1150,7 +1158,7 @@ async def test_a_transport_failure_is_summarized_instead_of_carrying_its_traceba
 
 
 @pytest.mark.asyncio
-async def test_repeat_passes_are_demoted_below_the_error_sink(caplog):
+async def test_repeat_passes_are_demoted_below_the_error_sink(caplog, sustained_outage):
     """The sink captures WARNING+ only, so a demoted repeat stays in the journal at
     DEBUG and out of the issue — the heartbeat returns when the window expires."""
     import logging
@@ -1167,7 +1175,7 @@ async def test_repeat_passes_are_demoted_below_the_error_sink(caplog):
 
 
 @pytest.mark.asyncio
-async def test_a_recovered_host_reports_its_next_outage_promptly(caplog):
+async def test_a_recovered_host_reports_its_next_outage_promptly(caplog, sustained_outage):
     """A window must pace a CONTINUING condition, never a new one: rocky coming back
     ends the outage, so the next one is news again even inside the same window."""
     import logging
@@ -1200,3 +1208,53 @@ async def test_automation_overview_asks_primary_once_without_worker_actionable_c
     primary.automation_overview.assert_awaited_once()
     worker.automation_overview.assert_not_awaited()
     worker.automation_statuses.assert_awaited_once()
+
+
+# --- a lone DaemonTimeout is INFO; the probe's run decides escalation (#2821) ----
+
+
+async def _unreachable_levels(caplog, exc, run):
+    import logging
+    from server.sessions import host_probe, host_upgrade
+
+    fo = FleetOrchestrator(_FakeRouter({"dobby": _AggOrch("dobby")}), primary="dobby")
+
+    async def not_expected(name, **_):
+        return False
+
+    host_probe._CONSECUTIVE_UNREACHABLE.pop("rocky", None)
+    if run:
+        host_probe._CONSECUTIVE_UNREACHABLE["rocky"] = run
+    try:
+        with mock.patch.object(host_upgrade, "restart_expected", not_expected), \
+             caplog.at_level(logging.INFO, logger="server.sessions.fleet_orchestrator"):
+            await fo._log_unreachable("rocky", exc, "list_sessions")
+    finally:
+        host_probe._CONSECUTIVE_UNREACHABLE.pop("rocky", None)
+    return [r.levelno for r in caplog.records if "rocky" in r.getMessage()
+            or getattr(r, "fields", {}).get("host") == "rocky"]
+
+
+@pytest.mark.asyncio
+async def test_lone_daemon_timeout_logs_info(caplog):
+    import logging
+    from server.ipc.client import DaemonTimeout
+    levels = await _unreachable_levels(caplog, DaemonTimeout("list_sessions timed out:"), 0)
+    assert levels == [logging.INFO]
+
+
+@pytest.mark.asyncio
+async def test_daemon_timeout_warns_once_probe_run_escalates(caplog):
+    import logging
+    from server.ipc.client import DaemonTimeout
+    from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER
+    levels = await _unreachable_levels(
+        caplog, DaemonTimeout("list_sessions timed out:"), UNREACHABLE_ESCALATE_AFTER)
+    assert levels == [logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_non_daemon_error_warns_despite_empty_run(caplog):
+    import logging
+    levels = await _unreachable_levels(caplog, RuntimeError("boom"), 0)
+    assert levels == [logging.WARNING]

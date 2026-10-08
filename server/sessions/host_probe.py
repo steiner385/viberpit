@@ -162,6 +162,11 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
     return values
 
 
+def unreachable_run(name: str) -> int:
+    """Read-only view of *name*'s current consecutive-unreachable run (0 if none)."""
+    return _CONSECUTIVE_UNREACHABLE.get(name, 0)
+
+
 def _count_unreachable(name: str, exc: Exception) -> int:
     """Length of *name*'s current unreachable run including *exc*; 0 if *exc* is not one.
 

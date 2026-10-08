@@ -15,7 +15,7 @@ from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.usage.process_quota import persist_quota_snapshot
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
-from server.sessions import host_upgrade
+from server.sessions import host_probe, host_upgrade
 from server.sessions.fleet_router import FleetRouter, NoEngineHostAvailable, NoHostAvailable
 from server.sessions.host_engines import expected_contract_sha256
 from server.sessions.engine import AgentEngine, parse_agent_engine
@@ -295,6 +295,13 @@ class FleetOrchestrator:
             # genuine failure that follows it to DEBUG.
             log.info(_UNREACHABLE_MSG + " (restart in progress)",
                      host, _field(site), cause)
+            return
+        if (isinstance(exc, DaemonUnavailable)
+                and host_probe.unreachable_run(host) < host_probe.UNREACHABLE_ESCALATE_AFTER):
+            # A lone timeout/refusal is a starved or restarting daemon, not an outage:
+            # the probe owns that policy (#2701/#2749), so stay INFO until its run of
+            # consecutive misses escalates (#2821).
+            log.info(_UNREACHABLE_MSG + " (isolated)", host, _field(site), cause)
             return
         expected = isinstance(exc, _EXPECTED_UNREACHABLE)
         log_event_throttled(
