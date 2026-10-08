@@ -589,21 +589,68 @@ def is_ref_lock_contention(stderr: str) -> bool:
         "Unable to create" in stderr and ".lock': File exists" in stderr)
 
 
+# A real ref update holds its `.lock` for milliseconds; anything older than this
+# is the corpse of a git process that died mid-update (daemon restart/rollout).
+STALE_LOCK_AGE_S = 60.0
+_LOCK_PATH_RE = re.compile(r"Unable to create '([^']+\.lock)': File exists")
+# git reports one lock per attempt, and a killed `fetch --prune` can leave many.
+_MAX_STALE_LOCK_SWEEPS = 32
+
+
+def remove_stale_locks(
+    dest: str | os.PathLike[str], stderr: str, *, min_age_s: float = STALE_LOCK_AGE_S,
+) -> list[str]:
+    """Unlink the old orphaned `.lock` files named in git's *stderr*.
+
+    Git never cleans a lock left by a dead process, so without this every later
+    fetch fails forever (#2856). Only regular files inside ``<dest>/.git`` older
+    than *min_age_s* are removed; the caller holds ``clone_lock`` so no sibling
+    thread of ours is mid-update.
+    """
+    git_dir = os.path.realpath(os.path.join(dest, ".git"))
+    removed: list[str] = []
+    for raw in _LOCK_PATH_RE.findall(stderr):
+        path = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(dest, raw))
+        if os.path.commonpath([git_dir, path]) != git_dir:
+            continue
+        try:
+            if not os.path.isfile(path) or os.path.islink(path):
+                continue
+            if time.time() - os.stat(path).st_mtime < min_age_s:
+                continue
+            os.unlink(path)
+        except OSError:
+            continue
+        removed.append(path)
+        log.warning("clone.stale_lock_removed path=%s", path)
+    return removed
+
+
 def fetch_clone(
     dest: str | os.PathLike[str], owner: str | None = None, *, prune: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """``git fetch [--prune] origin`` on *dest*, serialized per clone.
 
     Fetches ONLY ``origin`` (never ``--all``; see ``ensure_clone``). A ref-lock
-    contention failure — another process in a different address space holds the
-    lock, which the threading lock cannot cover — is retried once.
+    contention failure is either another process in a different address space
+    (young lock: retried once after a pause) or an orphan left by a dead git
+    process (old lock: removed, then retried — #2856).
     """
     args = ["-C", str(dest), "fetch", *(["--prune"] if prune else []), "origin"]
     with clone_lock(dest):
         r = _run_git(args, owner=owner)
-        if r.returncode != 0 and is_ref_lock_contention(r.stderr):
-            time.sleep(1.0)
-            r = _run_git(args, owner=owner)
+        retried = False
+        for _ in range(_MAX_STALE_LOCK_SWEEPS):
+            if r.returncode == 0 or not is_ref_lock_contention(r.stderr):
+                break
+            if remove_stale_locks(dest, r.stderr):
+                r = _run_git(args, owner=owner)
+            elif not retried:
+                retried = True
+                time.sleep(1.0)
+                r = _run_git(args, owner=owner)
+            else:
+                break
         return r
 
 
