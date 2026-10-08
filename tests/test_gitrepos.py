@@ -1021,3 +1021,51 @@ class AppTokenPublicHelpersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFetchCloneSerialization:
+    """#2847: overlapping `fetch --prune` on one clone lost ref-lock races."""
+
+    LOCK_ERR = ("error: could not delete references: cannot lock ref "
+                "'refs/remotes/origin/x': Unable to create 'x.lock': File exists.")
+
+    def test_contention_classifier(self):
+        assert gitrepos.is_ref_lock_contention(self.LOCK_ERR)
+        assert not gitrepos.is_ref_lock_contention("fatal: unable to access")
+
+    def test_concurrent_fetches_are_serialized(self, tmp_path):
+        import subprocess
+        import threading
+        import time
+        active, peak = 0, 0
+        guard = threading.Lock()
+
+        def fake(args, owner=None):
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with guard:
+                active -= 1
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(gitrepos, "_run_git", side_effect=fake):
+            ts = [threading.Thread(target=gitrepos.fetch_clone, args=(tmp_path,))
+                  for _ in range(5)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+        assert peak == 1
+
+    def test_lock_contention_retried_once(self, tmp_path):
+        import subprocess
+        results = [subprocess.CompletedProcess([], 1, "", self.LOCK_ERR),
+                   subprocess.CompletedProcess([], 0, "", "")]
+        with mock.patch.object(gitrepos, "_run_git", side_effect=results), \
+                mock.patch.object(gitrepos.time, "sleep"):
+            assert gitrepos.fetch_clone(tmp_path).returncode == 0
+
+    def test_same_lock_for_symlinked_path(self, tmp_path):
+        link = tmp_path / "link"
+        link.symlink_to(tmp_path)
+        assert gitrepos.clone_lock(tmp_path) is gitrepos.clone_lock(link)

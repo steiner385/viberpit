@@ -359,6 +359,52 @@ def test_completion_nudge_waits_out_its_own_release_before_resuming(tmp_path, ca
     assert orch._last_prompt.get("s1") == verdict.remedy
 
 
+def test_completion_nudge_keeps_waiting_when_its_release_overruns_the_budget(tmp_path, caplog):
+    """#2848: on a starved loop the release outlived COMPLETION_RELEASE_WAIT_S, and the
+    nudge fell through to ensure_driver, whose DRIVER_RELEASE_WAIT_S cap then built the
+    replacement over the live release (WARNING) — re-opening the #2655 race. The nudge
+    task holds no lock, so it keeps waiting and resumes only after aclose() returns."""
+    import logging
+
+    verdict = _unmet_verdict()
+
+    async def run():
+        cwd = str(tmp_path / "repo")
+        orch = await _build_orch(tmp_path, cwd=cwd)
+        old = _SlowCloseDriver(delay=0.3)
+        orch._drivers["s1"] = old
+        closed_at_resume: list[bool] = []
+        real_ensure = orch.ensure_driver
+
+        async def spy_ensure(sid, identity="system"):
+            closed_at_resume.append(old.closed)
+            return await real_ensure(sid, identity)
+
+        orch.ensure_driver = spy_ensure
+        with patch("server.sessions.orchestrator.DRIVER_RELEASE_WAIT_S", 0.05), \
+             patch("server.sessions.orchestrator.COMPLETION_RELEASE_WAIT_S", 0.05), \
+             patch("server.automations.completion_bar.met_bar", return_value=verdict), \
+             patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+             patch("server.sessions.orchestrator.configdir.trust_project"):
+            rec = orch.record("s1")
+            rec.auto_archive_opt_out_reason = "manual-unarchive"
+            await orch._persist_status("s1", "complete")
+            rec.auto_archive_opt_out_reason = None
+            await orch._auto_archive_completed("s1")
+            await _drain(orch)
+        return orch, old, closed_at_resume
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        orch, old, closed_at_resume = asyncio.run(run())
+    assert not [r for r in caplog.records
+                if "driver release still in flight" in r.getMessage()]
+    assert [r for r in caplog.records
+            if "completion.nudge_release_slow" in r.getMessage() and r.levelno == logging.INFO]
+    assert closed_at_resume and closed_at_resume[0] is True, (
+        "the replacement must be built only after the old aclose() returned")
+    assert orch._last_prompt.get("s1") == verdict.remedy
+
+
 def test_completion_release_budget_covers_the_driver_close_budget():
     """Single source of truth: the nudge's wait derives from aclose()'s own stage
     bounds, so a future close-constant bump cannot slip past it again."""
@@ -614,3 +660,21 @@ def test_completion_nudge_refused_by_a_drain_survives_the_restart(tmp_path):
         await _drain(orch)
         return row.pending_prompt
     assert asyncio.run(run()) == verdict.remedy
+
+
+def test_slow_driver_close_logs_its_stage_timings(tmp_path, caplog):
+    """#2848: none of the release's stages logged on its own, so an overrun could not
+    say where the time went. A close slower than DRIVER_CLOSE_SLOW_S names them."""
+    import logging
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = _FakeDriver()
+        with patch("server.sessions.orchestrator.DRIVER_CLOSE_SLOW_S", 0.0):
+            await orch._persist_status("s1", "complete")
+            await _drain(orch)
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        asyncio.run(run())
+    lines = [r.getMessage() for r in caplog.records if "driver_close.slow" in r.getMessage()]
+    assert lines and "snapshot=" in lines[0] and "aclose=" in lines[0]

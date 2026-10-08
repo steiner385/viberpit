@@ -71,6 +71,12 @@ _UNREACHABLE_MSG = "fleet host=%s unreachable; skipping it this pass (site='%s' 
 # and what ``asyncio.TimeoutError`` aliases, so naming either separately is redundant.
 _EXPECTED_UNREACHABLE = (DaemonUnavailable, OSError)
 
+# Failures that, alone, read as a starved or restarting daemon rather than an outage:
+# INFO until host_probe's run of consecutive misses escalates (#2821). ``TimeoutError``
+# is the local ``asyncio.timeout()`` deadline around a worker read (automation_statuses),
+# the same condition as an RPC-layer ``DaemonTimeout`` under a different type (#2846).
+_ISOLATED_UNREACHABLE = (DaemonUnavailable, TimeoutError)
+
 
 def _field(value: object) -> str:
     """Render *value* for a single-quoted log field: no quotes, no newlines."""
@@ -303,11 +309,11 @@ class FleetOrchestrator:
             log.info(_UNREACHABLE_MSG + " (restart in progress)",
                      host, _field(site), cause)
             return
-        if (isinstance(exc, DaemonUnavailable)
+        if (isinstance(exc, _ISOLATED_UNREACHABLE)
                 and host_probe.unreachable_run(host) < host_probe.UNREACHABLE_ESCALATE_AFTER):
             # A lone timeout/refusal is a starved or restarting daemon, not an outage:
             # the probe owns that policy (#2701/#2749), so stay INFO until its run of
-            # consecutive misses escalates (#2821).
+            # consecutive misses escalates (#2821, #2846).
             log.info(_UNREACHABLE_MSG + " (isolated)", host, _field(site), cause)
             return
         expected = isinstance(exc, _EXPECTED_UNREACHABLE)

@@ -667,6 +667,14 @@ DRIVER_RELEASE_WAIT_S = env_float("VIBERPIT_DRIVER_RELEASE_WAIT_S", 20.0, minimu
 # background task, so it gets the driver's full close budget plus headroom for the
 # DB snapshot/attest and account sync-back around aclose().
 COMPLETION_RELEASE_WAIT_S = ACLOSE_BUDGET_S + 15.0
+# Past COMPLETION_RELEASE_WAIT_S the nudge keeps waiting (#2848): on a starved loop
+# over the sshfs store the release ran 80–100 s, and falling through to
+# ensure_driver built the replacement over it after DRIVER_RELEASE_WAIT_S anyway. The
+# nudge task holds no lock, so waiting longer delays only the nudge; this cap exists
+# solely so a genuinely stuck release cannot pin the nudge forever.
+COMPLETION_RELEASE_MAX_WAIT_S = 300.0
+# A driver close slower than this logs its per-stage timings (#2848).
+DRIVER_CLOSE_SLOW_S = 10.0
 # How long ensure_driver waits for an IN-FLIGHT spawn of the same session before
 # giving up (asyncio.TimeoutError → the bridge's SESSION_RESUME_TIMEOUT hint). A
 # spawn is driver.start() — the SDK subprocess plus its MCP fleet — normally a few
@@ -2298,26 +2306,47 @@ class SessionOrchestrator:
         from server.automations.ownership import (
             StaleOwnership, attest_session_stopped, execution_snapshot,
         )
+        # Per-stage timings, logged only when the close is slow (#2848): none of
+        # these stages logs on its own, so an overrun was undiagnosable.
+        stages: dict[str, float] = {}
+        start = mark = time.monotonic()
+
+        def _stage(name: str) -> None:
+            nonlocal mark
+            now = time.monotonic()
+            stages[name] = now - mark
+            mark = now
+
         try:
-            snapshot = await execution_snapshot(
-                session_id, execution_id=getattr(driver, "automation_execution_id", None))
-        except Exception:
-            log.warning("automation close association unknown session=%s", session_id, exc_info=True)
-            snapshot = None
-        await driver.aclose()
-        if snapshot is None or snapshot.generation is None:
-            return
-        probe = getattr(driver, "automation_work_stopped", None)
-        if not callable(probe):
-            return
-        try:
-            if await probe():
-                await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
-                                             execution_id=snapshot.execution_id)
-        except StaleOwnership:
-            pass
-        except Exception:
-            log.warning("automation native close proof unknown session=%s", session_id, exc_info=True)
+            try:
+                snapshot = await execution_snapshot(
+                    session_id, execution_id=getattr(driver, "automation_execution_id", None))
+            except Exception:
+                log.warning("automation close association unknown session=%s", session_id, exc_info=True)
+                snapshot = None
+            _stage("snapshot")
+            await driver.aclose()
+            _stage("aclose")
+            if snapshot is None or snapshot.generation is None:
+                return
+            probe = getattr(driver, "automation_work_stopped", None)
+            if not callable(probe):
+                return
+            try:
+                if await probe():
+                    await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
+                                                 execution_id=snapshot.execution_id)
+            except StaleOwnership:
+                pass
+            except Exception:
+                log.warning("automation native close proof unknown session=%s", session_id, exc_info=True)
+            _stage("attest")
+        finally:
+            # A stage missing from the line is the one that raised or never ran.
+            total = time.monotonic() - start
+            if total >= DRIVER_CLOSE_SLOW_S:
+                log.info("driver_close.slow sid=%s total=%.1fs %s", session_id, total,
+                         " ".join(f"{k}={v:.1f}s" for k, v in stages.items()))
 
     async def _automation_session_work_stopped(self, session_id: str) -> bool:
         """Whole managed-tree proof, never a UI status or an expired host lease."""
@@ -6594,14 +6623,22 @@ class SessionOrchestrator:
                     # ago, and resuming over it races the old process's session-file
                     # flush. Waiting HERE blocks only this background task; inside
                     # ensure_driver it would cap at DRIVER_RELEASE_WAIT_S and then
-                    # build the replacement anyway.
+                    # build the replacement anyway — so an overrun keeps waiting here
+                    # (#2848) rather than handing the race to ensure_driver.
                     release = getattr(self, "_releasing", {}).get(session_id)
                     if release is not None:
                         done, _ = await asyncio.wait({release},
                                                      timeout=COMPLETION_RELEASE_WAIT_S)
                         if not done:
-                            log.info("completion.nudge_release_slow sid=%s waited=%.0fs",
-                                     session_id, COMPLETION_RELEASE_WAIT_S)
+                            log.info("completion.nudge_release_slow sid=%s waited=%.0fs "
+                                     "— still waiting", session_id, COMPLETION_RELEASE_WAIT_S)
+                            # INFO even past the cap: ensure_driver's own WARNING is
+                            # then the one filing for a truly stuck release.
+                            done, _ = await asyncio.wait(
+                                {release}, timeout=max(
+                                    0.0, COMPLETION_RELEASE_MAX_WAIT_S - COMPLETION_RELEASE_WAIT_S))
+                            log.info("completion.nudge_release_%s sid=%s",
+                                     "done" if done else "stuck", session_id)
                     if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
                         log.warning("completion.nudge_failed sid=%s reason=no_driver",
                                     session_id)
@@ -10069,11 +10106,6 @@ class SessionOrchestrator:
             # orphan every indexed feature. Let it raise so the pass is skipped.
             clone = await asyncio.to_thread(
                 gitrepos.ensure_clone, repo_root, repo, url)
-            await asyncio.to_thread(
-                subprocess.run,
-                ["git", "-C", clone, "fetch", "origin", "--quiet"],
-                check=False, capture_output=True, timeout=120,
-            )
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
@@ -10215,11 +10247,6 @@ class SessionOrchestrator:
             url = f"https://github.com/{repo}.git"
             clone = await asyncio.to_thread(
                 gitrepos.ensure_clone, repo_root, repo, url)
-            await asyncio.to_thread(
-                subprocess.run,
-                ["git", "-C", clone, "fetch", "origin", "--quiet"],
-                check=False, capture_output=True, timeout=120,
-            )
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
@@ -11822,8 +11849,7 @@ class SessionOrchestrator:
         import re
         from server.pm.classification import FEATURE_DOCS_DIR
         try:
-            fetched = subprocess.run(["git", "-C", clone, "fetch", "origin", "--quiet"],
-                                     check=False, capture_output=True, timeout=120)
+            fetched = gitrepos.fetch_clone(clone, prune=False)
             if fetched.returncode != 0:
                 return None
             rp = subprocess.run(
@@ -19354,7 +19380,8 @@ class SessionOrchestrator:
             return None
         return await stop(tool_use_id)
 
-    async def latest_suggestions(self, session_id: str) -> list[str]:
+    async def latest_suggestions(self, session_id: str, *,
+                                 copilot_accounts: frozenset[str] | None = None) -> list[str]:
         """Latest cached next-prompt suggestions for a session.
 
         Live (attached) sessions read straight off the driver. Detached
@@ -19369,6 +19396,9 @@ class SessionOrchestrator:
         Codex sessions (live-idle AND detached) are dispatched to
         _latest_suggestions_codex instead: Codex has no in-driver suggester loop
         and no on-disk transcript file, so neither branch below applies (#1281).
+
+        ``copilot_accounts`` is the batch's pre-resolved Copilot set (see
+        :meth:`_copilot_accounts_of`); None resolves this one account off-loop.
         """
         if self._engine_of(session_id) is AgentEngine.CODEX:
             return await self._latest_suggestions_codex(session_id)
@@ -19385,7 +19415,7 @@ class SessionOrchestrator:
         if is_assistant(rec):
             return []
         # Copilot sessions use a third-party model — Haiku suggestions are meaningless.
-        if _provider_of(rec.account) == _copilot_mod.PROVIDER:
+        if await self._is_copilot_account(rec.account, copilot_accounts):
             return []
         if rec.status not in ("done", "idle"):
             return []
@@ -19647,7 +19677,8 @@ class SessionOrchestrator:
                         exc_info=True)
             return []
 
-    async def latest_summary(self, session_id: str, *, viewing: bool) -> str:
+    async def latest_summary(self, session_id: str, *, viewing: bool,
+                             copilot_accounts: frozenset[str] | None = None) -> str:
         """Latest cached one-line status summary for a session.
 
         Mirrors latest_suggestions: lazy, signature-keyed, non-blocking. Schedules a
@@ -19668,7 +19699,7 @@ class SessionOrchestrator:
         if is_assistant(rec):
             return ""
         # Copilot sessions use a third-party model — Haiku summaries are meaningless.
-        if _provider_of(rec.account) == _copilot_mod.PROVIDER:
+        if await self._is_copilot_account(rec.account, copilot_accounts):
             return ""
         cached = self._summaries.get(session_id)
         if not viewing:
@@ -19718,11 +19749,41 @@ class SessionOrchestrator:
             return None
         return float(window.total_turns)
 
+    async def _copilot_accounts_of(self, session_ids: list[str]) -> frozenset[str]:
+        """The Copilot accounts among *session_ids*' records, resolved off the loop.
+
+        The edge polls the ``*_many`` RPCs every few seconds, and each provider
+        lookup reconciles the manifest against the account store — a file read plus
+        directory globs on the sshfs mount on runners. Per record on the event loop
+        that was N blocking round-trips per poll, stalling the daemon for seconds
+        (#2848). One worker-thread pass over the DISTINCT accounts instead.
+        """
+        accounts = {rec.account for sid in session_ids
+                    if (rec := self._records.get(sid)) is not None and rec.account}
+        if not accounts:
+            return frozenset()
+
+        def _resolve() -> frozenset[str]:
+            return frozenset(a for a in accounts if _provider_of(a) == _copilot_mod.PROVIDER)
+
+        return await asyncio.to_thread(_resolve)
+
+    async def _is_copilot_account(self, account: str | None,
+                                  resolved: frozenset[str] | None) -> bool:
+        """Membership in a batch's pre-resolved set, else one off-loop lookup (#2848)."""
+        if resolved is not None:
+            return account in resolved
+        if not account:
+            return False
+        return await asyncio.to_thread(_provider_of, account) == _copilot_mod.PROVIDER
+
     async def latest_suggestions_many(self, session_ids: list[str]) -> dict[str, list[str]]:
         """Batched :meth:`latest_suggestions`, isolated per session (see prs_for_many)."""
         ids = list(session_ids)
+        copilot = await self._copilot_accounts_of(ids)
         results = await asyncio.gather(
-            *(self.latest_suggestions(sid) for sid in ids), return_exceptions=True)
+            *(self.latest_suggestions(sid, copilot_accounts=copilot) for sid in ids),
+            return_exceptions=True)
         out: dict[str, list[str]] = {}
         for sid, r in zip(ids, results):
             if isinstance(r, BaseException):
@@ -19740,8 +19801,10 @@ class SessionOrchestrator:
         param for the whole page), so it applies uniformly to the batch.
         """
         ids = list(session_ids)
+        copilot = await self._copilot_accounts_of(ids)
         results = await asyncio.gather(
-            *(self.latest_summary(sid, viewing=viewing) for sid in ids),
+            *(self.latest_summary(sid, viewing=viewing, copilot_accounts=copilot)
+              for sid in ids),
             return_exceptions=True)
         out: dict[str, str] = {}
         for sid, r in zip(ids, results):

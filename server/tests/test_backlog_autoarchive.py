@@ -25,11 +25,13 @@ def _rec(sid="s1", *, origin="backlog-runner"):
 
 
 async def _drain():
-    # Let the scheduled _auto_archive_completed task run to completion. The path
-    # awaits several times (the app-wide toggle read, the completion-bar gate, the
-    # archive/nudge), so pump enough turns rather than a fixed one or two.
-    for _ in range(6):
-        await asyncio.sleep(0)
+    # Let the scheduled _auto_archive_completed task run to completion. Await the
+    # task itself rather than pumping a fixed number of loop turns: the path's
+    # awaits include off-loop reads (transcript/DB, git via to_thread) that a
+    # loaded CI shard doesn't finish within N sleep(0)s, so a turn count flakes.
+    pending = asyncio.all_tasks() - {asyncio.current_task()}
+    if pending:
+        await asyncio.wait(pending, timeout=10)
 
 
 async def _autoarchive_enabled() -> bool:
