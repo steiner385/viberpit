@@ -1,8 +1,8 @@
 """Opt-in, tool-free paired guidance review. Never an admission decision.
 
 The worker is a separate interpreter because the SDK merges os.environ into its
-child environment. No account picker, ambient provider override, or project
-settings cross that boundary. Only synthetic HTML and selected reference data
+child environment. One canonical subscription account is frozen for the comparison; no ambient
+provider override or project settings cross that boundary. Only synthetic HTML and selected reference data
 are sent; no generated code or vendor executable is run.
 """
 from __future__ import annotations
@@ -50,14 +50,58 @@ def validate_request(model: str, budget: float, timeout: float) -> None:
         raise ValueError('timeout must be finite, positive, and at most 300 seconds')
 
 
-def worker_environment() -> dict[str, str]:
-    """Fixed executable search path; never inherit provider/SDK overrides."""
-    env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8',
-           'ANTHROPIC_API_KEY': os.environ.get('ANTHROPIC_API_KEY', '').strip()}
-    # Preserve the actual home for canonical binary discovery, never rewrite it.
-    if 'HOME' in os.environ:
-        env['HOME'] = os.environ['HOME']
-    return env
+def worker_environment(account: str | None) -> dict[str, str]:
+    """Select once through canonical helpers; never forward ambient API credentials."""
+    from server.sessions.account_auth import helper_env, oauth_env_for
+    from server.sessions.adopt import _map_account
+    from server.sessions.helper_call import is_account_helper_ready, pick_helper_config_dir
+    from viberpit import accounts, paths
+    try:
+        config: str | None
+        if account is not None:
+            if accounts.provider_or_none(account) != 'anthropic' or not is_account_helper_ready(account):
+                raise ValueError('missing-subscription-account')
+            config = str(paths.account_cfg_dir(account))
+        else:
+            config = pick_helper_config_dir()
+        if not config:
+            raise ValueError('missing-subscription-account')
+        if account is None:
+            account = _map_account(config, [item['name'] for item in accounts.list_accounts()],
+                                   paths.account_cfg_dir)
+        if not account:
+            raise ValueError('missing-subscription-account')
+        selected = helper_env(config, account=account)
+        # helper_env merges ambient variables: only the selected canonical token
+        # may survive. An absent token permits that account's browser OAuth only.
+        selected.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
+        canonical_auth = oauth_env_for(account)
+        if accounts.runner_uses_envelope(account) and not canonical_auth:
+            raise ValueError('missing-subscription-account')
+        selected.update(canonical_auth)
+        env = {key: selected[key] for key in ('HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN')
+               if selected.get(key)}
+        env.update(PATH='/usr/local/bin:/usr/bin:/bin', LANG='C.UTF-8')
+        if not env.get('CLAUDE_CONFIG_DIR'):
+            raise ValueError('missing-subscription-account')
+        return env
+    except Exception:
+        raise ValueError('missing-subscription-account') from None
+
+
+def subscription_auth(binary: str, cwd: str, env: dict) -> dict:
+    """Native auth metadata only; never emit its account identifiers or diagnostics."""
+    try:
+        result = subprocess.run([binary, 'auth', 'status', '--json'], cwd=cwd, env=env,
+                                capture_output=True, text=True, timeout=10, check=True)
+        status = json.loads(result.stdout)
+        if (status.get('loggedIn') is not True or status.get('authMethod') != 'claude.ai'
+                or status.get('apiProvider') != 'firstParty'
+                or status.get('subscriptionType') not in ('max', 'pro')):
+            raise ValueError('unverified-subscription-auth')
+        return {'auth_mode': 'claude.ai', 'subscription_type': status['subscriptionType']}
+    except Exception:
+        raise ValueError('unverified-subscription-auth') from None
 
 
 def load_inputs(root: Path) -> tuple[list[dict], str, dict]:
@@ -146,7 +190,8 @@ def build_options(binary: str, model: str, budget: float, cwd: str, config: str)
     from claude_agent_sdk import ClaudeAgentOptions
     from server.sessions.helper_call import stateless_helper_options
     options = stateless_helper_options()
-    options['extra_args']['bare'] = None
+    options['extra_args'].update({'safe-mode': None, 'disable-slash-commands': None,
+                                 'system-prompt-snapshot': 'off'})
     return ClaudeAgentOptions(**options, cli_path=binary, model=model, cwd=cwd,
                               env={'CLAUDE_CONFIG_DIR': config}, system_prompt=SYSTEM_PROMPT,
                               max_turns=1, max_budget_usd=budget)
@@ -163,10 +208,14 @@ async def consume_query(prompt: str, options, vocabulary: list[str], query_fn=No
     def observe(message) -> None:
         nonlocal init, result
         if isinstance(message, SystemMessage) and message.subtype == 'init':
-            if init or message.data.get('tools') != [] or message.data.get('model') != options.model:
+            if (init or any(message.data.get(key) != [] for key in
+                            ('tools', 'mcp_servers', 'slash_commands', 'skills'))
+                    or message.data.get('model') != options.model):
                 raise ValueError('unexpected-init-capabilities-or-model')
             init = True
         if isinstance(message, AssistantMessage):
+            if message.error == 'authentication_failed':
+                raise ValueError('authentication-failed')
             if not init or message.error or message.model != options.model:
                 raise ValueError('invalid-assistant-message')
             if any(isinstance(block, (ToolUseBlock, ServerToolUseBlock)) for block in message.content):
@@ -235,7 +284,7 @@ async def bounded_query(request: dict, options) -> dict:
 def preflight(binary: str, cwd: str, env: dict) -> str:
     help_result = subprocess.run([binary, '--help'], cwd=cwd, env=env, capture_output=True,
                                  text=True, timeout=10, check=True)
-    for flag in ('--bare', '--tools', '--strict-mcp-config', '--setting-sources',
+    for flag in ('--safe-mode', '--disable-slash-commands', '--system-prompt-snapshot', '--tools', '--strict-mcp-config', '--setting-sources',
                  '--no-session-persistence', '--max-budget-usd'):
         if flag not in help_result.stdout:
             raise ValueError('unsupported-native-capability')
@@ -250,24 +299,23 @@ def preflight(binary: str, cwd: str, env: dict) -> str:
 def worker_main(request: dict) -> dict:
     """Only called inside the isolated worker interpreter, never in a service."""
     validate_request(request['model'], request['budget'], request['timeout'])
-    if not os.environ.get('ANTHROPIC_API_KEY', '').strip():
-        return {'status': 'missing-api-key', 'executed': False}
+    if not os.environ.get('CLAUDE_CONFIG_DIR'):
+        return {'status': 'missing-subscription-account', 'executed': False}
     started = time.monotonic()
     attempted = False
     identity = {}
     try:
         from server.sessions.claude_bin import resolve_claude_bin
         with tempfile.TemporaryDirectory(prefix='framework-guidance-') as directory:
-            cwd, config = Path(directory) / 'work', Path(directory) / 'config'
+            cwd, config = Path(directory) / 'work', os.environ['CLAUDE_CONFIG_DIR']
             cwd.mkdir(mode=0o700)
-            config.mkdir(mode=0o700)
             # Even binary resolution/version probes see only the clean worker environment.
-            os.environ['CLAUDE_CONFIG_DIR'] = str(config)
             binary = resolve_claude_bin()
             if not binary:
                 raise ValueError('native-engine-unavailable')
             identity = {'native_version': preflight(binary, str(cwd), dict(os.environ)),
-                        'sdk_version': version('claude-agent-sdk')}
+                        'sdk_version': version('claude-agent-sdk'),
+                        **subscription_auth(binary, str(cwd), dict(os.environ))}
             options = build_options(binary, request['model'], request['budget'], str(cwd), str(config))
             attempted = True
             result = asyncio.run(bounded_query(request, options))
@@ -286,7 +334,7 @@ def worker_main(request: dict) -> dict:
                   'tool-attempt', 'missing-or-failed-result', 'unknown-or-exhausted-cost',
                   'missing-executed-result', 'invalid-response-schema', 'invalid-finding-ids',
                   'unsupported-native-capability', 'unverified-native-version',
-                  'native-engine-unavailable',
+                  'native-engine-unavailable', 'unverified-subscription-auth', 'authentication-failed',
               }):
             reason = exc.args[0]
         elif type(exc) is TimeoutError and exc.args == ('query-timeout',):
@@ -296,11 +344,11 @@ def worker_main(request: dict) -> dict:
                 'cost_usd': None, 'usage': None, 'duration_seconds': time.monotonic() - started}
 
 
-def worker_call(request: dict) -> dict:
+def worker_call(request: dict, env: dict[str, str]) -> dict:
     """The credential crosses in env, never argv or a persisted request file."""
     with tempfile.TemporaryDirectory(prefix='framework-review-launch-') as cwd:
         with subprocess.Popen([sys.executable, '-I', str(Path(__file__).resolve()), '--worker'],
-                              cwd=cwd, env=worker_environment(), stdin=subprocess.PIPE,
+                              cwd=cwd, env=env, stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                               start_new_session=True) as process:
             try:
@@ -325,15 +373,17 @@ def worker_call(request: dict) -> dict:
                         'cost_usd': None, 'usage': None}
 
 
-def run_comparison(root: Path, *, model: str, budget: float, timeout: float) -> dict:
+def run_comparison(root: Path, *, model: str, budget: float, timeout: float, account: str | None = None) -> dict:
     validate_request(model, budget, timeout)
     report: dict[str, Any] = {'schema_version': 1, 'report_kind': 'paired-guidance-review', 'case_id': CASE_ID,
               'executed': False, 'status': 'not-executed', 'model': model, 'budget_usd': budget,
-              'budget_semantics': 'Equal per-call reservations; native SDK cap and provider cost estimates, not a billing guarantee.',
+              'budget_semantics': 'Subscription only. Equal native estimated-dollar workload reservations; neither API billing nor a subscription quota guarantee.',
               'evidence_scope': 'Synthetic source review only; no UI edits, browser execution, native skill invocation, or admission.',
               'repeats': 1, 'seed': None, 'calls': [], 'totals': {}, 'reserved_usd': 0.0}
-    if not os.environ.get('ANTHROPIC_API_KEY', '').strip():
-        report['status'] = 'missing-api-key'
+    try:
+        env = worker_environment(account)
+    except ValueError:
+        report['status'] = 'missing-subscription-account'
         return report
     try:
         corpus, guidance, provenance = load_inputs(root)
@@ -349,14 +399,14 @@ def run_comparison(root: Path, *, model: str, budget: float, timeout: float) -> 
             prompt = make_prompt(fixture['html'], fixture['vocabulary'], guidance if arm == 'guidance' else '')
             report['reserved_usd'] = reservation * (len(report['calls']) + 1)
             result = worker_call({'prompt': prompt, 'vocabulary': fixture['vocabulary'],
-                                  'model': model, 'budget': reservation, 'timeout': timeout})
+                                  'model': model, 'budget': reservation, 'timeout': timeout}, env)
             call = {'fixture_id': fixture['id'], 'fixture_sha256': fixture['sha256'],
                     'arm': arm, 'prompt_sha256': digest(prompt.encode()),
                     'reservation_usd': reservation, **result}
             report['calls'].append(call)
             if len(report['calls']) > 1 and any(
                 result.get(key) != report['calls'][0].get(key)
-                for key in ('native_version', 'sdk_version')
+                for key in ('native_version', 'sdk_version', 'auth_mode', 'subscription_type')
             ):
                 report['status'] = 'engine-version-changed'
                 return report
@@ -364,7 +414,9 @@ def run_comparison(root: Path, *, model: str, budget: float, timeout: float) -> 
             cost = result.get('cost_usd')
             if (result.get('status') != 'completed' or result.get('executed') is not True
                     or not isinstance(cost, (int, float)) or isinstance(cost, bool) or not math.isfinite(cost) or not 0 <= cost < reservation
-                    or result.get('observed_model') != model or result.get('tools_observed') != []):
+                    or result.get('observed_model') != model or result.get('tools_observed') != []
+                    or result.get('auth_mode') != 'claude.ai'
+                    or result.get('subscription_type') not in ('max', 'pro')):
                 report['status'] = 'incomplete'
                 return report
             try:

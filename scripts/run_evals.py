@@ -188,15 +188,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="which cases to run (default static — the CI gate)")
     ap.add_argument("--timeout", type=_timeout, default=120, help="browser seconds per case (0 < n <= 3600)")
     ap.add_argument("--report", type=Path, help="write browser calibration or private agent observations")
-    ap.add_argument("--execute", action="store_true", help="explicitly opt in to a supported paid agent case")
+    ap.add_argument("--execute", action="store_true", help="explicitly opt in to a supported subscription agent case")
     ap.add_argument("--case", help="select exactly one case")
     ap.add_argument("--model", help="exact dated Claude model ID for agent execution")
-    ap.add_argument("--max-budget-usd", type=float, help="total agent reservation, positive and at most 2 USD")
+    ap.add_argument("--account", help="ready Anthropic subscription account; default uses the canonical helper picker")
+    ap.add_argument("--max-budget-usd", type=float, help="subscription estimated-dollar workload cap, positive and at most 2; not a billing or quota guarantee")
     args = ap.parse_args(argv)
     if args.execute and args.kind != "agent":
         ap.error("--execute requires --kind agent")
-    if (args.model or args.max_budget_usd is not None) and not args.execute:
-        ap.error("--model and --max-budget-usd require --execute")
+    if (args.account or args.model or args.max_budget_usd is not None) and not args.execute:
+        ap.error("--account, --model and --max-budget-usd require --execute")
     if args.report and args.kind != "browser" and not args.execute:
         ap.error("--report requires --kind browser or --kind agent --execute")
 
@@ -221,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("cannot reserve report; choose a new writable private report path")
         with output:
             observation = run_comparison(_REPO_ROOT, model=args.model,
-                                         budget=args.max_budget_usd, timeout=args.timeout)
+                                         budget=args.max_budget_usd, timeout=args.timeout, account=args.account)
             try:
                 write_report(output, observation)
             except OSError:

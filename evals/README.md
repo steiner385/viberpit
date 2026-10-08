@@ -27,7 +27,7 @@ check: grep -q "ruff check src/ server/" CLAUDE.md   # trusted repository comman
   gate.
 - **`agent`** — the case is a real ViberPit task an agent must complete; the
   acceptance check is run against its result. These need native-engine/API access,
-  so paid execution is opt-in, never part of the PR gate.
+  so quota-consuming execution is opt-in, never part of the PR gate.
   `--kind agent` remains **LIST ONLY** without `--execute`.
   Only `framework-impeccable-guidance-review` currently supports execution;
   other cases remain examples and fail closed if execution is requested.
@@ -52,7 +52,7 @@ configuration, fixture, and web dependency changes, and uploads the JSON report
 on success or failure when produced. This job does not change branch protection
 or constitute framework admission. Browser
 cases are opt-in and do not change the default static gate. Provision browser tools
-separately; the runner never installs dependencies or launches paid agent sessions.
+separately; the runner never installs dependencies or launches subscription agent sessions.
 The timeout is per case, positive and at most 3600 seconds. On POSIX a timeout kills
 the command's process group, including Chromium descendants.
 
@@ -102,10 +102,13 @@ python scripts/run_evals.py --kind agent --execute \
 ```
 
 The model argument must be an explicit dated model ID available to the caller;
-the example is not an availability claim. Set a **dedicated evaluation**
-`ANTHROPIC_API_KEY` in the invoking environment. The runner never selects an
-account, OAuth token, proxy, or alternate provider. A missing key yields an
-unexecuted failure report. No paid call was used to validate this implementation.
+the example is not an availability claim. Use an existing Anthropic subscription
+account in ViberPit, optionally selected with `--account NAME`. The canonical
+helper picker otherwise selects one ready account. That account is fixed for the
+whole comparison; there is no automatic rotation or retry. The worker excludes
+API keys and alternate-provider overrides. Native auth status must identify a
+Claude.ai subscription before inference; missing or stale credentials stop the
+run. The previously provisioned evaluation API key is not read.
 
 Each of three existing synthetic fixtures (clean, mobile overflow, reduced motion)
 gets one baseline and one guidance review, with alternating order. Both arms see
@@ -116,21 +119,26 @@ reference text are untrusted data; the skill entry point and native binaries are
 never invoked. Expected findings remain outside model prompts.
 
 Each call runs in a separate Python worker with an allowlisted environment, fresh
-working/config directories, the canonical native Claude binary, and shared
+working directories, the canonical helper scratch configuration and Claude binary, and shared
 stateless-helper options: no tools, no MCP servers, no settings sources, and no
-session persistence. `--bare` additionally disables native hooks, plugins,
-auto-memory, and project instructions. Preflight rejects missing required CLI
+session persistence. `--safe-mode` disables user customizations, including
+project instructions, installed skills/plugins and hooks, while preserving native
+subscription authentication. `--disable-slash-commands` disables skills explicitly;
+`--system-prompt-snapshot off` prevents prompt recording. Native built-in plugins
+and managed policy remain vendor-controlled; safe mode is not a claim that every
+built-in plugin disappears. Preflight rejects missing required CLI
 flags; stream observations reject tools, wrong models, missing initialization,
 empty/failed results, malformed finding IDs, and missing/exhausted cost. These
 are native configuration and observed boundaries, **not an OS/network sandbox**.
 The trusted CLI still makes provider calls. Reports contain no prompts, keys,
 paths to runtime state, or raw native diagnostics.
 
-The budget must be positive, finite, and at most USD 2. Six fixed reservations
+The `--max-budget-usd` value is a positive, finite native estimated-workload
+ceiling of at most USD 2, not an API credit allocation or subscription quota limit. Six fixed reservations
 are made, one per call, with an equal native SDK `max_budget_usd` cap; unused
 reservations are never recycled. Any failure or unknown cost stops later calls,
 without retries. This is a scheduling bound plus the provider's native cost
-estimate, **not a hard billing guarantee**. Timeout applies per call (at most
+estimate, **not a subscription quota or billing guarantee**. Timeout applies per call (at most
 300 seconds), with a bounded extra worker cleanup/preflight allowance.
 
 The new report path must not exist; output is mode 0600. The runner exclusively
@@ -143,5 +151,5 @@ raw true-positive/false-positive/false-negative counts. Unknown usage remains
 null. `completed` means all six valid reviews were observed; it is not a
 quality pass or promotion. Nonzero exit means incomplete/invalid execution.
 No fabricated human rubric score, statistical significance, or framework
-admission result is produced. Real paid execution and evaluation of UI edits,
+admission result is produced. Evaluation of UI edits,
 visual judgment, engine compatibility, and runtime enforcement remain separate.

@@ -29,27 +29,35 @@ screenshot perception, visual redesign quality or successful UI repair.
 
 ## Native execution and credentials
 
-The installed Claude CLI was probed through its real `--help` and `--version`:
-version 2.1.292 documents `--bare`, which skips settings/plugin hooks, plugin sync,
-auto-memory and `CLAUDE.md` discovery. It also explicitly refuses OAuth/keychain
-authentication in this mode. A dedicated Anthropic evaluation API key must be
-provided through the normal runtime secret mechanism, never in a prompt, report,
-command-line argument or committed file. Do not substitute an ambient paid account
-or select a different provider to avoid this requirement.
+The default execution path uses an existing ViberPit Anthropic subscription
+account. An optional `--account` chooses it explicitly; otherwise the canonical
+helper picker chooses a ready account. Resolve credentials and host-local scratch
+configuration through `server/sessions/account_auth.py:helper_env`, then freeze
+that account for the entire paired sequence. No automatic account rotation occurs.
 
-Use canonical stateless helper options plus `--bare`: no built-in tools, no MCP
-servers, no loaded settings and no native session persistence. Each call has a
-fresh scratch working/config directory and a minimal child environment. The
-runner must reject advertised/requested tools and missing execution evidence.
-This is a tool-free inference boundary, not an OS/network sandbox; the trusted
-native process still contacts Anthropic to perform the requested inference.
+The worker receives a minimal allowlisted environment with the selected config and
+its canonical OAuth authentication. API keys and provider overrides are excluded;
+there is no API-funded fallback. Native `auth status --json` must identify a
+logged-in first-party Claude.ai subscription before inference. A cached logged-in
+status alone does not establish token validity: inference can still report expired
+authentication, and must stop without retrying or switching accounts.
 
-Require an explicit model identifier, single attempts, bounded turns and time,
-and a configured total budget no greater than $2 for this initial smoke. Reserve
-budget before dispatch and stop on failure, missing cost information or exhausted
-budget. Native budget enforcement and reported dollar costs are provider
-mechanisms/estimates, not a guarantee about final billing. No retries may silently
-increase the number of calls or pool evidence from different attempts.
+CLI 2.1.293 advertises `--safe-mode`, which disables user customizations while
+preserving authentication. Use it with canonical stateless helper options,
+`--disable-slash-commands` and `--system-prompt-snapshot off`: no built-in tools,
+MCP configuration, settings sources, skills or native session persistence. Safe
+mode disables installed custom plugins/hooks and project instructions; native
+built-in plugins and managed policy remain vendor-controlled. It does not imply
+an OS/network sandbox or permission to bypass managed policy. Every call uses a
+fresh working directory and the canonical helper scratch config, without copying
+credentials into a new ad hoc store or rewriting HOME.
+
+Require an explicit model identifier, six calls at most, single attempts, bounded
+turns and per-call timeouts. `--max-budget-usd` retains the native estimated-workload
+cap (at most 2), not an API credit allocation or subscription quota guarantee.
+Reservations are never recycled within a run. Stop on failure, missing cost
+telemetry or exhausted estimated budget. Report native estimated costs separately
+from billed charges; zero is valid telemetry, not proof that quota was unused.
 
 ## Evidence and interpretation
 
@@ -60,19 +68,20 @@ runner observations, not authenticated SDLC attestations. Raw native exceptions,
 authentication data, account paths and unbounded model text do not belong in a
 shareable result.
 
-A missing key, unavailable native capability, timeout, missing initialization,
+An unavailable subscription account, unavailable native capability, timeout, missing initialization,
 unexpected tool, malformed answer or exhausted budget is a failed/incomplete
 execution—not a zero-score completed experiment. Report this separately from a
 completed review that misses a real defect or flags a clean fixture.
 
 ## Running the comparison
 
-After provisioning the dedicated key through the runtime secret setup, choose
-an exact dated model ID supported by that account and a new private output path:
+Choose a ready subscription account, an exact dated model ID supported by it,
+and a new private output path:
 
 ```bash
 python scripts/run_evals.py --kind agent --execute \
   --case framework-impeccable-guidance-review \
+  --account "$EVAL_ACCOUNT" \
   --model "$EVAL_MODEL_ID" --max-budget-usd 2 --timeout 120 \
   --report /private/evals/new-guidance-comparison.json
 ```
@@ -117,6 +126,26 @@ reasons (including invalid JSON) while keeping arbitrary native diagnostics
 redacted; all 79 focused tests pass.
 
 Across all attempts, total reservations are $1.656667 (rounded up), reported costs
-are $0.28574365, and failed-call costs remain unknown. Further paid work is paused
-pending additional evaluation budget. Impeccable remains candidate. The earlier
+are $0.28574365, and failed-call costs remain unknown. API-funded work has stopped; these historical reservations are not reused by
+the subscription experiment. Impeccable remains candidate. The earlier
 browser calibration and historical pilots remain separate evidence.
+
+## Subscription transition
+
+The user requested subscription-backed execution on 2026-10-08. The actual CLI
+reported Claude.ai / firstParty / Max authentication for a canonical ready account.
+A safe-mode canary probe initialized without tools, MCP servers or slash commands;
+the synthetic SessionStart hook did not run. Native built-in plugins remained
+visible, as documented by safe mode. Two eligible accounts then reported expired
+OAuth authentication before successful inference, so instruction isolation and
+complete paired execution are not yet verified. Reauthentication and a successful
+canary probe remain prerequisites to claiming a clean subscription baseline.
+
+The subscription migration passes 105 focused tests plus the existing eval-runner
+tests and independent review. Offline tests cover API-key and ambient OAuth
+exclusion, native subscription status, absent/lapsed broker envelopes, fixed
+account selection, no automatic fallback, and the safe-mode launch options.
+
+The updated CLI entry point was exercised with the available account state and
+stopped with `unverified-subscription-auth`, `executed: false`, before inference.
+This verifies rejection only; reauthenticated successful inference is still pending.

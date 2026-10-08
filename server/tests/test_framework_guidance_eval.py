@@ -9,12 +9,31 @@ from scripts import framework_guidance_eval as fg
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_missing_key_never_starts_worker(monkeypatch, tmp_path):
-    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+@pytest.fixture(autouse=True)
+def isolated_accounts(monkeypatch):
+    from server.sessions import helper_call, account_auth, adopt
+    from viberpit import accounts, paths
+    monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: '/fake/account')
+    monkeypatch.setattr(helper_call, 'is_account_helper_ready', lambda name: True)
+    monkeypatch.setattr(accounts, 'runner_uses_envelope', lambda name: False)
+    monkeypatch.setattr(accounts, 'list_accounts', lambda: [{'name': 'account'}])
+    monkeypatch.setattr(adopt, '_map_account', lambda *a: 'account')
+    monkeypatch.setattr(account_auth, 'oauth_env_for', lambda account: {'CLAUDE_CODE_OAUTH_TOKEN': 'test-subscription-token'})
+    monkeypatch.setattr(accounts, 'provider_or_none', lambda name: 'anthropic')
+    monkeypatch.setattr(paths, 'account_cfg_dir', lambda name: Path('/fake') / name)
+    monkeypatch.setattr(account_auth, 'helper_env', lambda *a, **k: {
+        **__import__('os').environ, 'CLAUDE_CONFIG_DIR': '/fake/scratch',
+        'CLAUDE_CODE_OAUTH_TOKEN': 'test-subscription-token'})
+
+
+
+def test_missing_account_never_starts_worker(monkeypatch, tmp_path):
+    from server.sessions import helper_call
+    monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: None)
     monkeypatch.setattr(fg, 'worker_call', lambda *_: pytest.fail('worker started'))
     report = fg.run_comparison(ROOT, model='claude-sonnet-4-20250514', budget=1, timeout=30)
     assert report['executed'] is False
-    assert report['status'] == 'missing-api-key'
+    assert report['status'] == 'missing-subscription-account'
 
 
 @pytest.mark.parametrize('budget', [0, -1, float('nan'), float('inf'), 2.01])
@@ -35,9 +54,9 @@ def test_worker_environment_has_one_authority(monkeypatch):
     monkeypatch.setenv('CLAUDE_CODE_OAUTH_TOKEN', 'not-allowed')
     monkeypatch.setenv('NODE_OPTIONS', '--require malicious.js')
     monkeypatch.setenv('VIBERPIT_CLAUDE_BIN', '/untrusted')
-    env = fg.worker_environment()
-    assert env['ANTHROPIC_API_KEY'] == 'dedicated-test-key'
-    assert not ({'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'NODE_OPTIONS',
+    env = fg.worker_environment(None)
+    assert env['CLAUDE_CODE_OAUTH_TOKEN'] == 'test-subscription-token'
+    assert not ({'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'NODE_OPTIONS',
                  'VIBERPIT_CLAUDE_BIN', 'PYTHONPATH'} & env.keys())
 
 
@@ -90,7 +109,8 @@ def test_fenced_response_preserves_strict_validation(text):
 
 
 def test_unavailable_key_report_is_private(tmp_path, monkeypatch):
-    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    from server.sessions import helper_call
+    monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: None)
     path = tmp_path / 'report.json'
     with fg.reserve_report(path) as output:
         fg.write_report(output, fg.run_comparison(ROOT, model='claude-sonnet-4-20250514', budget=1, timeout=30))
@@ -109,7 +129,7 @@ def messages(*, tools=None, init=True, result=True, cost=.01, error=False, text=
     from claude_agent_sdk import ResultMessage, SystemMessage
     values = []
     if init:
-        values.append(SystemMessage('init', {'tools': tools or [], 'model': MODEL}))
+        values.append(SystemMessage('init', {'tools': tools or [], 'model': MODEL, 'mcp_servers': [], 'slash_commands': [], 'skills': []}))
     if result:
         values.append(ResultMessage('success', 1, 1, error, 1, 'private-id',
                                     total_cost_usd=cost, result=text, usage={'input_tokens': 10}))
@@ -202,7 +222,7 @@ def test_command_options_no_tools_and_bare():
     assert configured.mcp_servers == {}
     assert configured.strict_mcp_config is True
     assert configured.setting_sources == []
-    assert configured.extra_args == {'bare': None, 'no-session-persistence': None}
+    assert configured.extra_args == {'safe-mode': None, 'disable-slash-commands': None, 'system-prompt-snapshot': 'off', 'no-session-persistence': None}
     assert configured.max_turns == 1
     assert configured.max_budget_usd == .1
     assert configured.system_prompt == fg.SYSTEM_PROMPT
@@ -219,10 +239,11 @@ def test_capability_preflight_rejects_missing_bare(monkeypatch):
 def test_paired_order_and_budget_reservations(monkeypatch):
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-only')
     prompts = []
-    def call(request):
+    def call(request, env):
         prompts.append(request)
         return {'status': 'completed', 'executed': True, 'cost_usd': .01, 'usage': None,
-                'observed_model': MODEL, 'tools_observed': [], 'findings': []}
+                'observed_model': MODEL, 'tools_observed': [], 'findings': [],
+                'auth_mode': 'claude.ai', 'subscription_type': 'max'}
     monkeypatch.setattr(fg, 'worker_call', call)
     result = fg.run_comparison(ROOT, model=MODEL, budget=1.2, timeout=30)
     assert result['status'] == 'completed'
@@ -238,7 +259,7 @@ def test_paired_order_and_budget_reservations(monkeypatch):
 def test_unknown_failure_stops_remaining_calls(monkeypatch, outcome):
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-only')
     calls = []
-    monkeypatch.setattr(fg, 'worker_call', lambda request: calls.append(request) or outcome)
+    monkeypatch.setattr(fg, 'worker_call', lambda request, env: calls.append(request) or outcome)
     result = fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30)
     assert result['status'] == 'incomplete'
     assert len(calls) == 1
@@ -266,7 +287,8 @@ def test_empty_corpus_rejected(monkeypatch):
 
 def test_run_evals_explicit_mode_and_no_key(monkeypatch, tmp_path, capsys):
     from scripts import run_evals
-    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    from server.sessions import helper_call
+    monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: None)
     assert run_evals.main(['--kind', 'agent']) == 0
     assert 'LIST ONLY' in capsys.readouterr().out
     for arguments in (['--kind', 'agent', '--execute'],
@@ -285,16 +307,18 @@ def test_sdk_command_builds_empty_tools_and_bare():
     command = SubprocessCLITransport(prompt='synthetic', options=options())._build_command()
     assert command[command.index('--tools') + 1] == ''
     assert '--setting-sources=' in command
-    for flag in ('--bare', '--no-session-persistence', '--strict-mcp-config', '--max-budget-usd'):
+    for flag in ('--safe-mode', '--disable-slash-commands', '--no-session-persistence', '--strict-mcp-config', '--max-budget-usd'):
         assert flag in command
 
 
-def test_worker_missing_key_does_not_resolve_or_query(monkeypatch):
+def test_worker_missing_config_does_not_resolve_or_query(monkeypatch):
     from server.sessions import claude_bin
-    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    from server.sessions import helper_call
+    monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: None)
     monkeypatch.setattr(claude_bin, 'resolve_claude_bin', lambda: pytest.fail('resolved binary'))
+    monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
     assert fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30}) == {
-        'status': 'missing-api-key', 'executed': False}
+        'status': 'missing-subscription-account', 'executed': False}
 
 
 @pytest.mark.asyncio
@@ -325,12 +349,12 @@ def test_worker_launch_environment_and_stdin(monkeypatch):
             captured['request'] = text
             return ('{"status":"missing-api-key","executed":false}', None)
     monkeypatch.setattr(fg.subprocess, 'Popen', Process)
-    result = fg.worker_call({'prompt': 'synthetic', 'timeout': 30})
+    result = fg.worker_call({'prompt': 'synthetic', 'timeout': 30}, fg.worker_environment(None))
     assert result['executed'] is False
     assert '-I' in captured['command']
     assert 'ANTHROPIC_AUTH_TOKEN' not in captured['env']
-    assert 'CLAUDE_CONFIG_DIR' not in captured['env']
-    assert captured['env']['ANTHROPIC_API_KEY'] == 'dedicated-secret'
+    assert captured['env']['CLAUDE_CONFIG_DIR'] == '/fake/scratch'
+    assert 'ANTHROPIC_API_KEY' not in captured['env']
     assert 'secret' not in captured['request']
     assert 'secret' not in ' '.join(captured['command'])
 
@@ -465,7 +489,8 @@ def test_worker_failure_reason_is_bounded_and_redacted(monkeypatch, failure, rea
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-only')
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', '/original/test-config')
     monkeypatch.setattr(claude_bin, 'resolve_claude_bin', lambda: '/verified/claude')
-    monkeypatch.setattr(fg, 'preflight', lambda *args: '2.1.292')
+    monkeypatch.setattr(fg, 'preflight', lambda *args: '2.1.293')
+    monkeypatch.setattr(fg, 'subscription_auth', lambda *args: {'auth_mode': 'claude.ai', 'subscription_type': 'max'})
     async def fail(*args):
         raise failure
     monkeypatch.setattr(fg, 'bounded_query', fail)
@@ -476,3 +501,147 @@ def test_worker_failure_reason_is_bounded_and_redacted(monkeypatch, failure, rea
     assert report['cost_usd'] is None and report['usage'] is None
     assert 'sk-ant-private-value' not in json.dumps(report)
     assert 'secret-shaped detail' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('provider,ready', [('openai', True), ('copilot', True), (None, True), ('anthropic', False)])
+def test_explicit_account_rejected_without_fallback(monkeypatch, provider, ready):
+    from server.sessions import helper_call
+    from viberpit import accounts
+    monkeypatch.setattr(accounts, 'provider_or_none', lambda name: provider)
+    monkeypatch.setattr(helper_call, 'is_account_helper_ready', lambda name: ready)
+    monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: pytest.fail('fallback'))
+    with pytest.raises(ValueError, match='missing-subscription-account'):
+        fg.worker_environment('chosen')
+
+
+def test_explicit_account_passed_to_canonical_helper(monkeypatch):
+    from server.sessions import account_auth, helper_call
+    observed = []
+    monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: pytest.fail('fallback'))
+    def helper(config, account):
+        observed.append((config, account))
+        return {'CLAUDE_CONFIG_DIR': '/scratch/chosen'}
+    monkeypatch.setattr(account_auth, 'helper_env', helper)
+    assert fg.worker_environment('chosen')['CLAUDE_CONFIG_DIR'] == '/scratch/chosen'
+    assert observed == [('/fake/chosen', 'chosen')]
+
+
+def test_ambient_oauth_cannot_replace_missing_canonical_token(monkeypatch):
+    import os
+    from server.sessions import account_auth
+    monkeypatch.setenv('CLAUDE_CODE_OAUTH_TOKEN', 'ambient-secret')
+    monkeypatch.setattr(account_auth, 'oauth_env_for', lambda account: {})
+    monkeypatch.setattr(account_auth, 'helper_env', lambda *a, **k: {**os.environ, 'CLAUDE_CONFIG_DIR': '/scratch'})
+    assert 'CLAUDE_CODE_OAUTH_TOKEN' not in fg.worker_environment(None)
+    assert os.environ['CLAUDE_CODE_OAUTH_TOKEN'] == 'ambient-secret'
+
+
+@pytest.mark.parametrize('changes', [
+    {'loggedIn': False}, {'authMethod': 'api_key'}, {'apiProvider': 'bedrock'},
+    {'subscriptionType': None}, {'subscriptionType': 'unknown'}, {'loggedIn': 1},
+])
+def test_auth_probe_rejects_non_subscription(monkeypatch, changes):
+    from types import SimpleNamespace
+    value = {'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': 'firstParty', 'subscriptionType': 'max'}
+    value.update(changes)
+    monkeypatch.setattr(fg.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=json.dumps(value)))
+    with pytest.raises(ValueError, match='unverified-subscription-auth'):
+        fg.subscription_auth('/native', '/work', {})
+
+
+@pytest.mark.parametrize('tier', ['max', 'pro'])
+def test_auth_probe_returns_only_allowlisted_metadata(monkeypatch, tier):
+    from types import SimpleNamespace
+    def run(command, **kwargs):
+        assert command == ['/native', 'auth', 'status', '--json']
+        return SimpleNamespace(stdout=json.dumps({'loggedIn': True, 'authMethod': 'claude.ai',
+            'apiProvider': 'firstParty', 'subscriptionType': tier, 'email': 'private@example.org'}))
+    monkeypatch.setattr(fg.subprocess, 'run', run)
+    assert fg.subscription_auth('/native', '/work', {}) == {'auth_mode': 'claude.ai', 'subscription_type': tier}
+
+
+def test_stale_subscription_stops_before_inference(monkeypatch):
+    from server.sessions import claude_bin
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', '/scratch')
+    monkeypatch.setattr(claude_bin, 'resolve_claude_bin', lambda: '/native')
+    monkeypatch.setattr(fg, 'preflight', lambda *a: '2.1.293')
+    def reject(*a):
+        raise ValueError('unverified-subscription-auth')
+    monkeypatch.setattr(fg, 'subscription_auth', reject)
+    monkeypatch.setattr(fg, 'bounded_query', lambda *a: pytest.fail('inference'))
+    report = fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30})
+    assert report['executed'] is False
+    assert report['failure_reason'] == 'unverified-subscription-auth'
+
+
+def test_account_environment_frozen_for_all_calls(monkeypatch):
+    selections = []
+    environment = {'CLAUDE_CONFIG_DIR': '/scratch', 'CLAUDE_CODE_OAUTH_TOKEN': 'private'}
+    monkeypatch.setattr(fg, 'worker_environment', lambda account: selections.append(account) or environment)
+    environments = []
+    def worker(request, env):
+        environments.append(env)
+        return {'status': 'completed', 'executed': True, 'cost_usd': 0, 'usage': None,
+                'observed_model': MODEL, 'tools_observed': [], 'findings': [],
+                'auth_mode': 'claude.ai', 'subscription_type': 'max'}
+    monkeypatch.setattr(fg, 'worker_call', worker)
+    result = fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30, account='chosen')
+    assert result['status'] == 'completed'
+    assert selections == ['chosen'] and len(environments) == 6
+    assert all(env is environment for env in environments)
+    assert 'private' not in json.dumps(result) and '/scratch' not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key', ['tools', 'mcp_servers', 'slash_commands', 'skills'])
+async def test_inherited_capabilities_rejected(key):
+    values = messages()
+    values[0].data[key] = ['unexpected']
+    async def query(**kwargs):
+        for value in values:
+            yield value
+    with pytest.raises(ValueError, match='unexpected-init-capabilities-or-model'):
+        await fg.consume_query('synthetic', options(), [], query)
+
+
+@pytest.mark.asyncio
+async def test_documented_builtin_plugins_do_not_imply_installed_skills():
+    values = messages(cost=0)
+    values[0].data['plugins'] = ['cc-plugin-agents-md', 'cc-plugin-telemetry', 'cc-plugin-plugin-authoring']
+    async def query(**kwargs):
+        for value in values:
+            yield value
+    result = await fg.consume_query('synthetic', options(), [], query)
+    assert result['cost_usd'] == 0
+
+
+@pytest.mark.parametrize('auth', [{}, {'auth_mode': 'api_key', 'subscription_type': 'max'},
+                                  {'auth_mode': 'claude.ai', 'subscription_type': 'unknown'}])
+def test_success_without_verified_subscription_stops_comparison(monkeypatch, auth):
+    calls = []
+    def worker(request, env):
+        calls.append(1)
+        return {'status': 'completed', 'executed': True, 'cost_usd': 0,
+                'observed_model': MODEL, 'tools_observed': [], 'findings': [], **auth}
+    monkeypatch.setattr(fg, 'worker_call', worker)
+    assert fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30)['status'] == 'incomplete'
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_authentication_error_is_bounded():
+    from claude_agent_sdk import AssistantMessage
+    async def query(**kwargs):
+        yield messages()[0]
+        yield AssistantMessage([], MODEL, error='authentication_failed')
+    with pytest.raises(ValueError, match='authentication-failed'):
+        await fg.consume_query('synthetic', options(), [], query)
+
+
+def test_expired_envelope_never_falls_back_to_scratch_credentials(monkeypatch):
+    from server.sessions import account_auth
+    from viberpit import accounts
+    monkeypatch.setattr(accounts, 'runner_uses_envelope', lambda name: True)
+    monkeypatch.setattr(account_auth, 'oauth_env_for', lambda account: {})
+    with pytest.raises(ValueError, match='missing-subscription-account'):
+        fg.worker_environment(None)
