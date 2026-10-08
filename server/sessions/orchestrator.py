@@ -9883,11 +9883,6 @@ class SessionOrchestrator:
             # orphan every indexed feature. Let it raise so the pass is skipped.
             clone = await asyncio.to_thread(
                 gitrepos.ensure_clone, repo_root, repo, url)
-            await asyncio.to_thread(
-                subprocess.run,
-                ["git", "-C", clone, "fetch", "origin", "--quiet"],
-                check=False, capture_output=True, timeout=120,
-            )
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
@@ -10029,11 +10024,6 @@ class SessionOrchestrator:
             url = f"https://github.com/{repo}.git"
             clone = await asyncio.to_thread(
                 gitrepos.ensure_clone, repo_root, repo, url)
-            await asyncio.to_thread(
-                subprocess.run,
-                ["git", "-C", clone, "fetch", "origin", "--quiet"],
-                check=False, capture_output=True, timeout=120,
-            )
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
@@ -11636,8 +11626,7 @@ class SessionOrchestrator:
         import re
         from server.pm.classification import FEATURE_DOCS_DIR
         try:
-            fetched = subprocess.run(["git", "-C", clone, "fetch", "origin", "--quiet"],
-                                     check=False, capture_output=True, timeout=120)
+            fetched = gitrepos.fetch_clone(clone, prune=False)
             if fetched.returncode != 0:
                 return None
             rp = subprocess.run(

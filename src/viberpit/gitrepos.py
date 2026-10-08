@@ -560,6 +560,53 @@ def _run_git(
     )
 
 
+# Per-clone serialization. Every git process that mutates one shared clone's
+# `.git` (fetch --prune rewrites refs, `worktree add -b` writes `.git/config`)
+# takes this lock: git fails IMMEDIATELY on a held `*.lock` file instead of
+# waiting, so overlapping fetches lose with "cannot lock ref ... File exists"
+# (#2847). Keyed by the resolved clone path so `ensure_clone`'s dest and
+# `create_worktree`'s toplevel share one lock; different repos stay parallel.
+# RLock: `create_worktree` holds it and may re-enter via a fetch. threading (not
+# asyncio) because callers run in `asyncio.to_thread` workers. Cross-PROCESS
+# races (CLI vs daemon) are covered by the contention retry in `fetch_clone`.
+_CLONE_LOCKS: dict[str, threading.RLock] = {}
+_CLONE_LOCKS_GUARD = threading.Lock()
+
+
+def clone_lock(clone_dir: str | os.PathLike[str]) -> threading.RLock:
+    """Return the process-wide lock serializing git-mutating work on *clone_dir*."""
+    key = os.path.realpath(clone_dir)
+    with _CLONE_LOCKS_GUARD:
+        lock = _CLONE_LOCKS.get(key)
+        if lock is None:
+            lock = _CLONE_LOCKS[key] = threading.RLock()
+        return lock
+
+
+def is_ref_lock_contention(stderr: str) -> bool:
+    """True if *stderr* is git losing a ref/config lock race with another git process."""
+    return "cannot lock ref" in stderr or (
+        "Unable to create" in stderr and ".lock': File exists" in stderr)
+
+
+def fetch_clone(
+    dest: str | os.PathLike[str], owner: str | None = None, *, prune: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """``git fetch [--prune] origin`` on *dest*, serialized per clone.
+
+    Fetches ONLY ``origin`` (never ``--all``; see ``ensure_clone``). A ref-lock
+    contention failure — another process in a different address space holds the
+    lock, which the threading lock cannot cover — is retried once.
+    """
+    args = ["-C", str(dest), "fetch", *(["--prune"] if prune else []), "origin"]
+    with clone_lock(dest):
+        r = _run_git(args, owner=owner)
+        if r.returncode != 0 and is_ref_lock_contention(r.stderr):
+            time.sleep(1.0)
+            r = _run_git(args, owner=owner)
+        return r
+
+
 # ---------------------------------------------------------------------------
 # URL normalization + local reference discovery
 # ---------------------------------------------------------------------------
@@ -693,9 +740,14 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
         # remote points at a since-deleted path, makes the fetch fail on every
         # future automation spawn (issue #567). `origin` is the only remote
         # ensure_clone itself creates.
-        fetch = _run_git(["-C", str(dest), "fetch", "--prune", "origin"], owner=owner)
+        fetch = fetch_clone(dest, owner)
         if fetch.returncode != 0:
-            if is_auth_error(fetch.stderr):
+            if is_ref_lock_contention(fetch.stderr):
+                # Lost a ref-lock race even after the retry: transient, the stale
+                # ref is fine. Not WARNING: the sink would file an issue (#2847).
+                log.info("clone.fetch_failed path=%s err=%s (ref-lock contention)",
+                         dest, fetch.stderr.strip())
+            elif is_auth_error(fetch.stderr):
                 # Auth-class failure (revoked/expired token) — log at ERROR so it
                 # is operationally visible, flag the repo so the backlog runner
                 # pauses worktree creation, and let the dashboard surface a
@@ -719,6 +771,16 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
             record_fetch_result(name_with_owner, ok=True)
         return str(dest)
 
+    with clone_lock(dest):
+        # Re-check under the lock: a concurrent caller may have just cloned it.
+        if (dest / ".git").exists():
+            return str(dest)
+        return _create_clone(dest, repo_root, name_with_owner, clone_url, owner)
+
+
+def _create_clone(
+    dest: Path, repo_root: str, name_with_owner: str, clone_url: str, owner: str,
+) -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     args: list[str] = ["clone"]

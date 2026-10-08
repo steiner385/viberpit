@@ -28,37 +28,13 @@ import os
 import re
 import shutil
 import subprocess
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import brand, gh_credential, paths
-from .gitrepos import git_env_for_remote
+from .gitrepos import clone_lock, git_env_for_remote
 
 log = logging.getLogger(__name__)
-
-# Per-clone serialization. Every worktree creation for one shared clone mutates
-# that clone's `.git` (fetch writes refs; `worktree add -b` writes upstream
-# tracking into the shared `.git/config`). Git guards `.git/config` with a
-# `.git/config.lock` file and FAILS IMMEDIATELY — it does not wait — when the
-# lock is held, so a burst of concurrent creations against one clone loses
-# all-but-one to "could not lock config file .git/config: File exists" (the
-# pr-doctor multi-trigger spawn_failure). Serializing on the clone's toplevel
-# path lets different repos stay parallel while same-clone creations queue.
-# Keyed by repo_top (absolute clone toplevel). threading.Lock (not asyncio):
-# create_worktree runs in asyncio.to_thread worker threads.
-_CLONE_LOCKS: dict[str, threading.Lock] = {}
-_CLONE_LOCKS_GUARD = threading.Lock()
-
-
-def _clone_lock(repo_top: str) -> threading.Lock:
-    """Return the process-wide lock serializing git-mutating work for *repo_top*."""
-    with _CLONE_LOCKS_GUARD:
-        lock = _CLONE_LOCKS.get(repo_top)
-        if lock is None:
-            lock = _CLONE_LOCKS[repo_top] = threading.Lock()
-        return lock
-
 
 class WorktreeError(Exception):
     """Raised when a worktree could not be created."""
@@ -483,7 +459,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     # `.git/config.lock`. Without this, concurrent creations against ONE clone
     # lose all-but-one to "could not lock config file .git/config: File exists".
     # Different clones use different locks, so unrelated repos stay parallel.
-    with _clone_lock(repo_top):
+    with clone_lock(repo_top):
         # Fail fast on a near-full filesystem BEFORE any git churn: a doomed
         # checkout writes thousands of files, fails ENOSPC, and the write+delete
         # cycle's page cache pins the daemon cgroup at MemoryHigh (2026-07-21
