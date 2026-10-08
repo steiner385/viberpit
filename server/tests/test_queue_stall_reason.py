@@ -100,7 +100,8 @@ def _build_client(fake_orch: _FakeOrch, db_url: str) -> TestClient:
         # try to spawn the entry, fail on its bare params, and delete it before the
         # GET reads it — a load-dependent CI-only red. These tests read the stall
         # reason; they never want a drain.
-        async def _no_drain() -> int:
+        async def _no_drain(force: str | None = None,
+                            ceiling_out: dict | None = None) -> int:
             return 0
 
         real_orch._maybe_start_queued = _no_drain  # type: ignore[method-assign]
