@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable, Union
 
 from viberpit import gitrepos
 from server.aio import cancel_and_reap
+from server.db.transient import is_transient_db_failure
 from server.github import app_auth
 from .api_budget import PriorityGate
 from .host_failures import is_transient_github_edge_failure, log_gh_failure
@@ -38,6 +39,18 @@ from .pr_status import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _log_best_effort_failure(event: str, exc: BaseException) -> None:
+    """Log a swallowed best-effort DB write: INFO for a connectivity blip, else WARNING.
+
+    The write is retried next cycle, so a transient DB outage loses nothing and
+    must not file an auto-error (#2792); a real defect keeps its traceback.
+    """
+    if is_transient_db_failure(exc):
+        log.info("%s transiently (%s); retrying next cycle", event, type(exc).__name__)
+    else:
+        log.warning(event, exc_info=exc)
 
 # ETA fields carried across a failed refresh for stale-while-revalidate (#671).
 # eta_stale is set separately (True on re-serve); eta_updated_at rides along so
@@ -556,8 +569,8 @@ class PrPopulationPoller:
         # NEVER let a history-write break the poll — swallow + log.
         try:
             await self._record_group_history(merge_by_pr, now)
-        except Exception:
-            log.warning("pr_population.group_history_failed", exc_info=True)
+        except Exception as exc:
+            _log_best_effort_failure("pr_population.group_history_failed", exc)
 
         # build_check_groups is always needed (store-independent). compute_pr_eta needs
         # the history store, so import + run it only when we actually have one.
@@ -762,8 +775,8 @@ class PrPopulationPoller:
         # observations (SPEC §2). Best-effort — NEVER break the poll.
         try:
             await self._capture_timeline(new_cache, mq_by_repo)
-        except Exception:
-            log.warning("pr_population.timeline_capture_failed", exc_info=True)
+        except Exception as exc:
+            _log_best_effort_failure("pr_population.timeline_capture_failed", exc)
         self._cache.update(new_cache)
         # Drop error entries for repos no longer watched — same bound-the-map
         # rule as `_eta_cache`/`_prev_stage` (`_evict_stale`).
