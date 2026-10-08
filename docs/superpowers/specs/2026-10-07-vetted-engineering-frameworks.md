@@ -1,6 +1,21 @@
 # Vetted Engineering Frameworks
 
-Status: Proposed. This document proposes policy and implementation; it does not approve packages or enable enforcement.
+Status: Simplified 2026-10-08 (owner decision). Sections 1–5 below are the original proposal, kept as background; where they conflict with this section, this section wins.
+
+## Current direction: pin, skim, install — no new process
+
+Frameworks are advisory skills. Adopting one must not add CI jobs, required checks, review ceremonies or paid evaluation runs. The owner chose this to keep the CI/CD process light.
+
+To adopt a framework (Impeccable today; later Superpowers, Addy Osmani's domain skills, Vercel's React guidance, Trail of Bits):
+
+1. **Skim it.** Read the skill text and list any scripts, hooks, binaries, MCP servers, network calls or telemetry it ships. Install only the parts you need, never a whole marketplace.
+2. **Pin it.** Record the upstream commit and file hashes in `.agents/frameworks.lock.json` (`state: candidate` is fine). The existing `framework-lock-integrity` and dependency evals already run in the evals workflow. They catch silent drift at no extra CI cost.
+3. **Note it.** Write a short entry in `docs/engineering/frameworks/` covering what was selected, anything executable, and the commit to roll back to.
+4. **One owner per concern.** Don't install two process frameworks that both claim planning, TDD or review.
+
+Not pursued: admission reviews by a second approver, trusted-reviewer allowlists, paired paid evaluations and promotion thresholds, required merge checks or CODEOWNERS for framework policy, and cross-project enforcement rollouts.
+
+The gate code from #2845, #2850 and #2861 stays in place, dormant. Every concern defaults to `observe`, which never blocks anything. Making a concern blocking later takes one lock edit (`evidence_required` or `enforced`). Do that only if a concrete repeated failure justifies it, and first add the `.agents/**` human-review prerequisite noted in the plan.
 
 ## 1. Goal and non-goals
 
