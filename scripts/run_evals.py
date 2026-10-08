@@ -187,16 +187,50 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--kind", choices=("static", "agent", "browser"), default="static",
                     help="which cases to run (default static — the CI gate)")
     ap.add_argument("--timeout", type=_timeout, default=120, help="browser seconds per case (0 < n <= 3600)")
-    ap.add_argument("--report", type=Path, help="write browser calibration JSON observations")
+    ap.add_argument("--report", type=Path, help="write browser calibration or private agent observations")
+    ap.add_argument("--execute", action="store_true", help="explicitly opt in to a supported paid agent case")
+    ap.add_argument("--case", help="select exactly one case")
+    ap.add_argument("--model", help="exact dated Claude model ID for agent execution")
+    ap.add_argument("--max-budget-usd", type=float, help="total agent reservation, positive and at most 2 USD")
     args = ap.parse_args(argv)
-    if args.report and args.kind != "browser":
-        ap.error("--report requires --kind browser; agent mode is LIST ONLY")
+    if args.execute and args.kind != "agent":
+        ap.error("--execute requires --kind agent")
+    if (args.model or args.max_budget_usd is not None) and not args.execute:
+        ap.error("--model and --max-budget-usd require --execute")
+    if args.report and args.kind != "browser" and not args.execute:
+        ap.error("--report requires --kind browser or --kind agent --execute")
 
     cases = load_cases(args.kind)
+    if args.case:
+        cases = [case for case in cases if case.id == args.case]
+        if not cases:
+            ap.error("unknown or inapplicable case")
+    if args.execute:
+        from scripts.framework_guidance_eval import CASE_ID, reserve_report, run_comparison, validate_request, write_report
+        if args.case != CASE_ID or len(cases) != 1:
+            ap.error(f"agent execution supports only --case {CASE_ID}")
+        if not args.model or args.max_budget_usd is None or args.report is None:
+            ap.error("agent execution requires --model, --max-budget-usd, and --report")
+        try:
+            validate_request(args.model, args.max_budget_usd, args.timeout)
+        except ValueError as exc:
+            ap.error(str(exc))
+        try:
+            output = reserve_report(args.report)
+        except OSError:
+            ap.error("cannot reserve report; choose a new writable private report path")
+        with output:
+            observation = run_comparison(_REPO_ROOT, model=args.model,
+                                         budget=args.max_budget_usd, timeout=args.timeout)
+            try:
+                write_report(output, observation)
+            except OSError:
+                ap.error("cannot persist final report; evaluation may have incurred charges")
+        print(f"agent comparison: {observation['status']}; executed={observation['executed']}; "
+              "observations only, no admission decision")
+        return 0 if observation['status'] == 'completed' else 1
     if args.kind == "agent":
-        # Agent-mode cases need a live Claude session; the runner only lists them so
-        # the corpus is visible without an API key. Executing them is out-of-band.
-        print(f"agent-mode cases ({len(cases)}) — LIST ONLY; run out-of-band with a live session:")
+        print(f"agent-mode cases ({len(cases)}) — LIST ONLY; no calls made:")
         for c in cases:
             print(f"  - {c.id}: {c.description}")
         return 0
