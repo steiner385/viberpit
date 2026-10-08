@@ -442,3 +442,37 @@ def test_cli_final_report_uses_reserved_descriptor(monkeypatch, tmp_path):
     assert json.loads(reserved.read_text()) == {'status': 'completed', 'executed': True}
     assert reserved.stat().st_mode & 0o777 == 0o600
     assert target.read_text() == 'keep'
+
+
+@pytest.mark.parametrize('failure,reason', [
+    *[(ValueError(reason), reason) for reason in (
+        'unexpected-init-capabilities-or-model', 'invalid-assistant-message',
+        'tool-attempt', 'missing-or-failed-result', 'unknown-or-exhausted-cost',
+        'missing-executed-result', 'invalid-response-schema', 'invalid-finding-ids',
+        'unsupported-native-capability', 'unverified-native-version',
+        'native-engine-unavailable',
+    )],
+    (TimeoutError('query-timeout'), 'query-timeout'),
+    (json.JSONDecodeError('secret-shaped detail', 'sk-ant-private-value', 0), 'invalid-response-json'),
+    (ValueError('sk-ant-private-value'), 'native-error'),
+    (RuntimeError('sk-ant-private-value'), 'native-error'),
+    (RuntimeError('tool-attempt'), 'native-error'),
+    (ValueError('tool-attempt', 'sk-ant-private-value'), 'native-error'),
+    (KeyboardInterrupt('sk-ant-private-value'), 'native-error'),
+])
+def test_worker_failure_reason_is_bounded_and_redacted(monkeypatch, failure, reason):
+    from server.sessions import claude_bin
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-only')
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', '/original/test-config')
+    monkeypatch.setattr(claude_bin, 'resolve_claude_bin', lambda: '/verified/claude')
+    monkeypatch.setattr(fg, 'preflight', lambda *args: '2.1.292')
+    async def fail(*args):
+        raise failure
+    monkeypatch.setattr(fg, 'bounded_query', fail)
+    report = fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30})
+    assert report['status'] == 'worker-failed'
+    assert report['failure_reason'] == reason
+    assert report['executed'] is True
+    assert report['cost_usd'] is None and report['usage'] is None
+    assert 'sk-ant-private-value' not in json.dumps(report)
+    assert 'secret-shaped detail' not in json.dumps(report)

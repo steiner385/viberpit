@@ -273,9 +273,26 @@ def worker_main(request: dict) -> dict:
             result = asyncio.run(bounded_query(request, options))
             return {'status': 'completed', 'executed': True, **identity, **result,
                     'duration_seconds': time.monotonic() - started}
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt) as exc:
         # Never expose arbitrary native diagnostics, output, paths, or credential data.
+        # Only exact local validation literals may cross the worker boundary;
+        # do not stringify native exceptions (including JSONDecodeError.doc).
+        reason = 'native-error'
+        if isinstance(exc, json.JSONDecodeError):
+            reason = 'invalid-response-json'
+        elif (type(exc) is ValueError and len(exc.args) == 1 and type(exc.args[0]) is str
+              and exc.args[0] in {
+                  'unexpected-init-capabilities-or-model', 'invalid-assistant-message',
+                  'tool-attempt', 'missing-or-failed-result', 'unknown-or-exhausted-cost',
+                  'missing-executed-result', 'invalid-response-schema', 'invalid-finding-ids',
+                  'unsupported-native-capability', 'unverified-native-version',
+                  'native-engine-unavailable',
+              }):
+            reason = exc.args[0]
+        elif type(exc) is TimeoutError and exc.args == ('query-timeout',):
+            reason = 'query-timeout'
         return {'status': 'worker-failed', 'executed': attempted, **identity,
+                'failure_reason': reason,
                 'cost_usd': None, 'usage': None, 'duration_seconds': time.monotonic() - started}
 
 

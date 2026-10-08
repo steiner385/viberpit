@@ -100,7 +100,23 @@ cost telemetry was obtained. Total reservations were $0.533334 (rounded up for
 reporting): the initial $0.333334 plus two $0.10 diagnostic reservations. Actual
 charges are unknown; these reservations must not be recycled silently.
 
-The API account's billing must be resolved before further inference. No completed
-live comparison or effectiveness result is claimed. A live smoke remains required
-before declaring the native integration complete under constitution Principle III.
-The earlier browser calibration and historical pilots remain separate evidence.
+After API credits were added, a successful native result exposed an exact JSON
+code fence around the findings. The parser now accepts that single envelope while
+retaining strict schema, finding-ID and duplicate validation; 61 focused tests and
+independent review passed. A diagnostic successful call reported $0.0582865.
+
+A subsequent paired attempt completed three calls: baseline and guidance both
+returned no findings on the clean fixture, and guidance found the seeded mobile
+overflow. Their reported costs totaled $0.22745715. The fourth call (overflow
+baseline) failed without usable cost telemetry, and execution stopped before the
+reduced-motion pair. This is partial execution evidence, not a completed comparison
+or an effectiveness result. Successful calls established real native inference,
+identity checks, tool-free execution, parsing and scoring; failure diagnosis and a
+complete paired run remain outstanding. The runner now emits allowlisted failure
+reasons (including invalid JSON) while keeping arbitrary native diagnostics
+redacted; all 79 focused tests pass.
+
+Across all attempts, total reservations are $1.656667 (rounded up), reported costs
+are $0.28574365, and failed-call costs remain unknown. Further paid work is paused
+pending additional evaluation budget. Impeccable remains candidate. The earlier
+browser calibration and historical pilots remain separate evidence.
