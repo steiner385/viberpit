@@ -268,3 +268,32 @@ def test_a_real_foreign_takeover_still_screams(tmp_path, monkeypatch, caplog):
         assert "'rocky'" in screams[0] and "TWO primary" in screams[0]
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("exc,expect_warning", [
+    (ConnectionRefusedError("db down"), False),
+    (RuntimeError("no such column"), True),
+])
+def test_renew_db_failure_warns_only_when_not_transient(
+        tmp_path, monkeypatch, caplog, exc, expect_warning):
+    """A connect blip on renew is retried next beat quietly; a real DB defect
+    keeps its WARNING (#2791)."""
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+        orch = _new_orch()
+        await orch.start()
+
+        async def boom(*a, **k):
+            raise exc
+        monkeypatch.setattr(primary_lease, "renew", boom)
+        with caplog.at_level("DEBUG", logger="server.sessions.orchestrator"):
+            await orch._primary_lease_beat()
+        await orch.stop()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and "renew failed" in r.getMessage()]
+        assert bool(warnings) is expect_warning
+
+    asyncio.run(run())

@@ -2731,9 +2731,18 @@ class SessionOrchestrator:
         me = self_host_name()
         try:
             ok = await primary_lease.renew(me, fence)
-        except Exception:
-            log.warning("primary-lease: renew failed (DB error) — retrying "
-                        "next beat", exc_info=True)
+        except Exception as exc:
+            if caused_by_cancellation(exc) and current_task_cancelling():
+                # Our own cancellation, wrapped by asyncpg mid-handshake (#1164).
+                raise asyncio.CancelledError() from exc
+            if is_transient_db_failure(exc):
+                # A DB connect blip; the next beat retries, so not an auto-error
+                # (#2791).
+                log.info("primary-lease: renew failed transiently (%s) — "
+                         "retrying next beat", type(exc).__name__)
+            else:
+                log.warning("primary-lease: renew failed (DB error) — retrying "
+                            "next beat", exc_info=True)
             return
         if ok:
             return
