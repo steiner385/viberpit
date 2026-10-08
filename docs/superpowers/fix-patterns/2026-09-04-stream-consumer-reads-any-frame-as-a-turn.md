@@ -71,6 +71,35 @@ with no result behind them.
 Watch for the shape in anything new that awaits `receive_messages()` / `_source.next()`
 while no prompt is in flight, or that derives status from "the stream produced something".
 
+## Recurrence: model-control echoes (2026-10-08, #2844)
+
+**Symptom:** a resumed session queues the first human prompt behind a phantom turn.
+The stall watchdog eventually interrupts it and clears the queue, forcing a resend.
+On dobby, session `44e2ed76` opened an autonomous turn at 12:18:23 UTC alongside
+the model-restore bookkeeping, then hit the watchdog after 323 seconds with
+`active=True, drain_alive=False`.
+
+**Anti-pattern:** checking only the SDK message class is still too broad.
+`set_model()` can emit a `UserMessage` containing `<local-command-stdout>Set model
+to …</local-command-stdout>` without starting a model response. Confirmed with
+Claude 2.1.294 / SDK 0.2.105 using the real factory and a separate fork of the
+affected transcript; simpler fresh-session probes did not emit the echo.
+Live verification with the patched driver and the normal daemon auth environment
+then created a disposable session, received `OK` from one prompt, resumed it,
+observed the model-control echo without an active turn, and received `RESUMED`
+from one follow-up prompt. No resend or interrupt was needed.
+
+**Fix shape:** `is_turn_message()` excludes local-command text through the shared
+`transcript_entries.is_local_command_text()` classifier. The broader transcript
+plumbing predicate is inappropriate here: it also excludes task notifications,
+which can start real autonomous turns. Preserve those and tool-result messages.
+
+**Where to look:** the idle listener and fake SDK already consume the canonical
+turn predicate and both receive the correction. Replay, title generation, and
+transcript search already filter local-command text through `transcript_entries`.
+The prompt pump and one-shot helpers segment on `ResultMessage` after a query and
+do not infer turn starts from user frames. No additional live classifier found.
+
 ## Reference
 
 - Real-binary capture: `ClaudeSDKClient` with the production factory options, a copy of

@@ -273,3 +273,51 @@ def test_system_bookkeeping_frames_while_idle_do_not_open_a_turn():
         task.cancel()
         return idle_after_notice
     assert asyncio.run(run()) is True
+
+
+def test_model_echo_while_idle_does_not_strand_the_next_prompt():
+    """Real 2.1.294 set_model stdout has no model response behind it (#2844)."""
+    from claude_agent_sdk import UserMessage
+
+    client = FakeSDKClient([
+        f.assistant(TextBlock(text="reply"), uuid="model-reply"),
+        f.result(uuid="model-result"),
+    ])
+
+    async def run():
+        d = _build(client)
+        await d.start()
+        seen, task = _collector(d)
+        try:
+            # Exercise the initial idle listener and the listener restarted after a
+            # completed prompt: both model restore and a later picker change emit it.
+            for prompt in ("first prompt", "follow-up"):
+                client.inject([UserMessage(content=(
+                    "<local-command-stdout>Set model to `opus (claude-opus-5-5)`"
+                    "</local-command-stdout>"))])
+                # A trailing bookkeeping frame makes consumption observable without
+                # relying on a fixed wall-clock sleep or a synthetic turn result.
+                handled = asyncio.Event()
+                original = d._handle_msg
+
+                async def handle(msg):
+                    await original(msg)
+                    if isinstance(msg, SystemMessage) and msg.subtype == "probe":
+                        handled.set()
+
+                d._handle_msg = handle
+                client.inject([SystemMessage(subtype="probe", data={})])
+                await asyncio.wait_for(handled.wait(), 2)
+                d._handle_msg = original
+                assert not d.turn_active
+                await d.send_prompt(prompt)
+                await _wait_until(lambda: not d.turn_active)
+                assert not d.queued()
+            assert client.sent == ["first prompt", "follow-up"]
+            assert any(isinstance(e, TurnEnd) for e in seen)
+        finally:
+            await d.aclose()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
