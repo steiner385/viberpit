@@ -5,6 +5,7 @@
 // (NEVER nested inside the row's open button — a11y rule).
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { toast } from 'sonner'
 import { ArrowUp, ArrowDown, ChevronsUp, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useQueueMove, useQueueCancel, useQueueStartNow } from '@/api/hooks'
@@ -44,6 +45,10 @@ export function QueuedSection({ sessions, onOpen }: QueuedSectionProps) {
             ? REAUTH_MESSAGE
             : apiErrorMessage(err) ?? extractMutationErrorMessage(err, "Couldn't start it")
         setRowErrors((prev) => ({ ...prev, [id]: { text, code: stallCode } }))
+        // start_failed means the server ENDED the session: the refetch drops it
+        // from the queue and the row (with its error line) unmounts, so the row
+        // error alone would vanish unseen. A toast outlives the row.
+        if (code === 'start_failed') toast.error(`Couldn't start it: ${text}`)
       },
     })
   }

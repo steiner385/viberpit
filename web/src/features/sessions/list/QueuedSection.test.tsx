@@ -13,6 +13,9 @@ vi.mock('@/api/hooks', async (orig) => ({
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+
+import { toast } from 'sonner'
 import { ApiRequestError } from '@/api/client'
 import { QueuedSection } from './QueuedSection'
 
@@ -97,6 +100,26 @@ describe('QueuedSection', () => {
     render(<MemoryRouter><QueuedSection sessions={[qs('a', 1)]} onOpen={() => {}} /></MemoryRouter>)
     fireEvent.click(screen.getByRole('button', { name: /now, over capacity limits/ }))
     expect(screen.getByRole('status')).toHaveTextContent('boom')
+  })
+
+  it('toasts start_failed so it survives the ended row unmounting', () => {
+    startNow.mockImplementationOnce((_v, opts) =>
+      opts.onError(new ApiRequestError(409, { error: { code: 'start_failed', message: 'worktree exploded' } })))
+    const { rerender } = render(<MemoryRouter><QueuedSection sessions={[qs('a', 1)]} onOpen={() => {}} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /now, over capacity limits/ }))
+    // The server ended the session; the refetch drops it from the queue.
+    rerender(<MemoryRouter><QueuedSection sessions={[]} onOpen={() => {}} /></MemoryRouter>)
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('worktree exploded'))
+  })
+
+  it('does not toast a still-queued refusal', () => {
+    vi.mocked(toast.error).mockClear()
+    startNow.mockImplementationOnce((_v, opts) =>
+      opts.onError(new ApiRequestError(409, { error: { code: 'all_accounts_limited' } })))
+    render(<MemoryRouter><QueuedSection sessions={[qs('a', 1)]} onOpen={() => {}} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /now, over capacity limits/ }))
+    expect(toast.error).not.toHaveBeenCalled()
   })
 
   it('drops a row error once its stall reason changes', () => {

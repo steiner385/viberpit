@@ -92,6 +92,61 @@ def test_start_now_spawn_hitting_ceiling_raises_and_stays_queued(tmp_path):
     asyncio.run(run())
 
 
+def test_start_now_forced_product_entry_hitting_ceiling_raises(tmp_path):
+    """A forced product_capacity entry keeps its label when its spawn hits the
+    ceiling — start_queued_now must still recognise the ceiling outcome and raise
+    AllAccountsBusy with the real earliest_reset, leaving the session queued."""
+    async def run():
+        orch = await _make_capacity_orch(db_url=f"sqlite+aiosqlite:///{tmp_path/'f.db'}",
+                                         tmp_path=tmp_path)
+        try:
+            await _seed_product_at_cap("acme/widgets")
+            rec = await orch.create_session("m", repo="acme/widgets", initial_prompt="hi",
+                                            cwd=str(tmp_path / "reporoot"))
+            assert rec.status == "queued"
+            orch._account_headroom_or_raise = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+            def busy(*a, **k):
+                raise AllAccountsBusy(datetime(2030, 1, 1), "at_ceiling")
+            with patch("server.sessions.orchestrator.select_account", side_effect=busy):
+                with pytest.raises(AllAccountsBusy) as excinfo:
+                    await orch.start_queued_now(rec.id)
+            assert excinfo.value.kind == "at_ceiling"
+            assert excinfo.value.earliest_reset == datetime(2030, 1, 1)
+            assert orch.get_session(rec.id).status == "queued"
+            entry = await sq.entry_for(rec.id)
+            assert entry is not None and entry.params.get("queue_reason") == "product_capacity"
+        finally:
+            await _stop_orch(orch)
+    asyncio.run(run())
+
+
+def test_start_now_forced_global_entry_blocked_by_probe_raises(tmp_path):
+    """The drain's pre-spawn probe refuses a forced global_cap entry: the override
+    never beats the ceiling, and start_queued_now reports it as AllAccountsBusy."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path/'g.db'}",
+                                tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            await orch.create_session("one", cwd=str(tmp_path / "reporoot"))
+            queued = await orch.create_session("two", initial_prompt="hi",
+                                               cwd=str(tmp_path / "reporoot"))
+            assert queued.status == "queued"
+
+            def busy(*a, **k):
+                raise AllAccountsBusy(datetime(2031, 2, 2), "at_ceiling")
+            with patch("server.sessions.orchestrator.select_account", side_effect=busy):
+                with pytest.raises(AllAccountsBusy) as excinfo:
+                    await orch.start_queued_now(queued.id)
+            assert excinfo.value.earliest_reset == datetime(2031, 2, 2)
+            assert orch.get_session(queued.id).status == "queued"
+            entry = await sq.entry_for(queued.id)
+            assert entry is not None and entry.params.get("queue_reason") == "account_limited"
+        finally:
+            await _stop_orch(orch)
+    asyncio.run(run())
+
+
 def test_start_now_unknown_or_unqueued(tmp_path):
     async def run():
         orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path/'d.db'}",
