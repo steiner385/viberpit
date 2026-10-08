@@ -13,7 +13,10 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from types import SimpleNamespace
+
 from server.app import create_app
+from server.ipc.client import DaemonTimeout
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -36,10 +39,18 @@ class _FakeSessions:
     def __init__(self):
         self.resume_map: dict[str, str] = {}
         self.calls: list[tuple[str, str]] = []
+        self.timeouts: set[str] = set()
+        self.still_interrupted = False
 
     async def resume_interrupted(self, sid: str, identity: str = "system") -> str:
         self.calls.append((sid, identity))
+        if sid in self.timeouts:
+            raise DaemonTimeout("resume_interrupted timed out: ", outcome_unknown=True)
         return self.resume_map.get(sid, "skipped:not-found")
+
+
+    async def get_session(self, sid: str):
+        return SimpleNamespace(interrupted_by_restart=self.still_interrupted)
 
 
 def _make_client() -> tuple[TestClient, _FakeSessions]:
@@ -186,3 +197,25 @@ def test_batch_resume_dedupes_ids(client, fake_orch):
     assert body["succeeded"] == ["s1"]
     # Should only call resume_interrupted once for s1
     assert fake_orch.calls.count(("s1", "testuser@example.com")) == 1
+
+
+def test_batch_resume_timeout_with_cleared_flag_is_success_and_not_a_warning(
+        client, fake_orch, caplog):
+    """#2818: edge timeout, daemon finished ⇒ succeeded, no auto-filing WARNING."""
+    fake_orch.timeouts = {"s1"}
+    with caplog.at_level("INFO", logger="server.api.sessions"):
+        resp = client.post("/api/sessions/batch/resume", json={"ids": ["s1"]}, headers=_H)
+    assert resp.json() == {"succeeded": ["s1"], "failed": []}
+    assert not [r for r in caplog.records if r.levelname == "WARNING" and r.name == "server.api.sessions"]
+
+
+def test_batch_resume_timeout_still_interrupted_is_pending_failure(
+        client, fake_orch, caplog):
+    fake_orch.timeouts = {"s1"}
+    fake_orch.still_interrupted = True
+    with caplog.at_level("INFO", logger="server.api.sessions"):
+        resp = client.post("/api/sessions/batch/resume", json={"ids": ["s1"]}, headers=_H)
+    body = resp.json()
+    assert body["succeeded"] == []
+    assert body["failed"][0]["id"] == "s1"
+    assert not [r for r in caplog.records if r.levelname == "WARNING" and r.name == "server.api.sessions"]
