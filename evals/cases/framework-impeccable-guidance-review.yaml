@@ -1,0 +1,5 @@
+id: framework-impeccable-guidance-review
+description: Opt-in paired Claude source review of synthetic UI fixtures, baseline versus three hash-verified Impeccable references; not native skill execution or admission.
+kind: agent
+tags: [skills, impeccable, comparison, ui]
+fixtures: [clean, mobile-overflow, reduced-motion]
