@@ -27,11 +27,14 @@ redesign, UI repair or a human assessment rubric; it does not establish a qualit
 advantage or satisfy the full promotion criteria. See
 [comparison evidence](../../engineering/frameworks/impeccable-guidance-comparison.md).
 
-Task 3 now proceeds as an observe-only slice: expose applicability and evidence
-gaps in the existing SDLC surfaces before enforcing prerequisites. Missing trusted
-review receipts must remain missing or unknown; lock declarations and agent reports
-cannot satisfy review. Blocking transitions, authenticated evidence ingestion and
-merge-boundary enforcement remain subsequent work. Impeccable stays a candidate.
+Task 3 remains observe-only. PR #2845 delivered pinned declaration reads and
+untrusted-claim diagnostics. The next slice adds policy-based path applicability
+and explicit GitHub review attestations bound to the PR revisions and declaration
+digests. Lock declarations, ordinary approvals and agent reports cannot satisfy
+review. Trusted reviewer identities require explicit policy configuration; the
+initial ViberPit allowlist is empty. Blocking transitions, trusted deterministic
+runner receipts and merge-boundary enforcement remain subsequent work. Impeccable
+stays a candidate.
 
 Task 5 still needs actual native skill discovery/invocation, resume, rotation,
 remote execution and revocation/rollback evidence. Task 6
@@ -99,23 +102,36 @@ observations in the existing guidance payload. A read-only diagnostic request
 (`POST /api/sdlc/initiatives/{slug}/framework-observations`) can compare submitted
 supporting claims with a GitHub-resolved PR head and author. Neither endpoint
 stores a review receipt, changes a transition, or accepts claims as attestations.
-Both require the existing API identity control.
+Both require the existing API identity control. A diagnostic request with a PR
+number also collects its change scope and explicit review records from GitHub.
 
 The repository default branch is resolved to a commit before reading its contract
 and selected lock. A PR cannot weaken these observations by changing its own lock.
-Git blob OIDs identify the declarations read; they are not the contract validator's
-framework digest or a claim that the installed package passed validation. Complete
-change scope and trusted framework evidence are not collected in this slice, so
-applicability remains unknown and evidence remains missing or untrusted. Candidate
-and revoked declarations stay visible. This intentionally does not satisfy the
-enforced exit proof below; applicability routing, trusted receipt ingestion,
-exceptions and blocking enforcement still need subsequent implementation.
+Git blob OIDs identify the declarations read; they are not a claim that the
+installed package passed validation. Shared portable parsing supplies canonical
+declaration digests and optional concern policies. Positive path matches establish
+applicability; a negative requires a complete, stable, nonempty change scope whose
+paths are all explicitly excluded. Unclassified paths and incomplete or renamed
+scope remain unknown where old-path coverage is unavailable.
+
+Only explicit structured records from configured GitHub reviewers can establish
+`review_recorded`. They must match the repository, base/head, policy/framework
+digests and complete scope; the provider-reviewed commit must match the head.
+Reviewer identity comes from GitHub, is checked against the policy allowlist and
+must differ from the PR author. A matching submitted diagnostic claim remains
+untrusted. A recorded review is an authenticated principal's attestation, not proof
+of model execution, a passing deterministic check or framework admission. Candidate
+and revoked declarations stay visible. There is no new receipt database or gate
+enforcement in this slice. Exceptions, trusted runner ingestion, native compatibility
+and blocking enforcement still need subsequent implementation before the enforced
+exit proof below is met.
 
 - [ ] Write `test_required_framework_evidence_blocks_transition`, `test_advisory_finding_does_not_block`, and `test_tolerance_cannot_skip_failed_evidence` before wiring new decisions.
 - [ ] Add negative cases for forged producer identity, author self-review, stale head, wrong repository, policy downgrade in the same PR, expired exception, and revoked framework.
 - [ ] Wire prerequisites into existing stage decisions and explain output. Preserve current high-risk and release approvals.
 - [ ] Authenticate evidence ingestion and validate it server-side. Separate agent-authored supporting artifacts from trusted runner attestations.
-- [ ] Add `framework-gate-evidence-integrity` to `scripts/run_evals.py` using a deterministic fixture/check with no live service dependency.
+- [x] Add `framework-gate-evidence-integrity` to `scripts/run_evals.py` using a deterministic fixture/check with no live service dependency (initial observe-only coverage in #2845; extend with each trust boundary).
+- [x] Add the observe-only `framework-gate-receipts` case and `server/tests/test_framework_receipts.py`: independent reviewer/repository/revision bindings, conservative UI/process applicability, stale/self/wrong-repository rejection, and unchanged candidate state and stage decisions. This does not complete the blocking-gate tests above.
 
 **Exit proof:** An eligible transition succeeds with fresh trusted evidence and fails with each invalid variant. Advisory findings never masquerade as deterministic failures.
 

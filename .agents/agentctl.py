@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import hashlib
 import gzip
 import io
@@ -22,6 +23,11 @@ import tarfile
 import zlib
 import tomllib
 from pathlib import Path
+
+_policy_spec = importlib.util.spec_from_file_location("portable_framework_policy", Path(__file__).resolve().with_name("framework_policy.py"))
+assert _policy_spec is not None and _policy_spec.loader is not None
+framework_policy = importlib.util.module_from_spec(_policy_spec)
+_policy_spec.loader.exec_module(framework_policy)
 
 VERSION = "1.0.0"
 GENERATED = (
@@ -237,8 +243,7 @@ def load_framework_lock(root: Path, contract: dict) -> dict | None:
         raise ContractError('frameworks must be an object')
     path = framework_path(root, contract['frameworks']['lock'])
     data = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(data, dict) or type(data.get('schema_version')) is not int or data['schema_version'] != 1 or not isinstance(data.get('frameworks'), list):
-        raise ContractError('unsupported framework lock schema')
+    framework_policy.validate_declarations(data)
     return data
 
 
@@ -247,8 +252,7 @@ def framework_digest(root: Path, contract: dict) -> str | None:
     data = load_framework_lock(root, contract)
     if data is None:
         return None
-    data = dict(data, frameworks=sorted(data['frameworks'], key=lambda item: item['id']))
-    return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return framework_policy.framework_digest(data)
 
 
 def markdown_targets(text: str) -> list[str]:
@@ -273,30 +277,17 @@ def validate_framework_lock(root: Path, contract: dict) -> list[str]:
         data = load_framework_lock(root, contract)
         if data is None:
             return []
-        identifiers: set[str] = set()
-        concerns: dict[str, str] = {}
         for entry in data['frameworks']:
-            if not isinstance(entry, dict):
-                raise ContractError('framework entry must be an object')
             name = entry['id']
-            if not isinstance(name, str) or not name.strip() or name != name.strip() or name in identifiers:
-                raise ContractError('missing or duplicate framework id')
-            identifiers.add(name)
             state = entry['state']
-            if state not in {'candidate', 'sandbox', 'pilot', 'approved', 'rejected', 'revoked'}:
-                raise ContractError(f'{name}: invalid admission state')
             promoted = state in {'pilot', 'approved'}
-            for key in ('roots', 'runtime_paths', 'concerns', 'compatibility'):
+            for key in ('roots', 'runtime_paths', 'compatibility'):
                 if not isinstance(entry[key], list) or any(not isinstance(v, str) or not v.strip() or v != v.strip() for v in entry[key]):
                     raise ContractError(f'{name}: {key} must be a list of nonempty strings')
                 if len(entry[key]) != len(set(entry[key])):
                     raise ContractError(f'{name}: duplicate {key}')
             if not isinstance(entry['owner'], str) or not entry['owner'].strip() or entry['owner'] != entry['owner'].strip():
                 raise ContractError(f'{name}: missing owner or compatibility inventory')
-            for concern in entry['concerns']:
-                if concern in concerns:
-                    errors.append(f'{name}: duplicate concern ownership {concern} ({concerns[concern]})')
-                concerns[concern] = name
             upstream = entry['upstream']
             if not isinstance(upstream, dict):
                 raise ContractError(f'{name}: upstream must be an object')
@@ -897,6 +888,7 @@ def migrate(
     destination = agents_root / "agentctl.py"
     if Path(__file__).resolve() != destination.resolve():
         shutil.copy2(Path(__file__), destination)
+        shutil.copy2(Path(__file__).resolve().with_name("framework_policy.py"), agents_root / "framework_policy.py")
     workflow = root / ".github/workflows/agent-contract.yml"
     if not workflow.exists():
         write_text(workflow, WORKFLOW)
