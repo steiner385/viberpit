@@ -1,0 +1,5 @@
+id: framework-gate-evidence-integrity
+description: Observe-only framework diagnostics read pinned default-branch declarations, reject trusted status for all submitted claims, expose missing/stale/wrong-repo/self-review evidence and preserve existing gate decisions.
+kind: static
+tags: [sdlc, framework-evidence, security]
+check: 'python3 -m pytest server/tests/test_framework_observe.py server/tests/test_sdlc_explain.py -q'

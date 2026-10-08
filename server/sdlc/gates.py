@@ -137,3 +137,68 @@ def auto_resolved_view(record: dict | None, now: datetime) -> dict | None:
             "reverse": spec.reverse if spec is not None else None,
             "at": at.isoformat(), "outcome": str(record.get("outcome") or "resolved"),
             "tolerance": record.get("tolerance")}
+
+
+@dataclass(frozen=True)
+class FrameworkPolicySnapshot:
+    """Read-only declarations, NOT validated lock contents or review attestations.
+
+    Git object IDs identify the bytes observed; they are deliberately distinct
+    from agentctl's canonical framework digest. Subject head is never inferred
+    from the default-branch policy revision or an adopted artifact declaration.
+    """
+
+    repo: str
+    status: str
+    policy_revision: str | None = None
+    contract_oid: str | None = None
+    lock_oid: str | None = None
+    frameworks: tuple[dict, ...] = ()
+    head_sha: str | None = None
+    author: str | None = None
+
+
+def observe_framework_evidence(
+    snapshot: FrameworkPolicySnapshot, claims: list[dict] | None = None,
+) -> dict:
+    """Observe inventory and diagnose untrusted supporting claims, never gate.
+
+    No authenticated review store or trusted applicability scope is connected
+    yet. Matching claims therefore cannot pass, and unknown scope cannot skip an
+    obligation. This result is explanatory only: existing stage/risk decisions
+    must not consume it as authorization.
+    """
+    diagnostics = []
+    selected = {entry["id"] for entry in snapshot.frameworks}
+    for claim in claims or []:
+        reasons = ["unauthenticated_producer"]
+        if claim.get("framework") not in selected:
+            reasons.append("framework_not_selected")
+        if claim.get("repo") != snapshot.repo:
+            reasons.append("wrong_repository")
+        if snapshot.head_sha is None:
+            reasons.append("subject_revision_unknown")
+        elif claim.get("headSha") != snapshot.head_sha:
+            reasons.append("stale_head")
+        if snapshot.policy_revision is None:
+            reasons.append("policy_revision_unknown")
+        elif claim.get("policyRevision") != snapshot.policy_revision:
+            reasons.append("stale_policy")
+        reviewer = claim.get("reviewer")
+        if snapshot.author and isinstance(reviewer, str) and reviewer.casefold() == snapshot.author.casefold():
+            reasons.append("self_review")
+        diagnostics.append({"framework": claim.get("framework"), "trusted": False,
+                            "reasons": reasons})
+    return {
+        "mode": "observe", "blocking": False, "policyStatus": snapshot.status,
+        "repo": snapshot.repo, "policyRevision": snapshot.policy_revision,
+        "contractBlobOid": snapshot.contract_oid, "lockBlobOid": snapshot.lock_oid,
+        "subjectHeadSha": snapshot.head_sha,
+        "reason": "No authenticated framework review evidence or trusted applicability scope is connected.",
+        "frameworks": [{
+            "id": entry["id"], "state": entry["state"], "concerns": entry["concerns"],
+            "applicability": "unknown", "tier": "unconfigured",
+            "evidenceStatus": "untrusted" if any(c["framework"] == entry["id"] for c in diagnostics) else "missing",
+        } for entry in snapshot.frameworks],
+        "claims": diagnostics,
+    }

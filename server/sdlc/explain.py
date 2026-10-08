@@ -68,6 +68,7 @@ class ExplainContext:
     #: The unblock endpoint's third 409: the synthesizer gave up decomposing this
     #: plan after MATERIALIZE_MAX_ATTEMPTS. Defaulted so existing callers keep working.
     materialize_exhausted: bool = False
+    framework_observations: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ class Guidance:
     actions: dict[str, Consequence] = field(default_factory=dict)
     tolerance: dict = field(default_factory=dict)
     tick_seconds: int = 60
+    framework_observations: dict | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -405,7 +407,7 @@ def explain(ctx: ExplainContext) -> Guidance:
                  "autoresolveEnabled": ctx.autoresolve_enabled, "synthesizerMode": ctx.mode}
     if ctx.has_children:
         return Guidance(None, {c: _unavailable(_PROGRAM_REASON) for c in CONTROLS},
-                        tolerance, ctx.tick_seconds)
+                        tolerance, ctx.tick_seconds, ctx.framework_observations)
     actions = {
         "advance": _advance(ctx),
         "step_back": _step_back(ctx),
@@ -414,7 +416,7 @@ def explain(ctx: ExplainContext) -> Guidance:
         "materialize_accept": _materialize_accept(ctx),
         "materialize_reject": _materialize_reject(ctx),
     }
-    return Guidance(_outlook(ctx), actions, tolerance, ctx.tick_seconds)
+    return Guidance(_outlook(ctx), actions, tolerance, ctx.tick_seconds, ctx.framework_observations)
 
 
 # --------------------------------------------------------------------------- #
@@ -438,7 +440,9 @@ def guidance_to_wire(g: Guidance) -> dict:
         "steps": [step_to_wire(s) for s in g.machine.steps], "because": g.machine.because}
     return {"machine": machine,
             "actions": {k: consequence_to_wire(v) for k, v in g.actions.items()},
-            "tolerance": dict(g.tolerance), "tickSeconds": g.tick_seconds}
+            "tolerance": dict(g.tolerance), "tickSeconds": g.tick_seconds,
+            **({"frameworkEvidence": g.framework_observations}
+               if g.framework_observations is not None else {})}
 
 
 def gates_to_wire(*, autoresolve_enabled: bool) -> dict:

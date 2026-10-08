@@ -2,11 +2,12 @@
 control-band triage queue (#804)."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from server.audit import record_audit
@@ -51,7 +52,8 @@ from server.sdlc.engine import (
 from server.automations.product_policy import effective_policy
 from server.config import get_settings
 from server.sdlc.explain import ExplainContext, explain, gates_to_wire, guidance_to_wire
-from server.sdlc.gates import effective_tolerance
+from server.sdlc.gates import effective_tolerance, observe_framework_evidence
+from server.sdlc.framework_observe import load_policy_snapshot
 from server.sdlc.slug import slugify
 
 router = APIRouter(prefix="/api/sdlc", tags=["sdlc"])
@@ -497,11 +499,48 @@ async def adopt_artifact(
     return _artifact_to_dict(art)
 
 
+class FrameworkSupportingClaim(BaseModel):
+    """Untrusted diagnostic input; neither producer nor reviewer is authenticated."""
+
+    model_config = ConfigDict(extra="forbid")
+    framework: str = Field(max_length=200)
+    repo: str = Field(max_length=300)
+    headSha: str | None = Field(default=None, max_length=100)
+    policyRevision: str | None = Field(default=None, max_length=100)
+    producer: str | None = Field(default=None, max_length=200)
+    reviewer: str | None = Field(default=None, max_length=200)
+
+
+class FrameworkObservationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pullRequest: int | None = Field(default=None, gt=0, le=2147483647)
+    claims: list[FrameworkSupportingClaim] = Field(default_factory=list, max_length=50)
+
+
 @router.get("/initiatives/{slug}")
 async def get_initiative(
     slug: str,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
+    includeFrameworkEvidence: bool = False,
+) -> dict:
+    return await _initiative_detail(slug, db, observe=includeFrameworkEvidence)
+
+
+@router.post("/initiatives/{slug}/framework-observations")
+async def framework_observations(
+    slug: str,
+    body: FrameworkObservationBody,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Read-only diagnostics: no evidence is persisted, approved or executed."""
+    return await _initiative_detail(slug, db, observe=True, diagnostic=body)
+
+
+async def _initiative_detail(
+    slug: str, db, *, observe: bool = False,
+    diagnostic: FrameworkObservationBody | None = None,
 ) -> dict:
     """Return initiative detail including artifacts, buildSessions, and nextAction."""
     ini = (
@@ -596,6 +635,13 @@ async def get_initiative(
     # is meaningless and must not point at a stage transition nobody can take.
     if result["hasChildren"]:
         result["nextAction"] = None
+    framework_evidence = None
+    if observe:
+        snapshot = await asyncio.to_thread(
+            load_policy_snapshot, ini.repo or "",
+            pull_request=diagnostic.pullRequest if diagnostic else None)
+        framework_evidence = observe_framework_evidence(
+            snapshot, [c.model_dump() for c in diagnostic.claims] if diagnostic else None)
     result["guidance"] = guidance_to_wire(explain(ExplainContext(
         initiative=state, artifacts=artifact_views, mode=mode, tolerance=tolerance,
         configured_tolerance=str(policy.get("risk_tolerance") or "cautious"),
@@ -605,7 +651,8 @@ async def get_initiative(
         queue_min_status=str(policy.get("queue_min_status") or "ready"),
         session_model=str(policy.get("default_model") or "auto"),
         tick_seconds=int(TICK_INTERVAL_S),
-        materialize_exhausted=materialize_exhausted)))
+        materialize_exhausted=materialize_exhausted,
+        framework_observations=framework_evidence)))
     return result
 
 
