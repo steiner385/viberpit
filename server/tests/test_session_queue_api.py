@@ -10,10 +10,13 @@ import tempfile
 import types
 from unittest.mock import patch
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from server.api.sessions import _record_to_dict
 from server.app import create_app
+from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -523,5 +526,25 @@ def test_queued_create_returns_an_accurate_reason():
         reason = resp.json()["queueStallReason"]
         assert reason["code"] == "queued"
         assert "Capacity is free" not in reason["message"]
+    finally:
+        os.unlink(tf.name)
+
+
+@pytest.mark.parametrize("exc,code", [
+    (DaemonError("UnknownMethod", "start_queued_now"), "daemon_outdated"),
+    (DaemonError("RuntimeError", "boom"), "start_failed_remote"),
+    (DaemonUnavailable("down"), "daemon_unavailable"),
+])
+def test_start_now_daemon_failures_return_503_not_500(exc, code):
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _StartNowOrch(records=[_make_record("q1", status="queued")],
+                             positions={"q1": 1}, raises=exc)
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post("/api/sessions/q1/start-now", headers=_H)
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["error"]["code"] == code
     finally:
         os.unlink(tf.name)

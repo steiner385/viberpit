@@ -1614,6 +1614,11 @@ async def _queue_reason_of(session_id: str) -> str | None:
     return str((entry.params or {}).get("queue_reason", "global_cap"))
 
 
+def _start_now_unavailable(code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        content={"error": {"code": code, "message": message}})
+
+
 @router.post("/{session_id}/start-now")
 async def queue_start_now(
     session_id: str,
@@ -1638,6 +1643,21 @@ async def queue_start_now(
         return _all_accounts_busy_response(
             exc, limited_message="Every account is at its usage ceiling; this session "
                                  "starts automatically when quota frees.")
+    except DaemonUnavailable:
+        log.warning("queue_start_now: daemon unavailable id=%s", session_id, exc_info=True)
+        return _start_now_unavailable(
+            "daemon_unavailable", "The session daemon could not be reached; try again shortly.")
+    except DaemonError as exc:
+        # A daemon that predates start_queued_now answers UnknownMethod: say so rather
+        # than a bare 500 (#2857).
+        log.warning("queue_start_now: daemon error id=%s type=%s", session_id, exc.err_type,
+                    exc_info=True)
+        if exc.err_type == "UnknownMethod":
+            return _start_now_unavailable(
+                "daemon_outdated", "The session daemon has not been updated to support "
+                                   "Start now yet; try again after the next rollout.")
+        return _start_now_unavailable(
+            "start_failed_remote", f"The daemon could not start this session ({exc.err_type}).")
     if outcome == "not_queued":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
