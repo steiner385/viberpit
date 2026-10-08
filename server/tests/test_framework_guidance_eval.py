@@ -66,6 +66,29 @@ def test_output_schema():
             fg.parse_findings(text, ['mobile-overflow'])
 
 
+def test_single_json_fence_from_native_response():
+    assert fg.parse_findings('```json\n{"findings":["mobile-overflow"]}\n```',
+                             ['mobile-overflow']) == ['mobile-overflow']
+    assert fg.parse_findings(' \n```json\n{"findings":[]}\n```\n', []) == []
+
+
+@pytest.mark.parametrize('text', [
+    'Here are findings:\n```json\n{"findings":[]}\n```',
+    '```json\n{"findings":[]}\n```\nDone.',
+    '```json\n{"findings":[]}\n```\n```json\n{"findings":[]}\n```',
+    '```javascript\n{"findings":[]}\n```',
+    '```\n{"findings":[]}\n```',
+    '```json {"findings":[]} ```',
+    '```json\n{}\n```',
+    '```json\n{"findings":["unknown"]}\n```',
+    '```json\n{"findings":[],"extra":1}\n```',
+    '```json\n{"findings":["mobile-overflow","mobile-overflow"]}\n```',
+])
+def test_fenced_response_preserves_strict_validation(text):
+    with pytest.raises(ValueError):
+        fg.parse_findings(text, ['mobile-overflow'])
+
+
 def test_unavailable_key_report_is_private(tmp_path, monkeypatch):
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
     path = tmp_path / 'report.json'

@@ -121,6 +121,11 @@ def make_prompt(html: str, vocabulary: list[str], guidance: str) -> str:
 
 
 def parse_findings(text: str, vocabulary: list[str]) -> list[str]:
+    # Native results can wrap JSON in one fence. Unlike the tolerant PM prose
+    # extractor, this boundary must reject surrounding prose and extra blocks.
+    text = text.strip()
+    if text.startswith('```json\n') and text.endswith('\n```'):
+        text = text[len('```json\n'):-len('\n```')]
     value = json.loads(text)
     if not isinstance(value, dict) or set(value) != {'findings'}:
         raise ValueError('invalid-response-schema')
