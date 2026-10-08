@@ -57,7 +57,9 @@ async def _audit_tool_call(ctx: SessionToolContext, spec: ToolSpec, ok: bool, ms
             await record_audit(db, "session.tool_call", ctx.identity,
                                {"tool": spec.name, "class": spec.tool_class.value, "ok": ok,
                                 "ms": round(ms), "session_id": ctx.session_id}, via="session")
-            await db.commit()
+            # No explicit commit: db_session()'s exit commit is the shielded one
+            # (`_commit` → run_to_completion), so a cancel mid-flush cannot strand
+            # SQLite's write lock (#2726, #2804).
     except Exception:  # noqa: BLE001 - an audit failure must never fail the tool
         log.warning("session.tool_call audit failed tool=%s", spec.name, exc_info=True)
 
