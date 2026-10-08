@@ -6,6 +6,7 @@ group_history.record_group_outcome, writing into the async ccswitch.db (db_sessi
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 
 import pytest
@@ -99,3 +100,30 @@ def test_population_cycle_never_breaks_on_history_error(monkeypatch):
         assert len(p.cached(REPO)) == 1
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("exc,level", [
+    (ConnectionRefusedError(111, "Connection refused"), logging.INFO),
+    (ValueError("bad sql"), logging.WARNING),
+])
+def test_history_failure_log_level(monkeypatch, caplog, exc, level):
+    """A DB connectivity blip is INFO (no auto-error); a real defect stays WARNING (#2792)."""
+    async def run():
+        import server.pipeline.group_history as gh
+
+        async def boom(*a, **k):
+            raise exc
+
+        monkeypatch.setattr(gh, "record_group_outcome", boom)
+        p = PrPopulationPoller(
+            query_fn=lambda repo: _pop_resp(42),
+            eta_query_fn=lambda prs: _eta_resp_green_group(prs, "batchoid3"),
+            history_store=None,
+            now_fn=lambda: NOW,
+        )
+        with caplog.at_level(logging.INFO):
+            await p.refresh_once([REPO])
+
+    asyncio.run(run())
+    recs = [r for r in caplog.records if "pr_population.group_history_failed" in r.getMessage()]
+    assert [r.levelno for r in recs] == [level]

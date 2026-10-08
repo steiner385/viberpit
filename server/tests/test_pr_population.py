@@ -175,3 +175,21 @@ def test_fetch_merged_non_transient_failure_still_warns(caplog, monkeypatch):
     warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warned) == 1
     assert "pr_population.merged_fetch_failed repo=o/bad" in warned[0].getMessage()
+
+
+@pytest.mark.parametrize("exc,level", [
+    (ConnectionRefusedError(111, "Connection refused"), logging.INFO),
+    (ValueError("bad sql"), logging.WARNING),
+])
+def test_timeline_capture_db_failure_log_level(monkeypatch, caplog, exc, level):
+    """A DB connectivity blip is INFO (no auto-error); a real defect stays WARNING (#2792)."""
+    async def boom(*_a, **_k):
+        raise exc
+
+    p = PrPopulationPoller(query_fn=lambda repo: _resp(1))
+    monkeypatch.setattr(p, "_capture_timeline", boom)
+    with caplog.at_level(logging.INFO, logger=pop.log.name):
+        asyncio.run(p.refresh_once(["o/a"]))
+
+    recs = [r for r in caplog.records if "pr_population.timeline_capture_failed" in r.getMessage()]
+    assert [r.levelno for r in recs] == [level]
