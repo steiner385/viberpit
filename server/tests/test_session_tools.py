@@ -96,6 +96,39 @@ async def test_report_feedback_records_and_audits(isolated_db):
 
 
 @pytest.mark.asyncio
+async def test_audit_survives_cancel_mid_commit(isolated_db, monkeypatch):
+    """#2804: cancelling the tool task while the audit flush is in flight must not
+    abandon the write — the commit is shielded and the row still lands."""
+    import asyncio
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from server.db import db_session
+    from server.db.models import AuditEvent
+    from server.sessions.tools.registry import SESSION_TOOL_SPECS
+    from server.sessions.tools.tools import _audit_tool_call
+
+    real_commit = AsyncSession.commit
+    started = asyncio.Event()
+
+    async def slow_commit(self):
+        started.set()
+        await asyncio.sleep(0.2)
+        await real_commit(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", slow_commit)
+    task = asyncio.create_task(
+        _audit_tool_call(_ctx(), SESSION_TOOL_SPECS["session_context"], True, 1.0))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    monkeypatch.undo()
+    async with db_session() as db:
+        types = {a.type for a in (await db.execute(select(AuditEvent))).scalars()}
+    assert "session.tool_call" in types
+
+
+@pytest.mark.asyncio
 async def test_set_hold_resolves_the_session_ref_and_audits(isolated_db):
     from sqlalchemy import select
     from server.db import db_session
