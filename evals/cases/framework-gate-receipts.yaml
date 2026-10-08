@@ -1,0 +1,5 @@
+id: framework-gate-receipts
+description: Observe-only framework receipts bind authenticated allowlisted GitHub reviewers to pinned policy and complete revision-stable scope, reject invalid and ambiguous records, and preserve existing SDLC decisions.
+kind: static
+tags: [sdlc, framework-evidence, security]
+check: 'python3 -m pytest server/tests/test_framework_receipts.py server/tests/test_framework_scope_reader.py .agents/tests/test_framework_policy.py -q'

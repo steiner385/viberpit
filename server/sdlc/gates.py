@@ -141,7 +141,7 @@ def auto_resolved_view(record: dict | None, now: datetime) -> dict | None:
 
 @dataclass(frozen=True)
 class FrameworkPolicySnapshot:
-    """Read-only declarations, NOT validated lock contents or review attestations.
+    """Read-only declaration and GitHub provenance snapshot, never gate authority.
 
     Git object IDs identify the bytes observed; they are deliberately distinct
     from agentctl's canonical framework digest. Subject head is never inferred
@@ -156,6 +156,13 @@ class FrameworkPolicySnapshot:
     frameworks: tuple[dict, ...] = ()
     head_sha: str | None = None
     author: str | None = None
+    base_sha: str | None = None
+    framework_digest: str | None = None
+    policy_digest: str | None = None
+    changed_paths: tuple[str, ...] = ()
+    scope_complete: bool = False
+    reviews: tuple[dict, ...] = ()
+    reviews_complete: bool = False
 
 
 def observe_framework_evidence(
@@ -163,11 +170,13 @@ def observe_framework_evidence(
 ) -> dict:
     """Observe inventory and diagnose untrusted supporting claims, never gate.
 
-    No authenticated review store or trusted applicability scope is connected
-    yet. Matching claims therefore cannot pass, and unknown scope cannot skip an
-    obligation. This result is explanatory only: existing stage/risk decisions
-    must not consume it as authorization.
+    Submitted claims never authenticate. Explicit records collected through the
+    GitHub reader may attest a configured principal, but never authorize a gate.
+    Unknown scope cannot skip an obligation.
     """
+    from server.sdlc.framework_policy import policy
+    from server.sdlc.framework_evidence import review_observation
+
     diagnostics = []
     selected = {entry["id"] for entry in snapshot.frameworks}
     for claim in claims or []:
@@ -189,16 +198,33 @@ def observe_framework_evidence(
             reasons.append("self_review")
         diagnostics.append({"framework": claim.get("framework"), "trusted": False,
                             "reasons": reasons})
+    frameworks = []
+    for entry in snapshot.frameworks:
+        obligations = []
+        for concern, rule in entry.get("observation", {}).get("concerns", {}).items():
+            applicability = policy.applicability(rule, snapshot.changed_paths, snapshot.scope_complete)
+            status = "missing"
+            if rule["tier"] == "required_review" and applicability == "applicable":
+                status = review_observation(snapshot, entry, concern)
+            obligations.append({"concern": concern, "tier": rule["tier"],
+                                "applicability": applicability, "evidenceStatus": status})
+        row = {"id": entry["id"], "state": entry["state"], "concerns": entry["concerns"],
+               "obligations": obligations}
+        if not obligations:
+            row.update(applicability="unknown", tier="unconfigured",
+                       evidenceStatus="untrusted" if any(c["framework"] == entry["id"] for c in diagnostics) else "missing")
+        # Configured obligations are the sole source of concern-level statuses;
+        # an aggregate would hide mixed tiers or contradict individual scopes.
+        frameworks.append(row)
     return {
         "mode": "observe", "blocking": False, "policyStatus": snapshot.status,
         "repo": snapshot.repo, "policyRevision": snapshot.policy_revision,
         "contractBlobOid": snapshot.contract_oid, "lockBlobOid": snapshot.lock_oid,
-        "subjectHeadSha": snapshot.head_sha,
-        "reason": "No authenticated framework review evidence or trusted applicability scope is connected.",
-        "frameworks": [{
-            "id": entry["id"], "state": entry["state"], "concerns": entry["concerns"],
-            "applicability": "unknown", "tier": "unconfigured",
-            "evidenceStatus": "untrusted" if any(c["framework"] == entry["id"] for c in diagnostics) else "missing",
-        } for entry in snapshot.frameworks],
-        "claims": diagnostics,
+        "frameworkDigest": snapshot.framework_digest, "policyDigest": snapshot.policy_digest,
+        "subjectHeadSha": snapshot.head_sha, "subjectBaseSha": snapshot.base_sha,
+        "scopeComplete": snapshot.scope_complete,
+        "scopeDigest": policy.scope_digest(snapshot.changed_paths) if snapshot.scope_complete else None,
+        "reviewsComplete": snapshot.reviews_complete,
+        "reason": "Observe only. Recorded reviews attest configured GitHub principals, not execution, correctness or admission.",
+        "frameworks": frameworks, "claims": diagnostics,
     }

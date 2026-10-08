@@ -145,3 +145,74 @@ admission, safety approval, publisher authentication, or source-to-binary proof.
 The lock must itself be trusted: replacing both its hash and artifact defeats
 any claim of upstream identity. `framework-dependency-integrity` exercises these
 boundaries using disposable offline fixtures through the existing eval runner.
+
+## Observe-only applicability and GitHub review records
+
+An optional `observation` object on a framework lock entry declares `mode: "observe"`,
+`trusted_github_reviewers` (an explicit list of GitHub login names), and `concerns`.
+Each concern must already belong to that entry and has `tier` (`deterministic`,
+`required_review`, or `advisory`), `include_paths`, and `exclude_paths` arrays.
+Patterns are repository-relative segment globs: `*` and `?` stay inside a segment;
+`**` matches zero or more segments. Inclusions win. An exclusion is a skip only
+when every changed file is explicitly excluded and the scope is complete and
+nonempty. Backend paths without an explicit rule remain unknown; UI-facing API
+changes can be included. ViberPit's initial UI policy includes `web/**` and
+`server/api/**`, excludes `docs/**/*.md`, and trusts **no reviewers**.
+
+The stdlib helper `.agents/framework_policy.py` is the single source for declaration
+validation, routing, and canonical digests. Agentctl copies this sibling on
+migration. The server loads its own installed helper, never executable code from
+the repository being observed. The lock digest preserves the existing JSON
+canonicalization (sort entries by id, sort object keys, compact separators).
+The policy digest hashes the full contract with that JSON canonicalization; the
+scope digest hashes the sorted, unique changed-path array. Git blob OIDs remain
+separate identifiers. Policy and lock are pinned to one immutable default-branch
+revision, so PR content cannot downgrade its own obligations.
+
+The read-only GitHub adapter paginates files and reviews (100 items/page, at most
+20 pages each) and checks PR base and head on every page and again after both
+collections. Truncated, failed, or moving snapshots cannot authenticate a review.
+GraphQL does not expose old filenames; renames make negative scope resolution
+incomplete, while a known included destination still establishes applicability.
+
+For a `required_review` concern only, a configured GitHub principal distinct from
+the PR author can submit a review whose **entire trimmed body** is exactly:
+
+````text
+```viberpit-framework-review
+{"version":1,"framework":"impeccable","concern":"ui-design","repo":"owner/repository","base_sha":"<40 hex>","head_sha":"<40 hex>","framework_digest":"<64 hex>","policy_digest":"<64 hex>","scope_digest":"<64 hex>","artifacts":[{"path":"docs/reviews/example.md","sha256":"<64 hex>"}],"findings":[]}
+```
+````
+
+Use the current observation response's binding digests and PR revisions. A record
+requires 1–20 repository-relative artifact references with SHA-256 hashes, and an
+explicit findings list of at most 100 unique `{id, disposition}` objects. Allowed
+completed dispositions are `fixed`, `accepted`, and `not_applicable`; an empty
+findings list explicitly states no findings. Unresolved findings cannot produce
+`review_recorded`. Unknown fields (including any body-supplied identity) invalidate
+the record. References are attestations of artifact content hashes; this phase
+does **not** fetch or independently verify artifact bytes or evaluate dispositions.
+
+Identity, reviewed commit, state, submission time and edit metadata come from
+GitHub. Only submitted COMMENTED/APPROVED reviews of the current head qualify.
+Pending, dismissed, minimized, or CHANGES_REQUESTED reviews do not qualify. Edited
+bodies require the editor to match the original reviewer. The latest relevant
+record per principal and concern supersedes older success, including newer invalid
+or dismissed records. Invalid timestamp ordering conservatively disqualifies that
+principal. Ordinary approvals, prose examples and diagnostic POST claims never
+count. Raw review bodies and artifact details are not returned or logged.
+
+`review_recorded` means an authenticated principal attested to a bound scope. It
+is not proof of model execution, independent agent identity, framework usage,
+artifact availability, correctness, deterministic-check success, or admission.
+Configured logins are policy authority, not cryptographic identity independent of
+GitHub. No deterministic receipt collector exists yet. All three tiers remain
+non-blocking, and candidate/rejected/revoked admission states are never promoted.
+Adding reviewer identities is a separately reviewed policy change.
+
+### Regression pattern: review identifiers are not chronology
+
+- **Symptom:** an older valid record survives a newer invalid one submitted in the same second.
+- **Anti-pattern:** treating an opaque provider ID as a chronological timestamp tiebreaker.
+- **Fix shape:** reject ties at the latest known timestamp; allow a strictly newer record to supersede an older tie. An unparseable timestamp cannot establish ordering and remains invalid.
+- **Where to look:** review/attestation supersession and any timestamp-plus-ID comparison used to establish authority. A repository search found no other receipt-chronology instance; deterministic display ordering is a different use of IDs.

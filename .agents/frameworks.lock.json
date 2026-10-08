@@ -379,6 +379,22 @@
           "executed": false
         },
         "scope": "Observed content identity and publisher-channel agreement; no signature or reproducible-build verification, executable approval, or native compatibility claim."
+      },
+      "observation": {
+        "mode": "observe",
+        "trusted_github_reviewers": [],
+        "concerns": {
+          "ui-design": {
+            "tier": "required_review",
+            "include_paths": [
+              "web/**",
+              "server/api/**"
+            ],
+            "exclude_paths": [
+              "docs/**/*.md"
+            ]
+          }
+        }
       }
     }
   ]
