@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 
-from server.sessions.account_auth import helper_env
+from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options
 
@@ -74,7 +74,7 @@ async def refine_prompt(
         return None
 
     timeout = _timeout if _timeout is not None else REFINE_TIMEOUT_S
-    config_dir = _config_dir or pick_helper_config_dir() or os.environ.get("CLAUDE_CONFIG_DIR", "")
+    config_dir = _config_dir or await account_store_io(pick_helper_config_dir, default=None) or os.environ.get("CLAUDE_CONFIG_DIR", "")
     cwd = _cwd or helper_cwd()
 
     try:
@@ -87,7 +87,7 @@ async def refine_prompt(
             model="haiku",
             system_prompt=_REFINE_SYSTEM,
             cwd=cwd,
-            env=helper_env(config_dir),
+            env=await account_store_io(helper_env, config_dir),
             **stateless_helper_options(),
             **(await asyncio.to_thread(cli_path_kwargs)),
         )

@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 
-from .account_auth import helper_env
+from .account_auth import account_store_io, helper_env
 from .claude_bin import cli_path_kwargs
 from .helper_call import run_helper_call, stateless_helper_options
 
@@ -125,7 +125,7 @@ async def infer_goal(
             query_fn = _default_query_fn()
             options = ClaudeAgentOptions(
                 model=model, system_prompt=_SYSTEM_PROMPT, cwd=cwd,
-                env=helper_env(config_dir),
+                env=await account_store_io(helper_env, config_dir),
                 **stateless_helper_options(), **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:
         log.warning("infer_goal failed: %s", exc)

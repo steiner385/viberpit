@@ -15,12 +15,13 @@ from server.sessions import claude_sdk_factory as sf
     (sf.real_summary_factory, ('/tmp', '/test/config', 'account')),
 ])
 @pytest.mark.asyncio
-async def test_probe_runs_off_loop_but_client_and_auth_stay_on_loop(monkeypatch, factory, args):
+async def test_probe_and_auth_run_off_loop_but_client_stays_on_loop(monkeypatch, factory, args):
     import claude_agent_sdk
     from server.sessions import claude_bin
 
     loop_thread = threading.get_ident()
     probes = []
+    auths = []
     clients = []
     version = [2, 2, 0]
     monkeypatch.setattr(claude_bin, '_min_version', lambda: (2, 1, 0))
@@ -31,7 +32,8 @@ async def test_probe_runs_off_loop_but_client_and_auth_stay_on_loop(monkeypatch,
         return tuple(version)
 
     def auth(*args):
-        assert threading.get_ident() == loop_thread
+        # helper_env reads the sshfs account store: off the loop (#2852).
+        auths.append(threading.get_ident())
         return {'CLAUDE_CONFIG_DIR': '/scratch/account', 'CLAUDE_CODE_OAUTH_TOKEN': 'test-token'}
 
     class Client:
@@ -48,6 +50,9 @@ async def test_probe_runs_off_loop_but_client_and_auth_stay_on_loop(monkeypatch,
             await result
     assert len(clients) == 2
     assert len(probes) == 2 and all(t != loop_thread for t in probes)
+    assert all(t != loop_thread for t in auths)
+    if factory is not sf.real_sdk_factory:
+        assert len(auths) == 2
     assert all(opts.cli_path == '/test/claude' for opts in clients)
     version[:] = [2, 0, 0]
     await factory(*args)

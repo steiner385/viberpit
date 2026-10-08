@@ -329,8 +329,10 @@ async def test_goal_options_probe_off_loop(monkeypatch, version, expected_path):
         probe_threads.append(threading.get_ident())
         return version
 
+    env_threads = []
+
     def env(config_dir):
-        assert threading.get_ident() == loop_thread
+        env_threads.append(threading.get_ident())  # sshfs account-store reads: off-loop (#2852)
         return {"CLAUDE_CONFIG_DIR": config_dir}
 
     async def query(*, prompt, options):
@@ -347,6 +349,7 @@ async def test_goal_options_probe_off_loop(monkeypatch, version, expected_path):
 
     assert result == "Ship it"
     assert probe_threads and all(t != loop_thread for t in probe_threads)
+    assert len(env_threads) == 1 and env_threads[0] != loop_thread
     assert len(options_seen) == 1
     assert options_seen[0].cli_path == expected_path
     assert options_seen[0].cwd == "/test/repo"

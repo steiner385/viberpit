@@ -123,17 +123,17 @@ def _rank_clusters(raw: str, sample_count: int) -> list[str] | None:
 async def _curate(samples: list[str]) -> str | None:
     """Tool-free native SDK helper; None means retain the last good result."""
     from claude_agent_sdk import ClaudeAgentOptions, query
-    from server.sessions.account_auth import helper_env
+    from server.sessions.account_auth import account_store_io, helper_env
     from server.sessions.claude_bin import cli_path_kwargs
     from server.sessions.helper_call import (
         helper_cwd, pick_helper_config_dir, run_helper_call, stateless_helper_options)
 
-    config_dir = await asyncio.to_thread(pick_helper_config_dir)
+    config_dir = await account_store_io(pick_helper_config_dir, default=None)
     if config_dir is None:
         return None
     options = ClaudeAgentOptions(
         model='haiku', system_prompt=_SYSTEM_PROMPT, thinking={'type': 'disabled'},
-        cwd=helper_cwd(), env=helper_env(config_dir), max_turns=1, **stateless_helper_options(),
+        cwd=helper_cwd(), env=await account_store_io(helper_env, config_dir), max_turns=1, **stateless_helper_options(),
         **(await asyncio.to_thread(cli_path_kwargs)),
     )
     outcome = await run_helper_call(

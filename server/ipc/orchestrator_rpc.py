@@ -316,7 +316,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",
         "cancel_queued", "resolve_permission", "answer_question",
-        "transcript_path", "resolve_transcript_path", "transcript_search_text",
+        "resolve_transcript_path", "transcript_search_text",
         "has_transcript",
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "repark_pending_initial_prompt",
@@ -364,6 +364,16 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     for _m in _SIMPLE:
         register_rpc(app, _m, _make_simple(_m))
+
+    async def transcript_path(params: dict) -> str | None:
+        # Sync stat + glob over the account's projects tree, which is the sshfs mount on a
+        # session host. Run inline (the _SIMPLE path) it parked the daemon loop on a stalled
+        # mount and starved every other RPC, creds_sync included (#2852). Same offload as
+        # resolve_transcript_path; transcript_path only .get()s _drivers/_records.
+        # _maybe_await keeps the _SIMPLE contract for an orchestrator whose method is async.
+        return await _maybe_await(await asyncio.to_thread(orch.transcript_path, **params))
+
+    register_rpc(app, "transcript_path", transcript_path)
 
     import dataclasses
 
