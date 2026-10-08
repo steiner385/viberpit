@@ -53,3 +53,31 @@ def test_healthz_reports_busy_and_active_sessions(tmp_path):
     body = r.json()
     assert body["busy"] is True
     assert body["activeSessions"] == 1
+
+
+def _healthz_with(tmp_path, monkeypatch, caplog, exc):
+    client = _client(tmp_path)
+    with client:
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr("server.db.db_session", boom)
+        with caplog.at_level("DEBUG", logger="server"):
+            r = client.get("/healthz")
+    return r, [x for x in caplog.records if x.levelname == "WARNING"
+               and x.name == "server"]
+
+
+def test_healthz_transient_db_blip_is_500_but_not_a_warning(tmp_path, monkeypatch, caplog):
+    """A connect-level failure still fails the probe but must not file an auto-error (#2790)."""
+    r, warnings = _healthz_with(tmp_path, monkeypatch, caplog, ConnectionRefusedError("down"))
+    assert r.status_code == 500
+    assert r.json()["status"] == "schema_error"
+    assert not warnings
+
+
+def test_healthz_non_transient_db_error_still_warns(tmp_path, monkeypatch, caplog):
+    from sqlalchemy.exc import ProgrammingError
+    r, warnings = _healthz_with(
+        tmp_path, monkeypatch, caplog, ProgrammingError("SELECT", {}, Exception("no column")))
+    assert r.status_code == 500
+    assert warnings

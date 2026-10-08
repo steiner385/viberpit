@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import select as _sa_select
 import server.db as _db
+from server.db.transient import is_transient_db_failure
 from server.db.models import Session as _SessionModel
 from server.spa import mount_spa
 
@@ -941,7 +942,14 @@ def create_app(
                     payload["daemonSha"] = _dsha
             return JSONResponse(payload)
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
-            logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
+            if is_transient_db_failure(exc):
+                # A DB connect blip: still unhealthy (the probe gates on the 500)
+                # but not an auto-error (#2790).
+                logging.getLogger("server").info(
+                    "healthz DB unreachable transiently (%s)", type(exc).__name__)
+            else:
+                logging.getLogger("server").warning(
+                    "healthz schema check failed", exc_info=exc)
             return JSONResponse({"status": "schema_error", "sha": running_git_sha()}, status_code=500)
 
     # REST API routers (T036–T038)
