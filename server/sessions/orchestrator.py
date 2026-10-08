@@ -24,7 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dataclass_replace
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 if TYPE_CHECKING:
@@ -16840,6 +16840,35 @@ class SessionOrchestrator:
             return own_op_stuck
         return state.get("last_action_sha") != info.head_sha
 
+    async def _pr_doctor_attached_stall_state(
+            self, session_ids: Iterable[str]) -> dict[str, tuple[str, str | None]]:
+        """``session_id -> (status, paused_reason)`` for each attached
+        predecessor, as ``is_usage_stalled`` reads it.
+
+        The in-memory record wins (it is fresher on its own host). A session
+        this process holds no record for — a predecessor on another fleet
+        host — falls back to its shared ``sessions`` row, read in ONE batched
+        query because this is the admission hot path. An id known to neither
+        is absent from the result and keeps gating: evidence, never inference.
+        """
+        state: dict[str, tuple[str, str | None]] = {}
+        missing: set[str] = set()
+        for sid in session_ids:
+            rec = self._records.get(sid)
+            if rec is not None:
+                state[sid] = (rec.status, rec.paused_reason)
+            else:
+                missing.add(sid)
+        if missing:
+            from sqlalchemy import select
+            async with db_session() as db:
+                rows = await db.execute(
+                    select(DbSession.id, DbSession.status, DbSession.paused_reason)
+                    .where(DbSession.id.in_(missing)))
+                for sid, status, paused_reason in rows:
+                    state[sid] = (status, paused_reason)
+        return state
+
     async def _pr_doctor_pending_products(self) -> dict[str, tuple[str, ...]]:
         """Product slug -> the PR refs PR Doctor will actually act on (spec
         2026-09-21 pr-doctor-priority; #2202). Backlog Runner's admission gate
@@ -16882,6 +16911,7 @@ class SessionOrchestrator:
             states = await self._pr_doctor_ctx.list_target_states()
             waits = await self._pr_doctor_ownership_waits()
             refusals = waits.refusals
+            stall_state = await self._pr_doctor_attached_stall_state(waits.attached.values())
             gating: dict[str, list[str]] = {}
             unclaimable: dict[str, list[str]] = {}
             for repo, branch in await self._pr_doctor_scope_pairs():
@@ -16912,8 +16942,8 @@ class SessionOrchestrator:
                     own_op_stuck = self._pr_doctor_mechanical_stuck(
                         await self._pr_doctor_claim_operation(state["ownership_token"]))
                 stalled = ((sid := waits.attached.get(target)) is not None
-                           and (rec := self._records.get(sid)) is not None
-                           and is_usage_stalled(rec.status, rec.paused_reason))
+                           and (row := stall_state.get(sid)) is not None
+                           and is_usage_stalled(*row))
                 bucket = (unclaimable if stalled or self._pr_doctor_claim_unclaimable(
                     state, refusals.get(target), info, own_op_stuck=own_op_stuck) else gating)
                 bucket.setdefault(repo, []).append(target)

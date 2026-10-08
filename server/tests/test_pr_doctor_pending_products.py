@@ -497,12 +497,79 @@ def test_a_stalled_session_that_recovers_re_gates_with_no_sticky_state(monkeypat
     asyncio.run(run())
 
 
-def test_a_wait_on_an_unknown_session_keeps_gating(monkeypatch, tmp_path):
+async def _add_session_row(sid, *, status, paused_reason=None):
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        db.add(DbSession(id=sid, name="remote", account_name="acct-a", cwd="/tmp",
+                         status=status, paused_reason=paused_reason))
+
+
+def test_a_wait_on_a_usage_stalled_session_on_another_host_does_not_gate(monkeypatch, tmp_path):
+    """A predecessor on another fleet host has no in-memory record here: its
+    shared ``sessions`` row is the evidence."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        await _add_session_row("remote-1", **_STALLED)
+        await _attached_wait(orch, sid="remote-1")
+        assert await orch._pr_doctor_pending_products() == {}
+
+    asyncio.run(run())
+
+
+def test_a_wait_on_a_working_session_on_another_host_keeps_gating(monkeypatch, tmp_path):
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        await _add_session_row("remote-1", status="in_progress")
+        await _attached_wait(orch, sid="remote-1")
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_the_in_memory_record_wins_over_the_db_row(monkeypatch, tmp_path):
+    """The local record is fresher on its own host than the shared row."""
+    async def run():
+        orch, _ = await _waiting_orch(monkeypatch, tmp_path, status="in_progress")
+        await _add_session_row("sess1", **_STALLED)
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_a_wait_on_a_session_unknown_to_memory_and_db_keeps_gating(monkeypatch, tmp_path):
     """Evidence, never inference: a session nobody knows proves no stall."""
     async def run():
         orch = await _gated_orch(monkeypatch, tmp_path)
         await _attached_wait(orch, sid="ghost")
         assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_db_fallback_is_one_batched_query(monkeypatch, tmp_path):
+    """Admission hot path: every off-host predecessor is read in one query."""
+    async def run():
+        from sqlalchemy import event
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        for sid in ("r1", "r2", "r3"):
+            await _add_session_row(sid, **_STALLED)
+        selects = []
+        from server.db import db_session
+        async with db_session() as db:
+            sync_engine = db.get_bind()
+
+        def _count(conn, cursor, statement, *a):
+            if "FROM sessions" in statement and "paused_reason" in statement:
+                selects.append(statement)
+
+        event.listen(sync_engine, "before_cursor_execute", _count)
+        try:
+            state = await orch._pr_doctor_attached_stall_state(["r1", "r2", "r3", "ghost"])
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", _count)
+        assert set(state) == {"r1", "r2", "r3"}
+        assert len(selects) == 1
 
     asyncio.run(run())
 
