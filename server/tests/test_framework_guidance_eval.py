@@ -78,34 +78,12 @@ def test_score_clean_false_positive():
 
 
 def test_output_schema():
-    assert fg.parse_findings('{"findings":[]}', ['mobile-overflow']) == []
-    for text in ('', '{}', '{"findings":["unknown"]}', '{"findings":[],"extra":1}',
-                 '{"findings":["mobile-overflow","mobile-overflow"]}'):
+    assert fg.parse_findings({'findings': []}, ['mobile-overflow']) == []
+    for value in (None, '', {}, {'findings': ['unknown']}, {'findings': [], 'extra': 1},
+                  {'findings': ['mobile-overflow', 'mobile-overflow']},
+                  {'findings': [1]}, {'findings': 'mobile-overflow'}):
         with pytest.raises(ValueError):
-            fg.parse_findings(text, ['mobile-overflow'])
-
-
-def test_single_json_fence_from_native_response():
-    assert fg.parse_findings('```json\n{"findings":["mobile-overflow"]}\n```',
-                             ['mobile-overflow']) == ['mobile-overflow']
-    assert fg.parse_findings(' \n```json\n{"findings":[]}\n```\n', []) == []
-
-
-@pytest.mark.parametrize('text', [
-    'Here are findings:\n```json\n{"findings":[]}\n```',
-    '```json\n{"findings":[]}\n```\nDone.',
-    '```json\n{"findings":[]}\n```\n```json\n{"findings":[]}\n```',
-    '```javascript\n{"findings":[]}\n```',
-    '```\n{"findings":[]}\n```',
-    '```json {"findings":[]} ```',
-    '```json\n{}\n```',
-    '```json\n{"findings":["unknown"]}\n```',
-    '```json\n{"findings":[],"extra":1}\n```',
-    '```json\n{"findings":["mobile-overflow","mobile-overflow"]}\n```',
-])
-def test_fenced_response_preserves_strict_validation(text):
-    with pytest.raises(ValueError):
-        fg.parse_findings(text, ['mobile-overflow'])
+            fg.parse_findings(value, ['mobile-overflow'])
 
 
 def test_unavailable_key_report_is_private(tmp_path, monkeypatch):
@@ -122,17 +100,18 @@ MODEL = 'claude-sonnet-4-20250514'
 
 
 def options():
-    return fg.build_options('/verified/claude', MODEL, .1, '/scratch/work', '/scratch/config')
+    return fg.build_options('/verified/claude', MODEL, .1, '/scratch/work', '/scratch/config', ['mobile-overflow'])
 
 
-def messages(*, tools=None, init=True, result=True, cost=.01, error=False, text='{"findings":[]}'):
+def messages(*, tools=None, init=True, result=True, cost=.01, error=False,
+             text='untrusted prose', structured=True):
     from claude_agent_sdk import ResultMessage, SystemMessage
     values = []
     if init:
-        values.append(SystemMessage('init', {'tools': tools or [], 'model': MODEL, 'mcp_servers': [], 'slash_commands': [], 'skills': []}))
+        values.append(SystemMessage('init', {'tools': ['StructuredOutput'] if tools is None else tools, 'model': MODEL, 'mcp_servers': [], 'slash_commands': [], 'skills': []}))
     if result:
         values.append(ResultMessage('success', 1, 1, error, 1, 'private-id',
-                                    total_cost_usd=cost, result=text, usage={'input_tokens': 10}))
+                                    total_cost_usd=cost, result=text, structured_output={'findings': []} if structured else None, usage={'input_tokens': 10}))
     return values
 
 
@@ -151,7 +130,7 @@ async def test_successful_query_checks_observed_capabilities():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kwargs', [dict(init=False), dict(result=False), dict(tools=['Bash']),
                                      dict(cost=None), dict(cost=.1), dict(cost=float('nan')),
-                                     dict(error=True), dict(text=''), dict(text='not json')])
+                                     dict(error=True), dict(structured=False), dict(tools=[])])
 async def test_unexecuted_failed_or_unbounded_stream_rejected(kwargs):
     attempts = 0
     async def query(**ignored):
@@ -223,7 +202,7 @@ def test_command_options_no_tools_and_bare():
     assert configured.strict_mcp_config is True
     assert configured.setting_sources == []
     assert configured.extra_args == {'safe-mode': None, 'disable-slash-commands': None, 'system-prompt-snapshot': 'off', 'no-session-persistence': None}
-    assert configured.max_turns == 1
+    assert configured.max_turns == 2
     assert configured.max_budget_usd == .1
     assert configured.system_prompt == fg.SYSTEM_PROMPT
     assert configured.env == {'CLAUDE_CONFIG_DIR': '/scratch/config'}
@@ -242,7 +221,7 @@ def test_paired_order_and_budget_reservations(monkeypatch):
     def call(request, env):
         prompts.append(request)
         return {'status': 'completed', 'executed': True, 'cost_usd': .01, 'usage': None,
-                'observed_model': MODEL, 'tools_observed': [], 'findings': [],
+                'observed_model': MODEL, 'tools_observed': ['StructuredOutput'], 'findings': [],
                 'auth_mode': 'claude.ai', 'subscription_type': 'max'}
     monkeypatch.setattr(fg, 'worker_call', call)
     result = fg.run_comparison(ROOT, model=MODEL, budget=1.2, timeout=30)
@@ -317,7 +296,7 @@ def test_worker_missing_config_does_not_resolve_or_query(monkeypatch):
     monkeypatch.setattr(helper_call, 'pick_helper_config_dir', lambda: None)
     monkeypatch.setattr(claude_bin, 'resolve_claude_bin', lambda: pytest.fail('resolved binary'))
     monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
-    assert fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30}) == {
+    assert fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30, 'vocabulary': []}) == {
         'status': 'missing-subscription-account', 'executed': False}
 
 
@@ -494,7 +473,7 @@ def test_worker_failure_reason_is_bounded_and_redacted(monkeypatch, failure, rea
     async def fail(*args):
         raise failure
     monkeypatch.setattr(fg, 'bounded_query', fail)
-    report = fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30})
+    report = fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30, 'vocabulary': []})
     assert report['status'] == 'worker-failed'
     assert report['failure_reason'] == reason
     assert report['executed'] is True
@@ -569,7 +548,7 @@ def test_stale_subscription_stops_before_inference(monkeypatch):
         raise ValueError('unverified-subscription-auth')
     monkeypatch.setattr(fg, 'subscription_auth', reject)
     monkeypatch.setattr(fg, 'bounded_query', lambda *a: pytest.fail('inference'))
-    report = fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30})
+    report = fg.worker_main({'model': MODEL, 'budget': .1, 'timeout': 30, 'vocabulary': []})
     assert report['executed'] is False
     assert report['failure_reason'] == 'unverified-subscription-auth'
 
@@ -582,7 +561,7 @@ def test_account_environment_frozen_for_all_calls(monkeypatch):
     def worker(request, env):
         environments.append(env)
         return {'status': 'completed', 'executed': True, 'cost_usd': 0, 'usage': None,
-                'observed_model': MODEL, 'tools_observed': [], 'findings': [],
+                'observed_model': MODEL, 'tools_observed': ['StructuredOutput'], 'findings': [],
                 'auth_mode': 'claude.ai', 'subscription_type': 'max'}
     monkeypatch.setattr(fg, 'worker_call', worker)
     result = fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30, account='chosen')
@@ -622,7 +601,7 @@ def test_success_without_verified_subscription_stops_comparison(monkeypatch, aut
     def worker(request, env):
         calls.append(1)
         return {'status': 'completed', 'executed': True, 'cost_usd': 0,
-                'observed_model': MODEL, 'tools_observed': [], 'findings': [], **auth}
+                'observed_model': MODEL, 'tools_observed': ['StructuredOutput'], 'findings': [], **auth}
     monkeypatch.setattr(fg, 'worker_call', worker)
     assert fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30)['status'] == 'incomplete'
     assert calls == [1]
@@ -645,3 +624,141 @@ def test_expired_envelope_never_falls_back_to_scratch_credentials(monkeypatch):
     monkeypatch.setattr(account_auth, 'oauth_env_for', lambda account: {})
     with pytest.raises(ValueError, match='missing-subscription-account'):
         fg.worker_environment(None)
+
+
+@pytest.mark.parametrize('tier', [None, 'max', 'pro'])
+def test_broker_auth_preserves_native_metadata(monkeypatch, tier):
+    from types import SimpleNamespace
+    status = {'loggedIn': True, 'authMethod': 'oauth_token',
+              'apiProvider': 'firstParty', 'subscriptionType': tier}
+    monkeypatch.setattr(fg.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=json.dumps(status)))
+    assert fg.subscription_auth('/native', '/work', {'CLAUDE_CODE_OAUTH_TOKEN': 'canonical'}) == {
+        'auth_mode': 'oauth_token', 'subscription_type': tier}
+
+
+@pytest.mark.parametrize('changes,token', [
+    ({}, None), ({}, ''), ({}, '   '), ({'apiProvider': 'bedrock'}, 'canonical'),
+    ({'authMethod': 'api_key'}, 'canonical'), ({'loggedIn': False}, 'canonical'),
+    ({'subscriptionType': 'unknown'}, 'canonical'),
+])
+def test_broker_auth_rejects_unverified_authority(monkeypatch, changes, token):
+    from types import SimpleNamespace
+    status = {'loggedIn': True, 'authMethod': 'oauth_token',
+              'apiProvider': 'firstParty', 'subscriptionType': None, **changes}
+    monkeypatch.setattr(fg.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=json.dumps(status)))
+    env = {} if token is None else {'CLAUDE_CODE_OAUTH_TOKEN': token}
+    with pytest.raises(ValueError, match='unverified-subscription-auth'):
+        fg.subscription_auth('/native', '/work', env)
+
+
+@pytest.mark.parametrize('token,mode,tier,expected', [
+    ('canonical', 'oauth_token', None, 'completed'),
+    ('canonical', 'oauth_token', 'max', 'completed'),
+    ('', 'oauth_token', None, 'incomplete'),
+    ('canonical', 'claude.ai', None, 'incomplete'),
+    ('canonical', 'api_key', None, 'incomplete'),
+])
+def test_paired_broker_metadata_validation(monkeypatch, token, mode, tier, expected):
+    monkeypatch.setattr(fg, 'worker_environment', lambda account: {'CLAUDE_CODE_OAUTH_TOKEN': token})
+    def worker(request, env):
+        return {'status': 'completed', 'executed': True, 'cost_usd': 0,
+                'observed_model': MODEL, 'tools_observed': ['StructuredOutput'], 'findings': [],
+                'auth_mode': mode, 'subscription_type': tier}
+    monkeypatch.setattr(fg, 'worker_call', worker)
+    report = fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30)
+    assert report['status'] == expected
+    assert len(report['calls']) == (6 if expected == 'completed' else 1)
+    assert report['calls'][0]['subscription_type'] == tier
+
+
+def test_broker_auth_identity_drift_stops_comparison(monkeypatch):
+    calls = []
+    def worker(request, env):
+        calls.append(1)
+        return {'status': 'completed', 'executed': True, 'cost_usd': 0,
+                'observed_model': MODEL, 'tools_observed': ['StructuredOutput'], 'findings': [],
+                'auth_mode': 'oauth_token', 'subscription_type': None if len(calls) == 1 else 'max'}
+    monkeypatch.setattr(fg, 'worker_call', worker)
+    report = fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30)
+    assert report['status'] == 'engine-version-changed'
+    assert len(calls) == 2
+
+
+def test_native_structured_output_schema():
+    configured = options()
+    assert configured.output_format == {'type': 'json_schema', 'schema': {
+        'type': 'object', 'properties': {'findings': {'type': 'array',
+            'items': {'type': 'string', 'enum': ['mobile-overflow']}, 'uniqueItems': True}},
+        'required': ['findings'], 'additionalProperties': False}}
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+    command = SubprocessCLITransport(prompt='synthetic', options=configured)._build_command()
+    assert json.loads(command[command.index('--json-schema') + 1]) == configured.output_format['schema']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('payload', [None, {}, {'findings': ['unknown']},
+    {'findings': ['mobile-overflow', 'mobile-overflow']}, {'findings': [], 'extra': True}])
+async def test_malformed_formatter_arguments_rejected(payload):
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+    async def query(**kwargs):
+        yield messages()[0]
+        yield AssistantMessage([ToolUseBlock('id', 'StructuredOutput', payload)], MODEL)
+        yield messages()[1]
+    with pytest.raises(ValueError):
+        await fg.consume_query('synthetic', options(), ['mobile-overflow'], query)
+
+
+@pytest.mark.asyncio
+async def test_formatter_and_structured_result_without_prose():
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+    values = messages(text='')
+    values[-1].structured_output = {'findings': ['mobile-overflow']}
+    async def query(**kwargs):
+        yield values[0]
+        yield AssistantMessage([ToolUseBlock('id', 'StructuredOutput', {'findings': ['mobile-overflow']})], MODEL)
+        yield values[-1]
+    result = await fg.consume_query('synthetic', options(), ['mobile-overflow'], query)
+    assert result['findings'] == ['mobile-overflow']
+    assert result['tools_observed'] == ['StructuredOutput']
+
+
+@pytest.mark.asyncio
+async def test_server_tool_even_named_formatter_rejected():
+    from claude_agent_sdk import AssistantMessage, ServerToolUseBlock
+    async def query(**kwargs):
+        yield messages()[0]
+        yield AssistantMessage([ServerToolUseBlock('id', 'StructuredOutput', {'findings': []})], MODEL)
+    with pytest.raises(ValueError, match='tool-attempt'):
+        await fg.consume_query('synthetic', options(), [], query)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('structured', [None, {}, {'findings': ['unknown']}])
+async def test_valid_prose_never_replaces_invalid_structured_result(structured):
+    values = messages(text='{"findings":[]}')
+    values[-1].structured_output = structured
+    async def query(**kwargs):
+        for value in values:
+            yield value
+    with pytest.raises(ValueError):
+        await fg.consume_query('synthetic', options(), [], query)
+
+
+@pytest.mark.parametrize('observed', [[], ['Bash'], ['StructuredOutput', 'Bash']])
+def test_parent_rejects_unexpected_native_tools(monkeypatch, observed):
+    def worker(request, env):
+        return {'status': 'completed', 'executed': True, 'cost_usd': 0,
+                'observed_model': MODEL, 'tools_observed': observed, 'findings': [],
+                'auth_mode': 'claude.ai', 'subscription_type': 'max'}
+    monkeypatch.setattr(fg, 'worker_call', worker)
+    result = fg.run_comparison(ROOT, model=MODEL, budget=1, timeout=30)
+    assert result['status'] == 'incomplete'
+    assert len(result['calls']) == 1
+
+
+def test_preflight_requires_native_json_schema(monkeypatch):
+    from types import SimpleNamespace
+    flags = '--safe-mode --disable-slash-commands --system-prompt-snapshot --tools --strict-mcp-config --setting-sources --no-session-persistence --max-budget-usd'
+    monkeypatch.setattr(fg.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=flags))
+    with pytest.raises(ValueError, match='unsupported-native-capability'):
+        fg.preflight('/engine', '/scratch', {})

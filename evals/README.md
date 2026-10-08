@@ -107,8 +107,12 @@ account in ViberPit, optionally selected with `--account NAME`. The canonical
 helper picker otherwise selects one ready account. That account is fixed for the
 whole comparison; there is no automatic rotation or retry. The worker excludes
 API keys and alternate-provider overrides. Native auth status must identify a
-Claude.ai subscription before inference; missing or stale credentials stop the
-run. The previously provisioned evaluation API key is not read.
+Claude.ai or canonical first-party OAuth-token authentication before inference;
+missing or stale credentials stop the
+run. The previously provisioned evaluation API key is not read. Run with the daemon's
+state-directory and fleet-role environment so the canonical helper can find its
+broker envelope. In broker mode, native auth status may omit the subscription
+tier; the report preserves that unknown value.
 
 Each of three existing synthetic fixtures (clean, mobile overflow, reduced motion)
 gets one baseline and one guidance review, with alternating order. Both arms see
@@ -120,17 +124,22 @@ never invoked. Expected findings remain outside model prompts.
 
 Each call runs in a separate Python worker with an allowlisted environment, fresh
 working directories, the canonical helper scratch configuration and Claude binary, and shared
-stateless-helper options: no tools, no MCP servers, no settings sources, and no
+stateless-helper options: no environment-access tools, no MCP servers, no settings sources, and no
 session persistence. `--safe-mode` disables user customizations, including
 project instructions, installed skills/plugins and hooks, while preserving native
 subscription authentication. `--disable-slash-commands` disables skills explicitly;
 `--system-prompt-snapshot off` prevents prompt recording. Native built-in plugins
 and managed policy remain vendor-controlled; safe mode is not a claim that every
 built-in plugin disappears. Preflight rejects missing required CLI
-flags; stream observations reject tools, wrong models, missing initialization,
+flags; stream observations reject every tool except the native `StructuredOutput`
+formatter, wrong models, missing initialization,
 empty/failed results, malformed finding IDs, and missing/exhausted cost. These
 are native configuration and observed boundaries, **not an OS/network sandbox**.
-The trusted CLI still makes provider calls. Reports contain no prompts, keys,
+The trusted CLI still makes provider calls. Its JSON-schema output mode advertises
+one native `StructuredOutput` formatter; that is the only permitted tool name,
+and its arguments and final structured result must satisfy the findings schema.
+No shell, file, network or server-side tool is permitted. Freeform result text is
+not scored. Each call allows at most two native turns for the formatting step. Reports contain no prompts, keys,
 paths to runtime state, or raw native diagnostics.
 
 The `--max-budget-usd` value is a positive, finite native estimated-workload
