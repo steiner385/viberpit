@@ -92,7 +92,15 @@ tool rejection, budgets, paired scoring and output reservation. The actual CLI
 entry point without a key returned exit 1, `missing-api-key`, `executed: false`,
 zero calls and a private report. This proves rejection, not live model behavior.
 
-No live comparison has been claimed. A dedicated API key remains unavailable.
-A live smoke is required before declaring the native integration complete, as
-required by constitution Principle III. The earlier browser calibration and
-historical pilots are separate evidence and remain valid.
+On 2026-10-08 a dedicated key successfully listed available API models. The first
+live attempt used `claude-sonnet-4-5-20250929`, CLI 2.1.293 and SDK 0.2.105,
+and stopped after one incomplete call. Two bounded diagnostic attempts identified
+the native assistant error as `billing_error`; no completed inference, scoring or
+cost telemetry was obtained. Total reservations were $0.533334 (rounded up for
+reporting): the initial $0.333334 plus two $0.10 diagnostic reservations. Actual
+charges are unknown; these reservations must not be recycled silently.
+
+The API account's billing must be resolved before further inference. No completed
+live comparison or effectiveness result is claimed. A live smoke remains required
+before declaring the native integration complete under constitution Principle III.
+The earlier browser calibration and historical pilots remain separate evidence.
