@@ -611,3 +611,115 @@ def test_the_attached_session_wait_keeps_its_text_for_a_working_session(monkeypa
         assert event["detail"]["attached_session"] == "sess1"
 
     asyncio.run(run())
+
+
+def test_the_attached_session_wait_names_a_limited_predecessor_by_status(monkeypatch, tmp_path):
+    """``limited`` is usage-stalled with no ``paused_reason`` — never "(None)"."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        rec = orch._records["sess1"]
+        rec.status, rec.paused_reason = "limited", None
+
+        await orch._pr_doctor_session_fix_owned(
+            "o/r", "feat/x", _stuck(), "failing_ci", rec, ownership_token="tok-1")
+
+        event = (await orch._pr_doctor_ctx.list_events(kind="ownership_wait"))[0]
+        assert "stalled on usage (limited);" in event["summary"]
+        assert "None" not in event["summary"]
+
+    asyncio.run(run())
+
+
+async def _two_product_orch(monkeypatch, tmp_path):
+    """product-a gates normally on o/r#7; product-b's o/other#8 waits on an
+    off-host session row."""
+    await _init_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    await _set_config(_ON)
+    await _register_repo("o/r", "product-a")
+    await _register_repo("o/other", "product-b")
+    orch = _build_orch(
+        cache={("o/r", "feat/x"): _stuck(), ("o/other", "feat/y"): _stuck(number=8)},
+        pairs=[("o/r", "feat/x"), ("o/other", "feat/y")])
+    return orch
+
+
+def test_a_failed_stall_read_keeps_every_other_reservation(monkeypatch, tmp_path):
+    """The stall read's DB failure is contained: it must not fall through to
+    the blanket ``except`` that returns ``{}`` for EVERY product. The unread
+    id keeps gating (evidence, never inference)."""
+    async def run():
+        import contextlib
+        import server.sessions.orchestrator as orch_mod
+        orch = await _two_product_orch(monkeypatch, tmp_path)
+        await _add_session_row("remote-1", **_STALLED)
+        await _attached_wait(orch, target="o/other#8", sid="remote-1")
+
+        real = orch_mod.db_session
+
+        class _FailStallRead:
+            def __init__(self, db):
+                self._db = db
+
+            def __getattr__(self, name):
+                return getattr(self._db, name)
+
+            async def execute(self, stmt, *a, **kw):
+                if "paused_reason" in str(stmt):
+                    raise RuntimeError("db down")
+                return await self._db.execute(stmt, *a, **kw)
+
+        @contextlib.asynccontextmanager
+        async def _db_session():
+            async with real() as db:
+                yield _FailStallRead(db)
+
+        monkeypatch.setattr(orch_mod, "db_session", _db_session)
+
+        assert await orch._pr_doctor_pending_products() == {
+            "product-a": ("o/r#7",), "product-b": ("o/other#8",)}
+
+    asyncio.run(run())
+
+
+def test_the_gate_reads_events_once_and_stall_rows_at_most_once(monkeypatch, tmp_path):
+    """Review Focus 4 through the real path: several attached targets, one
+    ``ownership_wait`` read and at most one batched ``sessions`` select. An
+    attached wait for a target outside the gate's scope is never resolved."""
+    async def run():
+        from sqlalchemy import event
+        from server.db import db_session
+        orch = await _two_product_orch(monkeypatch, tmp_path)
+        for sid in ("remote-1", "remote-2", "remote-3"):
+            await _add_session_row(sid, **_STALLED)
+        await _attached_wait(orch, target="o/r#7", sid="remote-1")
+        await _attached_wait(orch, target="o/other#8", sid="remote-2")
+        await _attached_wait(orch, target="o/elsewhere#99", sid="remote-3")
+
+        reads = []
+        real_list = orch._pr_doctor_ctx.list_events
+
+        async def _list_events(**kw):
+            reads.append(kw.get("kind"))
+            return await real_list(**kw)
+
+        monkeypatch.setattr(orch._pr_doctor_ctx, "list_events", _list_events)
+
+        selects = []
+        async with db_session() as db:
+            sync_engine = db.get_bind()
+
+        def _count(conn, cursor, statement, params, *a):
+            if "FROM sessions" in statement and "paused_reason" in statement:
+                selects.append(params)
+
+        event.listen(sync_engine, "before_cursor_execute", _count)
+        try:
+            assert await orch._pr_doctor_pending_products() == {}
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", _count)
+        assert reads == ["ownership_wait"]
+        assert len(selects) == 1
+        assert "remote-3" not in repr(selects[0])
+
+    asyncio.run(run())

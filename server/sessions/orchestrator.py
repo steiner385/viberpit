@@ -15135,7 +15135,7 @@ class SessionOrchestrator:
                 # own (KinDash#18420, 2026-10-08) — say so, and how to clear it.
                 # D8: it is only named here, never stopped, released or archived.
                 summary = (f"{target} is waiting on session {rec.id}, which is stalled on usage "
-                           f"({rec.paused_reason}); hand its work to a session that can run, "
+                           f"({rec.paused_reason or rec.status}); hand its work to a session that can run, "
                            "or archive it, to let recovery start")
             else:
                 summary = (f"{target} is still attached to session {rec.id}; "
@@ -16751,7 +16751,7 @@ class SessionOrchestrator:
                     seen.add((repo, info.head_ref))
         return list(seen)
 
-    async def _pr_doctor_ownership_waits(self) -> "_PrDoctorOwnershipWaits":
+    async def _pr_doctor_ownership_waits(self) -> _PrDoctorOwnershipWaits:
         """One pass over the newest ``ownership_wait`` event per target, split
         by what that newest word says:
 
@@ -16850,6 +16850,11 @@ class SessionOrchestrator:
         host — falls back to its shared ``sessions`` row, read in ONE batched
         query because this is the admission hot path. An id known to neither
         is absent from the result and keeps gating: evidence, never inference.
+
+        A failed DB read is contained HERE: the caller's blanket ``except``
+        would otherwise drop every product's reservation, including products
+        with no off-host predecessor. The unread ids stay absent and keep
+        gating.
         """
         state: dict[str, tuple[str, str | None]] = {}
         missing: set[str] = set()
@@ -16861,12 +16866,16 @@ class SessionOrchestrator:
                 missing.add(sid)
         if missing:
             from sqlalchemy import select
-            async with db_session() as db:
-                rows = await db.execute(
-                    select(DbSession.id, DbSession.status, DbSession.paused_reason)
-                    .where(DbSession.id.in_(missing)))
-                for sid, status, paused_reason in rows:
-                    state[sid] = (status, paused_reason)
+            try:
+                async with db_session() as db:
+                    rows = (await db.execute(
+                        select(DbSession.id, DbSession.status, DbSession.paused_reason)
+                        .where(DbSession.id.in_(missing)))).all()
+            except Exception:
+                log.warning("orchestrator.pr_doctor_stall_state_failed", exc_info=True)
+                return state
+            for sid, status, paused_reason in rows:
+                state[sid] = (status, paused_reason)
         return state
 
     async def _pr_doctor_pending_products(self) -> dict[str, tuple[str, ...]]:
@@ -16911,9 +16920,11 @@ class SessionOrchestrator:
             states = await self._pr_doctor_ctx.list_target_states()
             waits = await self._pr_doctor_ownership_waits()
             refusals = waits.refusals
-            stall_state = await self._pr_doctor_attached_stall_state(waits.attached.values())
             gating: dict[str, list[str]] = {}
             unclaimable: dict[str, list[str]] = {}
+            # Gating targets waiting on an attached session: their stall state
+            # is resolved once, after the loop, for only these ids.
+            attached_waits: list[tuple[str, str, str]] = []
             for repo, branch in await self._pr_doctor_scope_pairs():
                 info = self._pr_doctor_info_for(repo, branch)
                 if info is None or engine.target_terminal(info):
@@ -16941,12 +16952,20 @@ class SessionOrchestrator:
                 if state.get("ownership_token") and refusals.get(target) == info.head_sha:
                     own_op_stuck = self._pr_doctor_mechanical_stuck(
                         await self._pr_doctor_claim_operation(state["ownership_token"]))
-                stalled = ((sid := waits.attached.get(target)) is not None
-                           and (row := stall_state.get(sid)) is not None
-                           and is_usage_stalled(*row))
-                bucket = (unclaimable if stalled or self._pr_doctor_claim_unclaimable(
-                    state, refusals.get(target), info, own_op_stuck=own_op_stuck) else gating)
-                bucket.setdefault(repo, []).append(target)
+                if self._pr_doctor_claim_unclaimable(
+                        state, refusals.get(target), info, own_op_stuck=own_op_stuck):
+                    unclaimable.setdefault(repo, []).append(target)
+                elif (sid := waits.attached.get(target)) is not None:
+                    attached_waits.append((repo, target, sid))
+                else:
+                    gating.setdefault(repo, []).append(target)
+            if attached_waits:
+                stall_state = await self._pr_doctor_attached_stall_state(
+                    {sid for _, _, sid in attached_waits})
+                for repo, target, sid in attached_waits:
+                    row = stall_state.get(sid)
+                    stalled = row is not None and is_usage_stalled(*row)
+                    (unclaimable if stalled else gating).setdefault(repo, []).append(target)
             if not gating and not unclaimable:
                 return {}
             async with db_session() as db:
