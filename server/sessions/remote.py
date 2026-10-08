@@ -813,6 +813,21 @@ class RemoteOrchestrator:
         r = await self._client.call("session_queue_cancel", session_id=session_id)
         return r
 
+    async def start_queued_now(self, session_id: str) -> str:
+        try:
+            # Blocks on the forced spawn (worktree create + agent start), so it gets
+            # the spawn budget like create_session, not the 30s default.
+            r = await self._client.call("start_queued_now", timeout=SPAWN_RPC_TIMEOUT,
+                                        session_id=session_id)
+        except DaemonError as exc:
+            # AllAccountsBusy (the account ceiling "Start now" never overrides) must
+            # reach the edge as its real type so the route can 409 with earliestReset.
+            reconstructed = reconstruct_create_session_error(exc)
+            if reconstructed is exc:
+                raise
+            raise reconstructed from exc
+        return str(r)
+
     async def session_queue_positions(self) -> dict[str, int]:
         r = await self._client.call("session_queue_positions")
         return r if isinstance(r, dict) else {}

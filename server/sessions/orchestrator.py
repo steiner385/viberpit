@@ -4322,10 +4322,15 @@ class SessionOrchestrator:
             exclude=self._recovery.quarantined(now=self._clock()),
             engine=engine, model=quota_model(params.get("model"), engine=engine))
 
-    async def _maybe_start_queued(self) -> int:
+    async def _maybe_start_queued(self, force: str | None = None) -> int:
         """Start queued sessions while capacity allows. Serialised by a lock so
         concurrent teardown paths can't double-start one entry. Returns count
         started.
+
+        ``force`` names one queued session to take FIRST, over the global cap, this
+        host's cap and the product/runner capacity holds ("Start now", a person's
+        explicit override, 2026-10-08). The account ceiling is never overridden.
+        After the forced entry the drain continues under the normal gates.
 
         Start failure → row leaves the queue, session is marked ``ended`` (not
         ``needs_attention``).  Rationale: a failed-to-start session holds no
@@ -4359,6 +4364,7 @@ class SessionOrchestrator:
         # never removed, so the next drain (or a cap_changed refresh) re-tries them.
         capacity_full: set[str] = set()
         enabled_hosts = await self._enabled_host_names()
+        forcing_done = force is None
         async with self._queue_drain_lock:
             # THIS host's own cap (``Host.max_sessions``), the number the fleet ranker
             # refuses dispatch on. The global gate below is fleet-wide and, on a worker,
@@ -4369,14 +4375,23 @@ class SessionOrchestrator:
             # overtake a caller that was already past its own checks.
             local_cap = await self._local_host_cap()
             while True:
-                if self._active_session_count() >= await self._max_active_sessions():
-                    break
-                if local_cap is not None and await self.owned_active_session_count() >= local_cap:
-                    log.debug("session_queue.host_full host=%s cap=%d — leaving the "
-                              "queue for a host with headroom", self_host_name(), local_cap)
-                    break
-                entry = await sq.next_entry(exclude=foreign | capacity_full)
+                forcing = not forcing_done
+                if not forcing:
+                    if self._active_session_count() >= await self._max_active_sessions():
+                        break
+                    if local_cap is not None and await self.owned_active_session_count() >= local_cap:
+                        log.debug("session_queue.host_full host=%s cap=%d — leaving the "
+                                  "queue for a host with headroom", self_host_name(), local_cap)
+                        break
+                    entry = await sq.next_entry(exclude=foreign | capacity_full)
+                else:
+                    # "Start now": the named entry, over every slot gate (user override,
+                    # 2026-10-08). Taken once; the loop then drains normally.
+                    forcing_done = True
+                    entry = await sq.entry_for(force) if force is not None else None
                 if entry is None:
+                    if forcing:
+                        continue
                     break
                 sid, params = entry.session_id, dict(entry.params)
                 queue_reason = params.pop("queue_reason", "global_cap")
@@ -4436,23 +4451,26 @@ class SessionOrchestrator:
                         foreign.add(sid)
                         continue
                     in_mem.host = self_host_name()
-                if queue_reason == "product_capacity" and params.get("repo"):
-                    from server.automations.product_admission import repo_capacity_status
-                    _slug, _count, _cap = await repo_capacity_status(
-                        params["repo"], context=self._backlog_ctx)
-                    if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
-                        capacity_full.add(sid)
-                        log.debug("session_queue.product_capacity_full id=%s product=%s "
-                                  "%d/%d — left queued", sid, _slug, _count, _cap)
-                        continue
-                if queue_reason == "runner_capacity" and params.get("repo"):
-                    from server.automations.product_admission import queued_claim_slot_free
-                    if not await queued_claim_slot_free(
-                            params["repo"], session_id=sid, context=self._backlog_ctx,
-                            pr_doctor_pending=self._pr_doctor_pending_products):
-                        capacity_full.add(sid)
-                        log.debug("session_queue.runner_capacity_full id=%s — left queued", sid)
-                        continue
+                # The product/runner holds are slot gates a person may override
+                # ("Start now"); the account_limited probe below is NOT.
+                if not forcing:
+                    if queue_reason == "product_capacity" and params.get("repo"):
+                        from server.automations.product_admission import repo_capacity_status
+                        _slug, _count, _cap = await repo_capacity_status(
+                            params["repo"], context=self._backlog_ctx)
+                        if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
+                            capacity_full.add(sid)
+                            log.debug("session_queue.product_capacity_full id=%s product=%s "
+                                      "%d/%d — left queued", sid, _slug, _count, _cap)
+                            continue
+                    if queue_reason == "runner_capacity" and params.get("repo"):
+                        from server.automations.product_admission import queued_claim_slot_free
+                        if not await queued_claim_slot_free(
+                                params["repo"], session_id=sid, context=self._backlog_ctx,
+                                pr_doctor_pending=self._pr_doctor_pending_products):
+                            capacity_full.add(sid)
+                            log.debug("session_queue.runner_capacity_full id=%s — left queued", sid)
+                            continue
                 if queue_reason == "account_limited":
                     try:
                         await self._account_headroom_or_raise(params)
@@ -4925,6 +4943,40 @@ class SessionOrchestrator:
     async def maybe_start_queued(self) -> int:
         """Public wrapper for _maybe_start_queued. RPC names must not start with '_'."""
         return await self._maybe_start_queued()
+
+    async def start_queued_now(self, session_id: str) -> str:
+        """Start one queued session immediately, over the global cap, this host's cap
+        and product/runner caps (a person's explicit override). An account ceiling is
+        NOT overridden: AllAccountsBusy propagates and the session stays queued.
+
+        Returns "started", "not_queued" (no entry, or the entry was left for its
+        owning host) or "failed" (the spawn failed and the session was ended)."""
+        from server.sessions import session_queue as sq
+        entry = await sq.entry_for(session_id)
+        if entry is None:
+            return "not_queued"
+        entry_params = dict(entry.params or {})
+        if entry_params.get("queue_reason") == "account_limited":
+            await self._account_headroom_or_raise(entry_params)
+        log.info("session_queue.start_now id=%s reason=%s", session_id,
+                 entry_params.get("queue_reason", "global_cap"))
+        await self._maybe_start_queued(force=session_id)
+        rec = self._records.get(session_id)
+        if rec is not None and rec.status not in ("queued", "ended"):
+            return "started"
+        if rec is not None and rec.status == "ended":
+            return "failed"
+        after = await sq.entry_for(session_id)
+        if (rec is not None and after is not None
+                and (after.params or {}).get("queue_reason") == "account_limited"):
+            # The forced spawn hit the account ceiling and the drain re-queued it
+            # (relabelled account_limited). That is a refusal, not "not queued":
+            # re-probe for the real earliest_reset to report.
+            after_params = dict(after.params or {})
+            after_params.pop("queue_reason", None)
+            await self._account_headroom_or_raise(after_params)
+            raise AllAccountsBusy(None, "at_ceiling")
+        return "not_queued"
 
     async def _spawn_session(
         self,

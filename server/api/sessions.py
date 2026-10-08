@@ -967,27 +967,8 @@ async def create_session(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="model blocked by policy")
     except AllAccountsBusy as exc:
-        if exc.kind == "no_usable_accounts":
-            return JSONResponse(
-                status_code=status.HTTP_409_CONFLICT,
-                content={
-                    "error": {
-                        "code": "accounts_need_reauth",
-                        "message": "No usable accounts — one or more need re-authentication",
-                    },
-                },
-            )
-        reset_iso = iso_utc(exc.earliest_reset)
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "error": {
-                    "code": "all_accounts_limited",
-                    "message": "All accounts are at or above the usage ceiling",
-                },
-                "earliestReset": reset_iso,
-            },
-        )
+        return _all_accounts_busy_response(
+            exc, limited_message="All accounts are at or above the usage ceiling")
 
     if _resolved_tool_allowlist is not None:
         # Recorded, not enforced: this column has zero readers today (see the
@@ -1519,6 +1500,91 @@ async def queue_cancel_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
         )
+
+
+def _all_accounts_busy_response(exc: AllAccountsBusy, *, limited_message: str) -> JSONResponse:
+    """The 409 for an ``AllAccountsBusy``: ``accounts_need_reauth`` when no account is
+    usable at all, else ``all_accounts_limited`` with the ``earliestReset``."""
+    if exc.kind == "no_usable_accounts":
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "accounts_need_reauth",
+                    "message": "No usable accounts — one or more need re-authentication",
+                },
+            },
+        )
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "error": {"code": "all_accounts_limited", "message": limited_message},
+            "earliestReset": iso_utc(exc.earliest_reset),
+        },
+    )
+
+
+async def _queue_reason_of(session_id: str) -> str | None:
+    """The ``queue_reason`` the dispatcher recorded on a session's queue entry, for
+    the audit trail. Best-effort: None when there is no entry or it cannot be read."""
+    from server.sessions import session_queue as sq
+    try:
+        entry = await sq.entry_for(session_id)
+    except Exception:
+        log.warning("queue_start_now: queue entry unreadable id=%s", session_id, exc_info=True)
+        return None
+    if entry is None:
+        return None
+    return str((entry.params or {}).get("queue_reason", "global_cap"))
+
+
+@router.post("/{session_id}/start-now")
+async def queue_start_now(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Start a queued session now, over slot caps and product holds (never over an
+    account usage ceiling — that 409s with earliestReset and the session stays queued)."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None or record.status != "queued":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
+        )
+    # Read before the start: a started session's queue entry is gone.
+    queue_reason = await _queue_reason_of(session_id)
+    try:
+        outcome = await orch.start_queued_now(session_id)
+    except AllAccountsBusy as exc:
+        return _all_accounts_busy_response(
+            exc, limited_message="Every account is at its usage ceiling; this session "
+                                 "starts automatically when quota frees.")
+    if outcome == "not_queued":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
+        )
+    # Committed by get_db on a normal return, as for session.create.
+    await record_audit(
+        db=db,
+        type="session.queue_start_now",
+        identity=identity,
+        detail={"session_id": session_id, "queue_reason": queue_reason, "outcome": outcome},
+    )
+    if outcome == "failed":
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "start_failed",
+                    "message": "The session could not start and was ended; see the daemon log.",
+                },
+            },
+        )
+    return {"ok": True, "status": outcome}
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

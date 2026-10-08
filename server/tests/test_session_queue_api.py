@@ -391,3 +391,103 @@ def test_create_when_every_host_is_full_answers_queued_with_a_position():
         assert "error" not in body
     finally:
         os.unlink(tf.name)
+
+
+# ---------------------------------------------------------------------------
+# Integration: POST /api/sessions/{id}/start-now — "Start now" (2026-10-08)
+# ---------------------------------------------------------------------------
+
+
+class _StartNowOrch(_FakeOrch):
+    """start_queued_now answers ``outcome``, or raises ``raises`` when set."""
+
+    def __init__(self, *a, outcome: str = "started", raises: Exception | None = None, **k):
+        super().__init__(*a, **k)
+        self.outcome, self.raises = outcome, raises
+        self.start_now_calls: list[str] = []
+
+    async def start_queued_now(self, session_id: str) -> str:
+        self.start_now_calls.append(session_id)
+        if self.raises is not None:
+            raise self.raises
+        return self.outcome
+
+
+def _audit_rows(db_path: str, type_: str) -> list[tuple]:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT identity, detail FROM audit_events WHERE type = ?", (type_,)).fetchall()
+
+
+def test_start_now_on_unqueued_session_returns_404():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _StartNowOrch(records=[_make_record("l1", status="idle")])
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post("/api/sessions/l1/start-now", headers=_H)
+            unknown = client.post("/api/sessions/nope/start-now", headers=_H)
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"]["code"] == "not_queued"
+        assert unknown.status_code == 404, unknown.text
+        assert fake.start_now_calls == []
+    finally:
+        os.unlink(tf.name)
+
+
+def test_start_now_started_returns_ok_and_audits():
+    import json
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _StartNowOrch(records=[_make_record("q1", status="queued")],
+                             positions={"q1": 1})
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post("/api/sessions/q1/start-now", headers=_H)
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True, "status": "started"}
+        assert fake.start_now_calls == ["q1"]
+        rows = _audit_rows(tf.name, "session.queue_start_now")
+        assert len(rows) == 1
+        detail = json.loads(rows[0][1])
+        assert detail["session_id"] == "q1" and "queue_reason" in detail
+    finally:
+        os.unlink(tf.name)
+
+
+def test_start_now_account_limited_returns_409_with_earliest_reset():
+    from datetime import datetime
+    from viberpit.selector import AllAccountsBusy
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _StartNowOrch(records=[_make_record("q1", status="queued")],
+                             positions={"q1": 1},
+                             raises=AllAccountsBusy(datetime(2030, 1, 1, 10), "at_ceiling"))
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post("/api/sessions/q1/start-now", headers=_H)
+        assert resp.status_code == 409, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "all_accounts_limited"
+        assert body["earliestReset"].startswith("2030-01-01T10:00:00")
+    finally:
+        os.unlink(tf.name)
+
+
+def test_start_now_failed_spawn_returns_409_start_failed():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _StartNowOrch(records=[_make_record("q1", status="queued")],
+                             positions={"q1": 1}, outcome="failed")
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post("/api/sessions/q1/start-now", headers=_H)
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"]["code"] == "start_failed"
+    finally:
+        os.unlink(tf.name)
