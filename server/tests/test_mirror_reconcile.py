@@ -268,3 +268,37 @@ async def test_mirror_reconcile_loop_ticks_on_its_own_cadence(monkeypatch):
     await asyncio.gather(task, return_exceptions=True)
 
     assert len(calls) >= 3, f"loop stalled after {len(calls)} pass(es)"
+
+
+async def _run_loop_with_failure(o, exc):
+    calls: list[int] = []
+
+    async def _boom():
+        calls.append(1)
+        raise exc
+
+    o._reconcile_mirror_once = _boom
+    task = asyncio.create_task(o._mirror_reconcile_loop(interval=0.01))
+    await asyncio.sleep(0.03)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert calls
+
+
+@pytest.mark.asyncio
+async def test_mirror_reconcile_transient_db_failure_is_not_a_warning(monkeypatch, caplog):
+    """A connect-level DB blip is retried quietly — a WARNING files an auto-error (#2773)."""
+    o = _make_orch(monkeypatch, present_ids=set())
+    with caplog.at_level("INFO", logger="server.sessions.orchestrator"):
+        await _run_loop_with_failure(o, ConnectionRefusedError("pg down"))
+    recs = [r for r in caplog.records if "mirror.reconcile_failed" in r.getMessage()]
+    assert recs and all(r.levelname == "INFO" and not r.exc_info for r in recs)
+
+
+@pytest.mark.asyncio
+async def test_mirror_reconcile_real_failure_stays_a_warning(monkeypatch, caplog):
+    o = _make_orch(monkeypatch, present_ids=set())
+    with caplog.at_level("INFO", logger="server.sessions.orchestrator"):
+        await _run_loop_with_failure(o, RuntimeError("bad sql"))
+    recs = [r for r in caplog.records if "mirror.reconcile_failed" in r.getMessage()]
+    assert recs and all(r.levelname == "WARNING" and r.exc_info for r in recs)

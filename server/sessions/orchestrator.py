@@ -14182,8 +14182,17 @@ class SessionOrchestrator:
         while True:
             try:
                 await self._reconcile_mirror_once()
-            except Exception:  # pragma: no cover — reconcile must never stall the loop
-                log.warning("mirror.reconcile_failed", exc_info=True)
+            except Exception as exc:  # reconcile must never stall the loop
+                if caused_by_cancellation(exc) and current_task_cancelling():
+                    # Our own cancellation, wrapped by asyncpg mid-handshake (#1164).
+                    raise asyncio.CancelledError() from exc
+                if is_transient_db_failure(exc):
+                    # A DB connect blip; the next tick retries, so this is not an
+                    # auto-error (#2773).
+                    log.info("mirror.reconcile_failed transiently (%s); retrying",
+                             type(exc).__name__)
+                else:
+                    log.warning("mirror.reconcile_failed", exc_info=True)
             await asyncio.sleep(interval)
 
     async def _pr_doctor_config(self) -> dict:
