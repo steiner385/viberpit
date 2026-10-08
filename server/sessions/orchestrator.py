@@ -4489,6 +4489,26 @@ class SessionOrchestrator:
                     foreign.add(sid)
                     continue
                 except Exception as exc:
+                    if isinstance(exc, AllAccountsBusy) and exc.kind == "at_ceiling":
+                        # Every account hit its ceiling between the slot freeing and
+                        # this spawn reserving one (a probe race, or an entry queued
+                        # for another reason that was never probed). That is a wait,
+                        # not a failure: ending it here is the silent disappearance
+                        # account_limited exists to prevent. The spawn raised before
+                        # its pre-seeded record / driver / row write and released its
+                        # worktree + display (_release_prespawn_resources); keep the
+                        # row 'queued', the entry in place, and re-label it so every
+                        # later drain probes it before spawning. (no_usable_accounts
+                        # never clears by itself — it falls through to 'ended'.)
+                        if getattr(self._records.get(sid), "status", None) != "queued":
+                            in_mem.status = "queued"
+                            self._records[sid] = in_mem
+                        await sq.set_queue_reason(sid, "account_limited")
+                        capacity_full.add(sid)
+                        log.info("session_queue.account_limited_at_spawn id=%s was=%s "
+                                 "earliest_reset=%s — left queued", sid, queue_reason,
+                                 exc.earliest_reset)
+                        continue
                     # A real start failure (as opposed to the process dying): the
                     # session is about to be marked 'ended', so its entry must go —
                     # leaving it would wedge the head of the queue forever. The

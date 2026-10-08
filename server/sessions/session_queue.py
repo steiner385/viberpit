@@ -42,6 +42,20 @@ async def entry_for(session_id: str) -> SessionQueue | None:
         )).scalar_one_or_none()
 
 
+async def set_queue_reason(session_id: str, reason: str) -> bool:
+    """Re-label *session_id*'s entry with *reason* (the drain-popped ``queue_reason``
+    params key — the only non-spawn key the blob may carry). False when not queued."""
+    async with db_session() as db:
+        entry = (await db.execute(
+            select(SessionQueue).where(SessionQueue.session_id == session_id)
+        )).scalar_one_or_none()
+        if entry is None:
+            return False
+        # Reassign (not mutate) so the JSON column is flagged dirty.
+        entry.params = {**(entry.params or {}), "queue_reason": reason}
+        return True
+
+
 async def remove(session_id: str) -> bool:
     async with db_session() as db:
         r = await db.execute(

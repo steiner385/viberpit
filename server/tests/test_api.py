@@ -414,6 +414,38 @@ def test_post_sessions_queues_when_all_busy():
     assert response.json()["status"] == "queued"
 
 
+def test_post_sessions_409_serializes_earliest_reset():
+    """A lagging daemon's at-ceiling refusal carries its reset time to the client."""
+    from viberpit.selector import AllAccountsBusy
+
+    reset_dt = datetime(2030, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(),
+                poll_interval=9999.0,
+            )
+            orch.create_session = AsyncMock(  # type: ignore[method-assign]
+                side_effect=AllAccountsBusy(reset_dt, kind="at_ceiling"))
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+
+            with client:
+                response = client.post(
+                    "/api/sessions",
+                    json={"name": "Blocked"},
+                    headers=IDENTITY_HEADERS,
+                )
+
+    assert response.status_code == 409, response.text
+    data = response.json()
+    assert data["error"]["code"] == "all_accounts_limited"
+    from server.time_iso import iso_utc
+    assert data["earliestReset"] == iso_utc(reset_dt)
+
+
 def test_post_sessions_409_null_earliest_reset():
     """A daemon that still refuses at the ceiling (a lagging fleet host, pre-queueing
     code) surfaces as 409 all_accounts_limited with a null earliestReset when the

@@ -202,3 +202,86 @@ def test_ownership_token_create_at_ceiling_queues_and_keeps_its_claim(tmp_path):
         finally:
             await _stop_orch(orch)
     asyncio.run(run())
+
+
+async def _enqueue(orch, cwd: str, *, queue_reason: str):
+    import uuid
+    sid = str(uuid.uuid4())
+    return await orch._enqueue_session(
+        sid, name="q", account=None, initial_prompt="hi", cols=80, rows=24,
+        cwd=cwd, branch=None, repo=None, identity="system",
+        permission_mode="interactive", attachment_ids=None, name_is_auto=True,
+        origin=None, origin_ref=None, model=None, queue_reason=queue_reason)
+
+
+def test_spawn_at_ceiling_after_probe_passes_stays_queued(tmp_path):
+    """Probe race: the read-only probe saw headroom, but the spawn's own reserving
+    select_account hits the ceiling. The session stays queued (not 'ended'), its
+    entry intact and still account_limited, with no leaked worktree."""
+    from unittest.mock import AsyncMock
+
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path/'p.db'}",
+                                tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            repo = _git_repo(tmp_path / "proj")
+            rec = await _enqueue(orch, repo, queue_reason="account_limited")
+            orch._account_headroom_or_raise = AsyncMock(return_value=None)  # type: ignore[method-assign]
+            with patch("server.sessions.orchestrator.select_account", side_effect=_busy):
+                assert await orch._maybe_start_queued() == 0
+            assert orch.get_session(rec.id).status == "queued"
+            assert rec.id not in orch._drivers and rec.id not in orch._worktrees
+            listed = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
+                                    check=True, capture_output=True, text=True).stdout
+            assert listed.count("worktree ") == 1, listed
+            entry = await sq.entry_for(rec.id)
+            assert entry is not None and entry.params.get("queue_reason") == "account_limited"
+            from server.db import db_session
+            from server.db.models import Session as DbSession
+            async with db_session() as db:
+                assert (await db.get(DbSession, rec.id)).status == "queued"
+            # Quota frees: it starts.
+            assert await orch._maybe_start_queued() == 1
+            assert orch.get_session(rec.id).status != "queued"
+        finally:
+            await _stop_orch(orch)
+    asyncio.run(run())
+
+
+def test_global_cap_entry_hitting_ceiling_is_relabelled_account_limited(tmp_path):
+    """A never-probed entry (global_cap) whose slot frees while every account is at
+    its ceiling waits as account_limited instead of being ended."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path/'g.db'}",
+                                tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            rec = await _enqueue(orch, str(tmp_path / "reporoot"), queue_reason="global_cap")
+            assert "queue_reason" not in (await sq.entry_for(rec.id)).params
+            with patch("server.sessions.orchestrator.select_account", side_effect=_busy):
+                assert await orch._maybe_start_queued() == 0
+            assert orch.get_session(rec.id).status == "queued"
+            entry = await sq.entry_for(rec.id)
+            assert entry is not None and entry.params.get("queue_reason") == "account_limited"
+            assert entry.params.get("name") == "q"  # the rest of the blob is untouched
+        finally:
+            await _stop_orch(orch)
+    asyncio.run(run())
+
+
+def test_spawn_needing_reauth_is_still_ended(tmp_path):
+    """no_usable_accounts never clears on its own: today's 'ended' behaviour stays."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path/'n.db'}",
+                                tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            rec = await _enqueue(orch, str(tmp_path / "reporoot"), queue_reason="global_cap")
+
+            def reauth(*a, **k):
+                raise AllAccountsBusy(None, "no_usable_accounts")
+            with patch("server.sessions.orchestrator.select_account", side_effect=reauth):
+                await orch._maybe_start_queued()
+            assert orch.get_session(rec.id).status == "ended"
+            assert await sq.entry_for(rec.id) is None
+        finally:
+            await _stop_orch(orch)
+    asyncio.run(run())
