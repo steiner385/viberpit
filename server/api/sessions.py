@@ -46,9 +46,10 @@ from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
-from server.sessions.engine import AgentEngine, AgentEngineUnavailable
+from server.sessions.engine import AgentEngine, AgentEngineUnavailable, parse_agent_engine
+from server.sessions.model_policy import quota_model
 from server.sessions.permissions import resolve_permission_mode
-from server.sessions.selection import AllAccountsBusy
+from server.sessions.selection import AllAccountsBusy, select_account
 from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.sessions.background_tasks import EMPTY_BACKGROUND_WORK
 from server.obs.logdedupe import LogThrottle, log_event_throttled
@@ -573,7 +574,9 @@ async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
 QUEUE_WAIT_GRACE_S = 60.0
 
 
-async def _queue_stall_reasons(records: list) -> dict[str, dict[str, Any]]:
+async def _queue_stall_reasons(
+    records: list, *, grace_s: float = QUEUE_WAIT_GRACE_S,
+) -> dict[str, dict[str, Any]]:
     """``{session id: why it is still queued}`` for every queued record that has
     waited — never None for one of those (incident 2026-10-06: ten sessions sat
     queued for 14 h with free hosts and accounts and ``queueStallReason: null``,
@@ -593,13 +596,15 @@ async def _queue_stall_reasons(records: list) -> dict[str, dict[str, Any]]:
     if shared is not None:
         return {r.id: shared for r in queued}
     try:
-        return await _per_session_stall_reasons(queued)
+        return await _per_session_stall_reasons(queued, grace_s=grace_s)
     except Exception:
         log.warning("list_sessions: per-session queue stall reasons failed", exc_info=True)
         return {}
 
 
-async def _per_session_stall_reasons(queued: list) -> dict[str, dict[str, Any]]:
+async def _per_session_stall_reasons(
+    queued: list, *, grace_s: float = QUEUE_WAIT_GRACE_S,
+) -> dict[str, dict[str, Any]]:
     from datetime import timezone
     from sqlalchemy import select
     from server.automations.context import AutomationContext
@@ -615,12 +620,14 @@ async def _per_session_stall_reasons(queued: list) -> dict[str, dict[str, Any]]:
             select(SessionQueue).where(SessionQueue.session_id.in_([r.id for r in queued])))).all()}
     context = AutomationContext("backlog-runner")
     product_status: dict[str, tuple[str | None, int | None, int | None]] = {}
+    # One read-only account probe per (engine, quota model): N queued sessions, one probe.
+    account_probe: dict[tuple[Any, str | None], AllAccountsBusy | None] = {}
     out: dict[str, dict[str, Any]] = {}
     for record in queued:
         entry = entries.get(record.id)
         since = _aware(entry.enqueued_at if entry is not None
                        else getattr(record, "created_at", None))
-        if since is None or (now - since).total_seconds() < QUEUE_WAIT_GRACE_S:
+        if since is None or (now - since).total_seconds() < grace_s:
             continue
         waited = int((now - since).total_seconds())
         if entry is None:
@@ -650,6 +657,29 @@ async def _per_session_stall_reasons(queued: list) -> dict[str, dict[str, Any]]:
                     "message": "Backlog Runner capacity (the runner ceiling, the product's "
                                "in-flight or pipeline cap) is full, so this dispatch waits "
                                "for a slot."}
+                continue
+        elif kind == "account_limited" and not params.get("account"):
+            engine = parse_agent_engine(params.get("engine"), legacy_default=True)
+            model = quota_model(params.get("model"), engine=engine)
+            if (engine, model) not in account_probe:
+                try:
+                    # Read-only probe, as SessionOrchestrator._account_headroom_or_raise;
+                    # no `exclude`: the edge holds no quarantine state.
+                    await asyncio.to_thread(
+                        select_account, reserve=False, engine=engine, model=model)
+                    account_probe[(engine, model)] = None
+                except AllAccountsBusy as busy:
+                    account_probe[(engine, model)] = busy
+            limit = account_probe[(engine, model)]
+            if limit is not None:
+                reset = iso_utc(limit.earliest_reset)
+                out[record.id] = {
+                    "code": "account_limited", "waitedSeconds": waited, "earliestReset": reset,
+                    "message": ("Every account that can run this model is at its usage "
+                                "ceiling, so this session waits for quota"
+                                + (f" (earliest reset {reset})" if reset else "")
+                                + ". It starts automatically; Start now cannot override "
+                                  "an account limit.")}
                 continue
         out[record.id] = {
             "code": "waiting_for_drain", "waitedSeconds": waited,
@@ -1006,10 +1036,19 @@ async def create_session(
             except Exception:
                 log.warning("create_session: session_queue_positions fetch failed", exc_info=True)
 
+    # Best-effort and grace-free: the caller learns WHY it queued in the same response.
+    queue_stall_reason: dict[str, Any] | None = None
+    if record.status == "queued":
+        try:
+            queue_stall_reason = (await _queue_stall_reasons([record], grace_s=0)).get(record.id)
+        except Exception:
+            log.warning("create_session: queue stall reason failed", exc_info=True)
+
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content=_record_to_dict(record, repo=await _resolve_repo(record),
-                                queue_position=queue_position),
+                                queue_position=queue_position,
+                                queue_stall_reason=queue_stall_reason),
     )
 
 

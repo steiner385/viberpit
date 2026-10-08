@@ -332,3 +332,80 @@ def test_a_queued_session_with_no_queue_entry_says_it_is_orphaned():
     rec.created_at = datetime.utcnow() - timedelta(hours=2)
     reasons = _list_with_queue([rec], entries={})
     assert reasons["ghost"]["code"] == "no_queue_entry"
+
+
+# ---------------------------------------------------------------------------
+# account_limited: every account that can run the model is at its ceiling.
+# ---------------------------------------------------------------------------
+
+
+def test_an_account_limited_session_names_the_ceiling_and_reset():
+    from datetime import datetime
+
+    from server.sessions.selection import AllAccountsBusy
+    from server.time_iso import iso_utc
+
+    params = {"queue_reason": "account_limited"}
+    busy = AllAccountsBusy(datetime(2030, 1, 1, 10), "at_ceiling")
+    with patch("server.api.sessions.select_account", side_effect=busy):
+        reasons = _list_with_queue([_make_record("q1", status="queued")],
+                                   entries={"q1": (120, params)})
+    reason = reasons["q1"]
+    assert reason["code"] == "account_limited"
+    assert reason["earliestReset"] == iso_utc(datetime(2030, 1, 1, 10))
+    assert "usage ceiling" in reason["message"]
+    assert reason["waitedSeconds"] >= 120
+
+
+def test_an_account_limited_session_with_headroom_is_waiting_for_drain():
+    params = {"queue_reason": "account_limited"}
+    with patch("server.api.sessions.select_account", return_value=object()):
+        reasons = _list_with_queue([_make_record("q1", status="queued")],
+                                   entries={"q1": (120, params)})
+    assert reasons["q1"]["code"] == "waiting_for_drain"
+
+
+def test_the_account_probe_runs_once_for_many_account_limited_sessions():
+    from datetime import datetime
+
+    from server.sessions.selection import AllAccountsBusy
+
+    params = {"queue_reason": "account_limited"}
+    busy = AllAccountsBusy(datetime(2030, 1, 1, 10), "at_ceiling")
+    with patch("server.api.sessions.select_account", side_effect=busy) as probe:
+        reasons = _list_with_queue(
+            [_make_record(s, status="queued") for s in ("q1", "q2", "q3")],
+            entries={s: (120, params) for s in ("q1", "q2", "q3")})
+    assert {r["code"] for r in reasons.values()} == {"account_limited"}
+    assert probe.call_count == 1
+
+
+def test_grace_zero_reports_a_session_queued_a_second_ago():
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from server.api.sessions import _queue_stall_reasons
+    from server.db import db_session
+    from server.db.models import Session as DbSession, SessionQueue
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        client = _build_client(_FakeOrch(), db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            async def _run():
+                async with db_session() as db:
+                    db.add(DbSession(id="q1", name="q1", account_name="a", cwd="/tmp",
+                                     status="queued"))
+                    db.add(SessionQueue(
+                        session_id="q1", priority=1, params={},
+                        enqueued_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
+                rec = _make_record("q1", status="queued")
+                return (await _queue_stall_reasons([rec], grace_s=0),
+                        await _queue_stall_reasons([rec]))
+            fast, default = (client.portal.call(_run) if getattr(client, "portal", None)
+                             else asyncio.run(_run()))
+        assert fast["q1"]["code"] == "waiting_for_drain"
+        assert "q1" not in default
+    finally:
+        os.unlink(tf.name)
