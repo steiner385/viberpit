@@ -167,11 +167,11 @@ def test_migration_chain_is_linear_with_exactly_one_head():
         # `revision = "x"` and alembic's generated `revision: str = "x"` /
         # `down_revision: Union[str, None] = "x" | None`. An unanchored `revision = "`
         # search also matches inside `down_revision = "`, and a bare-form-only pattern
-        # silently skipped ten of the sixteen migrations, so the "one head" claim was
+        # silently skipped ten of the sixteen migrations (and later the single-quoted 0077/0078), so the "one head" claim was
         # only ever checked against a subset.
-        rev_match = re.search(r'^revision(?::[^=]+?)?\s*=\s*"([^"]+)"', content, re.MULTILINE)
+        rev_match = re.search(r'^revision(?::[^=]+?)?\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
         down_rev_match = re.search(
-            r'^down_revision(?::[^=]+?)?\s*=\s*(?:"([^"]+)"|None)', content, re.MULTILINE)
+            r'^down_revision(?::[^=]+?)?\s*=\s*(?:["\']([^"\']+)["\']|None)', content, re.MULTILINE)
 
         if rev_match:
             rev = rev_match.group(1)

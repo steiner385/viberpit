@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from viberpit.selector import AllAccountsBusy
-from server.sessions.display_policy import DISPLAY_VIRTUAL
+from server.sessions.display_policy import DISPLAY_VIRTUAL, DisplayDecision
 from server.sessions.orchestrator import SessionOrchestrator
 
 
@@ -97,7 +97,7 @@ async def test_failure_after_display_lease_releases_display_and_worktree(
     session_id = "0badc0de-0000-0000-0000-000000000000"
 
     with (
-        patch.object(orch, "_resolve_display_mode_for", return_value=DISPLAY_VIRTUAL),
+        patch.object(orch, "_resolve_display_mode_for", return_value=DisplayDecision(DISPLAY_VIRTUAL)),
         patch("server.sessions.orchestrator.select_account") as pick,
         patch.object(orch, "_driver_config_dir", return_value=str(tmp_path)),
         patch("server.sessions.orchestrator.local_host_stamp",

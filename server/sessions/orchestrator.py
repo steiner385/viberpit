@@ -137,7 +137,13 @@ from server.sessions.recovery import (
 from server.sessions.selection import (  # noqa: F401
     AllAccountsBusy, Picked, has_alternative_account, select_account,
 )
-from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
+from server.sessions.display_policy import (
+    DISPLAY_NATIVE,
+    DISPLAY_VIRTUAL,
+    DisplayDecision,
+    native_fallback,
+    resolve_display_mode,
+)
 from server.sessions.background_tasks import (
     EMPTY_BACKGROUND_WORK, OpenBgTask, background_work_snapshot, build_rearm_prompt,
     scan_open_background_tasks)
@@ -3805,7 +3811,7 @@ class SessionOrchestrator:
         async with db_session() as db:
             return (await read_global_cap(db)).effective
 
-    def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> str:
+    def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> DisplayDecision:
         """The one call to ``resolve_display_mode`` for this daemon — used by the
         spawn, enqueue and hold paths so the decision is made identically wherever a
         session is born, not just where it happens to start a driver. A queued or
@@ -3813,10 +3819,29 @@ class SessionOrchestrator:
         client_node/display that produced it never survives into the shared queue
         blob (see ``_enqueue_session``'s comment on why) or a restart, so waiting
         until spawn time would silently lose it and fall back to virtual.
+
+        Also returns why a would-be-native session went virtual (the desktop is
+        locked/logged out/refusing, or native display is not configured here).
         """
-        return resolve_display_mode(
-            requested=display, client_node=client_node, runner=self_host_name(),
-            native_available=self._native is not None and self._native.available())
+        available = self._native is not None and self._native.available()
+        runner = self_host_name()
+        mode = resolve_display_mode(requested=display, client_node=client_node,
+                                    runner=runner, native_available=available)
+        reason = None
+        if native_fallback(requested=display, client_node=client_node,
+                           runner=runner, native_available=available):
+            reason = (self._native.unavailable_reason() if self._native is not None
+                      else "native_disabled")
+        return DisplayDecision(mode, reason)
+
+    def _display_decision(self, prior, display: str | None,
+                          client_node: str | None) -> DisplayDecision:
+        """A prior record's persisted decision (queued/held/resumed row) wins over a
+        fresh re-resolution; otherwise decide now."""
+        prior_mode = getattr(prior, "display_mode", None)
+        if prior_mode:
+            return DisplayDecision(prior_mode, getattr(prior, "display_fallback_reason", None))
+        return self._resolve_display_mode_for(display, client_node)
 
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
@@ -3849,8 +3874,8 @@ class SessionOrchestrator:
         # resolve_model_approval's comment on why), so its persisted display_mode
         # must win over a fresh re-resolution with client_node=None.
         _prior = self._records.get(session_id)
-        display_mode = (getattr(_prior, "display_mode", None)
-                        or self._resolve_display_mode_for(display, client_node))
+        display_mode, display_fallback_reason = self._display_decision(
+            _prior, display, client_node)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -3863,6 +3888,7 @@ class SessionOrchestrator:
                 initial_prompt=initial_prompt, host=host,
                 kind=kind, owner_identity=owner_identity,
                 display_mode=display_mode,
+                display_fallback_reason=display_fallback_reason,
                 autopilot_paused=autopilot_paused or None,
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason))
         params: dict = {
@@ -3919,7 +3945,8 @@ class SessionOrchestrator:
             initial_prompt=initial_prompt,
             model=model, reasoning_effort=reasoning_effort, host=host,
             kind=kind, owner_identity=owner_identity,
-            display_mode=display_mode, permission_mode=permission_mode,
+            display_mode=display_mode, display_fallback_reason=display_fallback_reason,
+            permission_mode=permission_mode,
             autopilot_paused=autopilot_paused,
             auto_archive_opt_out_reason=auto_archive_opt_out_reason)
         self._records[session_id] = rec
@@ -3959,7 +3986,8 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
-        display_mode = self._resolve_display_mode_for(display, client_node)
+        display_mode, display_fallback_reason = self._resolve_display_mode_for(
+            display, client_node)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -3975,6 +4003,7 @@ class SessionOrchestrator:
                 initial_prompt=initial_prompt, host=host,
                 kind=kind, owner_identity=owner_identity,
                 display_mode=display_mode,
+                display_fallback_reason=display_fallback_reason,
                 autopilot_paused=autopilot_paused or None,
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason))
             await record_audit(db, type="model_approval.requested", identity=identity,
@@ -4003,7 +4032,8 @@ class SessionOrchestrator:
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
             pending_model_reason=model_reason,
             kind=kind, owner_identity=owner_identity,
-            display_mode=display_mode, permission_mode=permission_mode,
+            display_mode=display_mode, display_fallback_reason=display_fallback_reason,
+            permission_mode=permission_mode,
             autopilot_paused=autopilot_paused,
             auto_archive_opt_out_reason=auto_archive_opt_out_reason)
         self._records[session_id] = rec
@@ -4306,7 +4336,9 @@ class SessionOrchestrator:
         # path strips them), so a re-resolution would silently fall back to virtual.
         # The failed _spawn_session leaves its pre-record in _records, which still
         # carries the held mode — same _prior precedence as _enqueue_session.
-        prior_mode = getattr(self._records.get(session_id), "display_mode", None)
+        _prior_rec = self._records.get(session_id)
+        prior_mode = getattr(_prior_rec, "display_mode", None)
+        prior_fallback = getattr(_prior_rec, "display_fallback_reason", None)
         try:
             async with db_session() as db:
                 # The failed spawn may or may not have INSERTed a row before raising;
@@ -4336,6 +4368,7 @@ class SessionOrchestrator:
                     kind=kwargs.get("kind"),
                     owner_identity=kwargs.get("owner_identity"),
                     display_mode=prior_mode,
+                    display_fallback_reason=prior_fallback,
                     autopilot_paused=kwargs.get("autopilot_paused") or None,
                     auto_archive_opt_out_reason=kwargs.get("auto_archive_opt_out_reason")))
             restored = dict(kwargs)
@@ -4357,6 +4390,7 @@ class SessionOrchestrator:
                 kind=kwargs.get("kind"),
                 owner_identity=kwargs.get("owner_identity"),
                 display_mode=prior_mode,
+                display_fallback_reason=prior_fallback,
                 permission_mode=kwargs.get("permission_mode") or "interactive",
                 autopilot_paused=bool(kwargs.get("autopilot_paused")),
                 auto_archive_opt_out_reason=kwargs.get("auto_archive_opt_out_reason"))
@@ -5240,8 +5274,8 @@ class SessionOrchestrator:
             # Decide where this session's GUI renders — ONCE, here — then either lease a
             # virtual Xvfb display or leave the host's real one to _display_env. A
             # previously-queued/resumed row keeps its persisted decision.
-            display_mode = (getattr(_prior, "display_mode", None)
-                            or self._resolve_display_mode_for(display, client_node))
+            display_mode, display_fallback_reason = self._display_decision(
+                _prior, display, client_node)
             if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
                 try:
                     await self._x11.start_display(session_id)
@@ -5316,6 +5350,7 @@ class SessionOrchestrator:
                 kind=kind, owner_identity=owner_identity,
                 last_activity_at=time.monotonic(),
                 display_mode=display_mode,
+                display_fallback_reason=display_fallback_reason,
                 # The in-memory record is what every later driver REBUILD reads its mode
                 # from (ensure_driver after a completion release / idle reap / detach,
                 # _reassign's driverless path). Seeding it without the mode left the
@@ -5419,7 +5454,9 @@ class SessionOrchestrator:
                                 engine=selected_engine.value, cwd=cwd,
                                 branch=branch_name, model=model,
                                 reasoning_effort=reasoning_effort,
-                                display_mode=sa_func.coalesce(DbSession.display_mode, display_mode))
+                                display_mode=sa_func.coalesce(DbSession.display_mode, display_mode),
+                                display_fallback_reason=sa_func.coalesce(
+                                    DbSession.display_fallback_reason, display_fallback_reason))
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -5447,6 +5484,7 @@ class SessionOrchestrator:
                         kind=kind,
                         owner_identity=owner_identity,
                         display_mode=display_mode,
+                        display_fallback_reason=display_fallback_reason,
                         autopilot_paused=autopilot_paused or None,
                         auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     )
@@ -16142,6 +16180,7 @@ class SessionOrchestrator:
             background_work=getattr(row, "background_work", None),
             host=getattr(row, "host", None),
             display_mode=getattr(row, "display_mode", None),
+            display_fallback_reason=getattr(row, "display_fallback_reason", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None),
             paused_reason=getattr(row, "paused_reason", None),

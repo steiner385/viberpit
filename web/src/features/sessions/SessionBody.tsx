@@ -98,6 +98,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           engine={sessionRecord?.engine}
           host={sessionRecord?.host}
           displayMode={sessionRecord?.displayMode}
+          displayFallbackReason={sessionRecord?.displayFallbackReason}
           reasoningEffort={sessionRecord?.reasoningEffort}
           subAgentsSupported={can(caps, 'subagents')}
           model={rt.model}

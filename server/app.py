@@ -914,15 +914,19 @@ def create_app(
         except DaemonUnavailable:
             active = 0
             daemon_state = "unavailable"
+        native_display = None
         if app.state.remote_mode:
             try:
                 m = await app.state.sessions.x11_metrics()
                 vnc_attached = bool(m.get("vnc_clients_attached", 0) > 0)
+                native_display = m.get("nativeDisplay")
             except (DaemonUnavailable, DaemonError):
                 vnc_attached = False
         else:
             x11 = getattr(app.state, "x11", None)
             vnc_attached = bool(x11 and x11.metrics().get("vnc_clients_attached", 0) > 0)
+            _nd = getattr(app.state, "native_display", None)
+            native_display = _nd.metrics() if _nd is not None else None
         try:
             async with _db.db_session() as db:
                 await db.execute(_sa_select(_SessionModel).limit(1))
@@ -930,6 +934,7 @@ def create_app(
                 "status": "ok", "sha": running_git_sha(),
                 "busy": active > 0, "activeSessions": active,
                 "vncAttached": vnc_attached,
+                "nativeDisplay": native_display,
             }
             if daemon_state is not None:
                 payload["daemon"] = daemon_state
@@ -1035,7 +1040,9 @@ def create_app(
             except DaemonUnavailable:
                 return {"enabled": False}
         x11 = getattr(app.state, "x11", None)
-        return x11.metrics() if x11 else {"enabled": False}
+        nd = getattr(app.state, "native_display", None)
+        return {**(x11.metrics() if x11 else {"enabled": False}),
+                "nativeDisplay": nd.metrics() if nd is not None else None}
 
     @app.get("/api/daemon/health")
     async def daemon_health(_identity: str = Depends(current_identity)) -> dict:

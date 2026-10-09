@@ -117,3 +117,19 @@ describe('SessionCard desktop badge', () => {
     expect(screen.queryByTitle(/windows open on the host's desktop/i)).toBeNull()
   })
 })
+
+describe('SessionCard display fallback badge', () => {
+  it('explains why a would-be-native session is on a virtual display', () => {
+    renderCard({ ...base, displayMode: 'virtual', displayFallbackReason: 'no_graphical_session' })
+    const badge = screen.getByTestId('card-display-fallback')
+    expect(badge).toHaveTextContent('virtual')
+    expect(badge).toHaveAttribute('title', expect.stringContaining('no one is logged in to the desktop'))
+  })
+  it('is absent without a reason and for native sessions', () => {
+    const { unmount } = renderCard({ ...base, displayMode: 'virtual', displayFallbackReason: null })
+    expect(screen.queryByTestId('card-display-fallback')).toBeNull()
+    unmount()
+    renderCard({ ...base, displayMode: 'native', displayFallbackReason: 'cookie_missing' })
+    expect(screen.queryByTestId('card-display-fallback')).toBeNull()
+  })
+})

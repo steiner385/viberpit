@@ -46,3 +46,19 @@ def test_node_comparison_is_case_insensitive():
 def test_unrecognised_request_is_treated_as_auto(bad):
     assert _r(requested=bad) == DISPLAY_NATIVE
     assert _r(requested=bad, client_node="phone") == DISPLAY_VIRTUAL
+
+
+@pytest.mark.parametrize("requested,client,available,expected", [
+    (None, "dobby", False, True),                 # local auto, desktop down
+    (DISPLAY_NATIVE, "phone", False, True),       # explicit native, desktop down
+    (DISPLAY_VIRTUAL, "dobby", False, False),     # explicit virtual is never a fallback
+    (None, "phone", False, False),                # remote client was always virtual
+    (None, None, False, False),
+    (None, "dobby", True, False),                 # desktop up: native, no fallback
+    (DISPLAY_NATIVE, "phone", True, False),
+    ("bogus", "Dobby", False, True),              # unrecognised => auto; node case-insensitive
+])
+def test_native_fallback_truth_table(requested, client, available, expected):
+    from server.sessions.display_policy import native_fallback
+    assert native_fallback(requested=requested, client_node=client, runner="dobby",
+                           native_available=available) is expected

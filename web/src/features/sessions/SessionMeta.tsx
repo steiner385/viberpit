@@ -22,6 +22,7 @@ import { SubAgentList } from './SubAgentList'
 import { BackgroundWorkList } from './BackgroundWorkList'
 import { backgroundWorkSummary } from './backgroundWorkSummary'
 import { STATUS_TONE, statusTone } from './subAgentStatus'
+import { displayFallbackTitle } from './displayFallback'
 import type { AgentEngine, UsageWindow } from '@/api/types'
 
 /** Tooltip copy for a quota window: spell out the abbreviation + reset time. */
@@ -41,6 +42,7 @@ interface Props {
   host?: string | null
   /** Where the session's GUI renders; 'native' shows the desktop chip. */
   displayMode?: 'native' | 'virtual' | null
+  displayFallbackReason?: string | null
   /** Engine-native reasoning choice (Codex); null = the model's own default. */
   reasoningEffort?: string | null
   /** Server-advertised `subagents` capability for this session's engine. False
@@ -98,7 +100,7 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [panel, setPanel] = useState<'agents' | 'background' | null>(null)
   const now = useNow(1000, backgroundWork.wakeupAt != null)
   // `now` is 0 until the first tick; a countdown against 0 would flash a huge number.
@@ -262,6 +264,15 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
           <span className="inline-flex items-center gap-1" aria-label="Display" title="Windows open on the host's desktop">
             <span className="text-ink-muted">display</span>
             <span className="font-medium text-ink">desktop</span>
+          </span>
+        )}
+
+        {displayMode !== 'native' && displayFallbackTitle(displayFallbackReason) && (
+          <span className="inline-flex items-center gap-1" aria-label="Display"
+                title={displayFallbackTitle(displayFallbackReason) ?? undefined}
+                data-testid="meta-display-fallback">
+            <span className="text-ink-muted">display</span>
+            <span className="font-medium text-ink">virtual</span>
           </span>
         )}
 

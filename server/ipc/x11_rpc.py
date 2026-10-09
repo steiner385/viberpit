@@ -57,7 +57,11 @@ def register_x11(app, x11, orchestrator=None) -> None:
             x11.detach(session_id)
 
     async def x11_metrics(params: dict) -> dict:
-        return x11.metrics() if x11 is not None else {"enabled": False}
+        # The native-desktop health rides this existing RPC (no new surface): the
+        # daemon owns the NativeDisplay, the edge only relays it to /healthz.
+        native = getattr(orchestrator, "_native", None)
+        return {**(x11.metrics() if x11 is not None else {"enabled": False}),
+                "nativeDisplay": native.metrics() if native is not None else None}
 
     async def x11_open_browser(params: dict) -> dict:
         session_id = params["session_id"]

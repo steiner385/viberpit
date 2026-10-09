@@ -281,6 +281,15 @@ describe('SessionMeta', () => {
     expect(screen.queryByLabelText('Runner host')).toBeNull()
   })
 
+  it('explains a virtual display fallback, and only then', () => {
+    const { rerender } = render(
+      <SessionMeta {...baseProps} displayMode="virtual" displayFallbackReason="cookie_missing" />)
+    expect(screen.getByTestId('meta-display-fallback')).toHaveAttribute(
+      'title', expect.stringContaining('Desktop unavailable'))
+    rerender(<SessionMeta {...baseProps} displayMode="virtual" displayFallbackReason={null} />)
+    expect(screen.queryByTestId('meta-display-fallback')).toBeNull()
+  })
+
   it('shows the engine-native reasoning effort', () => {
     render(<SessionMeta {...baseProps} engine="codex" reasoningEffort="high" />)
     expect(screen.getByLabelText('Reasoning effort')).toHaveTextContent('high')

@@ -243,6 +243,10 @@ class Session(Base):
     # before this column existed → treated as virtual. Nullable so init_db backfills
     # without a migration. Design: docs/superpowers/specs/2026-09-06-native-display-routing-design.md
     display_mode: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Why a session the locality rule would have made "native" was routed to "virtual"
+    # (NativeDisplay.unavailable_reason(), or "native_disabled" when this host has no
+    # native display). NULL = no fallback happened. Nullable so init_db backfills it.
+    display_fallback_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null
