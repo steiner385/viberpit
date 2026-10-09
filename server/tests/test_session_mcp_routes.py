@@ -87,6 +87,9 @@ class _Drv:
     async def mcp_status(self):
         return self.last_mcp_status
 
+    async def aclose(self):
+        pass
+
     async def reconnect_mcp_server(self, name):
         self.reconnected.append(name)
 
@@ -115,8 +118,8 @@ async def test_orchestrator_status_and_reconnect_errors():
     assert (await o.mcp_status_for("a"))[0]["name"] == "gh"
     with pytest.raises(LookupError):
         await o.mcp_reconnect("zz", "gh")
-    d.reconnect_mcp_server = AsyncMock(side_effect=RuntimeError("session not live"))
-    with pytest.raises(ValueError, match="session not live"):
+    d.reconnect_mcp_server = AsyncMock(side_effect=RuntimeError("boom"))
+    with pytest.raises(ValueError, match="boom"):
         await o.mcp_reconnect("a", "gh")
 
 
@@ -179,3 +182,77 @@ async def test_daemon_handler_to_remote_round_trip_preserves_error_type(exc, exp
 
     with pytest.raises(expect):
         await RemoteOrchestrator(_Loop()).mcp_reconnect("s", "gh")
+
+
+# --- fix round 1 -----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_plain_exception_from_sdk_becomes_value_error():
+    d = _Drv([_st("gh", "connected")])
+    d.reconnect_mcp_server = AsyncMock(side_effect=Exception("Server not found: zz"))
+    with pytest.raises(ValueError, match="Server not found: zz"):
+        await _orch(a=d).mcp_reconnect("a", "zz")
+
+
+@pytest.mark.asyncio
+async def test_driver_session_not_live_is_lookup_error():
+    d = _Drv([])
+    d.reconnect_mcp_server = AsyncMock(side_effect=RuntimeError("session not live"))
+    with pytest.raises(LookupError):
+        await _orch(a=d).mcp_reconnect("a", "gh")
+
+
+def test_plain_exception_is_409_through_real_facade():
+    with patch.dict(os.environ, _ENV):
+        from server.app import create_app
+        from fastapi.testclient import TestClient
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
+                                   usage_fn=lambda name: None)
+        app = create_app(orchestrator=orch)
+    d = _Drv([_st("gh", "connected")])
+    d.reconnect_mcp_server = AsyncMock(side_effect=Exception("Server not found: zz"))
+    orch._drivers["s1"] = d
+    with patch.dict(os.environ, _ENV), TestClient(app, raise_server_exceptions=False) as c:
+        r = c.post("/api/sessions/s1/mcp/zz/reconnect", headers=_H)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "MCP_RECONNECT_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_plain_exception_round_trips_to_value_error_without_warning(caplog):
+    import logging
+    from fastapi import FastAPI
+    from server.ipc.orchestrator_rpc import register_orchestrator_rpc
+
+    d = _Drv([_st("gh", "connected")])
+    d.reconnect_mcp_server = AsyncMock(side_effect=Exception("Server not found: zz"))
+    app = FastAPI()
+    app.state.rpc = {}
+    app.state.evict = lambda sid: None
+    register_orchestrator_rpc(app, _orch(a=d))
+
+    class _Loop:
+        async def call(self, method, **kw):
+            return await app.state.rpc[method](kw)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ValueError, match="Server not found"):
+            await RemoteOrchestrator(_Loop()).mcp_reconnect("a", "zz")
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_everywhere_bounds_a_hung_driver():
+    import asyncio
+    from server.sessions import orchestrator as orch_mod
+
+    hung = _Drv([_st("gh", "needs-auth")])
+
+    async def _hang(name):
+        await asyncio.sleep(60)
+
+    hung.reconnect_mcp_server = _hang
+    ok = _Drv([_st("gh", "failed")])
+    o = _orch(a=hung, b=ok)
+    with patch.object(orch_mod, "MCP_RECONNECT_TIMEOUT_S", 0.05):
+        n = await asyncio.wait_for(o.reconnect_mcp_everywhere("gh", ["needs-auth", "failed"]), 5)
+    assert n == 1 and ok.reconnected == ["gh"]

@@ -167,6 +167,11 @@ from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_promp
 
 log = logging.getLogger(__name__)
 
+# reconnect_mcp_everywhere bounds: it runs from the post-login background path, so one hung
+# session must not delay or lose the rest.
+MCP_RECONNECT_CONCURRENCY = 4
+MCP_RECONNECT_TIMEOUT_S = 15.0
+
 # List polling shares one bounded daemon-side provider refresh across clients.
 AUTOMATION_ACTIONABLE_TIMEOUT_S = 2.0
 AUTOMATION_ACTIONABLE_CACHE_S = 30.0
@@ -17942,27 +17947,38 @@ class SessionOrchestrator:
             raise LookupError(session_id)
         try:
             await d.reconnect_mcp_server(server)
-        except (NotImplementedError, RuntimeError) as exc:
-            raise ValueError(str(exc)) from exc
+        except RuntimeError as exc:
+            if str(exc) == "session not live":      # the driver's dead-client signal
+                raise LookupError(session_id) from exc
+            raise ValueError(str(exc)[:300]) from exc
+        except Exception as exc:                    # SDK control errors / timeouts are plain Exception
+            raise ValueError(str(exc)[:300]) from exc
         return [s.to_wire() for s in await d.mcp_status()]
 
     async def reconnect_mcp_everywhere(self, server: str, statuses: list[str]) -> int:
         """Reconnect *server* in every live driver on this host whose last snapshot shows
         it in *statuses* (post-login, spec 2026-10-09 §4). Failures are DEBUG-logged and
         surface through the next McpStatus poll. Returns the number reconnected."""
-        n = 0
         want = mcp_store.short_name(server)
+        targets: list[tuple[str, object, str]] = []
         for sid, d in list(self._drivers.items()):
             target = next((s.name for s in d.last_mcp_status
                            if mcp_store.short_name(s.name) == want and s.status in statuses), None)
-            if target is None:
-                continue
+            if target is not None:
+                targets.append((sid, d, target))
+        sem = asyncio.Semaphore(MCP_RECONNECT_CONCURRENCY)
+
+        async def _one(sid: str, d, target: str) -> bool:
             try:
-                await d.reconnect_mcp_server(target)
-                n += 1
+                async with sem:
+                    async with asyncio.timeout(MCP_RECONNECT_TIMEOUT_S):
+                        await d.reconnect_mcp_server(target)
+                return True
             except Exception:
                 log.debug("mcp reconnect failed session=%s server=%s", sid, server, exc_info=True)
-        return n
+                return False
+
+        return sum(await asyncio.gather(*(_one(*t) for t in targets)))
 
     async def probe_mcp(self, account: str | None = None) -> dict:
         """Run the no-prompt MCP probe on THIS host (spec 2026-10-09 §3)."""
