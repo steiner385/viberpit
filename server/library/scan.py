@@ -126,6 +126,17 @@ def list_plugins() -> dict[str, Any]:
     return {"plugins": plugins, "marketplaces": marketplaces}
 
 
+def _plugin_manifest_name(install: Path, registry_name: str) -> str:
+    """Name the CLI keys a plugin's MCP servers by: the manifest name, not the registry id.
+
+    Spike addendum (Task 3): registry notion@claude-plugins-official has manifest name "Notion"
+    and the CLI reports plugin:Notion:notion. Falls back to the registry name without a manifest.
+    """
+    manifest = read_json_safe(install / ".claude-plugin" / "plugin.json")
+    name = manifest.get("name") if isinstance(manifest, dict) else None
+    return name if isinstance(name, str) and name else registry_name
+
+
 def _plugin_mcp_servers(install: Path) -> dict[str, dict[str, Any]]:
     """Normalize a plugin .mcp.json: {'mcpServers': {...}} or flat {name: cfg}."""
     raw = read_json_safe(install / ".mcp.json") or {}
@@ -278,9 +289,10 @@ def list_mcp_servers(status_rows: list[dict] | None = None) -> dict[str, Any]:
                 "status": by_short.get(name, []),
             })
     for pid, install in enabled_plugin_paths():
+        plugin_name = _plugin_manifest_name(install, pid.partition("@")[0])
         for name, cfg in sorted(_plugin_mcp_servers(install).items()):
             servers.append({
-                "name": name, "source": pid, "readonly": True,
+                "name": name, "source": pid, "pluginName": plugin_name, "readonly": True,
                 "transport": infer_transport(cfg), "config": cfg,
                 "status": by_short.get(name, []),
             })

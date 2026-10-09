@@ -88,7 +88,7 @@ async def test_reassign_builds_driver_when_no_old_driver(monkeypatch, tmp_path):
 
     # Stub out DB write and compose
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
 
     class _MockDB:
         async def execute(self, *a): pass
@@ -147,7 +147,7 @@ async def test_reassign_with_live_driver_closes_old_and_starts_new(monkeypatch, 
     o._publish_event = lambda e: None
     o._install_driver = lambda sid, drv: o._drivers.__setitem__(sid, drv)
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
 
     class _MockDB2:
         async def execute(self, *a): pass
@@ -224,7 +224,7 @@ async def test_ensure_driver_rotates_on_proxy_start_failure(monkeypatch, tmp_pat
     monkeypatch.setattr(orch_mod, "_provider_of",
                         lambda acct: orch_mod._copilot_mod.PROVIDER)
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
 
     spawned = []
 
@@ -335,7 +335,7 @@ async def test_reassign_carries_the_old_drivers_queued_prompts(monkeypatch, tmp_
     o._publish_event = lambda e: None
     o._install_driver = lambda sid, drv: o._drivers.__setitem__(sid, drv)
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
 
     class _MockDB:
         async def execute(self, *a): pass

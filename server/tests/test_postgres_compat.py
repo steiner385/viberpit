@@ -208,6 +208,8 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "sessions": {"name": "dtcheck", "account_name": "dtcheck", "cwd": "/tmp/dtcheck"},
     "mcp_server_status": {"account": "dtcheck", "host": "dtcheck-host", "server": "dtcheck",
                           "status": "connected", "source": "probe"},
+    "mcp_server_scope": {"server": "dtcheck", "default_enabled": True},
+    "mcp_repo_rule": {"repo": "dtcheck/repo", "server": "dtcheck", "enabled": True},
     "app_sessions": {"identity": "dtcheck@example.invalid"},
     "audit_events": {"type": "dtcheck.event", "identity": "dtcheck@example.invalid"},
     "attachments": {"media_type": "image/png", "filename": "x.png", "byte_size": 1,

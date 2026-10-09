@@ -80,6 +80,20 @@ async def mcp_reconnect(orch, db, *, session_id: str, server: str, identity: str
     return {"servers": servers}
 
 
+async def mcp_toggle(orch, db, *, session_id: str, server: str, enabled: bool, identity: str,
+                     via: str | None = None) -> dict:
+    """Enable/disable one MCP server inside a live session and persist the override."""
+    try:
+        servers = await orch.mcp_toggle(session_id, server, enabled)
+    except LookupError:
+        raise ActionError("SESSION_NOT_LIVE", "This session is not running.", 404) from None
+    except ValueError as exc:
+        raise ActionError("MCP_TOGGLE_FAILED", str(exc)[:300], 409) from exc
+    await _audit(db, "session.mcp_toggle", identity,
+                 {"sessionId": session_id, "server": server, "enabled": enabled}, via)
+    return {"servers": servers}
+
+
 async def resolve_permission(
     orch, db, *, session_id: str, perm_id: str, decision: str, identity: str,
     via: str | None = None,

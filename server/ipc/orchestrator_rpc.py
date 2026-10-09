@@ -378,6 +378,17 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     register_rpc(app, "mcp_reconnect", mcp_reconnect)
 
+    async def mcp_toggle(params: dict):
+        # Same error-shaped-dict contract as mcp_reconnect (RemoteOrchestrator.mcp_toggle re-raises).
+        try:
+            return await _maybe_await(orch.mcp_toggle(**params))
+        except LookupError:
+            return {"error": "not_live"}
+        except ValueError as exc:
+            return {"error": "toggle_failed", "message": str(exc)[:300]}
+
+    register_rpc(app, "mcp_toggle", mcp_toggle)
+
     async def transcript_path(params: dict) -> str | None:
         # Sync stat + glob over the account's projects tree, which is the sshfs mount on a
         # session host. Run inline (the _SIMPLE path) it parked the daemon loop on a stalled

@@ -21,6 +21,7 @@ class FakeOrch:
         self.stop_subagent = AsyncMock(return_value="abb42ada82e1382fe")
         self.mcp_status_for = AsyncMock(return_value=[])
         self.mcp_reconnect = AsyncMock(return_value=[])
+        self.mcp_toggle = AsyncMock(return_value=[])
         self.reconnect_mcp_everywhere = AsyncMock(return_value=0)
         self.resolve_permission = AsyncMock(return_value=True)
         self.note_user_interaction = AsyncMock()

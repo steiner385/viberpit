@@ -110,6 +110,7 @@ export const QK = {
   librarySkills: ['library', 'skills'] as const,
   libraryCommands: ['library', 'commands'] as const,
   libraryMcp: ['library', 'mcp'] as const,
+  mcpScope: ['library', 'mcp', 'scope'] as const,
   libraryContent: (kind: string, id: string, plugin?: string) =>
     ['library', 'content', kind, id, plugin ?? null] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,

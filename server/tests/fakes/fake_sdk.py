@@ -186,6 +186,8 @@ class FakeSDKClient:
         self._context_usage = context_usage or {}
         self._mcp_status = mcp_status
         self.reconnected: list[str] = []
+        self.toggled: list[tuple[str, bool]] = []
+        self.toggle_error: Exception | None = None
         self._inbox: "asyncio.Queue | None" = None   # built lazily on the running loop
         self._turn_open = False
 
@@ -257,6 +259,10 @@ class FakeSDKClient:
         return {"mcpServers": list(v)}
     async def reconnect_mcp_server(self, server_name):
         self.reconnected.append(server_name)
+    async def toggle_mcp_server(self, server_name, enabled):
+        if self.toggle_error is not None:
+            raise self.toggle_error
+        self.toggled.append((server_name, enabled))
 
 
 class PerQueryScript:

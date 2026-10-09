@@ -137,11 +137,14 @@ def compose_claude_json(name: str) -> dict:
     return base
 
 
-def trust_project(name: str, cwd: str) -> None:
+def trust_project(name: str, cwd: str, *, disabled_mcp: list[str] | None = None) -> None:
     """Idempotently mark a project directory as trusted in the per-account .claude.json.
 
     Sets hasTrustDialogAccepted and hasCompletedProjectOnboarding so interactive
     claude sessions don't prompt the user for trust on startup.
+
+    ``disabled_mcp`` (when not None) overwrites ``projects[cwd].disabledMcpServers``,
+    the CLI's per-project MCP off-list; None leaves any existing value alone.
     """
     claude_json_path = paths.account_cfg_dir(name) / CLAUDE_JSON_NAME
     data: dict = read_json(claude_json_path) if claude_json_path.exists() else {}
@@ -154,6 +157,8 @@ def trust_project(name: str, cwd: str) -> None:
         "hasCompletedProjectOnboarding": True,
         "allowedTools": existing_entry.get("allowedTools", []),
     }
+    if disabled_mcp is not None:
+        projects[abs_cwd]["disabledMcpServers"] = list(disabled_mcp)
     write_json_secure(claude_json_path, data)
 
 

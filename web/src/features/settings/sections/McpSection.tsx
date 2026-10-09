@@ -5,6 +5,8 @@ import type { LibraryMcpServer } from '@/api/types'
 import { McpServerDialog } from './McpServerDialog'
 import { McpAuthFlow } from './McpAuthFlow'
 import { McpStatusPill } from './McpStatusPill'
+import { McpScopeControl } from './McpScopeControl'
+import { serverKey } from './mcpServerKey'
 import { relativeAge, worstStatus } from './mcpStatus'
 
 // Accounts whose latest status row for this server is needs-auth (de-duplicated).
@@ -173,6 +175,7 @@ export function McpSection() {
                 {testingTarget === s.name ? 'Testing…' : 'Test'}
               </button>
             </div>
+            <McpScopeControl serverKey={serverKey(s)} />
             <div className="px-3">
               <TestOutcomeNote outcome={outcome} target={s.name} />
             </div>

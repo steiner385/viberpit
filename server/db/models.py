@@ -125,6 +125,8 @@ class Session(Base):
     # refreshed from the transcript on status changes. Nullable so init_db backfills
     # it on the dev SQLite DB without a migration.
     sub_agents: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Live per-session MCP toggles {server_key: enabled}; layered over repo rules + defaults.
+    mcp_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # Open background work snapshot ({items, wakeup, wakeupAt}) behind a "Waiting…"
     # session — background shells / Monitors / Codex terminals and the armed wakeup —
     # refreshed at turn end (#2635). Nullable so init_db backfills it; none_as_null so
@@ -1436,6 +1438,30 @@ class McpServerHealth(Base):
     tool_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scope: Mapped[str | None] = mapped_column(String, nullable=True)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class McpServerScope(Base):
+    """Global default for one MCP server key (spec 2026-10-09): enabled or not for new sessions."""
+
+    __tablename__ = "mcp_server_scope"
+
+    server: Mapped[str] = mapped_column(String, primary_key=True)
+    default_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class McpRepoRule(Base):
+    """Per-repo override of an MCP server's default. ``repo`` is stored lower-cased (GitHub slugs
+    are case-insensitive)."""
+
+    __tablename__ = "mcp_repo_rule"
+    __table_args__ = (UniqueConstraint("repo", "server", name="uq_mcp_repo_rule_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str] = mapped_column(String, nullable=False)
+    server: Mapped[str] = mapped_column(String, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ import { ApiRequestError } from '@/api/client'
 
 const sessionMcp = vi.fn()
 const reconnect = vi.fn()
+const toggle = vi.fn()
 
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: (...a: unknown[]) => sessionMcp(...a),
@@ -19,12 +20,22 @@ vi.mock('@/api/hooks', () => ({
   useMcpAuthStatus: () => ({ data: undefined }),
 }))
 
+vi.mock('@/api/mcpScopeHooks', () => ({
+  useToggleSessionMcp: () => toggle(),
+}))
+
 function Wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>
 }
 
-function st(name: string, status: string, error: string | null = null, toolCount: number | null = 3): McpServerState {
-  return { name, status, error, toolCount, scope: null }
+function st(
+  name: string,
+  status: string,
+  error: string | null = null,
+  toolCount: number | null = 3,
+  scope: string | null = 'user',
+): McpServerState {
+  return { name, status, error, toolCount, scope }
 }
 
 function mockSessionMcp(data: { servers: McpServerState[] } | undefined) {
@@ -37,6 +48,12 @@ function mockReconnect(over: Record<string, unknown> = {}) {
   return rc
 }
 
+function mockToggle(over: Record<string, unknown> = {}) {
+  const t = { mutate: vi.fn(), isPending: false, isError: false, error: null, variables: undefined, ...over }
+  toggle.mockReturnValue(t)
+  return t
+}
+
 const ui = (live: McpServerState[] | null) => (
   <McpStatusReadout sessionId="s1" account="work" live={live} />
 )
@@ -44,8 +61,10 @@ const ui = (live: McpServerState[] | null) => (
 beforeEach(() => {
   sessionMcp.mockReset()
   reconnect.mockReset()
+  toggle.mockReset()
   mockSessionMcp(undefined)
   mockReconnect()
+  mockToggle()
 })
 
 describe('McpStatusReadout', () => {
@@ -150,5 +169,62 @@ describe('McpStatusReadout', () => {
     expect(pop.className).toMatch(/\bright-2\b/)
     expect(pop.className).toContain('max-w-[calc(100vw-1rem)]')
     expect(pop.parentElement!.className).not.toMatch(/\brelative\b/)
+  })
+
+  it('renders a switch only for user and dynamic (plugin) scope rows', () => {
+    render(
+      ui([
+        st('u', 'connected', null, 3, 'user'),
+        st('d', 'connected', null, 3, 'dynamic'),
+        st('p', 'connected', null, 3, 'project'),
+        st('c', 'connected', null, 3, 'claudeai'),
+        st('l', 'connected', null, 3, 'local'),
+      ]),
+      { wrapper: Wrapper },
+    )
+    fireEvent.click(screen.getByRole('button', { name: /MCP 5\/5/ }))
+    expect(screen.getByRole('switch', { name: 'u enabled' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'd enabled' })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'p enabled' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'c enabled' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'l enabled' })).toBeNull()
+  })
+
+  it('switch state follows status', async () => {
+    render(ui([st('a', 'connected'), st('b', 'disabled')]), { wrapper: Wrapper })
+    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
+    expect(screen.getByRole('switch', { name: 'a enabled' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('switch', { name: 'b enabled' })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('toggling sends the full server name', async () => {
+    const t = mockToggle()
+    render(ui([st('plugin:p:b', 'connected')]), { wrapper: Wrapper })
+    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
+    await userEvent.click(screen.getByRole('switch', { name: 'b enabled' }))
+    expect(t.mutate).toHaveBeenCalledWith({ server: 'plugin:p:b', enabled: false })
+  })
+
+  it('count excludes disabled servers', () => {
+    render(ui([st('a', 'connected'), st('b', 'disabled')]), { wrapper: Wrapper })
+    expect(screen.getByRole('button', { name: /MCP 1\/1/ })).toBeInTheDocument()
+  })
+
+  it('shows the toggle failure message inline', async () => {
+    mockToggle({
+      isError: true,
+      error: new ApiRequestError(409, { detail: { code: 'MCP_TOGGLE_FAILED', message: 'nope' } }),
+    })
+    render(ui([st('a', 'connected')]), { wrapper: Wrapper })
+    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
+    expect(screen.getByRole('alert')).toHaveTextContent('nope')
+  })
+
+  it('hides switches after a 404 mcp_scope_disabled', async () => {
+    mockToggle({ isError: true, error: new ApiRequestError(404, { error: 'mcp_scope_disabled' }) })
+    render(ui([st('a', 'connected')]), { wrapper: Wrapper })
+    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })

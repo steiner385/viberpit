@@ -301,7 +301,7 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
-                 assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
+                 desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None):
         self.automation_execution_id = automation_execution_id
@@ -350,6 +350,10 @@ class ClaudeAgentDriver:
         self._on_context_usage = on_context_usage
         self._on_mcp_status = on_mcp_status
         self._mcp_last: list = []                     # last sanitized snapshot
+        # Servers the orchestrator wrote to the CLI's disabledMcpServers; re-applied once per
+        # CLI start because a racing compose() can erase that list before the CLI reads it.
+        self._desired_disabled_mcp = desired_disabled_mcp
+        self._mcp_enforced = False
         self._mcp_unsupported = False                 # latched after the first control-request failure
         self._mcp_poll_task: asyncio.Task | None = None
         # Fired (synchronously, with the session id) when a Task sub-agent starts or
@@ -2103,6 +2107,19 @@ class ClaudeAgentDriver:
         await self._client.reconnect_mcp_server(name)
         await self._poll_mcp_status()
 
+    async def toggle_mcp_server(self, name: str, enabled: bool) -> None:
+        """User-initiated live toggle (the CLI mirrors it into its own project state)."""
+        if self._client is None or self._stream_ended:
+            raise RuntimeError("session not live")
+        await self._client.toggle_mcp_server(name, enabled)
+        # Keep the enforcement set consistent with the user's choice, or a later CLI restart
+        # (/clear reconnect) would re-apply the stale repo rule over it.
+        desired = [n for n in (self._desired_disabled_mcp or []) if n != name]
+        if not enabled:
+            desired.append(name)
+        self._desired_disabled_mcp = desired
+        await self._poll_mcp_status()
+
     async def _poll_mcp_status(self) -> list | None:
         """One get_mcp_status round-trip -> emit + persist. Best-effort, DEBUG on failure.
 
@@ -2135,10 +2152,36 @@ class ClaudeAgentDriver:
         """Poll once at start, then while anything is pending, capped at MCP_SETTLE_MAX_S."""
         deadline = asyncio.get_running_loop().time() + MCP_SETTLE_MAX_S
         states = await self._poll_mcp_status()
+        states = await self._enforce_disabled_mcp(states) or states
         while (states and any(s.status == "pending" for s in states)
                and asyncio.get_running_loop().time() < deadline and not self._closing):
             await asyncio.sleep(MCP_SETTLE_INTERVAL_S)
             states = await self._poll_mcp_status()
+
+    async def _enforce_disabled_mcp(self, states: list | None) -> list | None:
+        """Re-apply ``desired_disabled_mcp`` through the control channel, once per CLI start.
+
+        Runs on the first successful status poll. Returns the re-polled snapshot when it
+        toggled anything, else None. Best-effort: failures are DEBUG and never raise."""
+        if (not states or self._mcp_enforced or not self._desired_disabled_mcp or self._closing
+                or self._client is None or self._stream_ended
+                or not get_settings().mcp_scope_enabled):
+            return None
+        self._mcp_enforced = True
+        reported = {s.name: s.status for s in states}
+        toggled = False
+        for name in self._desired_disabled_mcp:
+            if reported.get(name) in (None, "disabled"):
+                continue
+            if name not in (self._desired_disabled_mcp or []):
+                continue  # the user enabled it mid-pass
+            try:
+                await self._client.toggle_mcp_server(name, False)
+                toggled = True
+            except Exception:
+                log.debug("mcp enforce toggle failed session=%s server=%s",
+                          self.session_id, name, exc_info=True)
+        return await self._poll_mcp_status() if toggled else None
 
     async def _emit_context_usage(self) -> None:
         """Forward exact context-window occupancy (same source as `/context`) so the
@@ -2230,6 +2273,7 @@ class ClaudeAgentDriver:
         self._start_listener()
         # Fresh CLI process: forget the old latch/snapshot and settle again.
         self._mcp_unsupported = False
+        self._mcp_enforced = False
         self._mcp_last = []
         self._start_mcp_settle()
 
@@ -2410,6 +2454,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_recoverable_failure=config.on_recoverable_failure,
             clock=config.clock,
             suggester=config.suggester,
+            desired_disabled_mcp=config.desired_disabled_mcp,
             assistant_api=config.assistant_api,
             before_execution=config.before_execution,
             automation_execution_id=config.automation_execution_id,

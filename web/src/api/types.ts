@@ -863,10 +863,17 @@ export interface McpStatusRow {
 export interface LibraryMcpServer {
   name: string
   source: string
+  /** Plugin manifest name (plugin entries only); server scope keys derive from this, never from `source`. */
+  pluginName?: string
   readonly: boolean
   transport: 'stdio' | 'http' | 'sse'
   config: McpServerConfig
   status: McpStatusRow[]
+}
+
+export interface McpScope {
+  servers: Record<string, { defaultEnabled: boolean }>
+  rules: { repo: string; server: string; enabled: boolean }[]
 }
 
 export interface LibraryContent {

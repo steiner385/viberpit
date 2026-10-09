@@ -16,7 +16,14 @@ vi.mock('@/api/client', async (importOriginal) => ({
 }))
 
 import { McpSection } from './McpSection'
-import { api } from '@/api/client'
+import { api, ApiRequestError } from '@/api/client'
+
+// Scope feature switched off: McpScopeControl renders nothing, so these specs stay about the rows.
+function otherGet(path: string) {
+  if (path === '/library/mcp/scope') return Promise.reject(new ApiRequestError(404, { error: 'mcp_scope_disabled' }))
+  if (path === '/github/repos') return Promise.resolve([])
+  return Promise.resolve({})
+}
 
 function renderSection() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -74,7 +81,7 @@ beforeEach(() => {
   vi.mocked(api.post).mockReset()
   vi.mocked(api.get).mockImplementation((path: string) => {
     if (path === '/library/mcp') return Promise.resolve(mcpResponse)
-    return Promise.resolve({})
+    return otherGet(path)
   })
 })
 
@@ -87,7 +94,7 @@ function row(over: Record<string, unknown> = {}) {
 
 function mockServers(servers: unknown[]) {
   vi.mocked(api.get).mockImplementation((path: string) =>
-    Promise.resolve(path === '/library/mcp' ? { servers } : {}))
+    path === '/library/mcp' ? Promise.resolve({ servers }) : otherGet(path))
 }
 
 const srv = (name: string, transport: string, status: unknown[]) => ({
@@ -162,13 +169,50 @@ describe('McpSection', () => {
   })
 
   it.each(['http', 'sse'])('offers OAuth for %s servers needing auth', async (transport) => {
-    vi.mocked(api.get).mockResolvedValue({ servers: [{
+    mockServers([{
       ...mcpResponse.servers[0], transport,
       config: { type: transport, url: 'https://example.com/mcp' },
-    }] })
+    }])
     renderSection()
     await userEvent.click(await screen.findByRole('button', { name: /fix auth/i }))
     expect(api.post).toHaveBeenCalledWith('/library/mcp/my-server/auth', { account: 'acct1' })
+  })
+
+  it('keys each row\'s scope control by serverKey (manifest name for plugins), outside the card button', async () => {
+    vi.mocked(api.get).mockImplementation((path: string) => {
+      if (path === '/library/mcp') {
+        return Promise.resolve({ servers: [{
+          name: 'notion', source: 'notion@claude-plugins-official', pluginName: 'Notion', readonly: true,
+          transport: 'http', config: { type: 'http', url: 'https://x' }, status: [],
+        }] })
+      }
+      if (path === '/library/mcp/scope') {
+        return Promise.resolve({
+          servers: { 'plugin:Notion:notion': { defaultEnabled: false } },
+          rules: [{ server: 'plugin:Notion:notion', repo: 'acme/web', enabled: true }],
+        })
+      }
+      return otherGet(path)
+    })
+    renderSection()
+    const off = await screen.findByRole('radio', { name: 'Off by default' })
+    expect(off).toHaveProperty('checked', true)
+    expect(screen.getByText('acme/web — on')).toBeTruthy()
+    expect(off.closest('button')).toBeNull()
+  })
+
+  it('a failing scope GET leaves the row usable and shows a retryable alert', async () => {
+    vi.mocked(api.get).mockImplementation((path: string) => {
+      if (path === '/library/mcp/scope') return Promise.reject(new ApiRequestError(500, { detail: 'boom' }))
+      return path === '/library/mcp'
+        ? Promise.resolve({ servers: [srv('gh', 'stdio', [])] })
+        : otherGet(path)
+    })
+    renderSection()
+    expect((await screen.findByRole('alert')).textContent).toContain("Couldn't load repo scope.")
+    expect(screen.getByRole('button', { name: 'gh' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Test gh' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
   // (a) user + plugin rows render with transport and needs-auth badges
