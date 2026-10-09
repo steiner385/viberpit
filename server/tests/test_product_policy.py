@@ -220,6 +220,24 @@ def test_session_assistance_defaults_on_and_only_takes_on_or_off():
 
 
 def test_trusted_authors_reader_normalises():
-    assert trusted_authors({"trusted_authors": [" Steiner385 ", "", "viberpit"]}) == \
-        frozenset({"steiner385", "viberpit"})
+    # A bare app login is dropped on read (it could only match a squatting user).
+    assert trusted_authors({"trusted_authors": [" Steiner385 ", "", "viberpit",
+                                                "github-actions", "App/Viberpit"]}) == \
+        frozenset({"steiner385", "app/viberpit"})
     assert trusted_authors(None) == frozenset()
+
+
+@pytest.mark.parametrize("entry", ["github-actions", "viberpit", " Viberpit ", "GITHUB-ACTIONS"])
+def test_merge_policy_patch_rejects_a_bare_app_login_in_trusted_authors(entry):
+    """A bare ``github-actions``/``viberpit`` entry would trust a USER who registers that
+    login (both are unregistered) -- apps are written ``app/<slug>``."""
+    from server.automations.product_policy import merge_policy_patch
+    with pytest.raises(ValueError, match=r"app/"):
+        merge_policy_patch(None, {"trusted_authors": ["tony", entry]})
+
+
+def test_merge_policy_patch_accepts_the_app_form_and_ordinary_users():
+    from server.automations.product_policy import merge_policy_patch
+    merged = merge_policy_patch(None, {"trusted_authors": ["app/viberpit", "app/github-actions",
+                                                           "steiner385"]})
+    assert merged == {"trusted_authors": ["app/viberpit", "app/github-actions", "steiner385"]}

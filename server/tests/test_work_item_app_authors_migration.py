@@ -1,20 +1,22 @@
-"""Migration 0081: only the two verified-unregistered App logins gain ``app/``, and only
-for rows created before the 2026-10-10 bound."""
+"""Migration 0081: only the two verified-unregistered App logins gain ``app/``, only
+for rows created before 2026-10-10 and last synced before the run, and it records the
+one-shot ``data_backfills`` marker the startup twin checks."""
 from __future__ import annotations
 
 import importlib.util
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import DateTime, bindparam, create_engine, text
+from sqlalchemy import DateTime, bindparam, create_engine, inspect, text
 
 MIGRATION = (Path(__file__).resolve().parents[1]
              / "db/migrations/versions/0081_work_item_app_authors.py")
 
 _BEFORE = datetime(2026, 9, 1, tzinfo=timezone.utc)
 _AFTER = datetime(2026, 10, 11, tzinfo=timezone.utc)
+_FUTURE = datetime.now(timezone.utc) + timedelta(days=1)
 
 
 def _module():
@@ -37,28 +39,35 @@ def test_revision_chains_after_0080():
     assert mod.down_revision == "0080_session_display_fallback_reason"
 
 
-def test_upgrade_converts_only_pre_bound_app_rows_and_downgrade_reverses(tmp_path):
+def test_upgrade_converts_only_old_app_rows_marks_itself_and_downgrade_reverses(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path}/m.db")
-    rows = [("github-actions", _BEFORE), ("viberpit", _BEFORE), ("github-actions", _AFTER),
-            ("copilot-swe-agent", _BEFORE), ("tony", _BEFORE), (None, _BEFORE)]
+    rows = [("github-actions", _BEFORE, _BEFORE), ("viberpit", _BEFORE, _BEFORE),
+            ("github-actions", _AFTER, _BEFORE), ("viberpit", _BEFORE, _FUTURE),
+            ("copilot-swe-agent", _BEFORE, _BEFORE), ("tony", _BEFORE, _BEFORE),
+            (None, _BEFORE, _BEFORE)]
+    stamp = DateTime(timezone=True)
     with engine.begin() as conn:
         conn.execute(text(
-            "CREATE TABLE work_items (id INTEGER PRIMARY KEY, author TEXT, gh_created_at DATETIME)"))
-        for a, created in rows:
-            conn.execute(text("INSERT INTO work_items (author, gh_created_at) VALUES (:a, :c)")
-                         .bindparams(bindparam("c", type_=DateTime(timezone=True))),
-                         {"a": a, "c": created})
+            "CREATE TABLE work_items (id INTEGER PRIMARY KEY, author TEXT, "
+            "gh_created_at DATETIME, last_synced_at DATETIME)"))
+        for a, created, synced in rows:
+            conn.execute(text(
+                "INSERT INTO work_items (author, gh_created_at, last_synced_at) "
+                "VALUES (:a, :c, :s)").bindparams(
+                    bindparam("c", type_=stamp), bindparam("s", type_=stamp)),
+                {"a": a, "c": created, "s": synced})
     mod = _module()
-    converted = ["app/github-actions", "app/viberpit", "github-actions",
-                 "copilot-swe-agent", "tony", None]
 
     def read():
         with engine.connect() as conn:
             return [r[0] for r in conn.execute(text("SELECT author FROM work_items ORDER BY id"))]
 
     _run(engine, mod.upgrade)
-    assert read() == converted
-    _run(engine, mod.upgrade)  # idempotent
-    assert read() == converted
+    assert read() == ["app/github-actions", "app/viberpit", "github-actions", "viberpit",
+                      "copilot-swe-agent", "tony", None]
+    with engine.connect() as conn:
+        assert [r[0] for r in conn.execute(text("SELECT name FROM data_backfills"))] == [
+            "work_item_app_authors"]
     _run(engine, mod.downgrade)
-    assert read() == [a for a, _ in rows]
+    assert read() == [a for a, _, _ in rows]
+    assert "data_backfills" not in inspect(engine).get_table_names()

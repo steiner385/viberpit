@@ -132,7 +132,9 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 default=[],
                 help="GitHub logins whose issues the queue may dispatch. Anyone else's "
                      "issue is skipped as 'untrusted'. Write a GitHub App as app/<slug> "
-                     "and a user by bare login. The github-actions app is always trusted."),
+                     "and a user by bare login. The github-actions app is always trusted. "
+                     "Trust follows the current GitHub login, so remove a trusted "
+                     "account that renames (someone else can register its old name)."),
     # #2679: classes of issue whose approval-gated ladder climb ("bounced at opus;
     # fable needs approval") is approved by the runner itself, within a budget —
     # ``server/pm/auto_escalation.py``. Budget 0 (the default) keeps every such
@@ -257,6 +259,21 @@ def effective_policy(raw: dict | None) -> dict:
     return validate_config(PRODUCT_POLICY_SCHEMA, {}, retired=PRODUCT_POLICY_RETIRED_KEYS)
 
 
+# GitHub App logins that are UNREGISTERED as user logins (verified 2026-10-09). The mirror
+# records the apps as ``app/<slug>``, so a BARE entry can only ever match a user who
+# registers that login -- i.e. it would trust a squatter. Rejected on write, ignored on read.
+BARE_APP_LOGINS = frozenset({"github-actions", "viberpit"})
+
+
+def _reject_bare_app_logins(entries: object) -> None:
+    for entry in entries or ():  # type: ignore[attr-defined]
+        login = str(entry).strip().lower()
+        if login in BARE_APP_LOGINS:
+            raise ValueError(
+                f"trusted_authors: {login!r} would trust a GitHub USER who registers that "
+                f"login, not the app; write the app as 'app/{login}'")
+
+
 def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
     """Validate both inputs, retaining only explicitly stored/supplied keys.
 
@@ -274,6 +291,7 @@ def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
     current = {} if current is None else current
     validate_config(PRODUCT_POLICY_SCHEMA, current, retired=PRODUCT_POLICY_RETIRED_KEYS)
     validate_config(PRODUCT_POLICY_SCHEMA, patch, retired=PRODUCT_POLICY_RETIRED_KEYS)
+    _reject_bare_app_logins(patch.get("trusted_authors"))
     merged = {k: v for k, v in {**current, **patch}.items()
               if k not in PRODUCT_POLICY_RETIRED_KEYS}
     validated = validate_config(PRODUCT_POLICY_SCHEMA, merged, retired=PRODUCT_POLICY_RETIRED_KEYS)
@@ -341,8 +359,10 @@ def skip_labels(policy: "Mapping | None") -> frozenset[str]:
 def trusted_authors(policy: "Mapping | None") -> frozenset[str]:
     """THE queue-shaped reading of ``trusted_authors`` — lowercased, stripped, a set.
     Same single-reader rule as ``skip_labels``."""
-    return frozenset(str(a).strip().lower() for a in (policy or {}).get("trusted_authors") or ()
-                     if str(a).strip())
+    logins = (str(a).strip().lower() for a in (policy or {}).get("trusted_authors") or ())
+    # A bare app login (``BARE_APP_LOGINS``) is never honoured, even from a row written
+    # before write-time validation rejected it: it could only match a squatting user.
+    return frozenset(a for a in logins if a and a not in BARE_APP_LOGINS)
 
 
 async def policy_for_repo(db: AsyncSession, repo: str) -> dict | None:

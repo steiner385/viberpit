@@ -388,6 +388,11 @@ def test_policy_schema_and_project_policy_round_trip():
         assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"nope": 1}}, headers=IDENTITY_HEADERS)
         assert r.status_code == 422
+        # A bare app login would trust a squatting USER of that name: 422 naming app/<slug>.
+        r = c.patch("/api/pm/projects/kindash/policy",
+                    json={"policy": {"trusted_authors": ["viberpit"]}}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
+        assert "app/viberpit" in r.json()["detail"]["message"]
         # A below-minimum int is a server-side refusal, not a browser courtesy: a
         # stored ``-1`` cap reads as an unreachable ceiling in ``_refill``, i.e.
         # unlimited spawning for that product.

@@ -157,7 +157,10 @@ def is_trusted_author(author: str, trusted: frozenset[str]) -> bool:
     anyone open an issue; a dispatched session writes code that auto-merges and deploys,
     so an untrusted author must never reach the runner. Fail-closed: empty/ghost is
     untrusted. *trusted* is already lowercased (``product_policy.trusted_authors``); a
-    GitHub App is listed there as ``app/<slug>``, a user by bare login."""
+    GitHub App is listed there as ``app/<slug>``, a user by bare login. Trust is keyed on
+    the CURRENT GitHub login (the mirror stores logins, which users can rename), so a
+    trusted account that renames must be removed from the list -- otherwise whoever
+    registers the freed login inherits its trust."""
     login = (author or "").strip().lower()
     if not login or login == "ghost":
         return False
