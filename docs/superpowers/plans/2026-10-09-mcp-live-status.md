@@ -14,13 +14,13 @@
 
 - Never copy the SDK status `config` field anywhere (event, DB, log, API): it carries headers and env secrets.
 - `error` text: truncate to 500 chars, and replace every URL query string with `?<redacted>`.
-- Filter out the internal app server (`server.sessions.tools` wire name, `viberpit.brand`) and any entry with `scope == "sdk"`.
+- Filter out the internal app server (`server.sessions.tools` wire name, `viberpit.brand`), by name only (`scope` is not a filter: the SDK server reports `dynamic`).
 - Poll and probe failures log at **DEBUG** (a WARNING auto-files an issue).
 - Timestamps come from `server/db/clock.py:db_utc_now()`. Never use `func.now()`.
 - Teardown of any background task uses `server/aio.py:cancel_and_reap()`.
 - Kill switch `VIBERPIT_MCP_STATUS_ENABLED`, default `true`. When it is off there is no polling, persistence, probe or readout, and the API returns empty `status` lists.
 - Migration `0078_mcp_server_status`, `down_revision = '0077_personal_quick_replies'`. Re-check the newest revision on `origin/master` before committing it.
-- Settle loop: re-poll every 5 s while any server is `pending`, stopping after 30 s total. Probe: settle until no `pending` or 20 s pass. `POST /api/library/mcp/test` budget: 30 s.
+- Settle loop: re-poll every 5 s while any server is `pending`, stopping after 30 s total. Probe: settle until no `pending` or 25 s pass. `POST /api/library/mcp/test` budget: 35 s.
 - Probe concurrency: one per account (later callers await the in-flight result), and a global cap of 2 per host.
 - Worst-status order for the Settings pill: `failed > needs-auth > pending > connected`. `disabled` renders neutral, and no rows renders "Not checked yet".
 - New settings use the `VIBERPIT_` prefix (brand ratchet).
@@ -142,11 +142,11 @@ def test_sanitize_drops_config_and_counts_tools():
     assert "s3cret" not in repr(s) and "s3cret" not in str(s.to_wire())
 
 
-def test_sanitize_filters_internal_and_sdk_scope():
+def test_sanitize_filters_internal_server_by_name_only():
     raw = {"mcpServers": [{"name": SERVER_NAME, "status": "connected"},
-                          {"name": "inproc", "status": "connected", "scope": "sdk"},
+                          {"name": "plugin:p:s", "status": "connected", "scope": "dynamic"},
                           {"name": "gh", "status": "failed", "error": "boom"}]}
-    assert [s.name for s in sanitize_statuses(raw)] == ["gh"]
+    assert [s.name for s in sanitize_statuses(raw)] == ["plugin:p:s", "gh"]
 
 
 def test_unknown_status_kept_verbatim():
@@ -224,7 +224,7 @@ def sanitize_statuses(raw: object) -> list[McpServerState]:
         if not isinstance(name, str) or not isinstance(status, str):
             continue
         scope = s.get("scope") if isinstance(s.get("scope"), str) else None
-        if name == SERVER_NAME or scope == "sdk":
+        if name == SERVER_NAME:
             continue
         tools = s.get("tools")
         out.append(McpServerState(name=name, status=status, error=redact_error(s.get("error")),
@@ -785,7 +785,7 @@ git commit -F /tmp/msg-task4.txt   # "feat(db): mcp_server_status table; session
 **Interfaces:**
 - Consumes: `sanitize_statuses`, `store.upsert_states`, `self_host_name()`
 - Produces:
-  - `async def probe_account(account: str, *, client_factory=None, settle_s: float = 20.0, interval_s: float = 2.0) -> list[McpServerState]`
+  - `async def probe_account(account: str, *, client_factory=None, settle_s: float = 25.0, interval_s: float = 2.0) -> list[McpServerState]`
   - `async def probe(accounts: list[str], **kw) -> dict`, returning `{"rows": [...store rows for this host...], "skipped": [{"account", "reason"}]}`
   - `orch.probe_mcp(account: str | None = None) -> dict` (same shape)
   - Fleet merge: concatenate `rows` and `skipped` across hosts
@@ -896,7 +896,7 @@ def _default_client(account: str, cfg_dir: Path):
         extra_args={"no-session-persistence": None}))
 
 
-async def probe_account(account: str, *, client_factory=None, settle_s: float = 20.0,
+async def probe_account(account: str, *, client_factory=None, settle_s: float = 25.0,
                         interval_s: float = 2.0) -> list[McpServerState]:
     if account in _inflight:
         return await asyncio.shield(_inflight[account])
@@ -1214,12 +1214,12 @@ class McpTestBody(BaseModel):
 @router.post("/mcp/test")
 async def mcp_test(body: McpTestBody, request: Request,
                    _identity: str = Depends(current_identity)) -> dict:
-    """Run the no-prompt probe on every host (spec 2026-10-09 §3), ≤30 s."""
+    """Run the no-prompt probe on every host (spec 2026-10-09 §3), ≤35 s."""
     if not get_settings().mcp_status_enabled:
         return {"rows": [], "skipped": []}
     orch = request.app.state.sessions          # capture lazily — FleetOrchestrator swaps in after router build
     try:
-        out = await asyncio.wait_for(orch.probe_mcp(account=body.account), timeout=30.0)
+        out = await asyncio.wait_for(orch.probe_mcp(account=body.account), timeout=35.0)
     except TimeoutError:
         raise HTTPException(status_code=504, detail={"error": "mcp_probe_timeout"})
     if body.server:

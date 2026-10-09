@@ -56,7 +56,7 @@ notifications or needs-you items on status flips (explicitly not chosen), backgr
   `McpStatus(servers=[McpServerState(name, status, error, tool_count, scope)])`, wire type `mcpStatus`.
 - **Sanitization (security, Principle IV):** the SDK `config` field is never copied (it carries headers
   and env secrets); `error` is truncated to 500 chars with URL query strings redacted; the internal
-  app server (`viberpit.brand` wire name) and any `scope == "sdk"` entry are filtered out.
+  app server (`viberpit.brand` wire name) is filtered out by name only.
 - Poll failures (control request unsupported, timeout, stream ended) log at **DEBUG** — not WARNING, which
   would auto-file an issue — and emit nothing.
 
@@ -92,7 +92,7 @@ New model `McpServerStatus`, table `mcp_server_status`, unique on `(account, hos
 - New module `server/mcp_health/probe.py`: open a `ClaudeSDKClient` whose `CLAUDE_CONFIG_DIR` is the
   account's **existing** cfg dir. It never calls `configdir.compose()` and never writes the dir, because
   a concurrent login or live session may own it. The cwd is a neutral helper dir, **no** `strict_mcp_config`, no prompt sent. Poll `get_mcp_status()` until nothing is
-  `pending` or 20 s elapse, disconnect, upsert rows with `source = probe` (still-pending servers are
+  `pending` or 25 s elapse, disconnect, upsert rows with `source = probe` (still-pending servers are
   recorded as `pending`).
 - Runs on the daemon that owns the cfg dirs, via a new `probe_mcp(account=None, server=None)` RPC;
   in-process in single-host mode. `account=None` probes every Anthropic account on that host.
@@ -106,7 +106,7 @@ New model `McpServerStatus`, table `mcp_server_status`, unique on `(account, hos
 - `GET /api/library/mcp` — each server gains
   `status: [{account, host, status, error, toolCount, observedAt, source}]`, **replacing** `needsAuth`
   (web consumers updated in the same PR).
-- `POST /api/library/mcp/test` `{account?, server?}` — runs the probe synchronously (≤ 30 s budget),
+- `POST /api/library/mcp/test` `{account?, server?}` — runs the probe synchronously (≤ 35 s budget),
   returns the refreshed rows. `server` narrows the returned rows; the probe connects all servers either
   way.
 - `GET /api/sessions/{id}/mcp` — fresh `driver.mcp_status()` for a live session (404 when not live,
@@ -143,7 +143,7 @@ New model `McpServerStatus`, table `mcp_server_status`, unique on `(account, hos
 - The SDK lacks the control request (older CLI): the driver latches "unsupported" after the first failure
   and stops polling for that session.
 - A probe times out: rows for still-`pending` servers are written as `pending` with
-  `error = "timed out after 20s"`, and the endpoint returns 200 with those rows.
+  `error = "timed out after 25s"`, and the endpoint returns 200 with those rows.
 - A probe hits an account with no usable credentials: it is skipped, and the response carries
   `skipped: [{account, reason}]`.
 - A reconnect targets a session that is no longer live: 404. Reconnecting an unknown server name
