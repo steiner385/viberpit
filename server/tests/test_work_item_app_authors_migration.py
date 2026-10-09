@@ -12,7 +12,7 @@ from alembic.operations import Operations
 from sqlalchemy import DateTime, bindparam, create_engine, inspect, text
 
 MIGRATION = (Path(__file__).resolve().parents[1]
-             / "db/migrations/versions/0081_work_item_app_authors.py")
+             / "db/migrations/versions/0082_work_item_app_authors.py")
 
 _BEFORE = datetime(2026, 9, 1, tzinfo=timezone.utc)
 _AFTER = datetime(2026, 10, 11, tzinfo=timezone.utc)
@@ -33,10 +33,10 @@ def _run(engine, fn):
             fn()
 
 
-def test_revision_chains_after_0080():
+def test_revision_chains_after_0081():
     mod = _module()
-    assert mod.revision == "0081_work_item_app_authors"
-    assert mod.down_revision == "0080_session_display_fallback_reason"
+    assert mod.revision == "0082_work_item_app_authors"
+    assert mod.down_revision == "0081_drop_test_run_slots"
 
 
 def test_upgrade_converts_only_old_app_rows_marks_itself_and_downgrade_reverses(tmp_path):

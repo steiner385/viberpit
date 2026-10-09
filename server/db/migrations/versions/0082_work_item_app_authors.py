@@ -26,8 +26,8 @@ from datetime import datetime, timezone
 import sqlalchemy as sa
 from alembic import op
 
-revision = '0081_work_item_app_authors'
-down_revision = '0080_session_display_fallback_reason'
+revision = '0082_work_item_app_authors'
+down_revision = '0081_drop_test_run_slots'
 branch_labels = None
 depends_on = None
 
