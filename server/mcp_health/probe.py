@@ -40,8 +40,16 @@ def _global_sem() -> asyncio.Semaphore:
 
 
 def _cfg_dir_for(account: str) -> Path | None:
-    from viberpit import paths
+    """The account's cfg dir on this host, or None when it has none. Refuses (ProbeSkipped)
+    a name that is not a known account or does not resolve to a direct child of the cfg
+    root: the name arrives from a request and must never steer a path outside the store."""
+    from viberpit import accounts, paths
+    if account not in accounts._anthropic_account_names():
+        raise ProbeSkipped("unknown account")
+    root = paths.cfg_root()
     d = paths.account_cfg_dir(account)
+    if d.parent != root or d.name != account:
+        raise ProbeSkipped("unknown account")
     return d if (d / ".claude.json").is_file() else None
 
 

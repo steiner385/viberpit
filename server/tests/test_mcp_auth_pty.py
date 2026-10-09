@@ -21,6 +21,7 @@ def test_extract_url_none_when_absent():
 
 
 def test_picker_prefers_needs_auth_account(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_auth.accounts, "_anthropic_account_names", lambda: ["alice", "bob"])
     monkeypatch.setattr(mcp_auth.configdir, "compose", lambda n: tmp_path / n)
     name, cfg = default_account_picker("notion", ["bob", "alice"])
     assert name == "bob"  # first preferred account

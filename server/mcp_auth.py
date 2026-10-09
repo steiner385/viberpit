@@ -280,8 +280,11 @@ def _claude_argv() -> list[str]:
 
 
 def default_account_picker(server: str, preferred: list[str]) -> tuple[str, Path]:
-    """First of the caller's preferred accounts, else any Anthropic account."""
-    for name in list(preferred) + accounts._anthropic_account_names():
+    """First of the caller's preferred accounts that is a KNOWN account, else any Anthropic
+    account. Preferred names can come from request bodies or stored status rows, and
+    ``compose`` writes under ``cfg_root/<name>``, so an unknown name is dropped."""
+    known = accounts._anthropic_account_names()
+    for name in [n for n in preferred if n in known] + known:
         return name, configdir.compose(name)
     raise McpAuthError("No authenticated account is available to authorize with.")
 

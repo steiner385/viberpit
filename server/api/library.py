@@ -37,6 +37,17 @@ from server.sessions.claude_driver import ClaudeAgentDriver
 router = APIRouter(prefix="/api/library", tags=["library"])
 
 
+def _require_known_account(account: str | None) -> None:
+    """A request-supplied account must be an exact member of the known account set: the
+    name later becomes a path under the account store, so anything else (``../x``, ``a/b``,
+    ``""``) is refused before any probe or config-dir write can run."""
+    if account is None:
+        return
+    from viberpit import accounts
+    if account not in accounts._anthropic_account_names():
+        raise HTTPException(status_code=400, detail={"error": "unknown_account"})
+
+
 async def _status_rows() -> list[dict]:
     return await mcp_store.rows() if get_settings().mcp_status_enabled else []
 
@@ -204,6 +215,7 @@ class McpTestBody(BaseModel):
 async def mcp_test(body: McpTestBody, request: Request,
                    _identity: str = Depends(current_identity)) -> dict:
     """Run the no-prompt probe on every host (spec 2026-10-09 §3), bounded at 35 s."""
+    _require_known_account(body.account)
     if not get_settings().mcp_status_enabled:
         return {"rows": [], "skipped": []}
     # Capture lazily — FleetOrchestrator replaces app.state.sessions after router build.
@@ -284,6 +296,7 @@ async def mcp_auth_start(
 ) -> Any:
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
+    _require_known_account(body.account if body else None)
     servers = [s for s in scan.list_mcp_servers(status_rows=await _status_rows())["servers"]
                if s["name"] == name]
     if not servers:
@@ -299,7 +312,7 @@ async def mcp_auth_start(
             "message": "Browser OAuth requires an HTTP or SSE server. Configure this server's credentials on the session host.",
         })
     try:
-        preferred = ([body.account] if body and body.account else []) + \
+        preferred = ([body.account] if body and body.account is not None else []) + \
             (await mcp_store.needs_auth_by_server()).get(name, [])
         state = await _mcp_auth(request).start(
             name, preferred=preferred, login_key=await mcp_store.login_key_for(name))

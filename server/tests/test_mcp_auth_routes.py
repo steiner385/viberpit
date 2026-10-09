@@ -135,7 +135,9 @@ def test_ambiguous_auth_rejected_before_spawn(client: TestClient, monkeypatch) -
     assert client.app.state.mcp_auth.calls == []
 
 
-def test_start_passes_preferred_account_and_login_key(client: TestClient) -> None:
+def test_start_passes_preferred_account_and_login_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from viberpit import accounts
+    monkeypatch.setattr(accounts, "_anthropic_account_names", lambda: ["bob", "alice"])
     r = client.post("/api/library/mcp/notion/auth", json={"account": "bob"})
     assert r.status_code == 202
     assert getattr(client.app, "state").mcp_auth.calls[-1] == ("start", "notion", ["bob", "alice"], "plugin:x:notion")
