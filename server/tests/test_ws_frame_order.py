@@ -430,3 +430,42 @@ def test_attach_survives_daemon_timeout_on_pending_ask_rpcs(tmp_path, caplog):
     assert "replayComplete" in types and "status" in types, types
     assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")
                 and "ws.work failed" in r.getMessage()]
+
+
+class _CloseCountingSocket:
+    """Starlette-shaped socket: a second close() raises, as the real one does."""
+
+    def __init__(self):
+        from starlette.websockets import WebSocketState
+        self.client_state = WebSocketState.CONNECTED
+        self.application_state = WebSocketState.CONNECTED
+        self.closes: list[int] = []
+        self._state = WebSocketState
+
+    async def close(self, code=1000):
+        if self.application_state == self._state.DISCONNECTED:
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+        self.closes.append(code)
+        self.application_state = self._state.DISCONNECTED
+
+
+def test_close_once_is_idempotent_across_queued_frames():
+    """#2860: attach then a queued prompt both hit the daemon-down 1013 branch."""
+    ws = _CloseCountingSocket()
+
+    async def _go():
+        await wsmod._close_once(ws, 1013)
+        await wsmod._close_once(ws, 1013)
+
+    asyncio.run(_go())
+    assert ws.closes == [1013]
+
+
+def test_close_once_swallows_peer_gone_mid_close():
+    ws = _CloseCountingSocket()
+
+    async def _boom(code=1000):
+        raise wsmod.WebSocketDisconnect(1006)
+
+    ws.close = _boom
+    asyncio.run(wsmod._close_once(ws, 1013))

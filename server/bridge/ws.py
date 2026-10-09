@@ -105,6 +105,23 @@ _MAX_FRAME = 262144
 _WS_ATTACH_DAEMON_UNAVAILABLE_LOG = LogThrottle()
 
 
+async def _close_once(websocket: WebSocket, code: int) -> None:
+    """Close ``websocket`` unless it is already closing/closed.
+
+    A queued frame can reach a close branch (daemon unavailable → 1013) after an
+    earlier frame on the same socket already closed it; Starlette then raises on
+    the second ``close``, and the error escaped ``_work_chain`` as an ERROR
+    (#2860). Idempotent, and swallows a peer that vanished mid-close.
+    """
+    if (websocket.client_state == WebSocketState.DISCONNECTED
+            or websocket.application_state == WebSocketState.DISCONNECTED):
+        return
+    try:
+        await websocket.close(code=code)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
 async def _log_attach_daemon_unavailable(session_id: str) -> None:
     """Report ``ws.attach: session daemon unavailable`` at the level its cause deserves.
 
@@ -584,7 +601,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             event_q = await orchestrator.subscribe_events()
         except DaemonUnavailable:
             log.warning("ws.connect: session daemon unavailable")
-            await websocket.close(code=1013)
+            await _close_once(websocket, 1013)
             return
 
         # Serialises all websocket writes. The batcher, the attach/replay path, and
@@ -604,7 +621,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         async def _close_unexpectedly() -> None:
             try:
                 if websocket.client_state == WebSocketState.CONNECTED:
-                    await websocket.close(code=1011)
+                    await _close_once(websocket, 1011)
             except Exception:
                 pass
 
@@ -792,7 +809,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except DaemonUnavailable:
                 await _log_attach_daemon_unavailable(session_id)
                 if not auto:
-                    await websocket.close(code=1013)
+                    await _close_once(websocket, 1013)
                 return None
             except Exception as exc:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
@@ -1335,7 +1352,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # _resume_driver_or_error's `auto`).
                 await _log_attach_daemon_unavailable(session_id)
                 if not auto:
-                    await websocket.close(code=1013)
+                    await _close_once(websocket, 1013)
                 return
 
             # Replay the last EXACT context usage so the ctx% readout is right immediately —
@@ -2037,7 +2054,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 if via != "cli":
                     ident = verify_identity(websocket)
                     if ident is None or ident != identity:
-                        await websocket.close(code=1008)
+                        await _close_once(websocket, 1008)
                         return
 
                 # 256KB frame cap.
