@@ -1077,6 +1077,7 @@ def create_app(
         "no_display": "no display for session",
         "cap": "browser cap reached",
         "native_unavailable": "native display unavailable",
+        "launch_failed": "browser failed to start",
     }
 
     @app.post("/api/sessions/{session_id}/browser/open")

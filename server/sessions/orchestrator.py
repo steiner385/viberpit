@@ -2057,8 +2057,9 @@ class SessionOrchestrator:
 
     def _display_env(self, session_id: str) -> dict[str, str]:
         """The DISPLAY/XAUTHORITY env for this session's process — the one place it
-        is chosen. Native records get the host desktop (no XAUTHORITY, see
-        NativeDisplay); everything else the Xvfb lease if one exists. A native record
+        is chosen. Native records get the live desktop's env from NativeDisplay's
+        resolver (DISPLAY plus the rotating XAUTHORITY cookie, and the Wayland socket
+        when browsers run Wayland-native); everything else the Xvfb lease if one exists. A native record
         whose desktop is gone gets {} — the same degrade an exhausted pool gives."""
         rec = self._records.get(session_id)
         if rec is not None and rec.display_mode == DISPLAY_NATIVE:
@@ -5785,7 +5786,8 @@ class SessionOrchestrator:
         """Launch a managed Chromium for this session on whichever display it owns.
 
         Returns {"ok", "reason"}; reasons: no_display (no such live session / no lease),
-        cap (per-session browser limit), native_unavailable (the desktop went away).
+        cap (per-session browser limit), native_unavailable (the desktop went away),
+        launch_failed (the native browser binary is missing or exited during startup).
         The daemon RPC ``x11_open_browser`` and the in-process API route both call
         this, so the native/virtual branch exists exactly once.
         """
@@ -5793,8 +5795,8 @@ class SessionOrchestrator:
         if rec is not None and rec.display_mode == DISPLAY_NATIVE:
             if self._native is None or not self._native.available():
                 return {"ok": False, "reason": "native_unavailable"}
-            ok = await self._native.launch_browser(session_id, url)
-            return {"ok": bool(ok), "reason": None if ok else "cap"}
+            reason = await self._native.launch_browser(session_id, url)
+            return {"ok": reason is None, "reason": reason}
         if self._x11 is None or self._x11.display_for(session_id) is None:
             return {"ok": False, "reason": "no_display"}
         ok = await self._x11.launch_browser(session_id, url)

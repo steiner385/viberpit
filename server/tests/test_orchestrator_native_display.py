@@ -22,9 +22,14 @@ class FakeNative:
         self.launched: list[tuple[str, str | None]] = []; self.closed: list[str] = []
     def available(self): return self._available
     def env(self): return {"DISPLAY": self.display}
-    async def launch_browser(self, sid, url): self.launched.append((sid, url)); return True
+    async def launch_browser(self, sid, url): self.launched.append((sid, url)); return None
     async def close(self, sid): self.closed.append(sid)
     async def stop_all(self): ...
+
+
+class FailingNative(FakeNative):
+    def __init__(self, reason): super().__init__(); self.reason = reason
+    async def launch_browser(self, sid, url): return self.reason
 
 
 class FakeX11:
@@ -243,6 +248,17 @@ async def test_close_tears_down_native_browsers(spawn_env):
         rec = await orch.create_session("n", account="acct", client_node="dobby")
         await orch.close_session(rec.id)
         assert native.closed == [rec.id]
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["cap", "launch_failed"])
+async def test_open_browser_passes_native_failure_reason_through(spawn_env, reason):
+    orch = await _orch(spawn_env, FakeX11(), FailingNative(reason))
+    try:
+        nat = await orch.create_session("n", account="acct", client_node="dobby")
+        assert await orch.open_browser(nat.id, None) == {"ok": False, "reason": reason}
     finally:
         await orch.stop()
 
