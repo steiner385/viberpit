@@ -110,3 +110,41 @@ start [plugin connected, aws-oauth connected, spike-ok connected]      (proj-srv
 6. **Plugin failure cache.** Spike 1 (`docs/superpowers/spikes/2026-10-09-mcp-status-verification.md`, "Other
    observations") found the CLI caches plugin-server failures across processes for 15 min. A disabled -> enabled
    plugin toggle may therefore report "Skipping connection..." and need `reconnect_mcp_server`.
+
+## Addendum (Task 3): plugin key uses the manifest name, not the registry id
+
+Question: the CLI builds plugin keys as `plugin:${UM(e.name, e.source)}:<server>`. Is `e.name` the registry name
+(`notion`) or the plugin manifest name? The registry entry is `notion@claude-plugins-official`, and its
+`.claude-plugin/plugin.json` says `"name": "Notion"`.
+
+Method: 0700 scratch config under `/tmp/mcp_notion_spike` (`cp -L` of `.claude.json` and `.credentials.json`; only the
+notion plugin and marketplace dirs copied; install paths rewritten into scratch; `settings.json` enabling
+`notion@claude-plugins-official`; scratch cwd trusted). Scratch HOME, `env -i`, CLI 2.1.295, no prompt sent. The
+probe read `get_mcp_status()` once the rows settled. Scratch deleted afterwards.
+
+Observed (`/tmp/mcp-notion-probe.log`, names and status only):
+```
+ROW 'plugin:Notion:notion' needs-auth dynamic
+ROW 'aws-oauth' connected user
+```
+
+Result: the key uses the MANIFEST name, `plugin:Notion:notion`. Not `plugin:notion:notion`.
+
+Supporting evidence:
+- `installed_plugins.json` records have no `name` field (keys: scope, installPath, version, installedAt,
+  lastUpdated, gitCommitSha), so `e.name` must come from the loaded plugin manifest.
+- The catalog entry (`marketplace.json`) says `"name": "notion"`. Only the manifest says `Notion`, so the catalog is not
+  the source.
+- Binary (2.1.295, byte ~209840400): `UM(e,n)` returns `h(e)[0] ?? w(e)` for sources ending `@claude-plugins-official`, else
+  `e`. `h` is an alias lookup and `w` is a fallback. The alias table is not fully reconstructed. No literal Notion
+  alias entry exists in the binary (only prose mentions). The one observed official-marketplace case with a manifest
+  name differing from the registry id is the one that gives `Notion`.
+- Across all 24 official-marketplace plugins in the local registry, the manifest name equals the registry name except
+  notion. `typescript-lsp` has no manifest name, so it falls back to the registry name.
+
+Consequence (Task 3 fix): `scan.list_mcp_servers` exposes `pluginName` (manifest name, falling back to the registry
+name) on plugin entries, and `server_key` uses it. A Notion-style rule keyed on `plugin:notion:notion` would silently
+never match.
+
+Caveat: the alias-table path (`h`) is not exhaustively verified. The manifest-name rule matches every observed case.
+Re-check the spike if a new official plugin's manifest name differs from its registry id in another way.

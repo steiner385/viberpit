@@ -1,7 +1,8 @@
 import pytest
 
+from server.library import scan
 from server.mcp_scope.resolve import effective_disabled
-from server.mcp_scope.servers import server_key
+from server.mcp_scope.servers import configured_server_keys, server_key
 
 ALL = ["a", "b", "c", "plugin:p:d"]
 
@@ -32,6 +33,32 @@ def test_output_is_sorted_and_deduplicated():
 
 def test_server_key_user_and_plugin():
     assert server_key({"name": "gh", "source": "user"}) == "gh"
-    # Spike 2026-10-09 (docs/superpowers/spikes/2026-10-09-mcp-repo-scope-verification.md, Q2):
-    # the key is plugin:<plugin-name>:<server>, no @marketplace suffix. Registry ids are name@marketplace.
-    assert server_key({"name": "railway", "source": "railway@claude-plugins-official"}) == "plugin:railway:railway"
+    assert server_key({"name": "railway", "source": "railway@claude-plugins-official",
+                       "pluginName": "railway"}) == "plugin:railway:railway"
+
+
+def test_server_key_uses_manifest_name_not_registry_id():
+    # Spike addendum (Task 3), docs/superpowers/spikes/2026-10-09-mcp-repo-scope-verification.md:
+    # registry notion@claude-plugins-official has manifest name "Notion"; the CLI reports plugin:Notion:notion.
+    entry = {"name": "notion", "source": "notion@claude-plugins-official", "pluginName": "Notion"}
+    assert server_key(entry) == "plugin:Notion:notion"
+
+
+def test_user_and_plugin_servers_with_same_short_name_get_distinct_keys():
+    user = {"name": "notion", "source": "user"}
+    plugin = {"name": "notion", "source": "notion@claude-plugins-official", "pluginName": "Notion"}
+    assert server_key(user) == "notion"
+    assert server_key(plugin) == "plugin:Notion:notion"
+    assert server_key(user) != server_key(plugin)
+
+
+def test_configured_server_keys_sorts_and_dedupes(monkeypatch):
+    fake = {"servers": [
+        {"name": "zeta", "source": "user"},
+        {"name": "alpha", "source": "user"},
+        {"name": "alpha", "source": "user"},
+        {"name": "notion", "source": "notion@claude-plugins-official", "pluginName": "Notion"},
+        {"name": "notion", "source": "notion@claude-plugins-official", "pluginName": "Notion"},
+    ]}
+    monkeypatch.setattr(scan, "list_mcp_servers", lambda status_rows=None: fake)
+    assert configured_server_keys() == ["alpha", "plugin:Notion:notion", "zeta"]

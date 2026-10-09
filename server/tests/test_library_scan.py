@@ -182,3 +182,19 @@ def test_list_plugins_no_tokens_is_none(shared: Path):
     out = scan.list_plugins()
     p = next(pl for pl in out["plugins"] if pl["id"] == pid)
     assert p["tokenCost"] is None
+
+
+def test_list_mcp_servers_plugin_exposes_manifest_name(shared: Path):
+    # The CLI keys plugin servers by the manifest name (.claude-plugin/plugin.json), not the registry id.
+    install = _seed_plugin(shared, "notion")
+    (install / ".claude-plugin").mkdir()
+    (install / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": "Notion"}))
+    [srv] = scan.list_mcp_servers()["servers"]
+    assert srv["source"] == "notion@test-market"
+    assert srv["pluginName"] == "Notion"
+
+
+def test_list_mcp_servers_plugin_without_manifest_falls_back_to_registry_name(shared: Path):
+    _seed_plugin(shared, "alpha")
+    [srv] = scan.list_mcp_servers()["servers"]
+    assert srv["pluginName"] == "alpha"
