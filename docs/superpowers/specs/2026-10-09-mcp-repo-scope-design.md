@@ -107,7 +107,7 @@ It returns the sorted list of disabled server keys. It is pure, with no I/O, and
 **Session `MCP n/m` popover:**
 - Each server gets an on/off switch that calls the toggle route.
 - Disabled servers show as "Disabled". `n/m` counts enabled servers only, which fixes sub-project 1 deferred minor M6.
-- A server disabled by a repo rule shows "Off for <repo>"; turning it on creates a session override only.
+- Turning on a server that a repo rule disabled creates a session override only; the repo rule itself is unchanged. The popover shows "Disabled" without the reason, because the status payload carries no reason and adding one isn't worth it.
 
 **Hint:** a rule change notes "Applies to new and resumed sessions."
 
