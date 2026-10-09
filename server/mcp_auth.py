@@ -18,13 +18,12 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 
 from viberpit import accounts, configdir, paths
 from viberpit.config import load_config
 from viberpit.creds import merge_shared_mcp, write_json_secure
 from server.aio import cancel_and_reap
-from server.library import scan
 from server.library.scan import read_json_safe
 
 log = logging.getLogger(__name__)
@@ -128,8 +127,8 @@ class McpAuthManager:
     def __init__(
         self,
         *,
-        session_factory: Callable[[str, str, Path], LoginSession],
-        account_picker: Callable[[str], tuple[str, Path]],
+        session_factory: Callable[[str, str, Path, str | None], LoginSession],
+        account_picker: Callable[[str, list[str]], tuple[str, Path]],
         clock: Callable[[], float] = time.time,
         url_timeout_s: float = 60.0,
         complete_timeout_s: float = 120.0,
@@ -152,12 +151,13 @@ class McpAuthManager:
                             auth_url=s.auth_url, accounts=list(s.accounts),
                             started_at=s.started_at)
 
-    async def start(self, server: str) -> McpAuthState:
+    async def start(self, server: str, *, preferred: Sequence[str] = (),
+                    login_key: str | None = None) -> McpAuthState:
         async with self._lock:
             if self._state.state in ("starting", "awaiting_redirect", "exchanging"):
                 raise McpAuthBusy(self._state.server)
-            account, cfg_dir = self._pick(server)
-            self._session = self._factory(server, account, cfg_dir)
+            account, cfg_dir = self._pick(server, list(preferred))
+            self._session = self._factory(server, account, cfg_dir, login_key)
             self._state = McpAuthState(state="starting", server=server,
                                        accounts=[account], started_at=self._clock())
             self._task = asyncio.create_task(self._read_url(server))
@@ -279,29 +279,9 @@ def _claude_argv() -> list[str]:
     return shlex.split(os.environ.get("VIBERPIT_CLAUDE_BIN", cfg.claude_bin))
 
 
-def resolve_login_key(server: str) -> str:
-    """Map a short server name to the FULL key `claude mcp login` expects.
-
-    The authoritative source is the raw key in each account's
-    mcp-needs-auth-cache.json (e.g. `plugin:railway:railway`). Falls back to the
-    short name for user-scope servers not present in any cache.
-    """
-    root = paths.cfg_root()
-    if root.is_dir():
-        for acct_dir in sorted(root.iterdir()):
-            cache = read_json_safe(acct_dir / "mcp-needs-auth-cache.json")
-            if not isinstance(cache, dict):
-                continue
-            for key in cache:
-                if _bare(key) == server:
-                    return key
-    return server
-
-
-def default_account_picker(server: str) -> tuple[str, Path]:
-    flagged = scan._needs_auth_by_server().get(server) or []
-    candidates = list(flagged) + accounts._anthropic_account_names()
-    for name in candidates:
+def default_account_picker(server: str, preferred: list[str]) -> tuple[str, Path]:
+    """First of the caller's preferred accounts, else any Anthropic account."""
+    for name in list(preferred) + accounts._anthropic_account_names():
         return name, configdir.compose(name)
     raise McpAuthError("No authenticated account is available to authorize with.")
 
@@ -310,18 +290,19 @@ class PtyLoginSession:
     """Runs `claude mcp login <full-key> --no-browser` under a PTY (required —
     a pipe stdin makes claude self-terminate as non-interactive)."""
 
-    def __init__(self, server: str, account: str, cfg_dir: Path) -> None:
+    def __init__(self, server: str, account: str, cfg_dir: Path,
+                 login_key: str | None = None) -> None:
         self.account = account
         self.cfg_dir = cfg_dir
         self._server = server
+        self._login_key = login_key or server
         self._pid: int | None = None
         self._fd: int | None = None
         self._buf = b""
         self._exit_code: int | None = None  # cached on first reap (never waitpid twice)
 
     def _spawn(self) -> None:
-        key = resolve_login_key(self._server)
-        argv = _claude_argv() + ["mcp", "login", key, "--no-browser"]
+        argv = _claude_argv() + ["mcp", "login", self._login_key, "--no-browser"]
         from server.sessions.account_auth import helper_env
         # writes_back: `claude mcp login` stores the server's OAuth token in the config dir's
         # .credentials.json. It must land in the real account dir — the host-local scratch copy
@@ -431,6 +412,7 @@ class PtyLoginSession:
 
 def build_default_manager() -> McpAuthManager:
     return McpAuthManager(
-        session_factory=lambda server, account, cfg_dir: PtyLoginSession(server, account, cfg_dir),
+        session_factory=lambda server, account, cfg_dir, login_key: PtyLoginSession(
+            server, account, cfg_dir, login_key),
         account_picker=default_account_picker,
     )

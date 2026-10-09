@@ -117,24 +117,22 @@ def test_list_commands_nested(shared: Path):
     assert nested is not None and nested["content"] == "x\n"
 
 
-def test_list_mcp_servers_user_plugin_and_auth(shared: Path, tmp_path: Path):
+def test_list_mcp_servers_user_plugin_and_status(shared: Path, tmp_path: Path):
     _seed_plugin(shared, "alpha")
     from viberpit.creds import write_json_secure
     write_json_secure(paths.shared_claude_json_path(), {"mcpServers": {
         "mine": {"type": "http", "url": "https://x.example/mcp"},
     }})
-    acct = paths.cfg_root() / "acct1"
-    acct.mkdir(parents=True)
-    (acct / "mcp-needs-auth-cache.json").write_text(json.dumps({
-        "plugin:alpha:alpha-srv": {"timestamp": 1}, "mine": {"timestamp": 2},
-    }))
-    out = scan.list_mcp_servers()["servers"]
+    rows = [{"server": "plugin:alpha:alpha-srv", "account": "acct1", "status": "needs-auth"},
+            {"server": "mine", "account": "acct1", "status": "needs-auth"}]
+    out = scan.list_mcp_servers(status_rows=rows)["servers"]
     by_name = {s["name"]: s for s in out}
     assert by_name["mine"]["source"] == "user"
     assert by_name["mine"]["transport"] == "http"
-    assert by_name["mine"]["needsAuth"] == ["acct1"]
+    assert by_name["mine"]["status"] == [rows[1]]
     assert by_name["alpha-srv"]["readonly"] is True
-    assert by_name["alpha-srv"]["needsAuth"] == ["acct1"]
+    assert by_name["alpha-srv"]["status"] == [rows[0]]
+    assert not any(k.lower() == "needsauth" for k in by_name["mine"])
 
 
 def test_read_traversal_rejected(shared: Path):

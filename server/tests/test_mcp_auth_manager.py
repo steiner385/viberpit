@@ -25,8 +25,8 @@ def make_manager(monkeypatch, tmp_path, *, fail=None, calls=None):
     monkeypatch.setattr(mcp_auth, "merge_mcp_oauth_from_cfg", lambda d, **kw: (calls.append(("merge", d)) or 1) if calls is not None else 1)
     monkeypatch.setattr(mcp_auth, "clear_needs_auth_cache", lambda s: (calls.append(("clear", s)) or ["alice"]) if calls is not None else ["alice"])
     mgr = McpAuthManager(
-        session_factory=lambda server, acct, d: sess,
-        account_picker=lambda server: ("alice", cfg),
+        session_factory=lambda server, acct, d, key: sess,
+        account_picker=lambda server, pref: ("alice", cfg),
     )
     return mgr, sess
 
@@ -120,8 +120,8 @@ async def test_read_url_error_surfaces_cli_message(monkeypatch, tmp_path):
             raise mcp_auth.McpAuthError('"aws-mcp" doesn\'t support OAuth login')
         async def complete(self, u, t): ...
         def terminate(self): pass
-    mgr = McpAuthManager(session_factory=lambda s, a, d: ErrSession(),
-                         account_picker=lambda s: ("alice", cfg))
+    mgr = McpAuthManager(session_factory=lambda s, a, d, k: ErrSession(),
+                         account_picker=lambda s, p: ("alice", cfg))
     await mgr.start("aws-mcp")
     for _ in range(50):
         if mgr.status("aws-mcp").state in mcp_auth.TERMINAL: break
