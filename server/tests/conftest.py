@@ -425,6 +425,15 @@ def pytest_configure(config):
         "slow: real-time waits (watchdog timers, subprocess spawns) — excluded from "
         "the fast local default (`pytest -m 'not slow'`), always run in CI (#823)",
     )
+    # Host-resource guard (xdist controller only): clamp -n to MemAvailable and
+    # take a host-local flock test slot before workers spawn. See the module.
+    from server.tests import _resource_guard
+    _resource_guard.configure(config)
+
+
+def pytest_unconfigure(config):
+    from server.tests import _resource_guard
+    _resource_guard.unconfigure(config)
 
 
 # --------------------------------------------------------------------------- #

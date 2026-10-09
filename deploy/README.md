@@ -583,11 +583,17 @@ Install (rewrite `ExecStart` to this host's deploy checkout first, like the daem
     sudo systemctl daemon-reload
     sudo systemctl enable --now viberpit-health.timer
 
-The daemon unit also gains `MemoryHigh=10G` (soft reclaim pressure below the 12G hard
-`MemoryMax`) so a restart-storm of relaunched session+MCP fleets degrades instead of being
-OOM-killed. On an already-running host apply it live without a restart:
+The daemon units size their memory limits as a **percentage of host RAM**, so one unit
+fits any host: `viberpit-daemon.service` (desktop host) `MemoryHigh=55%` / `MemoryMax=65%`,
+`viberpit-daemon-remote.service` (headless runner) `75%` / `88%`. `MemoryHigh` is soft
+reclaim pressure below the hard `MemoryMax`, so a restart-storm of relaunched
+session+MCP fleets degrades instead of being OOM-killed. Don't pin absolute values in a
+host drop-in: an absolute 15G on dobby's 19 GB left the desktop too little, and session
+test runs OOM-killed Chrome (2026-10-09). A `systemctl set-property` override (stored in
+`/etc/systemd/system.control/`) outranks the unit, so re-apply the unit's values on a
+host that has one — live, no restart:
 
-    sudo systemctl set-property --runtime viberpit-daemon.service MemoryHigh=10G
+    sudo systemctl set-property viberpit-daemon.service MemoryHigh=55% MemoryMax=65%
 
 Both daemon units set `OOMPolicy=continue` (#2673). systemd's default, `stop`, stops the
 whole unit whenever the kernel OOM-kills *any* process in its cgroup — including on a
@@ -608,6 +614,12 @@ inside the daemon cgroup. Every 30 s the daemon sums resident memory per direct 
 processes — so a runaway `node` is traceable before the OOM kill, not after. Throttled to
 one record per root per 10 min unless it grows 1.5×. Knobs: `VIBERPIT_SESSION_MEMORY_WARN_MB`,
 `VIBERPIT_SESSION_MEMORY_INTERVAL_S`; `VIBERPIT_SESSION_MEMORY_WATCH=off` disables it.
+The same pass raises every process in each session subtree to `oom_score_adj`
+`VIBERPIT_SESSION_OOM_SCORE_ADJ` (default 500, `0` disables), so a host-wide OOM kills a
+session's runaway `pytest`/`dotnet`/`node` before Chrome (300) or desktop apps (200).
+A fast path marks the daemon's direct children (fresh CLI roots, via
+`/proc/<pid>/task/*/children`) every `VIBERPIT_SESSION_OOM_MARK_INTERVAL_S` (default 2 s),
+so everything a session spawns inherits the score at fork.
 
 **Unit drift is reported, not fixed, by deploys** (#2702). After each runner deploys, it
 compares the safety directives in `DAEMON_UNIT_GUARDS` (`server/deploy/steps.py`:
