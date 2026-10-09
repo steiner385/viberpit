@@ -457,6 +457,13 @@ class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
 
+class UntrustedEpic(Exception):
+    """The mirrored epic that would seed a spec session is not by a trusted author.
+
+    Raised by ``_sdlc_epic_upstream_text`` from the SAME row read that produces the
+    prompt text, so no separate pre-check can disagree with what reaches the session."""
+
+
 class SessionLeaseHeld(RuntimeError):
     """Another host holds this session's ownership lease — refuse to spawn (#1379).
 
@@ -12490,10 +12497,20 @@ class SessionOrchestrator:
             return None
         if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
             return None
-        if (kind == "spec" and ini.get("origin") == "epic-adoption"
-                and not await self._sdlc_epic_author_trusted(
-                    slug, ini.get("epic_repo"), ini.get("epic_number"))):
-            return None
+        # Epic-adopted initiatives (#2159) enter the chain directly at Design —
+        # the intake stage that would have written intent.md never ran, so the
+        # spec is seeded from the mirrored epic instead. Read (and trust-judged)
+        # ONCE, here, before any launch work: a refusal must cost nothing, and the
+        # row that is judged is the row whose text reaches the prompt. The plan
+        # stage needs no equivalent: by then a real spec.md is committed.
+        epic_upstream: tuple[str, str] | None = None
+        if kind == "spec" and ini.get("origin") == "epic-adoption":
+            try:
+                epic_upstream = await self._sdlc_epic_upstream_text(
+                    ini.get("epic_repo"), ini.get("epic_number"))
+            except UntrustedEpic as exc:
+                await self._sdlc_warn_untrusted_epic(slug, str(exc))
+                return None
         # Engine FIRST, before any account, network or disk work. Two reasons,
         # and ``_backlog_spawn`` already moved its own check here for both:
         # the artifact instructions state a commit trailer (the one
@@ -12519,14 +12536,7 @@ class SessionOrchestrator:
         # there, the same way `origin`/`epic_repo` already ride on `ini`.
         layout = ini.get("artifact_layout")
         upstream = artifact_path(slug, "intent" if kind == "spec" else "spec", layout)
-        # Epic-adopted initiatives (#2159) enter the chain directly at Design —
-        # the intake stage that would have written intent.md never ran, so
-        # there is nothing on disk to read. The plan stage needs no equivalent
-        # branch: by then the design-stage session has committed a real spec.md.
-        epic_upstream: tuple[str, str] | None = None
-        if kind == "spec" and ini.get("origin") == "epic-adoption":
-            epic_upstream = await self._sdlc_epic_upstream_text(
-                ini.get("epic_repo"), ini.get("epic_number"))
+        # (``epic_upstream`` was read and trust-judged above, before launch work.)
         # Personas (#2447): resolved for every spec spawn, not only
         # epic-adoption ones — unlike the epic-body substitute, this augments
         # a normal intent.md read rather than replacing it.
@@ -12587,40 +12597,18 @@ class SessionOrchestrator:
             rec.upstream_ref = epic_upstream[1]
         return rec
 
-    async def _sdlc_epic_author_trusted(self, slug: str, epic_repo: str | None,
-                                        epic_number: int | None) -> bool:
-        """Whether an epic-adopted initiative's epic may seed its spec session.
-
-        The epic's title and body become that session's prompt, and adoption takes any
-        open epic on the product's board -- which a public repo's board automation can
-        fill with anyone's issue. So the MIRRORED epic author must be trusted under the
-        owning product's policy (``dispatch_trust``; fail-closed). An epic that is not
-        mirrored yet is left to ``_sdlc_epic_upstream_text``'s existing fallback.
-        Refusals are warned once per slug: the condition persists across ticks."""
-        if not epic_repo or epic_number is None:
-            return True
-        from sqlalchemy import select as sa_select
-        from server.db.models import WorkItem
-        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
-        async with db_session() as db:
-            row = (await db.execute(sa_select(WorkItem.author).where(
-                WorkItem.repo == epic_repo, WorkItem.number == epic_number,
-                WorkItem.kind == "issue"))).first()
-            if row is None:
-                return True
-            trusted = await trusted_authors_by_repo(db, [epic_repo])
-        if author_trusted(trusted, epic_repo, row[0]):
-            return True
+    async def _sdlc_warn_untrusted_epic(self, slug: str, epic_ref: str) -> None:
+        """Feed warning for a spec refused because its epic is not by a trusted author.
+        Once per slug: the condition persists across ticks."""
         warned: set[str] = self.__dict__.setdefault("_sdlc_untrusted_epic_slugs", set())
-        if slug not in warned:
-            warned.add(slug)
-            await self._sdlc_emit(
-                "warn", f"not writing a spec for {slug}: epic {epic_repo}#{epic_number} "
-                        "is not by a trusted author",
-                kind="untrusted_author", target=slug,
-                detail={"reason_codes": ["untrusted_author"],
-                        "epic": f"{epic_repo}#{epic_number}"})
-        return False
+        if slug in warned:
+            return
+        warned.add(slug)
+        await self._sdlc_emit(
+            "warn", f"not writing a spec for {slug}: epic {epic_ref} "
+                    "is not by a trusted author",
+            kind="untrusted_author", target=slug,
+            detail={"reason_codes": ["untrusted_author"], "epic": epic_ref})
 
     async def _sdlc_epic_upstream_text(
             self, epic_repo: str | None, epic_number: int | None,
@@ -12630,28 +12618,39 @@ class SessionOrchestrator:
         (#2159), which has no committed ``intent.md`` to read. Returns
         ``(markdown, "owner/repo#N")``, or ``None`` when there is no pointer or
         the epic is not (yet) mirrored — the caller then falls back to the
-        normal committed-file read."""
+        normal committed-file read.
+
+        Raises ``UntrustedEpic`` when the epic's author is not trusted under the owning
+        product's policy (``dispatch_trust``; fail-closed): its title and body would
+        become the session's prompt, and adoption takes any open epic on the board --
+        which a public repo's board automation can fill with anyone's issue. The trust
+        judgement is made on THIS read's row, never a separate query, so what is judged
+        is exactly what reaches the prompt. Only ISSUE rows are read: issues and PRs
+        share GitHub's number space, and an epic is an issue."""
         if not epic_repo or epic_number is None:
             return None
         from sqlalchemy import select as sa_select
         from server.db.models import WorkItem
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
+        ref = f"{epic_repo}#{epic_number}"
         async with db_session() as db:
             epic = (await db.execute(sa_select(WorkItem).where(
                 WorkItem.repo == epic_repo, WorkItem.number == epic_number,
+                WorkItem.kind == "issue",
             ))).scalar_one_or_none()
             if epic is None:
                 return None
             children = (await db.execute(sa_select(WorkItem).where(
                 WorkItem.parent_work_item_id == epic.id,
             ).order_by(WorkItem.number))).scalars().all()
-            # Only trusted authors' sub-issues reach the prompt (the epic itself is
-            # judged by ``_sdlc_epic_author_trusted`` before the spawn).
-            from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
-            trusted = await trusted_authors_by_repo(db, {c.repo for c in children})
+            trusted = await trusted_authors_by_repo(
+                db, {epic_repo} | {c.repo for c in children})
+            if not author_trusted(trusted, epic_repo, epic.author):
+                raise UntrustedEpic(ref)
+            # Only trusted authors' sub-issues reach the prompt either.
             kept = [c for c in children if author_trusted(trusted, c.repo, c.author)]
             omitted = len(children) - len(kept)
             children = kept
-        ref = f"{epic_repo}#{epic_number}"
         parts = [
             f"(upstream: epic {ref}; no intent.md exists — this initiative was "
             "adopted directly from the epic, so the spec is seeded from the "

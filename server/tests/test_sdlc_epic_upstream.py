@@ -90,6 +90,33 @@ def test_epic_adoption_spec_spawn_refuses_an_untrusted_epic(monkeypatch, isolate
     assert "o/r#42" in summary
 
 
+def test_epic_upstream_text_judges_the_epic_row_it_reads(isolated_db):
+    """The trust judgement and the text read are ONE read of ONE row: there is no
+    separate pre-check whose query could disagree with the read that seeds the prompt."""
+    import pytest
+    asyncio.run(_seed_epic(epic_author="stranger"))
+    orch_mod, orch = _bare_orchestrator()
+    with pytest.raises(orch_mod.UntrustedEpic):
+        asyncio.run(orch._sdlc_epic_upstream_text("o/r", 42))
+
+
+def test_an_epic_pointer_at_a_strangers_pr_never_reads_the_pr(isolated_db):
+    """Issues and PRs share GitHub's number space; the epic read takes ISSUES only, so a
+    pointer that resolves to a PR row yields no text at all."""
+    from server.db import db_session
+    from server.db.models import WorkItem
+    asyncio.run(_seed_epic(children=False))
+
+    async def _add_pr():
+        async with db_session() as db:
+            db.add(WorkItem(author="stranger", repo="o/r", number=77, kind="pr",
+                            title="PR", body="PR-INJECTION", state="open"))
+            await db.commit()
+    asyncio.run(_add_pr())
+    _orch_mod, orch = _bare_orchestrator()
+    assert asyncio.run(orch._sdlc_epic_upstream_text("o/r", 77)) is None
+
+
 def test_epic_upstream_text_includes_epic_and_children(isolated_db):
     asyncio.run(_seed_epic())
     _orch_mod, orch = _bare_orchestrator()

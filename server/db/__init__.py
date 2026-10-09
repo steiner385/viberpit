@@ -13,14 +13,14 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, cast
 
 from sqlalchemy import (
-    Table, event, insert as sa_insert, inspect as sa_inspect, literal as sa_literal,
+    Table, event, insert as sa_insert, inspect as sa_inspect,
     select as sa_select, text as sa_text, update as sa_update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.aio import run_to_completion
 from server.config import get_settings
-from server.db.models import Automation, Base, DataBackfill, WorkItem
+from server.db.models import Automation, Base, DataBackfill, ProjectRepo, WorkItem
 from server.sessions.engine import AgentEngine
 
 log = logging.getLogger(__name__)
@@ -273,50 +273,46 @@ def _backfill_session_engine(sync_conn) -> None:
         ))
 
 
-# GitHub App logins the mirror used to store bare (it now writes Bots as ``app/<slug>``).
-# Both were verified unregistered as USER logins on 2026-10-09, so a bare row of either
-# name written by the OLD sync code (before it read ``__typename``) can only be the App.
+# App logins the OLD mirror stored bare (the new sync writes Bots as ``app/<slug>``).
 _APP_AUTHOR_SLUGS = ("github-actions", "viberpit")
 _APP_AUTHOR_BACKFILL = "work_item_app_authors"
-# Extra conservative bound on ``gh_created_at``: nothing created after the logins were
-# verified unregistered is ever relabelled.
-_APP_AUTHOR_BACKFILL_BOUND = datetime(2026, 10, 10, tzinfo=timezone.utc)
 
 
 def _backfill_app_authors(sync_conn) -> None:
-    """ONE-SHOT: relabel bare App authors the old mirror wrote as ``app/<slug>``.
+    """ONE-SHOT: clear the bare App-looking authors the old mirror wrote, and re-mirror.
 
     Same rationale as ``_backfill_session_engine``: production startup reconciles
-    rather than running Alembic, so migration 0081's data change only reaches the live
+    rather than running Alembic, so migration 0082's data change only reaches the live
     database from here.
 
-    SECURITY -- this MUST stay one-shot (the ``data_backfills`` marker, written in the
-    same transaction as the UPDATE); do not "simplify" it into an every-boot update,
-    and a ``gh_created_at`` bound alone is NOT enough. GitHub users can rename: someone
-    who opened an issue before the bound can later rename to the unregistered login
-    ``viberpit``/``github-actions``, the next sync then stores that bare login on an
-    OLD row, and a repeated relabel would turn it into the trusted ``app/<slug>`` --
-    the squatting bypass the ``app/`` form exists to close. Once the marker exists
-    this never runs again; a bare row stays bare (untrusted, fail closed). The UPDATE
-    is further bounded to rows the mirror last wrote before this run
-    (``last_synced_at``) and created before 2026-10-10.
+    SECURITY -- never infer ``app/<slug>`` from a stored login. A login is a stale
+    identity: it records what the account was CALLED when the row was last synced, not
+    whether it was the App. Anyone who registered -- or renamed to -- ``viberpit`` or
+    ``github-actions`` before this deploy has bare rows indistinguishable from the
+    App's, and relabelling them would hand them the App's trust. So the bare rows are
+    CLEARED (``author`` NULL: untrusted, fail closed) and every repo's mirror backfill
+    is reset (``ProjectRepo.backfill_done`` etc.), so the ``__typename``-aware sync
+    re-reads every author and GitHub itself says which rows are Bots.
+
+    It MUST also stay one-shot (the ``data_backfills`` marker, written in the same
+    transaction): after it, a bare ``viberpit`` row can only have come from the NEW sync
+    -- i.e. a USER of that name -- and must be left alone.
     """
     tables = set(sa_inspect(sync_conn).get_table_names())
-    if not {"work_items", "data_backfills"} <= tables:
+    if not {"work_items", "project_repos", "data_backfills"} <= tables:
         return
     marker = cast(Table, DataBackfill.__table__)
     if sync_conn.execute(sa_select(marker.c.name).where(
             marker.c.name == _APP_AUTHOR_BACKFILL)).first() is not None:
         return
-    now = datetime.now(timezone.utc)
-    table = cast(Table, WorkItem.__table__)
+    items = cast(Table, WorkItem.__table__)
     sync_conn.execute(
-        sa_update(table)
-        .where(table.c.author.in_(_APP_AUTHOR_SLUGS),
-               table.c.gh_created_at < _APP_AUTHOR_BACKFILL_BOUND,
-               table.c.last_synced_at < now)
-        .values(author=sa_literal("app/") + table.c.author))
-    sync_conn.execute(sa_insert(marker).values(name=_APP_AUTHOR_BACKFILL, applied_at=now))
+        sa_update(items).where(items.c.author.in_(_APP_AUTHOR_SLUGS)).values(author=None))
+    repos = cast(Table, ProjectRepo.__table__)
+    sync_conn.execute(sa_update(repos).values(
+        backfill_done=False, backfill_cursor=None, backfill_phase="issues"))
+    sync_conn.execute(sa_insert(marker).values(
+        name=_APP_AUTHOR_BACKFILL, applied_at=datetime.now(timezone.utc)))
 
 
 def _assert_no_schema_drift(sync_conn) -> None:
