@@ -35,6 +35,10 @@ _EXT = {
     "application/zip": "zip",
 }
 
+#: The image subset the transcript renders inline (artifact cards, tool results, and
+#: the WS redactor's image exemption).
+IMAGE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
 # Types with no reliable magic bytes — accepted solely on declared Content-Type.
 _DECLARED_ONLY = frozenset({"text/plain", "text/csv", "application/json"})
 

@@ -88,6 +88,62 @@ def test_redact_event_cookie_shape_scrubbed():
     assert "[REDACTED]" in clean["cookie"]
 
 
+# Real magic bytes + a payload whose base64 ends in `=` — the shape the padded-base64
+# secret rule matched, turning ~2 in 3 screenshots into "Image unavailable".
+_PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 2
+_JPEG = b"\xff\xd8\xff\xe0" + bytes(range(201))
+
+
+def _b64(raw: bytes) -> str:
+    import base64
+    out = base64.b64encode(raw).decode()
+    assert out.endswith("=")
+    return out
+
+
+def test_redact_event_keeps_tool_result_image_data():
+    """A base64 image block in a toolResult reaches the browser intact."""
+    from server.audit import redact_event
+
+    data = _b64(_PNG)
+    token = "sk-ant-api03-ABCDEF1234567890abcdef1234567890ABCD"
+    wire = {"type": "toolResult", "payload": {"content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+        {"type": "text", "text": f"leaked {token}"},
+    ]}}
+    clean = redact_event(wire)
+    image, text = clean["payload"]["content"]
+    assert image["source"]["data"] == data
+    assert token not in text["text"]
+
+
+def test_redact_event_keeps_image_data_urls():
+    """User-turn images replay as data: URLs; they are not credentials either."""
+    from server.audit import redact_event
+
+    url = f"data:image/jpeg;base64,{_b64(_JPEG)}"
+    clean = redact_event({"type": "user", "images": [{"url": url, "mime": "image/jpeg"}]})
+    assert clean["images"][0]["url"] == url
+
+
+def test_redact_event_still_scrubs_secrets_dressed_as_images():
+    """Only real image bytes are exempt: a padded secret in an image's clothes, or
+    an image payload with non-base64 material appended, is still redacted."""
+    from server.audit import redact_event
+
+    secret = _b64(b"refresh-token-" + bytes(range(60)))
+    smuggled = _b64(_PNG) + " sk-ant-api03-ABCDEF1234567890abcdef1234567890ABCD"
+    wire = {"type": "toolResult", "payload": {"content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": secret}},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": smuggled}},
+    ]}, "url": f"data:image/png;base64,{secret}"}
+    clean = redact_event(wire)
+    first, second = clean["payload"]["content"]
+    assert secret not in first["source"]["data"]
+    assert "sk-ant" not in second["source"]["data"]
+    assert secret not in clean["url"]
+
+
 # ---------------------------------------------------------------------------
 # Part C — worktree branch arg-injection guard
 # ---------------------------------------------------------------------------
