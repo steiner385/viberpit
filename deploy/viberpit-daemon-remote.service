@@ -70,12 +70,13 @@ TimeoutStopSec=660
 # daemon; orchestrator.stop() then tears children down in order, and the final
 # SIGKILL phase still sweeps the whole cgroup at TimeoutStopSec.
 KillMode=mixed
-# Sized for rocky's 31 GB, versus 10G/12G on dobby's 19 GB host. Memory headroom is
-# the main reason for offloading sessions here in the first place.
-MemoryHigh=24G
+# Percent of host RAM so the unit sizes itself on any headless runner (rocky's 31 GB →
+# ~23G/27G, as the old absolute 24G/28G). Higher share than the desktop unit's 55%/65%:
+# memory headroom is the main reason for offloading sessions here in the first place.
+MemoryHigh=75%
 # Shared with every `codex app-server` this runner supervises (one per ACCOUNT,
 # ref-counted and idle-reaped after VIBERPIT_CODEX_IDLE_GRACE_S).
-MemoryMax=28G
+MemoryMax=88%
 # continue, NOT the default stop: one session's OOM-killed tool must not stop every
 # session on this host (#2673). Same rationale as the local unit.
 OOMPolicy=continue

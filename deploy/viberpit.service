@@ -41,11 +41,11 @@ RestartSec=3
 # auth-audit stop calls = ~55-60s, comfortably under the 90s below.
 TimeoutStopSec=90
 KillMode=control-group
-MemoryMax=12G
+MemoryMax=65%
 # No pids ceiling: in the in-process fallback (daemon unreachable) the edge runs
 # sessions itself, each spawning a Claude CLI + MCP fleet + Xvfb + threads. TasksMax
 # counts threads, so a low cap throttles fork/thread spawns (EAGAIN). Kept in sync
-# with viberpit-daemon.service; MemoryMax=12G is the real backstop.
+# with viberpit-daemon.service; MemoryMax (65% of RAM) is the real backstop.
 TasksMax=infinity
 LimitNOFILE=65536
 
