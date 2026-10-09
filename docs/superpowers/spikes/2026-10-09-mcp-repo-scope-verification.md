@@ -43,6 +43,8 @@ persisted-mid ["plugin:desktop-commander:desktop-commander"]
 after disable [... plugin disabled, aws-oauth connected, spike-ok disabled]
 persisted-mid ["plugin:desktop-commander:desktop-commander", "spike-ok"]
 bogus exc Exception Server not found: no-such-server
+after bogus [plugin disabled/dynamic, aws-oauth connected/user, spike-ok disabled/user]
+persisted {"disabledMcpServers": ["plugin:desktop-commander:desktop-commander", "spike-ok"], "disabledMcpjsonServers": null, "enabledMcpjsonServers": null}
 === RUN3 toggle plugin key (disabled -> enable -> disable)
 start [plugin disabled/dynamic, aws-oauth connected, spike-ok connected]
 after enable  [plugin connected/dynamic, ...]      persisted-mid []
@@ -74,7 +76,8 @@ start [plugin connected, aws-oauth connected, spike-ok connected]      (proj-srv
 2. **The CLI persists toggles (Q5); ruling R2: the DB stays authoritative.** Repo rules plus `sessions.mcp_overrides`
    are the source of truth. The CLI's own runtime write of `projects[cwd].disabledMcpServers` on a live toggle is a
    transient mirror, not a second authority. ViberPit overwrites that key at every driver build via
-   `configdir.trust_project`, before the CLI starts, so Q5 and the plan agree.
+   `configdir.trust_project`, before the CLI starts, so Q5 and the plan agree. (`trust_project` will write the key
+   as Task 4 behaviour; today it does not. With `disabled_mcp=None` it leaves the key untouched.)
    - Task 5's toggle route writes the DB only and never `.claude.json`.
    - The Global Constraint "written by `trust_project` only" means "ViberPit writes it only via `trust_project`";
      the CLI also writes it at runtime.
@@ -84,14 +87,19 @@ start [plugin connected, aws-oauth connected, spike-ok connected]      (proj-srv
    kill switch off), a list the CLI persisted earlier could in principle linger and keep servers disabled. R3: no list
    is written in those three cases, and a stale CLI-persisted list does not survive into other sessions, for two
    reasons confirmed in code:
-   - `compose()` rewrites the account `.claude.json` on every launch (`src/viberpit/configdir.py:179`, via
+   - `compose()` rewrites the account `.claude.json` on every launch (`src/viberpit/configdir.py:186`, via
      `compose_claude_json`, lines 104-137). That file is built from `store/<name>.claude.json` (written only at login
      capture, `src/viberpit/auth_login.py:365`) plus the shared overlay (`overlay_shared_claude_json`, lines 90-101),
      so CLI runtime writes into `cfg/.claude.json` are discarded. Nothing in `src/` or `server/` copies them back.
-   - Every session has a unique worktree cwd, so `projects[cwd]` is not reused across sessions anyway.
+   - Git-repo sessions get a unique worktree cwd (`server/sessions/orchestrator.py:5159-5170` creates one only when
+     `worktrees.is_git_repo(cwd)`), so their `projects[cwd]` entry is not reused across sessions. This reason does
+     NOT cover non-git cwds (see R4); reason 1 above still holds for them.
    Caveat: `trust_project` merges into the existing entry and keeps its other keys (lines 150-157), so within a single
    launch cycle an entry the CLI wrote earlier is preserved unless ViberPit overwrites `disabledMcpServers` (R2 does).
    The code does not contradict R3.
+   **R4 (known limitation).** Sessions with a non-git cwd (rare: adopted or explicit-cwd sessions) use the given cwd as-is,
+   so they share one `projects[cwd]` entry and one list. Two such LIVE sessions with different overrides are
+   last-writer-wins on it. Accepted; document it here and in the Task 10 feature doc.
 4. **Q7 handling is Task 5.** Validate the name against the configured server keys BEFORE calling the SDK; an unknown
    name is a 400. The bare `Exception("Server not found: <name>")` is only a fallback for a server deleted
    mid-flight, matched by message not type, and maps to 409 `MCP_TOGGLE_FAILED`.
