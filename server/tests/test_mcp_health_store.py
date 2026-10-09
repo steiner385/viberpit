@@ -52,3 +52,20 @@ async def test_orchestrator_persist_mcp_status_writes_row_for_record_account(iso
     await orch._persist_mcp_status("unknown", [S("zz", "connected", None, 1, "user")])  # no record: ignored
     [r] = await store.rows()
     assert (r["account"], r["host"], r["sessionId"], r["source"]) == ("alice", self_host_name(), "sid", "session")
+
+
+@pytest.mark.asyncio
+async def test_duplicate_names_in_one_call_last_wins(isolated_db):
+    await store.upsert_states("alice", "dobby", [S("gh", "failed", "x", None, "user"), S("gh", "connected", None, 2, "user")],
+                              source="probe", session_id=None)
+    [r] = await store.rows()
+    assert (r["status"], r["toolCount"], r["error"]) == ("connected", 2, None)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_upserts_same_key_do_not_collide(isolated_db):
+    import asyncio
+    await asyncio.gather(*[
+        store.upsert_states("alice", "dobby", [S("gh", "connected", None, i, "user")], source="session", session_id=f"s{i}")
+        for i in range(8)])
+    assert len(await store.rows()) == 1
