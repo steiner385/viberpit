@@ -9,16 +9,18 @@ import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncGenerator, cast
 
 from sqlalchemy import (
-    Table, event, inspect as sa_inspect, select as sa_select, text as sa_text, update as sa_update,
+    Table, event, inspect as sa_inspect, literal as sa_literal, select as sa_select,
+    text as sa_text, update as sa_update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.aio import run_to_completion
 from server.config import get_settings
-from server.db.models import Automation, Base
+from server.db.models import Automation, Base, WorkItem
 from server.sessions.engine import AgentEngine
 
 log = logging.getLogger(__name__)
@@ -271,6 +273,36 @@ def _backfill_session_engine(sync_conn) -> None:
         ))
 
 
+# GitHub App logins the mirror used to store bare (it now writes Bots as ``app/<slug>``).
+# Both were verified unregistered as USER logins on 2026-10-09, so a bare row of either
+# name created before that check can only be the App.
+_APP_AUTHOR_SLUGS = ("github-actions", "viberpit")
+# Exclusive upper bound on ``gh_created_at`` for the relabel. It MUST stay: anyone can
+# register ``github-actions``/``viberpit`` as a user later, and an unbounded every-boot
+# relabel would turn that squatter's issues into trusted App authors -- re-opening the
+# trusted-author bypass. Rows after the bound (or with no creation time) stay bare, i.e.
+# untrusted (fail closed), until a resync writes the correct ``app/`` form.
+_APP_AUTHOR_BACKFILL_BOUND = datetime(2026, 10, 10, tzinfo=timezone.utc)
+
+
+def _backfill_app_authors(sync_conn) -> None:
+    """Relabel pre-bound bare App authors on mirrored work items as ``app/<slug>``.
+
+    Same rationale as ``_backfill_session_engine``: production startup reconciles
+    rather than running Alembic, so migration 0081's data change only reaches the live
+    database from here. Idempotent without a marker: converted rows start with
+    ``app/`` and no longer match.
+    """
+    if "work_items" not in set(sa_inspect(sync_conn).get_table_names()):
+        return
+    table = cast(Table, WorkItem.__table__)
+    sync_conn.execute(
+        sa_update(table)
+        .where(table.c.author.in_(_APP_AUTHOR_SLUGS),
+               table.c.gh_created_at < _APP_AUTHOR_BACKFILL_BOUND)
+        .values(author=sa_literal("app/") + table.c.author))
+
+
 def _assert_no_schema_drift(sync_conn) -> None:
     """After reconcile, verify every model column exists in its table.
 
@@ -326,6 +358,7 @@ async def init_db(db_url: str | None = None) -> None:
         # Postgres deployment does not run Alembic revisions.
         await conn.run_sync(_backfill_session_engine)
         await conn.run_sync(_migrate_weighted_selection_strategy)
+        await conn.run_sync(_backfill_app_authors)
         await conn.run_sync(_assert_no_schema_drift)
         if url.startswith("sqlite"):
             # SQLite-only: `pending_rearm = 'null'` compares a json column to text,
