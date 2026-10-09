@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 from . import paths
+from .mcp_names import short_name
 
 log = logging.getLogger(__name__)
 
@@ -209,7 +210,7 @@ def refresh_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None) -> bool:
     for key, blob in shared.items():
         if not isinstance(blob, dict):
             continue
-        explicit = (server is not None and blob.get("serverName") == server
+        explicit = (server is not None and short_name(str(blob.get("serverName"))) == server
                     and bool(blob.get("accessToken")))
         if _mcp_bundle_replaces(existing.get(key), blob, explicit=explicit):
             merged[key] = blob

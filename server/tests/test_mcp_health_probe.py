@@ -162,3 +162,94 @@ async def test_store_failure_for_one_account_is_contained(monkeypatch, tmp_path,
     out = await probe.probe(["bad", "good"], client_factory=_factory([{"name": "a", "status": "connected"}], []))
     assert out["skipped"] == [{"account": "bad", "reason": "RuntimeError"}]
     assert {r["account"] for r in out["rows"]} == {"good"}
+
+
+# --- final-review fix wave -------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_select_accounts_gates_on_helper_readiness(monkeypatch):
+    from viberpit import accounts
+    monkeypatch.setattr(accounts, "_anthropic_account_names", lambda: ["ready", "disabled"])
+    monkeypatch.setattr(probe, "is_account_helper_ready", lambda n: n == "ready")
+    names, skipped = await probe.select_accounts(None)
+    assert names == ["ready"] and skipped == []          # implicit: not-ready accounts are never probed
+    names, skipped = await probe.select_accounts("disabled")
+    assert names == [] and skipped == [{"account": "disabled", "reason": "account not ready"}]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_probe_never_probes_a_not_ready_account(monkeypatch, isolated_db):
+    from server.sessions.orchestrator import SessionOrchestrator
+    from viberpit import accounts
+    monkeypatch.setattr(accounts, "_anthropic_account_names", lambda: ["ready", "disabled"])
+    monkeypatch.setattr(probe, "is_account_helper_ready", lambda n: n == "ready")
+    seen = []
+
+    async def fake_probe(names, **kw):
+        seen.append(list(names))
+        return {"rows": [], "skipped": []}
+
+    monkeypatch.setattr(probe, "probe", fake_probe)
+    out = await SessionOrchestrator.probe_mcp(object(), None)
+    assert seen == [["ready"]] and out["skipped"] == []
+    out = await SessionOrchestrator.probe_mcp(object(), "disabled")
+    assert out["skipped"] == [{"account": "disabled", "reason": "account not ready"}]
+
+
+@pytest.mark.asyncio
+async def test_account_store_reads_go_through_account_store_io(monkeypatch, tmp_path):
+    from viberpit import accounts
+    calls = []
+    real = probe.account_store_io
+
+    async def spy(fn, *a, **k):
+        calls.append(getattr(fn, "__name__", repr(fn)))
+        return await real(fn, *a, **k)
+
+    monkeypatch.setattr(probe, "account_store_io", spy)
+    def _anthropic_account_names():
+        return ["alice"]
+
+    def is_account_helper_ready(n):
+        return True
+
+    def _cfg_dir_for(a):
+        return tmp_path
+
+    monkeypatch.setattr(accounts, "_anthropic_account_names", _anthropic_account_names)
+    monkeypatch.setattr(probe, "is_account_helper_ready", is_account_helper_ready)
+    monkeypatch.setattr(probe, "_cfg_dir_for", _cfg_dir_for)
+    await probe.select_accounts(None)
+    await probe.probe_account("alice", client_factory=_factory([{"name": "a", "status": "connected"}], []))
+    assert "_anthropic_account_names" in calls and "is_account_helper_ready" in calls
+    assert "_cfg_dir_for" in calls
+
+
+@pytest.mark.asyncio
+async def test_scratch_mirror_gets_current_shared_servers_real_dir_untouched(monkeypatch, tmp_path):
+    import json
+    import claude_agent_sdk
+    from viberpit import paths
+    real = tmp_path / "cfg" / "alice"
+    real.mkdir(parents=True)
+    (real / ".claude.json").write_text('{"mcpServers": {"old": {"command": "x"}}}')
+    (real / ".credentials.json").write_text('{"claudeAiOauth": {"x": 1}}')
+    before = {p.name: p.read_bytes() for p in real.iterdir()}
+    shared = tmp_path / "claude.shared.json"
+    shared.write_text('{"mcpServers": {"fresh": {"command": "y"}}}')
+    monkeypatch.setattr(paths, "shared_claude_json_path", lambda: shared)
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
+    monkeypatch.setenv("VIBERPIT_HELPER_SCRATCH_CONFIG", "true")
+    seen = {}
+
+    class _Cap(FakeSDKClient):
+        def __init__(self, options=None, **_):
+            super().__init__([], mcp_status=[{"name": "fresh", "status": "connected"}], startup_frames=[])
+            seen["scratch"] = options.env["CLAUDE_CONFIG_DIR"]
+            seen["servers"] = json.loads((__import__("pathlib").Path(seen["scratch"]) / ".claude.json").read_text())["mcpServers"]
+
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _Cap)
+    monkeypatch.setattr(probe, "_cfg_dir_for", lambda a: real)
+    await probe.probe_account("alice")
+    assert set(seen["servers"]) == {"fresh"}
+    assert {p.name: p.read_bytes() for p in real.iterdir()} == before

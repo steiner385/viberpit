@@ -1,17 +1,13 @@
 """Persistence for MCP live status (spec 2026-10-09). Rows are the latest observation per key."""
 from __future__ import annotations
 
+from viberpit.mcp_names import short_name
 from sqlalchemy import select
 
 from server.db import db_session, dialect_insert
 from server.db.clock import db_utc_now
 from server.db.models import McpServerHealth
 from server.mcp_health.status import McpServerState
-
-
-def short_name(server_key: str) -> str:
-    """Strip the ``plugin:<p>:`` prefix: ``plugin:railway:railway`` -> ``railway``."""
-    return server_key.rsplit(":", 1)[-1] if server_key.startswith("plugin:") else server_key
 
 
 async def upsert_states(account: str, host: str, states: list[McpServerState], *,

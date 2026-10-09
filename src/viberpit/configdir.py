@@ -88,6 +88,19 @@ def reconcile_links(name: str) -> None:
         link.symlink_to(source)
 
 
+def overlay_shared_claude_json(base: dict) -> dict:
+    """Overlay the shared allowlist keys (mcpServers, projects, allowedTools) from
+    store/claude.shared.json onto *base* in place and return it. The one overlay both
+    ``compose_claude_json`` and a scratch-mirror consumer (the MCP probe) apply."""
+    shared_path = paths.shared_claude_json_path()
+    if shared_path.exists():
+        shared: dict = read_json(shared_path)
+        for key in ("mcpServers", "projects", "allowedTools"):
+            if key in shared:
+                base[key] = shared[key]
+    return base
+
+
 def compose_claude_json(name: str) -> dict:
     """Build the per-account .claude.json content.
 
@@ -108,13 +121,7 @@ def compose_claude_json(name: str) -> dict:
         global_path = paths.global_claude_json()
         base = read_json(global_path) if global_path.exists() else {}
 
-    # Overlay shared allowlist keys
-    shared_path = paths.shared_claude_json_path()
-    if shared_path.exists():
-        shared: dict = read_json(shared_path)
-        for key in ("mcpServers", "projects", "allowedTools"):
-            if key in shared:
-                base[key] = shared[key]
+    overlay_shared_claude_json(base)
 
     # Mark the account as onboarded so an INTERACTIVE `claude` session doesn't re-run
     # the login/onboarding chooser. The account is already authenticated (it has a

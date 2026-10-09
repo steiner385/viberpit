@@ -95,3 +95,20 @@ def test_skips_write_when_file_replaced_between_read_and_write(tmp_path, monkeyp
     monkeypatch.setattr(creds, "read_json", racing)
     assert creds.refresh_cfg_mcp_oauth(cfg) is False
     assert json.loads(cred.read_text()) == newer
+
+
+def test_plugin_prefixed_server_name_counts_as_explicit(tmp_path, monkeypatch):
+    cfg = _setup(tmp_path, monkeypatch,
+                 {"k": {"serverName": "plugin:p:notion", "accessToken": "new"}},
+                 {"k": {"serverName": "plugin:p:notion", "accessToken": "stale"}})
+    assert creds.refresh_cfg_mcp_oauth(cfg, server="notion") is True
+    assert json.loads((cfg / ".credentials.json").read_text())["mcpOAuth"]["k"]["accessToken"] == "new"
+
+
+def test_one_short_name_helper():
+    from viberpit.mcp_names import short_name
+    from server import mcp_auth
+    from server.mcp_health import store
+    assert short_name("plugin:railway:railway") == "railway" and short_name("notion") == "notion"
+    assert store.short_name is short_name
+    assert not hasattr(mcp_auth, "_bare")

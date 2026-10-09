@@ -17,7 +17,7 @@ import yaml
 
 from viberpit import paths
 from server.library.names import resolve_under
-from server.mcp_health.store import short_name
+from viberpit.mcp_names import short_name
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.S)
 

@@ -17986,9 +17986,10 @@ class SessionOrchestrator:
         from server.mcp_health import probe as mcp_probe
         if not get_settings().mcp_status_enabled:
             return {"rows": [], "skipped": []}
-        from viberpit import accounts as _accounts_mod
-        names = [account] if account else _accounts_mod._anthropic_account_names()
-        return await mcp_probe.probe(names)
+        names, not_ready = await mcp_probe.select_accounts(account)
+        out = await mcp_probe.probe(names)
+        out["skipped"] = not_ready + out["skipped"]
+        return out
 
     def live_session_load(self) -> dict[str, float]:
         """Weighted count of live sessions per account, for load-aware selection.

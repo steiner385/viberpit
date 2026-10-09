@@ -1,9 +1,10 @@
 """On-demand MCP health probe (spec 2026-10-09 §3).
 
-Opens a ClaudeSDKClient under an account's EXISTING cfg dir, never sends a prompt (control
+Opens a ClaudeSDKClient over a host-local scratch MIRROR of an account's cfg dir (current shared
+mcpServers overlaid onto the mirror's .claude.json), never sends a prompt (control
 requests start no turn — verified in docs/superpowers/spikes/2026-10-09-mcp-status-verification.md),
 polls get_mcp_status until nothing is pending, and closes. It never composes or writes the
-cfg dir: a concurrent OAuth login or live session may own it."""
+real cfg dir: a concurrent OAuth login or live session may own it."""
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +18,7 @@ from server.hostname import self_host_name
 from server.mcp_health import store
 from server.mcp_health.status import McpServerState, sanitize_statuses
 from server.sessions.account_auth import account_store_io, helper_env
+from server.sessions.helper_call import is_account_helper_ready
 
 log = logging.getLogger(__name__)
 _MAX_CONCURRENT = 2
@@ -53,6 +55,31 @@ def _cfg_dir_for(account: str) -> Path | None:
     return d if (d / ".claude.json").is_file() else None
 
 
+def _overlay_shared_servers(scratch: Path) -> None:
+    from viberpit.configdir import overlay_shared_claude_json
+    from viberpit.creds import read_json, write_json_secure
+    path = scratch / ".claude.json"
+    if path.is_file():
+        write_json_secure(path, overlay_shared_claude_json(read_json(path)))
+
+
+async def select_accounts(account: str | None) -> tuple[list[str], list[dict]]:
+    """The accounts to probe on this host, gated on helper readiness like every other
+    scratch-mirror call site (a disabled / org-denied / de-authed account is never spawned).
+    An EXPLICIT account that is not ready is reported in ``skipped``; an implicit one is omitted.
+    Store reads run off-loop via ``account_store_io`` (#2852)."""
+    from viberpit import accounts
+    names = [account] if account else await account_store_io(accounts._anthropic_account_names)
+    ready: list[str] = []
+    skipped: list[dict] = []
+    for n in names:
+        if await account_store_io(is_account_helper_ready, n, default=False):
+            ready.append(n)
+        elif account:
+            skipped.append({"account": n, "reason": "account not ready"})
+    return ready, skipped
+
+
 async def _default_client(account: str, cfg_dir: Path):
     """A prompt-less client over a host-local MIRROR of the account's cfg dir.
 
@@ -65,8 +92,12 @@ async def _default_client(account: str, cfg_dir: Path):
     from server.sessions.claude_bin import cli_path_kwargs
     from server.sessions.helper_call import helper_cwd
     env = await account_store_io(helper_env, str(cfg_dir), account)
-    if env.get("CLAUDE_CONFIG_DIR") == str(cfg_dir):      # scratch fail-open / kill switch
+    scratch = env.get("CLAUDE_CONFIG_DIR")
+    if scratch == str(cfg_dir):                           # scratch fail-open / kill switch
         raise ProbeSkipped("no scratch config mirror")
+    # Settings writes servers only to the shared store; an account's .claude.json picks them up
+    # on the next compose. Overlay the current ones onto the host-local mirror (never the real dir).
+    await asyncio.to_thread(_overlay_shared_servers, Path(str(scratch)))
     return ClaudeSDKClient(options=ClaudeAgentOptions(
         cwd=helper_cwd(), env=env, extra_args={"no-session-persistence": None},
         **(await asyncio.to_thread(cli_path_kwargs))))
@@ -98,7 +129,7 @@ async def _bounded(account, factory, settle_s, interval_s, budget_s) -> list[Mcp
 
     async def run() -> list[McpServerState]:
         nonlocal slot
-        cfg = _cfg_dir_for(account)
+        cfg = await account_store_io(_cfg_dir_for, account)
         if cfg is None:
             raise LookupError("no config dir on this host")
         async with _global_sem():

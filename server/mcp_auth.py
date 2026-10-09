@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Protocol, Sequence
 
+from viberpit.mcp_names import short_name
 from viberpit import accounts, configdir, paths
 from viberpit.config import load_config
 from viberpit.creds import merge_shared_mcp, write_json_secure
@@ -72,13 +73,9 @@ def merge_mcp_oauth_from_cfg(cfg_dir: Path, *, server: str | None = None) -> int
     authenticated_keys = {
         key for key, value in mcp.items()
         if isinstance(value, dict) and isinstance(value.get("serverName"), str)
-        and _bare(value["serverName"]) == server
+        and short_name(value["serverName"]) == server
     } if server is not None else set()
     return merge_shared_mcp(mcp, authenticated_keys=authenticated_keys)
-
-
-def _bare(key: str) -> str:
-    return key.rsplit(":", 1)[-1] if key.startswith("plugin:") else key
 
 
 def clear_needs_auth_cache(server: str) -> list[str]:
@@ -92,7 +89,7 @@ def clear_needs_auth_cache(server: str) -> list[str]:
         cache = read_json_safe(cache_path)
         if not isinstance(cache, dict):
             continue
-        keys = [k for k in cache if _bare(k) == server]
+        keys = [k for k in cache if short_name(k) == server]
         if not keys:
             continue
         for k in keys:
