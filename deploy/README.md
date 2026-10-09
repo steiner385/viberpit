@@ -601,6 +601,14 @@ itself, `Restart=always` brings it back. Apply it with a drop-in on every daemon
     sudo systemctl daemon-reload
     systemctl show -p OOMPolicy viberpit-daemon.service   # expect continue
 
+**Per-session memory attribution** (#2739). The kernel's OOM line names only a bare pid
+inside the daemon cgroup. Every 30 s the daemon sums resident memory per direct child
+(each live `claude` CLI and everything beneath it) and, past 4 GiB, logs a WARNING
+`session.memory_high` with the owning `session`, `rootPid`, `rssMb` and the `top` three
+processes — so a runaway `node` is traceable before the OOM kill, not after. Throttled to
+one record per root per 10 min unless it grows 1.5×. Knobs: `VIBERPIT_SESSION_MEMORY_WARN_MB`,
+`VIBERPIT_SESSION_MEMORY_INTERVAL_S`; `VIBERPIT_SESSION_MEMORY_WATCH=off` disables it.
+
 **Unit drift is reported, not fixed, by deploys** (#2702). After each runner deploys, it
 compares the safety directives in `DAEMON_UNIT_GUARDS` (`server/deploy/steps.py`:
 `KillMode`, `OOMPolicy`) between the committed unit (`viberpit-daemon.service` for the

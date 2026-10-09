@@ -4,14 +4,16 @@ import { ApiRequestError } from '@/api/client'
 import { AssistantHeader } from './AssistantHeader'
 
 const setModel = vi.fn()
+const resetMutate = vi.fn()
 const state = {
   status: { enabled: true, sessionId: 's1' as string | null, model: 'sonnet' },
   setModel: { isError: false, error: null as ApiRequestError | null, isPending: false },
+  reset: { isError: false, error: null as ApiRequestError | null, isPending: false },
 }
 
 vi.mock('@/api/assistant', () => ({
   useAssistantStatus: () => ({ data: state.status }),
-  useResetAssistant: () => ({ mutate: vi.fn() }),
+  useResetAssistant: () => ({ mutate: resetMutate, reset: vi.fn(), ...state.reset }),
   useSetAssistantModel: () => ({ mutate: setModel, ...state.setModel }),
   useAssistantHistory: () => ({ data: [], isLoading: false }),
   useResumeAssistantSession: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
@@ -22,6 +24,8 @@ vi.mock('@/api/hooks', () => ({
 
 beforeEach(() => {
   setModel.mockReset()
+  resetMutate.mockReset()
+  state.reset = { isError: false, error: null, isPending: false }
   state.status = { enabled: true, sessionId: 's1', model: 'sonnet' }
   state.setModel = { isError: false, error: null, isPending: false }
 })
@@ -65,5 +69,38 @@ describe('AssistantHeader model picker', () => {
     }
     render(<AssistantHeader />)
     expect(screen.getByRole('alert').textContent).toContain('Couldn’t switch model')
+  })
+})
+
+describe('AssistantHeader new chat', () => {
+  const confirm = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start new chat' }))
+  }
+
+  it('confirming resets the assistant and closes the dialog on success', () => {
+    resetMutate.mockImplementation((_vars, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    render(<AssistantHeader />)
+    confirm()
+    expect(resetMutate).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Start a new chat?')).toBeNull()
+  })
+
+  it('keeps the dialog open and explains a failed reset', () => {
+    state.reset = {
+      isError: true, isPending: false,
+      error: new ApiRequestError(409, { error: { code: 'ALL_ACCOUNTS_LIMITED', message: 'busy' } }),
+    }
+    render(<AssistantHeader />)
+    confirm()
+    expect(screen.getByText('Start a new chat?')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toMatch(/\S/)
+  })
+
+  it('disables the confirm button while the reset is in flight', () => {
+    state.reset = { isError: false, error: null, isPending: true }
+    render(<AssistantHeader />)
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: /Starting/ }).disabled).toBe(true)
   })
 })

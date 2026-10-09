@@ -5,6 +5,8 @@ RedactingFilter — logging.Filter that strips token-like material from log reco
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 import uuid
@@ -14,6 +16,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.models import AuditEvent
+from server.sessions.attachments import IMAGE_MEDIA_TYPES, sniff_media_type
 
 # ---------------------------------------------------------------------------
 # Redaction patterns
@@ -92,14 +95,57 @@ def redact_detail(detail: dict[str, Any]) -> dict[str, Any]:
     return {key: _redact_value(value) for key, value in detail.items()}
 
 
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+_IMAGE_DATA_URL = re.compile(r"data:image/[a-z]+;base64,(.*)", re.DOTALL)
+
+
+def _is_image_base64(data: str) -> bool:
+    """True when *data* is nothing but base64 whose bytes open with real image magic.
+
+    The padded-base64 secret rule above matches any image whose byte length is not a
+    multiple of 3 — about two in three — so every such screenshot reached the browser
+    as ``[REDACTED]`` and rendered "Image unavailable". The whole-string base64 check
+    is what keeps the exemption narrow: a payload carrying anything else (a `sk-` key,
+    a JWT, a cookie) is not a pure base64 run and is redacted as before, and a padded
+    secret fails the magic-byte sniff.
+    """
+    if not _BASE64_RUN.fullmatch(data):
+        return False
+    try:
+        head = base64.b64decode(data[:16])
+    except (binascii.Error, ValueError):
+        return False
+    return sniff_media_type(head) in IMAGE_MEDIA_TYPES
+
+
+def _redact_wire_value(value: Any) -> Any:
+    if isinstance(value, str):
+        m = _IMAGE_DATA_URL.fullmatch(value)
+        return value if m and _is_image_base64(m.group(1)) else _redact(value)
+    if isinstance(value, dict):
+        source = value.get("source")
+        if (value.get("type") == "image" and isinstance(source, dict)
+                and isinstance(source.get("data"), str) and _is_image_base64(source["data"])):
+            # An image content block: its payload is the picture, everything else is
+            # still scrubbed like any other field.
+            rest = {k: _redact_wire_value(v) for k, v in value.items() if k != "source"}
+            return {**rest, "source": {k: v if k == "data" else _redact_wire_value(v)
+                                       for k, v in source.items()}}
+        return {k: _redact_wire_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_wire_value(v) for v in value]
+    return value
+
+
 def redact_event(wire: dict[str, Any]) -> dict[str, Any]:
     """Recursively redact secret-shaped strings in an outbound WS event dict.
 
-    Reuses redact_detail which now recurses into both nested dicts and lists,
-    so this covers: plain string fields, nested dicts, and lists of events
-    (as found in ``{"type": "batch", "events": [...]}``) uniformly.
+    Covers plain string fields, nested dicts, and lists of events (as found in
+    ``{"type": "batch", "events": [...]}``) uniformly, like :func:`redact_detail`,
+    except that verified image payloads — base64 ``image`` content blocks and
+    ``data:image/…;base64,`` URLs — pass through so the transcript can render them.
     """
-    return redact_detail(wire)
+    return _redact_wire_value(wire)
 
 
 # ---------------------------------------------------------------------------

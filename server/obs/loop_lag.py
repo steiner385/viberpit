@@ -49,6 +49,16 @@ is reported from ``warn_after`` but is a WARNING only from ``alert_after`` —
 by default the stack-dump threshold, so every filed stall has a dump beside it.
 The two levels throttle independently, so a routine INFO line can never spend
 the window a real stall needs.
+
+A WARNING also has to be the *process's* fault (#2866). When the host thrashes
+memory, every process freezes at once — edge and daemon logged 5–29s stalls at
+the same instants, and no stack dump named a culprit because the tracer thread
+froze with the loop. So the watchdog snapshots the kernel's cumulative PSI
+``full`` stall counters (``/proc/pressure/{memory,io}``) at every tick, and when
+a lag crosses ``alert_after`` it diffs them over that window. If host-wide stall
+time covers at least ``HOST_STALL_SHARE`` of the lag, the stall is reported as
+``loop_lag.host_stall`` at INFO with the measured ``host_*_full_s``; a stall the
+host's pressure does not explain stays a WARNING. PSI absent → WARNING, as before.
 """
 import asyncio
 import logging
@@ -177,6 +187,40 @@ def _build_stall_tracer(dump_path: str | None):
     return ThreadStallTracer(file=sys.stderr)
 
 
+_PSI_RESOURCES = ("memory", "io")
+
+
+def read_host_psi() -> dict[str, float] | None:
+    """Cumulative host-wide PSI ``full`` stall seconds per resource, or None.
+
+    ``full`` is time during which *every* non-idle task was stalled on that
+    resource — the whole-host freeze a loop-lag watchdog cannot see past. Cheap
+    procfs reads; a kernel without PSI (or a container hiding it) returns None
+    and the watchdog falls back to treating every stall as the process's own.
+    """
+    totals: dict[str, float] = {}
+    for resource in _PSI_RESOURCES:
+        try:
+            with open(f"/proc/pressure/{resource}") as fh:
+                text = fh.read()
+        except OSError:
+            return None
+        for line in text.splitlines():
+            if line.startswith("full "):
+                for part in line.split():
+                    if part.startswith("total="):
+                        totals[resource] = int(part[len("total="):]) / 1e6
+                break
+        if resource not in totals:
+            return None
+    return totals
+
+
+# Share of a stall that host-wide full stall time must cover for the stall to be
+# attributed to the host rather than to this process (#2866).
+HOST_STALL_SHARE = 0.5
+
+
 class _Throttle:
     """One level's quiet window, and what it swallowed since its last line."""
 
@@ -198,6 +242,7 @@ class LoopLagWatchdog:
         _log=None,
         _clock=None,
         _tracer=None,
+        _psi=None,
     ) -> None:
         self.interval = interval
         self.warn_after = warn_after
@@ -217,7 +262,12 @@ class LoopLagWatchdog:
             self._tracer = _tracer if _tracer is not None else _build_stall_tracer(dump_path)
         else:
             self._tracer = None
-        self._throttles = {logging.INFO: _Throttle(), logging.WARNING: _Throttle()}
+        # Host PSI reader (#2866); returns cumulative full-stall seconds per
+        # resource, or None when the host does not expose PSI.
+        self._psi = _psi if _psi is not None else read_host_psi
+        # Routine overshoot, host-explained stalls and real stalls throttle
+        # independently: neither INFO class may spend the window a WARNING needs.
+        self._throttles = {"routine": _Throttle(), "host": _Throttle(), "alert": _Throttle()}
 
     def _arm_tracer(self) -> None:
         """(Re)arm the deadman switch for the next interval, if enabled."""
@@ -231,19 +281,49 @@ class LoopLagWatchdog:
             except Exception:  # pragma: no cover - disarm must never mask shutdown
                 pass
 
-    def _note_lag(self, lag: float) -> None:
+    def _read_psi(self) -> dict[str, float] | None:
+        try:
+            return self._psi()
+        except Exception:  # a diagnostic read must never kill the watchdog
+            return None
+
+    def _host_stall(self, psi_before: dict[str, float] | None) -> dict[str, float] | None:
+        """Host-wide full-stall seconds per resource since ``psi_before``, or None."""
+        if psi_before is None:
+            return None
+        psi_after = self._read_psi()
+        if psi_after is None:
+            return None
+        return {
+            r: max(0.0, psi_after[r] - psi_before[r])
+            for r in psi_before.keys() & psi_after.keys()
+        }
+
+    def _note_lag(self, lag: float, psi_before: dict[str, float] | None = None) -> None:
         """Record one measured overshoot and warn about it, rate-limited.
 
         Split out of ``run`` so the throttle is testable without real sleeps.
+        ``psi_before`` is the host PSI snapshot taken at the start of the tick;
+        with it, a stall the host's own pressure explains is not a WARNING.
         """
         if lag > self.peak_lag_s:
             self.peak_lag_s = lag
         if lag < self.warn_after:
             return
 
-        routine = self.alert_after is not None and lag < self.alert_after
-        level = logging.INFO if routine else logging.WARNING
-        t = self._throttles[level]
+        event = "loop_lag.stall"
+        extra: dict[str, float] = {}
+        if self.alert_after is not None and lag < self.alert_after:
+            kind, level = "routine", logging.INFO
+        else:
+            kind, level = "alert", logging.WARNING
+            host = self._host_stall(psi_before)
+            # Memory and io full-stall overlap during thrash (reclaim *is* io), so
+            # the larger of the two — not the sum — is the host's share.
+            if host and max(host.values()) >= HOST_STALL_SHARE * lag:
+                kind, level, event = "host", logging.INFO, "loop_lag.host_stall"
+                extra = {f"host_{r}_full_s": round(s, 2) for r, s in sorted(host.items())}
+        t = self._throttles[kind]
         now = self._clock()
         if t.last_at is not None and (now - t.last_at) < self.warn_every:
             # Inside the quiet window: count it, remember the worst, stay silent.
@@ -258,13 +338,14 @@ class LoopLagWatchdog:
         emit_event(
             self._log,
             level,
-            "loop_lag.stall",
+            event,
             {
                 "lag_s": round(lag, 2),
                 "interval_s": round(self.interval, 2),
                 "suppressed": t.suppressed,
                 "suppressed_peak_s": round(t.suppressed_peak, 2),
                 "since_last_warning_s": round(now - (t.last_at or now), 1),
+                **extra,
             },
         )
         t.last_at = now
@@ -276,9 +357,10 @@ class LoopLagWatchdog:
         try:
             while True:
                 started = self._clock()
+                psi_before = self._read_psi()
                 await asyncio.sleep(self.interval)
                 lag = (self._clock() - started) - self.interval
-                self._note_lag(lag)
+                self._note_lag(lag, psi_before)
                 # Re-arm the deadman switch: this tick proves the loop is alive,
                 # so push the dump deadline out. If the *next* sleep is swallowed
                 # by a block longer than ``dump_after``, the tracer thread fires

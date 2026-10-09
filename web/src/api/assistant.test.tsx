@@ -7,7 +7,7 @@ vi.mock('@/api/client', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
 import { api } from '@/api/client'
 import {
   useAssistantFeedback, useAssistantHistory, useAssistantSession, useAssistantStatus,
-  useResumeAssistantSession,
+  useResetAssistant, useResumeAssistantSession,
 } from './assistant'
 
 const wrap = () => {
@@ -27,6 +27,32 @@ describe('assistant api', () => {
     expect(out.id).toBe('a1')
     expect(api.post).toHaveBeenCalledWith('/assistant/session', {})
   })
+
+  // Regression: the hook forced `fresh` only on `mutateAsync`, so once the header
+  // switched to `mutate` (#2759) "New chat" posted `{}` and the server handed back
+  // the existing thread — the dialog closed and nothing changed.
+  it.each(['mutate', 'mutateAsync'] as const)(
+    'reset forces fresh via %s and invalidates status + history',
+    async (method) => {
+      vi.mocked(api.post).mockReset()
+      vi.mocked(api.post).mockResolvedValue({ id: 'a2', model: 'sonnet', engine: 'claude_code', state: 'created' })
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      qc.setQueryData(['assistant', 'status'], { enabled: true, sessionId: 'a1', model: 'sonnet' })
+      qc.setQueryData(['assistant', 'history'], [])
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      )
+      const { result } = renderHook(() => useResetAssistant(), { wrapper })
+      if (method === 'mutate') result.current.mutate({})
+      else await result.current.mutateAsync({})
+      await waitFor(() => expect(api.post).toHaveBeenCalledWith('/assistant/session', { fresh: true }))
+      await waitFor(() => {
+        expect(qc.getQueryState(['assistant', 'status'])?.isInvalidated).toBe(true)
+        // The thread a reset archives must show up in History.
+        expect(qc.getQueryState(['assistant', 'history'])?.isInvalidated).toBe(true)
+      })
+    },
+  )
 
   it('fetches history only while enabled', async () => {
     vi.mocked(api.get).mockResolvedValue([{ id: 'h1', snippet: 'fix the thing', archivedAt: '2026-09-17T00:00:00Z' }])
