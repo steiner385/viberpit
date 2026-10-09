@@ -1959,7 +1959,7 @@ async def session_mcp_toggle(
     """Enable/disable one MCP server in a live session. 404 kill switch / not live,
     400 unknown server, 409 the CLI refused the toggle."""
     if not get_settings().mcp_scope_enabled:
-        raise HTTPException(status_code=404, detail={"code": "MCP_SCOPE_DISABLED"})
+        return JSONResponse(status_code=404, content={"error": "mcp_scope_disabled"})
     if server not in await asyncio.to_thread(configured_server_keys):
         raise HTTPException(status_code=400, detail={"code": "UNKNOWN_SERVER"})
     try:

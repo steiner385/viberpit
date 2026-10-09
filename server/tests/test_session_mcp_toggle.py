@@ -103,7 +103,8 @@ def test_toggle_kill_switch_404():
     with patch.dict(os.environ, {**_ENV, "VIBERPIT_MCP_SCOPE_ENABLED": "false"}), \
             patch(_KEYS, return_value=["gh"]), client:
         r = _post(client, "gh")
-    assert r.status_code == 404 and fake.toggled == []
+    assert r.status_code == 404 and r.json() == {"error": "mcp_scope_disabled"}
+    assert fake.toggled == []
 
 
 def test_toggle_audited():
@@ -112,7 +113,8 @@ def test_toggle_audited():
     with patch.dict(os.environ, _ENV), patch(_KEYS, return_value=["gh"]), client:
         _post(client, "gh", True)
         events = client.portal.call(_audit_events)
-    assert any(e[0] == "session.mcp_toggle" for e in events)
+    assert [e[2] for e in events if e[0] == "session.mcp_toggle"] == [
+        {"sessionId": SID, "server": "gh", "enabled": True}]
 
 
 def test_toggle_plain_exception_is_409_through_real_facade():
@@ -141,6 +143,17 @@ async def test_orchestrator_toggle_saves_override_after_driver_success(isolated_
     assert d.toggled == [("gh", False)] and out[0]["name"] == "gh"
     async with db_session() as db:
         assert (await db.get(DbSession, "a")).mcp_overrides == {"gh": False}
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_toggle_persists_full_plugin_key(isolated_db):
+    async with db_session() as db:
+        db.add(DbSession(id="a", name="n", account_name="acct", cwd="/tmp"))
+    d = _Drv([_st("plugin:p:s", "connected")])
+    await _orch(a=d).mcp_toggle("a", "plugin:p:s", True)
+    assert d.toggled == [("plugin:p:s", True)]
+    async with db_session() as db:
+        assert (await db.get(DbSession, "a")).mcp_overrides == {"plugin:p:s": True}
 
 
 @pytest.mark.asyncio

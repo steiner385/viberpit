@@ -2112,6 +2112,12 @@ class ClaudeAgentDriver:
         if self._client is None or self._stream_ended:
             raise RuntimeError("session not live")
         await self._client.toggle_mcp_server(name, enabled)
+        # Keep the enforcement set consistent with the user's choice, or a later CLI restart
+        # (/clear reconnect) would re-apply the stale repo rule over it.
+        desired = [n for n in (self._desired_disabled_mcp or []) if n != name]
+        if not enabled:
+            desired.append(name)
+        self._desired_disabled_mcp = desired
         await self._poll_mcp_status()
 
     async def _poll_mcp_status(self) -> list | None:
