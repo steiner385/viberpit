@@ -1,5 +1,7 @@
 from __future__ import annotations
 import dataclasses, json, asyncio, logging, os, time
+import ctypes, ctypes.util, functools
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -80,14 +82,18 @@ class ReplayWindow:
     total_turns: int = 0
 
 
-def _read_jsonl(path: str) -> list:
+def _read_jsonl(path: str) -> Iterator:
     """Yield the well-formed JSON objects from a transcript ``.jsonl``, skipping
-    blank/garbage lines. Returns [] if the file is missing or unreadable."""
-    out: list = []
+    blank/garbage lines. Yields nothing if the file is missing or unreadable.
+
+    A generator, not a list (#2885): callers turn each entry into events and drop it,
+    so streaming keeps one raw entry alive at a time instead of the whole file's
+    dicts. A long transcript (91 MB measured on dobby) used to hold ~200 MB of raw
+    dicts alongside the events built from them."""
     try:
         f = open(path, errors="ignore")
     except OSError:
-        return out
+        return
     with f:
         for raw in f:
             raw = raw.strip()
@@ -98,8 +104,60 @@ def _read_jsonl(path: str) -> list:
             except json.JSONDecodeError:
                 continue
             if isinstance(o, dict):
-                out.append(o)
-    return out
+                yield o
+
+
+# A parse of a transcript at least this large is followed by malloc_trim(0) (#2885).
+# Parses run on asyncio.to_thread() workers, and glibc gives each thread its own
+# malloc arena: the ~2x-file-size of short-lived objects a parse allocates is freed
+# back into THAT arena, not to the OS. With the default executor's ~12 workers each
+# taking a turn at a long transcript (the 2-minute goal sweep alone parses every
+# owned session), the daemon's RSS settled at the sum of per-arena high-water marks
+# — 2.4-3.1 GB on dobby while supervising three sessions. Small files skip the trim:
+# their arenas stay small and the trim's arena walk is not free.
+_HEAP_TRIM_MIN_BYTES = 8 * 1024 * 1024
+
+
+def _trim_heap_after(path: str) -> None:
+    """Return freed heap pages to the OS after parsing *path*, if it was large.
+
+    Best-effort and glibc-only: a missing file, a non-glibc libc (musl, macOS) or
+    any ctypes failure is a silent no-op — this only reclaims memory, never gates
+    a read."""
+    try:
+        if os.path.getsize(path) < _HEAP_TRIM_MIN_BYTES:
+            return
+    except OSError:
+        return
+    trim = _malloc_trim()
+    if trim is not None:
+        trim(0)
+
+
+@functools.cache
+def _malloc_trim():
+    """glibc's ``malloc_trim``, or None where the C library has none."""
+    try:
+        return ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6").malloc_trim
+    except (OSError, AttributeError):
+        return None
+
+
+def _window_and_trim(path: str, *args) -> ReplayWindow:
+    """``_window`` for a worker thread: parse, then trim once the full event list
+    built inside ``_window`` has been freed (only the returned slice survives)."""
+    try:
+        return _window(path, *args)
+    finally:
+        _trim_heap_after(path)
+
+
+def _parse_and_trim(path: str, max_turns: int | None) -> list:
+    """``_parse`` for a worker thread; see ``_window_and_trim``."""
+    try:
+        return _parse(path, max_turns)
+    finally:
+        _trim_heap_after(path)
 
 
 def _content_blocks(msg: dict) -> list[dict]:
@@ -633,12 +691,12 @@ async def replay_window(jsonl_path: str, *, before: int | None = None, limit: in
     # limit=None returns the FULL transcript (no cap) — the review/export path.
     # turn_started_at (epoch SECONDS, from the live driver / daemon turn tracking)
     # scopes drop_incomplete_turn to the turn that actually is in progress.
-    return await asyncio.to_thread(_window, jsonl_path, before, limit, drop_incomplete_turn, True,
-                                   turn_started_at)
+    return await asyncio.to_thread(_window_and_trim, jsonl_path, before, limit,
+                                   drop_incomplete_turn, True, turn_started_at)
 
 
 async def replay_events(jsonl_path: str, *, max_turns: int | None = 20) -> list:
-    return await asyncio.to_thread(_parse, jsonl_path, max_turns)
+    return await asyncio.to_thread(_parse_and_trim, jsonl_path, max_turns)
 
 
 def last_question_events(path: str) -> list["ev.Question"]:

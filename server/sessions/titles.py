@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 
 from .transcript_entries import is_harness_user_entry
@@ -19,11 +20,15 @@ _AUTO_KEYS = ("ai-title", "aiTitle", "summary")
 _TITLE_KEYS = _CUSTOM_KEYS + _AUTO_KEYS
 
 
-def _scan_text(text: str) -> tuple[str | None, str | None]:
-    """Scan transcript JSONL text; return (customTitle, autoTitle) — last non-empty wins."""
+def _scan_lines(lines: Iterable[str]) -> tuple[str | None, str | None]:
+    """Scan transcript JSONL lines; return (customTitle, autoTitle) — last non-empty wins.
+
+    Takes an iterable (an open file) rather than the file's text (#2885): a
+    ``read_text()`` + ``splitlines()`` of a long transcript held two full copies of
+    it — ~180 MB for the 91 MB one measured on dobby — in a daemon worker thread."""
     custom: str | None = None
     auto: str | None = None
-    for line in text.splitlines():
+    for line in lines:
         line = line.strip()
         # Most lines are multi-MB tool results that name no title key. json.loads
         # holds the GIL, so parsing them from a worker thread still starves the
@@ -52,13 +57,13 @@ def read_ai_title_from_file(path: str | Path) -> str | None:
     if not path:
         return None
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        with open(path, encoding="utf-8", errors="replace") as f:
+            custom, auto = _scan_lines(f)
     except OSError:
         return None
     except Exception:  # never raise into the session loop
         log.warning("read_ai_title_from_file failed for %s", path, exc_info=True)
         return None
-    custom, auto = _scan_text(text)
     return custom or auto
 
 
@@ -94,31 +99,31 @@ def read_user_prompts_from_file(path: str | Path) -> list[str]:
     """
     if not path:
         return []
+    prompts: list[str] = []
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        # Streamed line by line, not read_text(): see _scan_lines (#2885).
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(obj, dict) or obj.get("type") != "user":
+                    continue
+                message = obj.get("message")
+                if not isinstance(message, dict):
+                    continue
+                prompt = _prompt_text(message)
+                if prompt and not is_harness_user_entry(obj, prompt):
+                    prompts.append(prompt)
     except OSError:
         return []
     except Exception:  # never raise into the session loop
         log.warning("read_user_prompts_from_file failed for %s", path, exc_info=True)
         return []
-
-    prompts: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(obj, dict) or obj.get("type") != "user":
-            continue
-        message = obj.get("message")
-        if not isinstance(message, dict):
-            continue
-        prompt = _prompt_text(message)
-        if prompt and not is_harness_user_entry(obj, prompt):
-            prompts.append(prompt)
     return prompts
 
 
@@ -140,10 +145,10 @@ def read_ai_title(projects_root: str | Path, engine_session_id: str) -> str | No
         auto: str | None = None
         for path in matches:
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    c, a = _scan_lines(f)
             except OSError:
                 continue
-            c, a = _scan_text(text)
             if c:
                 custom = c
             if a:

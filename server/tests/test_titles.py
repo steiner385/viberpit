@@ -71,7 +71,7 @@ def test_malformed_lines_do_not_raise(tmp_path):
     assert read_ai_title(tmp_path, "sid3") == "ok"
 
 
-def test_scan_text_skips_json_parse_of_lines_without_title_keys(monkeypatch):
+def test_scan_lines_skips_json_parse_of_lines_without_title_keys(monkeypatch):
     """#2144: parsing every transcript line held the GIL and stalled the loop."""
     from server.sessions import titles
 
@@ -82,5 +82,5 @@ def test_scan_text_skips_json_parse_of_lines_without_title_keys(monkeypatch):
         json.dumps({"type": "user", "message": {"content": "x" * 100}}),
         json.dumps({"type": "ai-title", "ai-title": "Real title"}),
     ])
-    assert titles._scan_text(text) == (None, "Real title")
+    assert titles._scan_lines(text.splitlines()) == (None, "Real title")
     assert len(parsed) == 1

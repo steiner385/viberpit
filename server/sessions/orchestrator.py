@@ -1691,6 +1691,9 @@ class SessionOrchestrator:
         # Inferred-goal sweep: per-session transcript-turn marker so a session whose
         # transcript hasn't advanced is never re-billed for inference (cost gate).
         self._goal_marker: dict[str, int] = {}
+        # (size, mtime_ns) of the transcript at the last sweep that parsed it — lets
+        # the sweep skip the full parse of an unchanged file (#2885).
+        self._goal_stat_sig: dict[str, tuple[int, int]] = {}
         self._goal_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
@@ -16042,9 +16045,20 @@ class SessionOrchestrator:
             if not self._owns_record(rec, enabled_hosts):
                 continue
             try:
+                # Pre-filter on the transcript file's (size, mtime) before parsing it:
+                # transcript_window has to parse the WHOLE file to count turns, and this
+                # sweep visited every owned session every 2 minutes — a 91 MB transcript
+                # cost ~1 s of CPU and ~200 MB of worker-thread heap per pass even when
+                # nothing had been appended (#2885). None (Codex, or no file yet) always
+                # parses, as before.
+                stat_sig = await asyncio.to_thread(self._transcript_stat_sig, sid)
+                if stat_sig is not None and self._goal_stat_sig.get(sid) == stat_sig:
+                    continue
                 window = await self.transcript_window(sid, limit=1, background=True)
                 if window is None or window.total_turns == 0:
                     continue
+                if stat_sig is not None:
+                    self._goal_stat_sig[sid] = stat_sig
                 if self._goal_marker.get(sid) == window.total_turns:
                     continue  # transcript unchanged since last inference — skip (cost)
                 goal = await self._infer_goal_for(sid)
@@ -16060,6 +16074,19 @@ class SessionOrchestrator:
                                      .values(inferred_goal=goal))
             except Exception:  # one session must never break the sweep
                 log.warning("goal sweep failed for %s", sid, exc_info=True)
+
+    def _transcript_stat_sig(self, session_id: str) -> tuple[int, int] | None:
+        """(size, mtime_ns) of *session_id*'s transcript file, or None if it has none.
+
+        Blocking (stats a possibly-sshfs path) — call via ``asyncio.to_thread``."""
+        path = self.transcript_path(session_id)
+        if not path:
+            return None
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime_ns)
 
     async def _goal_monitor(self) -> None:
         """Background loop: sweep inferred goals every ~2 minutes."""
