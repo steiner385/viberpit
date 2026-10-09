@@ -2073,6 +2073,14 @@ class ClaudeAgentDriver:
             return {}
         return await self._client.get_context_usage()
 
+    async def mcp_status(self) -> list:
+        # Placeholder so the AgentDriver Protocol type-checks; the real SDK-backed
+        # implementation (and capability flag) land in Task 3 of the MCP live-status plan.
+        return []
+
+    async def reconnect_mcp_server(self, name: str) -> None:
+        raise NotImplementedError("Claude MCP reconnect lands in Task 3 of the MCP live-status plan")
+
     async def _emit_context_usage(self) -> None:
         """Forward exact context-window occupancy (same source as `/context`) so the
         persistent ctx% readout reflects REAL remaining context — not the per-turn

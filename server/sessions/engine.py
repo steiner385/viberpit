@@ -94,6 +94,8 @@ class AgentCapabilities:
     #: True today — Claude's append rides every resume, and Codex restores a
     #: thread's `dynamicTools` from its saved session metadata on `thread/resume`.
     durable_tool_surface: bool = False
+    #: The driver can report per-server MCP status (get_mcp_status) and reconnect one server.
+    mcp_status: bool = False
     #: ViberPit's Library surface (``server/library/scan.py`` and ``mutate.py``)
     #: can browse and edit this engine's plugins, skills, commands and MCP
     #: servers. This is a SHARED, filesystem-scannable config directory, not a
@@ -206,6 +208,8 @@ class AgentDriver(Protocol):
     def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None: ...
     async def server_info(self) -> dict | None: ...
     async def context_usage(self) -> dict: ...
+    async def mcp_status(self) -> list: ...            # list[McpServerState]
+    async def reconnect_mcp_server(self, name: str) -> None: ...
     async def reconnect(self) -> None: ...
 
 
