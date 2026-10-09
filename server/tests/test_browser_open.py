@@ -112,6 +112,7 @@ def test_open_browser_launch_failed_detail():
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
     class FailedNative:
+        async def refresh(self): ...
         def available(self): return True
         async def launch_browser(self, sid, url): return "launch_failed"
 

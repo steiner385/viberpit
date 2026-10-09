@@ -3811,6 +3811,12 @@ class SessionOrchestrator:
         async with db_session() as db:
             return (await read_global_cap(db)).effective
 
+    async def _refresh_native(self) -> None:
+        """Warm NativeDisplay's cache off the loop before the sync accessors
+        (``available()``/``env()``/``unavailable_reason()``) are read."""
+        if self._native is not None:
+            await self._native.refresh()
+
     def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> DisplayDecision:
         """The one call to ``resolve_display_mode`` for this daemon — used by the
         spawn, enqueue and hold paths so the decision is made identically wherever a
@@ -3874,6 +3880,7 @@ class SessionOrchestrator:
         # resolve_model_approval's comment on why), so its persisted display_mode
         # must win over a fresh re-resolution with client_node=None.
         _prior = self._records.get(session_id)
+        await self._refresh_native()
         display_mode, display_fallback_reason = self._display_decision(
             _prior, display, client_node)
         async with db_session() as db:
@@ -3986,6 +3993,7 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        await self._refresh_native()
         display_mode, display_fallback_reason = self._resolve_display_mode_for(
             display, client_node)
         async with db_session() as db:
@@ -5274,6 +5282,7 @@ class SessionOrchestrator:
             # Decide where this session's GUI renders — ONCE, here — then either lease a
             # virtual Xvfb display or leave the host's real one to _display_env. A
             # previously-queued/resumed row keeps its persisted decision.
+            await self._refresh_native()
             display_mode, display_fallback_reason = self._display_decision(
                 _prior, display, client_node)
             if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
@@ -5831,6 +5840,7 @@ class SessionOrchestrator:
         """
         rec = self._records.get(session_id)
         if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            await self._refresh_native()
             if self._native is None or not self._native.available():
                 return {"ok": False, "reason": "native_unavailable"}
             reason = await self._native.launch_browser(session_id, url)

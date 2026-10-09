@@ -123,6 +123,7 @@ def test_x11_metrics_rpc_carries_native_display_health():
     from types import SimpleNamespace
 
     class _Native:
+        async def refresh(self): ...
         def metrics(self):
             return {"display": ":0", "available": False, "kind": None,
                     "reason": "cookie_missing", "browsers": 0}

@@ -20,6 +20,7 @@ class FakeNative:
     def __init__(self, available=True, display=":0"):
         self._available = available; self.display = display
         self.launched: list[tuple[str, str | None]] = []; self.closed: list[str] = []
+    async def refresh(self): ...
     def available(self): return self._available
     def unavailable_reason(self): return None if self._available else "cookie_missing"
     def env(self): return {"DISPLAY": self.display}
