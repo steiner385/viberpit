@@ -106,6 +106,21 @@ def test_env_forced_wayland_on_x11_kind_has_no_wayland_display(tmp_path):
     assert "WAYLAND_DISPLAY" not in env     # nothing to export; DesktopSession only exports it for kind wayland
 
 
+@pytest.mark.asyncio
+async def test_forced_wayland_on_x11_desktop_falls_back_to_x11_argv(tmp_path):
+    nd, spawned = _mk(tmp_path, result=X11, browser_platform="wayland")
+    assert await nd.launch_browser("s1", None) is None
+    assert "--ozone-platform=x11" in spawned[0][0]
+    assert "--ozone-platform=wayland" not in spawned[0][0]
+
+
+@pytest.mark.asyncio
+async def test_launch_uses_one_resolution_snapshot(tmp_path):
+    nd, spawned = _mk(tmp_path)
+    assert await nd.launch_browser("s1", None) is None
+    assert nd.resolver.calls == 1
+
+
 def test_env_empty_when_unavailable(tmp_path):
     assert _mk(tmp_path, result=DesktopUnavailable("connect_refused"))[0].env() == {}
 

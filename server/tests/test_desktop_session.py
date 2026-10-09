@@ -214,8 +214,11 @@ def test_unreadable_cookie_falls_back_to_legacy(root: Path, tmp_path: Path, monk
     real = ds._read
     monkeypatch.setattr(ds, "_read", lambda p: None if p == ck else real(p))
     seen: list[str | None] = []
-    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root),
-                                  probe=lambda s, x: seen.append(x) or True)
+    def probe(_sock: str, cookie: str | None) -> bool:
+        seen.append(cookie)
+        return True
+
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=probe)
     assert isinstance(got, DesktopSession) and got.xauthority is None and seen == [None]
 
 

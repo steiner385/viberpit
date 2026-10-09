@@ -23,7 +23,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Callable
-from typing import Literal
+from typing import Literal, TypeGuard, cast
 
 from server.sessions.desktop_session import DesktopSession, DesktopUnavailable, resolve_desktop_session
 from server.sessions.x11manager import CHROMIUM_CANDIDATES, _terminate, resolve_chromium
@@ -102,9 +102,11 @@ class NativeDisplay:
         cur = self._current()
         return cur.display if isinstance(cur, DesktopSession) else ":0"
 
-    def available(self) -> bool:
-        cur = self._current()
+    def _usable(self, cur: DesktopSession | DesktopUnavailable) -> TypeGuard[DesktopSession]:
         return isinstance(cur, DesktopSession) and not self._in_pool(cur)
+
+    def available(self) -> bool:
+        return self._usable(self._current())
 
     def unavailable_reason(self) -> str | None:
         cur = self._current()
@@ -113,15 +115,14 @@ class NativeDisplay:
         return cur.reason if isinstance(cur, DesktopUnavailable) else None
 
     def _prefer_wayland(self, session: DesktopSession) -> bool:
-        if self._browser_platform == "wayland":
-            return True
-        if self._browser_platform == "x11":
-            return False
-        return session.kind == "wayland"
+        """Wayland-native only when the desktop really offers a Wayland socket; a forced
+        'wayland' on an X11 desktop falls back to x11 (nothing to connect to)."""
+        return (self._browser_platform != "x11" and session.kind == "wayland"
+                and bool(session.wayland_display))
 
     def env(self) -> dict[str, str]:
         cur = self._current()
-        if not self.available() or not isinstance(cur, DesktopSession):
+        if not self._usable(cur):
             return {}
         return cur.env(prefer_wayland=self._prefer_wayland(cur))
 
@@ -135,8 +136,8 @@ class NativeDisplay:
     async def launch_browser(self, session_id: str, url: str | None) -> str | None:
         """Open a managed browser on the desktop. None = launched; else the failure
         reason (``native_unavailable`` / ``cap`` / ``launch_failed``)."""
-        cur = self._current()
-        if not self.available() or not isinstance(cur, DesktopSession):
+        cur = self._current()          # ONE snapshot: argv and env must come from the same resolution
+        if not self._usable(cur):
             return REASON_NATIVE_UNAVAILABLE
         procs = self._browsers.setdefault(session_id, [])
         if len(procs) >= self._max_browsers:
@@ -156,7 +157,7 @@ class NativeDisplay:
         # Inherit the daemon env, but drop anything that could contradict the resolved
         # desktop (a stale inherited cookie or Wayland socket must never win).
         env = {k: v for k, v in os.environ.items() if k not in _STALE_ENV}
-        env.update(self.env())
+        env.update(cur.env(prefer_wayland=wayland))
         try:
             proc = await self._spawn(*argv, env=env,
                                      stdout=asyncio.subprocess.DEVNULL,
@@ -230,6 +231,6 @@ def build_native_display(settings) -> NativeDisplay | None:
         no_sandbox=bool(getattr(settings, "chromium_no_sandbox", False)),
         max_browsers=int(getattr(settings, "max_browsers", 6)),
         browser_liveness_s=float(getattr(settings, "browser_liveness_s", 0.3)),
-        browser_platform=platform,  # type: ignore[arg-type]  # validated against _PLATFORMS above
+        browser_platform=cast(BrowserPlatform, platform),  # validated against _PLATFORMS above
         blocked_range=blocked,
     )
