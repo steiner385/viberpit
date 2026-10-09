@@ -1416,6 +1416,28 @@ class HostHeartbeat(Base):
     epoch: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class McpServerHealth(Base):
+    """Latest observed MCP connection status per (account, host, server) — spec 2026-10-09.
+
+    Written by session drivers (source='session') and the on-demand probe (source='probe').
+    The single source of needs-auth for Settings › MCP and the OAuth account picker."""
+
+    __tablename__ = "mcp_server_status"
+    __table_args__ = (UniqueConstraint("account", "host", "server", name="uq_mcp_server_status_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account: Mapped[str] = mapped_column(String, nullable=False)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    server: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    tool_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scope: Mapped[str | None] = mapped_column(String, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # AI-native SDLC artifact-chain spine (#795 Phase 1 / #796)
 #

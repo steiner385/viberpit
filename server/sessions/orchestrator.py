@@ -161,6 +161,7 @@ from server.usage.process_quota import (
     ProcessQuotaRefresher,
 )
 from server.github.pr_status import PullRequestInfo
+from server.mcp_health import store as mcp_store
 from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
 
@@ -2512,6 +2513,7 @@ class SessionOrchestrator:
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
+            on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
             on_record_condense_ms=self._record_condense_ms,
@@ -7007,6 +7009,15 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id).values(
                     context_used_tokens=used_tokens, context_max_tokens=max_tokens)
             )
+
+    async def _persist_mcp_status(self, session_id: str, states: list) -> None:
+        """Driver ``on_mcp_status`` callback: record the latest per-server status for this
+        session's account on THIS host (spec 2026-10-09). Best-effort like context usage."""
+        rec = self._records.get(session_id)
+        if rec is None or not states:
+            return
+        await mcp_store.upsert_states(rec.account, self_host_name(), states,
+                                      source="session", session_id=session_id)
 
     async def _maybe_push(self, session_id: str, status: str) -> None:
         """Fire an outbound push alert when a session enters a top-tier needs-you status.

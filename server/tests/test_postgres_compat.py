@@ -206,6 +206,8 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "automation_operations": {"token": "dtcheck-operation", "owner": "dtcheck-host",
                               "source": "dtcheck-runner", "reason": "datetime sweep"},
     "sessions": {"name": "dtcheck", "account_name": "dtcheck", "cwd": "/tmp/dtcheck"},
+    "mcp_server_status": {"account": "dtcheck", "host": "dtcheck-host", "server": "dtcheck",
+                          "status": "connected", "source": "probe"},
     "app_sessions": {"identity": "dtcheck@example.invalid"},
     "audit_events": {"type": "dtcheck.event", "identity": "dtcheck@example.invalid"},
     "attachments": {"media_type": "image/png", "filename": "x.png", "byte_size": 1,
