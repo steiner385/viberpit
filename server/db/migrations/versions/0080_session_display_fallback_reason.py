@@ -1,13 +1,13 @@
 """Native display routing: sessions.display_fallback_reason (why a local session went virtual).
 
-Revision ID: 0079_session_display_fallback_reason
-Revises: 0078_mcp_server_status
+Revision ID: 0080_session_display_fallback_reason
+Revises: 0079_mcp_repo_scope
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0079_session_display_fallback_reason"
-down_revision = "0078_mcp_server_status"
+revision = "0080_session_display_fallback_reason"
+down_revision = "0079_mcp_repo_scope"
 branch_labels = None
 depends_on = None
 

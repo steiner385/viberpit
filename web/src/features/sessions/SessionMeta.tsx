@@ -273,6 +273,9 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
                 data-testid="meta-display-fallback">
             <span className="text-ink-muted">display</span>
             <span className="font-medium text-ink">virtual</span>
+            <span className="text-ink-muted" data-testid="meta-display-fallback-reason">
+              {displayFallbackTitle(displayFallbackReason)}
+            </span>
           </span>
         )}
 

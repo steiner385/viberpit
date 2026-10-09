@@ -286,6 +286,8 @@ describe('SessionMeta', () => {
       <SessionMeta {...baseProps} displayMode="virtual" displayFallbackReason="cookie_missing" />)
     expect(screen.getByTestId('meta-display-fallback')).toHaveAttribute(
       'title', expect.stringContaining('Desktop unavailable'))
+    expect(screen.getByTestId('meta-display-fallback-reason')).toHaveTextContent(
+      'Desktop unavailable — opened on a virtual display: the desktop refused the connection')
     rerender(<SessionMeta {...baseProps} displayMode="virtual" displayFallbackReason={null} />)
     expect(screen.queryByTestId('meta-display-fallback')).toBeNull()
   })

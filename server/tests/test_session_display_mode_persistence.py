@@ -76,5 +76,5 @@ def test_fallback_reason_roundtrip_row_and_api():
 
 def test_fallback_reason_migration_chain():
     import importlib
-    m = importlib.import_module("server.db.migrations.versions.0079_session_display_fallback_reason")
-    assert m.down_revision == "0078_mcp_server_status"
+    m = importlib.import_module("server.db.migrations.versions.0080_session_display_fallback_reason")
+    assert m.down_revision == "0079_mcp_repo_scope"

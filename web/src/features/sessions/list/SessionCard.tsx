@@ -630,7 +630,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           <>
             <Sep />
             <span data-testid="card-display-fallback" className="flex-shrink-0 inline-flex items-center gap-1 text-ink-muted"
-                  title={displayFallbackTitle(session.displayFallbackReason) ?? undefined}>
+                  title={displayFallbackTitle(session.displayFallbackReason) ?? undefined}
+                  aria-label={displayFallbackTitle(session.displayFallbackReason) ?? undefined}>
               <Monitor size={12} aria-hidden="true" />
               <span>virtual</span>
             </span>
