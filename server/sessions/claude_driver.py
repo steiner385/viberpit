@@ -2103,7 +2103,7 @@ class ClaudeAgentDriver:
 
         A failure latches ``_mcp_unsupported`` (old CLI / transient): one DEBUG line and
         no retry storm; a session restart clears it."""
-        if (self._mcp_unsupported or self._client is None or self._stream_ended
+        if (self._mcp_unsupported or self._closing or self._client is None or self._stream_ended
                 or not get_settings().mcp_status_enabled):
             return None
         try:
@@ -2185,6 +2185,9 @@ class ClaudeAgentDriver:
                                phase=f"driver.reconnect-pump:{self.session_id}",
                                cancel_grace=grace)
         self._pump = None
+        if self._mcp_poll_task is not None:
+            await cancel_and_reap(self._mcp_poll_task,
+                                  phase=f"driver.reconnect-mcp-poll:{self.session_id}")
         if self._source is not None:
             await self._source.aclose(grace, phase=f"driver.reconnect-source:{self.session_id}")
             self._source = None

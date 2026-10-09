@@ -163,12 +163,47 @@ async def test_mcp_status_returns_cache_when_stream_ended(make_driver):
 @pytest.mark.asyncio
 async def test_close_during_settle_reaps_poll_task(make_driver, monkeypatch):
     monkeypatch.setattr(cd, "MCP_SETTLE_INTERVAL_S", 10.0)
+    persisted = []
+
+    async def on_mcp(sid, states):
+        persisted.append(states)
     client = FakeSDKClient([], mcp_status=[{"name": "a", "status": "pending"}])
-    d = make_driver(client)
+    d = make_driver(client, on_mcp_status=on_mcp)
     await d.start()
     await asyncio.sleep(0.01)
+    emitted = []
+    real = d._emit
+    monkeypatch.setattr(d, "_emit", lambda e: (emitted.append(e), real(e))[1])
+    n_persisted = len(persisted)
+    d._closing = True                    # aclose() has begun (grace window)
+    assert await d._poll_mcp_status() is None
     await d.aclose()
     assert d._mcp_poll_task.done()
+    assert not [e for e in emitted if isinstance(e, ev.McpStatus)]
+    assert len(persisted) == n_persisted
+
+
+@pytest.mark.asyncio
+async def test_clear_during_pending_settle_restarts_settle(make_driver, monkeypatch):
+    monkeypatch.setattr(cd, "MCP_SETTLE_INTERVAL_S", 10.0)
+    clients = []
+
+    def factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
+        c = FakeSDKClient([], mcp_status=[{"name": "a", "status": "pending"}])
+        clients.append(c)
+        return c
+    d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+    await d.start()
+    await asyncio.sleep(0.01)            # first settle parked in its 10 s sleep
+    old = d._mcp_poll_task
+    assert not old.done()
+    await d.reconnect()
+    assert old.done()
+    assert d._mcp_poll_task is not old and not d._mcp_poll_task.done()
+    assert d._mcp_unsupported is False
+    assert len(clients) == 2
+    await d.aclose()
 
 
 @pytest.mark.asyncio
