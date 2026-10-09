@@ -162,6 +162,7 @@ from server.usage.process_quota import (
 )
 from server.github.pr_status import PullRequestInfo
 from server.mcp_health import store as mcp_store
+from server.mcp_scope.apply import disabled_for_session
 from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
 
@@ -2239,6 +2240,8 @@ class SessionOrchestrator:
         account: str,
         cwd: str,
         kind: str | None,
+        *,
+        disabled_mcp: list[str] | None = None,
     ) -> str:
         """Prepare and return the engine-specific session configuration directory.
 
@@ -2255,7 +2258,7 @@ class SessionOrchestrator:
         cfg_dir = compose(account)
         # compose() rewrites .claude.json from the store, so trust must follow it;
         # the assistant isolation copy must then be taken last.
-        configdir.trust_project(account, cwd)
+        configdir.trust_project(account, cwd, disabled_mcp=disabled_mcp)
         return str(self._isolated_dir_for(cfg_dir, kind))
 
     async def _automation_before_execution(self, session_id: str, *, execution_id: str | None = None) -> bool:
@@ -5210,7 +5213,9 @@ class SessionOrchestrator:
                 pass
 
             driver_config_dir = self._driver_config_dir(
-                selected_engine, account, cwd, kind
+                selected_engine, account, cwd, kind,
+                # A brand-new session has no overrides yet (no row to read).
+                disabled_mcp=await disabled_for_session(repo=repo, session_id=None),
             )
 
             # Ensure the Copilot proxy is running for copilot-backed accounts.
@@ -18725,7 +18730,9 @@ class SessionOrchestrator:
             # misleading "account needs re-authentication" error.
             Path(rec.cwd).mkdir(parents=True, exist_ok=True)
             driver_config_dir = self._driver_config_dir(
-                resume_engine, rec.account, rec.cwd, getattr(rec, "kind", None)
+                resume_engine, rec.account, rec.cwd, getattr(rec, "kind", None),
+                disabled_mcp=await disabled_for_session(
+                    repo=getattr(rec, "repo", None), session_id=rec.id),
             )
 
             # Allocate a virtual X11 display for this session (if X11Manager wired
@@ -19145,7 +19152,9 @@ class SessionOrchestrator:
         await self._claim_session(session_id, why="adopt", adopt=True)
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         driver_config_dir = self._driver_config_dir(
-            AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None
+            AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None,
+            # Adopted sessions have no repo and a fresh id: global defaults only.
+            disabled_mcp=await disabled_for_session(repo=None, session_id=None),
         )
 
         # Allocate a virtual X11 display for the adopted session (fresh allocation).
@@ -22111,6 +22120,8 @@ class SessionOrchestrator:
                 new_account,
                 cwd,
                 getattr(record, "kind", None),
+                disabled_mcp=await disabled_for_session(
+                    repo=getattr(record, "repo", None), session_id=record.id),
             )
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:

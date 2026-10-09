@@ -76,8 +76,8 @@ start [plugin connected, aws-oauth connected, spike-ok connected]      (proj-srv
 2. **The CLI persists toggles (Q5); ruling R2: the DB stays authoritative.** Repo rules plus `sessions.mcp_overrides`
    are the source of truth. The CLI's own runtime write of `projects[cwd].disabledMcpServers` on a live toggle is a
    transient mirror, not a second authority. ViberPit overwrites that key at every driver build via
-   `configdir.trust_project`, before the CLI starts, so Q5 and the plan agree. (`trust_project` will write the key
-   as Task 4 behaviour; today it does not. With `disabled_mcp=None` it leaves the key untouched.)
+   `configdir.trust_project`, before the CLI starts, so Q5 and the plan agree. (`trust_project` writes the key
+   via its `disabled_mcp` argument; with `disabled_mcp=None` it leaves the key untouched.)
    - Task 5's toggle route writes the DB only and never `.claude.json`.
    - The Global Constraint "written by `trust_project` only" means "ViberPit writes it only via `trust_project`";
      the CLI also writes it at runtime.

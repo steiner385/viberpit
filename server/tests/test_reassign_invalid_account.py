@@ -102,7 +102,7 @@ async def test_reassign_rejects_invalid_target_and_keeps_live_driver(
 
     monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     _stub_db(monkeypatch)
 
     await o._reassign(rec, bad, reason="usage_ceiling")
@@ -138,7 +138,7 @@ async def test_reassign_failure_pauses_instead_of_silently_stranding(
 
     monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _ExplodingDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     _stub_db(monkeypatch)
 
     await o._reassign(rec, "tony_cairnea.com", reason="usage_ceiling")
@@ -175,7 +175,7 @@ async def test_reassign_still_accepts_a_valid_target(monkeypatch, tmp_path):
 
     monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     _stub_db(monkeypatch)
     o._publish_event = lambda e: None
     o._install_driver = lambda sid, drv: o._drivers.__setitem__(sid, drv)

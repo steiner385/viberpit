@@ -50,7 +50,7 @@ def _stub_env(monkeypatch):
 
     monkeypatch.setattr(orch_mod, "db_session", lambda: _FakeDbCtx())
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
-    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
 
 
 def _new_driver_cls(started):
