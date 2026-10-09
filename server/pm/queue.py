@@ -156,11 +156,19 @@ def is_trusted_author(author: str, trusted: frozenset[str]) -> bool:
     """Whether *author* may have their issue dispatched to an agent. A public repo lets
     anyone open an issue; a dispatched session writes code that auto-merges and deploys,
     so an untrusted author must never reach the runner. Fail-closed: empty/ghost is
-    untrusted. *trusted* is already lowercased (``product_policy.trusted_authors``)."""
-    login = (author or "").strip().lower().removeprefix("app/").removesuffix("[bot]")
+    untrusted. *trusted* is already lowercased (``product_policy.trusted_authors``); a
+    GitHub App is listed there as ``app/<slug>``, a user by bare login."""
+    login = (author or "").strip().lower()
     if not login or login == "ghost":
         return False
-    return login in trusted or login in TRUSTED_AUTOMATION_LOGINS
+    # The mirror records a Bot as ``app/<slug>`` (``github_sync._author``); the REST
+    # shape is ``<slug>[bot]``. Bot and User logins share a namespace, so a BARE login
+    # is a user and is never given a bot's trust — anyone can register a user named
+    # ``github-actions`` or ``viberpit``.
+    if login.startswith("app/") or login.endswith("[bot]"):
+        slug = login.removeprefix("app/").removesuffix("[bot]")
+        return bool(slug) and (f"app/{slug}" in trusted or slug in TRUSTED_AUTOMATION_LOGINS)
+    return login in trusted
 
 
 def _is_bot(row: QueueRow, extra_skip_labels: frozenset[str] = frozenset()) -> bool:

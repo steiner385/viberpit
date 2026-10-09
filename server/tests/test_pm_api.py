@@ -3265,7 +3265,7 @@ def test_approve_escalation_refuses_an_issue_the_products_policy_skips():
             async with db_session() as db:
                 w = (await db.execute(select(WorkItem).where(WorkItem.id == wid))).scalar_one()
                 w.labels = ["ci-infrastructure", "forced-deploy-audit"]
-                w.author = "github-actions"
+                w.author = "app/github-actions"
         c.portal.call(_label)
         _hold_for_escalation(c, wid)
         orch = c.app.state.sessions

@@ -15,7 +15,7 @@ _PAGE_PRS = 50
 
 _ITEM_FIELDS = """
       number title body state url createdAt updatedAt closedAt
-      author { login }
+      author { __typename login }
       labels(first: 20) { nodes { name } }
       assignees(first: 10) { nodes { login } }"""
 
@@ -110,6 +110,19 @@ def _parse_dt(value: object) -> datetime | None:
         return None
 
 
+def _author(author) -> str:
+    """The stored author string. GitHub's Bot and User logins share a namespace (the
+    Bot ``viberpit`` and a user who registers ``viberpit`` both read ``viberpit``), so
+    Bot-ness is recorded in the string as ``app/<slug>`` — the trusted-author gate
+    (``queue.is_trusted_author``) must not be squattable by a same-named user."""
+    if not isinstance(author, dict):
+        return ""
+    login = str(author.get("login") or "")
+    if login and author.get("__typename") == "Bot":
+        return f"app/{login}"
+    return login
+
+
 def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView], str | None, bool]:
     field = "issues" if kind == "issue" else "pullRequests"
     try:
@@ -147,7 +160,7 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
             labels=tuple(
                 lbl["name"] for lbl in ((node.get("labels") or {}).get("nodes") or [])
                 if isinstance(lbl, dict) and lbl.get("name")),
-            author=str(((node.get("author") or {}).get("login")) or ""),
+            author=_author(node.get("author")),
             url=str(node.get("url") or ""),
             gh_created_at=_parse_dt(node.get("createdAt")),
             gh_updated_at=_parse_dt(node.get("updatedAt")),

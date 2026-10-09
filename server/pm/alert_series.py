@@ -38,7 +38,8 @@ _SPACE_RE = re.compile(r"\s+")
 
 
 def is_automation_login(login: str | None) -> bool:
-    login = (login or "").strip().lower()
+    # The mirror stores a Bot as ``app/<slug>`` (``github_sync._author``).
+    login = (login or "").strip().lower().removeprefix("app/")
     return login.endswith("[bot]") or login in AUTOMATION_LOGINS
 
 

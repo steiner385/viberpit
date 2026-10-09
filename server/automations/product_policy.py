@@ -131,7 +131,8 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     ConfigField(key="trusted_authors", label="Trusted issue authors", type="string-list",
                 default=[],
                 help="GitHub logins whose issues the queue may dispatch. Anyone else's "
-                     "issue is skipped as 'untrusted'. Automation logins are always trusted."),
+                     "issue is skipped as 'untrusted'. Write a GitHub App as app/<slug> "
+                     "and a user by bare login. The github-actions app is always trusted."),
     # #2679: classes of issue whose approval-gated ladder climb ("bounced at opus;
     # fable needs approval") is approved by the runner itself, within a budget —
     # ``server/pm/auto_escalation.py``. Budget 0 (the default) keeps every such

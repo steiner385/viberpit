@@ -324,7 +324,7 @@ def test_is_bot_noise_is_the_predicate_behind_the_bot_skip():
                         extra_skip_labels=frozenset({"forced-deploy-audit"}))
 
 
-TRUSTED = frozenset({"steiner385", "viberpit"})
+TRUSTED = frozenset({"steiner385", "app/viberpit"})
 
 
 def test_untrusted_author_is_skipped_before_dispatch():
@@ -336,11 +336,27 @@ def test_untrusted_author_is_skipped_before_dispatch():
 def test_trust_is_case_insensitive_and_ignores_app_prefix_and_bot_suffix_forms():
     assert is_trusted_author("Steiner385", TRUSTED)
     assert is_trusted_author("app/viberpit", TRUSTED)
-    assert is_trusted_author("viberpit", TRUSTED)
+    assert is_trusted_author("App/Viberpit", TRUSTED)
+    assert is_trusted_author("viberpit[bot]", TRUSTED)
+
+
+def test_a_user_squatting_an_app_login_is_untrusted():
+    """The mirror stores a Bot as ``app/<slug>``; a bare login is a USER, and anyone can
+    register the user ``viberpit`` or ``github-actions`` and open an issue."""
+    assert not is_trusted_author("viberpit", TRUSTED)
+    assert not is_trusted_author("github-actions", frozenset())
+    assert not is_trusted_author("github-actions", TRUSTED)
+
+
+def test_a_user_is_trusted_only_by_a_bare_listing():
+    assert is_trusted_author("steiner385", TRUSTED)
+    assert not is_trusted_author("app/steiner385", TRUSTED)
+    assert not is_trusted_author("app/stranger", TRUSTED)
 
 
 def test_automation_logins_are_always_trusted():
-    assert is_trusted_author("github-actions", frozenset())
+    assert is_trusted_author("app/github-actions", frozenset())
+    assert is_trusted_author("github-actions[bot]", frozenset())
 
 
 def test_ghost_author_is_untrusted():
@@ -362,3 +378,14 @@ def test_trusted_automation_logins_pin_alert_series():
     from server.pm.alert_series import AUTOMATION_LOGINS
     from server.pm.queue import TRUSTED_AUTOMATION_LOGINS
     assert TRUSTED_AUTOMATION_LOGINS == AUTOMATION_LOGINS
+
+
+def test_alert_series_recognises_the_mirrors_app_form():
+    from server.pm.alert_series import alert_key, is_automation_login
+    assert is_automation_login("app/github-actions")
+    assert is_automation_login("github-actions")
+    assert is_automation_login("renovate[bot]")
+    assert not is_automation_login("app/tony")
+    assert alert_key("Weekly failed — 2026-09-01", "app/github-actions") == \
+        alert_key("Weekly failed — 2026-09-01", "github-actions")
+    assert alert_key("Weekly failed — 2026-09-01", "app/github-actions") is not None

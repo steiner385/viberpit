@@ -50,9 +50,8 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
     from server.pm.outcomes import escalation_for
     from server.sessions import model_policy
     from server.sessions.model_catalog import TIER_ORDER
-    from server.automations.product_policy import policy_for_repo, skip_labels
+    from server.automations.product_policy import policy_for_repo, skip_labels, trusted_authors
     from server.pm.policy_skip import skipped_by_policy
-    from server.automations.product_policy import trusted_authors
     from server.pm.queue import is_trusted_author
     escalation = escalation_for(wi.hold_kind, wi.hold_reason)
     if escalation is None:

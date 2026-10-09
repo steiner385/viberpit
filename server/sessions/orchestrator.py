@@ -9121,12 +9121,22 @@ class SessionOrchestrator:
         pending_batch = is_pending_dispatch(st)
         if primary not in by_ref and not pending_batch:
             return "unknown"
+        pending_issues = list(st.get("issues") or [primary]) if pending_batch else [primary]
+        if pending_batch:
+            # A pending claim is no longer in the ranked pool, so nothing has judged
+            # its authors since the claim: do it now, fail-closed. The whole batch is
+            # refused (not trimmed): the claim row owns every one of its refs, so a
+            # smaller batch could not re-take it.
+            from server.pm.dispatch_trust import untrusted_refs
+            async with db_session() as db:
+                if await untrusted_refs(db, pending_issues):
+                    return "refused"
         candidate = by_ref.get(primary, {})
         titles = dict(st.get("titles") or {})
         if candidate.get("title"):
             titles[primary] = candidate["title"]
         batch = Batch(primary=primary,
-                      issues=(st.get("issues") or [primary]) if pending_batch else [primary],
+                      issues=pending_issues,
                       repo=candidate.get("repo") or st.get("repo") or primary.split("#")[0],
                       titles=titles, product=candidate.get("product") or st.get("product"),
                       # A pending claim is no longer in the pool, so the claim row
@@ -9143,8 +9153,8 @@ class SessionOrchestrator:
         # / check-failed it was). The claim is deliberately KEPT: the tap refuses
         # this attempt, it does not reject the work — releasing would drop the
         # batch back into a pool whose next pick would hit the same blocker.
-        # ``backlog_runner_dispatch`` is an explicit operator override and stays
-        # ungated.
+        # ``backlog_runner_dispatch`` is an explicit operator override, but the
+        # endpoint in front of it is gated on author trust (``dispatch_trust``).
         if not await self._backlog_loop.live_check_ok(batch):
             return "not_ready"
         result = await self._backlog_dispatch_batch(batch, source="proposal")
