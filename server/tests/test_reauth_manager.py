@@ -14,6 +14,19 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from server.reauth import ReauthManager, ReauthBusy, ReauthNoKey, REAUTH_DISPLAY_KEY
 
 
+@pytest.fixture(autouse=True)
+def _host_desktop(monkeypatch):
+    """The host-screen fallback resolves the live desktop from /proc; a CI runner has
+    none, so pin a fake one. Tests about resolution override this stub."""
+    from server.sessions.desktop_session import DesktopSession
+
+    monkeypatch.setattr(
+        "server.reauth.resolve_desktop_session",
+        lambda **kw: DesktopSession(kind="x11", display=":0", xauthority=None,
+                                    wayland_display=None, xdg_runtime_dir=None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 1: x11 accessor, reserved key, vnc_session
 # ---------------------------------------------------------------------------
