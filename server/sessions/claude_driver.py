@@ -2085,6 +2085,11 @@ class ClaudeAgentDriver:
             return {}
         return await self._client.get_context_usage()
 
+    @property
+    def last_mcp_status(self) -> list:
+        """The last sanitized snapshot, without a round-trip (never raises)."""
+        return list(self._mcp_last)
+
     async def mcp_status(self) -> list:
         """Fresh sanitized status when live; the last snapshot otherwise."""
         if self._client is None or self._stream_ended or self._mcp_unsupported:

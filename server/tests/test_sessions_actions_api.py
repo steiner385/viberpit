@@ -59,6 +59,23 @@ class _FakeSessions:
         self.set_model_calls: list[tuple] = []
         self.set_model_result: bool = False
         self.set_model_error: Exception | None = None
+        self.mcp: dict[str, list[dict]] = {}
+        self.reconnected: list[tuple] = []
+        self.reconnect_error: str | None = None
+
+    async def mcp_status_for(self, sid):
+        return self.mcp.get(sid)
+
+    async def mcp_reconnect(self, sid, server):
+        if sid not in self.mcp:
+            raise LookupError(sid)
+        if self.reconnect_error is not None:
+            raise ValueError(self.reconnect_error)
+        self.reconnected.append((sid, server))
+        return self.mcp[sid]
+
+    async def reconnect_mcp_everywhere(self, server, statuses):
+        return 0
 
     async def get_session(self, sid):
         return self._record if (self._record and self._record.id == sid) else None

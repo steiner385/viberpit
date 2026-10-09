@@ -312,7 +312,7 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     # Methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
-        "probe_mcp",
+        "probe_mcp", "mcp_status_for", "reconnect_mcp_everywhere",
         "archive_session", "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",
@@ -365,6 +365,18 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     for _m in _SIMPLE:
         register_rpc(app, _m, _make_simple(_m))
+
+    async def mcp_reconnect(params: dict):
+        # Exceptions do not keep their type across the RPC hop: answer an error-shaped
+        # dict that RemoteOrchestrator.mcp_reconnect re-raises as LookupError / ValueError.
+        try:
+            return await _maybe_await(orch.mcp_reconnect(**params))
+        except LookupError:
+            return {"error": "not_live"}
+        except ValueError as exc:
+            return {"error": "reconnect_failed", "message": str(exc)[:300]}
+
+    register_rpc(app, "mcp_reconnect", mcp_reconnect)
 
     async def transcript_path(params: dict) -> str | None:
         # Sync stat + glob over the account's projects tree, which is the sshfs mount on a

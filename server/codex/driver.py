@@ -2400,6 +2400,10 @@ class CodexAgentDriver:
         Claude driver returns, or ``{}`` before the first one arrives."""
         return dict(self._context_usage)
 
+    @property
+    def last_mcp_status(self) -> list:
+        return []
+
     async def mcp_status(self) -> list:
         return []
 

@@ -66,6 +66,20 @@ async def stop_subagent(orch, db, *, session_id: str, tool_use_id: str, identity
     return {"ok": True, "taskId": task_id}
 
 
+async def mcp_reconnect(orch, db, *, session_id: str, server: str, identity: str,
+                        via: str | None = None) -> dict:
+    """Reconnect one MCP server inside a live session (spec 2026-10-09 §4)."""
+    try:
+        servers = await orch.mcp_reconnect(session_id, server)
+    except LookupError:
+        raise ActionError("SESSION_NOT_LIVE", "This session is not running.", 404) from None
+    except ValueError as exc:
+        raise ActionError("MCP_RECONNECT_FAILED", str(exc)[:300], 409) from exc
+    await _audit(db, "session.mcp_reconnect", identity,
+                 {"sessionId": session_id, "server": server}, via)
+    return {"servers": servers}
+
+
 async def resolve_permission(
     orch, db, *, session_id: str, perm_id: str, decision: str, identity: str,
     via: str | None = None,

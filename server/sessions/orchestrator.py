@@ -17927,6 +17927,43 @@ class SessionOrchestrator:
                    and r.status not in CAPACITY_EXEMPT_STATUSES
                    for r in list(self._records.values()))
 
+    async def mcp_status_for(self, session_id: str) -> list[dict] | None:
+        """Live MCP status of a session's driver; ``None`` when it has no live driver."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            return None
+        return [s.to_wire() for s in await d.mcp_status()]
+
+    async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
+        """Reconnect one MCP server in a live session. ``LookupError`` when not live,
+        ``ValueError`` carrying the SDK/driver message when the reconnect fails."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            raise LookupError(session_id)
+        try:
+            await d.reconnect_mcp_server(server)
+        except (NotImplementedError, RuntimeError) as exc:
+            raise ValueError(str(exc)) from exc
+        return [s.to_wire() for s in await d.mcp_status()]
+
+    async def reconnect_mcp_everywhere(self, server: str, statuses: list[str]) -> int:
+        """Reconnect *server* in every live driver on this host whose last snapshot shows
+        it in *statuses* (post-login, spec 2026-10-09 §4). Failures are DEBUG-logged and
+        surface through the next McpStatus poll. Returns the number reconnected."""
+        n = 0
+        want = mcp_store.short_name(server)
+        for sid, d in list(self._drivers.items()):
+            target = next((s.name for s in d.last_mcp_status
+                           if mcp_store.short_name(s.name) == want and s.status in statuses), None)
+            if target is None:
+                continue
+            try:
+                await d.reconnect_mcp_server(target)
+                n += 1
+            except Exception:
+                log.debug("mcp reconnect failed session=%s server=%s", sid, server, exc_info=True)
+        return n
+
     async def probe_mcp(self, account: str | None = None) -> dict:
         """Run the no-prompt MCP probe on THIS host (spec 2026-10-09 §3)."""
         from server.config import get_settings

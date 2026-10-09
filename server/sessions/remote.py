@@ -843,6 +843,23 @@ class RemoteOrchestrator:
         return await self._client.call("stop_subagent", session_id=session_id,
                                        tool_use_id=tool_use_id)
 
+    async def mcp_status_for(self, session_id):
+        return await self._client.call("mcp_status_for", session_id=session_id)
+
+    async def mcp_reconnect(self, session_id, server: str):
+        """The daemon answers an error-shaped dict (exceptions do not survive the RPC hop
+        as their own types); re-raise the orchestrator's LookupError / ValueError here."""
+        r = await self._client.call("mcp_reconnect", session_id=session_id, server=server)
+        if isinstance(r, dict) and "error" in r:
+            if r["error"] == "not_live":
+                raise LookupError(session_id)
+            raise ValueError(r.get("message") or "reconnect failed")
+        return r
+
+    async def reconnect_mcp_everywhere(self, server: str, statuses: list[str]):
+        r = await self._client.call("reconnect_mcp_everywhere", server=server, statuses=statuses)
+        return r if isinstance(r, int) else 0
+
     async def set_permission_mode(self, session_id, mode):
         return await self._client.call("set_permission_mode", session_id=session_id, mode=mode)
 
