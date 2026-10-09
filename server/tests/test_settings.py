@@ -477,7 +477,7 @@ def test_effective_global_cap_derives_from_enabled_host_caps():
 def test_managed_lists_the_capacity_env_flags():
     with _client() as client:
         keys = {m["key"] for m in client.get("/api/settings", headers=IDENTITY_HEADERS).json()["managed"]}
-    for env in ("VIBERPIT_TEST_SLOT_CAP", "VIBERPIT_CHILD_SESSION_CAP",
+    for env in ("VIBERPIT_CHILD_SESSION_CAP",
                 "VIBERPIT_STT_MAX_CONCURRENT", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED"):
         assert env in keys, env
 

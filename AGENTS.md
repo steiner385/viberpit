@@ -87,7 +87,7 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   `~/.cache/viberpit/test-slots`), printing `waiting for test slot (cap N, held by pid …)` while queued, for at most
   `VIBERPIT_TEST_SLOT_WAIT_S` (3600) before proceeding anyway. The kernel drops the lock when the run exits for any reason (SIGKILL
   included), so nothing can wedge it; any lock-dir error fails open. `VIBERPIT_TEST_SLOT=0` opts out; single-process runs never queue.
-  A queued run looks idle — run the suite in the background. The `/api/test-slots` HTTP API (#822) is superseded by this.
+  A queued run looks idle — run the suite in the background. (It replaced the `/api/test-slots` HTTP API, retired in #2887.)
 - **Unset `VIBERPIT_SESSIOND_*` and `VIBERPIT_DAEMON_ROLE` before running `server/tests/` locally.** `server/app.py` builds the app at
   import; a live shell's sessiond client-cert vars make it demand certs, and a worker `VIBERPIT_DAEMON_ROLE` turns ~90 tests into "No
   session with id" failures.
