@@ -20,7 +20,6 @@ _TURN = [f.sys_init("sess-1"), f.stream_start(uuid="t1"), f.stream_text("hi", uu
 @pytest.fixture
 def make_driver(monkeypatch):
     monkeypatch.delenv("VIBERPIT_MCP_STATUS_ENABLED", raising=False)
-    monkeypatch.delenv("CCSWITCH_MCP_STATUS_ENABLED", raising=False)
 
     def make(client, **kw):
         def factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):

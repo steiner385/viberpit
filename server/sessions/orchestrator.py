@@ -17986,7 +17986,8 @@ class SessionOrchestrator:
         from server.mcp_health import probe as mcp_probe
         if not get_settings().mcp_status_enabled:
             return {"rows": [], "skipped": []}
-        names = [account] if account else ccswitch_accounts._anthropic_account_names()
+        from viberpit import accounts as _accounts_mod
+        names = [account] if account else _accounts_mod._anthropic_account_names()
         return await mcp_probe.probe(names)
 
     def live_session_load(self) -> dict[str, float]:
