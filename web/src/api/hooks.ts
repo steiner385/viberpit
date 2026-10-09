@@ -17,7 +17,7 @@ import type {
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
   DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
-  LibraryMcpServer, McpServerConfig, LibraryContent,
+  LibraryMcpServer, McpScope, McpServerConfig, LibraryContent,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
@@ -110,6 +110,7 @@ export const QK = {
   librarySkills: ['library', 'skills'] as const,
   libraryCommands: ['library', 'commands'] as const,
   libraryMcp: ['library', 'mcp'] as const,
+  mcpScope: ['library', 'mcp', 'scope'] as const,
   libraryContent: (kind: string, id: string, plugin?: string) =>
     ['library', 'content', kind, id, plugin ?? null] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
@@ -1511,6 +1512,43 @@ export function useLibraryMcp() {
   })
 }
 
+export function useMcpScope() {
+  return useQuery<McpScope>({
+    queryKey: QK.mcpScope,
+    queryFn: () => api.get('/library/mcp/scope'),
+    staleTime: 30_000,
+  })
+}
+
+// `repo` is "owner/name"; each segment is encoded, the slash stays a path separator.
+const mcpRulePath = (server: string, repo: string) =>
+  `/library/mcp/scope/${encodeURIComponent(server)}/repos/${repo.split('/').map(encodeURIComponent).join('/')}`
+
+export function useSetMcpDefault() {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { server: string; defaultEnabled: boolean }>({
+    mutationFn: ({ server, defaultEnabled }) =>
+      api.put(`/library/mcp/scope/${encodeURIComponent(server)}`, { defaultEnabled }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.mcpScope }),
+  })
+}
+
+export function useSetMcpRepoRule() {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { server: string; repo: string; enabled: boolean }>({
+    mutationFn: ({ server, repo, enabled }) => api.put(mcpRulePath(server, repo), { enabled }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.mcpScope }),
+  })
+}
+
+export function useDeleteMcpRepoRule() {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { server: string; repo: string }>({
+    mutationFn: ({ server, repo }) => api.del(mcpRulePath(server, repo)),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.mcpScope }),
+  })
+}
+
 export function useSaveMcpServer() {
   const qc = useQueryClient()
   return useMutation<unknown, ApiRequestError, { name: string; config: McpServerConfig }>({
@@ -2808,6 +2846,16 @@ export function useReconnectSessionMcp(sessionId: string) {
   return useMutation<{ servers: McpServerState[] }, ApiRequestError, { server: string }>({
     mutationFn: ({ server }) =>
       api.post(`/sessions/${encodeURIComponent(sessionId)}/mcp/${encodeURIComponent(server)}/reconnect`),
+    onSuccess: (data) => qc.setQueryData(['session-mcp', sessionId], data),
+  })
+}
+
+// useToggleSessionMcp: enables/disables one MCP server inside a live session; the response is the fresh server list.
+export function useToggleSessionMcp(sessionId: string) {
+  const qc = useQueryClient()
+  return useMutation<{ servers: McpServerState[] }, ApiRequestError, { server: string; enabled: boolean }>({
+    mutationFn: ({ server, enabled }) =>
+      api.post(`/sessions/${encodeURIComponent(sessionId)}/mcp/${encodeURIComponent(server)}/toggle`, { enabled }),
     onSuccess: (data) => qc.setQueryData(['session-mcp', sessionId], data),
   })
 }
