@@ -53,7 +53,6 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("error_sink_enabled", "VIBERPIT_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
     ("gh_reconcile_enabled", "VIBERPIT_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
     ("capacity_governor_enabled", "VIBERPIT_CAPACITY_GOVERNOR_ENABLED", "Capacity governor may apply its plan (act mode)"),
-    ("test_slot_cap", "VIBERPIT_TEST_SLOT_CAP", "Full test-suite runs one host may carry at once"),
     ("child_session_cap", "VIBERPIT_CHILD_SESSION_CAP", "Live child sessions one parent session may hold"),
     ("stt_max_concurrent", "VIBERPIT_STT_MAX_CONCURRENT", "Concurrent server-side dictation streams"),
     ("log_level", "VIBERPIT_LOG_LEVEL", "Server log level"),

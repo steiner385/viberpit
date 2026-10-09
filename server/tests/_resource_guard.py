@@ -37,7 +37,7 @@ from typing import Any
 
 DEFAULT_WORKER_MB = 1536
 DEFAULT_RESERVE_MB = 3072
-DEFAULT_SLOT_CAP = 1  # mirrors server.config Settings.test_slot_cap (VIBERPIT_TEST_SLOT_CAP)
+DEFAULT_SLOT_CAP = 1  # VIBERPIT_TEST_SLOT_CAP
 DEFAULT_WAIT_S = 3600
 POLL_S = 10.0
 

@@ -80,7 +80,6 @@ describe('LimitsSection', () => {
       maxActiveSessions: null,
       managed: [
         { key: 'VIBERPIT_ENABLE_COPILOT', value: false, description: 'Enable GitHub Copilot accounts' },
-        { key: 'VIBERPIT_TEST_SLOT_CAP', value: 1, description: 'Full test-suite runs one host may carry at once' },
         { key: 'VIBERPIT_CAPACITY_GOVERNOR_ENABLED', value: true, description: 'Capacity governor may apply its plan (act mode)' },
       ],
       effectiveDefaults: {
@@ -147,7 +146,7 @@ describe('LimitsSection', () => {
     } as never))
     mount()
     const names = screen.getAllByRole('rowheader').map((th) => th.textContent)
-    expect(names).toEqual(['VIBERPIT_TEST_SLOT_CAP', 'VIBERPIT_CAPACITY_GOVERNOR_ENABLED'])
+    expect(names).toEqual(['VIBERPIT_CAPACITY_GOVERNOR_ENABLED'])
     const readout = screen.getByRole('group', { name: 'Live readout' })
     expect(within(readout).getByText('Global cap')).toBeInTheDocument()
     expect(within(readout).getByText('5 / 10 · 5 free')).toBeInTheDocument()
