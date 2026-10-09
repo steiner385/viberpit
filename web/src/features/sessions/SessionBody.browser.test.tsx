@@ -33,6 +33,9 @@ vi.mock('@/features/sessions/browser/BrowserTab', () => ({
 // Stub the hooks so SessionBody's query calls return safe empty data
 // without firing real fetch requests (which would conflict with the spied fetch).
 vi.mock('@/api/hooks', () => ({
+  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  useSessionMcp: vi.fn(() => ({ data: undefined })),
+  useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useModels: () => ({ data: [] }),
   useAccounts: () => ({ data: [] }),
   useSessions: () => ({ data: [] }),

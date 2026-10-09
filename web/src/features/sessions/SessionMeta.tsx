@@ -77,6 +77,8 @@ interface Props {
    *  it and keeps the actions in its own header. */
   actionsSlot?: React.ReactNode
   models: { id: string; label: string }[]
+  /** In-session MCP readout (rendered right after ctx). */
+  mcpSlot?: React.ReactNode
   accounts: { name: string; nickname?: string | null }[]
   accountPinned: boolean
   onSelectModel: (id: string) => void
@@ -96,7 +98,7 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [panel, setPanel] = useState<'agents' | 'background' | null>(null)
   const now = useNow(1000, backgroundWork.wakeupAt != null)
   // `now` is 0 until the first tick; a countdown against 0 would flash a huge number.
@@ -281,6 +283,8 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
             </span>
           )
         })()}
+
+        {mcpSlot}
 
         {/* Account quota — one readout per window the provider reported, so a
             single-allowance provider shows ONE number instead of the same one
