@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
@@ -115,5 +115,40 @@ describe('McpStatusReadout', () => {
     render(ui([st('a', 'connected')]), { wrapper: Wrapper })
     await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
     expect(screen.getByRole('link', { name: /manage/i })).toHaveAttribute('href', expect.stringContaining('/settings/mcp'))
+  })
+
+  it('shows a 404 string detail from the server', async () => {
+    mockReconnect({ isError: true, error: new ApiRequestError(404, { detail: 'Session not live' }) })
+    render(ui([st('b', 'failed')]), { wrapper: Wrapper })
+    await userEvent.click(screen.getByRole('button', { name: /MCP 0\/1/ }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Session not live')
+  })
+
+  it('Escape closes the popover and returns focus to the trigger', async () => {
+    render(ui([st('a', 'failed')]), { wrapper: Wrapper })
+    const trigger = screen.getByRole('button', { name: /MCP 0\/1/ })
+    await userEvent.click(trigger)
+    screen.getByRole('button', { name: 'Reconnect a' }).focus()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('link', { name: /manage/i })).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('closes on a mousedown outside but not on a click inside', async () => {
+    render(<div><p>outside</p>{ui([st('a', 'failed')])}</div>, { wrapper: Wrapper })
+    await userEvent.click(screen.getByRole('button', { name: /MCP 0\/1/ }))
+    await userEvent.click(screen.getByText('a'))
+    expect(screen.getByRole('link', { name: /manage/i })).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByText('outside'))
+    expect(screen.queryByRole('link', { name: /manage/i })).toBeNull()
+  })
+
+  it('is anchored to the strip and capped to the viewport (375px contract)', async () => {
+    render(ui([st('a', 'connected')]), { wrapper: Wrapper })
+    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
+    const pop = screen.getByRole('link', { name: /manage/i }).closest('div.absolute') as HTMLElement
+    expect(pop.className).toMatch(/\bright-2\b/)
+    expect(pop.className).toContain('max-w-[calc(100vw-1rem)]')
+    expect(pop.parentElement!.className).not.toMatch(/\brelative\b/)
   })
 })

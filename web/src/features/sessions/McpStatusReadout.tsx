@@ -3,11 +3,12 @@
  * `mcpStatus` events win; the GET snapshot fills in until the first event.
  * Engines without MCP status report no servers, so the readout renders nothing.
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useReconnectSessionMcp, useSessionMcp } from '@/api/hooks'
-import { ApiRequestError, apiErrorCode } from '@/api/client'
+import { extractMutationErrorMessage } from '@/api/queryClient'
+import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 import type { McpServerState } from '@/api/types'
 import { settingsSectionPath } from '@/shell/navDefs'
 import { McpStatusPill } from '@/features/settings/sections/McpStatusPill'
@@ -27,6 +28,26 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
   const reconnect = useReconnectSessionMcp(sessionId)
   const [open, setOpen] = useState(false)
   const [reauth, setReauth] = useState<string | null>(null)
+  const rootRef = useRef<HTMLSpanElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  // Outside-click closes (mirrors SessionActions / CardMenu); Escape is the
+  // container's own onKeyDown below.
+  useEffect(() => {
+    if (!open) return
+    function onDocClick(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  // An open popover is an overlay: the shell's shortcuts must not fire through it.
+  useEffect(() => {
+    if (!open) return
+    pushOverlay()
+    return () => popOverlay()
+  }, [open])
 
   const servers = live ?? snapshot.data?.servers ?? NO_SERVERS
   if (servers.length === 0) return null
@@ -35,17 +56,24 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
   const worst = worstStatus(servers.map((s) => s.status))
   const warn = worst === 'failed' || worst === 'needs-auth'
 
-  const err = reconnect.isError ? reconnect.error : null
-  const errMessage =
-    err instanceof ApiRequestError && apiErrorCode(err) === 'MCP_RECONNECT_FAILED'
-      ? String((err.body.detail as { message?: unknown }).message ?? 'Reconnect failed')
-      : err
-        ? 'Reconnect failed'
-        : null
+  const errMessage = reconnect.isError ? extractMutationErrorMessage(reconnect.error, 'Reconnect failed') : null
 
   return (
-    <span className="relative inline-flex">
+    // Not `relative`: the popover anchors to the SessionMeta strip (right-2), like
+    // the sub-agent and background panels, so it cannot run off a phone's right edge.
+    <span
+      ref={rootRef}
+      className="inline-flex"
+      onKeyDown={(e) => {
+        if (open && e.key === 'Escape') {
+          e.stopPropagation()
+          setOpen(false)
+          triggerRef.current?.focus()
+        }
+      }}
+    >
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -61,7 +89,7 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
       {open && (
         <div
           className={cn(
-            'absolute left-0 top-full z-sticky mt-1 w-72 max-h-72 overflow-y-auto',
+            'absolute right-2 top-full z-sticky mt-1 w-72 max-w-[calc(100vw-1rem)] max-h-72 overflow-y-auto',
             'rounded-md border border-edge bg-surface shadow-lg px-2 py-1',
           )}
         >
