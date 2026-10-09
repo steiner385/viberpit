@@ -1,6 +1,6 @@
 # Wayland coexistence — audit and plan
 
-**Date:** 2026-10-09 · **Status:** proposed, awaiting decisions in §4
+**Date:** 2026-10-09 · **Status:** approved — §4 decided 2026-10-09: Q1 Wayland-native (`auto`), Q2 auto-route to virtual + show the reason
 
 ## 1. What changed on the host
 
