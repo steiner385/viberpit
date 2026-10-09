@@ -92,15 +92,21 @@ export function useSetAssistantModel() {
 
 /**
  * Reset the assistant to a fresh session — always forces `fresh: true`,
- * regardless of what the caller passes.
+ * regardless of what the caller passes. The flag lives in `mutationFn`, not a
+ * wrapper around one call shape: overriding only `mutateAsync` let `mutate({})`
+ * post a plain create, which the server answers with the EXISTING thread, so
+ * "New chat" silently did nothing. Invalidates history too — the reset archives
+ * the old thread onto that list.
  */
 export function useResetAssistant() {
-  const mutation = useAssistantSession()
-  return {
-    ...mutation,
-    mutateAsync: (input: AssistantSessionInput = {}) =>
-      mutation.mutateAsync({ ...input, fresh: true }),
-  }
+  const qc = useQueryClient()
+  return useMutation<AssistantSession, ApiRequestError, AssistantSessionInput>({
+    mutationFn: (input) => api.post<AssistantSession>('/assistant/session', { ...input, fresh: true }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ASSISTANT_STATUS_KEY })
+      void qc.invalidateQueries({ queryKey: ASSISTANT_HISTORY_KEY })
+    },
+  })
 }
 
 /** One row of the drawer's "History" list — an archived assistant thread owned

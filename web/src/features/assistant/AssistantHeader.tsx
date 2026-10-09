@@ -13,6 +13,10 @@ import { useAssistantStatus, useResetAssistant, useSetAssistantModel } from '@/a
 import { useModels } from '@/api/hooks'
 import { apiErrorCode } from '@/api/client'
 import { modelName } from '@/session/modelName'
+import {
+  createSessionFailureMessage,
+  describeCreateSessionFailure,
+} from '@/features/sessions/createSessionFailure'
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import { IconButton } from '@/ui/IconButton'
@@ -74,7 +78,12 @@ export function AssistantHeader() {
         >
           <History size={16} aria-hidden="true" />
         </IconButton>
-        <Button type="button" variant="secondary" size="sm" onClick={() => setConfirming(true)}>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() => { reset.reset(); setConfirming(true) }}
+        >
           New chat
         </Button>
       </div>
@@ -86,6 +95,14 @@ export function AssistantHeader() {
           <p className="text-sm text-ink-muted">
             This clears the assistant&rsquo;s current conversation and starts a fresh session.
           </p>
+          {/* A failed reset keeps the dialog open with the reason — closing it would
+              leave the old thread on screen as if the reset had worked. The reset is
+              an assistant-session create, so it reads failures the same way. */}
+          {reset.isError && (
+            <p role="alert" className="text-sm text-danger">
+              {createSessionFailureMessage(describeCreateSessionFailure(reset.error))}
+            </p>
+          )}
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="secondary" size="lg" onClick={() => setConfirming(false)}>
               Cancel
@@ -94,9 +111,10 @@ export function AssistantHeader() {
               type="button"
               variant="primary"
               size="lg"
+              disabled={reset.isPending}
               onClick={() => { reset.mutate({}, { onSuccess: () => setConfirming(false) }) }}
             >
-              Start new chat
+              {reset.isPending ? 'Starting…' : 'Start new chat'}
             </Button>
           </div>
         </Dialog>
