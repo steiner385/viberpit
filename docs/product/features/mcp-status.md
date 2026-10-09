@@ -89,9 +89,13 @@ Plugin servers are keyed by the plugin manifest name (`plugin:Notion:notion`, no
 
 **Live toggle** - the in-session `MCP n/m` popover gets an on/off switch per server (`POST /api/sessions/{id}/mcp/{server}/toggle`, `{enabled}`; 400 unknown server, 409 if the CLI refuses, 404 if the session is not live). The choice is saved to `sessions.mcp_overrides` and survives resume; the driver's enforcement set is kept in sync. The DB is authoritative: the CLI also mirrors toggles into `.claude.json`, but that copy is overwritten at the next driver build. Disabled servers are excluded from the `n/m` count.
 
+**Repo key** - repo rules key on the session's stored repo (`Session.repo`, set at creation), not the live git remote some UI labels show. Adopted and explicit-cwd sessions have no stored repo and get server defaults only.
+
+**Switch coverage** - the popover shows a switch only for user-scope and plugin servers (CLI scope `user` or `dynamic`); `project`, `claudeai` and `local` rows keep status, Reconnect and Reauth but no switch, since the toggle route rejects them.
+
 **Applies to new and resumed sessions** - changing a repo rule or server default does not touch sessions that are already running. Use the live toggle for those.
 
-**Kill switch** - `VIBERPIT_MCP_SCOPE_ENABLED` (default on). When off, no list is written and both the rules API and the toggle route return 404 `{"error": "mcp_scope_disabled"}`; the web hides the controls.
+**Kill switch** - `VIBERPIT_MCP_SCOPE_ENABLED` (default on). When off, no list is written and both the rules API and the toggle route return 404 `{"error": "mcp_scope_disabled"}`; Settings hides its scope controls immediately; the session popover hides its switches only after the first toggle returns 404 `mcp_scope_disabled`. Post-start enforcement runs from the MCP status poll, so it also requires `VIBERPIT_MCP_STATUS_ENABLED` on; with status off only the pre-launch list protects a session.
 
 **Known limitations**
 

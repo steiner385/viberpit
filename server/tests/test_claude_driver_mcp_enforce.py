@@ -172,3 +172,25 @@ async def test_failed_toggle_leaves_desired_set_alone(make):
         await d.toggle_mcp_server("a", True)
     assert list(d._desired_disabled_mcp) == ["a"]
     await d.aclose()
+
+
+@pytest.mark.asyncio
+async def test_user_enable_landing_mid_pass_is_not_redisabled(make):
+    d, client, _ = make([("a", "connected"), ("b", "connected")], ["a", "b"])
+    await d.start()
+    await d._mcp_poll_task
+    client.toggled.clear()
+    d._mcp_enforced = False
+    orig = client.toggle_mcp_server
+    fired = []
+
+    async def hook(name, enabled):
+        await orig(name, enabled)
+        if not fired:
+            fired.append(1)
+            # the user enables "b" while the pass is between its two toggles
+            d._desired_disabled_mcp = [n for n in d._desired_disabled_mcp if n != "b"]
+    client.toggle_mcp_server = hook
+    await d._enforce_disabled_mcp(await d._poll_mcp_status())
+    assert client.toggled == [("a", False)]
+    await d.aclose()

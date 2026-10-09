@@ -28,8 +28,14 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>
 }
 
-function st(name: string, status: string, error: string | null = null, toolCount: number | null = 3): McpServerState {
-  return { name, status, error, toolCount, scope: null }
+function st(
+  name: string,
+  status: string,
+  error: string | null = null,
+  toolCount: number | null = 3,
+  scope: string | null = 'user',
+): McpServerState {
+  return { name, status, error, toolCount, scope }
 }
 
 function mockSessionMcp(data: { servers: McpServerState[] } | undefined) {
@@ -163,6 +169,25 @@ describe('McpStatusReadout', () => {
     expect(pop.className).toMatch(/\bright-2\b/)
     expect(pop.className).toContain('max-w-[calc(100vw-1rem)]')
     expect(pop.parentElement!.className).not.toMatch(/\brelative\b/)
+  })
+
+  it('renders a switch only for user and dynamic (plugin) scope rows', () => {
+    render(
+      ui([
+        st('u', 'connected', null, 3, 'user'),
+        st('d', 'connected', null, 3, 'dynamic'),
+        st('p', 'connected', null, 3, 'project'),
+        st('c', 'connected', null, 3, 'claudeai'),
+        st('l', 'connected', null, 3, 'local'),
+      ]),
+      { wrapper: Wrapper },
+    )
+    fireEvent.click(screen.getByRole('button', { name: /MCP 5\/5/ }))
+    expect(screen.getByRole('switch', { name: 'u enabled' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'd enabled' })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'p enabled' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'c enabled' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'l enabled' })).toBeNull()
   })
 
   it('switch state follows status', async () => {

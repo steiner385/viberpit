@@ -2173,6 +2173,8 @@ class ClaudeAgentDriver:
         for name in self._desired_disabled_mcp:
             if reported.get(name) in (None, "disabled"):
                 continue
+            if name not in (self._desired_disabled_mcp or []):
+                continue  # the user enabled it mid-pass
             try:
                 await self._client.toggle_mcp_server(name, False)
                 toggled = True

@@ -109,7 +109,7 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-ink truncate">{short}</span>
                     <McpStatusPill status={s.status} />
-                    {!switchesHidden && (
+                    {!switchesHidden && (s.scope === 'user' || s.scope === 'dynamic') && (
                       <button
                         type="button"
                         role="switch"
