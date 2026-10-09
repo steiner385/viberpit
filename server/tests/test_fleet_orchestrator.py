@@ -1284,3 +1284,14 @@ def test_probe_mcp_merge_concatenates_rows_and_skipped():
     assert _MERGE_ALL_HOSTS["probe_mcp"]([
         {"rows": [1], "skipped": []}, {"rows": [2], "skipped": [{"account": "b"}]}, {},
     ]) == {"rows": [1, 2], "skipped": [{"account": "b"}]}
+
+
+@pytest.mark.asyncio
+async def test_x11_metrics_passes_daemon_native_display_through_from_primary():
+    """/api/x11/metrics in fleet mode reaches the primary daemon's x11_metrics via
+    __getattr__ untouched, so its nativeDisplay key survives."""
+    class _Prim(_FakeOrch):
+        async def x11_metrics(self):
+            return {"enabled": True, "nativeDisplay": {"available": False, "reason": "cookie_missing"}}
+    fo = FleetOrchestrator(_FakeRouter({"rocky": _Prim("rocky")}), primary="rocky")
+    assert (await fo.x11_metrics())["nativeDisplay"]["reason"] == "cookie_missing"

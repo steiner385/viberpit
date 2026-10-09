@@ -20,11 +20,18 @@ class FakeNative:
     def __init__(self, available=True, display=":0"):
         self._available = available; self.display = display
         self.launched: list[tuple[str, str | None]] = []; self.closed: list[str] = []
+    async def refresh(self): ...
     def available(self): return self._available
+    def unavailable_reason(self): return None if self._available else "cookie_missing"
     def env(self): return {"DISPLAY": self.display}
-    async def launch_browser(self, sid, url): self.launched.append((sid, url)); return True
+    async def launch_browser(self, sid, url): self.launched.append((sid, url)); return None
     async def close(self, sid): self.closed.append(sid)
     async def stop_all(self): ...
+
+
+class FailingNative(FakeNative):
+    def __init__(self, reason): super().__init__(); self.reason = reason
+    async def launch_browser(self, sid, url): return self.reason
 
 
 class FakeX11:
@@ -248,6 +255,17 @@ async def test_close_tears_down_native_browsers(spawn_env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["cap", "launch_failed"])
+async def test_open_browser_passes_native_failure_reason_through(spawn_env, reason):
+    orch = await _orch(spawn_env, FakeX11(), FailingNative(reason))
+    try:
+        nat = await orch.create_session("n", account="acct", client_node="dobby")
+        assert await orch.open_browser(nat.id, None) == {"ok": False, "reason": reason}
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
 async def test_open_browser_dispatches_by_mode(spawn_env):
     x11, native = FakeX11(), FakeNative()
     orch = await _orch(spawn_env, x11, native)
@@ -463,5 +481,80 @@ async def test_failed_approve_restore_keeps_native_display(spawn_env):
 
         # A failed approve must not have leased an Xvfb display either.
         assert x11.started == []
+    finally:
+        await orch.stop()
+
+
+# --- fallback reason: WHY a would-be-native session went virtual ------------------
+
+class LockedNative(FakeNative):
+    def __init__(self, reason="cookie_missing"):
+        super().__init__(available=False); self._reason = reason
+    def unavailable_reason(self): return None if self._available else self._reason
+
+
+async def _row(sid):
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        return await db.get(DbSession, sid)
+
+
+@pytest.mark.asyncio
+async def test_spawn_persists_fallback_reason_when_local_desktop_unavailable(spawn_env):
+    x11, native = FakeX11(), LockedNative("no_graphical_session")
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        rec = await orch.create_session("n", account="acct", client_node="dobby")
+        assert rec.display_mode == "virtual"
+        assert rec.display_fallback_reason == "no_graphical_session"
+        assert rec.to_dict()["displayFallbackReason"] == "no_graphical_session"
+        assert (await _row(rec.id)).display_fallback_reason == "no_graphical_session"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_spawn_no_fallback_reason_for_remote_client_or_native_or_explicit_virtual(spawn_env):
+    x11, native = FakeX11(), LockedNative()
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        remote = await orch.create_session("n", account="acct", client_node="phone")
+        virtual = await orch.create_session("v", account="acct", client_node="dobby",
+                                            display="virtual")
+        assert remote.display_fallback_reason is None
+        assert virtual.display_fallback_reason is None
+        assert (await _row(remote.id)).display_fallback_reason is None
+        native._available = True              # desktop back: native, no reason
+        ok = await orch.create_session("o", account="acct", client_node="dobby")
+        assert ok.display_mode == "native" and ok.display_fallback_reason is None
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_native_wired_reads_native_disabled(spawn_env):
+    orch = await _orch(spawn_env, FakeX11(), None)
+    try:
+        rec = await orch.create_session("n", account="acct", client_node="dobby")
+        assert rec.display_fallback_reason == "native_disabled"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_persists_fallback_reason_and_promotion_keeps_it(spawn_env):
+    x11, native = FakeX11(), LockedNative("connect_refused")
+    orch = await _orch(spawn_env, x11, native, max_active_sessions=1)
+    try:
+        a = await orch.create_session("one", account="acct")
+        b = await orch.create_session("n", account="acct", client_node="dobby")
+        assert b.status == "queued"
+        assert b.display_fallback_reason == "connect_refused"
+        assert (await _row(b.id)).display_fallback_reason == "connect_refused"
+        await orch.close_session(a.id)
+        assert await orch._maybe_start_queued() == 1
+        assert orch._records[b.id].display_fallback_reason == "connect_refused"
+        assert (await _row(b.id)).display_fallback_reason == "connect_refused"
     finally:
         await orch.stop()

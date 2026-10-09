@@ -254,6 +254,7 @@ def _record_to_dict(
         # "native" | "virtual" | null — drives the desktop badge and whether the
         # Browser tab offers a VNC canvas at all.
         "displayMode": getattr(record, "display_mode", None),
+        "displayFallbackReason": getattr(record, "display_fallback_reason", None),
         "origin": getattr(record, "origin", None),
         "originRef": getattr(record, "origin_ref", None),
         "assistedBy": getattr(record, "assisted_by", None),

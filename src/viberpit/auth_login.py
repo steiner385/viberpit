@@ -337,6 +337,11 @@ def capture_login(
             "CLAUDE_CONFIG_DIR": capture_dir,
             **(env_extra or {}),
         }
+        if "DISPLAY" in (env_extra or {}):
+            # An explicit X display means "draw on X": a leaked Wayland socket would
+            # let Chrome auto-select Wayland and open on the operator's real desktop.
+            env.pop("WAYLAND_DISPLAY", None)
+            env.pop("WAYLAND_SOCKET", None)
         subprocess.run(claude_cmd + login_args, env=env, shell=False)
 
         cred_path = os.path.join(capture_dir, ".credentials.json")

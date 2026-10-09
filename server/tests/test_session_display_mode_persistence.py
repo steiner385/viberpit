@@ -52,3 +52,29 @@ def test_migration_chain():
     m = importlib.import_module("server.db.migrations.versions.0031_session_display_mode")
     assert m.revision == "0031_session_display_mode"
     assert m.down_revision == "0030_test_run_slots"
+
+
+def test_fallback_reason_roundtrip_row_and_api():
+    from types import SimpleNamespace
+
+    from server.api.sessions import _record_to_dict
+    from server.db.models import Session
+    from server.sessions.orchestrator import SessionOrchestrator
+    assert Session.__table__.c.display_fallback_reason.nullable is True
+    d = _rec(display_fallback_reason="cookie_missing").to_dict()
+    assert SessionRecord.from_dict(d).display_fallback_reason == "cookie_missing"
+    assert _record_to_dict(_rec(display_fallback_reason="cookie_missing"))[
+        "displayFallbackReason"] == "cookie_missing"
+    assert _record_to_dict(_rec())["displayFallbackReason"] is None
+    row = SimpleNamespace(id="s1", name="n", account_name="a", engine=AgentEngine.CLAUDE_CODE.value,
+                          engine_session_id="", cwd="/tmp", repo=None, status="idle",
+                          name_is_auto=True, permission_mode="interactive", created_at=None,
+                          display_mode="virtual", display_fallback_reason="connect_refused")
+    rec = SessionOrchestrator._record_from_row(SessionOrchestrator.__new__(SessionOrchestrator), row)
+    assert rec.display_fallback_reason == "connect_refused"
+
+
+def test_fallback_reason_migration_chain():
+    import importlib
+    m = importlib.import_module("server.db.migrations.versions.0080_session_display_fallback_reason")
+    assert m.down_revision == "0079_mcp_repo_scope"

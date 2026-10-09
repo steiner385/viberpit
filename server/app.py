@@ -1035,7 +1035,11 @@ def create_app(
             except DaemonUnavailable:
                 return {"enabled": False}
         x11 = getattr(app.state, "x11", None)
-        return x11.metrics() if x11 else {"enabled": False}
+        nd = getattr(app.state, "native_display", None)
+        if nd is not None:
+            await nd.refresh()
+        return {**(x11.metrics() if x11 else {"enabled": False}),
+                "nativeDisplay": nd.metrics() if nd is not None else None}
 
     @app.get("/api/daemon/health")
     async def daemon_health(_identity: str = Depends(current_identity)) -> dict:
@@ -1077,6 +1081,7 @@ def create_app(
         "no_display": "no display for session",
         "cap": "browser cap reached",
         "native_unavailable": "native display unavailable",
+        "launch_failed": "browser failed to start",
     }
 
     @app.post("/api/sessions/{session_id}/browser/open")

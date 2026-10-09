@@ -8,10 +8,25 @@ Design: docs/superpowers/specs/2026-09-06-native-display-routing-design.md §4.2
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 DISPLAY_NATIVE = "native"
 DISPLAY_VIRTUAL = "virtual"
 # Request-only value ("decide for me"); never persisted.
 DISPLAY_AUTO = "auto"
+
+
+class DisplayDecision(NamedTuple):
+    """The routing decision plus, for a would-be-native session sent to a virtual
+    display because the desktop is unavailable, WHY (else None)."""
+    mode: str
+    fallback_reason: str | None = None
+
+
+def _is_local(client_node: str | None, runner: str) -> bool:
+    """True iff the requesting client's tailnet node IS the runner host."""
+    return bool(client_node and runner
+                and client_node.strip().lower() == runner.strip().lower())
 
 
 def resolve_display_mode(
@@ -41,6 +56,23 @@ def resolve_display_mode(
         return DISPLAY_VIRTUAL
     if requested == DISPLAY_NATIVE:
         return DISPLAY_NATIVE
-    if client_node and runner and client_node.strip().lower() == runner.strip().lower():
+    if _is_local(client_node, runner):
         return DISPLAY_NATIVE
     return DISPLAY_VIRTUAL
+
+
+def native_fallback(
+    *,
+    requested: str | None,
+    client_node: str | None,
+    runner: str,
+    native_available: bool,
+) -> bool:
+    """True iff this session WOULD have gone native but the desktop is unavailable.
+
+    The caller then records why (``display_fallback_reason``) so the UI can explain
+    the silent virtual routing. An explicit "virtual" request is never a fallback.
+    """
+    if native_available or requested == DISPLAY_VIRTUAL:
+        return False
+    return requested == DISPLAY_NATIVE or _is_local(client_node, runner)

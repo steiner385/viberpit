@@ -337,6 +337,9 @@ export interface Session {
    *  'virtual' = a pooled Xvfb display viewed over VNC. Null for pre-feature rows
    *  (read as virtual). */
   displayMode?: 'native' | 'virtual' | null
+  /** Why a would-be-native session went virtual (desktop locked / logged out / not
+   *  configured); null when no fallback happened. */
+  displayFallbackReason?: string | null
   status: SessionStatus
   createdAt: string
   /** Last-activity time. May be null/absent for a session with no recorded

@@ -14,6 +14,19 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from server.reauth import ReauthManager, ReauthBusy, ReauthNoKey, REAUTH_DISPLAY_KEY
 
 
+@pytest.fixture(autouse=True)
+def _host_desktop(monkeypatch):
+    """The host-screen fallback resolves the live desktop from /proc; a CI runner has
+    none, so pin a fake one. Tests about resolution override this stub."""
+    from server.sessions.desktop_session import DesktopSession
+
+    monkeypatch.setattr(
+        "server.reauth.resolve_desktop_session",
+        lambda **kw: DesktopSession(kind="x11", display=":0", xauthority=None,
+                                    wayland_display=None, xdg_runtime_dir=None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 1: x11 accessor, reserved key, vnc_session
 # ---------------------------------------------------------------------------
@@ -105,22 +118,61 @@ async def test_runner_allocates_virtual_display_and_releases(monkeypatch):
     assert fake.stopped == [REAUTH_DISPLAY_KEY]      # released in finally
     assert captured["DISPLAY"] == ":105"
     assert captured["XAUTHORITY"] == "/tmp/viberpit-__reauth__.Xauthority"
+    assert captured["XDG_SESSION_TYPE"] == "x11"
 
 
-@pytest.mark.asyncio
-async def test_runner_falls_back_to_host_display_without_x11(monkeypatch):
-    captured = {}
-    monkeypatch.setattr("ccswitch.auth_login.capture_login",
-                        lambda name, env_extra=None: captured.update(env_extra or {}) or True)
+def _stub_login(monkeypatch, captured, calls=None):
+    def login(name, env_extra=None):
+        if calls is not None:
+            calls.append(name)
+        captured.update(env_extra or {})
+        return True
+
+    monkeypatch.setattr("ccswitch.auth_login.capture_login", login)
     monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-y")
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
 
+
+@pytest.mark.asyncio
+async def test_runner_fallback_uses_resolved_desktop_x11_with_cookie(monkeypatch):
+    from server.sessions.desktop_session import DesktopSession
+
+    captured: dict = {}
+    _stub_login(monkeypatch, captured)
+    seen: dict = {}
+
+    def fake_resolve(*, uid, display=None, **kw):
+        seen.update(uid=uid, display=display)
+        return DesktopSession(kind="wayland", display=":1", xauthority="/run/user/1000/.mutter-Xwaylandauth.X",
+                              wayland_display="wayland-0", xdg_runtime_dir="/run/user/1000")
+
+    monkeypatch.setattr("server.reauth.resolve_desktop_session", fake_resolve)
     mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)   # no x11
     await mgr.start("primary", "me@example.com")
     await asyncio.sleep(0.05)
-    assert captured["DISPLAY"] == ":0"          # settings.reauth_display default
-    assert "XAUTHORITY" not in captured         # untouched fallback env
+    assert seen["display"] is None              # default "" = discover
+    assert captured["DISPLAY"] == ":1"
+    assert captured["XAUTHORITY"] == "/run/user/1000/.mutter-Xwaylandauth.X"
+    assert "WAYLAND_DISPLAY" not in captured    # X11 via Xwayland, not native Wayland
+
+
+@pytest.mark.asyncio
+async def test_runner_fallback_without_desktop_fails_and_skips_browser(monkeypatch):
+    from server.sessions.desktop_session import DesktopUnavailable
+
+    captured: dict = {}
+    calls: list = []
+    _stub_login(monkeypatch, captured, calls)
+    monkeypatch.setattr("server.reauth.resolve_desktop_session",
+                        lambda **kw: DesktopUnavailable("cookie_missing", "/x"))
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+    assert calls == []                          # browser never launched
+    st = mgr.status("primary")
+    assert st.state == "error"
+    assert "cookie_missing" in (st.message or "")
 
 
 @pytest.mark.asyncio

@@ -104,3 +104,25 @@ def test_open_browser_no_x11():
     )
     assert r.status_code == 409
     assert r.json()["detail"] == "no display for session"
+
+
+def test_open_browser_launch_failed_detail():
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.types import SessionRecord  # noqa: F401
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
+    class FailedNative:
+        async def refresh(self): ...
+        def available(self): return True
+        async def launch_browser(self, sid, url): return "launch_failed"
+
+    from server.sessions.display_policy import DISPLAY_NATIVE
+    with patch.dict(os.environ, _ENV_PATCH):
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+        app = create_app(orchestrator=orch)
+        orch._native = FailedNative()
+        orch._records["S"] = type("R", (), {"display_mode": DISPLAY_NATIVE})()
+        client = TestClient(app, raise_server_exceptions=False)
+    r = client.post("/api/sessions/S/browser/open", json={}, headers=_IDENTITY_HEADERS)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "browser failed to start"

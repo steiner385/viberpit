@@ -117,3 +117,20 @@ async def test_x11_open_browser_rpc():
 
     no = await _app(_FakeX11(has_display=False)).state.rpc["x11_open_browser"]({"session_id": "S"})
     assert no == {"ok": False, "reason": "no_display"}
+
+
+def test_x11_metrics_rpc_carries_native_display_health():
+    from types import SimpleNamespace
+
+    class _Native:
+        async def refresh(self): ...
+        def metrics(self):
+            return {"display": ":0", "available": False, "kind": None,
+                    "reason": "cookie_missing", "browsers": 0}
+
+    app = create_daemon_app()
+    register_x11(app, _FakeX11(has_display=True), orchestrator=SimpleNamespace(_native=_Native()))
+    import asyncio
+    out = asyncio.run(app.state.rpc["x11_metrics"]({}))
+    assert out["nativeDisplay"]["reason"] == "cookie_missing"
+    assert out["displays_allocated"] == 1

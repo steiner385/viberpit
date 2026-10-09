@@ -153,6 +153,9 @@ class SessionRecord:
     # 2026-09-06-native-display-routing). Mirrors DB Session.display_mode; None on
     # pre-feature rows and reads as virtual everywhere.
     display_mode: str | None = None
+    # Why a would-be-native session went virtual (display_policy.native_fallback);
+    # mirrors DB Session.display_fallback_reason. None = no fallback.
+    display_fallback_reason: str | None = None
     # Wall-clock time the user last steered this session (prompt/answer/permission/typing ping).
     # Drives autopilot human-deference + the cooldown badge. In-memory/process-local ONLY: NOT in
     # to_dict/from_dict, NOT a DB column — a 120s window is meaningless across a restart.
@@ -261,6 +264,7 @@ class SessionRecord:
             "suspectedCompleteReason": self.suspected_complete_reason,
             "host": self.host,
             "displayMode": self.display_mode,
+            "displayFallbackReason": self.display_fallback_reason,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
             "interruptedFromStatus": self.interrupted_from_status,
@@ -330,6 +334,7 @@ class SessionRecord:
             suspected_complete_reason=d.get("suspectedCompleteReason"),
             host=d.get("host"),
             display_mode=d.get("displayMode"),
+            display_fallback_reason=d.get("displayFallbackReason"),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             interrupted_from_status=d.get("interruptedFromStatus"),

@@ -66,3 +66,15 @@ def test_healthz_vnc_attached_false_when_no_clients(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["vncAttached"] is False
+
+
+def test_healthz_never_discloses_native_desktop_state(tmp_path):
+    """/healthz is auth-exempt: desktop presence (locked / logged out) must not leak.
+    It lives on the authenticated /api/x11/metrics only."""
+    app = _client(tmp_path)
+    app.state.native_display = MagicMock(metrics=lambda: {"available": False, "reason": "cookie_missing"})
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.get("/healthz")
+    assert r.status_code == 200
+    assert "nativeDisplay" not in r.json()
+    assert "cookie_missing" not in r.text

@@ -527,6 +527,47 @@ These host versions are incident evidence, not pins to install on future runners
 
 ---
 
+## Wayland desktop hosts
+
+A host whose operator desktop is GNOME/Wayland (e.g. dobby) runs a rootless Xwayland on `:0`. Unlike
+Xorg it does **not** grant `SI:localuser`: clients need the per-login cookie
+(`/run/user/<uid>/.mutter-Xwaylandauth.XXXXXX`, randomized, rotated each login, stale files linger).
+No operator setup is required. `server/sessions/desktop_session.py` finds the live X server in `/proc`,
+reads its cookie from argv/environ, and verifies it with an X11 handshake. Only servers/sockets owned by
+the daemon's uid or root are trusted. Results are cached for 5 s, so a relogin is picked up automatically.
+Stale `/tmp/.X11-unix/X*` sockets and old cookie files are harmless. Leave `VIBERPIT_NATIVE_DISPLAY` and
+`VIBERPIT_REAUTH_DISPLAY` empty (auto-discover); set `:N` only to pin. `VIBERPIT_NATIVE_BROWSER_PLATFORM`
+(`auto`|`wayland`|`x11`) selects the native Chromium backend; forced `wayland` on an X11-only desktop
+falls back to x11.
+
+Diagnose a session that fell back to a virtual display. The session card badge tooltip and the
+session detail meta strip show human-readable copy; the raw code is `displayFallbackReason` in the
+session API:
+
+```bash
+pgrep -u "$(id -u)" -a Xwayland                     # live server: display + its `-auth <cookie>` argv
+tr '\0' '\n' </proc/$(pgrep -u "$(id -u)" -x Xwayland | head -1)/environ | grep -E '^(DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR)='
+# The cookie is whatever the live Xwayland process names in `-auth` / XAUTHORITY. Leftover
+# /run/user/<uid>/.mutter-Xwaylandauth.* files are stale and harmless (never pick one by mtime).
+# Authenticated (tailnet identity), NOT /healthz (unauthenticated, omits this):
+curl -s https://<host>/api/x11/metrics | jq .nativeDisplay   # {display, available, kind, reason, browsers}
+```
+
+GNOME's `autoclose-xwayland` makes Xwayland exit when idle; the resolver then reports
+`no_graphical_session` and sessions route virtual. Check `gsettings get org.gnome.mutter
+experimental-features` (look for `autoclose-xwayland`) and disable it on runner hosts that should
+take native sessions.
+
+A native-session agent process captures `DISPLAY`/`XAUTHORITY`/`WAYLAND_DISPLAY` when its driver
+starts. After the operator re-logs in (new cookie), the agent's own headful tools fail until the
+session is restarted; managed "Open a browser" windows resolve fresh and are unaffected.
+
+`reason` is one of `no_graphical_session` (nobody logged in / screen not up), `cookie_missing`,
+`connect_refused`, `invalid_display`, or `display_in_xvfb_pool` (move `VIBERPIT_NATIVE_DISPLAY` or
+`VIBERPIT_DISPLAY_START`). The virtual Xvfb path is unaffected by the desktop.
+
+---
+
 ## Rollback
 
 No edge restart is needed.

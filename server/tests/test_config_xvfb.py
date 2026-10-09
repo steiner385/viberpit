@@ -60,9 +60,16 @@ def test_reauth_extensions_comma_list(monkeypatch):
 def test_native_display_defaults(monkeypatch):
     monkeypatch.delenv("VIBERPIT_NATIVE_DISPLAY_ENABLED", raising=False)
     monkeypatch.delenv("VIBERPIT_NATIVE_DISPLAY", raising=False)
+    monkeypatch.delenv("VIBERPIT_NATIVE_BROWSER_PLATFORM", raising=False)
     s = _fresh()
     assert s.native_display_enabled is True
-    assert s.native_display == ":0"
+    assert s.native_display == ""              # empty = discover the live desktop
+    assert s.native_browser_platform == "auto"
+
+
+def test_native_browser_platform_env_override(monkeypatch):
+    monkeypatch.setenv("VIBERPIT_NATIVE_BROWSER_PLATFORM", "x11")
+    assert _fresh().native_browser_platform == "x11"
 
 
 def test_native_display_env_override(monkeypatch):
@@ -77,6 +84,7 @@ def test_native_display_fallback_dataclass_branch(monkeypatch):
     """The dataclass fallback must define the same fields (omitting it is a silent
     AttributeError on hosts without pydantic-settings)."""
     monkeypatch.setenv("VIBERPIT_NATIVE_DISPLAY", ":7")
+    monkeypatch.setenv("VIBERPIT_NATIVE_BROWSER_PLATFORM", "wayland")
 
     import server.config as cfg
     import builtins
@@ -94,6 +102,7 @@ def test_native_display_fallback_dataclass_branch(monkeypatch):
         # After reload with pydantic_settings blocked, Settings should be the dataclass
         inst = cfg.Settings()
         assert inst.native_display == ":7"
+        assert inst.native_browser_platform == "wayland"
         assert inst.native_display_enabled is True
     finally:
         # Restore pydantic Settings for the rest of the test suite

@@ -106,7 +106,8 @@ try:
             default_factory=lambda: str(Path.home() / "GitHub"),
             alias="VIBERPIT_REPO_ROOT",
         )
-        reauth_display: str = Field(default=":0", alias="VIBERPIT_REAUTH_DISPLAY")
+        # Empty = discover the live desktop (server/sessions/desktop_session.py); explicit ":N" still wins.
+        reauth_display: str = Field(default="", alias="VIBERPIT_REAUTH_DISPLAY")
         reauth_virtual_display: bool = Field(default=True, alias="VIBERPIT_REAUTH_VIRTUAL_DISPLAY")
         # Source profile the reauth flow copies from. Defaults to a dedicated,
         # ViberPit-owned profile — pointing this at the operator's everyday
@@ -141,7 +142,10 @@ try:
         # worker never sees a native session. Design:
         # docs/superpowers/specs/2026-09-06-native-display-routing-design.md
         native_display_enabled: bool = Field(default=True, alias="VIBERPIT_NATIVE_DISPLAY_ENABLED")
-        native_display: str = Field(default=":0", alias="VIBERPIT_NATIVE_DISPLAY")
+        # Empty = discover the live desktop (server/sessions/desktop_session.py).
+        native_display: str = Field(default="", alias="VIBERPIT_NATIVE_DISPLAY")
+        # auto|wayland|x11 — auto = Wayland-native browsers on a Wayland desktop.
+        native_browser_platform: str = Field(default="auto", alias="VIBERPIT_NATIVE_BROWSER_PLATFORM")
         enable_adoption: bool = Field(default=False, alias="VIBERPIT_ENABLE_ADOPTION")
         display_start: int = Field(default=100, alias="VIBERPIT_DISPLAY_START")
         display_count: int = Field(default=12, alias="VIBERPIT_DISPLAY_COUNT")
@@ -447,7 +451,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             )
         )
         reauth_display: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_DISPLAY", ":0")
+            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_DISPLAY", "")
         )
         reauth_virtual_display: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_VIRTUAL_DISPLAY", "true").lower() in ("1", "true", "yes", "on")
@@ -473,8 +477,13 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         native_display_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_NATIVE_DISPLAY_ENABLED", "true").lower() in ("1","true","yes","on")
         )
+        # Empty = discover the live desktop (server/sessions/desktop_session.py).
         native_display: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("VIBERPIT_NATIVE_DISPLAY", ":0")
+            default_factory=lambda: os.environ.get("VIBERPIT_NATIVE_DISPLAY", "")
+        )
+        # auto|wayland|x11 — auto = Wayland-native browsers on a Wayland desktop.
+        native_browser_platform: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_NATIVE_BROWSER_PLATFORM", "auto")
         )
         enable_adoption: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_ENABLE_ADOPTION", "false").lower() in ("1","true","yes","on")

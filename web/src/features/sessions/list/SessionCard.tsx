@@ -26,6 +26,7 @@ import { CardMenu, Sep, actionBtn, menuItem } from '@/ui/list/CardMenu'
 import { useViewport } from '@/shell/useViewport'
 import { useNow } from '@/hooks/useNow'
 import type { Session, Account } from '@/api/types'
+import { displayFallbackTitle } from '../displayFallback'
 
 // Meta-row marker: a 12px icon with the full text demoted to tooltip + sr-only.
 // Wide-card only (`hidden @md:inline-flex`), same declutter gate the old chips
@@ -622,6 +623,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                   title="Windows open on the host's desktop">
               <Monitor size={12} aria-hidden="true" />
               <span>desktop</span>
+            </span>
+          </>
+        )}
+        {session.displayMode !== 'native' && displayFallbackTitle(session.displayFallbackReason) && (
+          <>
+            <Sep />
+            <span data-testid="card-display-fallback" className="flex-shrink-0 inline-flex items-center gap-1 text-ink-muted"
+                  title={displayFallbackTitle(session.displayFallbackReason) ?? undefined}
+                  aria-label={displayFallbackTitle(session.displayFallbackReason) ?? undefined}>
+              <Monitor size={12} aria-hidden="true" />
+              <span>virtual</span>
             </span>
           </>
         )}
