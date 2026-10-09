@@ -1036,6 +1036,8 @@ def create_app(
                 return {"enabled": False}
         x11 = getattr(app.state, "x11", None)
         nd = getattr(app.state, "native_display", None)
+        if nd is not None:
+            await nd.refresh()
         return {**(x11.metrics() if x11 else {"enabled": False}),
                 "nativeDisplay": nd.metrics() if nd is not None else None}
 

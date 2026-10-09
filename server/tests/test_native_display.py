@@ -1,4 +1,5 @@
 """NativeDisplay: the operator's live desktop as a session target (spec §4.3)."""
+import asyncio
 import os
 
 import pytest
@@ -45,49 +46,75 @@ def _mk(tmp_path, result=WAYLAND, display=None, **kw):
     return nd, spawned
 
 
+def _mkp(*a, **kw):
+    """_mk plus one refresh(): the sync accessors only read the cache."""
+    nd, spawned = _mk(*a, **kw)
+    asyncio.run(nd.refresh())
+    return nd, spawned
+
+
 def test_available_when_session_resolved(tmp_path):
-    nd, _ = _mk(tmp_path)
+    nd, _ = _mkp(tmp_path)
     assert nd.available() is True
     assert nd.unavailable_reason() is None
 
 
 @pytest.mark.parametrize("reason", ["no_graphical_session", "cookie_missing", "connect_refused", "invalid_display"])
 def test_unavailable_reports_resolver_reason(tmp_path, reason):
-    nd, _ = _mk(tmp_path, result=DesktopUnavailable(reason, "d"))
+    nd, _ = _mkp(tmp_path, result=DesktopUnavailable(reason, "d"))
     assert nd.available() is False
     assert nd.unavailable_reason() == reason
 
 
 def test_blocked_range_makes_it_unavailable(tmp_path):
     session = DesktopSession(kind="x11", display=":101", xauthority=None, wayland_display=None, xdg_runtime_dir=None)
-    nd, _ = _mk(tmp_path, result=session, blocked_range=range(100, 112))
+    nd, _ = _mkp(tmp_path, result=session, blocked_range=range(100, 112))
     assert nd.available() is False
     assert nd.unavailable_reason() == "display_in_xvfb_pool"
 
 
 def test_resolution_is_cached_within_ttl_and_refreshed_after(tmp_path):
     nd, _ = _mk(tmp_path)
+    assert nd.available() is False                 # nothing resolved until refresh()
+    assert nd.resolver.calls == 0
+    asyncio.run(nd.refresh())
     nd.available(); nd.env(); nd.metrics()
     assert nd.resolver.calls == 1
     nd.clock.now = 4.9
-    nd.available()
+    asyncio.run(nd.refresh())
     assert nd.resolver.calls == 1
     nd.clock.now = 5.0
     nd.resolver.result = DesktopUnavailable("no_graphical_session")
+    asyncio.run(nd.refresh())
     assert nd.available() is False
     assert nd.resolver.calls == 2
 
 
+@pytest.mark.asyncio
+async def test_refresh_runs_resolver_off_the_event_loop_and_coalesces(tmp_path):
+    import threading
+    nd, _ = _mk(tmp_path)
+    threads = []
+    def resolve():
+        threads.append(threading.current_thread())
+        return WAYLAND
+    nd._resolve = resolve
+    await asyncio.gather(nd.refresh(), nd.refresh(), nd.refresh())
+    assert len(threads) == 1
+    assert threads[0] is not threading.main_thread()
+    assert nd.available() is True
+
+
 def test_display_property(tmp_path):
-    assert _mk(tmp_path, display=":3")[0].display == ":3"
-    assert _mk(tmp_path)[0].display == ":0"
-    assert _mk(tmp_path, result=DesktopUnavailable("no_graphical_session"))[0].display == ":0"
+    assert _mkp(tmp_path, display=":3")[0].display == ":3"
+    assert _mkp(tmp_path)[0].display == ":0"
+    assert _mkp(tmp_path, result=DesktopUnavailable("no_graphical_session"))[0].display == ":0"
     other = DesktopSession(kind="x11", display=":2", xauthority=None, wayland_display=None, xdg_runtime_dir=None)
-    assert _mk(tmp_path, result=other)[0].display == ":2"
+    assert _mkp(tmp_path, result=other)[0].display == ":2"
 
 
 def test_env_wayland_auto_exports_wayland_and_x_cookie(tmp_path):
-    env = _mk(tmp_path)[0].env()
+    env = _mkp(tmp_path)[0].env()
     assert env["WAYLAND_DISPLAY"] == "wayland-0"
     assert env["DISPLAY"] == ":0"
     assert env["XAUTHORITY"] == WAYLAND.xauthority
@@ -95,14 +122,14 @@ def test_env_wayland_auto_exports_wayland_and_x_cookie(tmp_path):
 
 
 def test_env_forced_x11_has_no_wayland(tmp_path):
-    env = _mk(tmp_path, browser_platform="x11")[0].env()
+    env = _mkp(tmp_path, browser_platform="x11")[0].env()
     assert "WAYLAND_DISPLAY" not in env
     assert env["XAUTHORITY"] == WAYLAND.xauthority
     assert env["XDG_SESSION_TYPE"] == "x11"
 
 
 def test_env_forced_wayland_on_x11_kind_has_no_wayland_display(tmp_path):
-    env = _mk(tmp_path, result=X11, browser_platform="wayland")[0].env()
+    env = _mkp(tmp_path, result=X11, browser_platform="wayland")[0].env()
     assert "WAYLAND_DISPLAY" not in env     # nothing to export; DesktopSession only exports it for kind wayland
 
 
@@ -122,7 +149,7 @@ async def test_launch_uses_one_resolution_snapshot(tmp_path):
 
 
 def test_env_empty_when_unavailable(tmp_path):
-    assert _mk(tmp_path, result=DesktopUnavailable("connect_refused"))[0].env() == {}
+    assert _mkp(tmp_path, result=DesktopUnavailable("connect_refused"))[0].env() == {}
 
 
 @pytest.mark.asyncio
@@ -191,9 +218,9 @@ async def test_launch_browser_dies_in_liveness_window_is_launch_failed(tmp_path)
 
 
 def test_metrics_shape(tmp_path):
-    nd, _ = _mk(tmp_path)
+    nd, _ = _mkp(tmp_path)
     assert nd.metrics() == {"display": ":0", "available": True, "kind": "wayland", "reason": None, "browsers": 0}
-    nd2, _ = _mk(tmp_path, result=DesktopUnavailable("cookie_missing"))
+    nd2, _ = _mkp(tmp_path, result=DesktopUnavailable("cookie_missing"))
     m = nd2.metrics()
     assert (m["available"], m["kind"], m["reason"]) == (False, None, "cookie_missing")
 
@@ -233,6 +260,7 @@ def test_build_returns_none_when_disabled():
 def test_build_blocks_pool_range_when_xvfb_on(caplog):
     nd = build_native_display(_S(enable_xvfb=True, native_display=":105"))
     assert nd is not None
+    asyncio.run(nd.refresh())
     assert nd.available() is False
     assert nd.unavailable_reason() == "display_in_xvfb_pool"
     assert "inside the Xvfb pool" in caplog.text
@@ -254,14 +282,14 @@ def test_build_empty_display_autodiscovers(monkeypatch):
     seen = _capture_resolver(monkeypatch)
     nd = build_native_display(_S(native_display=""))
     assert nd is not None
-    nd.available()
+    asyncio.run(nd.refresh())
     assert seen == [None]
 
 
 def test_build_explicit_display_is_passed_through(monkeypatch):
     seen = _capture_resolver(monkeypatch)
     nd = build_native_display(_S(native_display=":0"))
-    nd.available()
+    asyncio.run(nd.refresh())
     assert seen == [":0"]
 
 

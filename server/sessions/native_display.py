@@ -8,8 +8,8 @@ ViberPit itself opens on it so they can be closed with the session.
 A legacy Xorg grants SI:localuser, but a Wayland compositor's rootless Xwayland does
 not: it demands the per-login, randomly-named cookie (it rotates every login), so
 the resolver reads the live cookie from the X server's own argv/environ and proves
-it with a real handshake. Resolutions are cached for a short TTL (the callers are
-synchronous on an event loop). On a Wayland desktop, managed browsers run
+it with a real handshake. Resolutions are cached for a short TTL and refreshed off the event loop
+(``refresh()``); the synchronous accessors only read the cache. On a Wayland desktop, managed browsers run
 Wayland-native (``--ozone-platform=wayland``) by default, while DISPLAY (+ XAUTHORITY, when a cookie resolved)
 are still exported so X-only tools the agent spawns keep working.
 """
@@ -39,6 +39,7 @@ REASON_NATIVE_UNAVAILABLE = "native_unavailable"
 REASON_CAP = "cap"
 REASON_LAUNCH_FAILED = "launch_failed"
 REASON_DISPLAY_IN_POOL = "display_in_xvfb_pool"
+REASON_NOT_RESOLVED = "not_resolved"
 # Inherited vars that would contradict the resolved desktop if they leaked through.
 _STALE_ENV = ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XDG_SESSION_TYPE", "XAUTHORITY")
 
@@ -71,17 +72,35 @@ class NativeDisplay:
         self._blocked_range = blocked_range
         self._cached: DesktopSession | DesktopUnavailable | None = None
         self._stamp = 0.0
+        self._refresh_lock = asyncio.Lock()
         self._browsers: dict[str, list] = {}          # session_id → managed Chromium procs
         self._profiles: dict[str, list[str]] = {}     # session_id → throwaway --user-data-dir dirs
 
+    async def refresh(self) -> None:
+        """Re-resolve the desktop off the event loop when the cache is older than the
+        TTL. The resolver does a /proc scan and an X11 handshake probe (up to its
+        0.5 s timeout against a wedged Xwayland), so it runs in a worker thread; the
+        sync accessors below only ever read what this stored. Async callers (session
+        spawn, open_browser, metrics) await this first. Concurrent callers coalesce
+        on one resolution."""
+        if not self._stale():
+            return
+        async with self._refresh_lock:
+            if not self._stale():
+                return
+            self._cached = await asyncio.to_thread(self._resolve)
+            self._stamp = self._clock()
+
+    def _stale(self) -> bool:
+        return self._cached is None or self._clock() - self._stamp >= self._ttl_s
+
     def _current(self) -> DesktopSession | DesktopUnavailable:
-        """The desktop right now, re-resolved at most once per TTL. Evaluated live: a
-        desktop that logs in after the daemon booted must work, and one that logs out
-        must stop being offered."""
-        now = self._clock()
-        if self._cached is None or now - self._stamp >= self._ttl_s:
-            self._cached = self._resolve()
-            self._stamp = now
+        """The last resolution — read-only, never blocks. Evaluated live in the sense
+        that ``refresh()`` re-resolves per TTL: a desktop that logs in after the daemon
+        booted must work, and one that logs out must stop being offered. Before the
+        first ``refresh()`` nothing is resolved, which reads as unavailable."""
+        if self._cached is None:
+            return DesktopUnavailable(reason=REASON_NOT_RESOLVED)
         return self._cached
 
     def _in_pool(self, session: DesktopSession | DesktopUnavailable) -> bool:
@@ -136,6 +155,7 @@ class NativeDisplay:
     async def launch_browser(self, session_id: str, url: str | None) -> str | None:
         """Open a managed browser on the desktop. None = launched; else the failure
         reason (``native_unavailable`` / ``cap`` / ``launch_failed``)."""
+        await self.refresh()
         cur = self._current()          # ONE snapshot: argv and env must come from the same resolution
         if not self._usable(cur):
             return REASON_NATIVE_UNAVAILABLE
