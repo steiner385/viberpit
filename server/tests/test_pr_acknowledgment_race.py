@@ -12,6 +12,9 @@ from server.tests.test_automation_ownership import ownership_db as ownership_db
 from server.tests.test_pr_ownership import doctor as doctor, info
 from server.tests.test_mechanical_update_ownership import HEAD, NEXT, payload, proc
 
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('lost', [False, True])

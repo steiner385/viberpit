@@ -470,7 +470,8 @@ class DataBackfill(Base):
     __tablename__ = "data_backfills"
 
     name: Mapped[str] = mapped_column(String, primary_key=True)
-    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class AppSettings(Base):

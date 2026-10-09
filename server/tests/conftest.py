@@ -406,6 +406,16 @@ def pr_authors_trusted(monkeypatch):
 
 
 @pytest.fixture
+def refs_trusted(monkeypatch):
+    """Treat every issue ref as trusted (``dispatch_trust.untrusted_refs``) for tests of
+    manual/pending dispatch behaviour OTHER than author trust (pinned in
+    ``test_backlog_dispatch.py``)."""
+    async def _none(_db, _refs):
+        return []
+    monkeypatch.setattr("server.pm.dispatch_trust.untrusted_refs", _none)
+
+
+@pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).
 
