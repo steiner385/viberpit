@@ -142,9 +142,19 @@ async def test_hung_client_is_skipped_and_releases_everything(monkeypatch, tmp_p
 async def test_account_without_a_slot_before_deadline_is_budget_exhausted(monkeypatch, tmp_path, isolated_db):
     monkeypatch.setattr(probe, "_cfg_dir_for", lambda a: tmp_path)
     monkeypatch.setattr(probe, "_MAX_CONCURRENT", 1)
-    out = await probe.probe(["a1", "a2"], client_factory=_hang_factory, deadline_s=0.1)
-    reasons = sorted(s["reason"] for s in out["skipped"])
-    assert reasons == ["budget exhausted", "timed out"]
+    opened = []
+
+    def hang(account, cfg_dir):
+        opened.append(account)           # only the slot holder ever reaches the client factory
+        return _HangOnEnter([], mcp_status=[{"name": "a", "status": "connected"}], startup_frames=[])
+
+    # The budget covers the thread-run cfg lookup, so it must outlast a loaded worker's scheduling.
+    out = await probe.probe(["a1", "a2"], client_factory=hang, deadline_s=1.5)
+    assert len(opened) == 1
+    holder = opened[0]
+    waiter = ({"a1", "a2"} - {holder}).pop()
+    # Whichever account won the only slot times out; the other never got one.
+    assert {s["account"]: s["reason"] for s in out["skipped"]} == {holder: "timed out", waiter: "budget exhausted"}
 
 
 @pytest.mark.asyncio
