@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from server.automations.product_policy import (
-    DISPATCH_MODES, PRODUCT_POLICY_SCHEMA, SESSION_ASSISTANCE_MODES, effective_policy,
+    DISPATCH_MODES, PRODUCT_POLICY_SCHEMA, SESSION_ASSISTANCE_MODES, effective_policy, trusted_authors,
 )
 
 
@@ -11,7 +11,7 @@ def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "max_pipeline_prs",
                     "ladder_top", "give_up_after_bounces", "default_model",
-                    "respect_dependencies", "skip_labels", "auto_escalate_match",
+                    "respect_dependencies", "skip_labels", "trusted_authors", "auto_escalate_match",
                     "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
                     "triage_dismiss_bot_artifacts", "risk_tolerance",
                     "max_initiatives_in_flight", "unattended_model_floor", "session_assistance",
@@ -21,7 +21,8 @@ def test_schema_keys_and_defaults():
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
         "capacity_mode": "auto",
         "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
-        "respect_dependencies": True, "skip_labels": [], "auto_escalate_match": [],
+        "respect_dependencies": True, "skip_labels": [], "trusted_authors": [],
+        "auto_escalate_match": [],
         "auto_escalate_budget": 0, "triage_auto_accept": "off", "triage_auto_accept_dispatch_off": False,
         "triage_dismiss_bot_artifacts": False, "risk_tolerance": "cautious",
         "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "session_assistance": "on",
@@ -216,3 +217,9 @@ def test_session_assistance_defaults_on_and_only_takes_on_or_off():
     with pytest.raises(ValueError):
         from server.automations.product_policy import merge_policy_patch
         merge_policy_patch(None, {"session_assistance": "auto"})
+
+
+def test_trusted_authors_reader_normalises():
+    assert trusted_authors({"trusted_authors": [" Steiner385 ", "", "viberpit"]}) == \
+        frozenset({"steiner385", "viberpit"})
+    assert trusted_authors(None) == frozenset()

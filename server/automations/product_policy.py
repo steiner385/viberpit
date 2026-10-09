@@ -128,6 +128,10 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Issues carrying any of these labels are skipped by the queue for "
                      "this product, in addition to the built-in bot-noise filter "
                      "(dependencies, renovate)."),
+    ConfigField(key="trusted_authors", label="Trusted issue authors", type="string-list",
+                default=[],
+                help="GitHub logins whose issues the queue may dispatch. Anyone else's "
+                     "issue is skipped as 'untrusted'. Automation logins are always trusted."),
     # #2679: classes of issue whose approval-gated ladder climb ("bounced at opus;
     # fable needs approval") is approved by the runner itself, within a budget —
     # ``server/pm/auto_escalation.py``. Budget 0 (the default) keeps every such
@@ -331,6 +335,13 @@ def skip_labels(policy: "Mapping | None") -> frozenset[str]:
     """
     return frozenset(str(lbl).strip().lower() for lbl in (policy or {}).get("skip_labels") or ()
                      if str(lbl).strip())
+
+
+def trusted_authors(policy: "Mapping | None") -> frozenset[str]:
+    """THE queue-shaped reading of ``trusted_authors`` — lowercased, stripped, a set.
+    Same single-reader rule as ``skip_labels``."""
+    return frozenset(str(a).strip().lower() for a in (policy or {}).get("trusted_authors") or ()
+                     if str(a).strip())
 
 
 async def policy_for_repo(db: AsyncSession, repo: str) -> dict | None:

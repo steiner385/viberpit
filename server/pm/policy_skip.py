@@ -22,16 +22,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from server.automations.product_policy import skip_labels
+from server.automations.product_policy import skip_labels, trusted_authors
 from server.pm.holds import RUNNER_ACTOR
-from server.pm.queue import QueueRow, is_bot_noise
+from server.pm.queue import QueueRow, is_bot_noise, is_trusted_author
 
 
 def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
                       policy: Mapping | None) -> bool:
-    """Whether the queue would skip this issue as ``bot`` under *policy* — the
-    built-in filter plus the product's ``skip_labels``. ``None`` (no policy for the
-    product) applies the built-in filter alone."""
+    """Whether the queue would skip this issue as ``bot`` or ``untrusted`` under
+    *policy* — the built-in filter plus the product's ``skip_labels``, and an author
+    outside its ``trusted_authors``. ``None`` (no policy for the product) applies the
+    built-in filter and trusts only automation logins (fail-closed)."""
+    if not is_trusted_author(author, trusted_authors(policy)):
+        return True
     return is_bot_noise(author=author, labels=labels, title=title,
                         extra_skip_labels=skip_labels(policy))
 

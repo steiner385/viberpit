@@ -44,7 +44,8 @@ def test_skipped_by_policy_reads_the_products_skip_labels_and_the_global_filter(
     # no policy at all — this is ``skip_reason``'s own ``bot`` verdict, not a copy.
     assert skipped_by_policy(author="renovate[bot]", labels=(), title="t", policy={})
     assert skipped_by_policy(author="tony", labels=("dependencies",), title="t", policy=None)
-    assert not skipped_by_policy(author="tony", labels=("bug",), title="t", policy=None)
+    assert not skipped_by_policy(author="tony", labels=("bug",), title="t",
+                                 policy={"trusted_authors": ["tony"]})
 
 
 def test_stale_runner_holds_picks_only_the_runners_owner_action_holds_on_skipped_rows():
@@ -80,3 +81,9 @@ def test_stale_runner_holds_picks_only_the_runners_owner_action_holds_on_skipped
     ]
     assert [r.number for r in stale_runner_holds(rows, policies)] == [1, 2, 9]
     assert stale_runner_holds([], policies) == []
+
+
+def test_approval_tap_refuses_an_untrusted_author():
+    policy = {"trusted_authors": ["steiner385"]}
+    assert skipped_by_policy(author="stranger", labels=(), title="t", policy=policy)
+    assert not skipped_by_policy(author="steiner385", labels=(), title="t", policy=policy)

@@ -71,7 +71,8 @@ def test_superseded_keeps_the_newest_per_repo_and_type():
 # auto_escalation (#2679) — pure                                               #
 # --------------------------------------------------------------------------- #
 
-POLICY = {"dispatch": "auto", "auto_escalate_match": ["flaky", "Unverified prod"],
+POLICY = {"dispatch": "auto", "trusted_authors": ["tony"],
+          "auto_escalate_match": ["flaky", "Unverified prod"],
           "auto_escalate_budget": 2}
 
 
@@ -171,11 +172,19 @@ async def test_supersede_alerts_closes_older_alerts_but_never_a_claimed_one(db_e
 
 
 async def _seed_escalations(numbers, *, labels=("flaky",)):
-    from server.db.models import WorkItem
+    from sqlalchemy import select
+
+    from server.db.models import Project, ProjectRepo, WorkItem
     async with db_session() as db:
+        # The approval tap re-reads the product's policy, which is fail-closed on authors.
+        if (await db.execute(select(Project).where(Project.slug == "kindash"))).first() is None:
+            proj = Project(slug="kindash", name="kindash", automation_policy=POLICY)
+            db.add(proj)
+            await db.flush()
+            db.add(ProjectRepo(project_id=proj.id, repo="o/r", is_primary=True))
         for n in numbers:
             db.add(WorkItem(id=f"wi{n}", repo="o/r", number=n, kind="issue", state="open",
-                            title="t", body="", labels=list(labels),
+                            title="t", body="", labels=list(labels), author="tony",
                             hold_kind="owner_action", hold_reason=ESCALATION, hold_by="runner",
                             hold_set_at=(NOW - timedelta(days=n)).replace(tzinfo=None)))
 

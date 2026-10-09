@@ -1001,8 +1001,10 @@ def _seed_one_pending(c, *, feature_slug=None, no_fit_suggestion=None, repo="o/r
                                title=feature_slug, state="live")
                 db.add(feat)
                 await db.flush()
+            # The approve-escalation tap refuses an untrusted author (fail-closed).
+            p.automation_policy = {**(p.automation_policy or {}), "trusted_authors": ["tony"]}
             w = WorkItem(repo=repo, number=number, kind="issue", title="Fix",
-                         state="open", triage_state="unclassified")
+                         state="open", triage_state="unclassified", author="tony")
             db.add(w)
             await db.flush()
             tp = TriageProposal(

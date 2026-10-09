@@ -167,7 +167,8 @@ class Harness:
         has its own tests in test_backlog_runner_loop.py."""
         from server.automations.product_policy import effective_policy
         return {"viberpit": effective_policy({"dispatch": "auto",
-                                              "max_in_flight": 100})}
+                                              "max_in_flight": 100,
+                                              "trusted_authors": ["steiner385"]})}
 
     async def _query_queue(self, _config: dict | None = None) -> list[dict]:
         """The candidate pool, ranked exactly as ``_backlog_query_queue`` does:
@@ -178,7 +179,7 @@ class Harness:
                    for ref in (st.get("issues") or [target])}
         rows = [_queue_row(r, n, t, claimed=f"{r}#{n}" in claimed)
                 for (r, n, t) in self.candidate_refs]
-        entries, _skipped = rank(rows, now=NOW)
+        entries, _skipped = rank(rows, now=NOW, trusted_authors=frozenset({"steiner385"}))
         return [to_candidate(e) for e in entries]
 
     async def _refresh_groups(self, config):

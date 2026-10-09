@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from server.automations.product_policy import is_on, skip_labels
+from server.automations.product_policy import is_on, skip_labels, trusted_authors
 from server.pm.desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
                                      STATUS_HELD, STATUS_READY)
 from server.pm.drift import DepEdgeView, reverse_blockers
@@ -138,7 +138,8 @@ def _simulated_status(row: QueueRow) -> str | None:
 def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
                now: datetime, min_status: str, respect_dependencies: bool,
                give_up_after_bounces: int = 0,
-               extra_skip_labels: frozenset[str] = frozenset()) -> list[HeldItem]:
+               extra_skip_labels: frozenset[str] = frozenset(),
+               trusted_authors: frozenset[str] = frozenset()) -> list[HeldItem]:
     """One ``HeldItem`` per parked row (``HELD_KINDS``), unranked.
 
     ``downstream_dispatchable`` re-runs ``skip_reason`` on each dependent with the
@@ -157,7 +158,8 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
     def skipped(r: QueueRow) -> str | None:
         return skip_reason(r, min_status=min_status, respect_dependencies=respect_dependencies,
                            now=now, give_up_after_bounces=give_up_after_bounces,
-                           extra_skip_labels=extra_skip_labels)
+                           extra_skip_labels=extra_skip_labels,
+                           trusted_authors=trusted_authors)
 
     out: list[HeldItem] = []
     for row in rows:
@@ -218,11 +220,14 @@ def product_escalation(slug: str, rows: Iterable[QueueRow], proposals_by_ref: Ma
           else bool(policy["respect_dependencies"]))
     bounces = int(policy.get("give_up_after_bounces", 0))
     labels = skip_labels(policy)
+    trusted = trusted_authors(policy)
     entries, skipped = rank(rows, min_status=ms, respect_dependencies=rd, now=now,
-                            give_up_after_bounces=bounces, extra_skip_labels=labels)
+                            give_up_after_bounces=bounces, extra_skip_labels=labels,
+                            trusted_authors=trusted)
     held = tuple(rank_held(held_items(
         rows, proposals_by_ref, now=now, min_status=ms, respect_dependencies=rd,
-        give_up_after_bounces=bounces, extra_skip_labels=labels)))
+        give_up_after_bounces=bounces, extra_skip_labels=labels,
+        trusted_authors=trusted)))
     ages = [i.age_hours for i in held if i.age_hours is not None]
     return ProductEscalation(
         slug=slug, dispatchable=len(entries), skipped=skipped, held=held,

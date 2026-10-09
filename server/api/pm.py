@@ -19,7 +19,7 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.product_policy import (
     PRODUCT_POLICY_SCHEMA, PolicyEditConflict, effective_policy, load_policies,
-    patch_project_policy, skip_labels)
+    patch_project_policy, skip_labels, trusted_authors)
 from server.time_iso import iso_utc
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
@@ -959,7 +959,8 @@ async def queue(
             # D8: THE bounce threshold, from this product's own policy — the same
             # reading the runner's pool uses.
             give_up_after_bounces=int(policy["give_up_after_bounces"]),
-            extra_skip_labels=skip_labels(policy))
+            extra_skip_labels=skip_labels(policy),
+            trusted_authors=trusted_authors(policy))
         entries.extend(entries_p)
         skipped_by_product[slug] = dict(skipped_p)
         dispatchable_by_product[slug] = len(entries_p)

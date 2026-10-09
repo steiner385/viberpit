@@ -928,7 +928,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "queue, keyed by reason: 'held' (an owner_action or decision hold), "
                "'blocked' (an open dependency), 'status' "
                "(below the product's minimum board status), 'epic_open', 'assigned', "
-               "'claimed', 'live_session', 'bot', 'needs_spec'. `skippedByProduct` and "
+               "'claimed', 'live_session', 'bot', 'untrusted' (author not in the product's "
+               "trusted authors), 'needs_spec'. `skippedByProduct` and "
                "`dispatchableByProduct` give the same per product slug. `product` narrows "
                "everything to one slug. min_status limits to items at or above a status "
                "('backlog' or 'ready'; default 'ready').",

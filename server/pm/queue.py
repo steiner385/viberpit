@@ -49,7 +49,12 @@ SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 URGENT_LABELS = frozenset({"deploy-monitor"})
 
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
-                 "held", "needs_spec")
+                 "untrusted", "held", "needs_spec")
+
+# Logins that file issues which ARE work (deploy-monitor, forced-deploy-audit) — always
+# trusted. Mirrors alert_series.AUTOMATION_LOGINS; pinned by a test rather than imported
+# to keep this ranking core free of automation imports (same pattern as URGENT_LABELS).
+TRUSTED_AUTOMATION_LOGINS = frozenset({"github-actions"})
 
 # The only two ``min_status`` values the queue accepts today (C1 will feed this from
 # stored runner config). Explicit rather than derived from a slice of STATUS_OPTIONS
@@ -147,6 +152,17 @@ def is_bot_noise(*, author: str, labels: Iterable[str], title: str,
     return (title or "").strip().lower() in SKIP_ISSUE_TITLES
 
 
+def is_trusted_author(author: str, trusted: frozenset[str]) -> bool:
+    """Whether *author* may have their issue dispatched to an agent. A public repo lets
+    anyone open an issue; a dispatched session writes code that auto-merges and deploys,
+    so an untrusted author must never reach the runner. Fail-closed: empty/ghost is
+    untrusted. *trusted* is already lowercased (``product_policy.trusted_authors``)."""
+    login = (author or "").strip().lower().removeprefix("app/").removesuffix("[bot]")
+    if not login or login == "ghost":
+        return False
+    return login in trusted or login in TRUSTED_AUTOMATION_LOGINS
+
+
 def _is_bot(row: QueueRow, extra_skip_labels: frozenset[str] = frozenset()) -> bool:
     return is_bot_noise(author=row.author, labels=row.labels, title=row.title,
                         extra_skip_labels=extra_skip_labels)
@@ -181,6 +197,7 @@ def skip_reason(
     now: datetime,
     give_up_after_bounces: int = 0,
     extra_skip_labels: frozenset[str] = frozenset(),
+    trusted_authors: frozenset[str] = frozenset(),
 ) -> str | None:
     """Decision C-2: a row whose board Status is ``None`` (never stamped by the
     reconciler) or outside the spec vocabulary (e.g. GitHub's default "Todo" column)
@@ -216,6 +233,8 @@ def skip_reason(
         return "epic_open"
     if _is_bot(row, extra_skip_labels):
         return "bot"
+    if not is_trusted_author(row.author, trusted_authors):
+        return "untrusted"
     return None
 
 
@@ -251,6 +270,7 @@ def rank(
     now: datetime,
     give_up_after_bounces: int = 0,
     extra_skip_labels: frozenset[str] = frozenset(),
+    trusted_authors: frozenset[str] = frozenset(),
 ) -> tuple[list[QueueEntry], dict[str, int]]:
     kept: list[QueueRow] = []
     skipped: dict[str, int] = {}
@@ -262,6 +282,7 @@ def rank(
             now=now,
             give_up_after_bounces=give_up_after_bounces,
             extra_skip_labels=extra_skip_labels,
+            trusted_authors=trusted_authors,
         )
         if why:
             skipped[why] = skipped.get(why, 0) + 1

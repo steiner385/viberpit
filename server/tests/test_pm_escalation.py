@@ -29,10 +29,12 @@ def _held(ref, kind="owner_action", *, set_at=None, **over) -> QueueRow:
 
 def _policy(dispatch="auto"):
     return {"dispatch": dispatch, "queue_min_status": "Ready", "respect_dependencies": True,
-            "give_up_after_bounces": 0, "skip_labels": []}
+            "give_up_after_bounces": 0, "skip_labels": [],
+            "trusted_authors": ["tony"]}
 
 
-KW = dict(now=NOW, min_status="Ready", respect_dependencies=True)
+KW = dict(now=NOW, min_status="Ready", respect_dependencies=True,
+          trusted_authors=frozenset({"tony"}))
 
 
 def test_reverse_index_maps_blocker_to_dependents():
