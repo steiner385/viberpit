@@ -83,4 +83,15 @@ describe('transcriptReducer — exact context usage', () => {
     const s2 = transcriptReducer(s1, { type: 'replayReset' })
     expect(s2.contextUsage).toEqual({ usedTokens: 50_000, maxTokens: 200_000 })
   })
+
+  it('records mcpStatus servers and preserves them across a replayReset', () => {
+    expect(initialTranscript.mcpServers).toBeNull()
+    const s1 = transcriptReducer(initialTranscript, {
+      type: 'mcpStatus',
+      servers: [{ name: 'gh', status: 'failed', error: 'x', toolCount: null, scope: 'user' }],
+    })
+    expect(s1.mcpServers?.[0].status).toBe('failed')
+    const s2 = transcriptReducer(s1, { type: 'replayReset' })
+    expect(s2.mcpServers).toEqual(s1.mcpServers)
+  })
 })

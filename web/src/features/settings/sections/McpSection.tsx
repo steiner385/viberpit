@@ -4,6 +4,11 @@ import type { LibraryMcpServer } from '@/api/types'
 import { McpServerDialog } from './McpServerDialog'
 import { McpAuthFlow } from './McpAuthFlow'
 
+// Accounts whose latest status row for this server is needs-auth (de-duplicated).
+function needsAuthAccounts(s: LibraryMcpServer): string[] {
+  return [...new Set(s.status.filter((r) => r.status === 'needs-auth').map((r) => r.account))]
+}
+
 export function McpSection() {
   const { data, isLoading } = useLibraryMcp()
   const [dialogServer, setDialogServer] = useState<LibraryMcpServer | null | undefined>(undefined)
@@ -18,7 +23,9 @@ export function McpSection() {
         MCP servers are shared across accounts; changes apply to newly started sessions.
       </p>
       <ul className="space-y-2">
-        {servers.map((s) => (
+        {servers.map((s) => {
+          const needsAuth = needsAuthAccounts(s)
+          return (
           <li key={`${s.source}/${s.name}`}>
             <button
               className="w-full text-left border border-edge rounded-lg p-3 hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent"
@@ -38,25 +45,26 @@ export function McpSection() {
                   </span>
                 )}
                 {/* Needs-auth badge */}
-                {s.needsAuth.length > 0 && (
+                {needsAuth.length > 0 && (
                   <span className="text-xs px-1.5 py-0.5 rounded-full bg-warning-wash text-warning border border-warning">
-                    needs auth: {s.needsAuth.join(', ')}
+                    needs auth: {needsAuth.join(', ')}
                   </span>
                 )}
               </div>
             </button>
             {/* Inline auth flow — rendered as sibling below the card button to avoid nesting interactive elements */}
-            {s.needsAuth.length > 0 && (s.transport === 'http' || s.transport === 'sse') && (
-              <McpAuthFlow server={s.name} accounts={s.needsAuth} />
+            {needsAuth.length > 0 && (s.transport === 'http' || s.transport === 'sse') && (
+              <McpAuthFlow server={s.name} accounts={needsAuth} />
             )}
-            {s.needsAuth.length > 0 && s.transport === 'stdio' && (
+            {needsAuth.length > 0 && s.transport === 'stdio' && (
               <p className="mt-1 px-3 pb-2 text-sm text-ink-muted">
                 This server cannot use browser OAuth here. Configure credentials on the host
                 running the session using the server’s setup instructions, then start a new session.
               </p>
             )}
           </li>
-        ))}
+          )
+        })}
         {servers.length === 0 && (
           <li className="text-sm opacity-70 p-4">No MCP servers configured.</li>
         )}

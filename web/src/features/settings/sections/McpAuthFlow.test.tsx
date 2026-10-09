@@ -161,7 +161,7 @@ describe('McpAuthFlow', () => {
   })
 
   // (e) clicking Fix auth calls startMcpAuth.mutate
-  it('clicking Fix auth calls mutate with the server name', async () => {
+  it('clicking Fix auth calls mutate with the server name and first account', async () => {
     const startMutate = vi.fn()
     vi.mocked(useStartMcpAuth).mockReturnValue(mutationResult({ mutate: startMutate }))
 
@@ -172,6 +172,6 @@ describe('McpAuthFlow', () => {
 
     const btn = screen.getByRole('button', { name: /fix auth/i })
     await userEvent.click(btn)
-    expect(startMutate).toHaveBeenCalledWith('notion')
+    expect(startMutate).toHaveBeenCalledWith({ name: 'notion', account: 'acct1' })
   })
 })

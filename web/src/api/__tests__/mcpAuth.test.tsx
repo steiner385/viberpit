@@ -57,22 +57,29 @@ describe('useStartMcpAuth', () => {
   it('POSTs to /library/mcp/{name}/auth', async () => {
     const { result } = renderHook(() => useStartMcpAuth(), { wrapper: makeWrapper() })
 
-    result.current.mutate('notion')
+    result.current.mutate({ name: 'notion' })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(api.post).toHaveBeenCalledWith('/library/mcp/notion/auth')
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/notion/auth', undefined)
     expect(result.current.data).toEqual(MCP_AWAITING_STATE)
+  })
+
+  it('sends the account in the body when given', async () => {
+    const { result } = renderHook(() => useStartMcpAuth(), { wrapper: makeWrapper() })
+    result.current.mutate({ name: 'notion', account: 'acct1' })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/notion/auth', { account: 'acct1' })
   })
 
   it('URL-encodes the server name', async () => {
     const { result } = renderHook(() => useStartMcpAuth(), { wrapper: makeWrapper() })
 
-    result.current.mutate('my server')
+    result.current.mutate({ name: 'my server' })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(api.post).toHaveBeenCalledWith('/library/mcp/my%20server/auth')
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/my%20server/auth', undefined)
   })
 })
 

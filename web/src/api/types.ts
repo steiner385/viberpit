@@ -837,13 +837,36 @@ export interface McpServerConfig {
   [key: string]: unknown
 }
 
+/** One MCP server's live state inside a session (SDK get_mcp_status). */
+export interface McpServerState {
+  name: string
+  status: string
+  error: string | null
+  toolCount: number | null
+  scope: string | null
+}
+
+/** One observed (account, host, server) status row — from a live session or a probe. */
+export interface McpStatusRow {
+  account: string
+  host: string
+  server: string
+  status: string
+  error: string | null
+  toolCount: number | null
+  scope: string | null
+  source: 'session' | 'probe'
+  sessionId: string | null
+  observedAt: string
+}
+
 export interface LibraryMcpServer {
   name: string
   source: string
   readonly: boolean
   transport: 'stdio' | 'http' | 'sse'
   config: McpServerConfig
-  needsAuth: string[]
+  status: McpStatusRow[]
 }
 
 export interface LibraryContent {

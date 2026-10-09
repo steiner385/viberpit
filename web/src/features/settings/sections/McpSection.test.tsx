@@ -37,7 +37,10 @@ const mcpResponse = {
       readonly: false,
       transport: 'stdio' as const,
       config: { type: 'stdio', command: 'npx', args: ['-y', 'some-mcp'] },
-      needsAuth: ['acct1', 'acct2'],
+      status: ['acct1', 'acct2'].map((account) => ({
+        account, host: 'dobby', server: 'my-server', status: 'needs-auth', error: null, toolCount: null,
+        scope: 'user', source: 'probe' as const, sessionId: null, observedAt: '2026-10-09T12:00:00Z',
+      })),
     },
     {
       name: 'plugin-server',
@@ -45,7 +48,7 @@ const mcpResponse = {
       readonly: true,
       transport: 'http' as const,
       config: { type: 'http', url: 'https://plugin.example/mcp' },
-      needsAuth: [],
+      status: [],
     },
     {
       name: 'httpurl-server',
@@ -53,7 +56,7 @@ const mcpResponse = {
       readonly: false,
       transport: 'http' as const,
       config: { type: 'http', httpUrl: 'https://via-httpurl.example/mcp' },
-      needsAuth: [],
+      status: [],
     },
     {
       name: 'extra-keys-server',
@@ -61,7 +64,7 @@ const mcpResponse = {
       readonly: false,
       transport: 'stdio' as const,
       config: { type: 'stdio', command: 'my-cmd', args: [], customKey: 'preserve-me' },
-      needsAuth: [],
+      status: [],
     },
   ],
 }
@@ -88,7 +91,7 @@ describe('McpSection', () => {
     }] })
     renderSection()
     await userEvent.click(await screen.findByRole('button', { name: /fix auth/i }))
-    expect(api.post).toHaveBeenCalledWith('/library/mcp/my-server/auth')
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/my-server/auth', { account: 'acct1' })
   })
 
   // (a) user + plugin rows render with transport and needs-auth badges

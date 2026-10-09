@@ -13,7 +13,7 @@ import {
 } from './automations'
 import { DEFAULT_AGENT_ENGINE } from './types'
 import type {
-  Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
+  McpStatusRow, McpServerState, Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
   DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
@@ -2772,8 +2772,43 @@ export function useRejectDecision() {
 // MCP OAuth auth flow — mirrors the reauth hooks pattern.
 // useStartMcpAuth: initiates OAuth for a named MCP server.
 export function useStartMcpAuth() {
-  return useMutation<McpAuthState, ApiRequestError, string>({
-    mutationFn: (name) => api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth`),
+  return useMutation<McpAuthState, ApiRequestError, { name: string; account?: string }>({
+    mutationFn: ({ name, account }) =>
+      api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth`, account ? { account } : undefined),
+  })
+}
+
+// useTestMcp: probes MCP servers now (all accounts, or one account/server) and refreshes the status rows.
+export function useTestMcp() {
+  const qc = useQueryClient()
+  return useMutation<
+    { rows: McpStatusRow[]; skipped: { account: string; reason: string }[] },
+    ApiRequestError,
+    { account?: string; server?: string }
+  >({
+    mutationFn: (body) => api.post('/library/mcp/test', body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.libraryMcp }),
+  })
+}
+
+// useSessionMcp: live MCP server states of one session (404 when the session is not live).
+export function useSessionMcp(sessionId: string, enabled: boolean) {
+  return useQuery<{ servers: McpServerState[] }>({
+    queryKey: ['session-mcp', sessionId],
+    queryFn: () => api.get(`/sessions/${encodeURIComponent(sessionId)}/mcp`),
+    enabled,
+    staleTime: 15_000,
+    retry: false,
+  })
+}
+
+// useReconnectSessionMcp: reconnects one MCP server inside a live session.
+export function useReconnectSessionMcp(sessionId: string) {
+  const qc = useQueryClient()
+  return useMutation<{ servers: McpServerState[] }, ApiRequestError, { server: string }>({
+    mutationFn: ({ server }) =>
+      api.post(`/sessions/${encodeURIComponent(sessionId)}/mcp/${encodeURIComponent(server)}/reconnect`),
+    onSuccess: (data) => qc.setQueryData(['session-mcp', sessionId], data),
   })
 }
 
