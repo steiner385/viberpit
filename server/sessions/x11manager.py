@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from server.sessions.desktop_session import probe_x11
 from server.sessions.adopt import _proc_lister, terminate_process_tree
 
 log = logging.getLogger("server.x11")
@@ -29,6 +30,9 @@ def resolve_chromium() -> str | None:
     return None
 
 
+_WAYLAND_ENV = ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XDG_SESSION_TYPE")
+
+
 class PoolExhausted(RuntimeError):
     """Raised when no display number is available."""
 
@@ -42,7 +46,8 @@ class DisplayLease:
 class DisplayAllocator:
     """Asyncio-locked pool of (display, rfbport) pairs."""
 
-    def __init__(self, start: int, count: int, port_base: int) -> None:
+    def __init__(self, start: int, count: int, port_base: int, run_dir: str = "/tmp") -> None:
+        self._run_dir = run_dir
         self._free: list[int] = list(range(start, start + count))
         self._start = start
         self._port_base = port_base
@@ -51,9 +56,15 @@ class DisplayAllocator:
 
     async def alloc(self) -> DisplayLease:
         async with self._lock:
-            if not self._free:
+            # A number whose X lock has a live owner is a foreign server: skip it.
+            display = next(
+                (n for n in self._free
+                 if not _lock_owner_alive(os.path.join(self._run_dir, f".X{n}-lock"))),
+                None,
+            )
+            if display is None:
                 raise PoolExhausted("display pool exhausted")
-            display = self._free.pop(0)
+            self._free.remove(display)
             self._used.add(display)
             return DisplayLease(display=display, rfbport=self._port_base + (display - self._start))
 
@@ -67,8 +78,24 @@ class DisplayAllocator:
         return len(self._used)
 
 
-def _default_ready_check(display: int, run_dir: str = "/tmp") -> bool:
-    return Path(run_dir, ".X11-unix", f"X{display}").exists()
+def _lock_owner_alive(lock_path: str) -> bool:
+    try:
+        pid = int(Path(lock_path).read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _default_ready_check(display: int, xauthority: str, run_dir: str = "/tmp") -> bool:
+    """Ready = our cookie authenticates against a live X server on the socket (a
+    stale socket file or a foreign server rejects it)."""
+    return probe_x11(os.path.join(run_dir, ".X11-unix", f"X{display}"), xauthority)
 
 
 def _default_vnc_ready_check(port: int) -> bool:
@@ -133,7 +160,7 @@ class X11Manager:
         self._no_sandbox = no_sandbox
         self._chromium_cmd = chromium_cmd
         self._browser_liveness_s = browser_liveness_s
-        self._ready_check = ready_check or (lambda d: _default_ready_check(d, run_dir))
+        self._ready_check = ready_check or (lambda d, xa: _default_ready_check(d, xa, run_dir))
         self._ready_timeout_s = ready_timeout_s
         self._ready_interval_s = ready_interval_s
         # Readiness probe for the VNC RFB port (x11vnc binds asynchronously after
@@ -186,7 +213,7 @@ class X11Manager:
                 except OSError:
                     pass
                 return None
-            if not await self._await_ready(lease.display):
+            if not await self._await_ready(lease.display, xauth):
                 log.warning("x11: display :%d never became ready", lease.display)
                 await _terminate(xvfb)
                 await self._allocator.release(lease)
@@ -195,15 +222,15 @@ class X11Manager:
             self._specs[session_id] = spec
             return spec
 
-    async def _await_ready(self, display: int) -> bool:
+    async def _await_ready(self, display: int, xauthority: str) -> bool:
         deadline = self._ready_timeout_s
         waited = 0.0
         while waited <= deadline:
-            if self._ready_check(display):
+            if await asyncio.to_thread(self._ready_check, display, xauthority):
                 return True
             await asyncio.sleep(self._ready_interval_s)
             waited += self._ready_interval_s
-        return self._ready_check(display)
+        return await asyncio.to_thread(self._ready_check, display, xauthority)
 
     async def stop_display(self, session_id: str) -> None:
         async with self._lock:
@@ -315,7 +342,9 @@ class X11Manager:
         spec = self._specs.get(session_id)
         if spec is None or len(spec.browsers) >= self._max_browsers:
             return False
-        argv = [self._chromium_cmd,
+        # --ozone-platform=x11 + no Wayland env: Chrome would otherwise auto-pick Wayland
+        # and draw this "virtual" browser on the operator's real desktop (D2).
+        argv = [self._chromium_cmd, "--ozone-platform=x11",
                 "--disable-dev-shm-usage", "--no-first-run", "--start-maximized"]
         # --no-sandbox is a conscious downgrade (quickstart §8b): only when the host's
         # userns restriction would otherwise FATAL Chromium at zygote init.
@@ -338,7 +367,8 @@ class X11Manager:
         argv.append(f"--user-data-dir={profile_dir}")
         if url:
             argv.append(url)
-        env = dict(os.environ, DISPLAY=f":{spec.lease.display}", XAUTHORITY=spec.xauthority)
+        env = {k: v for k, v in os.environ.items() if k not in _WAYLAND_ENV}
+        env.update(DISPLAY=f":{spec.lease.display}", XAUTHORITY=spec.xauthority)
         try:
             proc = await self._spawn(*argv, env=env,
                                      stdout=asyncio.subprocess.DEVNULL,
@@ -395,7 +425,7 @@ class X11Manager:
                 continue
             lock = os.path.join(self._run_dir, f".X{n}-lock")
             if os.path.exists(lock):
-                if not self._lock_owner_alive(lock):
+                if not _lock_owner_alive(lock):
                     for p in (lock, os.path.join(self._run_dir, ".X11-unix", f"X{n}")):
                         try:
                             os.unlink(p)
@@ -423,6 +453,7 @@ class X11Manager:
         ``lister``/``killer`` are injected so the sweep is unit-testable without /proc.
         Returns the number of processes actually signalled.
         """
+        browser_exes = {os.path.basename(self._chromium_cmd), *CHROMIUM_CANDIDATES}
         managed = range(self._display_start, self._display_start + self._display_count)
         live = {s.lease.display for s in self._specs.values()}
         killed = 0
@@ -431,7 +462,8 @@ class X11Manager:
             if not cmd:
                 continue
             exe = os.path.basename(cmd[0])
-            if not (exe == "Xvfb" or exe == "x11vnc" or exe.startswith("chromium")):
+            browser = exe in browser_exes or exe.startswith("chromium")
+            if not (exe == "Xvfb" or exe == "x11vnc" or browser):
                 continue
             display = self._display_of(proc)
             if display is None or display not in managed or display in live:
@@ -468,20 +500,6 @@ class X11Manager:
             return int(token[1:].split(".", 1)[0])
         except ValueError:
             return None
-
-    @staticmethod
-    def _lock_owner_alive(lock_path: str) -> bool:
-        try:
-            pid = int(Path(lock_path).read_text().strip())
-        except (OSError, ValueError):
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
 
 
 def build_x11_manager(settings) -> "X11Manager | None":

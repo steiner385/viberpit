@@ -205,6 +205,7 @@ class ReauthManager:
                 if spec is not None:
                     env_extra["DISPLAY"] = f":{spec.lease.display}"
                     env_extra["XAUTHORITY"] = spec.xauthority
+                    env_extra["XDG_SESSION_TYPE"] = "x11"
                     manager._state.vnc_session = REAUTH_DISPLAY_KEY
                     _progress("Opening the Claude login \u2014 the browser takes a few seconds to appear\u2026")
                 else:

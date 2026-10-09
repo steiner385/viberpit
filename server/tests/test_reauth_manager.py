@@ -105,6 +105,7 @@ async def test_runner_allocates_virtual_display_and_releases(monkeypatch):
     assert fake.stopped == [REAUTH_DISPLAY_KEY]      # released in finally
     assert captured["DISPLAY"] == ":105"
     assert captured["XAUTHORITY"] == "/tmp/viberpit-__reauth__.Xauthority"
+    assert captured["XDG_SESSION_TYPE"] == "x11"
 
 
 def _stub_login(monkeypatch, captured, calls=None):
