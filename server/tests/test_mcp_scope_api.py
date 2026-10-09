@@ -78,7 +78,8 @@ def test_unknown_server_400_and_unknown_repo_400():
         d = client.delete(f"{BASE}/gh/repos/acme/other", headers=_H)
     assert a.status_code == b.status_code == 400
     assert a.json()["detail"] == {"error": "unknown_server"}
-    assert c.status_code == d.status_code == 400
+    assert c.status_code == 400
+    assert d.status_code == 404  # DELETE skips the known-repo check; no such rule
     assert c.json()["detail"] == {"error": "unknown_repo"}
 
 
@@ -114,7 +115,7 @@ def test_dot_segments_rejected_by_validator_directly():
 
 def test_kill_switch_404_on_every_route():
     client, _ = _make_client()
-    e, k, r = _ctx()
+    _e, k, r = _ctx()
     with _env(VIBERPIT_MCP_SCOPE_ENABLED="false"), k, r, client:
         resps = [
             client.get(BASE, headers=_H),
@@ -147,3 +148,24 @@ def test_known_repo_slugs_lowercases_and_shares_last_good_cache():
         assert asyncio.run(known_repo_slugs(state)) == {"acme/widgets"}
     with patch("viberpit.gitrepos.list_accessible_repos", side_effect=GhError("rate limited")):
         assert asyncio.run(known_repo_slugs(state)) == {"acme/widgets"}
+
+
+def test_delete_rule_works_when_repo_no_longer_known():
+    client, _ = _make_client()
+    e, k, r = _ctx()
+    with e, k, r, client:
+        client.put(f"{BASE}/gh/repos/acme/widgets", json={"enabled": True}, headers=_H)
+        with patch(_REPOS, AsyncMock(return_value={"other/repo"})):
+            assert client.delete(f"{BASE}/gh/repos/acme/widgets", headers=_H).status_code == 204
+        assert client.get(BASE, headers=_H).json()["rules"] == []
+
+
+def test_delete_rule_never_calls_known_repo_lookup():
+    client, _ = _make_client()
+    e, k, r = _ctx()
+    boom = AsyncMock(side_effect=RuntimeError("gh down"))
+    with e, k, r, client:
+        client.put(f"{BASE}/gh/repos/acme/widgets", json={"enabled": True}, headers=_H)
+        with patch(_REPOS, boom):
+            assert client.delete(f"{BASE}/gh/repos/Acme/Widgets", headers=_H).status_code == 204
+    boom.assert_not_called()

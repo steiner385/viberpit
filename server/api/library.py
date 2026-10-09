@@ -290,11 +290,17 @@ async def _scope_server_or_400(server: str) -> None:
         raise HTTPException(status_code=400, detail={"error": "unknown_server"})
 
 
-async def _scope_repo_or_400(request: Request, owner: str, name: str) -> str:
-    """Shape-check BEFORE any lookup, then require a repo the gh creds know."""
+def _scope_slug_or_400(owner: str, name: str) -> str:
+    """Shape-check owner/name BEFORE any store or lookup; returns the lower-cased slug."""
     if any(not _SLUG_PART.match(p) or p in (".", "..") for p in (owner, name)):
         raise HTTPException(status_code=400, detail={"error": "invalid_repo"})
-    slug = f"{owner}/{name}".lower()
+    return f"{owner}/{name}".lower()
+
+
+async def _scope_repo_or_400(request: Request, owner: str, name: str) -> str:
+    """Write-side guard (typos): shape, then require a repo the gh creds know.
+    DELETE uses only the shape check so a rule for a lost/renamed repo stays removable."""
+    slug = _scope_slug_or_400(owner, name)
     if slug not in await known_repo_slugs(request.app.state):
         raise HTTPException(status_code=400, detail={"error": "unknown_repo"})
     return slug
@@ -345,12 +351,12 @@ async def put_mcp_scope_rule(server: str, owner: str, name: str, body: McpScopeR
 
 
 @router.delete("/mcp/scope/{server}/repos/{owner}/{name}")
-async def delete_mcp_scope_rule(server: str, owner: str, name: str, request: Request,
+async def delete_mcp_scope_rule(server: str, owner: str, name: str,
                                 identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
     if (off := _scope_off()) is not None:
         return off
     await _scope_server_or_400(server)
-    repo = await _scope_repo_or_400(request, owner, name)
+    repo = _scope_slug_or_400(owner, name)
     if not await scope_store.delete_repo_rule(repo, server):
         raise HTTPException(status_code=404, detail={"error": "unknown_rule"})
     await record_audit(db=db, type="library_mcp_scope_saved", identity=identity,
