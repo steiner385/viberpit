@@ -60,6 +60,8 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         durable_tool_surface=True,
         # The Library surface scans/mutates CLAUDE_CONFIG_DIR directly (#1285).
         library_management=True,
+        # The CLI answers get_mcp_status / reconnect_mcp_server control requests.
+        mcp_status=True,
     )
 
     driver._engine_session_id = "native-1"

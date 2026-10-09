@@ -47,6 +47,7 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("self_model_switch_enabled", "VIBERPIT_SELF_MODEL_SWITCH_ENABLED", "Sessions may request a model change"),
     ("self_model_switch_cap", "VIBERPIT_SELF_MODEL_SWITCH_CAP", "Auto-applied model switches per session before parking for approval"),
     ("session_tools_enabled", "VIBERPIT_SESSION_TOOLS_ENABLED", f"Coding sessions get the {brand.NAME} MCP tools (session_context, report_feedback)"),
+    ("mcp_status_enabled", "VIBERPIT_MCP_STATUS_ENABLED", "Sessions report MCP server connection status; Settings › MCP can test servers"),
     ("session_feedback_cap", "VIBERPIT_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
     ("error_sink_enabled", "VIBERPIT_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
     ("gh_reconcile_enabled", "VIBERPIT_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
