@@ -15,8 +15,8 @@ from uuid import NAMESPACE_URL, uuid5
 from server.db import db_session
 from server.db.models import Attachment
 from server.mcp_spec import ToolArgError
-from server.sessions.artifacts import IMAGE_MEDIA_TYPES, read_image
-from server.sessions.attachments import MAX_BYTES, sniff_media_type, store_attachment
+from server.sessions.artifacts import read_image
+from server.sessions.attachments import IMAGE_MEDIA_TYPES, MAX_BYTES, sniff_media_type, store_attachment
 from server.sessions.events import ToolResult
 
 

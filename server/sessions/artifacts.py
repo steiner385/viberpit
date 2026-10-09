@@ -29,12 +29,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from server.mcp_spec import ToolArgError
-from server.sessions.attachments import MAX_BYTES, sniff_media_type
+from server.sessions.attachments import IMAGE_MEDIA_TYPES, MAX_BYTES, sniff_media_type
 
 ARTIFACT_KINDS: tuple[str, ...] = ("url", "path", "image")
-
-#: The image types the card renders inline — the attachment store's image subset.
-IMAGE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 LABEL_MAX = 120
 NOTE_MAX = 500
