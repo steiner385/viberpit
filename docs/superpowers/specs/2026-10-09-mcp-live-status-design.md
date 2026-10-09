@@ -90,8 +90,8 @@ New model `McpServerStatus`, table `mcp_server_status`, unique on `(account, hos
 ### 3. Probe ("Test connection")
 
 - New module `server/mcp_health/probe.py`: open a `ClaudeSDKClient` whose `CLAUDE_CONFIG_DIR` is the
-  account's composed cfg dir (`configdir.compose(name)`, as `McpAuthManager` uses), cwd a neutral
-  helper dir, **no** `strict_mcp_config`, no prompt sent. Poll `get_mcp_status()` until nothing is
+  account's **existing** cfg dir. It never calls `configdir.compose()` and never writes the dir, because
+  a concurrent login or live session may own it. The cwd is a neutral helper dir, **no** `strict_mcp_config`, no prompt sent. Poll `get_mcp_status()` until nothing is
   `pending` or 20 s elapse, disconnect, upsert rows with `source = probe` (still-pending servers are
   recorded as `pending`).
 - Runs on the daemon that owns the cfg dirs, via a new `probe_mcp(account=None, server=None)` RPC;
@@ -151,10 +151,18 @@ New model `McpServerStatus`, table `mcp_server_status`, unique on `(account, hos
 
 ## Open risk (verify first in the plan)
 
-Remote worker hosts (rocky) receive credentials as envelopes pushed from the edge
-(`server/ipc/creds_rpc.py`). If `mcpOAuth` from `store/mcp.shared.json` is not part of those envelopes,
-then reconnecting a rocky session after reauth will not see the new token. If so, the fix is to include
-it in the envelope, not to work around it here.
+`mcpOAuth` reaches a session's `.credentials.json` only through `configdir.compose()` at session start.
+A login writes the token into ONE account's cfg dir, plus the shared store. So a live session of any
+OTHER account would reconnect without the token.
+
+Resolution (plan Task 8): after a login, `refresh_cfg_mcp_oauth()` merges the shared `mcpOAuth` into each
+account's cfg-dir `.credentials.json`. It rewrites **only** the `mcpOAuth` key, so a token the CLI has just
+rotated in `claudeAiOauth` survives. Reconnect happens only after that merge.
+
+Worker hosts read the same account store over sshfs, which plan Task 1 confirms. That makes the credential
+envelopes (`server/ipc/creds_rpc.py`, `claudeAiOauth` only) irrelevant here.
+
+Plan Task 1 also verifies on the real binary that a live CLI re-reads the file on `reconnect_mcp_server()`.
 
 ## Testing
 
