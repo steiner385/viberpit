@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useLibraryMcp, useTestMcp } from '@/api/hooks'
-import { ApiRequestError, apiErrorCode } from '@/api/client'
+import { apiErrorCode } from '@/api/client'
 import type { LibraryMcpServer } from '@/api/types'
 import { McpServerDialog } from './McpServerDialog'
 import { McpAuthFlow } from './McpAuthFlow'
@@ -13,9 +13,7 @@ function needsAuthAccounts(s: LibraryMcpServer): string[] {
 }
 
 function testErrorMessage(err: unknown): string {
-  // The test endpoint answers {"error": "<code>"} (a flat string), which apiErrorCode does not read.
-  const flat = err instanceof ApiRequestError ? err.body.error : null
-  switch (typeof flat === 'string' ? flat : apiErrorCode(err)) {
+  switch (apiErrorCode(err)) {
     case 'unknown_account':
       return 'Test failed: unknown account.'
     case 'mcp_probe_timeout':
@@ -158,6 +156,7 @@ export function McpSection() {
                   type="button"
                   aria-label={`Details for ${s.name}`}
                   aria-expanded={open}
+                  aria-controls={`mcp-details-${key}`}
                   onClick={() => toggle(key)}
                   className="rounded border border-edge px-2 py-1 text-xs hover:bg-surface-raised"
                 >
@@ -178,7 +177,7 @@ export function McpSection() {
               <TestOutcomeNote outcome={outcome} target={s.name} />
             </div>
             {open && (
-              <ul className="mt-1 px-3 space-y-2">
+              <ul id={`mcp-details-${key}`} className="mt-1 px-3 space-y-2">
                 {s.status.map((r) => (
                   <li
                     key={`${r.account}/${r.host}`}
