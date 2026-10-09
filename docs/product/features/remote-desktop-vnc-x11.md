@@ -70,7 +70,7 @@ insecure origins the paste button falls back to a capture field (#541).
 ## Native display routing (2026-09-06)
 
 A session created from the runner host's **own desktop** does not get a virtual display:
-its `DISPLAY` is the host's real X display (`VIBERPIT_NATIVE_DISPLAY`, default `:0`) and
+its `DISPLAY` is the host's real X display (discovered at runtime; `VIBERPIT_NATIVE_DISPLAY` pins one) and
 "Open a browser" launches Chromium there. Every other client — any other tailnet device,
 automations, the assistant — keeps the pooled Xvfb display and VNC relay.
 
@@ -85,9 +85,24 @@ does not move a session.
 
 **Override.** `POST /api/sessions` accepts `display: "auto" | "native" | "virtual"`.
 
-**Requirements / limits.** The daemon runs as the desktop user and the X server must
-accept `SI:localuser:<user>` (GDM's default; otherwise `xhost +SI:localuser:<user>` in the
-session startup). No `XAUTHORITY` is set. `VIBERPIT_NATIVE_DISPLAY` must not fall inside
+**Requirements / limits.** The daemon runs as the desktop user. No `SI:localuser` grant and no
+`xhost` step are needed: `server/sessions/desktop_session.py` finds the live X server from `/proc`
+(Xorg, or the rootless Xwayland of a Wayland session), reads its per-login cookie from argv/environ,
+proves it with a real X11 handshake, and exports `DISPLAY` + `XAUTHORITY` (plus `WAYLAND_DISPLAY` /
+`XDG_RUNTIME_DIR` on Wayland). It only trusts X servers and sockets owned by the daemon's uid or
+root, and re-resolves on a 5 s TTL, so a relogin (which rotates the cookie) is picked up
+automatically; stale cookie files and `/tmp/.X11-unix/X*` sockets are ignored. Empty
+`VIBERPIT_NATIVE_DISPLAY` (default) = auto-discover; `:N` pins a display.
+`VIBERPIT_NATIVE_BROWSER_PLATFORM=auto|wayland|x11` picks the Chromium backend: `auto` runs
+Wayland-native on a Wayland desktop and X11 otherwise; forcing `wayland` on an X11-only desktop
+falls back to x11. Virtual (Xvfb) Chromium is always pinned `--ozone-platform=x11` with the
+Wayland vars scrubbed so it cannot escape onto the real desktop. When a local session lands on a
+virtual display instead, `Session.displayFallbackReason` (`displayFallbackReason` in the API,
+migration 0080) records why and the session card shows it as a badge tooltip. The reauth
+host-screen fallback uses the same resolver (X11 via Xwayland; `VIBERPIT_REAUTH_DISPLAY` empty =
+auto-discover). Authenticated `GET /api/x11/metrics` exposes `nativeDisplay`
+(`display`, `available`, `kind`, `reason`, `browsers`); `/healthz` does not (unauthenticated).
+See `docs/runbooks/onboarding-a-session-runner.md` § "Wayland desktop hosts". `VIBERPIT_NATIVE_DISPLAY` must not fall inside
 the Xvfb pool range or native routing disables itself with a warning (the orphan sweep
 reaps that range). Behind `tailscale serve` (no `X-Real-IP`) locality resolves to unknown →
 virtual. Native routing is effectively **Claude-only** today: only

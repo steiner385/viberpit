@@ -31,7 +31,7 @@ Checked against the real binaries and hosts on 2026-09-06 (constitution Principl
 | `tailscale whois --json <own tailnet IP>` succeeds and returns `Node.ComputedName` equal to the first hostname label. | On rocky: `Node.ComputedName == "rocky"`, `LoginName` present. `whois 127.0.0.1` → "peer not found". |
 | The prod front (`deploy/ccswitch-tailnet.nginx`) strips identity headers and sets `X-Real-IP`, so `verify_identity` already runs whois on every request. | `server/auth/identity.py:144-179`; only `UserProfile.LoginName` is kept. |
 | A browser on dobby reaching `https://dobby.tail0dd570.ts.net` connects from dobby's own tailnet IP, so nginx's `$remote_addr` is dobby's node. | MagicDNS resolves to the 100.x address; whois on it works (row 1). |
-| dobby runs a real X11 seat on `:0`, and a process owned by `tony` with **no** `XAUTHORITY` can open it: the server grants `SI:localuser:tony`. | `loginctl` type `x11` on seat0; `env -u XAUTHORITY DISPLAY=:0 xdpyinfo` succeeds; `xhost` lists `SI:localuser:tony`. |
+| dobby runs a real X11 seat on `:0`, and a process owned by `tony` with **no** `XAUTHORITY` can open it: the server grants `SI:localuser:tony`. | `loginctl` type `x11` on seat0; `env -u XAUTHORITY DISPLAY=:0 xdpyinfo` succeeds; `xhost` lists `SI:localuser:tony`. *(Superseded 2026-10-09: dobby now runs GNOME/Wayland with rootless Xwayland on `:0`, which does NOT grant `SI:localuser`; a per-login cookie `/run/user/<uid>/.mutter-Xwaylandauth.*` is required. See `docs/superpowers/plans/2026-10-09-wayland-coexistence.md`.)* |
 | The daemon (`ccswitch-daemon.service`, `User=tony`) has no `DISPLAY`/`XAUTHORITY` in its environment. | `/proc/<MainPID>/environ`. |
 | Bare `DISPLAY=:0` with no `XAUTHORITY` is the already-shipped reauth fallback posture. | `server/reauth.py:200-202`. |
 
@@ -53,8 +53,9 @@ Checked against the real binaries and hosts on 2026-09-06 (constitution Principl
   agent process's `DISPLAY` is fixed at spawn; a "move to my desktop" action would be a
   respawn and is a separate feature.
 - VNC access to the operator's real desktop (explicitly a non-goal of spec 002 too).
-- Wayland-native display routing. dobby is X11; a Wayland host still exposes `:0` via
-  Xwayland, which this design would use unchanged, but that is not verified here.
+- Wayland-native display routing. *(Superseded 2026-10-09: now in scope. dobby is a Wayland host; Xwayland
+  needs its per-login cookie, so the design was NOT usable unchanged. See
+  `docs/superpowers/plans/2026-10-09-wayland-coexistence.md`.)*
 - `tailscale serve` fronting. It sets `X-Forwarded-For`, not `X-Real-IP`; locality would
   resolve to "unknown" → virtual, which is safe. Documented as a limitation.
 
@@ -326,4 +327,7 @@ Web (`web/`): full `npm run typecheck`, `npm run lint`, `npm run test`, `npm run
 4. **No `XAUTHORITY` for native**, matching the verified host posture and the reauth
    fallback. A host without `SI:localuser` access would need `xhost +SI:localuser:<user>`
    in its session startup; documented, not automated.
+   *(Superseded 2026-10-09: false on Wayland/Xwayland, which does not grant `SI:localuser`. The
+   live desktop and its cookie are now discovered at runtime and `XAUTHORITY` is exported; no
+   `xhost` step. See `docs/superpowers/plans/2026-10-09-wayland-coexistence.md`.)*
 5. Adopted sessions stay virtual.

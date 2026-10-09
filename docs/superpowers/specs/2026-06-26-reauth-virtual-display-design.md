@@ -92,6 +92,9 @@ if spec is not None:
     manager._state.vnc_session = REAUTH_DISPLAY_KEY        # surfaces to the UI (Component 4)
 else:
     env_extra["DISPLAY"] = settings.reauth_display          # unchanged :0 fallback; no XAUTHORITY
+    # Superseded 2026-10-09: the fallback now resolves the live desktop (server/sessions/desktop_session.py)
+    # and exports its DISPLAY + XAUTHORITY cookie (X11 via Xwayland on Wayland hosts); empty
+    # VIBERPIT_REAUTH_DISPLAY = auto-discover. See docs/superpowers/plans/2026-10-09-wayland-coexistence.md.
 try:
     ... existing capture_login + mark_reauthenticated ...
 finally:
