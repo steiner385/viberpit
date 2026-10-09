@@ -305,7 +305,11 @@ _EXPECTED_RECONNECT_TIMEOUT_MESSAGE = "timed out during opening handshake"
 #: clean SERVICE_RESTART close, so `websockets`' own keepalive ping never
 #: gets a pong and it self-closes the *established* connection locally with
 #: code 1011 (INTERNAL_ERROR) — no close frame is received from the daemon
-#: (`rcvd is None`). Matched by code AND reason, not code alone: 1011 is
+#: (`rcvd is None`). The mirror image is the same blip seen from the other
+#: end (#2883): the *daemon's* keepalive pinged an edge whose event loop was
+#: frozen (e.g. a host IO stall, already reported by `server.obs.loop_lag`),
+#: so the daemon closed with 1011 and the edge echoed it — `rcvd` carries the
+#: keepalive close. Both directions match. Matched by code AND reason, not code alone: 1011 is
 #: also the generic "something went wrong" code an app can send for a real
 #: internal error, so a bare code check would swallow those too. Like the
 #: handshake timeout above (and unlike the unconditional SERVICE_RESTART
@@ -324,15 +328,22 @@ def _is_expected_reconnect(exc: Exception) -> bool:
     )
 
 
+def _is_keepalive_close(close: websockets.frames.Close | None) -> bool:
+    return (
+        close is not None
+        and close.code == websockets.CloseCode.INTERNAL_ERROR
+        and close.reason == _KEEPALIVE_PING_TIMEOUT_REASON
+    )
+
+
 def _is_keepalive_ping_timeout(exc: Exception) -> bool:
     if not isinstance(exc, websockets.ConnectionClosed):
         return False
-    return (
-        exc.rcvd is None
-        and exc.sent is not None
-        and exc.sent.code == websockets.CloseCode.INTERNAL_ERROR
-        and exc.sent.reason == _KEEPALIVE_PING_TIMEOUT_REASON
-    )
+    if exc.rcvd is not None:
+        # The daemon closed on its own keepalive timeout (#2883).
+        return _is_keepalive_close(exc.rcvd)
+    # Our own keepalive timed out and closed locally (#1725).
+    return _is_keepalive_close(exc.sent)
 
 
 def _is_transient_connect_failure(exc: Exception) -> bool:

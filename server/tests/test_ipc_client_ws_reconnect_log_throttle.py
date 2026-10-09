@@ -191,13 +191,21 @@ def _keepalive_ping_timeout_close() -> websockets.ConnectionClosed:
     return websockets.ConnectionClosed(None, close, rcvd_then_sent=None)
 
 
+def _peer_keepalive_ping_timeout_close() -> websockets.ConnectionClosed:
+    """The daemon's keepalive timed out on the edge and closed; the edge echoed it (#2883)."""
+    close = websockets.frames.Close(
+        websockets.CloseCode.INTERNAL_ERROR, "keepalive ping timeout")
+    return websockets.ConnectionClosed(close, close, rcvd_then_sent=True)
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("make_close", [
+    _keepalive_ping_timeout_close, _peer_keepalive_ping_timeout_close])
 async def test_keepalive_ping_timeout_inside_the_grace_window_logs_at_info(
-        tmp_path, caplog, monkeypatch):
+        tmp_path, caplog, monkeypatch, make_close):
     monkeypatch.setattr(
         ipc_client, "daemon_ws_connect",
-        lambda endpoint, path, ssl_ctx=None: _FailingConnect(
-            _keepalive_ping_timeout_close()),
+        lambda endpoint, path, ssl_ctx=None: _FailingConnect(make_close()),
     )
 
     client = DaemonClient(str(tmp_path / "nonexistent.sock"))
@@ -296,7 +304,8 @@ def test_reconnect_log_level_policy(monkeypatch):
     monkeypatch.setattr(ipc_client, "_RECONNECT_WARN_AFTER_S", 60.0)
     for blip in (TimeoutError("timed out during opening handshake"),
                  ConnectionRefusedError("connection refused"),
-                 _keepalive_ping_timeout_close()):
+                 _keepalive_ping_timeout_close(),
+                 _peer_keepalive_ping_timeout_close()):
         assert ipc_client._reconnect_log_level(blip, 0.0) == logging.INFO
         assert ipc_client._reconnect_log_level(blip, 59.9) == logging.INFO
         assert ipc_client._reconnect_log_level(blip, 60.0) == logging.WARNING
@@ -312,6 +321,11 @@ def test_reconnect_log_level_policy(monkeypatch):
         websockets.CloseCode.INTERNAL_ERROR, "unhandled exception in handler")
     bad = websockets.ConnectionClosed(None, other_internal_error, rcvd_then_sent=None)
     assert ipc_client._reconnect_log_level(bad, 0.0) == logging.WARNING
+    # The same holds for a 1011 the daemon *sent*: only its keepalive reason
+    # is a blip; any other reason is a real daemon-side error (#2883).
+    peer_boom = websockets.frames.Close(websockets.CloseCode.INTERNAL_ERROR, "boom")
+    peer_bad = websockets.ConnectionClosed(peer_boom, peer_boom, rcvd_then_sent=True)
+    assert ipc_client._reconnect_log_level(peer_bad, 0.0) == logging.WARNING
 
 
 async def _wait_for_n_records(caplog, selector, n: int) -> None:
