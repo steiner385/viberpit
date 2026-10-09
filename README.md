@@ -7,10 +7,12 @@
 
 *Formerly ccswitch / cc-account-switcher.*
 
-The open source cockpit for builders who'd rather create than click around: run and switch
+The cockpit for builders who'd rather create than click around: run and switch
 between live AI coding-agent sessions across several accounts, with automatic usage-aware
 account rotation. The CLI is installed as `viberpit`; `ccswitch` remains an alias for one release.
 See `docs/` for the design spec and `docs/product/guides/viberpit-rebrand.md` for the brand.
+
+Source-available for reference. No license is granted; all rights reserved.
 
 ## Usage
 

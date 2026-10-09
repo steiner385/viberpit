@@ -147,7 +147,7 @@ renderer are gone; the brand is now three rasters under `web/public/brand/` and 
   interactive colour and the status tones are unchanged. The sheet's Deep Night (`#0b1020`) is
   the icon plate, not the dark canvas (`#16171d`, `shell/canvas.ts`), which stays as tuned.
 - **Copy from the brand sheet** (owner-approved; typos in the mockup fixed here): tagline
-  *Code it. Vibe it. Ship it.*; positioning *The open source cockpit for builders who'd rather
+  *Code it. Vibe it. Ship it.*; positioning *The cockpit for builders who'd rather
   create than click around.*; loop *Plan · Build · Test · Ship · Repeat*; alternates *Ideas to
   impact. On autopilot.* / *Your product lifecycle, less work.* / *Build more. Manage less.* /
   *From concept to commit.* / *Serious ideas. Less serious attitude.* / *Less grind. More build.*

@@ -100,10 +100,9 @@ usage-aware multi-account rotation; steer-from-anywhere over the tailnet.
   **worktrees**.
 - Performance and accessibility are contracts with budgets (`docs/PERFORMANCE.md`,
   `docs/ACCESSIBILITY.md`); the frontend has a bundle budget check.
-- **Explicitly undecided:** whether and when the product opens up beyond the operator. The
-  approved brand copy says "open source cockpit for builders", but the repository is private with
-  no licence today; until that changes, newcomer onboarding and public-facing surfaces are out of
-  scope and must not be inferred from the tagline.
+- **Licence:** public repository, no licence (all rights reserved) as of 2026-10-09 — made public
+  to eliminate Actions spend, not as an open-sourcing decision. Whether to open-source remains
+  undecided; newcomer onboarding and public-facing surfaces stay out of scope.
 
 ## Brand Commitments
 
@@ -112,7 +111,7 @@ Owner-approved, from `docs/product/guides/viberpit-rebrand.md` § Visual identit
 
 - **Name:** ViberPit (renamed from its original slug in September 2026; the old spelling survives
   only as compat aliases and a ratcheted inventory — `docs/product/guides/viberpit-rebrand.md`).
-- **Tagline:** *Code it. Vibe it. Ship it.* **Positioning line:** *The open source cockpit for
+- **Tagline:** *Code it. Vibe it. Ship it.* **Positioning line:** *The cockpit for
   builders who'd rather create than click around.* **Loop:** *Plan · Build · Test · Ship · Repeat.*
   **Alternates:** *Ideas to impact. On autopilot.* / *Your product lifecycle, less work.* / *Build
   more. Manage less.* / *From concept to commit.* / *Serious ideas. Less serious attitude.* / *Less
