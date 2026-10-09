@@ -36,6 +36,14 @@ RECONCILE_EXEMPT: set[str] = {
     "mcp_server_status.status",
     "mcp_server_status.source",
     "mcp_server_status.observed_at",
+    # mcp_server_scope / mcp_repo_rule (0079): new tables installed whole by create_all; every
+    # column is supplied at first INSERT by mcp_scope.store.
+    "mcp_server_scope.default_enabled",
+    "mcp_server_scope.updated_at",
+    "mcp_repo_rule.repo",
+    "mcp_repo_rule.server",
+    "mcp_repo_rule.enabled",
+    "mcp_repo_rule.updated_at",
     "sessions.name",           # required at session create; no sane default
     "sessions.account_name",   # required at session create; no sane default
     "sessions.cwd",            # required at session create; no sane default
