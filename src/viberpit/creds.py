@@ -169,3 +169,34 @@ def write_credentials(path: Path, data: dict) -> None:
             _warn_no_key_once()
 
     write_json_secure(path, data)
+
+
+def refresh_cfg_mcp_oauth(cfg_dir: Path) -> bool:
+    """Merge the shared mcpOAuth store into ONE cfg dir's .credentials.json in place.
+
+    Touches only the ``mcpOAuth`` key: a live CLI may have just rotated ``claudeAiOauth``
+    in this same file, and a full compose would clobber it (cf. #2695). Used after an MCP
+    login so live sessions of OTHER accounts can reconnect with the new token (spec
+    2026-10-09 section 4). The merge is per server key (``merge_keep_later`` on each
+    bundle's ``expiresAt``); keys only present locally are kept. Returns True when the
+    file changed."""
+    from .configdir import CREDENTIALS_NAME  # configdir imports this module
+
+    path = Path(cfg_dir) / CREDENTIALS_NAME
+    if not path.is_file():
+        return False
+    shared_path = paths.shared_mcp_path()
+    shared = read_json(shared_path) if shared_path.exists() else {}
+    current = read_json(path)
+    existing = current.get("mcpOAuth")
+    existing = existing if isinstance(existing, dict) else {}
+    merged = dict(existing)
+    for key, blob in shared.items():
+        if isinstance(blob, dict):
+            old = existing.get(key)
+            merged[key] = merge_keep_later(old if isinstance(old, dict) else None, blob)
+    if merged == existing:
+        return False
+    current["mcpOAuth"] = merged
+    write_json_secure(path, current)
+    return True

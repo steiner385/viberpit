@@ -796,7 +796,10 @@ def create_app(
     # is out of scope for the current single-host deployment; if ever needed, mirror
     # server/ipc/reauth_rpc.py.
     from server.mcp_auth import build_default_manager as _build_mcp_auth
-    app.state.mcp_auth = _build_mcp_auth()
+    from server.mcp_health.after_login import after_login as _mcp_after_login
+    # app.state.sessions is resolved at call time: the lifespan swaps in FleetOrchestrator.
+    app.state.mcp_auth = _build_mcp_auth(
+        on_success=lambda server, accts: _mcp_after_login(app.state.sessions, server, accts))
 
     # Middleware stack (Starlette runs last-added outermost): RequestContextMiddleware
     # wraps IdentityMiddleware wraps the routes, so request_id is set before identity.

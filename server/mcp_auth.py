@@ -18,7 +18,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol, Sequence
+from typing import Awaitable, Callable, Protocol, Sequence
 
 from viberpit import accounts, configdir, paths
 from viberpit.config import load_config
@@ -132,6 +132,7 @@ class McpAuthManager:
         clock: Callable[[], float] = time.time,
         url_timeout_s: float = 60.0,
         complete_timeout_s: float = 120.0,
+        on_success: Callable[[str, list[str]], Awaitable[object]] | None = None,
     ) -> None:
         self._factory = session_factory
         self._pick = account_picker
@@ -142,6 +143,8 @@ class McpAuthManager:
         self._session: LoginSession | None = None
         self._task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._lock = asyncio.Lock()
+        self._on_success = on_success
+        self._success_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
 
     def status(self, server: str) -> McpAuthState:
         s = self._state
@@ -199,11 +202,18 @@ class McpAuthManager:
             await session.complete(redirect_url, self._complete_timeout)
             n_merged = merge_mcp_oauth_from_cfg(session.cfg_dir, server=server)
             cleared = clear_needs_auth_cache(server)
+            flipped = False
             async with self._lock:
                 if self._state.server == server and self._state.state == "exchanging":
                     self._state.state = "success"
                     self._state.accounts = cleared or self._state.accounts
                     self._state.message = None
+                    flipped = True
+            if flipped and self._on_success is not None:
+                # Background: the redirect response must not wait on reconnect + probe.
+                task = asyncio.create_task(self._fire_success(server))
+                self._success_tasks.add(task)
+                task.add_done_callback(self._success_tasks.discard)
             log.info("mcp auth: %s ok (shared_keys=%d, cleared=%d accounts)",
                      server, n_merged, len(cleared))
         except McpAuthError as exc:
@@ -229,9 +239,21 @@ class McpAuthManager:
                                            message="cancelled")
         return self.status(server)
 
+    async def _fire_success(self, server: str) -> None:
+        # Only known accounts are refreshed, never request-supplied names.
+        try:
+            assert self._on_success is not None
+            names = await asyncio.to_thread(accounts._anthropic_account_names)
+            await self._on_success(server, names)
+        except Exception:
+            log.debug("mcp auth: on_success follow-through failed for %r", server,
+                      exc_info=True)
+
     async def shutdown(self) -> None:
         if self._state.server:
             await self.cancel(self._state.server)
+        for task in list(self._success_tasks):
+            await cancel_and_reap(task, phase="mcp-auth.on-success", timeout=3.0)
 
     async def _fail(self, server: str, msg: str) -> None:
         async with self._lock:
@@ -413,9 +435,12 @@ class PtyLoginSession:
             self._fd = None
 
 
-def build_default_manager() -> McpAuthManager:
+def build_default_manager(
+    on_success: Callable[[str, list[str]], Awaitable[object]] | None = None,
+) -> McpAuthManager:
     return McpAuthManager(
         session_factory=lambda server, account, cfg_dir, login_key: PtyLoginSession(
             server, account, cfg_dir, login_key),
         account_picker=default_account_picker,
+        on_success=on_success,
     )
