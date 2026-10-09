@@ -383,9 +383,20 @@ def test_trusted_automation_logins_pin_alert_series():
 def test_alert_series_recognises_the_mirrors_app_form():
     from server.pm.alert_series import alert_key, is_automation_login
     assert is_automation_login("app/github-actions")
-    assert is_automation_login("github-actions")
+    assert not is_automation_login("github-actions")      # a bare login is a user
     assert is_automation_login("renovate[bot]")
     assert not is_automation_login("app/tony")
     assert alert_key("Weekly failed — 2026-09-01", "app/github-actions") == \
-        alert_key("Weekly failed — 2026-09-01", "github-actions")
+        alert_key("Weekly failed — 2026-09-01", "github-actions[bot]")
+    assert alert_key("Weekly failed — 2026-09-01", "github-actions") is None
     assert alert_key("Weekly failed — 2026-09-01", "app/github-actions") is not None
+
+
+def test_a_bare_github_actions_user_cannot_supersede_a_real_alert_series():
+    from server.pm.alert_series import AlertIssue, superseded
+    title = "⚠️ Unverified prod deploy b80aa1b03c — 2026-09-21"
+    real = AlertIssue("o/r", 10, title, "app/github-actions")
+    rest = AlertIssue("o/r", 11, title.replace("2026-09-21", "2026-09-22"), "github-actions[bot]")
+    squat = AlertIssue("o/r", 99, title.replace("2026-09-21", "2026-09-30"), "github-actions")
+    assert superseded([real, squat]) == []
+    assert superseded([real, rest, squat]) == [("o/r#10", "o/r#11")]

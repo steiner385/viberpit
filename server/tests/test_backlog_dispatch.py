@@ -70,7 +70,7 @@ async def dispatch_orch(tmp_path, monkeypatch):
             db.add(Automation(id="backlog-runner"))
 
         await _seed_product()
-        await _seed_items(7, 8)
+        await _seed_items(7, 8, 99)
         orch._backlog_count_in_flight = AsyncMock(return_value=0)
         orch._backlog_loop._announce = lambda batch: orch._backlog_announce(batch)
         orch._backlog_ctx.record_outcome = AsyncMock()
@@ -644,7 +644,9 @@ async def test_manual_dispatch_resolves_owner_even_without_candidate_product(dis
 async def test_manual_dispatch_unknown_repository_takes_no_claim(dispatch_orch):
     result = await dispatch_orch.backlog_runner_dispatch(["other/repo#7"])
     assert result["status"] == "refused"
-    assert "ownership_missing" in result["reason_codes"]
+    # No product owns the repo, so there is no policy to trust the author under:
+    # refused by the trust gate (fail-closed) before ownership is even consulted.
+    assert result["reason_codes"] == ["untrusted_author"]
     assert await dispatch_orch._backlog_ctx.get_target_state("other/repo#7") == {}
     dispatch_orch._backlog_spawn.assert_not_awaited()
 
@@ -655,7 +657,7 @@ async def test_manual_dispatch_zero_owner_cap_takes_no_claim(dispatch_orch):
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_in_flight": 0}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_in_flight": 0}))
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert result["status"] == "capacity"
     assert "product_capacity_full" in result["reason_codes"]
@@ -678,7 +680,7 @@ async def test_manual_dispatch_behind_a_plan_derived_zero_cap_queues(dispatch_or
     from server.db.models import Project
     async with db_session() as db:
         await db.execute(update(Project).values(
-            automation_policy={"dispatch": "off", "capacity_mode": "auto", "max_in_flight": 3}))
+            automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "capacity_mode": "auto", "max_in_flight": 3}))
     plan = {"computedAt": datetime.now(timezone.utc).isoformat(), "applied": True,
             "fleetConcurrency": 1, "perProduct": {"test-product": 0},
             "budget": {"limiting": "account"}}
@@ -696,7 +698,7 @@ async def test_manual_dispatch_zero_pipeline_cap_takes_no_claim(dispatch_orch):
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_pipeline_prs": 0}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_pipeline_prs": 0}))
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert result["status"] == "capacity"
     assert "product_pipeline_full" in result["reason_codes"]
@@ -732,7 +734,7 @@ async def test_manual_dispatch_at_a_full_product_cap_queues_for_a_slot(dispatch_
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_in_flight": 1}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_in_flight": 1}))
     await dispatch_orch._backlog_ctx.claim_target_state("o/r#8", {
         "repo": "o/r", "product": "test-product", "issues": ["o/r#8"], "claimed": True},
         expected={}, source="automatic")
@@ -776,7 +778,7 @@ async def test_queued_claim_slot_free_excludes_its_own_claim(dispatch_orch):
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_in_flight": 1}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_in_flight": 1}))
     ctx = dispatch_orch._backlog_ctx
     own = {"repo": "o/r", "product": "test-product", "issues": ["o/r#7"], "claimed": True,
            "session_id": "sess-own"}
@@ -880,8 +882,12 @@ async def test_manual_dispatch_rejects_candidate_repo_unrelated_to_ref(dispatch_
 
 
 @pytest.mark.asyncio
-async def test_runner_status_reports_same_refusal_codes_as_action(dispatch_orch):
+async def test_runner_status_reports_same_refusal_codes_as_action(dispatch_orch, monkeypatch):
     from server.automations.backlog_runner import BacklogRunner
+    # The trust gate would refuse an unowned repo first; this test is about the
+    # ownership refusal's status/action agreement, so let trust pass.
+    monkeypatch.setattr("server.pm.dispatch_trust.untrusted_refs",
+                        AsyncMock(return_value=[]))
     result = await dispatch_orch.backlog_runner_dispatch(["other/repo#7"])
     status = BacklogRunner().status(dispatch_orch._backlog_ctx)
     assert status.waiting_reason == "policy"
@@ -916,3 +922,23 @@ async def test_remote_orch_forwards_the_model_pin_only_when_set():
     await orch.backlog_runner_dispatch(["o/r#7"], model="fable")
     assert "model" not in calls[0] and calls[0]["refs"] == ["o/r#7"]
     assert calls[1]["model"] == "fable"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dispatch_refuses_an_untrusted_or_unmirrored_ref_itself(dispatch_orch):
+    """The gate is in the orchestrator method, not only the HTTP endpoint (the session
+    daemon proxies the method directly)."""
+    from sqlalchemy import update
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+    async with db_session() as db:
+        await db.execute(update(WorkItem).where(WorkItem.number == 8).values(author="stranger"))
+    for refs in (["o/r#8"], ["o/r#7", "o/r#8"], ["o/r#98"]):
+        r = await dispatch_orch.backlog_runner_dispatch(refs)
+        assert r["status"] == "refused" and r["reason_codes"] == ["untrusted_author"]
+        assert refs[-1] in r["reason"]
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+    assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
+    # A trusted ref still dispatches.
+    assert (await dispatch_orch.backlog_runner_dispatch(["o/r#7"]))["status"] == "spawned"

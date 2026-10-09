@@ -38,22 +38,22 @@ def _row(**over) -> QueueRow:
 def test_alert_key_needs_an_automation_author_and_a_date_suffix():
     from server.pm.alert_series import alert_key
     deploy = "⚠️ Unverified prod deploy 0531454bff — 2026-10-05"
-    assert alert_key(deploy, "github-actions") == alert_key(
+    assert alert_key(deploy, "app/github-actions") == alert_key(
         "⚠️ Unverified prod deploy 035f72c08c — 2026-10-04", "github-actions[bot]")
-    assert alert_key("Weekly failed — 2026-10-04", "github-actions") == "weekly failed"
+    assert alert_key("Weekly failed — 2026-10-04", "app/github-actions") == "weekly failed"
     # Counts are per-occurrence too.
-    assert alert_key("Site Crawler: 3 errors found — 2026-10-04", "github-actions") == \
-        alert_key("Site Crawler: 12 errors found — 2026-10-01", "github-actions")
+    assert alert_key("Site Crawler: 3 errors found — 2026-10-04", "app/github-actions") == \
+        alert_key("Site Crawler: 12 errors found — 2026-10-01", "app/github-actions")
     # A person's dated title is not a series; neither is an undated bot title.
     assert alert_key("Sprint review — 2026-10-01", "tony") is None
     assert alert_key("Dependency Dashboard", "renovate[bot]") is None
     # An all-letter word is not a sha.
-    assert alert_key("defaced page — 2026-10-01", "github-actions") == "defaced page"
+    assert alert_key("defaced page — 2026-10-01", "app/github-actions") == "defaced page"
 
 
 def test_superseded_keeps_the_newest_per_repo_and_type():
     from server.pm.alert_series import AlertIssue, superseded
-    gha = "github-actions"
+    gha = "app/github-actions"
     issues = [
         AlertIssue("o/k", 10, "⚠️ Unverified prod deploy 1111111aaa — 2026-09-20", gha),
         AlertIssue("o/k", 30, "⚠️ Unverified prod deploy 3333333ccc — 2026-10-05", gha),
@@ -137,7 +137,7 @@ async def test_supersede_alerts_closes_older_alerts_but_never_a_claimed_one(db_e
 
     from server.db.models import WorkItem
     await init_db(db_env)
-    gha = "github-actions"
+    gha = "app/github-actions"
     rows = [_row(number=n, title=f"Weekly failed — 2026-09-{n:02d}", author=gha,
                  claimed=(n == 11)) for n in (10, 11, 12, 13)]
     rows.append(_row(repo="o/off", number=1, title="Weekly failed — 2026-09-01", author=gha,

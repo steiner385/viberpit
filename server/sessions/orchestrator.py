@@ -9198,6 +9198,16 @@ class SessionOrchestrator:
         from server.automations.backlog_selection import Batch
         if not refs:
             return {"status": "no_refs", "session_id": None, "session_name": None}
+        # Fail-closed author trust, enforced here as well as on the HTTP endpoint: this
+        # method is reachable without it (the session daemon proxies it), and it does
+        # not re-rank, so nothing else has judged these refs' authors.
+        from server.pm.dispatch_trust import untrusted_refs
+        async with db_session() as db:
+            untrusted = await untrusted_refs(db, refs)
+        if untrusted:
+            return {"status": "refused", "session_id": None, "session_name": None,
+                    "reason_codes": ["untrusted_author"],
+                    "reason": f"{', '.join(untrusted)}: not mirrored or author not trusted"}
         primary = refs[0]
         _mode, config = await self._backlog_read_config()
         candidates = await self._backlog_query_queue(config)
