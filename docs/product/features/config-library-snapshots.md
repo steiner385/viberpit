@@ -24,6 +24,8 @@ session, and there was no undo.
 authoring skills and slash commands, wiring MCP servers, editing hooks, and defining named presets
 and permission profiles that are applied across accounts and at session spawn.
 
+MCP server health (status pills, Test, in-session readout) is covered in [MCP Live Status and Reauth](mcp-status.md).
+
 **Desired outcome** — A browsable "library" of the shared config that can be scanned, named,
 mutated, and applied safely. Read routes are direct filesystem scans that degrade gracefully
 (a missing or malformed file yields an empty result / `parseError` flag, never an exception).

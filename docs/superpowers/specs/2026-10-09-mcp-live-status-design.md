@@ -1,6 +1,6 @@
 # MCP live status + reauth — design
 
-**Date:** 2026-10-09 · **Status:** draft for review · **Sub-project 1 of 4** of "integrated MCP server management"
+**Date:** 2026-10-09 · **Status:** implemented (sub-project 1) · **Sub-project 1 of 4** of "integrated MCP server management"
 
 ## Context
 
@@ -188,3 +188,17 @@ Plan Task 1 also verifies on the real binary that a live CLI re-reads the file o
     for a bad stdio command, and `pending` immediately after connect;
   - a connected client that is never sent a prompt records no usage;
   - `reconnect_mcp_server()` after a token lands moves `needs-auth` to `connected` without a restart.
+
+## As built
+
+Deviations from the text above, from the Task 1 spike (`docs/superpowers/spikes/2026-10-09-mcp-status-verification.md`) and review:
+
+- **R4** - the internal app server is filtered by name only (`name == SERVER_NAME`), not by `scope == "sdk"`; plugin servers (`scope: "dynamic"`, `plugin:` prefix) are kept.
+- **R5** - probe settle is 25 s and the Test endpoint budget 35 s (the spike measured a 15 s worst case). Per-server `pending` is rendered rather than waiting for all to settle; the session driver's 30 s cap is unchanged.
+- **R8** - the probe runs on the host-local scratch mirror of the account config via `account_auth.helper_env`, never the account's real cfg dir.
+- **R9** - per-host probe deadline of 33 s; hosts that miss it report skipped reasons `timed out`, `budget exhausted` or `unknown account`.
+- **Account validation** - request-supplied account names are validated against the known account set (400 `unknown_account`).
+- **Post-login credentials** - only the `mcpOAuth` key of each account's `.credentials.json` is refreshed, with a stat guard against concurrent CLI writes, sharing one merge policy with `merge_shared_mcp`. Reconnect fan-out is bounded (4 concurrent, 15 s each).
+- The model is `McpServerHealth` (table `mcp_server_status`).
+
+Feature doc: `docs/product/features/mcp-status.md`.
