@@ -3,7 +3,7 @@
 Repo slugs are case-insensitive on GitHub, so ``repo`` is lower-cased on every write and read."""
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from server.db import db_session, dialect_insert
 from server.db.clock import db_utc_now
@@ -73,9 +73,15 @@ async def session_overrides(session_id: str) -> dict[str, bool]:
 
 async def set_session_override(session_id: str, server: str, enabled: bool) -> dict[str, bool]:
     async with db_session() as db:
-        row = await db.get(DbSession, session_id)
-        if row is None:
+        # Take the row's write lock BEFORE reading: a concurrent toggle of another server must wait
+        # and re-read, not clobber. A no-op UPDATE locks on Postgres (row lock) and on SQLite (it
+        # upgrades the transaction to a writer up front; FOR UPDATE is ignored there).
+        locked = await db.execute(
+            update(DbSession).where(DbSession.id == session_id).values(id=DbSession.id))
+        if not locked.rowcount:  # type: ignore[attr-defined]
             raise KeyError(session_id)
+        row = (await db.execute(select(DbSession).where(DbSession.id == session_id)
+                                .execution_options(populate_existing=True))).scalar_one()
         merged = {**(row.mcp_overrides or {}), server: enabled}
         row.mcp_overrides = merged  # NEW dict: in-place mutation of a JSON column isn't detected
         return dict(merged)

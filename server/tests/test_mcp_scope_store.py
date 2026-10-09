@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from server.db import db_session
@@ -55,3 +57,17 @@ async def test_session_override_merges(isolated_db, make_session_row):
     assert await store.set_session_override(sid, "plugin:p:s", True) == {"gh": False, "plugin:p:s": True}
     assert await store.session_overrides(sid) == {"gh": False, "plugin:p:s": True}
     assert await store.session_overrides("missing") == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_session_overrides_for_different_servers_both_survive(isolated_db, make_session_row):
+    sid = await make_session_row()
+    servers = [f"srv{i}" for i in range(8)]
+    await asyncio.gather(*(store.set_session_override(sid, s, False) for s in servers))
+    assert await store.session_overrides(sid) == {s: False for s in servers}
+
+
+@pytest.mark.asyncio
+async def test_set_session_override_unknown_session_raises(isolated_db):
+    with pytest.raises(KeyError):
+        await store.set_session_override("nope", "gh", True)
