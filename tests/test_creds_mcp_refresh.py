@@ -38,3 +38,60 @@ def test_refresh_keeps_newer_local_and_local_only_keys(tmp_path, monkeypatch):
     (cfg / ".credentials.json").write_text(json.dumps({"mcpOAuth": local}))
     assert creds.refresh_cfg_mcp_oauth(cfg) is False
     assert json.loads((cfg / ".credentials.json").read_text())["mcpOAuth"] == local
+
+
+def _setup(tmp_path, monkeypatch, shared, local, extra=None):
+    tmp_path.mkdir(exist_ok=True)
+    monkeypatch.setattr(paths, "shared_mcp_path", lambda: tmp_path / "mcp.shared.json")
+    (tmp_path / "mcp.shared.json").write_text(json.dumps(shared))
+    cfg = tmp_path / "cfg"; cfg.mkdir()
+    doc = {"mcpOAuth": local, **(extra or {})}
+    (cfg / ".credentials.json").write_text(json.dumps(doc))
+    return cfg
+
+
+def test_explicit_server_login_wins_without_expiry(tmp_path, monkeypatch):
+    cfg = _setup(tmp_path, monkeypatch,
+                 {"k": {"serverName": "notion", "accessToken": "new"}},
+                 {"k": {"serverName": "notion", "accessToken": "stale"}})
+    assert creds.refresh_cfg_mcp_oauth(cfg, server="notion") is True
+    assert json.loads((cfg / ".credentials.json").read_text())["mcpOAuth"]["k"]["accessToken"] == "new"
+
+
+def test_non_explicit_server_does_not_override_equal_expiry(tmp_path, monkeypatch):
+    cfg = _setup(tmp_path, monkeypatch,
+                 {"k": {"serverName": "notion", "accessToken": "new"}},
+                 {"k": {"serverName": "notion", "accessToken": "stale"}})
+    assert creds.refresh_cfg_mcp_oauth(cfg, server="other") is False
+
+
+def test_null_expiry_does_not_raise(tmp_path, monkeypatch):
+    cfg = _setup(tmp_path, monkeypatch,
+                 {"k": {"serverName": "n", "accessToken": "a", "expiresAt": None}},
+                 {"k": {"serverName": "n", "accessToken": "b", "expiresAt": None}})
+    assert creds.refresh_cfg_mcp_oauth(cfg) is False
+    cfg2 = _setup(tmp_path / "two", monkeypatch,
+                  {"k": {"serverName": "n", "accessToken": "a", "expiresAt": 5}},
+                  {"k": {"serverName": "n", "accessToken": "b", "expiresAt": None}})
+    assert creds.refresh_cfg_mcp_oauth(cfg2) is True
+
+
+def test_skips_write_when_file_replaced_between_read_and_write(tmp_path, monkeypatch):
+    cfg = _setup(tmp_path, monkeypatch,
+                 {"k": {"serverName": "n", "accessToken": "new", "expiresAt": 9}}, {},
+                 {"claudeAiOauth": {"accessToken": "old"}})
+    cred = cfg / ".credentials.json"
+    real = creds.read_json
+    newer = {"claudeAiOauth": {"accessToken": "rotated"}, "mcpOAuth": {}}
+
+    def racing(p):
+        out = real(p)
+        if str(p).endswith(".credentials.json"):
+            tmp = cfg / "x.tmp"
+            tmp.write_text(json.dumps(newer))
+            tmp.replace(cred)  # new inode, like the CLI's atomic rotate
+        return out
+
+    monkeypatch.setattr(creds, "read_json", racing)
+    assert creds.refresh_cfg_mcp_oauth(cfg) is False
+    assert json.loads(cred.read_text()) == newer
