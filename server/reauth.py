@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from server.aio import cancel_and_reap
+from server.sessions.desktop_session import DesktopUnavailable, resolve_desktop_session
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,10 @@ class ReauthNoKey(Exception):
     """No encryption key is configured — refuse to store plaintext credentials."""
 
 
+class ReauthNoDesktop(Exception):
+    """The host-screen fallback found no live desktop to open the login browser on."""
+
+
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -62,7 +67,7 @@ class ReauthState:
     _task: asyncio.Task | None = field(default=None, repr=False, compare=False)
     _launcher_pid: int | None = field(default=None, repr=False, compare=False)
     _temp_profile: str | None = field(default=None, repr=False, compare=False)
-    vnc_session: str | None = None   # reserved key while a virtual display is live; None on :0 fallback
+    vnc_session: str | None = None   # reserved key while a virtual display is live; None on host-screen fallback
     auth_url: str | None = None
 
     def to_dict(self) -> dict:
@@ -141,7 +146,8 @@ class ReauthManager:
         a timeout fires before the runner finishes.
 
         prepare_reauth_profile(chrome_profile, extension_ids=settings.reauth_extension_id_items)
-          → env_extra {BROWSER: realpath(launcher), DISPLAY: reauth_display,
+          → env_extra {BROWSER: realpath(launcher), DISPLAY (+ XAUTHORITY) from the virtual
+                       display, else the resolved live desktop (cookie included),
                        VIBERPIT_REAUTH_PROFILE: temp}
           → asyncio.to_thread(capture_login, name, env_extra=...)
           → finally: cleanup_reauth_profile(temp)
@@ -202,7 +208,20 @@ class ReauthManager:
                     manager._state.vnc_session = REAUTH_DISPLAY_KEY
                     _progress("Opening the Claude login \u2014 the browser takes a few seconds to appear\u2026")
                 else:
-                    env_extra["DISPLAY"] = reauth_display
+                    # Host-screen fallback. Under Xwayland a bare DISPLAY is refused
+                    # ("Authorization required"): the resolver finds the live X server
+                    # and its per-login cookie. X11 (not native Wayland) — the login
+                    # Chrome gets no ozone flag, so the cookie is all it needs.
+                    desktop = await asyncio.to_thread(
+                        resolve_desktop_session,
+                        uid=os.getuid(),
+                        display=reauth_display or None,
+                    )
+                    if isinstance(desktop, DesktopUnavailable):
+                        raise ReauthNoDesktop(
+                            f"No desktop to open the login browser on ({desktop.reason})"
+                        )
+                    env_extra.update(desktop.env(prefer_wayland=False))
                     _progress("Opening Chrome on the host screen \u2014 sign in there\u2026")
                 ok = await asyncio.to_thread(
                     auth_login.capture_login, name, env_extra=env_extra
@@ -441,6 +460,16 @@ class ReauthManager:
             self._kill_launcher()
             self._cleanup_temp_profile(temp)
             log.warning("reauth timed out for %r after %.0fs", name, self._timeout_s)
+        except ReauthNoDesktop as exc:
+            temp = None
+            async with self._lock:
+                if self._state.state in ("running", "awaiting_code"):
+                    self._state.state = "error"
+                    self._state.message = str(exc)
+                    temp = self._state._temp_profile
+                    self._state._temp_profile = None
+            self._cleanup_temp_profile(temp)
+            log.info("reauth for %r not started: %s", name, exc)  # expected operator condition
         except asyncio.CancelledError:
             # cancel() handles both the state transition and the temp-profile cleanup.
             raise

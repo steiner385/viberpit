@@ -106,7 +106,8 @@ try:
             default_factory=lambda: str(Path.home() / "GitHub"),
             alias="VIBERPIT_REPO_ROOT",
         )
-        reauth_display: str = Field(default=":0", alias="VIBERPIT_REAUTH_DISPLAY")
+        # Empty = discover the live desktop (server/sessions/desktop_session.py); explicit ":N" still wins.
+        reauth_display: str = Field(default="", alias="VIBERPIT_REAUTH_DISPLAY")
         reauth_virtual_display: bool = Field(default=True, alias="VIBERPIT_REAUTH_VIRTUAL_DISPLAY")
         # Source profile the reauth flow copies from. Defaults to a dedicated,
         # ViberPit-owned profile — pointing this at the operator's everyday
@@ -450,7 +451,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             )
         )
         reauth_display: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_DISPLAY", ":0")
+            default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_DISPLAY", "")
         )
         reauth_virtual_display: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_REAUTH_VIRTUAL_DISPLAY", "true").lower() in ("1", "true", "yes", "on")
