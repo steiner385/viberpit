@@ -217,6 +217,8 @@ def _bare_orch():
     orch._draining = False
     orch._records = {}
     orch._goal_marker = {}
+    orch._goal_stat_sig = {}
+    orch.transcript_path = lambda sid: None   # no file → the stat pre-filter never skips
     return orch
 
 
@@ -279,6 +281,31 @@ def test_goal_sweep_infers_and_persists(tmp_path):
         # Second sweep with an UNCHANGED transcript: no re-inference (cost gate).
         await orch._goal_sweep()
         assert calls["infer"] == 1
+    asyncio.run(run())
+
+
+def test_goal_sweep_skips_parse_of_unchanged_transcript_file(tmp_path):
+    """#2885: an unchanged transcript file is not re-parsed every 2-minute sweep —
+    counting its turns means parsing the WHOLE file (~200 MB of heap for a 91 MB one).
+    Any append (size/mtime change) re-parses."""
+    async def run():
+        from server.db import init_db
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'g4.db'}")
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text('{"type": "user"}\n')
+        orch = _bare_orch()
+        orch.transcript_path = lambda sid: str(transcript)
+        orch._records = {"s1": _rec()}
+        calls = _wire(orch)
+
+        await orch._goal_sweep()
+        await orch._goal_sweep()
+        assert len(calls["window_kwargs"]) == 1     # second pass: stat unchanged → no parse
+
+        with transcript.open("a") as f:
+            f.write('{"type": "assistant"}\n')
+        await orch._goal_sweep()
+        assert len(calls["window_kwargs"]) == 2     # appended → parsed again
     asyncio.run(run())
 
 
