@@ -74,7 +74,10 @@ out of scope — see the fleet crash-loop gap #816).
   threshold (`0` disables it) and `VIBERPIT_LOOP_STALL_DUMP_PATH` redirects it from the journal to a file.
   Only a stall of at least `VIBERPIT_LOOP_LAG_WARN_S` (default: the dump threshold) is a WARNING and
   so an auto-error issue; routine sub-threshold overshoot logs at INFO, throttled separately so it
-  never swallows a real stall (issue #1514).
+  never swallows a real stall (issue #1514). A stall that host-wide PSI `full` stall time
+  (`/proc/pressure/{memory,io}`) covers by at least half is a host freeze, not this process's block:
+  it logs `loop_lag.host_stall` at INFO with `host_memory_full_s` / `host_io_full_s`, and only an
+  unexplained stall (or one on a host without PSI) stays a WARNING (issue #2866).
 - **Task supervision** (`server/obs/tasks.py`): `supervise` attaches a done-callback that always
   retrieves a failed task's exception, logs it loudly with the task name, and invokes an optional
   recovery hook; clean returns and cancellations pass through untouched (audit W2.6 — a bare

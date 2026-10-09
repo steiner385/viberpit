@@ -237,3 +237,141 @@ def test_without_alert_after_every_reported_stall_is_a_warning():
     wd = LoopLagWatchdog(interval=1.0, warn_after=0.5, _log=log, _clock=_FakeClock())
     wd._note_lag(0.9)
     assert log.levels == [logging.WARNING]
+
+
+# --- a host-wide freeze is not the process's fault (#2866) --------------------
+# When the host thrashes memory, edge and daemon stall at the same instants and
+# no stack dump names a culprit. The kernel's PSI ``full`` counters measure that
+# freeze directly; a stall they explain is INFO, one they don't stays a WARNING.
+
+class _FakePsi:
+    """Cumulative full-stall seconds per resource, advanced by the test."""
+
+    def __init__(self, memory: float = 100.0, io: float = 50.0) -> None:
+        self.totals: dict[str, float] | None = {"memory": memory, "io": io}
+
+    def __call__(self):
+        return None if self.totals is None else dict(self.totals)
+
+    def stall(self, memory: float = 0.0, io: float = 0.0) -> None:
+        assert self.totals is not None
+        self.totals["memory"] += memory
+        self.totals["io"] += io
+
+
+def _alerting_watchdog(log, psi):
+    return LoopLagWatchdog(interval=1.0, warn_after=0.5, alert_after=5.0,
+                           _log=log, _clock=_FakeClock(), _psi=psi)
+
+
+def test_a_stall_the_host_pressure_explains_is_info():
+    log = _LevelLog()
+    psi = _FakePsi()
+    wd = _alerting_watchdog(log, psi)
+    before = psi()
+    psi.stall(memory=5.0, io=4.1)
+    wd._note_lag(6.88, before)
+
+    assert log.levels == [logging.INFO]
+    event, fields = log.events[0]
+    assert event == "loop_lag.host_stall"
+    assert fields["host_memory_full_s"] == pytest.approx(5.0)
+    assert fields["host_io_full_s"] == pytest.approx(4.1)
+    assert fields["lag_s"] == pytest.approx(6.88)
+
+
+def test_a_stall_the_host_pressure_does_not_explain_stays_a_warning():
+    log = _LevelLog()
+    psi = _FakePsi()
+    wd = _alerting_watchdog(log, psi)
+    before = psi()
+    psi.stall(memory=0.4, io=0.2)       # a little reclaim, nowhere near the lag
+    wd._note_lag(6.0, before)
+
+    assert log.levels == [logging.WARNING]
+    assert log.events[0][0] == "loop_lag.stall"
+
+
+def test_unavailable_psi_keeps_a_stall_a_warning():
+    log = _LevelLog()
+    psi = _FakePsi()
+    psi.totals = None                    # kernel without PSI
+    wd = _alerting_watchdog(log, psi)
+    wd._note_lag(6.0, psi())
+    assert log.levels == [logging.WARNING]
+
+
+def test_a_failing_psi_reader_keeps_a_stall_a_warning():
+    def _boom():
+        raise PermissionError("no procfs")
+
+    log = _LevelLog()
+    wd = _alerting_watchdog(log, _boom)
+    wd._note_lag(6.0, {"memory": 1.0, "io": 1.0})
+    assert log.levels == [logging.WARNING]
+
+
+def test_a_host_stall_does_not_spend_the_warning_window():
+    log = _LevelLog()
+    psi = _FakePsi()
+    wd = _alerting_watchdog(log, psi)
+    before = psi()
+    psi.stall(memory=9.0)
+    wd._note_lag(9.5, before)            # host-explained
+    wd._note_lag(9.5, psi())             # same window, host quiet → a real stall
+    assert log.levels == [logging.INFO, logging.WARNING]
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_run_snapshots_psi_around_each_tick():
+    """End-to-end through run(): the snapshot is taken before the sleep."""
+    log = _LevelLog()
+    psi = _FakePsi()
+    wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, alert_after=0.2,
+                         _log=log, _psi=psi)
+    task = asyncio.create_task(wd.run())
+    await asyncio.sleep(0.05)
+
+    psi.stall(memory=1.0)                # the host froze for longer than the block
+    time.sleep(0.4)
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert [e for e, _ in log.events] == ["loop_lag.host_stall"]
+    assert log.levels == [logging.INFO]
+
+
+def test_read_host_psi_parses_full_totals(monkeypatch, tmp_path):
+    import builtins
+
+    from server.obs import loop_lag
+
+    files = {
+        "/proc/pressure/memory": "some avg10=0.00 avg60=0.13 avg300=0.24 total=566117271\n"
+                                 "full avg10=0.00 avg60=0.06 avg300=0.12 total=422753042\n",
+        "/proc/pressure/io": "some avg10=1.00 avg60=0.00 avg300=0.00 total=9000000\n"
+                             "full avg10=0.50 avg60=0.00 avg300=0.00 total=2500000\n",
+    }
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if path in files:
+            p = tmp_path / path.rsplit("/", 1)[-1]
+            p.write_text(files[path])
+            return real_open(p, *args, **kwargs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    assert loop_lag.read_host_psi() == {
+        "memory": pytest.approx(422.753042), "io": pytest.approx(2.5)}
+
+    def missing(path, *args, **kwargs):
+        if path == "/proc/pressure/io":
+            raise FileNotFoundError(path)
+        return fake_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", missing)
+    assert loop_lag.read_host_psi() is None
