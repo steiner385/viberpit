@@ -29,7 +29,10 @@ from server.library.names import (
 )
 from server.config import get_settings
 from server.ipc.client import DaemonTimeout
+from server.api.repos import known_repo_slugs
 from server.mcp_auth import McpAuthBusy
+from server.mcp_scope import store as scope_store
+from server.mcp_scope.servers import configured_server_keys
 from server.mcp_health import store as mcp_store
 from server.sessions.facade import call_with_deadline
 from server.sessions.claude_driver import ClaudeAgentDriver
@@ -261,8 +264,97 @@ async def delete_mcp(name: str,
         return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
     if not found:
         raise HTTPException(status_code=404, detail={"error": "unknown_server"})
+    await scope_store.delete_server(name)  # user servers: scope key == name
     await record_audit(db=db, type="library_mcp_deleted", identity=identity,
                        detail={"name": name})
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Per-repo MCP scope rules (spec 2026-10-09). Every path has a literal "scope"
+# segment, so none collides with /mcp/{name}.
+# ---------------------------------------------------------------------------
+
+_SLUG_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _scope_off() -> JSONResponse | None:
+    if get_settings().mcp_scope_enabled:
+        return None
+    return JSONResponse(status_code=404, content={"error": "mcp_scope_disabled"})
+
+
+async def _scope_server_or_400(server: str) -> None:
+    # Membership only — `server` may be `plugin:p:s` and is never treated as a path.
+    if server not in await asyncio.to_thread(configured_server_keys):
+        raise HTTPException(status_code=400, detail={"error": "unknown_server"})
+
+
+async def _scope_repo_or_400(request: Request, owner: str, name: str) -> str:
+    """Shape-check BEFORE any lookup, then require a repo the gh creds know."""
+    if any(not _SLUG_PART.match(p) or p in (".", "..") for p in (owner, name)):
+        raise HTTPException(status_code=400, detail={"error": "invalid_repo"})
+    slug = f"{owner}/{name}".lower()
+    if slug not in await known_repo_slugs(request.app.state):
+        raise HTTPException(status_code=400, detail={"error": "unknown_repo"})
+    return slug
+
+
+class McpScopeDefaultBody(BaseModel):
+    defaultEnabled: bool
+
+
+class McpScopeRuleBody(BaseModel):
+    enabled: bool
+
+
+@router.get("/mcp/scope")
+async def get_mcp_scope(_identity: str = Depends(current_identity)) -> Any:
+    if (off := _scope_off()) is not None:
+        return off
+    keys = await asyncio.to_thread(configured_server_keys)
+    defaults = await scope_store.server_defaults()
+    return {"servers": {k: {"defaultEnabled": defaults.get(k, True)} for k in keys},
+            "rules": await scope_store.all_rules()}
+
+
+@router.put("/mcp/scope/{server}")
+async def put_mcp_scope_default(server: str, body: McpScopeDefaultBody,
+                                identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    if (off := _scope_off()) is not None:
+        return off
+    await _scope_server_or_400(server)
+    await scope_store.set_default(server, body.defaultEnabled)
+    await record_audit(db=db, type="library_mcp_scope_saved", identity=identity,
+                       detail={"server": server})
+    return Response(status_code=204)
+
+
+@router.put("/mcp/scope/{server}/repos/{owner}/{name}")
+async def put_mcp_scope_rule(server: str, owner: str, name: str, body: McpScopeRuleBody,
+                             request: Request,
+                             identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    if (off := _scope_off()) is not None:
+        return off
+    await _scope_server_or_400(server)
+    repo = await _scope_repo_or_400(request, owner, name)
+    await scope_store.set_repo_rule(repo, server, body.enabled)
+    await record_audit(db=db, type="library_mcp_scope_saved", identity=identity,
+                       detail={"server": server, "repo": repo})
+    return Response(status_code=204)
+
+
+@router.delete("/mcp/scope/{server}/repos/{owner}/{name}")
+async def delete_mcp_scope_rule(server: str, owner: str, name: str, request: Request,
+                                identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    if (off := _scope_off()) is not None:
+        return off
+    await _scope_server_or_400(server)
+    repo = await _scope_repo_or_400(request, owner, name)
+    if not await scope_store.delete_repo_rule(repo, server):
+        raise HTTPException(status_code=404, detail={"error": "unknown_rule"})
+    await record_audit(db=db, type="library_mcp_scope_saved", identity=identity,
+                       detail={"server": server, "repo": repo})
     return Response(status_code=204)
 
 

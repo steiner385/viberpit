@@ -29,6 +29,29 @@ log = logging.getLogger(__name__)
 _REPOS_MAX_STALE_SECONDS = 3600.0
 
 
+async def _fetch_repos(state) -> list[dict]:  # noqa: ANN001
+    """gh-accessible repos, falling back to the last-good list (within
+    ``_REPOS_MAX_STALE_SECONDS``) so a rate-limit blip doesn't 502-storm the UI. 502 if no usable cache."""
+    try:
+        repos = await asyncio.to_thread(gitrepos.list_accessible_repos)
+        state.github_repos_cache = (repos, time.monotonic())
+    except gitrepos.GhError as exc:
+        cache = getattr(state, "github_repos_cache", None)
+        if cache is None or (time.monotonic() - cache[1]) > _REPOS_MAX_STALE_SECONDS:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        log.warning(
+            "github/repos: gh failed (%s) — serving cached list (%.0fs old)",
+            exc, time.monotonic() - cache[1],
+        )
+        repos = cache[0]
+    return repos
+
+
+async def known_repo_slugs(app_state) -> set[str]:  # noqa: ANN001
+    """Lower-cased ``nameWithOwner`` of every repo the gh creds can access (same cache as the list route)."""
+    return {(r.get("nameWithOwner") or "").lower() for r in await _fetch_repos(app_state)} - {""}
+
+
 @router.get("/repos")
 async def list_github_repos(
     request: Request,
@@ -44,18 +67,7 @@ async def list_github_repos(
     ``_REPOS_MAX_STALE_SECONDS``) so a rate-limit blip doesn't 502-storm the UI.
     """
     state = request.app.state
-    try:
-        repos = await asyncio.to_thread(gitrepos.list_accessible_repos)
-        state.github_repos_cache = (repos, time.monotonic())
-    except gitrepos.GhError as exc:
-        cache = getattr(state, "github_repos_cache", None)
-        if cache is None or (time.monotonic() - cache[1]) > _REPOS_MAX_STALE_SECONDS:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        log.warning(
-            "github/repos: gh failed (%s) — serving cached list (%.0fs old)",
-            exc, time.monotonic() - cache[1],
-        )
-        repos = cache[0]
+    repos = await _fetch_repos(state)
 
     # The clone check must run where the clones live — the daemon host — not this
     # edge process, whose filesystem has no clones once daemon and edge are split
