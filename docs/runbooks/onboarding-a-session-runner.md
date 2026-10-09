@@ -540,13 +540,15 @@ Stale `/tmp/.X11-unix/X*` sockets and old cookie files are harmless. Leave `VIBE
 (`auto`|`wayland`|`x11`) selects the native Chromium backend; forced `wayland` on an X11-only desktop
 falls back to x11.
 
-Diagnose a session that fell back to a virtual display (the session card badge tooltip shows
-`displayFallbackReason`):
+Diagnose a session that fell back to a virtual display. The session card badge tooltip and the
+session detail meta strip show human-readable copy; the raw code is `displayFallbackReason` in the
+session API:
 
 ```bash
-pgrep -a Xwayland                                   # is a desktop X server up, which display?
+pgrep -u "$(id -u)" -a Xwayland                     # live server: display + its `-auth <cookie>` argv
 tr '\0' '\n' </proc/$(pgrep -x Xwayland)/environ | grep -E '^(DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR)='
-ls -l /run/user/$(id -u)/.mutter-Xwaylandauth.*     # newest = live cookie
+# The cookie is whatever the live Xwayland process names in `-auth` / XAUTHORITY. Leftover
+# /run/user/<uid>/.mutter-Xwaylandauth.* files are stale and harmless (never pick one by mtime).
 # Authenticated (tailnet identity), NOT /healthz (unauthenticated, omits this):
 curl -s https://<host>/api/x11/metrics | jq .nativeDisplay   # {display, available, kind, reason, browsers}
 ```

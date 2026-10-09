@@ -53,8 +53,10 @@ Checked against the real binaries and hosts on 2026-09-06 (constitution Principl
   agent process's `DISPLAY` is fixed at spawn; a "move to my desktop" action would be a
   respawn and is a separate feature.
 - VNC access to the operator's real desktop (explicitly a non-goal of spec 002 too).
-- Wayland-native display routing. *(Superseded 2026-10-09: now in scope. dobby is a Wayland host; Xwayland
-  needs its per-login cookie, so the design was NOT usable unchanged. See
+- Wayland-native display routing. dobby is X11; a Wayland host still exposes `:0` via
+  Xwayland, which this design would use unchanged, but that is not verified here.
+  *(Superseded 2026-10-09: now in scope. dobby is a Wayland host; Xwayland needs its per-login
+  cookie, so the design was NOT usable unchanged. See
   `docs/superpowers/plans/2026-10-09-wayland-coexistence.md`.)*
 - `tailscale serve` fronting. It sets `X-Forwarded-For`, not `X-Real-IP`; locality would
   resolve to "unknown" → virtual, which is safe. Documented as a limitation.
