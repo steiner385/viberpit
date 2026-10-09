@@ -7,6 +7,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useReconnectSessionMcp, useSessionMcp } from '@/api/hooks'
+import { useToggleSessionMcp } from '@/api/mcpScopeHooks'
+import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 import type { McpServerState } from '@/api/types'
@@ -26,6 +28,7 @@ const NO_SERVERS: McpServerState[] = []
 export function McpStatusReadout({ sessionId, account, live }: Props) {
   const snapshot = useSessionMcp(sessionId, live == null)
   const reconnect = useReconnectSessionMcp(sessionId)
+  const toggle = useToggleSessionMcp(sessionId)
   const [open, setOpen] = useState(false)
   const [reauth, setReauth] = useState<string | null>(null)
   const rootRef = useRef<HTMLSpanElement>(null)
@@ -53,10 +56,14 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
   if (servers.length === 0) return null
 
   const connected = servers.filter((s) => s.status === 'connected').length
+  const enabledTotal = servers.filter((s) => s.status !== 'disabled').length
+  // Kill switch: the first toggle's 404 mcp_scope_disabled hides the switches.
+  const switchesHidden = toggle.isError && apiErrorCode(toggle.error) === 'mcp_scope_disabled'
   const worst = worstStatus(servers.map((s) => s.status))
   const warn = worst === 'failed' || worst === 'needs-auth'
 
   const errMessage = reconnect.isError ? extractMutationErrorMessage(reconnect.error, 'Reconnect failed') : null
+  const toggleError = toggle.isError && !switchesHidden ? extractMutationErrorMessage(toggle.error, 'Toggle failed') : null
 
   return (
     // Not `relative`: the popover anchors to the SessionMeta strip (right-2), like
@@ -84,7 +91,7 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
           warn ? 'text-warning' : 'text-ink-muted',
         )}
       >
-        MCP {connected}/{servers.length}
+        MCP {connected}/{enabledTotal}
       </button>
       {open && (
         <div
@@ -102,6 +109,28 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-ink truncate">{short}</span>
                     <McpStatusPill status={s.status} />
+                    {!switchesHidden && (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={s.status !== 'disabled'}
+                        aria-label={`${short} enabled`}
+                        disabled={toggle.isPending}
+                        onClick={() => toggle.mutate({ server: s.name, enabled: s.status === 'disabled' })}
+                        className={cn(
+                          'relative h-4 w-7 shrink-0 rounded-full transition-colors disabled:opacity-50',
+                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                          s.status !== 'disabled' ? 'bg-accent' : 'bg-edge-strong',
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-surface transition-transform',
+                            s.status !== 'disabled' && 'translate-x-3',
+                          )}
+                        />
+                      </button>
+                    )}
                     {s.toolCount != null && <span className="ml-auto text-ink-muted">{s.toolCount} tools</span>}
                   </div>
                   {s.error && <p className="mt-0.5 text-danger break-words">{s.error}</p>}
@@ -137,6 +166,11 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
           {errMessage && (
             <p role="alert" className="py-1 text-xs text-danger">
               {errMessage}
+            </p>
+          )}
+          {toggleError && (
+            <p role="alert" className="py-1 text-xs text-danger">
+              {toggleError}
             </p>
           )}
           <div className="py-1.5 text-xs">
