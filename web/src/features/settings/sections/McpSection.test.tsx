@@ -4,8 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-vi.mock('@/api/client', () => ({
-  ApiRequestError: class extends Error {},
+vi.mock('@/api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/client')>()),
   api: {
     get: vi.fn(),
     post: vi.fn(),
@@ -70,13 +70,88 @@ const mcpResponse = {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(api.post).mockReset()
   vi.mocked(api.get).mockImplementation((path: string) => {
     if (path === '/library/mcp') return Promise.resolve(mcpResponse)
     return Promise.resolve({})
   })
 })
 
+function row(over: Record<string, unknown> = {}) {
+  return {
+    account: 'a', host: 'dobby', server: 'x', status: 'connected', error: null, toolCount: null,
+    scope: 'user', source: 'probe' as const, sessionId: null, observedAt: '2026-10-09T12:00:00Z', ...over,
+  }
+}
+
+function mockServers(servers: unknown[]) {
+  vi.mocked(api.get).mockImplementation((path: string) =>
+    Promise.resolve(path === '/library/mcp' ? { servers } : {}))
+}
+
+const srv = (name: string, transport: string, status: unknown[]) => ({
+  name, source: 'user', readonly: false, transport, config: { type: transport }, status,
+})
+
 describe('McpSection', () => {
+  it('shows the worst status pill and per-account detail', async () => {
+    mockServers([srv('notion', 'http', [row({ account: 'a' }), row({ account: 'b', status: 'needs-auth', error: 'token expired' })])])
+    renderSection()
+    expect(await screen.findByText('Needs auth')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: /details for notion/i }))
+    expect(screen.getByText(/b · dobby/)).toBeTruthy()
+    expect(screen.getByText('token expired')).toBeTruthy()
+    expect(screen.getAllByText(/from probe/)).toHaveLength(2)
+  })
+
+  it('shows Not checked yet without rows and runs Test for that server', async () => {
+    vi.mocked(api.post).mockResolvedValue({ rows: [], skipped: [{ account: 'z', reason: 'host offline' }] })
+    mockServers([srv('gh', 'stdio', [])])
+    renderSection()
+    expect(await screen.findByText('Not checked yet')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: 'Test gh' }))
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/test', { server: 'gh' })
+    expect(await screen.findByText(/z \(host offline\)/)).toBeTruthy()
+  })
+
+  it('Test all probes without a server filter', async () => {
+    vi.mocked(api.post).mockResolvedValue({ rows: [], skipped: [] })
+    mockServers([])
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: 'Test all' }))
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/test', {})
+  })
+
+  it('shows a readable message when the probe times out', async () => {
+    const { ApiRequestError } = await import('@/api/client')
+    vi.mocked(api.post).mockRejectedValue(new ApiRequestError(504, { error: 'mcp_probe_timeout' }))
+    mockServers([srv('gh', 'stdio', [])])
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: 'Test gh' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/timed out/i)
+  })
+
+  it('offers Reauth only for http/sse rows that need auth', async () => {
+    mockServers([srv('notion', 'http', [row({ status: 'needs-auth' })]), srv('ok', 'http', [row({ server: 'ok' })])])
+    renderSection()
+    expect(await screen.findAllByRole('button', { name: /fix auth/i })).toHaveLength(1)
+  })
+
+  it('lets the user pick which needs-auth account to reauthorize', async () => {
+    mockServers([srv('notion', 'http', [row({ account: 'a', status: 'needs-auth' }), row({ account: 'b', status: 'needs-auth' })])])
+    renderSection()
+    await userEvent.selectOptions(await screen.findByRole('combobox'), 'b')
+    await userEvent.click(screen.getByRole('button', { name: /fix auth/i }))
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/notion/auth', { account: 'b' })
+  })
+
+  it('renders an unknown status verbatim as neutral', async () => {
+    mockServers([srv('x', 'http', [row({ status: 'weird-state' })])])
+    renderSection()
+    expect(await screen.findByText('weird-state')).toBeTruthy()
+  })
+
   it('shows credential guidance instead of OAuth for stdio servers', async () => {
     renderSection()
     expect(await screen.findByText(/configure credentials on the host/i)).toBeTruthy()
@@ -95,7 +170,7 @@ describe('McpSection', () => {
   })
 
   // (a) user + plugin rows render with transport and needs-auth badges
-  it('renders rows with transport badges and needs-auth badge', async () => {
+  it('renders rows with transport badges and the status pill', async () => {
     renderSection()
     // User server row
     expect(await screen.findByText('my-server')).toBeTruthy()
@@ -104,9 +179,8 @@ describe('McpSection', () => {
     expect((await screen.findAllByText('http')).length).toBeGreaterThan(0)
     // Plugin source badge
     expect(await screen.findByText('alpha@m')).toBeTruthy()
-    // Needs-auth badge for my-server
-    expect(await screen.findByText(/needs auth/i)).toBeTruthy()
-    expect(await screen.findByText(/acct1/)).toBeTruthy()
+    // Worst-status pill for my-server
+    expect(await screen.findByText('Needs auth')).toBeTruthy()
   })
 
   // (b) Add server → fill name, transport http, url → Save calls api.put
@@ -148,7 +222,7 @@ describe('McpSection', () => {
     renderSection()
 
     // Click the user server row to open edit dialog
-    const serverRow = await screen.findByRole('button', { name: /my-server/i })
+    const serverRow = await screen.findByRole('button', { name: 'my-server' })
     await userEvent.click(serverRow)
 
     // Dialog opens
@@ -170,7 +244,7 @@ describe('McpSection', () => {
   it('plugin server dialog has no Save button', async () => {
     renderSection()
 
-    const pluginRow = await screen.findByRole('button', { name: /plugin-server/i })
+    const pluginRow = await screen.findByRole('button', { name: 'plugin-server' })
     await userEvent.click(pluginRow)
 
     // Dialog opens
@@ -186,7 +260,7 @@ describe('McpSection', () => {
   it('editing server with httpUrl shows httpUrl value in URL field', async () => {
     renderSection()
 
-    const serverRow = await screen.findByRole('button', { name: /httpurl-server/i })
+    const serverRow = await screen.findByRole('button', { name: 'httpurl-server' })
     await userEvent.click(serverRow)
 
     expect(await screen.findByRole('dialog')).toBeTruthy()
@@ -200,7 +274,7 @@ describe('McpSection', () => {
   it('entering JSON mode with pristine edit form shows full server.config', async () => {
     renderSection()
 
-    const serverRow = await screen.findByRole('button', { name: /my-server/i })
+    const serverRow = await screen.findByRole('button', { name: 'my-server' })
     await userEvent.click(serverRow)
 
     expect(await screen.findByRole('dialog')).toBeTruthy()
@@ -220,7 +294,7 @@ describe('McpSection', () => {
   it('saving in form mode preserves extra config keys', async () => {
     renderSection()
 
-    const serverRow = await screen.findByRole('button', { name: /extra-keys-server/i })
+    const serverRow = await screen.findByRole('button', { name: 'extra-keys-server' })
     await userEvent.click(serverRow)
 
     expect(await screen.findByRole('dialog')).toBeTruthy()
