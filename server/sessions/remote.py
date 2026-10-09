@@ -856,6 +856,16 @@ class RemoteOrchestrator:
             raise ValueError(r.get("message") or "reconnect failed")
         return r
 
+    async def mcp_toggle(self, session_id, server: str, enabled: bool):
+        """Error-shaped daemon reply re-raised as LookupError / ValueError (see mcp_reconnect)."""
+        r = await self._client.call("mcp_toggle", session_id=session_id, server=server,
+                                    enabled=enabled)
+        if isinstance(r, dict) and "error" in r:
+            if r["error"] == "not_live":
+                raise LookupError(session_id)
+            raise ValueError(r.get("message") or "toggle failed")
+        return r
+
     async def reconnect_mcp_everywhere(self, server: str, statuses: list[str]):
         r = await self._client.call("reconnect_mcp_everywhere", server=server, statuses=statuses)
         return r if isinstance(r, int) else 0

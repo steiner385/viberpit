@@ -200,7 +200,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_queue_cancel", "start_queued_now", "cancel_queued", "archive_session", "permanent_delete",
     "rename_session", "note_user_interaction", "set_autopilot_paused",
     "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
-    "stop_subagent", "mcp_status_for", "mcp_reconnect",
+    "stop_subagent", "mcp_status_for", "mcp_reconnect", "mcp_toggle",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",

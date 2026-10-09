@@ -2410,6 +2410,9 @@ class CodexAgentDriver:
     async def reconnect_mcp_server(self, name: str) -> None:
         raise NotImplementedError("Codex MCP status is sub-project 4 of the MCP management spec")
 
+    async def toggle_mcp_server(self, name: str, enabled: bool) -> None:
+        raise NotImplementedError("Codex MCP status is sub-project 4 of the MCP management spec")
+
     async def open_background_work(self) -> list[OpenBgTask]:
         """This thread's live background terminals, as engine-neutral open tasks.
 

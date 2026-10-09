@@ -62,6 +62,8 @@ class _FakeSessions:
         self.mcp: dict[str, list[dict]] = {}
         self.reconnected: list[tuple] = []
         self.reconnect_error: str | None = None
+        self.toggled: list[tuple] = []
+        self.toggle_error: str | None = None
 
     async def mcp_status_for(self, sid):
         return self.mcp.get(sid)
@@ -72,6 +74,14 @@ class _FakeSessions:
         if self.reconnect_error is not None:
             raise ValueError(self.reconnect_error)
         self.reconnected.append((sid, server))
+        return self.mcp[sid]
+
+    async def mcp_toggle(self, sid, server, enabled):
+        if sid not in self.mcp:
+            raise LookupError(sid)
+        if self.toggle_error is not None:
+            raise ValueError(self.toggle_error)
+        self.toggled.append((sid, server, enabled))
         return self.mcp[sid]
 
     async def reconnect_mcp_everywhere(self, server, statuses):

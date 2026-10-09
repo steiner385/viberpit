@@ -27,6 +27,7 @@ from viberpit import accounts as _accounts
 from viberpit import gitrepos
 from server.auth.middleware import current_client_node, current_identity
 from server.library.names import valid_mcp_name
+from server.mcp_scope.servers import configured_server_keys
 from server.quick_replies import observe_reply
 from server.automations.registry import assisted_by_label, origin_label, work_class_for_origin
 from server.sessions.search import parse_terms, session_matches
@@ -1938,6 +1939,33 @@ async def session_mcp_reconnect(
         return await session_actions.mcp_reconnect(
             _get_orchestrator(request), db, session_id=session_id, server=server,
             identity=identity, via=getattr(request.state, "via", None))
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
+class McpToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/{session_id}/mcp/{server}/toggle")
+async def session_mcp_toggle(
+    session_id: str,
+    server: str,
+    body: McpToggleRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Enable/disable one MCP server in a live session. 404 kill switch / not live,
+    400 unknown server, 409 the CLI refused the toggle."""
+    if not get_settings().mcp_scope_enabled:
+        raise HTTPException(status_code=404, detail={"code": "MCP_SCOPE_DISABLED"})
+    if server not in await asyncio.to_thread(configured_server_keys):
+        raise HTTPException(status_code=400, detail={"code": "UNKNOWN_SERVER"})
+    try:
+        return await session_actions.mcp_toggle(
+            _get_orchestrator(request), db, session_id=session_id, server=server,
+            enabled=body.enabled, identity=identity, via=getattr(request.state, "via", None))
     except ActionError as exc:
         return _action_error_response(exc)
 

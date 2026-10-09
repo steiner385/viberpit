@@ -162,6 +162,7 @@ from server.usage.process_quota import (
 )
 from server.github.pr_status import PullRequestInfo
 from server.mcp_health import store as mcp_store
+from server.mcp_scope import store as mcp_scope_store
 from server.mcp_scope.apply import disabled_for_session
 from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
@@ -17961,6 +17962,27 @@ class SessionOrchestrator:
             raise ValueError(str(exc)[:300]) from exc
         except Exception as exc:                    # SDK control errors / timeouts are plain Exception
             raise ValueError(str(exc)[:300]) from exc
+        return [s.to_wire() for s in await d.mcp_status()]
+
+    async def mcp_toggle(self, session_id: str, server: str, enabled: bool) -> list[dict]:
+        """Enable/disable one MCP server in a live session and persist the override.
+        ``LookupError`` when not live, ``ValueError`` carrying the SDK/driver message on
+        failure. The override is saved only after the CLI accepted the toggle."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            raise LookupError(session_id)
+        try:
+            await d.toggle_mcp_server(server, enabled)
+        except RuntimeError as exc:
+            if str(exc) == "session not live":
+                raise LookupError(session_id) from exc
+            raise ValueError(str(exc)[:300]) from exc
+        except Exception as exc:
+            raise ValueError(str(exc)[:300]) from exc
+        try:
+            await mcp_scope_store.set_session_override(session_id, server, enabled)
+        except KeyError:    # row deleted mid-flight: the toggle took effect, don't fail it
+            log.debug("mcp toggle override not saved, session row gone session=%s", session_id)
         return [s.to_wire() for s in await d.mcp_status()]
 
     async def reconnect_mcp_everywhere(self, server: str, statuses: list[str]) -> int:

@@ -2107,6 +2107,13 @@ class ClaudeAgentDriver:
         await self._client.reconnect_mcp_server(name)
         await self._poll_mcp_status()
 
+    async def toggle_mcp_server(self, name: str, enabled: bool) -> None:
+        """User-initiated live toggle (the CLI mirrors it into its own project state)."""
+        if self._client is None or self._stream_ended:
+            raise RuntimeError("session not live")
+        await self._client.toggle_mcp_server(name, enabled)
+        await self._poll_mcp_status()
+
     async def _poll_mcp_status(self) -> list | None:
         """One get_mcp_status round-trip -> emit + persist. Best-effort, DEBUG on failure.
 

@@ -221,3 +221,31 @@ def test_capability_and_setting_default(monkeypatch):
     monkeypatch.delenv("VIBERPIT_MCP_STATUS_ENABLED", raising=False)
     assert ClaudeAgentDriver.capabilities.mcp_status is True
     assert Settings().mcp_status_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_toggle_calls_sdk_then_repolls(make_driver):
+    calls = []
+
+    def answer():
+        calls.append(1)
+        return [{"name": "a", "status": "disabled"}]
+    client = FakeSDKClient([], mcp_status=answer)
+    d = make_driver(client)
+    await d.start()
+    await d._mcp_poll_task
+    n = len(calls)
+    await d.toggle_mcp_server("a", False)
+    assert client.toggled == [("a", False)]
+    assert len(calls) == n + 1
+    await d.aclose()
+
+
+@pytest.mark.asyncio
+async def test_toggle_dead_client_raises(make_driver):
+    d = make_driver(FakeSDKClient([], mcp_status=[]))
+    await d.start()
+    d._stream_ended = True
+    with pytest.raises(RuntimeError, match="session not live"):
+        await d.toggle_mcp_server("a", True)
+    await d.aclose()
