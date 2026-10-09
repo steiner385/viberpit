@@ -1,5 +1,6 @@
 import { useId, useState } from 'react'
-import { useDeleteMcpRepoRule, useGithubRepos, useMcpScope, useSetMcpDefault, useSetMcpRepoRule } from '@/api/hooks'
+import { useGithubRepos } from '@/api/hooks'
+import { useDeleteMcpRepoRule, useMcpScope, useSetMcpDefault, useSetMcpRepoRule } from '@/api/mcpScopeHooks'
 import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Button } from '@/ui/Button'

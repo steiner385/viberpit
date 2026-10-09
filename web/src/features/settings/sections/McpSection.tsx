@@ -6,7 +6,8 @@ import { McpServerDialog } from './McpServerDialog'
 import { McpAuthFlow } from './McpAuthFlow'
 import { McpStatusPill } from './McpStatusPill'
 import { McpScopeControl } from './McpScopeControl'
-import { relativeAge, serverKey, worstStatus } from './mcpStatus'
+import { serverKey } from './mcpServerKey'
+import { relativeAge, worstStatus } from './mcpStatus'
 
 // Accounts whose latest status row for this server is needs-auth (de-duplicated).
 function needsAuthAccounts(s: LibraryMcpServer): string[] {

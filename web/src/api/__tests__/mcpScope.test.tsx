@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
+import { QK } from '../hooks'
 import {
-  QK,
   useMcpScope,
   useSetMcpDefault,
   useSetMcpRepoRule,
   useDeleteMcpRepoRule,
   useToggleSessionMcp,
-} from '../hooks'
+} from '../mcpScopeHooks'
 import { api } from '../client'
 
 vi.mock('../client', () => ({
