@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import socket
+import stat
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ _DISPLAY_RE = re.compile(r"^:(\d+)(?:\.\d+)?$")
 _SERVER_ARG_RE = re.compile(r"^:\d+$")
 _X_SERVERS = frozenset({"Xwayland", "Xorg", "X"})
 _COOKIE_NAME = b"MIT-MAGIC-COOKIE-1"
+_FAMILY_LOCAL = 0x0100
 _FAMILY_WILD = 0xFFFF
 
 
@@ -82,6 +84,19 @@ def _read(path: str) -> bytes | None:
         return None
 
 
+def _owner(path: str) -> int:
+    return os.stat(path).st_uid
+
+
+def _socket_owner(path: str) -> int | None:
+    """Owner uid of ``path`` iff it is a real socket (lstat: a symlink is rejected), else None."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    return st.st_uid if stat.S_ISSOCK(st.st_mode) else None
+
+
 def _environ(pid_dir: str) -> dict[str, str]:
     raw = _read(os.path.join(pid_dir, "environ")) or b""
     out: dict[str, str] = {}
@@ -117,9 +132,12 @@ def _scan(proc_root: str, uid: int) -> list[_Server]:
             if number is None:
                 continue
             auth = next((argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-auth"), None)
-            owned = os.stat(pid_dir).st_uid == uid
+            owner = _owner(pid_dir)
         except OSError:
             continue  # raced with process exit / unreadable
+        if owner not in (uid, 0):
+            continue  # another user's process: its argv (-auth, :N) is not ours to trust
+        owned = owner == uid
         found.append(_Server(number, comm if comm in _X_SERVERS else exe, owned, pid_dir, auth))
     return found
 
@@ -136,9 +154,11 @@ def resolve_desktop_session(
             return DesktopUnavailable(REASON_INVALID_DISPLAY, f"display {display!r} is not a local :N")
         wanted = int(m.group(1))
 
-    servers = _scan(proc_root, uid)
-    if wanted is not None:
-        servers = [s for s in servers if s.number == wanted]
+    servers = [
+        s for s in _scan(proc_root, uid)
+        if (wanted is None or s.number == wanted)
+        and _socket_owner(os.path.join(socket_dir, f"X{s.number}")) in (uid, 0)
+    ]
     if not servers:
         return DesktopUnavailable(
             REASON_NO_GRAPHICAL_SESSION,
@@ -147,8 +167,15 @@ def resolve_desktop_session(
 
     env = _environ(srv.pid_dir) if srv.owned else {}
     cookie = srv.auth_arg or env.get("XAUTHORITY") or None
-    if cookie and not os.path.isfile(cookie):
-        return DesktopUnavailable(REASON_COOKIE_MISSING, cookie)
+    if cookie:
+        try:
+            os.lstat(cookie)
+        except FileNotFoundError:
+            return DesktopUnavailable(REASON_COOKIE_MISSING, cookie)
+        except OSError:
+            pass
+        if _read(cookie) is None:
+            cookie = None  # exists but unreadable (root-owned Xorg auth): legacy SI:localuser posture
 
     wayland_display = env.get("WAYLAND_DISPLAY") if srv.owned and srv.comm == "Xwayland" else None
     kind: DesktopKind = "wayland" if wayland_display else "x11"
@@ -163,28 +190,32 @@ def resolve_desktop_session(
 
 
 def _cookie_for(xauthority: str | None, number: str) -> bytes:
-    """First MIT-MAGIC-COOKIE-1 for this display number (or any, when the record's is empty)."""
+    """MIT-MAGIC-COOKIE-1 for this display: a Local/Wild record wins over the first other-family match."""
     raw = _read(xauthority) if xauthority else None
     if not raw:
         return b""
     pos = 0
+    first_any = b""
     try:
         while pos + 2 <= len(raw):
-            pos += 2  # family: Local (0x0100) and Wild (0xFFFF) both qualify
+            (family,) = struct.unpack_from(">H", raw, pos)
+            pos += 2
             fields: list[bytes] = []
             for _ in range(4):
                 (n,) = struct.unpack_from(">H", raw, pos)
                 pos += 2
                 if pos + n > len(raw):
-                    return b""
+                    return first_any
                 fields.append(raw[pos:pos + n])
                 pos += n
             _addr, num, name, data = fields
             if name == _COOKIE_NAME and num in (b"", number.encode()):
-                return data
+                if family in (_FAMILY_LOCAL, _FAMILY_WILD):
+                    return data
+                first_any = first_any or data
     except struct.error:
         pass
-    return b""
+    return first_any
 
 
 def _pad4(b: bytes) -> bytes:

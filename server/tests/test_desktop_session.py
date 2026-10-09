@@ -25,6 +25,14 @@ from server.sessions.desktop_session import (
 )
 
 UID = os.getuid()
+SD: Path  # set per-test by _sd
+
+
+@pytest.fixture(autouse=True)
+def _sd(tmp_path: Path):
+    global SD
+    SD = tmp_path / "x11"
+    yield
 
 
 def _proc(root: Path, pid: int, comm: str, argv: list[str], environ: dict[str, str] | None = None) -> None:
@@ -34,6 +42,21 @@ def _proc(root: Path, pid: int, comm: str, argv: list[str], environ: dict[str, s
     (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
     if environ is not None:
         (d / "environ").write_bytes(b"\0".join(f"{k}={v}".encode() for k, v in environ.items()) + b"\0")
+
+
+@pytest.fixture(autouse=True)
+def _socks(tmp_path: Path):
+    """Real AF_UNIX socket files X0..X3 (owned by us) so the socket-trust check passes."""
+    d = tmp_path / "x11"
+    d.mkdir()
+    held = []
+    for n in range(4):
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(str(d / f"X{n}"))
+        held.append(s)
+    yield
+    for s in held:
+        s.close()
 
 
 def _ok(_sock: str, _xauth: str | None) -> bool:
@@ -57,64 +80,64 @@ def test_wayland_xwayland_with_environ(root: Path, tmp_path: Path) -> None:
     ck = _cookie(tmp_path)
     _proc(root, 10, "Xwayland", ["/usr/bin/Xwayland", ":0", "-rootless", "-auth", ck, "-listenfd", "4"],
           {"DISPLAY": ":0", "XAUTHORITY": ck, "WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/run/user/1000"})
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert got == DesktopSession("wayland", ":0", ck, "wayland-0", "/run/user/1000")
 
 
 def test_xorg_legacy_with_auth(root: Path, tmp_path: Path) -> None:
     ck = _cookie(tmp_path)
     _proc(root, 11, "Xorg", ["/usr/lib/Xorg", ":0", "-auth", ck, "vt1"])
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert got == DesktopSession("x11", ":0", ck, None, None)
 
 
 def test_xorg_without_auth_is_legacy_posture(root: Path) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0"])
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopSession) and got.xauthority is None and got.kind == "x11"
 
 
 def test_cookie_named_but_missing(root: Path, tmp_path: Path) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0", "-auth", str(tmp_path / "gone")])
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopUnavailable) and got.reason == REASON_COOKIE_MISSING
 
 
 def test_cookie_from_environ_when_no_auth_arg(root: Path, tmp_path: Path) -> None:
     ck = _cookie(tmp_path)
     _proc(root, 10, "Xwayland", ["Xwayland", ":0"], {"XAUTHORITY": ck, "WAYLAND_DISPLAY": "wayland-0"})
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopSession) and got.xauthority == ck
 
 
 def test_no_server(root: Path) -> None:
     _proc(root, 5, "bash", ["bash"])
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
 
 
 def test_invalid_display(root: Path) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0"])
-    got = resolve_desktop_session(uid=UID, display="host:0", proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), display="host:0", proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopUnavailable) and got.reason == REASON_INVALID_DISPLAY
 
 
 def test_requested_display_absent(root: Path) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0"])
-    got = resolve_desktop_session(uid=UID, display=":1", proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), display=":1", proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
 
 
 def test_requested_display_with_screen_suffix(root: Path) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":1"])
-    got = resolve_desktop_session(uid=UID, display=":1.0", proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), display=":1.0", proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopSession) and got.display == ":1"
 
 
 def test_lowest_display_wins_without_request(root: Path) -> None:
     _proc(root, 12, "Xorg", ["Xorg", ":2"])
     _proc(root, 11, "Xorg", ["Xorg", ":1"])
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopSession) and got.display == ":1"
 
 
@@ -122,7 +145,7 @@ def test_unreadable_entries_skipped(root: Path) -> None:
     (root / "99").mkdir()  # no comm/cmdline: raced exit
     (root / "self").mkdir()
     _proc(root, 11, "Xorg", ["Xorg", ":0"])
-    assert isinstance(resolve_desktop_session(uid=UID, proc_root=str(root), probe=_ok), DesktopSession)
+    assert isinstance(resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok), DesktopSession)
 
 
 def test_probe_false_is_connect_refused(root: Path, tmp_path: Path) -> None:
@@ -133,9 +156,95 @@ def test_probe_false_is_connect_refused(root: Path, tmp_path: Path) -> None:
         seen.append((sock, xauth))
         return False
 
-    got = resolve_desktop_session(uid=UID, proc_root=str(root), socket_dir="/sd", probe=probe)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=probe)
     assert isinstance(got, DesktopUnavailable) and got.reason == REASON_CONNECT_REFUSED
-    assert seen == [("/sd/X3", None)]
+    assert seen == [(str(SD / "X3"), None)]
+
+
+def _owners(monkeypatch: pytest.MonkeyPatch, by_pid: dict[str, int]) -> None:
+    monkeypatch.setattr(ds, "_owner", lambda d: by_pid.get(os.path.basename(d), UID))
+
+
+def test_other_uid_server_ignored(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _proc(root, 11, "Xorg", ["Xorg", ":0", "-auth", "/etc/passwd"])
+    _owners(monkeypatch, {"11": UID + 1})
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), display=":0", proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
+
+
+def test_root_owned_server_accepted(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _proc(root, 11, "Xorg", ["Xorg", ":0"])
+    _owners(monkeypatch, {"11": 0})
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopSession) and got.kind == "x11"
+
+
+def test_uid_owned_preferred_over_root(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _proc(root, 11, "Xorg", ["Xorg", ":0"])
+    _proc(root, 12, "Xorg", ["Xorg", ":1"])
+    _owners(monkeypatch, {"11": 0, "12": UID})
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopSession) and got.display == ":1"
+
+
+def test_socket_owned_by_other_uid_rejected(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _proc(root, 11, "Xorg", ["Xorg", ":0"])
+    monkeypatch.setattr(ds, "_socket_owner", lambda p: UID + 1)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
+
+
+def test_socket_symlink_rejected(root: Path, tmp_path: Path) -> None:
+    _proc(root, 11, "Xorg", ["Xorg", ":9"])
+    (SD / "X9").symlink_to(SD / "X0")  # points at a real socket we own
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
+
+
+def test_regular_file_socket_rejected(root: Path) -> None:
+    _proc(root, 11, "Xorg", ["Xorg", ":8"])
+    (SD / "X8").write_text("")
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
+
+
+def test_unreadable_cookie_falls_back_to_legacy(root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ck = _cookie(tmp_path)
+    _proc(root, 11, "Xorg", ["Xorg", ":0", "-auth", ck])
+    real = ds._read
+    monkeypatch.setattr(ds, "_read", lambda p: None if p == ck else real(p))
+    seen: list[str | None] = []
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root),
+                                  probe=lambda s, x: seen.append(x) or True)
+    assert isinstance(got, DesktopSession) and got.xauthority is None and seen == [None]
+
+
+def test_xwayland_unreadable_environ_is_x11(root: Path) -> None:
+    _proc(root, 10, "Xwayland", ["Xwayland", ":0"])  # no environ file
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert got == DesktopSession("x11", ":0", None, None, None)
+    assert "WAYLAND_DISPLAY" not in got.env(prefer_wayland=True)
+
+
+def test_cookie_prefers_local_over_earlier_foreign_family(tmp_path: Path) -> None:
+    xa = tmp_path / "xa"
+    xa.write_bytes(
+        _xauth_record(0, b"\x0a\x00\x00\x01", b"3", b"MIT-MAGIC-COOKIE-1", b"F" * 16)
+        + _xauth_record(0x0100, b"host", b"3", b"MIT-MAGIC-COOKIE-1", b"L" * 16))
+    assert ds._cookie_for(str(xa), "3") == b"L" * 16
+
+
+def test_cookie_falls_back_to_foreign_family_when_no_local(tmp_path: Path) -> None:
+    xa = tmp_path / "xa"
+    xa.write_bytes(_xauth_record(0, b"\x0a\x00\x00\x01", b"3", b"MIT-MAGIC-COOKIE-1", b"F" * 16))
+    assert ds._cookie_for(str(xa), "3") == b"F" * 16
+
+
+def test_truncated_record_after_valid_keeps_valid_cookie(tmp_path: Path) -> None:
+    xa = tmp_path / "xa"
+    good = _xauth_record(0x0100, b"host", b"3", b"MIT-MAGIC-COOKIE-1", b"G" * 16)
+    xa.write_bytes(good + _xauth_record(0x0100, b"host", b"3", b"MIT-MAGIC-COOKIE-1", b"H" * 16)[:-5])
+    assert ds._cookie_for(str(xa), "3") == b"G" * 16
 
 
 def test_env_wayland() -> None:
@@ -250,6 +359,7 @@ def test_probe_garbage_xauthority_file(tmp_path: Path) -> None:
         assert probe_x11(str(fx.path), str(xa)) is True
     finally:
         fx.close()
+    assert struct.unpack("<HH", fx.request[6:10]) == (0, 0)
 
 
 def test_probe_timeout_when_server_silent(tmp_path: Path) -> None:
