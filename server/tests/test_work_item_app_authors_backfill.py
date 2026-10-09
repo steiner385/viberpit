@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import Table, create_engine, select
 
 from server.db import _backfill_app_authors, init_db
 from server.db.models import Base, DataBackfill, WorkItem
@@ -21,7 +21,7 @@ _BEFORE = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 _AFTER = datetime(2026, 10, 10, 0, 0, 1, tzinfo=timezone.utc)
 _FUTURE = datetime.now(timezone.utc) + timedelta(days=1)
 
-_T = WorkItem.__table__
+_T: Table = WorkItem.__table__  # type: ignore[assignment]
 
 
 def _insert(engine, id_, author, created, synced=_BEFORE) -> None:

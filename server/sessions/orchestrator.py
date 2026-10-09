@@ -12611,9 +12611,7 @@ class SessionOrchestrator:
             trusted = await trusted_authors_by_repo(db, [epic_repo])
         if author_trusted(trusted, epic_repo, row[0]):
             return True
-        warned: set[str] | None = getattr(self, "_sdlc_untrusted_epic_slugs", None)
-        if warned is None:
-            warned = self._sdlc_untrusted_epic_slugs = set()
+        warned: set[str] = self.__dict__.setdefault("_sdlc_untrusted_epic_slugs", set())
         if slug not in warned:
             warned.add(slug)
             await self._sdlc_emit(
