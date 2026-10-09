@@ -17,6 +17,9 @@ const { useEngineOffers } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/api/hooks', () => ({
+  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  useSessionMcp: vi.fn(() => ({ data: undefined })),
+  useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useModels: () => ({ data: [{ id: 'opus', label: 'Opus 4' }, { id: 'sonnet', label: 'Sonnet 4' }] }),
   useAccounts: () => ({ data: [] }),
   useSessions: vi.fn(() => ({ data: [] })),

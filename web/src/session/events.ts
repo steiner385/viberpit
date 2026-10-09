@@ -1,4 +1,6 @@
 // Server → client session events (the backend's normalized event wire shapes).
+import type { McpServerState } from '@/api/types'
+
 export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 'web' | 'task' | 'mcp' | 'app_action' | 'unknown'
 
 // One attached image on a user turn. `url` is ready to use directly as an <img> src:
@@ -62,6 +64,8 @@ export interface EvCondensing    { type: 'condensing';    active: boolean; expec
 // Exact context-window occupancy pulled from the SDK after a turn settles (same data
 // as the `/context` command). Drives the persistent ctx% readout — see contextWindow.ts.
 export interface EvContextUsage  { type: 'contextUsage';  usedTokens: number; maxTokens: number; percentage: number; model?: string | null }
+// Live MCP connection status for the session (SDK get_mcp_status); not part of the transcript.
+export interface EvMcpStatus     { type: 'mcpStatus';     servers: McpServerState[] }
 export interface EvRecovering    { type: 'recovering';    turnId: string; message: string; ts?: number }
 // A proactive notice fired by a watch (a NotificationRule whose channel is the caller's
 // own assistant thread — spec v2 §4.7 Pack N, Task 8.4/8.5). Mirrors `Notice.to_wire()`
@@ -86,7 +90,7 @@ export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvPermissionResolved | EvQuestion | EvQuestionResolved
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
-  | EvSuggestions | EvCondensing | EvContextUsage | EvRecovering | EvNotice
+  | EvSuggestions | EvCondensing | EvContextUsage | EvMcpStatus | EvRecovering | EvNotice
   | EvSubAgentStarted | EvSubAgentProgress | EvSubAgentEnded
   | EvBackgroundTaskStarted | EvBackgroundTaskEnded
 
@@ -118,7 +122,7 @@ const SESSION_EVENT_TYPE_FLAGS: Record<SessionEvent['type'], true> = {
   toolCall: true, toolResult: true, permissionRequest: true, permissionResolved: true,
   question: true, questionResolved: true, sessionMeta: true, turnModel: true, title: true,
   status: true, replayReset: true, replayComplete: true, error: true, queueUpdate: true,
-  suggestions: true, condensing: true, contextUsage: true, recovering: true, notice: true,
+  suggestions: true, condensing: true, contextUsage: true, mcpStatus: true, recovering: true, notice: true,
   subAgentStarted: true, subAgentProgress: true, subAgentEnded: true,
   backgroundTaskStarted: true, backgroundTaskEnded: true,
 }

@@ -2400,6 +2400,16 @@ class CodexAgentDriver:
         Claude driver returns, or ``{}`` before the first one arrives."""
         return dict(self._context_usage)
 
+    @property
+    def last_mcp_status(self) -> list:
+        return []
+
+    async def mcp_status(self) -> list:
+        return []
+
+    async def reconnect_mcp_server(self, name: str) -> None:
+        raise NotImplementedError("Codex MCP status is sub-project 4 of the MCP management spec")
+
     async def open_background_work(self) -> list[OpenBgTask]:
         """This thread's live background terminals, as engine-neutral open tasks.
 

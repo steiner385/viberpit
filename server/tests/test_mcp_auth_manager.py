@@ -25,8 +25,8 @@ def make_manager(monkeypatch, tmp_path, *, fail=None, calls=None):
     monkeypatch.setattr(mcp_auth, "merge_mcp_oauth_from_cfg", lambda d, **kw: (calls.append(("merge", d)) or 1) if calls is not None else 1)
     monkeypatch.setattr(mcp_auth, "clear_needs_auth_cache", lambda s: (calls.append(("clear", s)) or ["alice"]) if calls is not None else ["alice"])
     mgr = McpAuthManager(
-        session_factory=lambda server, acct, d: sess,
-        account_picker=lambda server: ("alice", cfg),
+        session_factory=lambda server, acct, d, key: sess,
+        account_picker=lambda server, pref: ("alice", cfg),
     )
     return mgr, sess
 
@@ -120,8 +120,8 @@ async def test_read_url_error_surfaces_cli_message(monkeypatch, tmp_path):
             raise mcp_auth.McpAuthError('"aws-mcp" doesn\'t support OAuth login')
         async def complete(self, u, t): ...
         def terminate(self): pass
-    mgr = McpAuthManager(session_factory=lambda s, a, d: ErrSession(),
-                         account_picker=lambda s: ("alice", cfg))
+    mgr = McpAuthManager(session_factory=lambda s, a, d, k: ErrSession(),
+                         account_picker=lambda s, p: ("alice", cfg))
     await mgr.start("aws-mcp")
     for _ in range(50):
         if mgr.status("aws-mcp").state in mcp_auth.TERMINAL: break
@@ -129,3 +129,67 @@ async def test_read_url_error_surfaces_cli_message(monkeypatch, tmp_path):
     s = mgr.status("aws-mcp")
     assert s.state == "error"
     assert "doesn't support OAuth login" in (s.message or "")
+
+
+async def _to_awaiting(mgr):
+    await mgr.start("notion")
+    for _ in range(50):
+        if mgr.status("notion").state == "awaiting_redirect":
+            break
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_on_success_awaited_once_with_known_accounts(monkeypatch, tmp_path):
+    mgr, _ = make_manager(monkeypatch, tmp_path)
+    seen = []
+
+    async def cb(server, accts):
+        seen.append((server, accts))
+
+    mgr._on_success = cb
+    monkeypatch.setattr(mcp_auth.accounts, "_anthropic_account_names", lambda: ["alice", "bob"])
+    await _to_awaiting(mgr)
+    st = await mgr.submit_redirect("notion", "http://localhost:1/callback?code=abc")
+    await asyncio.gather(*list(mgr._success_tasks))
+    assert st.state == "success"
+    assert seen == [("notion", ["alice", "bob"])]
+    assert not mgr._success_tasks
+
+
+@pytest.mark.asyncio
+async def test_on_success_raising_leaves_success(monkeypatch, tmp_path, caplog):
+    import logging
+    mgr, _ = make_manager(monkeypatch, tmp_path)
+
+    async def cb(server, accts):
+        raise RuntimeError("boom")
+
+    mgr._on_success = cb
+    monkeypatch.setattr(mcp_auth.accounts, "_anthropic_account_names", lambda: [])
+    await _to_awaiting(mgr)
+    with caplog.at_level(logging.DEBUG, logger="server.mcp_auth"):
+        st = await mgr.submit_redirect("notion", "http://localhost:1/callback?code=abc")
+        await asyncio.gather(*list(mgr._success_tasks))
+    assert st.state == "success"
+    assert mgr.status("notion").state == "success"
+    assert any("follow-through failed" in r.message and r.levelno == logging.DEBUG
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_reaps_pending_on_success_task(monkeypatch, tmp_path):
+    mgr, _ = make_manager(monkeypatch, tmp_path)
+    started = asyncio.Event()
+
+    async def cb(server, accts):
+        started.set()
+        await asyncio.sleep(60)
+
+    mgr._on_success = cb
+    monkeypatch.setattr(mcp_auth.accounts, "_anthropic_account_names", lambda: [])
+    await _to_awaiting(mgr)
+    await mgr.submit_redirect("notion", "http://localhost:1/callback?code=abc")
+    await asyncio.wait_for(started.wait(), 2)
+    await mgr.shutdown()
+    assert not mgr._success_tasks

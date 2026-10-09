@@ -34,7 +34,9 @@ export function apiErrorCode(err: unknown): string | null {
       if (typeof value === 'string') return value
     }
   }
-  return typeof record.code === 'string' ? record.code : null
+  if (typeof record.code === 'string') return record.code
+  // Flat `{"error": "<code>"}` (e.g. the MCP test endpoint).
+  return typeof record.error === 'string' ? record.error : null
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {

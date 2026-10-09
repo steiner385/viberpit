@@ -2,6 +2,7 @@
 import copy
 import fcntl
 import json
+import logging
 import math
 import os
 import tempfile
@@ -9,6 +10,9 @@ import threading
 from pathlib import Path
 
 from . import paths
+from .mcp_names import short_name
+
+log = logging.getLogger(__name__)
 
 _mcp_write_lock = threading.Lock()
 
@@ -77,6 +81,24 @@ def merge_keep_later(existing: dict | None, incoming: dict) -> dict:
     return incoming
 
 
+def _mcp_expiry(blob: dict) -> float:
+    value = blob.get("expiresAt")
+    return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else 0.0
+
+
+def _mcp_bundle_replaces(old: object, new: dict, *, explicit: bool) -> bool:
+    """The ONE per-key MCP bundle policy: does ``new`` replace ``old``?
+
+    Empty/discovery-only snapshots cannot revoke an existing token; an explicit login
+    replaces without a later expiry; otherwise ``new`` must prove a strictly later one."""
+    if isinstance(old, dict) and old.get("accessToken"):
+        if not new.get("accessToken"):
+            return False
+        if not explicit and _mcp_expiry(new) <= _mcp_expiry(old):
+            return False
+    return True
+
+
 def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = None) -> int:
     """Merge account MCP snapshots without rolling back another account's login.
 
@@ -88,10 +110,6 @@ def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = No
     The lock serializes local threads/processes; flock is not a distributed lock
     on SSHFS. Callers on separate hosts still rely on credential-authority policy.
     """
-    def expiry(blob: dict) -> float:
-        value = blob.get("expiresAt")
-        return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else 0.0
-
     with _mcp_write_lock:
         path = paths.shared_mcp_path()
         paths.ensure_root()
@@ -105,14 +123,9 @@ def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = No
             for key, new in incoming.items():
                 if not isinstance(new, dict):
                     continue
-                old = existing.get(key)
-                if isinstance(old, dict) and old.get("accessToken"):
-                    if not new.get("accessToken"):
-                        continue
-                    explicit = authenticated_keys is not None and key in authenticated_keys
-                    if not explicit and expiry(new) <= expiry(old):
-                        continue
-                merged[key] = new
+                explicit = authenticated_keys is not None and key in authenticated_keys
+                if _mcp_bundle_replaces(existing.get(key), new, explicit=explicit):
+                    merged[key] = new
             if merged != existing:
                 write_json_secure(path, merged)
             return len(merged)
@@ -169,3 +182,44 @@ def write_credentials(path: Path, data: dict) -> None:
             _warn_no_key_once()
 
     write_json_secure(path, data)
+
+
+def refresh_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None) -> bool:
+    """Merge the shared mcpOAuth store into ONE cfg dir's .credentials.json in place.
+
+    Touches only the ``mcpOAuth`` key: a live CLI may have just rotated ``claudeAiOauth``
+    in this same file, and a full compose would clobber it (cf. #2695). Used after an MCP
+    login so live sessions of OTHER accounts can reconnect with the new token (spec
+    2026-10-09 section 4). Per-key policy is ``merge_shared_mcp``'s
+    (``_mcp_bundle_replaces``); shared keys whose ``serverName`` is *server* are the
+    explicit login and win whenever they carry a token. If the file is replaced between
+    read and write (the CLI rotates it atomically) the write is skipped and the next
+    compose/login catches up. Returns True when the file changed."""
+    from .configdir import CREDENTIALS_NAME  # configdir imports this module
+
+    path = Path(cfg_dir) / CREDENTIALS_NAME
+    if not path.is_file():
+        return False
+    shared_path = paths.shared_mcp_path()
+    shared = read_json(shared_path) if shared_path.exists() else {}
+    before = path.stat()
+    current = read_json(path)
+    existing = current.get("mcpOAuth")
+    existing = existing if isinstance(existing, dict) else {}
+    merged = dict(existing)
+    for key, blob in shared.items():
+        if not isinstance(blob, dict):
+            continue
+        explicit = (server is not None and short_name(str(blob.get("serverName"))) == server
+                    and bool(blob.get("accessToken")))
+        if _mcp_bundle_replaces(existing.get(key), blob, explicit=explicit):
+            merged[key] = blob
+    if merged == existing:
+        return False
+    after = path.stat()
+    if (after.st_ino, after.st_mtime_ns) != (before.st_ino, before.st_mtime_ns):
+        log.debug("refresh_cfg_mcp_oauth: %s changed during merge; skipping write", path)
+        return False
+    current["mcpOAuth"] = merged
+    write_json_secure(path, current)
+    return True

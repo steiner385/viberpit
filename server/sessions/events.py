@@ -438,3 +438,11 @@ class ContextUsage:
     def to_wire(self): return {"type": "contextUsage", "usedTokens": self.used_tokens,
                                "maxTokens": self.max_tokens, "percentage": self.percentage,
                                "model": self.model}
+
+
+@dataclass
+class McpStatus:
+    """Sanitized per-server MCP connection status for one live session (spec 2026-10-09).
+    Built only by server.mcp_health.status.sanitize_statuses — never carries server config."""
+    servers: list  # list[McpServerState]
+    def to_wire(self): return {"type": "mcpStatus", "servers": [s.to_wire() for s in self.servers]}

@@ -17,6 +17,7 @@ import yaml
 
 from viberpit import paths
 from server.library.names import resolve_under
+from viberpit.mcp_names import short_name
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.S)
 
@@ -259,26 +260,11 @@ def read_command(path: str, plugin: str | None = None) -> dict[str, Any] | None:
     return {"path": path, "content": file.read_text(), "readonly": plugin is not None}
 
 
-def _needs_auth_by_server() -> dict[str, list[str]]:
-    """server-name → sorted account names that flag it in mcp-needs-auth-cache.json.
-
-    Cache keys are either the bare server name (user scope) or
-    'plugin:<plugin-name>:<server-name>'.
-    """
-    out: dict[str, set[str]] = {}
-    cfg_root = paths.cfg_root()
-    if not cfg_root.is_dir():
-        return {}
-    for acct_dir in sorted(cfg_root.iterdir()):
-        cache = read_json_safe(acct_dir / "mcp-needs-auth-cache.json") or {}
-        for key in cache:
-            server = key.rsplit(":", 1)[-1] if key.startswith("plugin:") else key
-            out.setdefault(server, set()).add(acct_dir.name)
-    return {name: sorted(accts) for name, accts in out.items()}
-
-
-def list_mcp_servers() -> dict[str, Any]:
-    needs_auth = _needs_auth_by_server()
+def list_mcp_servers(status_rows: list[dict] | None = None) -> dict[str, Any]:
+    """Configured MCP servers, each with its live ``status`` rows (mcp_server_status table)."""
+    by_short: dict[str, list[dict]] = {}
+    for r in status_rows or []:
+        by_short.setdefault(short_name(r["server"]), []).append(r)
     servers: list[dict[str, Any]] = []
     shared = read_json_safe(paths.shared_claude_json_path()) or {}
     user_servers = shared.get("mcpServers")
@@ -289,13 +275,13 @@ def list_mcp_servers() -> dict[str, Any]:
             servers.append({
                 "name": name, "source": "user", "readonly": False,
                 "transport": infer_transport(cfg), "config": cfg,
-                "needsAuth": needs_auth.get(name, []),
+                "status": by_short.get(name, []),
             })
     for pid, install in enabled_plugin_paths():
         for name, cfg in sorted(_plugin_mcp_servers(install).items()):
             servers.append({
                 "name": name, "source": pid, "readonly": True,
                 "transport": infer_transport(cfg), "config": cfg,
-                "needsAuth": needs_auth.get(name, []),
+                "status": by_short.get(name, []),
             })
     return {"servers": servers}

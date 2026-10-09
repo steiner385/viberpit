@@ -3,6 +3,7 @@ shared config base. Read routes are direct filesystem scans; mutations are
 atomic writes + audit events. No orchestrator/daemon involvement."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -26,10 +27,29 @@ from server.library.names import (
     valid_plugin_id,
     valid_skill_name,
 )
+from server.config import get_settings
+from server.ipc.client import DaemonTimeout
 from server.mcp_auth import McpAuthBusy
+from server.mcp_health import store as mcp_store
+from server.sessions.facade import call_with_deadline
 from server.sessions.claude_driver import ClaudeAgentDriver
 
 router = APIRouter(prefix="/api/library", tags=["library"])
+
+
+def _require_known_account(account: str | None) -> None:
+    """A request-supplied account must be an exact member of the known account set: the
+    name later becomes a path under the account store, so anything else (``../x``, ``a/b``,
+    ``""``) is refused before any probe or config-dir write can run."""
+    if account is None:
+        return
+    from viberpit import accounts
+    if account not in accounts._anthropic_account_names():
+        raise HTTPException(status_code=400, detail={"error": "unknown_account"})
+
+
+async def _status_rows() -> list[dict]:
+    return await mcp_store.rows() if get_settings().mcp_status_enabled else []
 
 
 @router.get("/engines")
@@ -183,7 +203,32 @@ async def delete_command(path: str,
 
 @router.get("/mcp")
 async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
-    return scan.list_mcp_servers()
+    return scan.list_mcp_servers(status_rows=await _status_rows())
+
+
+class McpTestBody(BaseModel):
+    account: str | None = None
+    server: str | None = None
+
+
+@router.post("/mcp/test")
+async def mcp_test(body: McpTestBody, request: Request,
+                   _identity: str = Depends(current_identity)) -> dict:
+    """Run the no-prompt probe on every host (spec 2026-10-09 §3), bounded at 35 s."""
+    _require_known_account(body.account)
+    if not get_settings().mcp_status_enabled:
+        return {"rows": [], "skipped": []}
+    # Capture lazily — FleetOrchestrator replaces app.state.sessions after router build.
+    orch = request.app.state.sessions
+    try:
+        # Deadline pushed INTO the RPC, never wait_for around it (#734).
+        out = await call_with_deadline(orch.probe_mcp, body.account, timeout=35.0)
+    except (asyncio.TimeoutError, DaemonTimeout):
+        raise HTTPException(status_code=504, detail={"error": "mcp_probe_timeout"})
+    if body.server:
+        want = mcp_store.short_name(body.server)
+        out = {**out, "rows": [r for r in out["rows"] if mcp_store.short_name(r["server"]) == want]}
+    return out
 
 
 @router.put("/mcp/{name}")
@@ -226,6 +271,10 @@ async def delete_mcp(name: str,
 # ---------------------------------------------------------------------------
 
 
+class McpAuthStartBody(BaseModel):
+    account: str | None = None
+
+
 class RedirectBody(BaseModel):
     redirectUrl: str
 
@@ -241,12 +290,15 @@ def _mcp_auth(request: Request):  # noqa: ANN201
 async def mcp_auth_start(
     name: str,
     request: Request,
+    body: McpAuthStartBody | None = None,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> Any:
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
-    servers = [s for s in scan.list_mcp_servers()["servers"] if s["name"] == name]
+    _require_known_account(body.account if body else None)
+    servers = [s for s in scan.list_mcp_servers(status_rows=await _status_rows())["servers"]
+               if s["name"] == name]
     if not servers:
         raise HTTPException(status_code=404, detail={"error": "mcp_server_not_found"})
     if len(servers) != 1:
@@ -260,7 +312,10 @@ async def mcp_auth_start(
             "message": "Browser OAuth requires an HTTP or SSE server. Configure this server's credentials on the session host.",
         })
     try:
-        state = await _mcp_auth(request).start(name)
+        preferred = ([body.account] if body and body.account is not None else []) + \
+            (await mcp_store.needs_auth_by_server()).get(name, [])
+        state = await _mcp_auth(request).start(
+            name, preferred=preferred, login_key=await mcp_store.login_key_for(name))
     except McpAuthBusy as exc:
         raise HTTPException(status_code=409, detail={"error": "mcp_auth_busy", "server": exc.server})
     # Audit name only — never log the redirect URL or tokens.

@@ -28,7 +28,7 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
 
   function handleStart() {
     setStarted(true)
-    startMcpAuth.mutate(server)
+    startMcpAuth.mutate({ name: server, account: accounts[0] })
   }
 
   function handleCancel() {

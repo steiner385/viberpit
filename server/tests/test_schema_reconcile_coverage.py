@@ -28,6 +28,14 @@ RECONCILE_EXEMPT: set[str] = {
     "automation_operations.owner",
     "automation_operations.source",
     "automation_operations.reason",
+    # mcp_server_status (0078): new table, installed whole by create_all; every key/observation
+    # field is required at first INSERT by store.upsert_states.
+    "mcp_server_status.account",
+    "mcp_server_status.host",
+    "mcp_server_status.server",
+    "mcp_server_status.status",
+    "mcp_server_status.source",
+    "mcp_server_status.observed_at",
     "sessions.name",           # required at session create; no sane default
     "sessions.account_name",   # required at session create; no sane default
     "sessions.cwd",            # required at session create; no sane default

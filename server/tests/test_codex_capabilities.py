@@ -31,7 +31,7 @@ def test_capability_set_covers_every_declared_field():
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
         "account_rotation", "account_switch_new_thread",
         "vendor_commands", "vendor_skills", "durable_tool_surface",
-        "library_management",
+        "library_management", "mcp_status",
     }
 
 
@@ -93,6 +93,9 @@ def test_codex_advertises_the_planned_controls():
     # per-account, never a shared directory the Library surface could scan.
     assert not CODEX_CAPABILITIES.library_management
     assert "CODEX_HOME" in CODEX_LIBRARY_UNSUPPORTED_DETAIL
+    # Codex MCP status (get_mcp_status / reconnect) is sub-project 4 of the MCP
+    # management spec; until the Codex driver wires it, the capability stays off.
+    assert not CODEX_CAPABILITIES.mcp_status
 
 
 def test_no_capabilities_is_all_false():

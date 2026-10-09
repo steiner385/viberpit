@@ -161,10 +161,16 @@ from server.usage.process_quota import (
     ProcessQuotaRefresher,
 )
 from server.github.pr_status import PullRequestInfo
+from server.mcp_health import store as mcp_store
 from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
 
 log = logging.getLogger(__name__)
+
+# reconnect_mcp_everywhere bounds: it runs from the post-login background path, so one hung
+# session must not delay or lose the rest.
+MCP_RECONNECT_CONCURRENCY = 4
+MCP_RECONNECT_TIMEOUT_S = 15.0
 
 # List polling shares one bounded daemon-side provider refresh across clients.
 AUTOMATION_ACTIONABLE_TIMEOUT_S = 2.0
@@ -2512,6 +2518,7 @@ class SessionOrchestrator:
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
+            on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
             on_record_condense_ms=self._record_condense_ms,
@@ -7007,6 +7014,15 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id).values(
                     context_used_tokens=used_tokens, context_max_tokens=max_tokens)
             )
+
+    async def _persist_mcp_status(self, session_id: str, states: list) -> None:
+        """Driver ``on_mcp_status`` callback: record the latest per-server status for this
+        session's account on THIS host (spec 2026-10-09). Best-effort like context usage."""
+        rec = self._records.get(session_id)
+        if rec is None or not states:
+            return
+        await mcp_store.upsert_states(rec.account, self_host_name(), states,
+                                      source="session", session_id=session_id)
 
     async def _maybe_push(self, session_id: str, status: str) -> None:
         """Fire an outbound push alert when a session enters a top-tier needs-you status.
@@ -17915,6 +17931,65 @@ class SessionOrchestrator:
                    and r.host is not None and r.host != me
                    and r.status not in CAPACITY_EXEMPT_STATUSES
                    for r in list(self._records.values()))
+
+    async def mcp_status_for(self, session_id: str) -> list[dict] | None:
+        """Live MCP status of a session's driver; ``None`` when it has no live driver."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            return None
+        return [s.to_wire() for s in await d.mcp_status()]
+
+    async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
+        """Reconnect one MCP server in a live session. ``LookupError`` when not live,
+        ``ValueError`` carrying the SDK/driver message when the reconnect fails."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            raise LookupError(session_id)
+        try:
+            await d.reconnect_mcp_server(server)
+        except RuntimeError as exc:
+            if str(exc) == "session not live":      # the driver's dead-client signal
+                raise LookupError(session_id) from exc
+            raise ValueError(str(exc)[:300]) from exc
+        except Exception as exc:                    # SDK control errors / timeouts are plain Exception
+            raise ValueError(str(exc)[:300]) from exc
+        return [s.to_wire() for s in await d.mcp_status()]
+
+    async def reconnect_mcp_everywhere(self, server: str, statuses: list[str]) -> int:
+        """Reconnect *server* in every live driver on this host whose last snapshot shows
+        it in *statuses* (post-login, spec 2026-10-09 §4). Failures are DEBUG-logged and
+        surface through the next McpStatus poll. Returns the number reconnected."""
+        want = mcp_store.short_name(server)
+        targets: list[tuple[str, object, str]] = []
+        for sid, d in list(self._drivers.items()):
+            target = next((s.name for s in d.last_mcp_status
+                           if mcp_store.short_name(s.name) == want and s.status in statuses), None)
+            if target is not None:
+                targets.append((sid, d, target))
+        sem = asyncio.Semaphore(MCP_RECONNECT_CONCURRENCY)
+
+        async def _one(sid: str, d, target: str) -> bool:
+            try:
+                async with sem:
+                    async with asyncio.timeout(MCP_RECONNECT_TIMEOUT_S):
+                        await d.reconnect_mcp_server(target)
+                return True
+            except Exception:
+                log.debug("mcp reconnect failed session=%s server=%s", sid, server, exc_info=True)
+                return False
+
+        return sum(await asyncio.gather(*(_one(*t) for t in targets)))
+
+    async def probe_mcp(self, account: str | None = None) -> dict:
+        """Run the no-prompt MCP probe on THIS host (spec 2026-10-09 §3)."""
+        from server.config import get_settings
+        from server.mcp_health import probe as mcp_probe
+        if not get_settings().mcp_status_enabled:
+            return {"rows": [], "skipped": []}
+        names, not_ready = await mcp_probe.select_accounts(account)
+        out = await mcp_probe.probe(names)
+        out["skipped"] = not_ready + out["skipped"]
+        return out
 
     def live_session_load(self) -> dict[str, float]:
         """Weighted count of live sessions per account, for load-aware selection.

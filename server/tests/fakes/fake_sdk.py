@@ -172,7 +172,7 @@ class FakeSDKClient:
     Pass ``startup_frames=[]`` for a silent connect.
     """
     def __init__(self, messages, on_can_use_tool=None, server_info=None, context_usage=None,
-                 startup_frames: list | None = None):
+                 startup_frames: list | None = None, mcp_status=None):
         self._messages = list(messages)
         self._startup_frames = (session_start_hook_frames() if startup_frames is None
                                 else list(startup_frames))
@@ -184,6 +184,8 @@ class FakeSDKClient:
         self.sent: list[str] = []
         self._server_info = server_info
         self._context_usage = context_usage or {}
+        self._mcp_status = mcp_status
+        self.reconnected: list[str] = []
         self._inbox: "asyncio.Queue | None" = None   # built lazily on the running loop
         self._turn_open = False
 
@@ -248,6 +250,13 @@ class FakeSDKClient:
     async def set_model(self, model=None): self.model = model
     async def get_server_info(self): return self._server_info
     async def get_context_usage(self): return self._context_usage
+    async def get_mcp_status(self):
+        v = self._mcp_status() if callable(self._mcp_status) else self._mcp_status
+        if v is None:
+            raise RuntimeError("mcp_status not scripted")   # mirrors an old CLI rejecting the control request
+        return {"mcpServers": list(v)}
+    async def reconnect_mcp_server(self, server_name):
+        self.reconnected.append(server_name)
 
 
 class PerQueryScript:

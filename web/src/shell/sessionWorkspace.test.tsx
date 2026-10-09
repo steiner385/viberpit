@@ -27,6 +27,9 @@ import { anthropicUsage } from '@/test/factories'
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
 vi.mock('@/api/hooks', () => ({
+  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  useSessionMcp: vi.fn(() => ({ data: undefined })),
+  useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
   useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // "Next best account" (MainPaneSession → SessionHeader → SessionActions).

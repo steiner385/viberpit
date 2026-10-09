@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
 from server.auth.middleware import current_client_node, current_identity
+from server.library.names import valid_mcp_name
 from server.quick_replies import observe_reply
 from server.automations.registry import assisted_by_label, origin_label, work_class_for_origin
 from server.sessions.search import parse_terms, session_matches
@@ -1905,6 +1906,38 @@ async def stop_session_subagent(
         return await session_actions.stop_subagent(
             orch, db, session_id=session_id, tool_use_id=tool_use_id,
             identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
+@router.get("/{session_id}/mcp")
+async def session_mcp_status(
+    session_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Live MCP server status for a running session (spec 2026-10-09)."""
+    servers = await _get_orchestrator(request).mcp_status_for(session_id)
+    if servers is None:
+        raise HTTPException(status_code=404, detail={"code": "SESSION_NOT_LIVE"})
+    return {"servers": servers}
+
+
+@router.post("/{session_id}/mcp/{server}/reconnect")
+async def session_mcp_reconnect(
+    session_id: str,
+    server: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Reconnect one MCP server in a live session. 404 not live, 409 reconnect failed."""
+    if not valid_mcp_name(server.rsplit(":", 1)[-1]):
+        raise HTTPException(status_code=400, detail={"code": "INVALID_SERVER"})
+    try:
+        return await session_actions.mcp_reconnect(
+            _get_orchestrator(request), db, session_id=session_id, server=server,
+            identity=identity, via=getattr(request.state, "via", None))
     except ActionError as exc:
         return _action_error_response(exc)
 

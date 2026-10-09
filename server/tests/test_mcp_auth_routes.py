@@ -13,10 +13,10 @@ class FakeMgr:
     def __init__(self) -> None:
         self.calls: list = []
 
-    async def start(self, server: str) -> McpAuthState:
+    async def start(self, server: str, *, preferred=(), login_key=None) -> McpAuthState:
         if server == "busy":
             raise McpAuthBusy("other")
-        self.calls.append(("start", server))
+        self.calls.append(("start", server, list(preferred), login_key))
         return McpAuthState(state="starting", server=server)
 
     def status(self, server: str) -> McpAuthState:
@@ -34,12 +34,24 @@ class FakeMgr:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(library, "valid_mcp_name", lambda n: True)
-    monkeypatch.setattr(library.scan, "list_mcp_servers", lambda: {"servers": [
+    monkeypatch.setattr(library.scan, "list_mcp_servers", lambda status_rows=None: {"servers": [
         {"name": "notion", "transport": "http"},
         {"name": "events", "transport": "sse"},
         {"name": "busy", "transport": "http"},
         {"name": "local", "transport": "stdio"},
     ]})
+    async def _no_rows():
+        return []
+
+    async def _needs():
+        return {"notion": ["alice"]}
+
+    async def _key(name):
+        return f"plugin:x:{name}"
+
+    monkeypatch.setattr(library, "_status_rows", _no_rows)
+    monkeypatch.setattr(library.mcp_store, "needs_auth_by_server", _needs)
+    monkeypatch.setattr(library.mcp_store, "login_key_for", _key)
     app = FastAPI()
     app.include_router(library.router)
     app.state.mcp_auth = FakeMgr()
@@ -114,10 +126,18 @@ def test_unknown_auth_rejected_before_spawn(client: TestClient) -> None:
 
 
 def test_ambiguous_auth_rejected_before_spawn(client: TestClient, monkeypatch) -> None:
-    monkeypatch.setattr(library.scan, "list_mcp_servers", lambda: {"servers": [
+    monkeypatch.setattr(library.scan, "list_mcp_servers", lambda status_rows=None: {"servers": [
         {"name": "local", "transport": "http"},
         {"name": "local", "transport": "stdio"},
     ]})
     assert client.post("/api/library/mcp/local/auth").status_code == 409
     assert isinstance(client.app, FastAPI)
     assert client.app.state.mcp_auth.calls == []
+
+
+def test_start_passes_preferred_account_and_login_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from viberpit import accounts
+    monkeypatch.setattr(accounts, "_anthropic_account_names", lambda: ["bob", "alice"])
+    r = client.post("/api/library/mcp/notion/auth", json={"account": "bob"})
+    assert r.status_code == 202
+    assert getattr(client.app, "state").mcp_auth.calls[-1] == ("start", "notion", ["bob", "alice"], "plugin:x:notion")

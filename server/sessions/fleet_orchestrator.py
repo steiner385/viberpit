@@ -123,6 +123,17 @@ def _merge_sum_counts(parts: list[dict]) -> dict[str, dict[str, int]]:
     return out
 
 
+def _merge_probe(parts: list[dict]) -> dict:
+    """Concatenate per-host probe results (probe_mcp): every host probes its own cfg dirs."""
+    return {"rows": [r for p in parts for r in (p or {}).get("rows", [])],
+            "skipped": [s for p in parts for s in (p or {}).get("skipped", [])]}
+
+
+def _merge_sum_int(parts: list[int]) -> int:
+    """Sum per-host counts (reconnect_mcp_everywhere)."""
+    return sum(p or 0 for p in parts)
+
+
 def _merge_union(parts: list[dict]) -> dict:
     """Union per-host maps keyed by session_id (session_queue_positions).
 
@@ -175,6 +186,8 @@ def _merge_codex_status(parts: list[dict]) -> dict:
 # queue (session_queue_positions), so a primary-only read silently undercounts every
 # worker session (#920). Ask EVERY host and reduce with the per-method merge below.
 _MERGE_ALL_HOSTS: dict[str, object] = {
+    "probe_mcp": _merge_probe,
+    "reconnect_mcp_everywhere": _merge_sum_int,
     "live_session_load": _merge_sum_floats,
     "live_session_counts": _merge_sum_counts,
     "session_queue_positions": _merge_union,
@@ -187,7 +200,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_queue_cancel", "start_queued_now", "cancel_queued", "archive_session", "permanent_delete",
     "rename_session", "note_user_interaction", "set_autopilot_paused",
     "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
-    "stop_subagent",
+    "stop_subagent", "mcp_status_for", "mcp_reconnect",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",

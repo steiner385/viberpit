@@ -23,7 +23,7 @@ Restore an expired account to service through an observable login flow that can 
 **Problem** — OAuth refresh tokens expire or get revoked, and accounts log out. When that happens an
 account silently starts failing usage fetches and session launches, and the user has no headless way
 to re-authenticate a daemon-hosted account (the daemon has no browser and no keyring). MCP servers
-add a second auth surface that must be re-established per account.
+add a second auth surface that must be re-established per account. Live MCP status and the post-login follow-through are described in [MCP Live Status and Reauth](mcp-status.md).
 
 **Target users** — Anyone whose registered account has flipped to needs-reauth: web-dashboard users
 re-authing a specific account row, operators of the headless session daemon, and users of

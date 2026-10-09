@@ -2,6 +2,7 @@ import type {
   SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
   PromptContext, PromptOrigin,
 } from './events'
+import type { McpServerState } from '@/api/types'
 import type { ContextUsageExact } from '@/lib/contextWindow'
 import { type PromptStage, advancesStage, canStall } from './promptStage'
 import { toolLabel } from './toolSummary'
@@ -142,6 +143,7 @@ export interface TranscriptState {
   model: string | null          // current model id (from sessionMeta / replay)
   usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   contextUsage: ContextUsageExact | null  // exact ctx-window occupancy (SDK /context data); preferred over `usage` for the ctx% readout
+  mcpServers: McpServerState[] | null  // live MCP connection status (mcpStatus event); null until first report; survives replayReset
   replaying: boolean            // true until replayComplete
   earliestTurn: number          // lowest turn ordinal currently loaded (0 = at session start)
   totalTurns: number            // total turns in the on-disk transcript
@@ -173,6 +175,7 @@ export const initialTranscript: TranscriptState = {
   model: null,
   usage: null,
   contextUsage: null,
+  mcpServers: null,
   replaying: true,
   earliestTurn: 0,
   totalTurns: 0,
@@ -1213,6 +1216,12 @@ export function transcriptReducer(
       if (!(maxTokens > 0)) return state
       return { ...state, contextUsage: { usedTokens: num(ev.usedTokens), maxTokens } }
     }
+
+    // ── mcpStatus ─────────────────────────────────────────────────────────────
+    case 'mcpStatus':
+      // Live MCP connection status (spec 2026-10-09). Not part of the transcript, so —
+      // like contextUsage — it survives replayReset.
+      return { ...state, mcpServers: Array.isArray(ev.servers) ? ev.servers : [] }
 
     // ── replayReset ───────────────────────────────────────────────────────────
     case 'replayReset': {

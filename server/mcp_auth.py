@@ -18,13 +18,13 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Awaitable, Callable, Protocol, Sequence
 
+from viberpit.mcp_names import short_name
 from viberpit import accounts, configdir, paths
 from viberpit.config import load_config
 from viberpit.creds import merge_shared_mcp, write_json_secure
 from server.aio import cancel_and_reap
-from server.library import scan
 from server.library.scan import read_json_safe
 
 log = logging.getLogger(__name__)
@@ -73,13 +73,9 @@ def merge_mcp_oauth_from_cfg(cfg_dir: Path, *, server: str | None = None) -> int
     authenticated_keys = {
         key for key, value in mcp.items()
         if isinstance(value, dict) and isinstance(value.get("serverName"), str)
-        and _bare(value["serverName"]) == server
+        and short_name(value["serverName"]) == server
     } if server is not None else set()
     return merge_shared_mcp(mcp, authenticated_keys=authenticated_keys)
-
-
-def _bare(key: str) -> str:
-    return key.rsplit(":", 1)[-1] if key.startswith("plugin:") else key
 
 
 def clear_needs_auth_cache(server: str) -> list[str]:
@@ -93,7 +89,7 @@ def clear_needs_auth_cache(server: str) -> list[str]:
         cache = read_json_safe(cache_path)
         if not isinstance(cache, dict):
             continue
-        keys = [k for k in cache if _bare(k) == server]
+        keys = [k for k in cache if short_name(k) == server]
         if not keys:
             continue
         for k in keys:
@@ -128,11 +124,12 @@ class McpAuthManager:
     def __init__(
         self,
         *,
-        session_factory: Callable[[str, str, Path], LoginSession],
-        account_picker: Callable[[str], tuple[str, Path]],
+        session_factory: Callable[[str, str, Path, str | None], LoginSession],
+        account_picker: Callable[[str, list[str]], tuple[str, Path]],
         clock: Callable[[], float] = time.time,
         url_timeout_s: float = 60.0,
         complete_timeout_s: float = 120.0,
+        on_success: Callable[[str, list[str]], Awaitable[object]] | None = None,
     ) -> None:
         self._factory = session_factory
         self._pick = account_picker
@@ -143,6 +140,8 @@ class McpAuthManager:
         self._session: LoginSession | None = None
         self._task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._lock = asyncio.Lock()
+        self._on_success = on_success
+        self._success_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
 
     def status(self, server: str) -> McpAuthState:
         s = self._state
@@ -152,12 +151,13 @@ class McpAuthManager:
                             auth_url=s.auth_url, accounts=list(s.accounts),
                             started_at=s.started_at)
 
-    async def start(self, server: str) -> McpAuthState:
+    async def start(self, server: str, *, preferred: Sequence[str] = (),
+                    login_key: str | None = None) -> McpAuthState:
         async with self._lock:
             if self._state.state in ("starting", "awaiting_redirect", "exchanging"):
                 raise McpAuthBusy(self._state.server)
-            account, cfg_dir = self._pick(server)
-            self._session = self._factory(server, account, cfg_dir)
+            account, cfg_dir = self._pick(server, list(preferred))
+            self._session = self._factory(server, account, cfg_dir, login_key)
             self._state = McpAuthState(state="starting", server=server,
                                        accounts=[account], started_at=self._clock())
             self._task = asyncio.create_task(self._read_url(server))
@@ -199,11 +199,18 @@ class McpAuthManager:
             await session.complete(redirect_url, self._complete_timeout)
             n_merged = merge_mcp_oauth_from_cfg(session.cfg_dir, server=server)
             cleared = clear_needs_auth_cache(server)
+            flipped = False
             async with self._lock:
                 if self._state.server == server and self._state.state == "exchanging":
                     self._state.state = "success"
                     self._state.accounts = cleared or self._state.accounts
                     self._state.message = None
+                    flipped = True
+            if flipped and self._on_success is not None:
+                # Background: the redirect response must not wait on reconnect + probe.
+                task = asyncio.create_task(self._fire_success(server))
+                self._success_tasks.add(task)
+                task.add_done_callback(self._success_tasks.discard)
             log.info("mcp auth: %s ok (shared_keys=%d, cleared=%d accounts)",
                      server, n_merged, len(cleared))
         except McpAuthError as exc:
@@ -229,9 +236,21 @@ class McpAuthManager:
                                            message="cancelled")
         return self.status(server)
 
+    async def _fire_success(self, server: str) -> None:
+        # Only known accounts are refreshed, never request-supplied names.
+        try:
+            assert self._on_success is not None
+            names = await asyncio.to_thread(accounts._anthropic_account_names)
+            await self._on_success(server, names)
+        except Exception:
+            log.debug("mcp auth: on_success follow-through failed for %r", server,
+                      exc_info=True)
+
     async def shutdown(self) -> None:
         if self._state.server:
             await self.cancel(self._state.server)
+        for task in list(self._success_tasks):
+            await cancel_and_reap(task, phase="mcp-auth.on-success", timeout=3.0)
 
     async def _fail(self, server: str, msg: str) -> None:
         async with self._lock:
@@ -279,29 +298,12 @@ def _claude_argv() -> list[str]:
     return shlex.split(os.environ.get("VIBERPIT_CLAUDE_BIN", cfg.claude_bin))
 
 
-def resolve_login_key(server: str) -> str:
-    """Map a short server name to the FULL key `claude mcp login` expects.
-
-    The authoritative source is the raw key in each account's
-    mcp-needs-auth-cache.json (e.g. `plugin:railway:railway`). Falls back to the
-    short name for user-scope servers not present in any cache.
-    """
-    root = paths.cfg_root()
-    if root.is_dir():
-        for acct_dir in sorted(root.iterdir()):
-            cache = read_json_safe(acct_dir / "mcp-needs-auth-cache.json")
-            if not isinstance(cache, dict):
-                continue
-            for key in cache:
-                if _bare(key) == server:
-                    return key
-    return server
-
-
-def default_account_picker(server: str) -> tuple[str, Path]:
-    flagged = scan._needs_auth_by_server().get(server) or []
-    candidates = list(flagged) + accounts._anthropic_account_names()
-    for name in candidates:
+def default_account_picker(server: str, preferred: list[str]) -> tuple[str, Path]:
+    """First of the caller's preferred accounts that is a KNOWN account, else any Anthropic
+    account. Preferred names can come from request bodies or stored status rows, and
+    ``compose`` writes under ``cfg_root/<name>``, so an unknown name is dropped."""
+    known = accounts._anthropic_account_names()
+    for name in [n for n in preferred if n in known] + known:
         return name, configdir.compose(name)
     raise McpAuthError("No authenticated account is available to authorize with.")
 
@@ -310,18 +312,19 @@ class PtyLoginSession:
     """Runs `claude mcp login <full-key> --no-browser` under a PTY (required —
     a pipe stdin makes claude self-terminate as non-interactive)."""
 
-    def __init__(self, server: str, account: str, cfg_dir: Path) -> None:
+    def __init__(self, server: str, account: str, cfg_dir: Path,
+                 login_key: str | None = None) -> None:
         self.account = account
         self.cfg_dir = cfg_dir
         self._server = server
+        self._login_key = login_key or server
         self._pid: int | None = None
         self._fd: int | None = None
         self._buf = b""
         self._exit_code: int | None = None  # cached on first reap (never waitpid twice)
 
     def _spawn(self) -> None:
-        key = resolve_login_key(self._server)
-        argv = _claude_argv() + ["mcp", "login", key, "--no-browser"]
+        argv = _claude_argv() + ["mcp", "login", self._login_key, "--no-browser"]
         from server.sessions.account_auth import helper_env
         # writes_back: `claude mcp login` stores the server's OAuth token in the config dir's
         # .credentials.json. It must land in the real account dir — the host-local scratch copy
@@ -429,8 +432,12 @@ class PtyLoginSession:
             self._fd = None
 
 
-def build_default_manager() -> McpAuthManager:
+def build_default_manager(
+    on_success: Callable[[str, list[str]], Awaitable[object]] | None = None,
+) -> McpAuthManager:
     return McpAuthManager(
-        session_factory=lambda server, account, cfg_dir: PtyLoginSession(server, account, cfg_dir),
+        session_factory=lambda server, account, cfg_dir, login_key: PtyLoginSession(
+            server, account, cfg_dir, login_key),
         account_picker=default_account_picker,
+        on_success=on_success,
     )

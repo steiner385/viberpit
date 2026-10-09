@@ -284,6 +284,8 @@ try:
         # Off = no in-process server is mounted and no instruction is appended.
         session_tools_enabled: bool = Field(
             default=True, alias="VIBERPIT_SESSION_TOOLS_ENABLED")
+        # MCP live status (spec 2026-10-09): driver polling, persistence, probe, readout.
+        mcp_status_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_STATUS_ENABLED")
         # How many report_feedback rows one session may file (spec §4). Further reports
         # are recorded as "capped": visible, never filed.
         session_feedback_cap: int = Field(
@@ -604,6 +606,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         session_tools_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        mcp_status_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_MCP_STATUS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         session_feedback_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3

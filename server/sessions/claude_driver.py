@@ -21,6 +21,8 @@ from server.aio import bounded_wait, cancel_and_reap, format_task_dump
 from server.assistant.context import PromptContext, render_context_header
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
+from server.config import get_settings
+from server.mcp_health.status import sanitize_statuses
 from server.mcp_spec import is_mcp_tool
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
 from server.obs.context import bind_session
@@ -70,6 +72,9 @@ _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
 # How long aclose() waits for the CLI to flush its synthetic interrupt result for a
 # turn wedged mid-tool-call before giving up and cancelling the drain.
 _CLOSE_GRACE_SEC = 5.0
+# MCP status settle loop: servers are `pending` at connect and settle within ~15 s.
+MCP_SETTLE_INTERVAL_S = 5.0
+MCP_SETTLE_MAX_S = 30.0
 
 # Budget for the SDK client's __aexit__ during aclose(): the real client runs two
 # 5s subprocess-terminate timeouts internally, so 15s covers it with headroom while
@@ -280,6 +285,7 @@ class ClaudeAgentDriver:
         # starts — so text passthrough IS this engine's native dispatch and
         # `vendor_skills` stays False.
         vendor_commands=True,
+        mcp_status=True,
         # A resume carries the SDK client's full `system_prompt` append (the
         # marker/tool instructions) and `mcp_servers` overlay again — unlike
         # Codex's `thread/resume`, nothing declared at session start is lost.
@@ -294,7 +300,7 @@ class ClaudeAgentDriver:
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
-                 on_recoverable_failure=None, on_context_usage=None, clock=None, suggester=None,
+                 on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
                  assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None):
@@ -342,6 +348,10 @@ class ClaudeAgentDriver:
         # SessionRecord so the WS bridge can replay it on attach (the live ContextUsage event
         # is otherwise never re-emitted, leaving reloaded sessions on the 0%-pinning fallback).
         self._on_context_usage = on_context_usage
+        self._on_mcp_status = on_mcp_status
+        self._mcp_last: list = []                     # last sanitized snapshot
+        self._mcp_unsupported = False                 # latched after the first control-request failure
+        self._mcp_poll_task: asyncio.Task | None = None
         # Fired (synchronously, with the session id) when a Task sub-agent starts or
         # ends, so the orchestrator can refresh the persisted per-session sub-agent
         # summary the board's cards read. Without it the summary only refreshes on a
@@ -992,6 +1002,7 @@ class ClaudeAgentDriver:
         self._source = _MessageSource(self._client)
         self._closing = False
         self._start_listener()
+        self._start_mcp_settle()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
                           interrupt: bool = False,
@@ -1579,6 +1590,7 @@ class ClaudeAgentDriver:
             # "interrupted" (2026-09-16).
             if not self._stream_ended:
                 await self._emit_context_usage()
+                await self._poll_mcp_status()
             await self._emit_status()
         # If queued prompts remain, pop the front and start the next turn. Re-checked
         # AFTER the idle bookkeeping above because `_turn_live()` is `drain_alive or
@@ -2073,6 +2085,61 @@ class ClaudeAgentDriver:
             return {}
         return await self._client.get_context_usage()
 
+    @property
+    def last_mcp_status(self) -> list:
+        """The last sanitized snapshot, without a round-trip (never raises)."""
+        return list(self._mcp_last)
+
+    async def mcp_status(self) -> list:
+        """Fresh sanitized status when live; the last snapshot otherwise."""
+        if self._client is None or self._stream_ended or self._mcp_unsupported:
+            return list(self._mcp_last)
+        await self._poll_mcp_status()
+        return list(self._mcp_last)
+
+    async def reconnect_mcp_server(self, name: str) -> None:
+        if self._client is None or self._stream_ended:
+            raise RuntimeError("session not live")
+        await self._client.reconnect_mcp_server(name)
+        await self._poll_mcp_status()
+
+    async def _poll_mcp_status(self) -> list | None:
+        """One get_mcp_status round-trip -> emit + persist. Best-effort, DEBUG on failure.
+
+        A failure latches ``_mcp_unsupported`` (old CLI / transient): one DEBUG line and
+        no retry storm; a session restart clears it."""
+        if (self._mcp_unsupported or self._closing or self._client is None or self._stream_ended
+                or not get_settings().mcp_status_enabled):
+            return None
+        try:
+            states = sanitize_statuses(await self._client.get_mcp_status())
+        except Exception:
+            self._mcp_unsupported = True
+            log.debug("mcp_status pull failed session=%s", self.session_id, exc_info=True)
+            return None
+        self._mcp_last = states
+        self._emit(ev.McpStatus(servers=states))
+        if self._on_mcp_status is not None:
+            try:
+                await self._on_mcp_status(self.session_id, states)
+            except Exception:
+                log.debug("on_mcp_status persist failed session=%s", self.session_id, exc_info=True)
+        return states
+
+    def _start_mcp_settle(self) -> None:
+        if self._mcp_poll_task is None or self._mcp_poll_task.done():
+            if get_settings().mcp_status_enabled:
+                self._mcp_poll_task = asyncio.create_task(self._mcp_settle())
+
+    async def _mcp_settle(self) -> None:
+        """Poll once at start, then while anything is pending, capped at MCP_SETTLE_MAX_S."""
+        deadline = asyncio.get_running_loop().time() + MCP_SETTLE_MAX_S
+        states = await self._poll_mcp_status()
+        while (states and any(s.status == "pending" for s in states)
+               and asyncio.get_running_loop().time() < deadline and not self._closing):
+            await asyncio.sleep(MCP_SETTLE_INTERVAL_S)
+            states = await self._poll_mcp_status()
+
     async def _emit_context_usage(self) -> None:
         """Forward exact context-window occupancy (same source as `/context`) so the
         persistent ctx% readout reflects REAL remaining context — not the per-turn
@@ -2123,6 +2190,9 @@ class ClaudeAgentDriver:
                                phase=f"driver.reconnect-pump:{self.session_id}",
                                cancel_grace=grace)
         self._pump = None
+        if self._mcp_poll_task is not None:
+            await cancel_and_reap(self._mcp_poll_task,
+                                  phase=f"driver.reconnect-mcp-poll:{self.session_id}")
         if self._source is not None:
             await self._source.aclose(grace, phase=f"driver.reconnect-source:{self.session_id}")
             self._source = None
@@ -2158,6 +2228,10 @@ class ClaudeAgentDriver:
         self._source = _MessageSource(client)
         self._closing = False
         self._start_listener()
+        # Fresh CLI process: forget the old latch/snapshot and settle again.
+        self._mcp_unsupported = False
+        self._mcp_last = []
+        self._start_mcp_settle()
 
     def resolve_permission(self, perm_id, decision, identity) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
@@ -2237,6 +2311,8 @@ class ClaudeAgentDriver:
             self._closing = True
             await self._stop_listener()
             self._cancel_suggest()
+            if self._mcp_poll_task is not None:
+                await cancel_and_reap(self._mcp_poll_task, phase=f"driver.mcp-poll:{self.session_id}")
             self._reg.deny_all(self.session_id)
             self._qreg.deny_all(self.session_id)
             grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
@@ -2326,6 +2402,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_sync_back=config.on_sync_back,
             on_status=config.on_status,
             on_context_usage=config.on_context_usage,
+            on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,
             on_record_condense_ms=config.on_record_condense_ms,
