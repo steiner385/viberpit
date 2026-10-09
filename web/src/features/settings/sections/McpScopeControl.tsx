@@ -3,20 +3,39 @@ import { useGithubRepos } from '@/api/hooks'
 import { useDeleteMcpRepoRule, useMcpScope, useSetMcpDefault, useSetMcpRepoRule } from '@/api/mcpScopeHooks'
 import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
+import type { McpScope } from '@/api/types'
 import { Button } from '@/ui/Button'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Select } from '@/ui/Select'
+import { shortName } from './mcpStatus'
 
 type Mode = 'on' | 'off'
 
 /**
  * Per-server repo scope: the default ("On for all repos" / "Off by default") plus per-repo
- * exceptions. `serverKey` is the CLI/server key (`serverKey()` in mcpStatus.ts). Renders nothing
+ * exceptions. `serverKey` is the CLI/server key (`serverKey()` in mcpServerKey.ts). Renders nothing
  * while the feature is switched off (scope GET answers 404 `mcp_scope_disabled`).
  */
 export function McpScopeControl({ serverKey }: { serverKey: string }) {
-  const uid = useId()
   const scope = useMcpScope()
+  if (scope.isError) {
+    if (apiErrorCode(scope.error) === 'mcp_scope_disabled') return null
+    return (
+      <div className="mt-1 px-3 flex flex-wrap items-center gap-2">
+        <p className="text-xs text-danger" role="alert">Couldn't load repo scope.</p>
+        <Button type="button" variant="secondary" size="sm" onClick={() => void scope.refetch()}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
+  if (!scope.data) return null
+  // Mounted only with data, so the repo list is not fetched while scope is loading or disabled.
+  return <ScopeBody serverKey={serverKey} data={scope.data} />
+}
+
+function ScopeBody({ serverKey, data }: { serverKey: string; data: McpScope }) {
+  const uid = useId()
   const repos = useGithubRepos()
   const setDefault = useSetMcpDefault()
   const setRule = useSetMcpRepoRule()
@@ -24,11 +43,8 @@ export function McpScopeControl({ serverKey }: { serverKey: string }) {
   const [picked, setPicked] = useState('')
   const [pickedMode, setPickedMode] = useState<Mode | null>(null)
 
-  if (scope.isError && apiErrorCode(scope.error) === 'mcp_scope_disabled') return null
-  if (!scope.data) return null
-
-  const defaultEnabled = scope.data.servers?.[serverKey]?.defaultEnabled ?? true
-  const rules = (scope.data.rules ?? []).filter((r) => r.server === serverKey)
+  const defaultEnabled = data.servers?.[serverKey]?.defaultEnabled ?? true
+  const rules = (data.rules ?? []).filter((r) => r.server === serverKey)
   // The server stores repos lower-cased; the picker offers only GitHub-listed repos without a rule.
   const taken = new Set(rules.map((r) => r.repo.toLowerCase()))
   const options = [...new Set((repos.data ?? []).map((r) => r.nameWithOwner.toLowerCase()))]
@@ -40,7 +56,7 @@ export function McpScopeControl({ serverKey }: { serverKey: string }) {
   const busy = setDefault.isPending || setRule.isPending || delRule.isPending
 
   return (
-    <div className="mt-1 px-3 space-y-2">
+    <div role="group" aria-label={`Repo scope for ${shortName(serverKey)}`} className="mt-1 px-3 space-y-2">
       <div className="flex flex-wrap items-start gap-x-4 gap-y-1">
         <RadioGroup
           name={`mcp-scope-${uid}`}

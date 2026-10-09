@@ -125,6 +125,28 @@ describe('McpScopeControl', () => {
     await waitFor(() => expect(container.textContent).toBe(''))
   })
 
+  it('shows an alert with Retry when the scope GET fails (not a silent null)', async () => {
+    mockGets(new ApiRequestError(500, { detail: 'boom' }))
+    renderControl()
+    expect((await screen.findByRole('alert')).textContent).toContain("Couldn't load repo scope.")
+    mockGets({ servers: { [KEY]: { defaultEnabled: true } }, rules: [] })
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('radio', { name: 'On for all repos' })).toBeTruthy()
+  })
+
+  it('does not fetch the repo list until scope data exists', async () => {
+    mockGets(new ApiRequestError(404, { error: 'mcp_scope_disabled' }))
+    renderControl()
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/library/mcp/scope'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(api.get).not.toHaveBeenCalledWith('/github/repos')
+  })
+
+  it('names the controls by the server short name', async () => {
+    renderControl()
+    expect(await screen.findByRole('group', { name: 'Repo scope for notion' })).toBeTruthy()
+  })
+
   it('surfaces a mutation error', async () => {
     vi.mocked(api.put).mockRejectedValue(new ApiRequestError(400, { detail: { message: 'unknown repo' } }))
     renderControl()

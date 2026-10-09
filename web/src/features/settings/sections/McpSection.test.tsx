@@ -201,6 +201,20 @@ describe('McpSection', () => {
     expect(off.closest('button')).toBeNull()
   })
 
+  it('a failing scope GET leaves the row usable and shows a retryable alert', async () => {
+    vi.mocked(api.get).mockImplementation((path: string) => {
+      if (path === '/library/mcp/scope') return Promise.reject(new ApiRequestError(500, { detail: 'boom' }))
+      return path === '/library/mcp'
+        ? Promise.resolve({ servers: [srv('gh', 'stdio', [])] })
+        : otherGet(path)
+    })
+    renderSection()
+    expect((await screen.findByRole('alert')).textContent).toContain("Couldn't load repo scope.")
+    expect(screen.getByRole('button', { name: 'gh' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Test gh' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  })
+
   // (a) user + plugin rows render with transport and needs-auth badges
   it('renders rows with transport badges and the status pill', async () => {
     renderSection()
