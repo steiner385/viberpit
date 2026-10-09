@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from server.sessions.desktop_session import probe_x11
+from server.sessions.desktop_session import probe_x11, socket_owner
 from server.sessions.adopt import _proc_lister, terminate_process_tree
 
 log = logging.getLogger("server.x11")
@@ -94,8 +94,13 @@ def _lock_owner_alive(lock_path: str) -> bool:
 
 def _default_ready_check(display: int, xauthority: str, run_dir: str = "/tmp") -> bool:
     """Ready = our cookie authenticates against a live X server on the socket (a
-    stale socket file or a foreign server rejects it)."""
-    return probe_x11(os.path.join(run_dir, ".X11-unix", f"X{display}"), xauthority)
+    stale socket file or a foreign server rejects it). The socket must be a real
+    socket owned by us before the cookie is sent to it."""
+    sock = os.path.join(run_dir, ".X11-unix", f"X{display}")
+    # Never send the session cookie to a socket we do not own (or a symlink to one).
+    if socket_owner(sock) != os.getuid():
+        return False
+    return probe_x11(sock, xauthority)
 
 
 def _default_vnc_ready_check(port: int) -> bool:

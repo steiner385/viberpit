@@ -10,7 +10,7 @@ not: it demands the per-login, randomly-named cookie (it rotates every login), s
 the resolver reads the live cookie from the X server's own argv/environ and proves
 it with a real handshake. Resolutions are cached for a short TTL (the callers are
 synchronous on an event loop). On a Wayland desktop, managed browsers run
-Wayland-native (``--ozone-platform=wayland``) by default, while DISPLAY + XAUTHORITY
+Wayland-native (``--ozone-platform=wayland``) by default, while DISPLAY (+ XAUTHORITY, when a cookie resolved)
 are still exported so X-only tools the agent spawns keep working.
 """
 from __future__ import annotations

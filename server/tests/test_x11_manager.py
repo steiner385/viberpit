@@ -488,11 +488,21 @@ async def test_ready_check_receives_lease_cookie_and_failure_cleans_up(tmp_path)
 
 @pytest.mark.asyncio
 async def test_default_ready_check_probes_socket_with_cookie(tmp_path, monkeypatch):
+    import socket as _socket
     from server.sessions import x11manager
+    d = tmp_path / ".X11-unix"
+    d.mkdir()
+    srv = _socket.socket(_socket.AF_UNIX)
+    srv.bind(str(d / "X105"))
     calls = []
     monkeypatch.setattr(x11manager, "probe_x11", lambda sock, xa: calls.append((sock, xa)) or True)
     assert x11manager._default_ready_check(105, "/c/cookie", str(tmp_path)) is True
     assert calls == [(os.path.join(str(tmp_path), ".X11-unix", "X105"), "/c/cookie")]
+    monkeypatch.setattr(x11manager, "socket_owner", lambda p: os.getuid() + 1)
+    calls.clear()
+    assert x11manager._default_ready_check(105, "/c/cookie", str(tmp_path)) is False
+    assert calls == []  # the cookie never reaches a socket we do not own
+    srv.close()
 
 
 @pytest.mark.asyncio

@@ -546,12 +546,21 @@ session API:
 
 ```bash
 pgrep -u "$(id -u)" -a Xwayland                     # live server: display + its `-auth <cookie>` argv
-tr '\0' '\n' </proc/$(pgrep -x Xwayland)/environ | grep -E '^(DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR)='
+tr '\0' '\n' </proc/$(pgrep -u "$(id -u)" -x Xwayland | head -1)/environ | grep -E '^(DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR)='
 # The cookie is whatever the live Xwayland process names in `-auth` / XAUTHORITY. Leftover
 # /run/user/<uid>/.mutter-Xwaylandauth.* files are stale and harmless (never pick one by mtime).
 # Authenticated (tailnet identity), NOT /healthz (unauthenticated, omits this):
 curl -s https://<host>/api/x11/metrics | jq .nativeDisplay   # {display, available, kind, reason, browsers}
 ```
+
+GNOME's `autoclose-xwayland` makes Xwayland exit when idle; the resolver then reports
+`no_graphical_session` and sessions route virtual. Check `gsettings get org.gnome.mutter
+experimental-features` (look for `autoclose-xwayland`) and disable it on runner hosts that should
+take native sessions.
+
+A native-session agent process captures `DISPLAY`/`XAUTHORITY`/`WAYLAND_DISPLAY` when its driver
+starts. After the operator re-logs in (new cookie), the agent's own headful tools fail until the
+session is restarted; managed "Open a browser" windows resolve fresh and are unaffected.
 
 `reason` is one of `no_graphical_session` (nobody logged in / screen not up), `cookie_missing`,
 `connect_refused`, `invalid_display`, or `display_in_xvfb_pool` (move `VIBERPIT_NATIVE_DISPLAY` or

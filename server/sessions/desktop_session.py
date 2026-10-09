@@ -84,11 +84,26 @@ def _read(path: str) -> bytes | None:
         return None
 
 
-def _owner(path: str) -> int:
-    return os.stat(path).st_uid
+def _owner(pid_dir: str) -> int:
+    """REAL uid of a process, from ``status``'s ``Uid:`` line (first field).
+
+    Not the ``/proc/<pid>`` dir owner: a non-dumpable process (prctl PR_SET_DUMPABLE 0)
+    shows that dir as root-owned, so any local user's fake ``Xorg`` would pass as root.
+    Raises OSError when unreadable/unparseable (the caller skips the process).
+    """
+    raw = _read(os.path.join(pid_dir, "status"))
+    if raw is None:
+        raise OSError(f"no status for {pid_dir}")
+    for line in raw.decode(errors="replace").splitlines():
+        if line.startswith("Uid:"):
+            try:
+                return int(line.split()[1])
+            except (IndexError, ValueError):
+                break
+    raise OSError(f"no Uid in status for {pid_dir}")
 
 
-def _socket_owner(path: str) -> int | None:
+def socket_owner(path: str) -> int | None:
     """Owner uid of ``path`` iff it is a real socket (lstat: a symlink is rejected), else None."""
     try:
         st = os.lstat(path)
@@ -157,13 +172,13 @@ def resolve_desktop_session(
     servers = [
         s for s in _scan(proc_root, uid)
         if (wanted is None or s.number == wanted)
-        and _socket_owner(os.path.join(socket_dir, f"X{s.number}")) in (uid, 0)
+        and socket_owner(os.path.join(socket_dir, f"X{s.number}")) in (uid, 0)
     ]
     if not servers:
         return DesktopUnavailable(
             REASON_NO_GRAPHICAL_SESSION,
             f"no X server process for display :{wanted}" if wanted is not None else "no X server process")
-    srv = min(servers, key=lambda s: (wanted is None and not s.owned, s.number))
+    srv = min(servers, key=lambda s: (not s.owned, s.number))
 
     env = _environ(srv.pid_dir) if srv.owned else {}
     cookie = srv.auth_arg or env.get("XAUTHORITY") or None

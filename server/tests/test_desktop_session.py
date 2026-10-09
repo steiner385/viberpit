@@ -35,11 +35,14 @@ def _sd(tmp_path: Path):
     yield
 
 
-def _proc(root: Path, pid: int, comm: str, argv: list[str], environ: dict[str, str] | None = None) -> None:
+def _proc(root: Path, pid: int, comm: str, argv: list[str], environ: dict[str, str] | None = None,
+          uid: int | None = None) -> None:
+    uid = UID if uid is None else uid
     d = root / str(pid)
     d.mkdir()
     (d / "comm").write_text(comm + "\n")
     (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    (d / "status").write_text(f"Name:\t{comm}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n")
     if environ is not None:
         (d / "environ").write_bytes(b"\0".join(f"{k}={v}".encode() for k, v in environ.items()) + b"\0")
 
@@ -161,20 +164,21 @@ def test_probe_false_is_connect_refused(root: Path, tmp_path: Path) -> None:
     assert seen == [(str(SD / "X3"), None)]
 
 
-def _owners(monkeypatch: pytest.MonkeyPatch, by_pid: dict[str, int]) -> None:
-    monkeypatch.setattr(ds, "_owner", lambda d: by_pid.get(os.path.basename(d), UID))
+def _owners(root: Path, by_pid: dict[str, int]) -> None:
+    for pid, uid in by_pid.items():
+        (root / pid / "status").write_text(f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n")
 
 
 def test_other_uid_server_ignored(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0", "-auth", "/etc/passwd"])
-    _owners(monkeypatch, {"11": UID + 1})
+    _owners(root, {"11": UID + 1})
     got = resolve_desktop_session(uid=UID, socket_dir=str(SD), display=":0", proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
 
 
 def test_root_owned_server_accepted(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0"])
-    _owners(monkeypatch, {"11": 0})
+    _owners(root, {"11": 0})
     got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopSession) and got.kind == "x11"
 
@@ -182,14 +186,14 @@ def test_root_owned_server_accepted(root: Path, monkeypatch: pytest.MonkeyPatch)
 def test_uid_owned_preferred_over_root(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0"])
     _proc(root, 12, "Xorg", ["Xorg", ":1"])
-    _owners(monkeypatch, {"11": 0, "12": UID})
+    _owners(root, {"11": 0, "12": UID})
     got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopSession) and got.display == ":1"
 
 
 def test_socket_owned_by_other_uid_rejected(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _proc(root, 11, "Xorg", ["Xorg", ":0"])
-    monkeypatch.setattr(ds, "_socket_owner", lambda p: UID + 1)
+    monkeypatch.setattr(ds, "socket_owner", lambda p: UID + 1)
     got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
     assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
 
@@ -400,3 +404,29 @@ def test_probe_real_xvfb(tmp_path: Path) -> None:
     finally:
         proc.terminate()
         proc.wait(timeout=5)
+
+
+def test_dir_owner_is_not_trusted_only_status_uid(root: Path) -> None:
+    # Non-dumpable fake Xorg: /proc/<pid> would read root-owned, but its real uid is another user.
+    _proc(root, 11, "Xorg", ["Xorg", ":0"], uid=UID + 1)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
+
+
+def test_unreadable_status_skipped(root: Path) -> None:
+    _proc(root, 11, "Xorg", ["Xorg", ":0"])
+    (root / "11" / "status").unlink()
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopUnavailable) and got.reason == REASON_NO_GRAPHICAL_SESSION
+
+
+def test_pinned_display_prefers_uid_owned_candidate(root: Path) -> None:
+    _proc(root, 10, "Xorg", ["Xorg", ":0"], uid=0)
+    _proc(root, 12, "Xorg", ["Xorg", ":0"], uid=UID)
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), display=":0", proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopSession)
+    assert got.display == ":0"
+    # uid-owned server's environ is read; the root one's never is.
+    (root / "12" / "environ").write_bytes(b"XAUTHORITY=/nonexistent/cookie\0")
+    got = resolve_desktop_session(uid=UID, socket_dir=str(SD), display=":0", proc_root=str(root), probe=_ok)
+    assert isinstance(got, DesktopUnavailable) and got.reason == REASON_COOKIE_MISSING

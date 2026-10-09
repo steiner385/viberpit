@@ -3,8 +3,8 @@
  *  plus "native_disabled"); the one map from reason to human copy. */
 const REASON_COPY: Record<string, string> = {
   no_graphical_session: 'no one is logged in to the desktop',
-  cookie_missing: 'the desktop refused the connection (locked or session changed)',
-  connect_refused: 'the desktop refused the connection (locked or session changed)',
+  cookie_missing: 'the desktop session changed or is not responding',
+  connect_refused: 'the desktop session changed or is not responding',
   display_in_xvfb_pool: 'native display is not configured',
   invalid_display: 'native display is not configured',
   native_disabled: 'native display is not configured',
