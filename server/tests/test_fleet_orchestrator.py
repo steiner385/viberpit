@@ -1277,3 +1277,10 @@ async def test_non_daemon_error_warns_despite_empty_run(caplog):
     import logging
     levels = await _unreachable_levels(caplog, RuntimeError("boom"), 0)
     assert levels == [logging.WARNING]
+
+
+def test_probe_mcp_merge_concatenates_rows_and_skipped():
+    from server.sessions.fleet_orchestrator import _MERGE_ALL_HOSTS
+    assert _MERGE_ALL_HOSTS["probe_mcp"]([
+        {"rows": [1], "skipped": []}, {"rows": [2], "skipped": [{"account": "b"}]}, {},
+    ]) == {"rows": [1, 2], "skipped": [{"account": "b"}]}

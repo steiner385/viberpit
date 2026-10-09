@@ -17927,6 +17927,15 @@ class SessionOrchestrator:
                    and r.status not in CAPACITY_EXEMPT_STATUSES
                    for r in list(self._records.values()))
 
+    async def probe_mcp(self, account: str | None = None) -> dict:
+        """Run the no-prompt MCP probe on THIS host (spec 2026-10-09 §3)."""
+        from server.config import get_settings
+        from server.mcp_health import probe as mcp_probe
+        if not get_settings().mcp_status_enabled:
+            return {"rows": [], "skipped": []}
+        names = [account] if account else ccswitch_accounts._anthropic_account_names()
+        return await mcp_probe.probe(names)
+
     def live_session_load(self) -> dict[str, float]:
         """Weighted count of live sessions per account, for load-aware selection.
 
