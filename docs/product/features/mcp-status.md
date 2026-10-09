@@ -6,6 +6,7 @@ state: live
 links:
   specs:
     - docs/superpowers/specs/2026-10-09-mcp-live-status-design.md
+    - docs/superpowers/specs/2026-10-09-mcp-repo-scope-design.md
   code:
     - server/mcp_health/probe.py
     - server/mcp_health/store.py
@@ -14,6 +15,10 @@ links:
     - server/api/library.py
     - server/api/sessions.py
     - server/sessions/claude_driver.py
+    - server/mcp_scope/resolve.py
+    - server/mcp_scope/apply.py
+    - server/mcp_scope/store.py
+    - web/src/features/settings/sections/McpScopeControl.tsx
     - src/viberpit/creds.py
     - web/src/features/settings/sections/McpSection.tsx
     - web/src/features/sessions/McpStatusReadout.tsx
@@ -65,6 +70,37 @@ A compact `MCP n/m` (connected of total) sits beside the context meter in the se
 
 Data loads from `GET /api/sessions/{id}/mcp` on mount, then follows `mcpStatus` session events. The internal ViberPit app server is hidden (filtered by name).
 
+## Scope
+
+Sub-project 2a. By default every session loads every user-scope and plugin MCP server. Scope lets an operator turn a server off by default, turn it on for named repos only, turn it off for chosen repos, and flip any server inside a running session. A disabled server never connects, never prompts for OAuth and never loads tools.
+
+**Precedence** - for each configured server the first source with a value wins: session override, then repo rule (`Session.repo`, `owner/name`, case-insensitive; scratch sessions have no repo and skip this step), then the server default, then on. One pure function, `server/mcp_scope/resolve.py:effective_disabled`, produces the disabled list.
+
+**Rules** - managed in Settings › MCP (`McpScopeControl`) through the library API:
+
+- `GET /api/library/mcp/scope` - server defaults and repo rules.
+- `PUT /api/library/mcp/scope/{server}` - set the server default (`{defaultEnabled}`).
+- `PUT /api/library/mcp/scope/{server}/repos/{owner}/{name}` - set a repo rule (`{enabled}`). Validates the server is configured, the repo slug shape, and that the repo is a known repo.
+- `DELETE` on the same path removes the rule. It skips the known-repo check so a stale rule for a repo that has gone away stays removable.
+
+Plugin servers are keyed by the plugin manifest name (`plugin:Notion:notion`, not the registry id); the UI's `serverKey` and the server's `server_key` share one test table so a rule is always saved under the key the CLI reports.
+
+**How it reaches the CLI** - at every driver build (spawn, resume, reassign, adopt) the effective list is written to the CLI's `projects[<worktree>].disabledMcpServers` through `configdir.trust_project`. The driver also re-enforces it after start: on its first successful MCP status poll (and after a `/clear` reconnect) it calls `toggle_mcp_server(name, False)` once for each desired-disabled server not already `disabled`. This closes a race where `compose()` rewrites the account config while the CLI is starting.
+
+**Live toggle** - the in-session `MCP n/m` popover gets an on/off switch per server (`POST /api/sessions/{id}/mcp/{server}/toggle`, `{enabled}`; 400 unknown server, 409 if the CLI refuses, 404 if the session is not live). The choice is saved to `sessions.mcp_overrides` and survives resume; the driver's enforcement set is kept in sync. The DB is authoritative: the CLI also mirrors toggles into `.claude.json`, but that copy is overwritten at the next driver build. Disabled servers are excluded from the `n/m` count.
+
+**Applies to new and resumed sessions** - changing a repo rule or server default does not touch sessions that are already running. Use the live toggle for those.
+
+**Kill switch** - `VIBERPIT_MCP_SCOPE_ENABLED` (default on). When off, no list is written and both the rules API and the toggle route return 404 `{"error": "mcp_scope_disabled"}`; the web hides the controls.
+
+**Known limitations**
+
+- Sessions that share a non-git cwd (adopted or explicit-cwd sessions with no worktree) share one `projects[<cwd>]` entry, so two live ones with different overrides last-writer-win on that list. Git-repo sessions each have a unique worktree key.
+- A server flipped off just before a kill-switch flip could stay off for a resumed session in the same worktree (the list is not rewritten while the switch is off).
+- In the start-up race case a disabled server may briefly connect before post-start enforcement switches it off.
+- Codex sessions are not supported (the toggle returns 409).
+- Committed `.mcp.json` servers are out of scope here (planned as sub-project 2b).
+
 ## Limits and switches
 
 - **Codex** sessions do not report MCP status yet; the readout is absent and the endpoints return an empty list. Planned in sub-project 4 of the MCP management series.
@@ -73,3 +109,5 @@ Data loads from `GET /api/sessions/{id}/mcp` on mount, then follows `mcpStatus` 
 ## Data model
 
 Table `mcp_server_status` (model `McpServerHealth`, migration `0078`), unique on `(account, host, server)`; each row is the latest observation. Columns: `status`, `error` (sanitized), `tool_count`, `scope`, `source` (`session` | `probe`), `session_id`, `observed_at` (`db_utc_now()`). It replaces the old cache-file reader for needs-auth, which was deleted.
+
+Scope adds tables `mcp_server_scope` (`server` PK, `default_enabled`, `updated_at`) and `mcp_repo_rule` (unique `(repo, server)`, `enabled`, `updated_at`), and the nullable column `sessions.mcp_overrides` (JSON `{server_key: bool}`), all in migration `0079`.

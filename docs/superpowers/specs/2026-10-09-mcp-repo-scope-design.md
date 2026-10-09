@@ -1,6 +1,6 @@
 # MCP per-repo scope + live session toggle: design
 
-**Date:** 2026-10-09 · **Status:** draft for review · **Sub-project 2a** of "integrated MCP server management"
+**Date:** 2026-10-09 · **Status:** implemented (sub-project 2a) · **Sub-project 2a** of "integrated MCP server management"
 **Depends on:** sub-project 1, live status + reauth (`2026-10-09-mcp-live-status-design.md`, PR #2872)
 
 ## Context
@@ -135,3 +135,21 @@ If (1) fails, stop and revisit the approach. Approach B, the per-session overlay
 - Rules API: validation (unknown server or repo, traversal-shaped segments), kill switch and audit.
 - Postgres suite for the new tables (`_REQUIRED_EXTRAS`, `RECONCILE_EXEMPT`).
 - Web: scope control, exceptions list, popover switch and the `n/m` count; full `npm run test`; bundle budget (lazy-load new popover weight, lesson from #2872).
+
+## As built
+
+Rulings made during implementation (ledger R1-R7):
+
+- **R1** - the TS `serverKey` and Python `server_key` share one test table; key parity is the contract between UI rules and the CLI list.
+- **R2** - the DB (rules plus `sessions.mcp_overrides`) is authoritative; the CLI's own write of `disabledMcpServers` on a live toggle is a transient mirror that the next driver build overwrites. The toggle route writes the DB only.
+- **R3** - the stale-list hazard on "no list written" paths (kill switch off, rules read failure) is accepted, because `compose()` drops prior `projects[cwd]` entries on every launch; a test pins that behaviour.
+- **R4** - sessions sharing a non-git cwd share one `projects[cwd]` list and last-writer-win; accepted as a known limitation, with a test pinning that git-repo sessions get distinct worktree keys.
+- **R5** - closing the `compose()` race by post-start enforcement in the driver (`AgentDriverConfig.desired_disabled_mcp`, `toggle_mcp_server(name, False)` after the first good status poll and after `/clear`), not by changing `compose()`.
+- **R6** - the kill-switch 404 on the toggle route uses the flat `{"error": "mcp_scope_disabled"}` shape, same as the rules API, so the web detects both with one code.
+- **R7** - the scope and toggle hooks live in `web/src/api/mcpScopeHooks.ts`, imported only by the lazy Settings control and lazy session readout, keeping `serverKey` off the critical path; the `initialJs` budget was raised only by the measured overage.
+
+Real-CLI findings that changed the design (spike `2026-10-09-mcp-repo-scope-verification.md`):
+
+- **Plugin keys use the manifest name.** The CLI reports `plugin:Notion:notion`, not the registry id `plugin:notion:notion`. `scan.list_mcp_servers` exposes `pluginName` (manifest name, falling back to the registry name) and `server_key` uses it; otherwise a Notion rule would never match.
+- **The CLI persists live toggles** into `projects[cwd].disabledMcpServers` (enable removes, disable appends, so order changes). Hence R2: compare as sets and keep the DB authoritative.
+- **Post-start enforcement is needed** (R5): writing the list before launch is not enough when `compose()` races the CLI start.
