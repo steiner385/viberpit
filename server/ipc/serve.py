@@ -218,6 +218,15 @@ async def daemon_lifespan(app, orchestrator):
         asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
         name="loop-lag-watchdog",
     )
+    # Per-session memory attribution (#2739): names the session whose process subtree
+    # is ballooning BEFORE the kernel's OOM line, which only carries a bare pid.
+    from server.sessions.memory_watch import SessionKey, memory_watch_from_env
+    memory_watch = memory_watch_from_env(lambda: [
+        SessionKey(r.id, r.engine_session_id, r.cwd) for r in orchestrator.list_sessions()])
+    app.state.memory_watch_task = None if memory_watch is None else supervise(
+        asyncio.create_task(memory_watch.run(), name="session-memory-watch"),
+        name="session-memory-watch",
+    )
     # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
     # prior SIGKILLed run (issue #206, startup half). The daemon owns the displays in
     # remote mode yet swept nothing at boot, so orphans accumulated across restarts.
@@ -289,6 +298,9 @@ async def daemon_lifespan(app, orchestrator):
             loop_lag_task = None
         if loop_lag_task is not None:
             await cancel_and_reap(loop_lag_task, phase="daemon.loop-lag")
+        memory_watch_task = getattr(app.state, "memory_watch_task", None)
+        if memory_watch_task is not None:
+            await cancel_and_reap(memory_watch_task, phase="daemon.memory-watch")
         if error_sink is not None:
             try:
                 await asyncio.wait_for(error_sink.stop(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
