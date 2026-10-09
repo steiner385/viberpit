@@ -519,6 +519,75 @@ def test_primary_never_adopts_a_reaped_thread_stamped_for_another_live_host(tmp_
     asyncio.run(run())
 
 
+def test_primary_never_returns_a_live_thread_stamped_for_another_live_host(tmp_path):
+    """2026-10-09 outage, the live-thread twin of the test above: an idle assistant
+    thread stamped host=rocky (created there when the soft primary pin failed over)
+    was in the primary's _records — the primary rehydrates every row — so the
+    in-memory scan returned it, the drawer resumed it on rocky, and every tool call
+    hit rocky's loopback where no edge listens (ConnectError on all endpoints). The
+    live scan must apply the same _owns_record rule the reaped-row adoption does."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'livefx.db'}",
+                                tmp_path=tmp_path)
+        try:
+            mine = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                             identity="u@x", kind=ASSISTANT_KIND,
+                                             owner_identity="u@x")
+            await _stamp_host(mine.id, "dobby")
+            await _backdate(mine.id, hours=1)
+            theirs = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                               identity="u@x", kind=ASSISTANT_KIND,
+                                               owner_identity="u@x")
+            await _stamp_host(theirs.id, "rocky")   # newest, but a live worker's
+            orch._records.clear()
+            orch._drivers.clear()
+            await orch.rehydrate()                  # primary: loads BOTH rows
+            assert {mine.id, theirs.id} <= set(orch._records)
+            # Move ours LAST: a first-match scan then lands on the foreign thread.
+            orch._records[mine.id] = orch._records.pop(mine.id)
+
+            hosts = patch.object(orch, "_enabled_host_names",
+                                 return_value=frozenset({"dobby", "rocky"}))
+            me = patch("server.sessions.orchestrator.self_host_name", return_value="dobby")
+            with hosts, me:
+                found = await orch.find_assistant("u@x")
+            assert found is not None and found.id == mine.id
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_live_scan_returns_the_newest_owned_thread(tmp_path):
+    """Several live threads for one identity (the leak left up to a dozen) must not
+    resolve by dict order: /status and POST /session would disagree about which
+    thread the drawer is on. Newest wins, matching the reaped-row adoption."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'livenew.db'}",
+                                tmp_path=tmp_path)
+        try:
+            old = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                            identity="u@x", kind=ASSISTANT_KIND,
+                                            owner_identity="u@x")
+            await _backdate(old.id, hours=2)
+            new = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                            identity="u@x", kind=ASSISTANT_KIND,
+                                            owner_identity="u@x")
+            orch._records.clear()
+            orch._drivers.clear()
+            await orch.rehydrate()
+            # Re-insert the newest LAST: a first-match scan then picks the old one.
+            orch._records[new.id] = orch._records.pop(new.id)
+            # A legacy record with no created_at sorts oldest instead of raising.
+            orch._records[old.id].created_at = None
+            found = await orch.find_assistant("u@x")
+            assert found is not None and found.id == new.id
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
 def test_primary_adopts_a_reaped_thread_whose_host_left_the_registry(tmp_path):
     """The flip side of the ownership rule: a stamp for a host that is no longer
     enabled is an orphan the primary adopts (same as _owns_record for every other

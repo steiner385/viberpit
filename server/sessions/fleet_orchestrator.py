@@ -443,6 +443,19 @@ class FleetOrchestrator:
             # the row is written by a daemon, and started by whichever daemon frees a
             # slot (see SessionOrchestrator._maybe_start_queued's host-capacity rule).
             return await self._queue_for_capacity(refusal, engine=engine, sha=sha, kwargs=kwargs)
+        if assistant:
+            # `prefer` only REORDERS — pick() keeps the other hosts as failover, and
+            # _dispatch cascades past a primary whose spawn raised. For the assistant
+            # either leak is worse than a refusal: a worker has no edge on its
+            # loopback, so the thread is created fine and then EVERY tool call fails
+            # with ConnectError (report_gap alone, DB-only, still works), and the
+            # drawer reuses that thread indefinitely (2026-10-09: ten such threads on
+            # rocky since 09-07). Dispatch to the primary alone, or refuse.
+            if self._primary not in order:
+                raise NoHostAvailable(
+                    f"the assistant runs only on the primary host {self._primary!r}, "
+                    "which is not dispatchable right now; retry once it is healthy")
+            order = [self._primary]
         return await self._dispatch(order, kwargs)
 
     async def _dispatch(self, order: list[str], kwargs: dict):

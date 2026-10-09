@@ -16578,10 +16578,26 @@ class SessionOrchestrator:
         deciding whether to create, resume, or (with ``fresh``) archive-and-recreate.
 
         Falls back to ``_adopt_reaped_assistant`` on an in-memory miss: a thread the
-        idle reap already parked on ``ended`` is NOT in ``_records`` after a restart."""
-        for r in self._records.values():
-            if is_assistant(r) and r.owner_identity == owner_identity and r.status != "archived":
-                return self._sync_detached(r)
+        idle reap already parked on ``ended`` is NOT in ``_records`` after a restart.
+
+        Same selection rule as that adoption — ``_owns_record``, newest first — because
+        the primary holds every row in ``_records``. A first-match scan returned a live
+        thread stamped for a worker (2026-10-09: an idle rocky thread from a pin
+        failover), the drawer resumed it there, and every tool call hit a loopback with
+        no edge. A foreign thread is skipped, so the drawer gets one it can serve."""
+        candidates = [r for r in self._records.values()
+                      if is_assistant(r) and r.owner_identity == owner_identity
+                      and r.status != "archived"]
+        if candidates:
+            enabled_hosts = await self._enabled_host_names()
+            owned = [r for r in candidates if self._owns_record(r, enabled_hosts)]
+            if owned:
+                from datetime import datetime as _dt
+                return self._sync_detached(max(
+                    owned, key=lambda r: r.created_at or _dt.min))
+            log.warning("find_assistant: skipped %d live thread(s) stamped on another "
+                        "live host (%s) — falling back to reaped-thread adoption",
+                        len(candidates), ",".join(sorted({str(r.host) for r in candidates})))
         return await self._adopt_reaped_assistant(owner_identity)
 
     async def _adopt_reaped_assistant(self, owner_identity: str) -> SessionRecord | None:

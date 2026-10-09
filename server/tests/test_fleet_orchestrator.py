@@ -299,6 +299,61 @@ async def test_create_exempts_only_the_assistant_from_the_capacity_leg(
     assert seen["ignore_capacity"] is expected
 
 
+def _assistant_fleet(monkeypatch, *, order, primary_create):
+    """A dobby(primary)+rocky fleet whose router ranks *order* and whose primary's
+    create_session is *primary_create*; rocky always accepts, so any assistant that
+    lands there proves the pin leaked."""
+    dobby, rocky = _FakeOrch("dobby"), _FakeOrch("rocky")
+    async def rocky_ok(self, **kw):
+        self.calls.append("create_session"); return _Rec("on-rocky")
+    rocky.create_session = rocky_ok.__get__(rocky)
+    dobby.create_session = primary_create.__get__(dobby)
+    router = _FakeRouter({"dobby": dobby, "rocky": rocky})
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None,
+                   ignore_capacity=False):
+        return list(order)
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="dobby")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    return fo, rocky
+
+
+@pytest.mark.asyncio
+async def test_assistant_create_never_fails_over_when_primary_is_not_ranked(monkeypatch):
+    """2026-10-09 outage: `prefer=primary` only REORDERED the candidates, so when the
+    primary was briefly not dispatchable the drawer's thread was created on rocky.
+    Rocky has no edge on 127.0.0.1:8787, so every assistant tool call failed with
+    ConnectError for days while report_gap (DB-only) kept working. A worker can
+    never serve an assistant, so no primary means refuse — never fall over."""
+    from server.sessions.fleet_router import NoHostAvailable
+    async def unused(self, **kw): raise AssertionError("primary was not ranked")
+    fo, rocky = _assistant_fleet(monkeypatch, order=["rocky"], primary_create=unused)
+    with pytest.raises(NoHostAvailable, match="primary"):
+        await fo.create_session(kind="assistant")
+    assert rocky.calls == []
+
+
+@pytest.mark.asyncio
+async def test_assistant_create_never_cascades_past_a_failing_primary(monkeypatch):
+    """The other leak: primary ranked first but its spawn raised, and _dispatch's
+    best-first loop moved on to the worker."""
+    from server.sessions.fleet_router import NoHostAvailable
+    async def boom(self, **kw): raise RuntimeError("spawn failed")
+    fo, rocky = _assistant_fleet(monkeypatch, order=["dobby", "rocky"], primary_create=boom)
+    with pytest.raises((NoHostAvailable, RuntimeError)):
+        await fo.create_session(kind="assistant")
+    assert rocky.calls == []
+
+
+@pytest.mark.asyncio
+async def test_coding_create_still_fails_over_past_the_primary(monkeypatch):
+    """The strict pin is assistant-only: a coding session keeps best-first failover."""
+    async def boom(self, **kw): raise RuntimeError("spawn failed")
+    fo, rocky = _assistant_fleet(monkeypatch, order=["dobby", "rocky"], primary_create=boom)
+    rec = await fo.create_session(kind="coding")
+    assert rec.host == "rocky" and rocky.calls == ["create_session"]
+
+
 @pytest.mark.asyncio
 async def test_create_cascades_on_spawn_failure(monkeypatch):
     good = _FakeOrch("rocky")
