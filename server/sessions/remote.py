@@ -1100,10 +1100,12 @@ class RemoteOrchestrator:
     async def active_session_count(self):
         return await self._client.call("active_session_count")
 
-    async def probe_mcp(self, account=None):
-        # Probes settle for up to 25 s per account (two at a time); the 30 s client
-        # default would cut a multi-account probe off mid-flight.
-        return await self._client.call("probe_mcp", account=account, timeout=300.0)
+    @rpc_deadline
+    async def probe_mcp(self, account=None, *, timeout: float | None = 45.0):
+        """No-prompt MCP probe on that host. ``timeout`` is the caller's deadline pushed INTO
+        the RPC (see server.sessions.facade.call_with_deadline); the default exceeds the
+        probe's own 33 s budget so the host's skipped list, not the transport, reports it."""
+        return await self._client.call("probe_mcp", account=account, timeout=timeout)
 
     async def live_session_load(self):
         return await self._client.call("live_session_load")

@@ -305,6 +305,7 @@ _DEADLINE_CAPABLE_RPCS = frozenset({
     "latest_summary",
     "latest_summary_many",
     "prs_for",
+    "probe_mcp",
     "prs_for_many",
     "usage",
 })
