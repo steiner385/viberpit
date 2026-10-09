@@ -280,6 +280,32 @@ async def test_pending_claim_is_refused_when_any_of_its_issues_is_untrusted(disp
     assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "refused"
 
 
+@pytest.mark.asyncio
+async def test_pending_claim_trust_refusal_is_reported_on_the_feed(dispatch_orch):
+    """The tap's "refused" toast says "see the feed": the feed must say why."""
+    from sqlalchemy import update
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+    ctx = dispatch_orch._backlog_ctx
+    await ctx.claim_target_state("o/r#7", {
+        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "product": "test-product",
+        "claimed": True, "proposed": True, "titles": {"o/r#7": "Seven", "o/r#8": "Eight"},
+        "attempts": 1}, expected={}, source="automatic")
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    async with db_session() as db:
+        await db.execute(update(WorkItem).where(WorkItem.number == 8).values(author="stranger"))
+    ctx.emit = AsyncMock()
+    assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "refused"
+    ctx.emit.assert_awaited_once()
+    args, kwargs = ctx.emit.await_args
+    assert kwargs["kind"] == "implementation_refused"
+    assert kwargs["target"] == "o/r#7"
+    assert kwargs["detail"]["reason_codes"] == ["untrusted_author"]
+    assert kwargs["detail"]["refs"] == ["o/r#8"]
+    assert "o/r#8" in args[1]
+
+
 async def _seed_held_issue(hold_kind: str = "owner_action", *, number: int = 7, repo: str = "o/r"):
     from server.db import db_session
     from server.db.models import WorkItem

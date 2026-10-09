@@ -9129,8 +9129,17 @@ class SessionOrchestrator:
             # smaller batch could not re-take it.
             from server.pm.dispatch_trust import untrusted_refs
             async with db_session() as db:
-                if await untrusted_refs(db, pending_issues):
-                    return "refused"
+                untrusted = await untrusted_refs(db, pending_issues)
+            if untrusted:
+                # Same event shape as the runner's own admission refusals, so the
+                # tap's "see the feed" toast has a feed entry saying why.
+                await self._backlog_ctx.emit(
+                    "info", f"skipped {primary}: {', '.join(untrusted)} not mirrored "
+                            "or author not trusted",
+                    kind="implementation_refused", target=primary,
+                    detail={"reason_codes": ["untrusted_author"], "refs": untrusted,
+                            "product": st.get("product")})
+                return "refused"
         candidate = by_ref.get(primary, {})
         titles = dict(st.get("titles") or {})
         if candidate.get("title"):
