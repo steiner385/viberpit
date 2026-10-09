@@ -78,6 +78,13 @@ def test_spawn_and_ensure_driver_both_write_the_list(tmp_path):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
                                        usage_fn=_fake_usage, repo_root=str(repo_root))
             await orch.start()
+            created: list[dict] = []
+            real_create = orch._create_driver
+
+            def _spy(**kw):
+                created.append(kw)
+                return real_create(**kw)
+            orch._create_driver = _spy
             try:
                 rec = await orch.create_session("auto")
                 assert rec.id in orch._drivers
@@ -85,16 +92,18 @@ def test_spawn_and_ensure_driver_both_write_the_list(tmp_path):
                 orch._drivers.pop(rec.id)  # simulate a detached/rehydrated session
                 trust.reset_mock()
                 await orch.ensure_driver(rec.id)
-                return rec.id, spawn_calls, list(trust.call_args_list)
+                return rec.id, spawn_calls, list(trust.call_args_list), created
             finally:
                 await orch.stop()
 
-        sid, spawn_calls, resume_calls = asyncio.run(_run())
+        sid, spawn_calls, resume_calls, created = asyncio.run(_run())
     assert spawn_calls and spawn_calls[-1].kwargs["disabled_mcp"] == ["gh"]
     assert resume_calls and resume_calls[-1].kwargs["disabled_mcp"] == ["gh"]
-    # spawn has no session row yet (no overrides); resume reads the row's own id
-    assert fake.await_args_list[0].kwargs["session_id"] is None
+    # both builds read the session's own overrides ({} for a not-yet-written row)
+    assert fake.await_args_list[0].kwargs["session_id"] == sid
     assert fake.await_args_list[-1].kwargs["session_id"] == sid
+    # the driver is told the SAME list so it can enforce it after start (R5)
+    assert [c["desired_disabled_mcp"] for c in created] == [["gh"], ["gh"]]
 
 
 def test_setting_defaults_on_and_reads_env(monkeypatch):
@@ -103,3 +112,60 @@ def test_setting_defaults_on_and_reads_env(monkeypatch):
     assert Settings().mcp_scope_enabled is True
     monkeypatch.setenv("VIBERPIT_MCP_SCOPE_ENABLED", "false")
     assert Settings().mcp_scope_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_adopt_passes_the_list_to_trust_and_driver(tmp_path, monkeypatch):
+    from server.db import init_db
+    from server.tests.test_adopt_session import _candidate
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    sid = "66666666-6666-6666-6666-666666666666"
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), repo_root=str(tmp_path))
+    monkeypatch.setattr(orch, "_resolve_candidate", lambda s: _candidate(str(cwd), sid))
+    monkeypatch.setattr("server.sessions.orchestrator.compose", lambda a: tmp_path / "cfg")
+    trust: list[dict] = []
+    monkeypatch.setattr("server.sessions.orchestrator.configdir.trust_project",
+                        lambda *a, **k: trust.append(k))
+    monkeypatch.setattr("server.sessions.orchestrator.disabled_for_session",
+                        AsyncMock(return_value=["gh"]))
+    monkeypatch.setattr("server.sessions.orchestrator._adopt.terminate_process_tree",
+                        lambda pid, killer: True)
+    created: list[dict] = []
+    real = orch._create_driver
+    monkeypatch.setattr(orch, "_create_driver", lambda **kw: (created.append(kw), real(**kw))[1])
+    await orch.adopt_session(sid, identity="t@e.com")
+    assert trust and trust[-1]["disabled_mcp"] == ["gh"]
+    assert created[-1]["desired_disabled_mcp"] == ["gh"]
+
+
+@pytest.mark.asyncio
+async def test_reassign_passes_the_list_to_trust_and_driver(monkeypatch):
+    from server.tests.test_reload_session import _OldDriver, _orch, _rec
+    rec = _rec("idle")
+    orch, built = _orch(monkeypatch, rec, _OldDriver())
+    trust: list[dict] = []
+    monkeypatch.setattr("server.sessions.orchestrator.configdir.trust_project",
+                        lambda *a, **k: trust.append(k))
+    monkeypatch.setattr("server.sessions.orchestrator.disabled_for_session",
+                        AsyncMock(return_value=["gh"]))
+    created: list[dict] = []
+    real = orch._create_driver
+    monkeypatch.setattr(orch, "_create_driver", lambda **kw: (created.append(kw), real(**kw))[1])
+    assert await orch.reload_session("s1", "u@x") == "reloaded"
+    assert trust and trust[-1]["disabled_mcp"] == ["gh"]
+    assert created[-1]["desired_disabled_mcp"] == ["gh"]
+
+
+@pytest.mark.asyncio
+async def test_codex_build_skips_the_scope_computation(monkeypatch):
+    from server.sessions.engine import AgentEngine
+    from server.tests.test_reload_session import _OldDriver, _orch, _rec
+    rec = _rec("idle")
+    rec.engine = AgentEngine.CODEX
+    orch, _ = _orch(monkeypatch, rec, _OldDriver())
+    fake = AsyncMock(return_value=["gh"])
+    monkeypatch.setattr("server.sessions.orchestrator.disabled_for_session", fake)
+    await orch.reload_session("s1", "u@x")
+    fake.assert_not_awaited()

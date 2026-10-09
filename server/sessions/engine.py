@@ -266,6 +266,9 @@ class AgentDriverConfig:
     #: starts or ends, so the orchestrator can refresh the persisted background-work
     #: snapshot (#2635). Only Claude calls it.
     on_background_work_changed: Callable[[str], None] | None = None
+    #: MCP servers the orchestrator wrote to the CLI's per-project disabled list; Claude
+    #: re-applies them after start in case a racing compose() erased the file (R5). Codex ignores.
+    desired_disabled_mcp: list[str] | None = None
     clock: Callable[[], float] | None = None
     suggester: SuggestionProvider | None = None
     assistant_api: AsyncCloser | None = None

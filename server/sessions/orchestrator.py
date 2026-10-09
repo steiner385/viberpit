@@ -2491,6 +2491,7 @@ class SessionOrchestrator:
         reasoning_effort: str | None = None,
         suggester: SuggestionProvider | None = None,
         assistant_api: AsyncCloser | None = None,
+        desired_disabled_mcp: list[str] | None = None,
     ) -> AgentDriver:
         """Build one driver through the canonical engine registry."""
         execution_id = uuid.uuid4().hex
@@ -2503,6 +2504,7 @@ class SessionOrchestrator:
             identity=identity,
             resume=resume,
             reasoning_effort=reasoning_effort,
+            desired_disabled_mcp=desired_disabled_mcp,
             before_execution=functools.partial(self._automation_before_execution, session_id,
                                                execution_id=execution_id),
             automation_execution_id=execution_id,
@@ -5212,10 +5214,10 @@ class SessionOrchestrator:
                 # Verify the given account exists (will raise if cred file missing — acceptable)
                 pass
 
+            disabled_mcp = (None if selected_engine is AgentEngine.CODEX else
+                            await disabled_for_session(repo=repo, session_id=session_id))
             driver_config_dir = self._driver_config_dir(
-                selected_engine, account, cwd, kind,
-                # A brand-new session has no overrides yet (no row to read).
-                disabled_mcp=await disabled_for_session(repo=repo, session_id=None),
+                selected_engine, account, cwd, kind, disabled_mcp=disabled_mcp,
             )
 
             # Ensure the Copilot proxy is running for copilot-backed accounts.
@@ -5357,6 +5359,7 @@ class SessionOrchestrator:
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
                 suggester=self._suggester_for(kind),
                 assistant_api=assistant_api,
+                desired_disabled_mcp=disabled_mcp,
             )
             # Creation transfers cleanup ownership immediately. start() can allocate
             # its subprocess/client and then block or be cancelled before returning;
@@ -18729,10 +18732,12 @@ class SessionOrchestrator:
             # SDK fails with "Working directory does not exist", which surfaced as a
             # misleading "account needs re-authentication" error.
             Path(rec.cwd).mkdir(parents=True, exist_ok=True)
+            disabled_mcp = (None if resume_engine is AgentEngine.CODEX else
+                            await disabled_for_session(
+                                repo=getattr(rec, "repo", None), session_id=rec.id))
             driver_config_dir = self._driver_config_dir(
                 resume_engine, rec.account, rec.cwd, getattr(rec, "kind", None),
-                disabled_mcp=await disabled_for_session(
-                    repo=getattr(rec, "repo", None), session_id=rec.id),
+                disabled_mcp=disabled_mcp,
             )
 
             # Allocate a virtual X11 display for this session (if X11Manager wired
@@ -18803,6 +18808,7 @@ class SessionOrchestrator:
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     suggester=self._suggester_for(getattr(rec, "kind", None)),
                     assistant_api=assistant_api,
+                    desired_disabled_mcp=disabled_mcp,
                 )
 
             # Publish this build as an in-flight swap (#1040) so a concurrent
@@ -19151,10 +19157,11 @@ class SessionOrchestrator:
         # picture rather than a driver with no claim behind it (#1379).
         await self._claim_session(session_id, why="adopt", adopt=True)
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
+        # Adopted sessions carry no repo here: global defaults plus the fresh id's overrides.
+        disabled_mcp = await disabled_for_session(repo=None, session_id=session_id)
         driver_config_dir = self._driver_config_dir(
             AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None,
-            # Adopted sessions have no repo and a fresh id: global defaults only.
-            disabled_mcp=await disabled_for_session(repo=None, session_id=None),
+            disabled_mcp=disabled_mcp,
         )
 
         # Allocate a virtual X11 display for the adopted session (fresh allocation).
@@ -19186,6 +19193,7 @@ class SessionOrchestrator:
                 resume=resume_arg,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 suggester=self._suggester,
+                desired_disabled_mcp=disabled_mcp,
             )
 
         # The FOURTH driver-build site (see the fix-pattern doc named on
@@ -22115,13 +22123,15 @@ class SessionOrchestrator:
             # instead; the caller's `except` pauses the session for a human.
             if not await self._claim_session(record.id, why=f"relaunch ({reason})"):
                 raise SessionLeaseHeld(record.id)
+            disabled_mcp = (None if record.engine is AgentEngine.CODEX else
+                            await disabled_for_session(
+                                repo=getattr(record, "repo", None), session_id=record.id))
             driver_config_dir = self._driver_config_dir(
                 record.engine,
                 new_account,
                 cwd,
                 getattr(record, "kind", None),
-                disabled_mcp=await disabled_for_session(
-                    repo=getattr(record, "repo", None), session_id=record.id),
+                disabled_mcp=disabled_mcp,
             )
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
@@ -22160,6 +22170,7 @@ class SessionOrchestrator:
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 suggester=self._suggester_for(getattr(record, "kind", None)),
                 assistant_api=assistant_api,
+                desired_disabled_mcp=disabled_mcp,
             )
             # Set the record's account BEFORE start(): start() triggers the SDK factory →
             # _oat_env, which reads record.account to pick the setup-token. If left stale, a
