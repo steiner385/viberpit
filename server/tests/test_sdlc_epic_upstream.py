@@ -22,23 +22,72 @@ def _bare_orchestrator():
     return orch_mod, orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
 
 
-async def _seed_epic(*, children: bool = True) -> None:
+async def _seed_epic(*, children: bool = True, epic_author: str = "tony",
+                     extra_child_author: str | None = None) -> None:
+    """The epic's repo is owned by a product that trusts ``tony`` -- its text is the
+    spec session's prompt, so only trusted authors may reach it."""
     from server.db import db_session
-    from server.db.models import WorkItem
+    from server.db.models import Project, ProjectRepo, WorkItem
 
     async with db_session() as db:
-        epic = WorkItem(repo="o/r", number=42, kind="issue", title="Recovery epic",
-                        body="Epic body describing the goal.", is_epic=True, state="open")
+        p = Project(slug="prod", name="prod", automation_policy={"trusted_authors": ["tony"]})
+        db.add(p)
+        await db.flush()
+        db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))
+        epic = WorkItem(author=epic_author, repo="o/r", number=42, kind="issue",
+                        title="Recovery epic", body="Epic body describing the goal.",
+                        is_epic=True, state="open")
         db.add(epic)
         await db.flush()
         if children:
-            db.add(WorkItem(repo="o/r", number=43, kind="issue", title="Child one",
-                            body="Child one body.", parent_work_item_id=epic.id,
-                            state="open"))
-            db.add(WorkItem(repo="o/r", number=44, kind="issue", title="Child two",
-                            body="Child two body.", parent_work_item_id=epic.id,
-                            state="open"))
+            db.add(WorkItem(author="tony", repo="o/r", number=43, kind="issue",
+                            title="Child one", body="Child one body.",
+                            parent_work_item_id=epic.id, state="open"))
+            db.add(WorkItem(author="tony", repo="o/r", number=44, kind="issue",
+                            title="Child two", body="Child two body.",
+                            parent_work_item_id=epic.id, state="open"))
+        if extra_child_author is not None:
+            db.add(WorkItem(author=extra_child_author, repo="o/r", number=45, kind="issue",
+                            title="Injected child", body="UNTRUSTED-CHILD-BODY",
+                            parent_work_item_id=epic.id, state="open"))
         await db.commit()
+
+
+def test_epic_upstream_text_omits_untrusted_sub_issues(isolated_db):
+    asyncio.run(_seed_epic(extra_child_author="stranger"))
+    _orch_mod, orch = _bare_orchestrator()
+    text, _ref = asyncio.run(orch._sdlc_epic_upstream_text("o/r", 42))
+    assert "Child one body." in text and "Child two body." in text
+    assert "UNTRUSTED-CHILD-BODY" not in text and "Injected child" not in text
+    assert "1 sub-issue omitted" in text
+
+
+def test_epic_adoption_spec_spawn_refuses_an_untrusted_epic(monkeypatch, isolated_db):
+    """An epic whose author is not trusted never seeds a spec session, and the feed
+    says why (once, not every tick)."""
+    asyncio.run(_seed_epic(epic_author="stranger"))
+    orch_mod, orch = _bare_orchestrator()
+    events: list = []
+
+    class Ctx:
+        async def launch_plan_or_refuse(self, _origin_ref):  # pragma: no cover
+            raise AssertionError("must refuse before the launch plan")
+
+        async def spawn_session(self, **kwargs):  # pragma: no cover
+            raise AssertionError("must not spawn")
+
+        async def emit(self, level, summary, **kw):
+            events.append((level, summary, kw))
+
+    monkeypatch.setattr(orch, "_sdlc_synth_ctx", Ctx(), raising=False)
+    ini = {"id": "ini-1", "slug": "widget", "repo": "o/r", "title": "Widget",
+           "origin": "epic-adoption", "epic_repo": "o/r", "epic_number": 42}
+    assert asyncio.run(orch._sdlc_spawn_synth(ini, "spec")) is None
+    assert asyncio.run(orch._sdlc_spawn_synth(ini, "spec")) is None
+    assert len(events) == 1
+    level, summary, kw = events[0]
+    assert kw["kind"] == "untrusted_author" and kw["target"] == "widget"
+    assert "o/r#42" in summary
 
 
 def test_epic_upstream_text_includes_epic_and_children(isolated_db):

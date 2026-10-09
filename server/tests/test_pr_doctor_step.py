@@ -16,6 +16,9 @@ from server.github.pr_status import PullRequestInfo
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 @pytest.fixture(autouse=True)
 def github_identity(monkeypatch):

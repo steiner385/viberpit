@@ -43,6 +43,9 @@ from server.sessions.pr_fix import (
     build_pr_fix_prompt,
 )
 
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 def _pr(number=7, title="fix the widget", url="https://x/pull/7"):
     return PullRequestInfo(number=number, url=url, state="open", checks="failing",

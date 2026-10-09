@@ -394,6 +394,18 @@ def _reset_github_app_auth_singletons():
 
 
 @pytest.fixture
+def pr_authors_trusted(monkeypatch):
+    """Treat every PR's mirrored author as trusted (``dispatch_trust.untrusted_prs``).
+
+    PR Doctor refuses to hand an untrusted or unmirrored PR to an agent; tests of its
+    OTHER behaviour (ownership, jobs, consolidation, engines) seed no mirrored PRs and
+    opt in here. The trust gate itself is pinned by ``test_pr_doctor_trust.py``."""
+    async def _none(_db, _repo, _numbers):
+        return []
+    monkeypatch.setattr("server.pm.dispatch_trust.untrusted_prs", _none)
+
+
+@pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).
 

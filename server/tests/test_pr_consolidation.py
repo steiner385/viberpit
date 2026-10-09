@@ -9,6 +9,9 @@ from server.github.pr_status import PullRequestInfo
 from server.tests.test_pr_doctor_step import github_identity as github_identity
 from server.tests.test_pr_doctor_step import _install_spawn_recorder
 
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 @pytest.fixture(autouse=True)
 def consolidation_github(monkeypatch, github_identity):

@@ -10579,10 +10579,15 @@ class SessionOrchestrator:
 
     async def _pm_triage_list_pending(self) -> list:
         """Open, unclassified, not parked by a HELD_KINDS hold, and with NO pending
-        proposal — the classify candidate set (see ``_classifiable_hold_clause``)."""
+        proposal — the classify candidate set (see ``_classifiable_hold_clause``).
+
+        Only TRUSTED authors (``dispatch_trust``; fail-closed for a repo no product
+        owns): this body is pasted into a classify session's prompt, and on a public
+        repo anyone can open an issue or PR."""
         from sqlalchemy import select
         from server.automations.pm_triage import PendingItemView
         from server.db.models import TriageProposal, WorkItem
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
         async with db_session() as db:
             pending_ids = set((await db.execute(
                 select(TriageProposal.work_item_id)
@@ -10594,12 +10599,14 @@ class SessionOrchestrator:
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
             )).scalars().all()
+            trusted = await trusted_authors_by_repo(db, {w.repo for w in rows})
             return [PendingItemView(
                 repo=w.repo or "", number=w.number or 0, kind=w.kind or "issue",
                 title=w.title or "", body=w.body or "",
                 labels=tuple(w.labels or ()),
                 linked_issue_numbers=tuple(w.linked_issue_numbers or ()),
-            ) for w in rows if w.id not in pending_ids]
+            ) for w in rows if w.id not in pending_ids
+                and author_trusted(trusted, w.repo, w.author)]
 
     async def _pm_triage_auto_link(self, item) -> bool:
         """Mechanical routing, no AI session (design §6.2): a PR whose closing
@@ -10803,7 +10810,9 @@ class SessionOrchestrator:
         """Build the pure engine view from DB counts (design §6). Excludes
         HELD_KINDS-parked and already-proposed items from ``unclassified_count`` —
         literally the same ``_classifiable_hold_clause`` ``_pm_triage_list_pending``
-        applies, so the count and the list cannot disagree.
+        applies, so the count and the list cannot disagree. Both also apply the same
+        author-trust filter, and so do the no_fit clusters: a cluster's suggestion and
+        item numbers seed a map-diff session that arms auto-merge.
 
         ``day_spawns`` is reported as 0 on purpose: the DB holds no record of the
         sessions THIS process spawned in the window, and ``PmTriageLoop._budgeted``
@@ -10812,6 +10821,7 @@ class SessionOrchestrator:
         from datetime import datetime, timezone
         from sqlalchemy import func, select
         from server.db.models import Feature, TriageProposal, WorkItem
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
         from server.pm.engine import NoFitCluster, StaleFeature, TriageState
         mode, config = await self._pm_triage_read_config()
         stale_days = int(config.get("stale_days", 14))
@@ -10822,13 +10832,11 @@ class SessionOrchestrator:
                 .where(TriageProposal.status == "pending")
             )).scalars().all())
             open_unclassified = (await db.execute(
-                select(WorkItem.id).where(
+                select(WorkItem.id, WorkItem.repo, WorkItem.author).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
-            )).scalars().all()
-            unclassified = sum(1 for wid in open_unclassified
-                               if wid not in pending_ids)
+            )).all()
             pending_count = len(pending_ids)
             # Drift clusters: accepted no_fit proposals grouped by
             # (suggestion, repo) — NOT by suggestion alone. A map-diff PR targets
@@ -10841,9 +10849,17 @@ class SessionOrchestrator:
                 .where(TriageProposal.status == "accepted",
                        TriageProposal.no_fit_suggestion.isnot(None))
             )).all()
+            trusted = await trusted_authors_by_repo(
+                db, {r for _id, r, _a in open_unclassified}
+                | {item.repo for _p, item in accepted_nofit})
+            unclassified = sum(1 for wid, repo, author in open_unclassified
+                               if wid not in pending_ids
+                               and author_trusted(trusted, repo, author))
             clusters: dict[tuple[str, str], list[int]] = {}
             from server.pm.map_resolution import map_resolution_inputs
             for proposal, item in accepted_nofit:
+                if not author_trusted(trusted, item.repo, item.author):
+                    continue
                 if (proposal.map_resolution or {}).get("inputs") == map_resolution_inputs(
                         proposal, item):
                     continue
@@ -11494,13 +11510,19 @@ class SessionOrchestrator:
         With ``items=[(repo, number, kind), ...]`` it classifies exactly that
         caller-supplied set (phase-3 loop path). Moves the project to
         ``classifying``. Returns the item count dispatched (0 if none/no account).
-        Closed history is evidence, not classified (spec §5)."""
+        Closed history is evidence, not classified (spec §5).
+
+        Both branches keep only items whose author is trusted under the owning
+        product's policy (``dispatch_trust``; fail-closed when no product owns the
+        repo): each item's title and body go verbatim into the session's prompt, and
+        on a public repo anyone can open an issue or PR."""
         from sqlalchemy import select, tuple_ as sa_tuple
         from server.db.models import (
             Feature, Project, ProjectRepo, TriageProposal, WorkItem)
         from server.pm.classification import (
             CLASSIFY_CHUNK_SIZE, FeatureBrief, WorkItemBrief,
             build_classification_prompt)
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
         async with db_session() as db:
             proj = (await db.execute(select(Project).where(
                 Project.slug == slug))).scalar_one_or_none()
@@ -11517,24 +11539,34 @@ class SessionOrchestrator:
                 if not items:
                     return 0
                 keys = [(r, n) for (r, n, _k) in items]
-                chunk = (await db.execute(select(WorkItem).where(
+                found = (await db.execute(select(WorkItem).where(
                     sa_tuple(WorkItem.repo, WorkItem.number).in_(keys)
                 ))).scalars().all()
+                trusted = await trusted_authors_by_repo(db, {w.repo for w in found})
+                chunk = [w for w in found if author_trusted(trusted, w.repo, w.author)]
                 if not chunk:
                     return 0
             else:
                 pending_ids = set((await db.execute(select(
                     TriageProposal.work_item_id).where(
                         TriageProposal.status == "pending"))).scalars().all())
-                selected = (await db.execute(select(WorkItem).where(
+                # Judge trust on the light columns over the WHOLE candidate set, then
+                # load the chunk: filtering after a LIMIT would let a flood of
+                # untrusted issues starve every trusted one out of the window.
+                trusted = await trusted_authors_by_repo(db, repo_names)
+                candidates = (await db.execute(select(
+                    WorkItem.id, WorkItem.repo, WorkItem.author).where(
                     WorkItem.repo.in_(repo_names), WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified"
-                ).order_by(WorkItem.gh_updated_at.desc()).limit(
-                    CLASSIFY_CHUNK_SIZE * 2))).scalars().all()
-                chunk = [w for w in selected
-                         if w.id not in pending_ids][:CLASSIFY_CHUNK_SIZE]
-                if not chunk:
+                ).order_by(WorkItem.gh_updated_at.desc()))).all()
+                chunk_ids = [wid for wid, repo_, author in candidates
+                             if wid not in pending_ids
+                             and author_trusted(trusted, repo_, author)][:CLASSIFY_CHUNK_SIZE]
+                if not chunk_ids:
                     return 0
+                by_id = {w.id: w for w in (await db.execute(select(WorkItem).where(
+                    WorkItem.id.in_(chunk_ids)))).scalars().all()}
+                chunk = [by_id[i] for i in chunk_ids if i in by_id]
             features = (await db.execute(select(Feature).where(
                 Feature.project_id == proj.id,
                 Feature.orphaned.isnot(True)))).scalars().all()
@@ -12458,6 +12490,10 @@ class SessionOrchestrator:
             return None
         if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
             return None
+        if (kind == "spec" and ini.get("origin") == "epic-adoption"
+                and not await self._sdlc_epic_author_trusted(
+                    slug, ini.get("epic_repo"), ini.get("epic_number"))):
+            return None
         # Engine FIRST, before any account, network or disk work. Two reasons,
         # and ``_backlog_spawn`` already moved its own check here for both:
         # the artifact instructions state a commit trailer (the one
@@ -12551,6 +12587,43 @@ class SessionOrchestrator:
             rec.upstream_ref = epic_upstream[1]
         return rec
 
+    async def _sdlc_epic_author_trusted(self, slug: str, epic_repo: str | None,
+                                        epic_number: int | None) -> bool:
+        """Whether an epic-adopted initiative's epic may seed its spec session.
+
+        The epic's title and body become that session's prompt, and adoption takes any
+        open epic on the product's board -- which a public repo's board automation can
+        fill with anyone's issue. So the MIRRORED epic author must be trusted under the
+        owning product's policy (``dispatch_trust``; fail-closed). An epic that is not
+        mirrored yet is left to ``_sdlc_epic_upstream_text``'s existing fallback.
+        Refusals are warned once per slug: the condition persists across ticks."""
+        if not epic_repo or epic_number is None:
+            return True
+        from sqlalchemy import select as sa_select
+        from server.db.models import WorkItem
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
+        async with db_session() as db:
+            row = (await db.execute(sa_select(WorkItem.author).where(
+                WorkItem.repo == epic_repo, WorkItem.number == epic_number,
+                WorkItem.kind == "issue"))).first()
+            if row is None:
+                return True
+            trusted = await trusted_authors_by_repo(db, [epic_repo])
+        if author_trusted(trusted, epic_repo, row[0]):
+            return True
+        warned: set[str] | None = getattr(self, "_sdlc_untrusted_epic_slugs", None)
+        if warned is None:
+            warned = self._sdlc_untrusted_epic_slugs = set()
+        if slug not in warned:
+            warned.add(slug)
+            await self._sdlc_emit(
+                "warn", f"not writing a spec for {slug}: epic {epic_repo}#{epic_number} "
+                        "is not by a trusted author",
+                kind="untrusted_author", target=slug,
+                detail={"reason_codes": ["untrusted_author"],
+                        "epic": f"{epic_repo}#{epic_number}"})
+        return False
+
     async def _sdlc_epic_upstream_text(
             self, epic_repo: str | None, epic_number: int | None,
     ) -> tuple[str, str] | None:
@@ -12573,6 +12646,13 @@ class SessionOrchestrator:
             children = (await db.execute(sa_select(WorkItem).where(
                 WorkItem.parent_work_item_id == epic.id,
             ).order_by(WorkItem.number))).scalars().all()
+            # Only trusted authors' sub-issues reach the prompt (the epic itself is
+            # judged by ``_sdlc_epic_author_trusted`` before the spawn).
+            from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
+            trusted = await trusted_authors_by_repo(db, {c.repo for c in children})
+            kept = [c for c in children if author_trusted(trusted, c.repo, c.author)]
+            omitted = len(children) - len(kept)
+            children = kept
         ref = f"{epic_repo}#{epic_number}"
         parts = [
             f"(upstream: epic {ref}; no intent.md exists — this initiative was "
@@ -12583,6 +12663,9 @@ class SessionOrchestrator:
         for child in children:
             parts += ["", f"## #{child.number} {child.title or ''}".rstrip(),
                      child.body or "_(no body)_"]
+        if omitted:
+            parts += ["", f"_({omitted} sub-issue{'s' if omitted != 1 else ''} omitted: "
+                          "not by a trusted author)_"]
         return "\n".join(parts), ref
 
     async def _sdlc_capability_personas(
@@ -15193,12 +15276,43 @@ class SessionOrchestrator:
                                           kind="gave_up", target=target)
         return False
 
+    async def _pr_doctor_untrusted_prs(self, repo: str, numbers: list[int], *,
+                                       target: str, head: str | None = None) -> list[int]:
+        """The PRs among *numbers* PR Doctor must not hand to an agent: the MIRRORED PR
+        author is not trusted under the owning product's policy (``dispatch_trust``;
+        fail-closed for an unmirrored PR or an unowned repo).
+
+        PR Doctor's scope is every open PR in its repos, fork PRs included, and a fix
+        session runs ``gh pr checkout`` + the PR's tests with full permissions, its
+        prompt carrying the PR title -- on a public repo that is anyone's code. The
+        refusal is reported once per (target, head) rather than every sweep."""
+        from server.pm.dispatch_trust import untrusted_prs
+        async with db_session() as db:
+            bad = await untrusted_prs(db, repo, numbers)
+        if bad:
+            seen: set = self.__dict__.setdefault("_pr_doctor_untrusted_seen", set())
+            key = (target, head)
+            if key not in seen:
+                seen.add(key)
+                await self._pr_doctor_ctx.emit(
+                    "warn", f"not fixing {target}: "
+                            f"{', '.join(f'{repo}#{n}' for n in bad)} not mirrored or "
+                            "author not trusted",
+                    kind="untrusted_author", target=target,
+                    detail={"reason_codes": ["untrusted_author"], "prs": bad})
+        return bad
+
     async def _pr_doctor_session_fix(self, repo, branch, info, kind, rec, on_phase=None,
                                      *, expected_state=None):
         from server.automations import pr_doctor_engine as engine
         from server.automations.ownership import OwnershipConflict, StaleOwnership
         from server.automations.target_identity import TargetIdentityError
         target = f"{repo}#{info.number}"
+        # Before the claim, so a refusal changes no durable state and the next sweep
+        # re-judges (the mirror may simply not have synced a fresh PR yet).
+        if await self._pr_doctor_untrusted_prs(repo, [info.number], target=target,
+                                               head=info.head_sha):
+            return "untrusted_author", None, "the PR's author is not a trusted author"
         try:
             expected = await self._pr_doctor_claim(repo, [info.number], target,
                                                   source="manual" if on_phase else "automatic",
@@ -15446,6 +15560,9 @@ class SessionOrchestrator:
                and not by_number[n].is_draft]
         if len(prs) != len(want):
             return "not_actionable", None
+        if await self._pr_doctor_untrusted_prs(
+                repo, want, target=consolidation_target(repo, want)):
+            return "untrusted_author", None
         cands = [ConsolidationCandidate(
             number=p.number, title=p.title, url=p.url, checks=p.checks,
             mergeable=p.mergeable, updated_at=p.updated_at, scope="") for p in prs]

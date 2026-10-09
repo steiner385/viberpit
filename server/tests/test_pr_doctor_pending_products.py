@@ -12,6 +12,11 @@ from dataclasses import replace
 from server.tests.test_pr_doctor_sweep import (
     _build_orch, _init_pr_doctor_db, _pr, _set_config, _set_mode)
 
+import pytest
+
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 async def _register_repo(repo: str, slug: str) -> None:
     from server.db import db_session
