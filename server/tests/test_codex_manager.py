@@ -906,6 +906,55 @@ def test_a_clean_self_exit_is_reported_as_an_exit_and_still_restarts(caplog):
     asyncio.run(go())
 
 
+def test_an_exit_names_the_request_it_left_unanswered(caplog):
+    """#2889: a clean exit landing just after a quota poll was suspected of being
+    caused BY the poll, and nothing on the record could confirm or refute it. The
+    ending now names the last request sent and what was still awaiting a reply."""
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        client = manager.client_for("a")
+        # No rule for the method: the fake never answers, as an app-server that
+        # exits instead of replying would not.
+        poll = asyncio.create_task(client.read_rate_limits())
+        await spawned[0].server.expect("account/rateLimits/read")
+        with caplog.at_level(logging.INFO, logger="server.codex.manager"):
+            spawned[0].crash(rc=0)
+            await manager.wait_settled("a", timeout=2.0)
+        with contextlib.suppress(Exception):
+            await poll
+
+        record = _ending_record(caplog)
+        assert record.event == "codex.manager.runner_exited"
+        assert record.fields["last_request_method"] == "account/rateLimits/read"
+        assert record.fields["last_request_age_s"] >= 0.0
+        assert record.fields["pending_requests"] == ["account/rateLimits/read"]
+        assert list(record.fields)[-1] == "detail", "detail must stay last (#1857)"
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_an_exit_nothing_provoked_says_so(caplog):
+    """The other half of the evidence: an app-server asked nothing since its
+    startup handshake left with no request outstanding."""
+
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        with caplog.at_level(logging.INFO, logger="server.codex.manager"):
+            spawned[0].crash(rc=0)
+            await manager.wait_settled("a", timeout=2.0)
+
+        record = _ending_record(caplog)
+        assert record.fields["last_request_method"] == "remoteControl/disable"
+        assert record.fields["pending_requests"] == []
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
 def _clean_exit_levels(caplog, uptimes: list[float]) -> list[int]:
     """Drive one clean self-exit per uptime through the real supervisor and
     return the level each ``runner_exited`` record was logged at."""

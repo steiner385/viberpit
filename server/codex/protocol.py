@@ -358,6 +358,12 @@ class CodexAppServerClient:
         #: still alive (#1444, one oversized frame) is a dead runner, and nothing
         #: else — not the process exit, not the next caller's error — reports it.
         self._closed_event = asyncio.Event()
+        #: Post-mortem for a runner that ends: what it was last asked, when, and
+        #: what it left unanswered — frozen at the latch, because closing fails
+        #: and forgets every pending request (#2889).
+        self._last_request_method: str | None = None
+        self._last_request_at: float | None = None
+        self._pending_at_close: tuple[str, ...] = ()
         self._initialized = False
         self._initialize_response: schema.InitializeResponse | None = None
 
@@ -384,6 +390,24 @@ class CodexAppServerClient:
     @property
     def pending_request_count(self) -> int:
         return len(self._pending)
+
+    @property
+    def pending_request_methods(self) -> tuple[str, ...]:
+        """Methods awaiting a reply; once latched, those the latch failed."""
+        if self._closed_error is not None:
+            return self._pending_at_close
+        return tuple(entry.method for entry in self._pending.values())
+
+    @property
+    def last_request_method(self) -> str | None:
+        return self._last_request_method
+
+    @property
+    def last_request_age_s(self) -> float | None:
+        """Seconds since the last request was sent, or None if none ever was."""
+        if self._last_request_at is None:
+            return None
+        return round(time.monotonic() - self._last_request_at, 1)
 
     @property
     def active_outbound_request_count(self) -> int:
@@ -771,6 +795,8 @@ class CodexAppServerClient:
         request_id = next(self._ids)
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = _Pending(future, method)
+        self._last_request_method = method
+        self._last_request_at = time.monotonic()
         frame = {"id": request_id, "method": method, "params": frame_params}
 
         async def _send_and_await() -> Any:
@@ -842,10 +868,11 @@ class CodexAppServerClient:
             raise self._closed_copy()
 
     def _fail_all(self, error: CodexProtocolError) -> None:
+        pending, self._pending = self._pending, {}
         if self._closed_error is None:
             self._closed_error = error
+            self._pending_at_close = tuple(entry.method for entry in pending.values())
         self._closed_event.set()
-        pending, self._pending = self._pending, {}
         for entry in pending.values():
             if not entry.future.done():
                 entry.future.set_exception(self._closed_copy())
