@@ -1156,6 +1156,12 @@ class CodexRunnerManager:
             # saying why an app-server left, because the record carried neither.
             uptime_s=round(uptime_s, 1),
             pid=runner.process.pid,
+            # What the runner was last asked and left unanswered: the evidence
+            # that confirms or refutes "this request provoked the exit" (#2889,
+            # where a quota poll was suspected and nothing on record could say).
+            last_request_method=runner.client.last_request_method,
+            last_request_age_s=runner.client.last_request_age_s,
+            pending_requests=list(runner.client.pending_request_methods),
             # `detail` goes last: the sink's issue title is the field summary
             # clipped to 100 characters, and a stderr tail that led would push out
             # the fields triage actually reads.
