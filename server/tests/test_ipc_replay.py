@@ -275,3 +275,27 @@ async def test_evict_clears_stream_buffer():
         app.state.evict("s1")
         assert "s1" not in app.state.buffers
         assert "s1" not in app.state.seqs
+
+
+@pytest.mark.asyncio
+async def test_release_ring_frees_buffer_but_keeps_seq_continuity():
+    """#2891: archive frees the ring but a revived (unarchived) stream must continue
+    its seq space — a restart at 0 would read as an overlap to every edge cursor."""
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        for t in ("user", "a", "b"):          # seq 0..2, turn left open
+            await app.state.publish("s1", {"type": t})
+        app.state.release_ring("s1")
+        assert "s1" not in app.state.buffers
+        assert "s1" not in app.state.stats
+        assert app.state.head_seq("s1") == 2
+        # An edge cursor from before the archive is not served from an empty ring,
+        # and no stale open turn is offered for resupply.
+        assert app.state.ring_covers("s1", 2) is False
+        assert app.state.turn_open_for("s1") is False
+        assert app.state.resume_since("s1") == 2
+        # Revived stream continues at head + 1; the old cursor covers the new tail.
+        await app.state.publish("s1", {"type": "c"})
+        assert app.state.head_seq("s1") == 3
+        assert app.state.ring_tail("s1", 2) == {
+            "covered": True, "events": [{"seq": 3, "event": {"type": "c"}}], "head": 3}

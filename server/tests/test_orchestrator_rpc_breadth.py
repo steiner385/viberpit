@@ -35,6 +35,34 @@ def test_simple_returns_wrapped_in_result():
     orch.resolve_permission.assert_called_once_with(session_id="s1", perm_id="p", decision="allow", identity="me")
 
 
+def test_archive_session_rpc_releases_replay_ring_keeping_seq():
+    """#2891: archiving frees the stream's replay ring (it used to live until the
+    daemon restarted) but keeps the seq counter for a later unarchive."""
+    import asyncio
+    app, orch = _app()
+    orch.archive_session = mock.AsyncMock(return_value=None)
+    asyncio.run(app.state.publish("s1", {"type": "user"}))
+    asyncio.run(app.state.publish("s2", {"type": "user"}))
+    with TestClient(app) as c:
+        assert c.post("/rpc/archive_session",
+                      json={"session_id": "s1", "archived_by": "autopilot"}).json()["result"] is None
+    orch.archive_session.assert_awaited_once_with(session_id="s1", archived_by="autopilot")
+    assert "s1" not in app.state.buffers
+    assert app.state.head_seq("s1") == 0
+    assert "s2" in app.state.buffers     # other streams untouched
+
+
+def test_archive_session_rpc_keeps_ring_when_archive_fails():
+    """A failed archive leaves the session live, so its ring must survive."""
+    import asyncio
+    app, orch = _app()
+    orch.archive_session = mock.AsyncMock(side_effect=RuntimeError("db down"))
+    asyncio.run(app.state.publish("s1", {"type": "user"}))
+    with TestClient(app, raise_server_exceptions=False) as c:
+        assert c.post("/rpc/archive_session", json={"session_id": "s1"}).status_code == 500
+    assert "s1" in app.state.buffers
+
+
 def test_certify_harvested_complete_is_a_simple_rpc():
     """The owning host's daemon runs the certify locally when the primary's
     chained ingest forwards it (edge -> FleetOrchestrator -> this RPC)."""
