@@ -31,3 +31,9 @@
 /scripts/check_constitution_amendment.py @steiner385
 /.github/workflows/constitution.yml @steiner385
 /.github/CODEOWNERS                 @steiner385
+
+# Every workflow and repo-automation file. Once the repo is public, an agent PR that
+# auto-merged a new workflow (e.g. `pull_request_target`, or `issue_comment` with a
+# write token) could undo the "no dangerous triggers" property CI depends on, so any
+# change under .github/ needs a human's review, like the governance files above.
+/.github/                           @steiner385
