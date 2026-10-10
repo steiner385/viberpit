@@ -47,6 +47,11 @@ _DEPLOY_STATE_LOG = LogThrottle()
 # wedge-then-restart sequence is one unreachable spell, so a timeout followed by a refusal
 # keeps counting. Anything else — a success, a fence, a non-daemon error — ends the run.
 UNREACHABLE_ESCALATE_AFTER = 3
+# A ``DaemonTimeout`` is stronger evidence of load than of an outage (the daemon answered
+# the TCP/TLS handshake), and a runner host's test-suite burst outlasts 90s (#2899), so it
+# earns a longer run (~5 min) before escalating. The threshold is that of the CURRENT
+# exception's class, so a timeout run that ends in refusals escalates at 3 total.
+UNREACHABLE_TIMEOUT_ESCALATE_AFTER = 10
 _CONSECUTIVE_UNREACHABLE: dict[str, int] = {}
 
 Fetch = Callable[[str], Awaitable[dict]]
@@ -145,7 +150,7 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
                 log, _PROBE_FAILURE_LOG, f"{name}:restart:{cause}", logging.INFO,
                 "fleet.probe_failed", host=name, endpoint=endpoint, error=str(exc),
                 restart="in_progress")
-        elif 0 < unreachable < UNREACHABLE_ESCALATE_AFTER:
+        elif 0 < unreachable < escalate_after(exc):
             # Its own key, for the same reason the restart branch has one: sharing the
             # host's would let this INFO gag the WARNING the run is about to earn.
             log_event_throttled(
@@ -165,6 +170,16 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
 def unreachable_run(name: str) -> int:
     """Read-only view of *name*'s current consecutive-unreachable run (0 if none)."""
     return _CONSECUTIVE_UNREACHABLE.get(name, 0)
+
+
+def escalate_after(exc: BaseException) -> int:
+    """Run length at which an unreachable probe for *exc*'s class becomes a WARNING."""
+    from server.ipc.client import DaemonTimeout  # deferred, as in default_fetch
+
+    # Builtin TimeoutError is the same condition raised by a local asyncio.timeout (#2846).
+    if isinstance(exc, (DaemonTimeout, TimeoutError)):
+        return UNREACHABLE_TIMEOUT_ESCALATE_AFTER
+    return UNREACHABLE_ESCALATE_AFTER
 
 
 def _count_unreachable(name: str, exc: Exception) -> int:

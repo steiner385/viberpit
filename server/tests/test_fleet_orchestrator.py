@@ -1182,7 +1182,7 @@ def sustained_outage(monkeypatch):
     """The probe has already seen rocky miss enough times that a miss is news (#2821)."""
     from server.sessions import host_probe
     monkeypatch.setitem(host_probe._CONSECUTIVE_UNREACHABLE, "rocky",
-                        host_probe.UNREACHABLE_ESCALATE_AFTER)
+                        host_probe.UNREACHABLE_TIMEOUT_ESCALATE_AFTER)
 
 
 @pytest.mark.asyncio
@@ -1335,9 +1335,9 @@ async def test_lone_daemon_timeout_logs_info(caplog):
 async def test_daemon_timeout_warns_once_probe_run_escalates(caplog):
     import logging
     from server.ipc.client import DaemonTimeout
-    from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER
+    from server.sessions.host_probe import UNREACHABLE_TIMEOUT_ESCALATE_AFTER
     levels = await _unreachable_levels(
-        caplog, DaemonTimeout("list_sessions timed out:"), UNREACHABLE_ESCALATE_AFTER)
+        caplog, DaemonTimeout("list_sessions timed out:"), UNREACHABLE_TIMEOUT_ESCALATE_AFTER)
     assert levels == [logging.WARNING]
 
 
@@ -1353,8 +1353,8 @@ async def test_lone_local_deadline_timeout_logs_info(caplog):
 @pytest.mark.asyncio
 async def test_local_deadline_timeout_warns_once_probe_run_escalates(caplog):
     import logging
-    from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER
-    levels = await _unreachable_levels(caplog, TimeoutError(), UNREACHABLE_ESCALATE_AFTER)
+    from server.sessions.host_probe import UNREACHABLE_TIMEOUT_ESCALATE_AFTER
+    levels = await _unreachable_levels(caplog, TimeoutError(), UNREACHABLE_TIMEOUT_ESCALATE_AFTER)
     assert levels == [logging.WARNING]
 
 
