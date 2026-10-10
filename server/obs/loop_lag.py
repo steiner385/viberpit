@@ -59,6 +59,13 @@ a lag crosses ``alert_after`` it diffs them over that window. If host-wide stall
 time covers at least ``HOST_STALL_SHARE`` of the lag, the stall is reported as
 ``loop_lag.host_stall`` at INFO with the measured ``host_*_full_s``; a stall the
 host's pressure does not explain stays a WARNING. PSI absent → WARNING, as before.
+
+Host ``full`` misses a *partly* thrashing host (#2882): the edge froze 7s faulting
+on its own swapped-out pages while the daemon kept logging, so host-wide ``full``
+stayed low. ``PsiReader`` therefore also reads this process's own cgroup
+``memory.pressure`` / ``io.pressure`` ``full`` counters (``cgroup_*_full_s``) and
+the largest of all the deltas is what must cover the lag. Every delta rides on
+the WARNING too, so an unexplained stall shows how much pressure *did* explain.
 """
 import asyncio
 import logging
@@ -190,34 +197,73 @@ def _build_stall_tracer(dump_path: str | None):
 _PSI_RESOURCES = ("memory", "io")
 
 
-def read_host_psi() -> dict[str, float] | None:
-    """Cumulative host-wide PSI ``full`` stall seconds per resource, or None.
+def _psi_full_total_s(path: str) -> float | None:
+    """Cumulative ``full`` stall seconds from one PSI file, or None if unreadable."""
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("full "):
+            for part in line.split():
+                if part.startswith("total="):
+                    try:
+                        return int(part[len("total="):]) / 1e6
+                    except ValueError:
+                        return None
+    return None
 
-    ``full`` is time during which *every* non-idle task was stalled on that
-    resource — the whole-host freeze a loop-lag watchdog cannot see past. Cheap
-    procfs reads; a kernel without PSI (or a container hiding it) returns None
-    and the watchdog falls back to treating every stall as the process's own.
+
+def _own_cgroup_dir(proc_root: str, cgroup_root: str) -> str | None:
+    """This process's cgroup v2 directory (``0::/system.slice/x.service``), or None."""
+    try:
+        with open(f"{proc_root}/self/cgroup") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("0::"):
+            return os.path.join(cgroup_root, line[3:].strip().lstrip("/"))
+    return None  # cgroup v1 only: no unified hierarchy, no per-unit PSI
+
+
+class PsiReader:
+    """Cumulative PSI ``full`` stall seconds, keyed ``<scope>_<resource>``, or None.
+
+    Two scopes. ``host`` (``/proc/pressure/*``) is time during which *every*
+    non-idle task on the host was stalled — the whole-host freeze of #2866.
+    ``cgroup`` (``<own cgroup>/*.pressure``) is time during which every task in
+    *this unit* was stalled (#2882): a partly thrashing host keeps host ``full``
+    low while the edge faults on its own swapped-out pages, which only the unit's
+    counter sees. For the daemon the unit also holds the claude children, so its
+    ``full`` stays conservative — one faulting child does not trip it.
+
+    The cgroup is resolved once, at construction. Each file is read on its own:
+    a missing one drops only its key (cgroup v1, no PSI, a hidden procfs), and a
+    reader with nothing readable returns None so the watchdog keeps every stall
+    the process's own.
     """
-    totals: dict[str, float] = {}
-    for resource in _PSI_RESOURCES:
-        try:
-            with open(f"/proc/pressure/{resource}") as fh:
-                text = fh.read()
-        except OSError:
-            return None
-        for line in text.splitlines():
-            if line.startswith("full "):
-                for part in line.split():
-                    if part.startswith("total="):
-                        totals[resource] = int(part[len("total="):]) / 1e6
-                break
-        if resource not in totals:
-            return None
-    return totals
+
+    def __init__(self, proc_root: str = "/proc", cgroup_root: str = "/sys/fs/cgroup") -> None:
+        self._paths = {f"host_{r}": f"{proc_root}/pressure/{r}" for r in _PSI_RESOURCES}
+        cgroup_dir = _own_cgroup_dir(proc_root, cgroup_root)
+        if cgroup_dir is not None:
+            self._paths.update(
+                {f"cgroup_{r}": f"{cgroup_dir}/{r}.pressure" for r in _PSI_RESOURCES})
+
+    def __call__(self) -> dict[str, float] | None:
+        totals = {}
+        for key, path in self._paths.items():
+            total = _psi_full_total_s(path)
+            if total is not None:
+                totals[key] = total
+        return totals or None
 
 
-# Share of a stall that host-wide full stall time must cover for the stall to be
-# attributed to the host rather than to this process (#2866).
+# Share of a stall that full stall time (host-wide or this unit's) must cover for
+# the stall to be attributed to memory/io pressure rather than to this process's
+# own code (#2866, #2882).
 HOST_STALL_SHARE = 0.5
 
 
@@ -262,9 +308,9 @@ class LoopLagWatchdog:
             self._tracer = _tracer if _tracer is not None else _build_stall_tracer(dump_path)
         else:
             self._tracer = None
-        # Host PSI reader (#2866); returns cumulative full-stall seconds per
-        # resource, or None when the host does not expose PSI.
-        self._psi = _psi if _psi is not None else read_host_psi
+        # PSI reader (#2866, #2882); returns cumulative full-stall seconds per
+        # ``<scope>_<resource>``, or None when nothing exposes PSI.
+        self._psi = _psi if _psi is not None else PsiReader()
         # Routine overshoot, host-explained stalls and real stalls throttle
         # independently: neither INFO class may spend the window a WARNING needs.
         self._throttles = {"routine": _Throttle(), "host": _Throttle(), "alert": _Throttle()}
@@ -287,8 +333,8 @@ class LoopLagWatchdog:
         except Exception:  # a diagnostic read must never kill the watchdog
             return None
 
-    def _host_stall(self, psi_before: dict[str, float] | None) -> dict[str, float] | None:
-        """Host-wide full-stall seconds per resource since ``psi_before``, or None."""
+    def _pressure_since(self, psi_before: dict[str, float] | None) -> dict[str, float] | None:
+        """Full-stall seconds per ``<scope>_<resource>`` since ``psi_before``, or None."""
         if psi_before is None:
             return None
         psi_after = self._read_psi()
@@ -303,8 +349,8 @@ class LoopLagWatchdog:
         """Record one measured overshoot and warn about it, rate-limited.
 
         Split out of ``run`` so the throttle is testable without real sleeps.
-        ``psi_before`` is the host PSI snapshot taken at the start of the tick;
-        with it, a stall the host's own pressure explains is not a WARNING.
+        ``psi_before`` is the PSI snapshot taken at the start of the tick; with
+        it, a stall that host or cgroup pressure explains is not a WARNING.
         """
         if lag > self.peak_lag_s:
             self.peak_lag_s = lag
@@ -317,12 +363,16 @@ class LoopLagWatchdog:
             kind, level = "routine", logging.INFO
         else:
             kind, level = "alert", logging.WARNING
-            host = self._host_stall(psi_before)
-            # Memory and io full-stall overlap during thrash (reclaim *is* io), so
-            # the larger of the two — not the sum — is the host's share.
-            if host and max(host.values()) >= HOST_STALL_SHARE * lag:
-                kind, level, event = "host", logging.INFO, "loop_lag.host_stall"
-                extra = {f"host_{r}_full_s": round(s, 2) for r, s in sorted(host.items())}
+            pressure = self._pressure_since(psi_before)
+            if pressure:
+                # Attached to the WARNING too, so an unexplained stall still shows
+                # how much of it pressure did explain (#2882).
+                extra = {f"{k}_full_s": round(s, 2) for k, s in sorted(pressure.items())}
+                # Memory and io full-stall overlap during thrash (reclaim *is* io),
+                # and the cgroup's stall is inside the host's — so the largest
+                # single counter, never a sum, is pressure's share.
+                if max(pressure.values()) >= HOST_STALL_SHARE * lag:
+                    kind, level, event = "host", logging.INFO, "loop_lag.host_stall"
         t = self._throttles[kind]
         now = self._clock()
         if t.last_at is not None and (now - t.last_at) < self.warn_every:
