@@ -100,6 +100,13 @@ def list_completed_runs(repo: str, since_ts: float | None, *,
                                  f"?status=completed&per_page=100&page={page}{date}"]))
         runs = data.get("workflow_runs", [])
         for r in runs:
+            # A fork PR's run executes the FORK's code: its test ids, failure text and
+            # junit artifacts are attacker-written, and the doctor files issues from
+            # them under this repo's own (trusted) identity. Keep only runs of this
+            # repo's code; a missing head repository (deleted fork) is foreign too.
+            head = (r.get("head_repository") or {}).get("full_name") or ""
+            if head.lower() != repo.lower():
+                continue
             created = _iso_ts(r.get("created_at")) or 0.0
             # No strict client-side created <= since_ts filter: idempotence lives in
             # _ingest's existing `seen` set (skips already-stored run ids).

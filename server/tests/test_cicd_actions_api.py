@@ -24,10 +24,12 @@ def test_list_completed_runs_normalizes_and_3day_lookback():
     payload = {"workflow_runs": [
         {"id": 5, "path": ".github/workflows/ci.yml", "event": "pull_request",
          "head_sha": "abc", "head_branch": "feat", "conclusion": "success",
+         "head_repository": {"full_name": "o/r"},
          "run_started_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:05:00Z",
          "created_at": "2026-07-01T10:00:00Z"},
         {"id": 4, "path": ".github/workflows/ci.yml", "event": "push",
          "head_sha": "old", "head_branch": "master", "conclusion": "success",
+         "head_repository": {"full_name": "o/r"},
          "run_started_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:04:00Z",
          "created_at": "2026-06-01T10:00:00Z"},
     ]}
@@ -54,8 +56,24 @@ def _run_payload(n, start_id=0):
     return {"workflow_runs": [
         {"id": start_id + i, "path": ".github/workflows/ci.yml", "event": "push",
          "head_sha": f"s{i}", "head_branch": "master", "conclusion": "success",
+         "head_repository": {"full_name": "o/r"},
          "run_started_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:01:00Z",
          "created_at": "2026-07-01T10:00:00Z"} for i in range(n)]}
+
+
+def test_list_completed_runs_drops_runs_of_fork_code():
+    """A fork PR's run executes the FORK's code, so its test ids, failure messages and
+    junit artifacts are attacker-written. CI/CD Doctor files issues from them under the
+    repo's own identity -- which the trusted-author gate trusts -- so those runs must
+    never be ingested. Only runs whose head repository IS this repo (case-insensitive)
+    are kept; a run with no head repository (e.g. a deleted fork) is dropped too."""
+    base = _run_payload(4)["workflow_runs"]
+    base[1]["head_repository"] = {"full_name": "stranger/r"}     # fork PR
+    base[2]["head_repository"] = None                            # deleted fork
+    base[3]["head_repository"] = {"full_name": "O/R"}            # same repo, other case
+    runs = list_completed_runs("o/r", None, run=lambda args, token=None: _ok(
+        {"workflow_runs": base}))
+    assert [r["id"] for r in runs] == [0, 3]
 
 
 def test_list_completed_runs_paginates_full_pages():
