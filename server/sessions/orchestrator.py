@@ -4586,24 +4586,12 @@ class SessionOrchestrator:
                     # ownership by the stamp it carries NOW — a stale in-memory stamp
                     # is how two daemons would both believe they own one entry.
                     in_mem.host = row.host
-                if not self._owns_record(in_mem, enabled_hosts):
-                    # Ownership (#852) has one exception: an entry whose owner cannot
-                    # start it — at its own cap, down, or disabled — is started by the
-                    # first host that has room. That is what makes "every host was
-                    # full, queue it" (FleetOrchestrator) end in a session rather than
-                    # a row pinned to whichever daemon happened to persist it. The
-                    # lease fences the race with the owner's own drain (_adopt).
-                    if await self._queue_owner_can_start(row.host):
-                        foreign.add(sid)
-                        log.debug("session_queue.foreign_entry id=%s host=%s — left for owner",
-                                  sid, row.host)
-                        continue
-                    if not await self._adopt_queued_entry(sid, row):
-                        foreign.add(sid)
-                        continue
-                    in_mem.host = self_host_name()
                 # The product/runner holds are slot gates a person may override
-                # ("Start now"); the account headroom probe below is NOT.
+                # ("Start now"); the account headroom probe below is NOT. Checked
+                # BEFORE ownership: adopting an entry its product cap still holds
+                # re-stamps the row for nothing, and the next full host adopts it
+                # back — the dobby⇄rocky ping-pong that left a stale worker copy
+                # every queue action was routed to (4a558770, 2026-10-09).
                 if not forcing:
                     if queue_reason == "product_capacity" and params.get("repo"):
                         from server.automations.product_admission import repo_capacity_status
@@ -4622,6 +4610,22 @@ class SessionOrchestrator:
                             capacity_full.add(sid)
                             log.debug("session_queue.runner_capacity_full id=%s — left queued", sid)
                             continue
+                if not self._owns_record(in_mem, enabled_hosts):
+                    # Ownership (#852) has one exception: an entry whose owner cannot
+                    # start it — at its own cap, down, or disabled — is started by the
+                    # first host that has room. That is what makes "every host was
+                    # full, queue it" (FleetOrchestrator) end in a session rather than
+                    # a row pinned to whichever daemon happened to persist it. The
+                    # lease fences the race with the owner's own drain (_adopt).
+                    if await self._queue_owner_can_start(row.host):
+                        foreign.add(sid)
+                        log.debug("session_queue.foreign_entry id=%s host=%s — left for owner",
+                                  sid, row.host)
+                        continue
+                    if not await self._adopt_queued_entry(sid, row):
+                        foreign.add(sid)
+                        continue
+                    in_mem.host = self_host_name()
                 # Account headroom, for EVERY unpinned entry whatever its reason
                 # (never overridable, so outside the forcing gate): spawning into a
                 # ceiling only builds a worktree to tear it down, and the at-spawn
@@ -5077,10 +5081,45 @@ class SessionOrchestrator:
             log.warning("session_queue.orphan_announce_failed id=%s", row.id,
                         exc_info=True)
 
+    async def _heal_queue_entry(self, session_id: str) -> bool:
+        """Whether *session_id* has a queue entry, re-enqueuing a lost one first.
+
+        A person acting on a queued card (move / Start now) is asking for the
+        session to run, so a 'queued' row whose entry is gone is put back at the
+        tail from the row (``_orphan_queue_params``) rather than refused with "not
+        in the queue". Unlike ``_reconcile_orphan_queued`` there is no replayability
+        bar: that reaper guards against re-running automation work nobody asked
+        for, while here someone did. An assistant row is the one exception (its
+        queue is exempt and its prompt is a drawer message).
+        """
+        from sqlalchemy import select as sa_select
+        from server.sessions import session_queue as sq
+        if await sq.entry_for(session_id) is not None:
+            return True
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession).where(DbSession.id == session_id)
+            )).scalar_one_or_none()
+        if row is None or row.status != "queued" or is_assistant_kind(
+                getattr(row, "kind", None)):
+            return False
+        from sqlalchemy.exc import IntegrityError
+        try:
+            await sq.enqueue(session_id, self._orphan_queue_params(row))
+        except IntegrityError:
+            # The entry landed concurrently (session_id is the PK): it exists now.
+            return True
+        log.warning("session_queue.orphan_reconciled id=%s action=requeued_on_action "
+                    "origin=%s host=%s", session_id, getattr(row, "origin", None),
+                    getattr(row, "host", None))
+        return True
+
     async def session_queue_move(self, session_id: str, op: str,
                                  position: int | None = None) -> bool:
         """Reorder a queued session. Returns True on success, False if not found."""
         from server.sessions import session_queue as sq
+        if not await self._heal_queue_entry(session_id):
+            return False
         return await sq.move(session_id, op, position)
 
     async def session_queue_positions(self) -> dict[str, int]:
@@ -5097,9 +5136,17 @@ class SessionOrchestrator:
         with no entry, which _reconcile_orphan_queued would replay as a crash orphan
         and re-run the very session the user just cancelled. The presence check
         therefore reads the queue instead of using remove()'s rowcount as the claim."""
+        from sqlalchemy import select as sa_select
         from server.sessions import session_queue as sq
         if session_id not in await sq.positions():
-            return False
+            # An entry-less 'queued' row is still a queued card to its user:
+            # cancelling it ends it rather than 404ing "not in the queue".
+            async with db_session() as db:
+                status = (await db.execute(
+                    sa_select(DbSession.status).where(DbSession.id == session_id)
+                )).scalar_one_or_none()
+            if status != "queued":
+                return False
         await self._persist_status(session_id, "ended")
         await sq.remove(session_id)
         rec = self._records.get(session_id)
@@ -5119,6 +5166,8 @@ class SessionOrchestrator:
         Returns "started", "not_queued" (no entry, or the entry was left for its
         owning host) or "failed" (the spawn failed and the session was ended)."""
         from server.sessions import session_queue as sq
+        if not await self._heal_queue_entry(session_id):
+            return "not_queued"
         entry = await sq.entry_for(session_id)
         if entry is None:
             return "not_queued"
@@ -14480,6 +14529,15 @@ class SessionOrchestrator:
             except Exception:  # pragma: no cover — recheck must never stall the loop
                 log.warning("completion.recheck_loop_error", exc_info=True)
             try:
+                # The primary resyncs moved queued records from its mirror loop, which a
+                # worker never starts — so a worker's copy of an entry another host
+                # adopted was never dropped, and the edge kept routing that session's
+                # queue actions here ("not in the queue").
+                if daemon_role() == "worker":
+                    await self._resync_moved_queued_mirrors()
+            except Exception:  # pragma: no cover — resync must never stall the loop
+                log.warning("session_queue.mirror_resync_failed", exc_info=True)
+            try:
                 await self._autopilot_loop.tick()
             except Exception:  # pragma: no cover — tick() already swallows; belt+braces
                 log.warning("autopilot.tick_loop_error", exc_info=True)
@@ -23827,6 +23885,11 @@ class SessionOrchestrator:
         host-partitions), so it drops the record outright: a worker-served copy
         beats the primary's in the fleet list merge, and a stale one here would
         shadow the live session on the host that adopted it.
+
+        A worker judges by the stamp alone, not by "the stamp moved since my copy":
+        the drain re-stamps a driverless copy in place (``in_mem.host = row.host``),
+        after which a moved-since check saw nothing to drop and the copy lived on.
+        The primary's mirror loop calls this; a worker's autopilot loop does too.
         """
         drivers = getattr(self, "_drivers", {})
         ids = [sid for sid, rec in list(self._records.items())
@@ -23842,7 +23905,7 @@ class SessionOrchestrator:
         enabled_hosts = await self._enabled_host_names()
         for sid, host, status in rows:
             rec = self._records.get(sid)
-            if rec is None or rec.host == host:
+            if rec is None or (rec.host == host and not worker):
                 continue
             if self._owns_record_by_stamp(host, enabled_hosts):
                 # Still ours under its current stamp — e.g. the edge stamped the

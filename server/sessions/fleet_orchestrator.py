@@ -760,6 +760,15 @@ class FleetOrchestrator:
             for rec in recs or []:
                 if not include_assistant and is_assistant(rec):
                     continue
+                stamp = getattr(rec, "host", None)
+                if (name != self._primary and stamp is not None and stamp != name
+                        and getattr(rec, "detached", False)):
+                    # A worker serving a DRIVERLESS copy stamped for another host is
+                    # holding a stale record (another host adopted its queue entry),
+                    # not running the session. Letting it win the merge pinned every
+                    # per-session action to that worker, which answered "not in the
+                    # queue" (4a558770, 2026-10-09).
+                    continue
                 prev = served_by.get(rec.id)
                 # Keep an existing entry unless it is the primary's mirror and this
                 # host is the one actually running the session.
@@ -778,6 +787,12 @@ class FleetOrchestrator:
         for sid, name in list(served_by.items()):
             if name != self._primary:
                 continue  # served by the host that runs it — authoritative
+            cached = self._host_cache.get(sid)
+            if cached is not None and cached != self._primary and cached in answered:
+                # A worker once served this id and has since stopped: forget the
+                # route so _host_for re-reads the row's stamp instead of pinning
+                # the session to a host that no longer holds it.
+                self._host_cache.pop(sid, None)
             rec = merged[sid]
             owner = getattr(rec, "host", None)
             if (owner is not None and owner != self._primary and owner in answered

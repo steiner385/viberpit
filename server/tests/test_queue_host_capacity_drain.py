@@ -288,3 +288,153 @@ def test_a_worker_drops_a_queued_record_the_row_says_moved(tmp_path, me):
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+# --- 4a558770 (2026-10-09): a queued row whose queue actions all 404'd ----------
+#
+# dobby and rocky took turns adopting one product-capped entry (each adoption
+# re-stamped the row, and the product cap still held it either way). The loser,
+# a worker, kept a driverless 'queued' copy forever — its stale-copy drop only ran
+# in the primary-only mirror loop — and the edge routed every queue action to it.
+
+
+async def _hold_for_product_cap(sid: str, repo: str = "acme/widgets") -> None:
+    from server.db.models import SessionQueue
+    async with db_session() as db:
+        await db.execute(sa_update(SessionQueue).where(SessionQueue.session_id == sid)
+                         .values(params={"name": "held", "repo": repo,
+                                         "queue_reason": "product_capacity"}))
+
+
+def test_a_product_capped_entry_is_not_adopted_from_a_full_owner(tmp_path, me):
+    """Adopting an entry its product cap still holds starts nothing; it only
+    re-stamps the row, and the next full host adopts it back (the ping-pong)."""
+    from unittest.mock import AsyncMock, patch
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'p.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            await _add_hosts(orch, _host(ME, max_sessions=5),
+                             _host("other", max_sessions=4, active=4))
+            rec = await orch.create_session("held", queue_only=True)
+            await _restamp(rec.id, "other")
+            orch._records.pop(rec.id)
+            await _hold_for_product_cap(rec.id)
+            at_cap = AsyncMock(return_value=("widgets", 1, 1))
+            with patch("server.automations.product_admission.repo_capacity_status", at_cap):
+                assert await orch._maybe_start_queued() == 0
+            row = await _row(rec.id)
+            assert row is not None and row.status == "queued" and row.host == "other"
+            assert (await sq.positions()) == {rec.id: 1}
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_a_worker_drops_a_queued_copy_the_drain_already_restamped(tmp_path, me):
+    """The drain rewrites a driverless copy's host to the row's (``in_mem.host =
+    row.host``), so "the stamp moved since my copy" saw nothing to drop."""
+    from unittest.mock import patch
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'r.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            await _add_hosts(orch, _host(ME, max_sessions=5), _host("other", max_sessions=4))
+            rec = await orch.create_session("adopted-away", queue_only=True)
+            await _restamp(rec.id, "other")
+            orch._records[rec.id].host = "other"
+            with patch("server.sessions.orchestrator.daemon_role", return_value="worker"):
+                await orch._resync_moved_queued_mirrors()
+            assert rec.id not in orch._records
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_a_workers_always_on_loop_runs_the_queued_copy_resync(tmp_path, me):
+    """The mirror loop is primary-only, so the worker branch of the resync was
+    dead code in production; the per-host autopilot loop drives it on a worker."""
+    from unittest.mock import AsyncMock, patch
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'l.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            from server.aio import cancel_and_reap
+            ran = asyncio.Event()
+            orch._recover_resume_failures_once = AsyncMock()
+            # The primary's mirror loop calls the resync too; mute it so only the
+            # always-on loop can satisfy the assertion.
+            orch._reconcile_mirror_once = AsyncMock()
+            orch._resync_moved_queued_mirrors = AsyncMock(side_effect=lambda: ran.set())
+            orch._autopilot_loop = AsyncMock()
+            with patch("server.sessions.orchestrator.daemon_role", return_value="worker"):
+                loop = asyncio.create_task(orch._autopilot_tick_loop(interval=3600.0))
+                try:
+                    await asyncio.wait_for(ran.wait(), timeout=5)
+                finally:
+                    await cancel_and_reap(loop, phase="test:autopilot-loop")
+            orch._resync_moved_queued_mirrors.assert_awaited()
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+async def _drop_entry(sid: str) -> None:
+    await sq.remove(sid)
+    assert await sq.entry_for(sid) is None
+
+
+def test_start_now_on_a_queued_row_with_no_entry_requeues_and_starts(tmp_path, me):
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 's.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            rec = await orch.create_session("lost-entry", queue_only=True)
+            await _drop_entry(rec.id)
+            assert await orch.start_queued_now(rec.id) == "started"
+            row = await _row(rec.id)
+            assert row is not None and row.status != "queued"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_queue_move_on_a_queued_row_with_no_entry_requeues_it(tmp_path, me):
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'v.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            first = await orch.create_session("first", queue_only=True)
+            lost = await orch.create_session("lost-entry", queue_only=True)
+            await _drop_entry(lost.id)
+            assert await orch.session_queue_move(lost.id, "top") is True
+            assert (await sq.positions()) == {lost.id: 1, first.id: 2}
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_queue_cancel_on_a_queued_row_with_no_entry_ends_it(tmp_path, me):
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'x.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            rec = await orch.create_session("lost-entry", queue_only=True)
+            await _drop_entry(rec.id)
+            assert await orch.session_queue_cancel(rec.id) is True
+            row = await _row(rec.id)
+            assert row is not None and row.status == "ended"
+            # A row that is not queued stays a 404.
+            assert await orch.session_queue_cancel(rec.id) is False
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
