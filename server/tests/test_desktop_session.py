@@ -395,11 +395,17 @@ def test_probe_real_xvfb(tmp_path: Path) -> None:
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         sock = f"/tmp/.X11-unix/X{n}"
-        for _ in range(50):
-            if os.path.exists(sock):
-                break
-            time.sleep(0.1)
-        assert probe_x11(sock, str(xa)) is True
+        # Poll the probe itself, like x11manager._await_ready: Xvfb creates the socket
+        # before it can answer a connection setup, so a single probe right after the
+        # socket appears raced a slow CI runner (master ee737d7, 2026-10-09).
+        deadline = time.monotonic() + 15
+        ready = False
+        while not ready and time.monotonic() < deadline and proc.poll() is None:
+            ready = probe_x11(sock, str(xa), timeout_s=2.0)
+            if not ready:
+                time.sleep(0.1)
+        assert proc.poll() is None, f"Xvfb :{n} exited early with {proc.returncode}"
+        assert ready, f"Xvfb :{n} never accepted our cookie within 15s"
         assert probe_x11(sock, None) is False
     finally:
         proc.terminate()
