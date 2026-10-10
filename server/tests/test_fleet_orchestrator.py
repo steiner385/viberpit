@@ -137,6 +137,37 @@ async def test_list_sessions_unarchive_on_owner_yields_one_live_record(primary_f
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_ignores_a_worker_copy_stamped_for_another_host():
+    # 4a558770 (2026-10-09): dobby adopted a queued entry back from rocky, but
+    # rocky kept a driverless copy. The worker-wins merge rule let that stale copy
+    # shadow the primary's record and pinned every queue action to rocky, which
+    # answered "not in the queue". A detached worker copy stamped for ANOTHER host
+    # is not the session running there — the primary's record must win, and a
+    # route an earlier list cached for the worker must be forgotten.
+    dobby = _ListOrch("dobby", [_LRec("s-q", host="dobby", status="queued")])
+    rocky = _ListOrch("rocky", [_LRec("s-q", host="rocky", status="queued", detached=True)])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    await fo.list_sessions()
+    assert fo._host_cache["s-q"] == "rocky"  # rocky's copy was its own back then
+
+    rocky.recs = [_LRec("s-q", host="dobby", status="queued", detached=True)]
+    got = {r.id: r for r in await fo.list_sessions()}
+    assert got["s-q"].host == "dobby"
+    assert "s-q" not in fo._host_cache  # _host_for re-reads the row's stamp
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_forgets_a_worker_route_once_the_worker_stops_listing_it():
+    dobby = _ListOrch("dobby", [_LRec("s-q", host="dobby", status="queued")])
+    rocky = _ListOrch("rocky", [_LRec("s-q", host="rocky", status="queued", detached=True)])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    await fo.list_sessions()
+    rocky.recs = []
+    await fo.list_sessions()
+    assert "s-q" not in fo._host_cache
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_keeps_primary_mirror_when_owning_host_is_unreachable():
     # The mirror is the only view we have of a session on a dead worker — keep it
     # (the existing "dead worker must not blank the dashboard" contract).
