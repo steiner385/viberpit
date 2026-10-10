@@ -323,7 +323,7 @@ class FleetOrchestrator:
                      host, _field(site), cause)
             return
         if (isinstance(exc, _ISOLATED_UNREACHABLE)
-                and host_probe.unreachable_run(host) < host_probe.UNREACHABLE_ESCALATE_AFTER):
+                and host_probe.unreachable_run(host) < host_probe.escalate_after(exc)):
             # A lone timeout/refusal is a starved or restarting daemon, not an outage:
             # the probe owns that policy (#2701/#2749), so stay INFO until its run of
             # consecutive misses escalates (#2821, #2846).

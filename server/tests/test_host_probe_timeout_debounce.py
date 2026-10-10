@@ -75,10 +75,10 @@ def test_a_lone_timeout_is_info_but_still_marks_the_host_unhealthy(tmp_path, cap
 
 
 def test_a_run_of_timeouts_escalates_to_warning_on_the_nth(tmp_path, caplog):
-    from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER
+    from server.sessions.host_probe import UNREACHABLE_TIMEOUT_ESCALATE_AFTER as N
 
     with caplog.at_level(logging.DEBUG, logger="server.sessions.host_probe"):
-        _run_probes(tmp_path, [_timeout() for _ in range(UNREACHABLE_ESCALATE_AFTER)])
+        _run_probes(tmp_path, [_timeout() for _ in range(N)])
 
     levels = _levels(caplog)
     assert levels[0] == logging.INFO
@@ -88,12 +88,24 @@ def test_a_run_of_timeouts_escalates_to_warning_on_the_nth(tmp_path, caplog):
     assert last.fields["host"] == "dobby"
 
 
+def test_timeouts_stay_info_past_the_refusal_threshold(tmp_path, caplog):
+    """#2899: a load-starved daemon (timeouts) outlasts 3 probes without being an outage."""
+    from server.sessions.host_probe import (UNREACHABLE_ESCALATE_AFTER,
+                                            UNREACHABLE_TIMEOUT_ESCALATE_AFTER as N)
+
+    assert N > UNREACHABLE_ESCALATE_AFTER
+    with caplog.at_level(logging.DEBUG, logger="server.sessions.host_probe"):
+        _run_probes(tmp_path, [_timeout() for _ in range(N - 1)])
+
+    assert logging.WARNING not in _levels(caplog)
+
+
 def test_a_success_ends_the_run(tmp_path, caplog):
     """N timeouts that are not CONSECUTIVE never escalate — the load-spike shape."""
-    from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER
+    from server.sessions.host_probe import UNREACHABLE_TIMEOUT_ESCALATE_AFTER as N
 
     outcomes: list = []
-    for _ in range(UNREACHABLE_ESCALATE_AFTER):
+    for _ in range(N):
         outcomes += [_timeout(), _timeout(), {"sha": "abc"}]
     with caplog.at_level(logging.DEBUG, logger="server.sessions.host_probe"):
         healthy = _run_probes(tmp_path, outcomes)
@@ -132,7 +144,10 @@ def test_a_run_of_refused_connections_escalates_to_warning_on_the_nth(tmp_path, 
 
 
 def test_timeouts_and_refusals_count_as_one_run(tmp_path, caplog):
-    """A wedge (timeouts) followed by its restart (refusals) is ONE unreachable spell."""
+    """A wedge (timeouts) followed by its restart (refusals) is ONE unreachable spell.
+
+    The refusal is judged against the refusal threshold, so it escalates the run.
+    """
     from server.sessions.host_probe import UNREACHABLE_ESCALATE_AFTER
 
     before = [_timeout() for _ in range(UNREACHABLE_ESCALATE_AFTER - 1)]
