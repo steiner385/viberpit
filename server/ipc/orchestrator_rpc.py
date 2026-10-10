@@ -313,7 +313,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     # Methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
         "probe_mcp", "mcp_status_for", "reconnect_mcp_everywhere",
-        "archive_session", "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
+        "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",
         "cancel_queued", "resolve_permission", "answer_question",
@@ -454,6 +454,17 @@ def register_orchestrator_rpc(app, orch) -> None:
         return result
 
     register_rpc(app, "permanent_delete", permanent_delete)
+
+    async def archive_session(params: dict):
+        # Free the stream's replay ring: an archived session has no live viewer to
+        # resume, and without this every session that ever ran held its ring until
+        # the daemon restarted (#2891). release_ring keeps the seq counter so an
+        # unarchived session continues its seq space instead of restarting at 0.
+        result = await _maybe_await(orch.archive_session(**params))
+        app.state.release_ring(params["session_id"])
+        return result
+
+    register_rpc(app, "archive_session", archive_session)
 
     async def unarchive(params: dict) -> dict:
         rec = await orch.unarchive(**params)

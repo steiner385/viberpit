@@ -49,6 +49,9 @@ def create_daemon_app() -> FastAPI:
     # at ~1–2 KB per normalized event that is roughly 8–16 MB per busy session at the cap,
     # and far less typically (idle streams hold only their turn tail). Bounded and evicted
     # oldest-first, so it never grows without limit. Override with VIBERPIT_IPC_REPLAY_BUFFER.
+    # Entries hold tool results whole (screenshots, file reads), so a busy ring can run
+    # well past that estimate; it is freed on archive (release_ring) and permanent delete
+    # (evict), so only live sessions pay for it.
     _maxlen = int(os.environ.get("VIBERPIT_IPC_REPLAY_BUFFER", "8192"))
     app.state.buffers = {}   # stream -> deque[(seq, event)]
     app.state.seqs = {}      # stream -> last assigned seq (int)
@@ -228,13 +231,28 @@ def create_daemon_app() -> FastAPI:
 
     app.state.ring_tail = ring_tail
 
-    def evict(stream: str) -> None:
+    def release_ring(stream: str) -> None:
+        """Free a stream's replay ring and turn state but KEEP its seq counter (#2891).
+
+        For archive: the session can come back (unarchive), and the edge's cursors
+        (RemoteDriver's seq dedup, the browser's ``attach.sinceSrcSeq``) still hold
+        seqs from before. Restarting the seq space at 0 would make every new event
+        look like an already-seen overlap. Keeping ``seqs`` means a revived stream
+        resumes at ``head + 1`` and the empty ring makes ``ring_covers`` /
+        ``resume_since`` answer "not covered / from head" → a disk replay, which has
+        the archived history. One int per stream is all that is retained."""
         app.state.buffers.pop(stream, None)
-        app.state.seqs.pop(stream, None)
         app.state.stats.pop(stream, None)
         app.state.turn_start_seqs.pop(stream, None)
         app.state.turn_open.pop(stream, None)
         app.state.turn_start_ts.pop(stream, None)
+
+    app.state.release_ring = release_ring
+
+    def evict(stream: str) -> None:
+        # Permanent delete: the stream can never come back, so drop the seq too.
+        release_ring(stream)
+        app.state.seqs.pop(stream, None)
 
     app.state.evict = evict
 
