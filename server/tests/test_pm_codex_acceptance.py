@@ -208,7 +208,8 @@ def _exploding(name):
 async def _seed(db_url: str) -> str:
     await init_db(db_url)
     async with db_session() as db:
-        p = Project(slug="proj", name="proj", onboarding_state="map_merged")
+        p = Project(slug="proj", name="proj", onboarding_state="map_merged",
+                    automation_policy={"trusted_authors": ["tony"]})
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True,
@@ -216,7 +217,7 @@ async def _seed(db_url: str) -> str:
         db.add(Feature(project_id=p.id, slug="sessions", title="Sessions",
                        state="live", summary="s"))
         for n in range(2):
-            db.add(WorkItem(repo="o/r", number=100 + n, kind="issue",
+            db.add(WorkItem(author="tony", repo="o/r", number=100 + n, kind="issue",
                             title=f"Bug {n}", state="open",
                             triage_state="unclassified"))
         return p.id

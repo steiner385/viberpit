@@ -23,7 +23,8 @@ def _seed(c) -> None:
             now = datetime.now(timezone.utc)
 
             async def product(slug, repo, number):
-                p = Project(slug=slug, name=slug, automation_policy={"dispatch": "auto"})
+                p = Project(slug=slug, name=slug, automation_policy={"dispatch": "auto",
+                                                       "trusted_authors": ["tony"]})
                 db.add(p)
                 await db.flush()
                 db.add(ProjectRepo(project_id=p.id, repo=repo, is_primary=True))
@@ -34,7 +35,8 @@ def _seed(c) -> None:
 
             async def item(gh, repo, n, **hold):
                 wi = WorkItem(repo=repo, number=n, kind="issue", title=f"issue {n}",
-                              state="open", body="b", url=f"https://x/{n}", **hold)
+                              state="open", body="b", url=f"https://x/{n}",
+                              author="tony", **hold)
                 db.add(wi)
                 await db.flush()
                 db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wi.id,
@@ -144,7 +146,8 @@ def _seed_backlog_reach(c) -> None:
         async with db_session() as db:
             now = datetime.now(timezone.utc)
             p = Project(slug="deep", name="deep",
-                        automation_policy={"dispatch": "auto", "queue_min_status": "Backlog"})
+                        automation_policy={"dispatch": "auto", "queue_min_status": "Backlog",
+                                           "trusted_authors": ["tony"]})
             db.add(p)
             await db.flush()
             db.add(ProjectRepo(project_id=p.id, repo="o/d", is_primary=True))
@@ -156,7 +159,8 @@ def _seed_backlog_reach(c) -> None:
                                                    "hold_reason": "call", "hold_set_at": now}),
                                     (11, "Backlog", {})):
                 wi = WorkItem(repo="o/d", number=n, kind="issue", title=f"issue {n}",
-                              state="open", body="b", url=f"https://x/{n}", **hold)
+                              state="open", body="b", url=f"https://x/{n}",
+                              author="tony", **hold)
                 db.add(wi)
                 await db.flush()
                 db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wi.id,

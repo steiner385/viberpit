@@ -50,8 +50,9 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
     from server.pm.outcomes import escalation_for
     from server.sessions import model_policy
     from server.sessions.model_catalog import TIER_ORDER
-    from server.automations.product_policy import policy_for_repo, skip_labels
+    from server.automations.product_policy import policy_for_repo, skip_labels, trusted_authors
     from server.pm.policy_skip import skipped_by_policy
+    from server.pm.queue import is_trusted_author
     escalation = escalation_for(wi.hold_kind, wi.hold_reason)
     if escalation is None:
         raise EscalationApprovalError(
@@ -67,7 +68,12 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
                          policy=policy):
         named = sorted({str(lbl).strip().lower() for lbl in (wi.labels or ())}
                        & skip_labels(policy))
-        why = f"it carries {', '.join(named)}" if named else "it is bot noise"
+        if named:
+            why = f"it carries {', '.join(named)}"
+        elif not is_trusted_author(wi.author or "", trusted_authors(policy)):
+            why = "its author is not a trusted author"
+        else:
+            why = "it is bot noise"
         raise EscalationApprovalError(
             "skipped_by_policy",
             f"{wi.repo}#{wi.number} is skipped by this product's policy ({why}); the runner "

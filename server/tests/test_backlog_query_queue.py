@@ -41,7 +41,8 @@ async def _seed_product(slug: str, repo: str, *,
     whose policy says ``dispatch != off``, so the fixture opts in by default."""
     async with db_session() as db:
         project = Project(slug=slug, name=slug,
-                          automation_policy=policy or {"dispatch": "auto"})
+                          automation_policy={"trusted_authors": ["steiner385"],
+                                             **(policy or {"dispatch": "auto"})})
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo=repo, is_primary=True))
@@ -55,7 +56,8 @@ async def _set_policy(slug: str, policy: dict | None) -> None:
     async with db_session() as db:
         project = (await db.execute(select(Project).where(
             Project.slug == slug))).scalar_one()
-        project.automation_policy = policy
+        project.automation_policy = (None if policy is None
+                                     else {"trusted_authors": ["steiner385"], **policy})
 
 
 async def _seed_item(repo: str, number: int, *, status: str = "Ready",

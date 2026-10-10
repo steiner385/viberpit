@@ -457,6 +457,13 @@ class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
 
+class UntrustedEpic(Exception):
+    """The mirrored epic that would seed a spec session is not by a trusted author.
+
+    Raised by ``_sdlc_epic_upstream_text`` from the SAME row read that produces the
+    prompt text, so no separate pre-check can disagree with what reaches the session."""
+
+
 class SessionLeaseHeld(RuntimeError):
     """Another host holds this session's ownership lease — refuse to spawn (#1379).
 
@@ -7597,7 +7604,8 @@ class SessionOrchestrator:
 
         from sqlalchemy import select as sa_select
 
-        from server.automations.product_policy import is_on, policies_by_slug, skip_labels
+        from server.automations.product_policy import (
+            is_on, policies_by_slug, skip_labels, trusted_authors)
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
         from server.pm.queue import rank, rank_key, to_candidate
@@ -7661,7 +7669,8 @@ class SessionOrchestrator:
                 now=now,
                 # D8: THE bounce threshold, from this product's own policy.
                 give_up_after_bounces=int(policy["give_up_after_bounces"]),
-                extra_skip_labels=skip_labels(policy))
+                extra_skip_labels=skip_labels(policy),
+                trusted_authors=trusted_authors(policy))
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
@@ -9119,12 +9128,31 @@ class SessionOrchestrator:
         pending_batch = is_pending_dispatch(st)
         if primary not in by_ref and not pending_batch:
             return "unknown"
+        pending_issues = list(st.get("issues") or [primary]) if pending_batch else [primary]
+        if pending_batch:
+            # A pending claim is no longer in the ranked pool, so nothing has judged
+            # its authors since the claim: do it now, fail-closed. The whole batch is
+            # refused (not trimmed): the claim row owns every one of its refs, so a
+            # smaller batch could not re-take it.
+            from server.pm.dispatch_trust import untrusted_refs
+            async with db_session() as db:
+                untrusted = await untrusted_refs(db, pending_issues)
+            if untrusted:
+                # Same event shape as the runner's own admission refusals, so the
+                # tap's "see the feed" toast has a feed entry saying why.
+                await self._backlog_ctx.emit(
+                    "info", f"skipped {primary}: {', '.join(untrusted)} not mirrored "
+                            "or author not trusted",
+                    kind="implementation_refused", target=primary,
+                    detail={"reason_codes": ["untrusted_author"], "refs": untrusted,
+                            "product": st.get("product")})
+                return "refused"
         candidate = by_ref.get(primary, {})
         titles = dict(st.get("titles") or {})
         if candidate.get("title"):
             titles[primary] = candidate["title"]
         batch = Batch(primary=primary,
-                      issues=(st.get("issues") or [primary]) if pending_batch else [primary],
+                      issues=pending_issues,
                       repo=candidate.get("repo") or st.get("repo") or primary.split("#")[0],
                       titles=titles, product=candidate.get("product") or st.get("product"),
                       # A pending claim is no longer in the pool, so the claim row
@@ -9141,8 +9169,8 @@ class SessionOrchestrator:
         # / check-failed it was). The claim is deliberately KEPT: the tap refuses
         # this attempt, it does not reject the work — releasing would drop the
         # batch back into a pool whose next pick would hit the same blocker.
-        # ``backlog_runner_dispatch`` is an explicit operator override and stays
-        # ungated.
+        # ``backlog_runner_dispatch`` is an explicit operator override, but the
+        # endpoint in front of it is gated on author trust (``dispatch_trust``).
         if not await self._backlog_loop.live_check_ok(batch):
             return "not_ready"
         result = await self._backlog_dispatch_batch(batch, source="proposal")
@@ -9186,6 +9214,16 @@ class SessionOrchestrator:
         from server.automations.backlog_selection import Batch
         if not refs:
             return {"status": "no_refs", "session_id": None, "session_name": None}
+        # Fail-closed author trust, enforced here as well as on the HTTP endpoint: this
+        # method is reachable without it (the session daemon proxies it), and it does
+        # not re-rank, so nothing else has judged these refs' authors.
+        from server.pm.dispatch_trust import untrusted_refs
+        async with db_session() as db:
+            untrusted = await untrusted_refs(db, refs)
+        if untrusted:
+            return {"status": "refused", "session_id": None, "session_name": None,
+                    "reason_codes": ["untrusted_author"],
+                    "reason": f"{', '.join(untrusted)}: not mirrored or author not trusted"}
         primary = refs[0]
         _mode, config = await self._backlog_read_config()
         candidates = await self._backlog_query_queue(config)
@@ -10548,10 +10586,15 @@ class SessionOrchestrator:
 
     async def _pm_triage_list_pending(self) -> list:
         """Open, unclassified, not parked by a HELD_KINDS hold, and with NO pending
-        proposal — the classify candidate set (see ``_classifiable_hold_clause``)."""
+        proposal — the classify candidate set (see ``_classifiable_hold_clause``).
+
+        Only TRUSTED authors (``dispatch_trust``; fail-closed for a repo no product
+        owns): this body is pasted into a classify session's prompt, and on a public
+        repo anyone can open an issue or PR."""
         from sqlalchemy import select
         from server.automations.pm_triage import PendingItemView
         from server.db.models import TriageProposal, WorkItem
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
         async with db_session() as db:
             pending_ids = set((await db.execute(
                 select(TriageProposal.work_item_id)
@@ -10563,12 +10606,14 @@ class SessionOrchestrator:
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
             )).scalars().all()
+            trusted = await trusted_authors_by_repo(db, {w.repo for w in rows})
             return [PendingItemView(
                 repo=w.repo or "", number=w.number or 0, kind=w.kind or "issue",
                 title=w.title or "", body=w.body or "",
                 labels=tuple(w.labels or ()),
                 linked_issue_numbers=tuple(w.linked_issue_numbers or ()),
-            ) for w in rows if w.id not in pending_ids]
+            ) for w in rows if w.id not in pending_ids
+                and author_trusted(trusted, w.repo, w.author)]
 
     async def _pm_triage_auto_link(self, item) -> bool:
         """Mechanical routing, no AI session (design §6.2): a PR whose closing
@@ -10772,7 +10817,9 @@ class SessionOrchestrator:
         """Build the pure engine view from DB counts (design §6). Excludes
         HELD_KINDS-parked and already-proposed items from ``unclassified_count`` —
         literally the same ``_classifiable_hold_clause`` ``_pm_triage_list_pending``
-        applies, so the count and the list cannot disagree.
+        applies, so the count and the list cannot disagree. Both also apply the same
+        author-trust filter, and so do the no_fit clusters: a cluster's suggestion and
+        item numbers seed a map-diff session that arms auto-merge.
 
         ``day_spawns`` is reported as 0 on purpose: the DB holds no record of the
         sessions THIS process spawned in the window, and ``PmTriageLoop._budgeted``
@@ -10781,6 +10828,7 @@ class SessionOrchestrator:
         from datetime import datetime, timezone
         from sqlalchemy import func, select
         from server.db.models import Feature, TriageProposal, WorkItem
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
         from server.pm.engine import NoFitCluster, StaleFeature, TriageState
         mode, config = await self._pm_triage_read_config()
         stale_days = int(config.get("stale_days", 14))
@@ -10791,13 +10839,11 @@ class SessionOrchestrator:
                 .where(TriageProposal.status == "pending")
             )).scalars().all())
             open_unclassified = (await db.execute(
-                select(WorkItem.id).where(
+                select(WorkItem.id, WorkItem.repo, WorkItem.author).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
-            )).scalars().all()
-            unclassified = sum(1 for wid in open_unclassified
-                               if wid not in pending_ids)
+            )).all()
             pending_count = len(pending_ids)
             # Drift clusters: accepted no_fit proposals grouped by
             # (suggestion, repo) — NOT by suggestion alone. A map-diff PR targets
@@ -10810,9 +10856,17 @@ class SessionOrchestrator:
                 .where(TriageProposal.status == "accepted",
                        TriageProposal.no_fit_suggestion.isnot(None))
             )).all()
+            trusted = await trusted_authors_by_repo(
+                db, {r for _id, r, _a in open_unclassified}
+                | {item.repo for _p, item in accepted_nofit})
+            unclassified = sum(1 for wid, repo, author in open_unclassified
+                               if wid not in pending_ids
+                               and author_trusted(trusted, repo, author))
             clusters: dict[tuple[str, str], list[int]] = {}
             from server.pm.map_resolution import map_resolution_inputs
             for proposal, item in accepted_nofit:
+                if not author_trusted(trusted, item.repo, item.author):
+                    continue
                 if (proposal.map_resolution or {}).get("inputs") == map_resolution_inputs(
                         proposal, item):
                     continue
@@ -11463,13 +11517,19 @@ class SessionOrchestrator:
         With ``items=[(repo, number, kind), ...]`` it classifies exactly that
         caller-supplied set (phase-3 loop path). Moves the project to
         ``classifying``. Returns the item count dispatched (0 if none/no account).
-        Closed history is evidence, not classified (spec §5)."""
+        Closed history is evidence, not classified (spec §5).
+
+        Both branches keep only items whose author is trusted under the owning
+        product's policy (``dispatch_trust``; fail-closed when no product owns the
+        repo): each item's title and body go verbatim into the session's prompt, and
+        on a public repo anyone can open an issue or PR."""
         from sqlalchemy import select, tuple_ as sa_tuple
         from server.db.models import (
             Feature, Project, ProjectRepo, TriageProposal, WorkItem)
         from server.pm.classification import (
             CLASSIFY_CHUNK_SIZE, FeatureBrief, WorkItemBrief,
             build_classification_prompt)
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
         async with db_session() as db:
             proj = (await db.execute(select(Project).where(
                 Project.slug == slug))).scalar_one_or_none()
@@ -11486,24 +11546,34 @@ class SessionOrchestrator:
                 if not items:
                     return 0
                 keys = [(r, n) for (r, n, _k) in items]
-                chunk = (await db.execute(select(WorkItem).where(
+                found = (await db.execute(select(WorkItem).where(
                     sa_tuple(WorkItem.repo, WorkItem.number).in_(keys)
                 ))).scalars().all()
+                trusted = await trusted_authors_by_repo(db, {w.repo for w in found})
+                chunk = [w for w in found if author_trusted(trusted, w.repo, w.author)]
                 if not chunk:
                     return 0
             else:
                 pending_ids = set((await db.execute(select(
                     TriageProposal.work_item_id).where(
                         TriageProposal.status == "pending"))).scalars().all())
-                selected = (await db.execute(select(WorkItem).where(
+                # Judge trust on the light columns over the WHOLE candidate set, then
+                # load the chunk: filtering after a LIMIT would let a flood of
+                # untrusted issues starve every trusted one out of the window.
+                trusted = await trusted_authors_by_repo(db, repo_names)
+                candidates = (await db.execute(select(
+                    WorkItem.id, WorkItem.repo, WorkItem.author).where(
                     WorkItem.repo.in_(repo_names), WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified"
-                ).order_by(WorkItem.gh_updated_at.desc()).limit(
-                    CLASSIFY_CHUNK_SIZE * 2))).scalars().all()
-                chunk = [w for w in selected
-                         if w.id not in pending_ids][:CLASSIFY_CHUNK_SIZE]
-                if not chunk:
+                ).order_by(WorkItem.gh_updated_at.desc()))).all()
+                chunk_ids = [wid for wid, repo_, author in candidates
+                             if wid not in pending_ids
+                             and author_trusted(trusted, repo_, author)][:CLASSIFY_CHUNK_SIZE]
+                if not chunk_ids:
                     return 0
+                by_id = {w.id: w for w in (await db.execute(select(WorkItem).where(
+                    WorkItem.id.in_(chunk_ids)))).scalars().all()}
+                chunk = [by_id[i] for i in chunk_ids if i in by_id]
             features = (await db.execute(select(Feature).where(
                 Feature.project_id == proj.id,
                 Feature.orphaned.isnot(True)))).scalars().all()
@@ -12427,6 +12497,20 @@ class SessionOrchestrator:
             return None
         if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
             return None
+        # Epic-adopted initiatives (#2159) enter the chain directly at Design —
+        # the intake stage that would have written intent.md never ran, so the
+        # spec is seeded from the mirrored epic instead. Read (and trust-judged)
+        # ONCE, here, before any launch work: a refusal must cost nothing, and the
+        # row that is judged is the row whose text reaches the prompt. The plan
+        # stage needs no equivalent: by then a real spec.md is committed.
+        epic_upstream: tuple[str, str] | None = None
+        if kind == "spec" and ini.get("origin") == "epic-adoption":
+            try:
+                epic_upstream = await self._sdlc_epic_upstream_text(
+                    ini.get("epic_repo"), ini.get("epic_number"))
+            except UntrustedEpic as exc:
+                await self._sdlc_warn_untrusted_epic(slug, str(exc))
+                return None
         # Engine FIRST, before any account, network or disk work. Two reasons,
         # and ``_backlog_spawn`` already moved its own check here for both:
         # the artifact instructions state a commit trailer (the one
@@ -12452,14 +12536,7 @@ class SessionOrchestrator:
         # there, the same way `origin`/`epic_repo` already ride on `ini`.
         layout = ini.get("artifact_layout")
         upstream = artifact_path(slug, "intent" if kind == "spec" else "spec", layout)
-        # Epic-adopted initiatives (#2159) enter the chain directly at Design —
-        # the intake stage that would have written intent.md never ran, so
-        # there is nothing on disk to read. The plan stage needs no equivalent
-        # branch: by then the design-stage session has committed a real spec.md.
-        epic_upstream: tuple[str, str] | None = None
-        if kind == "spec" and ini.get("origin") == "epic-adoption":
-            epic_upstream = await self._sdlc_epic_upstream_text(
-                ini.get("epic_repo"), ini.get("epic_number"))
+        # (``epic_upstream`` was read and trust-judged above, before launch work.)
         # Personas (#2447): resolved for every spec spawn, not only
         # epic-adoption ones — unlike the epic-body substitute, this augments
         # a normal intent.md read rather than replacing it.
@@ -12520,6 +12597,19 @@ class SessionOrchestrator:
             rec.upstream_ref = epic_upstream[1]
         return rec
 
+    async def _sdlc_warn_untrusted_epic(self, slug: str, epic_ref: str) -> None:
+        """Feed warning for a spec refused because its epic is not by a trusted author.
+        Once per slug: the condition persists across ticks."""
+        warned: set[str] = self.__dict__.setdefault("_sdlc_untrusted_epic_slugs", set())
+        if slug in warned:
+            return
+        warned.add(slug)
+        await self._sdlc_emit(
+            "warn", f"not writing a spec for {slug}: epic {epic_ref} "
+                    "is not by a trusted author",
+            kind="untrusted_author", target=slug,
+            detail={"reason_codes": ["untrusted_author"], "epic": epic_ref})
+
     async def _sdlc_epic_upstream_text(
             self, epic_repo: str | None, epic_number: int | None,
     ) -> tuple[str, str] | None:
@@ -12528,21 +12618,39 @@ class SessionOrchestrator:
         (#2159), which has no committed ``intent.md`` to read. Returns
         ``(markdown, "owner/repo#N")``, or ``None`` when there is no pointer or
         the epic is not (yet) mirrored — the caller then falls back to the
-        normal committed-file read."""
+        normal committed-file read.
+
+        Raises ``UntrustedEpic`` when the epic's author is not trusted under the owning
+        product's policy (``dispatch_trust``; fail-closed): its title and body would
+        become the session's prompt, and adoption takes any open epic on the board --
+        which a public repo's board automation can fill with anyone's issue. The trust
+        judgement is made on THIS read's row, never a separate query, so what is judged
+        is exactly what reaches the prompt. Only ISSUE rows are read: issues and PRs
+        share GitHub's number space, and an epic is an issue."""
         if not epic_repo or epic_number is None:
             return None
         from sqlalchemy import select as sa_select
         from server.db.models import WorkItem
+        from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
+        ref = f"{epic_repo}#{epic_number}"
         async with db_session() as db:
             epic = (await db.execute(sa_select(WorkItem).where(
                 WorkItem.repo == epic_repo, WorkItem.number == epic_number,
+                WorkItem.kind == "issue",
             ))).scalar_one_or_none()
             if epic is None:
                 return None
             children = (await db.execute(sa_select(WorkItem).where(
                 WorkItem.parent_work_item_id == epic.id,
             ).order_by(WorkItem.number))).scalars().all()
-        ref = f"{epic_repo}#{epic_number}"
+            trusted = await trusted_authors_by_repo(
+                db, {epic_repo} | {c.repo for c in children})
+            if not author_trusted(trusted, epic_repo, epic.author):
+                raise UntrustedEpic(ref)
+            # Only trusted authors' sub-issues reach the prompt either.
+            kept = [c for c in children if author_trusted(trusted, c.repo, c.author)]
+            omitted = len(children) - len(kept)
+            children = kept
         parts = [
             f"(upstream: epic {ref}; no intent.md exists — this initiative was "
             "adopted directly from the epic, so the spec is seeded from the "
@@ -12552,6 +12660,9 @@ class SessionOrchestrator:
         for child in children:
             parts += ["", f"## #{child.number} {child.title or ''}".rstrip(),
                      child.body or "_(no body)_"]
+        if omitted:
+            parts += ["", f"_({omitted} sub-issue{'s' if omitted != 1 else ''} omitted: "
+                          "not by a trusted author)_"]
         return "\n".join(parts), ref
 
     async def _sdlc_capability_personas(
@@ -15162,12 +15273,43 @@ class SessionOrchestrator:
                                           kind="gave_up", target=target)
         return False
 
+    async def _pr_doctor_untrusted_prs(self, repo: str, numbers: list[int], *,
+                                       target: str, head: str | None = None) -> list[int]:
+        """The PRs among *numbers* PR Doctor must not hand to an agent: the MIRRORED PR
+        author is not trusted under the owning product's policy (``dispatch_trust``;
+        fail-closed for an unmirrored PR or an unowned repo).
+
+        PR Doctor's scope is every open PR in its repos, fork PRs included, and a fix
+        session runs ``gh pr checkout`` + the PR's tests with full permissions, its
+        prompt carrying the PR title -- on a public repo that is anyone's code. The
+        refusal is reported once per (target, head) rather than every sweep."""
+        from server.pm.dispatch_trust import untrusted_prs
+        async with db_session() as db:
+            bad = await untrusted_prs(db, repo, numbers)
+        if bad:
+            seen: set = self.__dict__.setdefault("_pr_doctor_untrusted_seen", set())
+            key = (target, head)
+            if key not in seen:
+                seen.add(key)
+                await self._pr_doctor_ctx.emit(
+                    "warn", f"not fixing {target}: "
+                            f"{', '.join(f'{repo}#{n}' for n in bad)} not mirrored or "
+                            "author not trusted",
+                    kind="untrusted_author", target=target,
+                    detail={"reason_codes": ["untrusted_author"], "prs": bad})
+        return bad
+
     async def _pr_doctor_session_fix(self, repo, branch, info, kind, rec, on_phase=None,
                                      *, expected_state=None):
         from server.automations import pr_doctor_engine as engine
         from server.automations.ownership import OwnershipConflict, StaleOwnership
         from server.automations.target_identity import TargetIdentityError
         target = f"{repo}#{info.number}"
+        # Before the claim, so a refusal changes no durable state and the next sweep
+        # re-judges (the mirror may simply not have synced a fresh PR yet).
+        if await self._pr_doctor_untrusted_prs(repo, [info.number], target=target,
+                                               head=info.head_sha):
+            return "untrusted_author", None, "the PR's author is not a trusted author"
         try:
             expected = await self._pr_doctor_claim(repo, [info.number], target,
                                                   source="manual" if on_phase else "automatic",
@@ -15415,6 +15557,9 @@ class SessionOrchestrator:
                and not by_number[n].is_draft]
         if len(prs) != len(want):
             return "not_actionable", None
+        if await self._pr_doctor_untrusted_prs(
+                repo, want, target=consolidation_target(repo, want)):
+            return "untrusted_author", None
         cands = [ConsolidationCandidate(
             number=p.number, title=p.title, url=p.url, checks=p.checks,
             mergeable=p.mergeable, updated_at=p.updated_at, scope="") for p in prs]

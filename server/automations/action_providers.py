@@ -39,6 +39,7 @@ _PR_STATUS_MAP = {
     "spawn_failed": ("error", "Spawn failed — see the automation feed"),
     "failed": ("error", "Branch update failed — see the automation feed"),
     "refused": ("warn", "Launch refused by engine policy — see the automation feed"),
+    "untrusted_author": ("warn", "Not fixing: the PR's author is not a trusted author"),
 }
 
 
@@ -156,6 +157,7 @@ _CONSOLIDATE_STATUS_MAP = {
     "duplicate": ("warn", "Already consolidating this set"),
     "too_few": ("warn", "Select at least 2 PRs"),
     "not_actionable": ("warn", "One or more PRs are no longer open"),
+    "untrusted_author": ("warn", "Not consolidating: a PR's author is not a trusted author"),
 }
 
 

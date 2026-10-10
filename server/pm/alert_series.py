@@ -38,8 +38,14 @@ _SPACE_RE = re.compile(r"\s+")
 
 
 def is_automation_login(login: str | None) -> bool:
+    """Bot-ness is recorded in the string: the mirror stores a Bot as ``app/<slug>``
+    (``github_sync._author``), REST says ``<slug>[bot]``. A BARE login is a user, and
+    ``github-actions`` is unregistered as one — whoever registers it must not be able
+    to join (and so supersede) a real alert series."""
     login = (login or "").strip().lower()
-    return login.endswith("[bot]") or login in AUTOMATION_LOGINS
+    if login.startswith("app/"):
+        return login.removeprefix("app/") in AUTOMATION_LOGINS
+    return login.endswith("[bot]")
 
 
 def alert_key(title: str | None, author: str | None) -> str | None:

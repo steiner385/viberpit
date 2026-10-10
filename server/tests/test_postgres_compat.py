@@ -238,6 +238,9 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # token_hash are NOT NULL with no synthesizable default (set at mint time).
     "assistant_tokens": {"identity": "dtcheck@example.invalid", "scope": "read",
                           "token_hash": "0" * 64},
+    # data_backfills joins the sweep via applied_at; name is the PK and has no default
+    # (it names the one-shot backfill the row marks).
+    "data_backfills": {"name": "dtcheck-backfill"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

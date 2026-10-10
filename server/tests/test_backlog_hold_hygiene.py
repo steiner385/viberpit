@@ -38,22 +38,22 @@ def _row(**over) -> QueueRow:
 def test_alert_key_needs_an_automation_author_and_a_date_suffix():
     from server.pm.alert_series import alert_key
     deploy = "⚠️ Unverified prod deploy 0531454bff — 2026-10-05"
-    assert alert_key(deploy, "github-actions") == alert_key(
+    assert alert_key(deploy, "app/github-actions") == alert_key(
         "⚠️ Unverified prod deploy 035f72c08c — 2026-10-04", "github-actions[bot]")
-    assert alert_key("Weekly failed — 2026-10-04", "github-actions") == "weekly failed"
+    assert alert_key("Weekly failed — 2026-10-04", "app/github-actions") == "weekly failed"
     # Counts are per-occurrence too.
-    assert alert_key("Site Crawler: 3 errors found — 2026-10-04", "github-actions") == \
-        alert_key("Site Crawler: 12 errors found — 2026-10-01", "github-actions")
+    assert alert_key("Site Crawler: 3 errors found — 2026-10-04", "app/github-actions") == \
+        alert_key("Site Crawler: 12 errors found — 2026-10-01", "app/github-actions")
     # A person's dated title is not a series; neither is an undated bot title.
     assert alert_key("Sprint review — 2026-10-01", "tony") is None
     assert alert_key("Dependency Dashboard", "renovate[bot]") is None
     # An all-letter word is not a sha.
-    assert alert_key("defaced page — 2026-10-01", "github-actions") == "defaced page"
+    assert alert_key("defaced page — 2026-10-01", "app/github-actions") == "defaced page"
 
 
 def test_superseded_keeps_the_newest_per_repo_and_type():
     from server.pm.alert_series import AlertIssue, superseded
-    gha = "github-actions"
+    gha = "app/github-actions"
     issues = [
         AlertIssue("o/k", 10, "⚠️ Unverified prod deploy 1111111aaa — 2026-09-20", gha),
         AlertIssue("o/k", 30, "⚠️ Unverified prod deploy 3333333ccc — 2026-10-05", gha),
@@ -71,7 +71,8 @@ def test_superseded_keeps_the_newest_per_repo_and_type():
 # auto_escalation (#2679) — pure                                               #
 # --------------------------------------------------------------------------- #
 
-POLICY = {"dispatch": "auto", "auto_escalate_match": ["flaky", "Unverified prod"],
+POLICY = {"dispatch": "auto", "trusted_authors": ["tony"],
+          "auto_escalate_match": ["flaky", "Unverified prod"],
           "auto_escalate_budget": 2}
 
 
@@ -136,7 +137,7 @@ async def test_supersede_alerts_closes_older_alerts_but_never_a_claimed_one(db_e
 
     from server.db.models import WorkItem
     await init_db(db_env)
-    gha = "github-actions"
+    gha = "app/github-actions"
     rows = [_row(number=n, title=f"Weekly failed — 2026-09-{n:02d}", author=gha,
                  claimed=(n == 11)) for n in (10, 11, 12, 13)]
     rows.append(_row(repo="o/off", number=1, title="Weekly failed — 2026-09-01", author=gha,
@@ -171,11 +172,19 @@ async def test_supersede_alerts_closes_older_alerts_but_never_a_claimed_one(db_e
 
 
 async def _seed_escalations(numbers, *, labels=("flaky",)):
-    from server.db.models import WorkItem
+    from sqlalchemy import select
+
+    from server.db.models import Project, ProjectRepo, WorkItem
     async with db_session() as db:
+        # The approval tap re-reads the product's policy, which is fail-closed on authors.
+        if (await db.execute(select(Project).where(Project.slug == "kindash"))).first() is None:
+            proj = Project(slug="kindash", name="kindash", automation_policy=POLICY)
+            db.add(proj)
+            await db.flush()
+            db.add(ProjectRepo(project_id=proj.id, repo="o/r", is_primary=True))
         for n in numbers:
             db.add(WorkItem(id=f"wi{n}", repo="o/r", number=n, kind="issue", state="open",
-                            title="t", body="", labels=list(labels),
+                            title="t", body="", labels=list(labels), author="tony",
                             hold_kind="owner_action", hold_reason=ESCALATION, hold_by="runner",
                             hold_set_at=(NOW - timedelta(days=n)).replace(tzinfo=None)))
 

@@ -35,6 +35,7 @@ from server.pm.holds import (
     actor_for_request,
     release_via_api,
 )
+from server.pm.dispatch_trust import untrusted_refs
 from server.pm.refs import split_ref
 from server.sessions.global_cap import read_global_cap
 
@@ -426,6 +427,16 @@ async def backlog_runner_dispatch(body: DispatchBody, request: Request,
     _automation_or_404("backlog-runner")
     if not body.refs:
         raise HTTPException(status_code=400, detail="refs must be non-empty")
+    # Fail-closed author trust: this path does not re-rank, so an untrusted (or
+    # unmirrored) issue — e.g. one the assistant was steered to by injected text —
+    # must be refused here, before any hold is released.
+    refused = await untrusted_refs(db, body.refs)
+    if refused:
+        raise HTTPException(status_code=422, detail={
+            "error": "untrusted_author",
+            "message": f"{', '.join(refused)}: the issue is not mirrored or its author is "
+                       "not trusted, so the runner will not dispatch it (add the author to "
+                       "the product's trusted_authors to allow it)"})
     actor = actor_for_request(request)
     for ref in body.refs:
         parts = split_ref(ref)

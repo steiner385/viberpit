@@ -388,6 +388,11 @@ def test_policy_schema_and_project_policy_round_trip():
         assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"nope": 1}}, headers=IDENTITY_HEADERS)
         assert r.status_code == 422
+        # A bare app login would trust a squatting USER of that name: 422 naming app/<slug>.
+        r = c.patch("/api/pm/projects/kindash/policy",
+                    json={"policy": {"trusted_authors": ["viberpit"]}}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
+        assert "app/viberpit" in r.json()["detail"]["message"]
         # A below-minimum int is a server-side refusal, not a browser courtesy: a
         # stored ``-1`` cap reads as an unreachable ceiling in ``_refill``, i.e.
         # unlimited spawning for that product.
@@ -1001,8 +1006,10 @@ def _seed_one_pending(c, *, feature_slug=None, no_fit_suggestion=None, repo="o/r
                                title=feature_slug, state="live")
                 db.add(feat)
                 await db.flush()
+            # The approve-escalation tap refuses an untrusted author (fail-closed).
+            p.automation_policy = {**(p.automation_policy or {}), "trusted_authors": ["tony"]}
             w = WorkItem(repo=repo, number=number, kind="issue", title="Fix",
-                         state="open", triage_state="unclassified")
+                         state="open", triage_state="unclassified", author="tony")
             db.add(w)
             await db.flush()
             tp = TriageProposal(
@@ -3263,7 +3270,7 @@ def test_approve_escalation_refuses_an_issue_the_products_policy_skips():
             async with db_session() as db:
                 w = (await db.execute(select(WorkItem).where(WorkItem.id == wid))).scalar_one()
                 w.labels = ["ci-infrastructure", "forced-deploy-audit"]
-                w.author = "github-actions"
+                w.author = "app/github-actions"
         c.portal.call(_label)
         _hold_for_escalation(c, wid)
         orch = c.app.state.sessions

@@ -459,6 +459,21 @@ class MergeQueueObservation(Base):
     eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class DataBackfill(Base):
+    """Durable marker for a ONE-SHOT startup data backfill (``server.db.init_db``).
+
+    Production never runs Alembic, so a data change that must reach the live DB runs
+    on the startup path. One that must never repeat (e.g. ``_backfill_app_authors``,
+    where a re-run is a security hole) writes its row here in the same transaction as
+    its UPDATE and skips forever once the row exists."""
+
+    __tablename__ = "data_backfills"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
 class AppSettings(Base):
     """Single-row application settings (singleton id='singleton')."""
 

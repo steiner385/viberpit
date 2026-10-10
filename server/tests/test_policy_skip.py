@@ -25,7 +25,7 @@ def _row(**over) -> QueueRow:
     base: dict[str, Any] = dict(
         ref="o/r#1", repo="o/r", number=1, product="kindash", title="t", body="", url="u",
         status="Held", score=None, gh_created_at=NOW, gh_updated_at=NOW, assignees=(),
-        author="github-actions", labels=(), open_children=0, open_blockers=(),
+        author="app/github-actions", labels=(), open_children=0, open_blockers=(),
         live_session=False, claimed=False)
     base.update(over)
     if "ref" not in over:
@@ -35,16 +35,17 @@ def _row(**over) -> QueueRow:
 
 def test_skipped_by_policy_reads_the_products_skip_labels_and_the_global_filter():
     policy = {"skip_labels": [" Forced-Deploy-Audit "]}        # normalised like the queue
-    assert skipped_by_policy(author="github-actions", labels=AUDIT,
+    assert skipped_by_policy(author="app/github-actions", labels=AUDIT,
                              title="⚠️ Unverified prod deploy b80aa1b03c — 2026-09-21",
                              policy=policy)
-    assert not skipped_by_policy(author="github-actions", labels=("ci-infrastructure",),
+    assert not skipped_by_policy(author="app/github-actions", labels=("ci-infrastructure",),
                                  title="t", policy=policy)
     # The built-in bot-noise filter (``queue.SKIP_ISSUE_LABELS`` & co.) counts with
     # no policy at all — this is ``skip_reason``'s own ``bot`` verdict, not a copy.
     assert skipped_by_policy(author="renovate[bot]", labels=(), title="t", policy={})
     assert skipped_by_policy(author="tony", labels=("dependencies",), title="t", policy=None)
-    assert not skipped_by_policy(author="tony", labels=("bug",), title="t", policy=None)
+    assert not skipped_by_policy(author="tony", labels=("bug",), title="t",
+                                 policy={"trusted_authors": ["tony"]})
 
 
 def test_stale_runner_holds_picks_only_the_runners_owner_action_holds_on_skipped_rows():
@@ -80,3 +81,22 @@ def test_stale_runner_holds_picks_only_the_runners_owner_action_holds_on_skipped
     ]
     assert [r.number for r in stale_runner_holds(rows, policies)] == [1, 2, 9]
     assert stale_runner_holds([], policies) == []
+
+
+def test_approval_tap_refuses_an_untrusted_author():
+    policy = {"trusted_authors": ["steiner385"]}
+    assert skipped_by_policy(author="stranger", labels=(), title="t", policy=policy)
+    assert not skipped_by_policy(author="steiner385", labels=(), title="t", policy=policy)
+
+
+def test_trust_never_makes_a_runner_hold_stale():
+    """Trust gates DISPATCH (and the approve tap), not the hold inbox: before a product's
+    trusted_authors is seeded, every runner hold on a human-authored issue is
+    'untrusted' and releasing them would silently drop the owner's queue."""
+    policies = {"kindash": {"trusted_authors": ["steiner385"]}}
+    row = _row(number=1, hold_kind="owner_action", hold_by="runner", hold_reason=ESCALATION,
+               author="stranger", labels=("bug",))
+    assert skipped_by_policy(author="stranger", labels=("bug",), title="t",
+                             policy=policies["kindash"])
+    assert stale_runner_holds([row], policies) == []
+    assert stale_runner_holds([row], {}) == []

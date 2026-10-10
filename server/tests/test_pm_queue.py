@@ -6,10 +6,25 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from server.pm.desired_state import STATUS_OPTIONS, STATUS_READY
-from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, URGENT_LABELS, QueueRow, rank,
-                             rank_key, skip_reason, to_candidate)
+from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, URGENT_LABELS, QueueRow,
+                             is_trusted_author, rank_key, to_candidate)
+from server.pm.queue import rank as _rank
+from server.pm.queue import skip_reason as _skip_reason
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
+
+
+# The trust gate is fail-closed, so every fixture row (default author "tony") must be
+# vouched for; these wrappers declare it once. A test of the gate itself passes
+# ``trusted_authors=`` explicitly, which wins.
+def skip_reason(row, **kw):
+    kw.setdefault("trusted_authors", frozenset({"tony"}))
+    return _skip_reason(row, **kw)
+
+
+def rank(rows, **kw):
+    kw.setdefault("trusted_authors", frozenset({"tony"}))
+    return _rank(rows, **kw)
 
 
 def _row(**over):
@@ -221,6 +236,7 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "assigned": _row(assignees=("steiner385",)),
         "epic_open": _row(open_children=1),
         "bot": _row(author="renovate[bot]"),
+        "untrusted": _row(author="stranger"),
         "held": _row(hold_kind="owner_action"),
         "needs_spec": _row(bounces=2),
     }
@@ -306,3 +322,81 @@ def test_is_bot_noise_is_the_predicate_behind_the_bot_skip():
     assert not is_bot_noise(author="github-actions", labels=(), title="t")
     assert is_bot_noise(author="github-actions", labels=("forced-deploy-audit",), title="t",
                         extra_skip_labels=frozenset({"forced-deploy-audit"}))
+
+
+TRUSTED = frozenset({"steiner385", "app/viberpit"})
+
+
+def test_untrusted_author_is_skipped_before_dispatch():
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW, trusted_authors=TRUSTED)
+    assert skip_reason(_row(author="steiner385"), **kw) is None
+    assert skip_reason(_row(author="stranger"), **kw) == "untrusted"
+
+
+def test_trust_is_case_insensitive_and_ignores_app_prefix_and_bot_suffix_forms():
+    assert is_trusted_author("Steiner385", TRUSTED)
+    assert is_trusted_author("app/viberpit", TRUSTED)
+    assert is_trusted_author("App/Viberpit", TRUSTED)
+    assert is_trusted_author("viberpit[bot]", TRUSTED)
+
+
+def test_a_user_squatting_an_app_login_is_untrusted():
+    """The mirror stores a Bot as ``app/<slug>``; a bare login is a USER, and anyone can
+    register the user ``viberpit`` or ``github-actions`` and open an issue."""
+    assert not is_trusted_author("viberpit", TRUSTED)
+    assert not is_trusted_author("github-actions", frozenset())
+    assert not is_trusted_author("github-actions", TRUSTED)
+
+
+def test_a_user_is_trusted_only_by_a_bare_listing():
+    assert is_trusted_author("steiner385", TRUSTED)
+    assert not is_trusted_author("app/steiner385", TRUSTED)
+    assert not is_trusted_author("app/stranger", TRUSTED)
+
+
+def test_automation_logins_are_always_trusted():
+    assert is_trusted_author("app/github-actions", frozenset())
+    assert is_trusted_author("github-actions[bot]", frozenset())
+
+
+def test_ghost_author_is_untrusted():
+    assert not is_trusted_author("", TRUSTED)
+    assert not is_trusted_author("ghost", TRUSTED)
+
+
+def test_empty_trusted_list_fails_closed_for_humans():
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW,
+              trusted_authors=frozenset())
+    assert skip_reason(_row(author="steiner385"), **kw) == "untrusted"
+
+
+def test_untrusted_is_a_declared_skip_reason():
+    assert "untrusted" in SKIP_REASONS
+
+
+def test_trusted_automation_logins_pin_alert_series():
+    from server.pm.alert_series import AUTOMATION_LOGINS
+    from server.pm.queue import TRUSTED_AUTOMATION_LOGINS
+    assert TRUSTED_AUTOMATION_LOGINS == AUTOMATION_LOGINS
+
+
+def test_alert_series_recognises_the_mirrors_app_form():
+    from server.pm.alert_series import alert_key, is_automation_login
+    assert is_automation_login("app/github-actions")
+    assert not is_automation_login("github-actions")      # a bare login is a user
+    assert is_automation_login("renovate[bot]")
+    assert not is_automation_login("app/tony")
+    assert alert_key("Weekly failed — 2026-09-01", "app/github-actions") == \
+        alert_key("Weekly failed — 2026-09-01", "github-actions[bot]")
+    assert alert_key("Weekly failed — 2026-09-01", "github-actions") is None
+    assert alert_key("Weekly failed — 2026-09-01", "app/github-actions") is not None
+
+
+def test_a_bare_github_actions_user_cannot_supersede_a_real_alert_series():
+    from server.pm.alert_series import AlertIssue, superseded
+    title = "⚠️ Unverified prod deploy b80aa1b03c — 2026-09-21"
+    real = AlertIssue("o/r", 10, title, "app/github-actions")
+    rest = AlertIssue("o/r", 11, title.replace("2026-09-21", "2026-09-22"), "github-actions[bot]")
+    squat = AlertIssue("o/r", 99, title.replace("2026-09-21", "2026-09-30"), "github-actions")
+    assert superseded([real, squat]) == []
+    assert superseded([real, rest, squat]) == [("o/r#10", "o/r#11")]

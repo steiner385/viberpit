@@ -203,3 +203,21 @@ def test_parse_malformed_label_is_string():
     items, _, _ = parse_page(payload, "o/r", "issue")
     assert len(items) == 1
     assert items[0].labels == ("critical",)
+
+
+def test_bot_author_is_stored_as_app_slug_and_a_user_as_the_bare_login():
+    """Bot and User logins share a namespace, so the Bot-ness is recorded in the string
+    (``app/<slug>``): the trusted-author gate cannot be squatted by a same-named user."""
+    for typename, expected in (("Bot", "app/viberpit"), ("User", "viberpit"), (None, "viberpit")):
+        payload = _issue_payload()
+        author = {"login": "viberpit"}
+        if typename:
+            author["__typename"] = typename
+        payload["data"]["repository"]["issues"]["nodes"][0]["author"] = author
+        (item,) = parse_page(payload, "o/r", "issue")[0]
+        assert item.author == expected
+
+
+def test_queries_select_the_author_typename():
+    assert "author { __typename login }" in build_issues_query("o/r", None, None)
+    assert "author { __typename login }" in build_prs_query("o/r", None)

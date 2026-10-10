@@ -53,7 +53,8 @@ def _seed_ready_and_blocked(c) -> None:
 
     async def _seed_async() -> None:
         async with db_session() as db:
-            proj = Project(slug="viberpit", name="viberpit")
+            proj = Project(slug="viberpit", name="viberpit",
+                           automation_policy={"trusted_authors": ["tony"]})
             db.add(proj)
             await db.flush()
 
@@ -63,7 +64,8 @@ def _seed_ready_and_blocked(c) -> None:
 
             wi_ready = WorkItem(repo="steiner385/viberpit", number=100,
                                 kind="issue", title="ready item", state="open",
-                                body="do the thing", url="https://example.com/100")
+                                body="do the thing", url="https://example.com/100",
+                                author="tony")
             wi_blocked = WorkItem(repo="steiner385/viberpit", number=101,
                                   kind="issue", title="blocked item", state="open",
                                   body="blocked thing", url="https://example.com/101")
@@ -253,13 +255,14 @@ def _seed_bounced_issue(c, *, give_up_after_bounces: int) -> None:
         async with db_session() as db:
             proj = Project(slug="bouncy", name="bouncy",
                            automation_policy={
-                               "give_up_after_bounces": give_up_after_bounces})
+                               "give_up_after_bounces": give_up_after_bounces,
+                               "trusted_authors": ["tony"]})
             db.add(proj)
             await db.flush()
             db.add(ProjectRepo(project_id=proj.id, repo="o/bouncy", is_primary=True))
             wi = WorkItem(repo="o/bouncy", number=1, kind="issue", title="bounced",
                           state="open", body="needs a spec",
-                          url="https://example.com/b1")
+                          url="https://example.com/b1", author="tony")
             db.add(wi)
             await db.flush()
             ghp = GhProject(project_id=proj.id, gh_project_number=9, title="bouncy")
@@ -313,13 +316,14 @@ def _seed_second_product_with_a_held_item(c) -> None:
 
     async def _seed_async() -> None:
         async with db_session() as db:
-            proj = Project(slug="kindash", name="kindash")
+            proj = Project(slug="kindash", name="kindash",
+                           automation_policy={"trusted_authors": ["tony"]})
             db.add(proj)
             await db.flush()
             db.add(ProjectRepo(project_id=proj.id, repo="steiner385/KinDash", is_primary=True))
             wi = WorkItem(repo="steiner385/KinDash", number=7, kind="issue",
                           title="held item", state="open", body="b",
-                          url="https://example.com/k7",
+                          url="https://example.com/k7", author="tony",
                           hold_kind="owner_action", hold_by="tony@example.com",
                           hold_reason="waiting on the owner")
             db.add(wi)

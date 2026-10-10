@@ -12,26 +12,30 @@ escalation" tap, and the tap (``escalation_approval.approve_escalation`` →
 of them were dispatched again — each a session that could only report "no code to
 write".
 
-Pure half. ``skipped_by_policy`` is the one predicate both consumers apply: the
-approve tap refuses on it, and the backlog tick ends every RUNNER-written
-``owner_action`` hold it names (``stale_runner_holds``), so the inbox stops
-offering them and the queue's ordinary ``bot`` skip takes over. Only the runner's
+Pure half. ``skipped_by_policy`` is the approve tap's predicate (``bot`` rule plus
+author trust). The backlog tick ends every RUNNER-written ``owner_action`` hold the
+``bot`` rule alone names (``stale_runner_holds``: ``is_bot_noise`` under the product's
+``skip_labels``; trust is NOT a release reason), so the inbox stops offering them and
+the queue's ordinary ``bot`` skip takes over. Only the runner's
 own holds: a person who parked a skipped issue meant to.
 """
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from server.automations.product_policy import skip_labels
+from server.automations.product_policy import skip_labels, trusted_authors
 from server.pm.holds import RUNNER_ACTOR
-from server.pm.queue import QueueRow, is_bot_noise
+from server.pm.queue import QueueRow, is_bot_noise, is_trusted_author
 
 
 def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
                       policy: Mapping | None) -> bool:
-    """Whether the queue would skip this issue as ``bot`` under *policy* — the
-    built-in filter plus the product's ``skip_labels``. ``None`` (no policy for the
-    product) applies the built-in filter alone."""
+    """Whether the queue would skip this issue as ``bot`` or ``untrusted`` under
+    *policy* — the built-in filter plus the product's ``skip_labels``, and an author
+    outside its ``trusted_authors``. ``None`` (no policy for the product) applies the
+    built-in filter and trusts only automation logins (fail-closed)."""
+    if not is_trusted_author(author, trusted_authors(policy)):
+        return True
     return is_bot_noise(author=author, labels=labels, title=title,
                         extra_skip_labels=skip_labels(policy))
 
@@ -39,9 +43,12 @@ def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
 def stale_runner_holds(rows: Iterable[QueueRow],
                        policies: Mapping[str, Mapping]) -> list[QueueRow]:
     """The rows whose ``owner_action`` hold the RUNNER wrote and whose issue the
-    owning product's policy now skips, in the order given. A person's hold, a hold
-    of another kind, and an issue the policy still treats as work are not stale."""
+    owning product's policy now skips as ``bot``, in the order given. A person's hold,
+    a hold of another kind, and an issue the policy still treats as work are not stale.
+    Author TRUST is deliberately not part of this: an untrusted author's issue is not
+    dispatched, but the owner's inbox must not be emptied because a product has not
+    (yet) listed its trusted authors."""
     return [row for row in rows
             if row.hold_kind == "owner_action" and row.hold_by == RUNNER_ACTOR
-            and skipped_by_policy(author=row.author, labels=row.labels, title=row.title,
-                                  policy=policies.get(row.product))]
+            and is_bot_noise(author=row.author, labels=row.labels, title=row.title,
+                             extra_skip_labels=skip_labels(policies.get(row.product)))]

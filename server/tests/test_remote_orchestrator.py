@@ -312,6 +312,7 @@ async def test_run_command_unknown_over_uds_surfaces_keyerror():
     assert "isn't live" in notice["data"]["text"]
 
 
+@pytest.mark.usefixtures("pr_authors_trusted")
 @pytest.mark.asyncio
 async def test_request_pr_fix_over_uds(isolated_db, monkeypatch):
     """Manual 'Fix PR #N' tap routes through the daemon to the real orchestrator.

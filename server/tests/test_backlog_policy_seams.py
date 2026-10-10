@@ -44,7 +44,9 @@ async def _init(tmp_path, name="policy_seams.db"):
 async def _seed_product(slug: str, repo: str, *, policy: dict | None = None,
                         board: bool = True, rank: int | None = None) -> None:
     async with db_session() as db:
-        project = Project(slug=slug, name=slug, automation_policy=policy, priority_rank=rank)
+        project = Project(slug=slug, name=slug, automation_policy=(policy if policy is None
+                                               else {"trusted_authors": ["steiner385"], **policy}),
+                          priority_rank=rank)
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo=repo, is_primary=True))
@@ -520,7 +522,8 @@ def test_a_hand_set_policy_survives_the_seed_without_blocking_the_others(tmp_pat
         assert await orch._backlog_seed_policies({"enabled_repos": ["o/a", "o/b"]},
                                                  "auto") == 1
         policies = await _policies()
-        assert policies["alpha"][0] == {"dispatch": "off"}    # untouched
+        assert policies["alpha"][0] == {"trusted_authors": ["steiner385"],
+                                        "dispatch": "off"}    # untouched
         assert policies["beta"][0]["dispatch"] == "auto"      # migrated
 
     asyncio.run(run())

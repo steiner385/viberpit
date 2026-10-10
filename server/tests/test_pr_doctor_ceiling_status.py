@@ -9,6 +9,9 @@ from server.sessions.selection import AllAccountsBusy
 from server.github.pr_status import PullRequestInfo
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 @pytest.mark.asyncio
 async def test_session_fix_returns_ceiling_when_all_accounts_busy(isolated_db):

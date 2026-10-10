@@ -13,6 +13,9 @@ from server.github.pr_status import PullRequestInfo
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.test_automation_ownership import ownership_db as ownership_db
 
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 @pytest_asyncio.fixture
 async def doctor(ownership_db, monkeypatch):

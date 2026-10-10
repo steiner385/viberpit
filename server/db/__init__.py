@@ -9,16 +9,18 @@ import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncGenerator, cast
 
 from sqlalchemy import (
-    Table, event, inspect as sa_inspect, select as sa_select, text as sa_text, update as sa_update,
+    Table, event, insert as sa_insert, inspect as sa_inspect,
+    select as sa_select, text as sa_text, update as sa_update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.aio import run_to_completion
 from server.config import get_settings
-from server.db.models import Automation, Base
+from server.db.models import Automation, Base, DataBackfill, ProjectRepo, WorkItem
 from server.sessions.engine import AgentEngine
 
 log = logging.getLogger(__name__)
@@ -271,6 +273,48 @@ def _backfill_session_engine(sync_conn) -> None:
         ))
 
 
+# App logins the OLD mirror stored bare (the new sync writes Bots as ``app/<slug>``).
+_APP_AUTHOR_SLUGS = ("github-actions", "viberpit")
+_APP_AUTHOR_BACKFILL = "work_item_app_authors"
+
+
+def _backfill_app_authors(sync_conn) -> None:
+    """ONE-SHOT: clear the bare App-looking authors the old mirror wrote, and re-mirror.
+
+    Same rationale as ``_backfill_session_engine``: production startup reconciles
+    rather than running Alembic, so migration 0082's data change only reaches the live
+    database from here.
+
+    SECURITY -- never infer ``app/<slug>`` from a stored login. A login is a stale
+    identity: it records what the account was CALLED when the row was last synced, not
+    whether it was the App. Anyone who registered -- or renamed to -- ``viberpit`` or
+    ``github-actions`` before this deploy has bare rows indistinguishable from the
+    App's, and relabelling them would hand them the App's trust. So the bare rows are
+    CLEARED (``author`` NULL: untrusted, fail closed) and every repo's mirror backfill
+    is reset (``ProjectRepo.backfill_done`` etc.), so the ``__typename``-aware sync
+    re-reads every author and GitHub itself says which rows are Bots.
+
+    It MUST also stay one-shot (the ``data_backfills`` marker, written in the same
+    transaction): after it, a bare ``viberpit`` row can only have come from the NEW sync
+    -- i.e. a USER of that name -- and must be left alone.
+    """
+    tables = set(sa_inspect(sync_conn).get_table_names())
+    if not {"work_items", "project_repos", "data_backfills"} <= tables:
+        return
+    marker = cast(Table, DataBackfill.__table__)
+    if sync_conn.execute(sa_select(marker.c.name).where(
+            marker.c.name == _APP_AUTHOR_BACKFILL)).first() is not None:
+        return
+    items = cast(Table, WorkItem.__table__)
+    sync_conn.execute(
+        sa_update(items).where(items.c.author.in_(_APP_AUTHOR_SLUGS)).values(author=None))
+    repos = cast(Table, ProjectRepo.__table__)
+    sync_conn.execute(sa_update(repos).values(
+        backfill_done=False, backfill_cursor=None, backfill_phase="issues"))
+    sync_conn.execute(sa_insert(marker).values(
+        name=_APP_AUTHOR_BACKFILL, applied_at=datetime.now(timezone.utc)))
+
+
 def _assert_no_schema_drift(sync_conn) -> None:
     """After reconcile, verify every model column exists in its table.
 
@@ -326,6 +370,7 @@ async def init_db(db_url: str | None = None) -> None:
         # Postgres deployment does not run Alembic revisions.
         await conn.run_sync(_backfill_session_engine)
         await conn.run_sync(_migrate_weighted_selection_strategy)
+        await conn.run_sync(_backfill_app_authors)
         await conn.run_sync(_assert_no_schema_drift)
         if url.startswith("sqlite"):
             # SQLite-only: `pending_rearm = 'null'` compares a json column to text,

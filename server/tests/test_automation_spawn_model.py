@@ -341,6 +341,7 @@ async def test_backlog_spawn_survives_a_failing_floor_lookup(tmp_path, monkeypat
     assert "floor" not in captured["detail"]
 
 
+@pytest.mark.usefixtures("refs_trusted")
 @pytest.mark.asyncio
 async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
         isolated_db, tmp_path, monkeypatch):
@@ -1003,6 +1004,7 @@ _INFO = PullRequestInfo(number=11, url="https://x/11", state="open",
                         head_ref="fix-lint")
 
 
+@pytest.mark.usefixtures("pr_authors_trusted")
 @pytest.mark.asyncio
 async def test_pr_fix_spawn_passes_pinned_model(isolated_db, monkeypatch):
     from server.tests.test_pr_doctor_step import github_identity
@@ -1026,6 +1028,7 @@ async def test_pr_fix_spawn_passes_pinned_model(isolated_db, monkeypatch):
         "engine": "claude_code", "model": "opus", "model_source": "pinned"}
 
 
+@pytest.mark.usefixtures("pr_authors_trusted")
 @pytest.mark.asyncio
 async def test_pr_fix_spawn_auto_fails_open_without_model_access(isolated_db, monkeypatch):
     from server.tests.test_pr_doctor_step import github_identity

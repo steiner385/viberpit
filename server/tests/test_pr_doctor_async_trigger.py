@@ -20,6 +20,9 @@ from server.github.pr_status import PullRequestInfo
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
+# PR Doctor refuses untrusted/unmirrored PRs; these tests cover its other behaviour.
+pytestmark = pytest.mark.usefixtures("pr_authors_trusted")
+
 
 def _pr(**kw):
     base = dict(number=777, url="https://x/777", state="open", checks="failing",
