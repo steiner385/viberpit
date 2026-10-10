@@ -77,7 +77,10 @@ out of scope — see the fleet crash-loop gap #816).
   never swallows a real stall (issue #1514). A stall that host-wide PSI `full` stall time
   (`/proc/pressure/{memory,io}`) covers by at least half is a host freeze, not this process's block:
   it logs `loop_lag.host_stall` at INFO with `host_memory_full_s` / `host_io_full_s`, and only an
-  unexplained stall (or one on a host without PSI) stays a WARNING (issue #2866).
+  unexplained stall (or one on a host without PSI) stays a WARNING (issue #2866). The process's own
+  cgroup v2 `memory.pressure` / `io.pressure` `full` counters count too (`cgroup_*_full_s`), so a
+  partly thrashing host that freezes only this unit is also INFO; every available delta is attached
+  to the WARNING as well, showing how much of an unexplained stall pressure did cover (issue #2882).
 - **Task supervision** (`server/obs/tasks.py`): `supervise` attaches a done-callback that always
   retrieves a failed task's exception, logs it loudly with the task name, and invokes an optional
   recovery hook; clean returns and cancellations pass through untouched (audit W2.6 — a bare

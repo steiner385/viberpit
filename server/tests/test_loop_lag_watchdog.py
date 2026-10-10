@@ -245,18 +245,24 @@ def test_without_alert_after_every_reported_stall_is_a_warning():
 # freeze directly; a stall they explain is INFO, one they don't stays a WARNING.
 
 class _FakePsi:
-    """Cumulative full-stall seconds per resource, advanced by the test."""
+    """Cumulative full-stall seconds per ``<scope>_<resource>``, advanced by the test."""
 
-    def __init__(self, memory: float = 100.0, io: float = 50.0) -> None:
-        self.totals: dict[str, float] | None = {"memory": memory, "io": io}
+    def __init__(self, cgroup: bool = True) -> None:
+        self.totals: dict[str, float] | None = {"host_memory": 100.0, "host_io": 50.0}
+        if cgroup:
+            self.totals |= {"cgroup_memory": 20.0, "cgroup_io": 10.0}
 
     def __call__(self):
         return None if self.totals is None else dict(self.totals)
 
-    def stall(self, memory: float = 0.0, io: float = 0.0) -> None:
+    def stall(self, memory: float = 0.0, io: float = 0.0, *,
+              cgroup_memory: float = 0.0, cgroup_io: float = 0.0) -> None:
         assert self.totals is not None
-        self.totals["memory"] += memory
-        self.totals["io"] += io
+        self.totals["host_memory"] += memory
+        self.totals["host_io"] += io
+        if "cgroup_memory" in self.totals:
+            self.totals["cgroup_memory"] += cgroup_memory
+            self.totals["cgroup_io"] += cgroup_io
 
 
 def _alerting_watchdog(log, psi):
@@ -289,7 +295,78 @@ def test_a_stall_the_host_pressure_does_not_explain_stays_a_warning():
     wd._note_lag(6.0, before)
 
     assert log.levels == [logging.WARNING]
-    assert log.events[0][0] == "loop_lag.stall"
+    event, fields = log.events[0]
+    assert event == "loop_lag.stall"
+    # #2882: the WARNING shows how much of the lag pressure did explain.
+    assert fields["host_memory_full_s"] == pytest.approx(0.4)
+    assert fields["host_io_full_s"] == pytest.approx(0.2)
+    assert fields["cgroup_memory_full_s"] == pytest.approx(0.0)
+    assert fields["cgroup_io_full_s"] == pytest.approx(0.0)
+
+
+def test_psi_fields_on_a_warning_do_not_split_its_fingerprint():
+    """#2882 put pressure fields on the WARNING; they must stay out of identity."""
+    from server.obs.error_signature import signature_of
+
+    captured: list[logging.LogRecord] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    log = logging.getLogger("server.obs.loop_lag")
+    handler = _Sink()
+    log.addHandler(handler)
+    try:
+        LoopLagWatchdog(interval=1.0, alert_after=5.0, _clock=_FakeClock(),
+                        _psi=_FakePsi(cgroup=False))._note_lag(6.0, None)
+        psi = _FakePsi()
+        before = psi()
+        psi.stall(memory=0.4, cgroup_memory=1.3)
+        LoopLagWatchdog(interval=1.0, alert_after=5.0, _clock=_FakeClock(),
+                        _psi=psi)._note_lag(7.2, before)
+    finally:
+        log.removeHandler(handler)
+
+    assert [r.levelno for r in captured] == [logging.WARNING, logging.WARNING]
+    sigs = [signature_of(r, source="edge", host="dobby") for r in captured]
+    assert sigs[0].fingerprint == sigs[1].fingerprint
+
+
+# --- a partly thrashing host: this unit froze, the host did not (#2882) -------
+# Host ``full`` needs every task on the host stalled. When only the edge faults
+# on its own swapped-out pages, the daemon keeps running and host ``full`` stays
+# low; the edge's own cgroup ``full`` is what measures that freeze.
+
+def test_a_stall_the_cgroup_pressure_explains_is_info():
+    log = _LevelLog()
+    psi = _FakePsi()
+    wd = _alerting_watchdog(log, psi)
+    before = psi()
+    psi.stall(memory=0.3, cgroup_memory=6.1, cgroup_io=2.0)
+    wd._note_lag(6.94, before)
+
+    assert log.levels == [logging.INFO]
+    event, fields = log.events[0]
+    assert event == "loop_lag.host_stall"
+    assert fields["cgroup_memory_full_s"] == pytest.approx(6.1)
+    assert fields["cgroup_io_full_s"] == pytest.approx(2.0)
+    assert fields["host_memory_full_s"] == pytest.approx(0.3)
+
+
+def test_without_a_cgroup_counter_the_host_alone_decides():
+    log = _LevelLog()
+    psi = _FakePsi(cgroup=False)
+    wd = _alerting_watchdog(log, psi)
+    before = psi()
+    psi.stall(memory=0.4)
+    wd._note_lag(6.0, before)
+    before = psi()
+    psi.stall(memory=5.0)
+    wd._note_lag(6.0, before)
+
+    assert log.levels == [logging.WARNING, logging.INFO]
+    assert not any(k.startswith("cgroup_") for _, f in log.events for k in f)
 
 
 def test_unavailable_psi_keeps_a_stall_a_warning():
@@ -307,7 +384,7 @@ def test_a_failing_psi_reader_keeps_a_stall_a_warning():
 
     log = _LevelLog()
     wd = _alerting_watchdog(log, _boom)
-    wd._note_lag(6.0, {"memory": 1.0, "io": 1.0})
+    wd._note_lag(6.0, {"host_memory": 1.0, "host_io": 1.0})
     assert log.levels == [logging.WARNING]
 
 
@@ -344,34 +421,58 @@ async def test_run_snapshots_psi_around_each_tick():
     assert log.levels == [logging.INFO]
 
 
-def test_read_host_psi_parses_full_totals(monkeypatch, tmp_path):
-    import builtins
+def _psi_tree(tmp_path, cgroup_line="0::/system.slice/viberpit.service\n"):
+    proc, cg = tmp_path / "proc", tmp_path / "cgroup"
+    (proc / "pressure").mkdir(parents=True)
+    (proc / "self").mkdir()
+    (proc / "self" / "cgroup").write_text(cgroup_line)
+    (proc / "pressure" / "memory").write_text(
+        "some avg10=0.00 avg60=0.13 avg300=0.24 total=566117271\n"
+        "full avg10=0.00 avg60=0.06 avg300=0.12 total=422753042\n")
+    (proc / "pressure" / "io").write_text(
+        "some avg10=1.00 avg60=0.00 avg300=0.00 total=9000000\n"
+        "full avg10=0.50 avg60=0.00 avg300=0.00 total=2500000\n")
+    unit = cg / "system.slice" / "viberpit.service"
+    unit.mkdir(parents=True)
+    (unit / "memory.pressure").write_text(
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=8000000\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=7250000\n")
+    (unit / "io.pressure").write_text(
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=4000000\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=1000000\n")
+    return proc, cg, unit
 
-    from server.obs import loop_lag
 
-    files = {
-        "/proc/pressure/memory": "some avg10=0.00 avg60=0.13 avg300=0.24 total=566117271\n"
-                                 "full avg10=0.00 avg60=0.06 avg300=0.12 total=422753042\n",
-        "/proc/pressure/io": "some avg10=1.00 avg60=0.00 avg300=0.00 total=9000000\n"
-                             "full avg10=0.50 avg60=0.00 avg300=0.00 total=2500000\n",
-    }
-    real_open = builtins.open
+def test_psi_reader_reads_host_and_own_cgroup_full_totals(tmp_path):
+    from server.obs.loop_lag import PsiReader
 
-    def fake_open(path, *args, **kwargs):
-        if path in files:
-            p = tmp_path / path.rsplit("/", 1)[-1]
-            p.write_text(files[path])
-            return real_open(p, *args, **kwargs)
-        return real_open(path, *args, **kwargs)
+    proc, cg, _ = _psi_tree(tmp_path)
+    assert PsiReader(str(proc), str(cg))() == {
+        "host_memory": pytest.approx(422.753042), "host_io": pytest.approx(2.5),
+        "cgroup_memory": pytest.approx(7.25), "cgroup_io": pytest.approx(1.0)}
 
-    monkeypatch.setattr(builtins, "open", fake_open)
-    assert loop_lag.read_host_psi() == {
-        "memory": pytest.approx(422.753042), "io": pytest.approx(2.5)}
 
-    def missing(path, *args, **kwargs):
-        if path == "/proc/pressure/io":
-            raise FileNotFoundError(path)
-        return fake_open(path, *args, **kwargs)
+def test_psi_reader_falls_back_to_host_only_without_cgroup_files(tmp_path):
+    from server.obs.loop_lag import PsiReader
 
-    monkeypatch.setattr(builtins, "open", missing)
-    assert loop_lag.read_host_psi() is None
+    proc, cg, unit = _psi_tree(tmp_path)
+    (unit / "memory.pressure").unlink()
+    (unit / "io.pressure").unlink()
+    assert set(PsiReader(str(proc), str(cg))()) == {"host_memory", "host_io"}
+
+    # cgroup v1 only: no unified ``0::`` line, so no unit counters at all.
+    proc, cg, _ = _psi_tree(tmp_path / "v1", cgroup_line="4:memory:/system.slice/x\n")
+    assert set(PsiReader(str(proc), str(cg))()) == {"host_memory", "host_io"}
+
+
+def test_psi_reader_drops_only_the_unreadable_files(tmp_path):
+    from server.obs.loop_lag import PsiReader
+
+    proc, cg, unit = _psi_tree(tmp_path)
+    (proc / "pressure" / "io").unlink()
+    (unit / "io.pressure").write_text("some avg10=0.00 total=1\n")   # no full line
+    assert set(PsiReader(str(proc), str(cg))()) == {"host_memory", "cgroup_memory"}
+
+    for p in (proc / "pressure" / "memory", unit / "memory.pressure"):
+        p.unlink()
+    assert PsiReader(str(proc), str(cg))() is None
