@@ -235,3 +235,80 @@ def test_quoted_request_keeps_prefix_suggestion():
 )
 def test_round3_usability(pat):
     assert assess(pat, "session").level == "ok"
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        # `-m` must be followed by a module word in the head.
+        "Bash(python -m:*)",
+        "Bash(python3 -m:*)",
+        "Bash(python -m *)",
+        "Bash(python -m -c:*)",
+        # Modules that run inline code.
+        "Bash(python -m timeit:*)",
+        "Bash(python3 -m pdb:*)",
+        "Bash(python -m code:*)",
+        "Bash(python -m runpy:*)",
+        "Bash(python -m cProfile:*)",
+        "Bash(python -m profile:*)",
+        "Bash(python3.12 -m trace:*)",
+        "Bash(pythonw -m timeit:*)",
+        # Command launchers with nothing (or only options) after them.
+        "Bash(uv run:*)",
+        "Bash(uv run *)",
+        "Bash(npm exec:*)",
+        "Bash(npm x:*)",
+        "Bash(pnpm exec:*)",
+        "Bash(pnpm dlx:*)",
+        "Bash(yarn exec:*)",
+        "Bash(yarn dlx:*)",
+        "Bash(poetry run:*)",
+        "Bash(pipx run:*)",
+        "Bash(npx:*)",
+        "Bash(bunx:*)",
+        "Bash(npx -y:*)",
+        "Bash(uv run --with x:*)",
+        # ... and the rest of a launcher head is checked like a head of its own.
+        "Bash(uv run python:*)",
+        "Bash(uv run python -c:*)",
+        "Bash(uv run python -m timeit:*)",
+        "Bash(poetry run bash:*)",
+        "Bash(npx node -e:*)",
+        "Bash(uv run uv run:*)",
+    ],
+)
+def test_module_and_launcher_heads_refused(pat):
+    assert assess(pat, "session").level == "refuse"
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "Bash(python -m pytest:*)",
+        "Bash(python3 -m pip list:*)",
+        "Bash(uv run pytest:*)",
+        "Bash(poetry run pytest -q:*)",
+        "Bash(npx tsc:*)",
+        "Bash(pnpm exec vitest:*)",
+        "Bash(uv run python -m pytest:*)",
+    ],
+)
+def test_module_and_launcher_heads_ok(pat):
+    assert assess(pat, "session").level == "ok"
+
+
+def _offered(command):
+    return [s["pattern"] for s in offered_suggestions("Bash", {"command": command}, "/w")]
+
+
+def test_python_module_suggestion_names_the_module():
+    pats = _offered("python -m pytest -q")
+    assert "Bash(python -m pytest:*)" in pats
+    assert "Bash(python -m:*)" not in pats
+
+
+def test_launcher_suggestion_names_the_command():
+    pats = _offered("uv run pytest -x")
+    assert "Bash(uv run pytest:*)" in pats
+    assert "Bash(uv run:*)" not in pats

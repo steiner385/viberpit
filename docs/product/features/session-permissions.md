@@ -82,7 +82,12 @@ exception (see Standing rules).
     rule built from the card's first `ok` suggestion (plain allow when none exists or rules are
     off).
   - *Safety tiers.* `assess()` returns refuse / warn / ok. Refused: Bash exec wrappers and
-    interpreters in a prefix/glob head (`python`/`python3` only with `-m`), `git push` except
+    interpreters in a prefix/glob head (`python`/`python3` only as `-m <module>`, and never with
+    an inline-code module such as `timeit`, `pdb`, `code`, `runpy`, `cProfile`, `profile`,
+    `trace`), command launchers (`uv run`, `npx`, `npm exec`/`x`, `pnpm exec`/`dlx`,
+    `yarn exec`/`dlx`, `poetry run`, `pipx run`, `bunx`) unless followed by the command they run
+    — which is then judged as a head of its own (`uv run pytest:*` ok, `uv run python:*`
+    refused) — `git push` except
     exactly, `git -c`/`git config`, and WebFetch domains that are wildcards, single-label, IP
     literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
     `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means

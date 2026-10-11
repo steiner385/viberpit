@@ -21,6 +21,7 @@ from server.permission_rules.patterns import (
     PatternError,
     describe,
     is_protected_path,
+    launcher_len,
     matches_any,
     parse,
     path_spec_matches,
@@ -70,6 +71,8 @@ _EXEC_WRAPPERS = frozenset({
 })  # fmt: skip
 # ``python -m pytest`` runs a named module, not arbitrary code; every other interpreter use is refused.
 _INTERPRETERS_WITH_MODULE_MODE = frozenset({"python", "pythonw"})
+# Standard-library modules that execute code passed on their own command line.
+_INLINE_CODE_MODULES = frozenset({"timeit", "pdb", "code", "runpy", "cprofile", "profile", "trace"})
 _EXTENSIONS = (
     " --force", " -f", " --mirror", " --delete x", " -D x", " --hard origin/master", " -fdx",
     " -rf /", " -c x", " -e x",
@@ -104,6 +107,39 @@ def _word_names(word: str) -> tuple[str, str]:
     return base, re.sub(r"(?<=[a-z])[\d.]+$", "", base) or base
 
 
+def _assess_head_words(words: list[str]) -> Assessment | None:
+    """Refusal for a prefix/glob head that can run arbitrary commands, else None.
+
+    A launcher (``uv run``, ``npx`` ...) must be followed by the command it runs, and the words
+    after it are judged exactly like a head of their own. ``python -m`` must name a module that
+    does not itself run inline code.
+    """
+    i = 0
+    while i < len(words):
+        w = words[i]
+        raw, name = _word_names(w)
+        n = launcher_len([_word_names(x)[0] for x in words[i:]])
+        if n:
+            nxt = words[i + n : i + n + 1]
+            if not nxt or nxt[0].startswith("-"):
+                return _refuse(f"`{' '.join(words[i:i + n])}` runs arbitrary commands; "
+                               "name the command it runs")
+            i += n
+            continue
+        if name in _INTERPRETERS_WITH_MODULE_MODE and words[i + 1 : i + 2] == ["-m"]:
+            module = words[i + 2] if i + 2 < len(words) else ""
+            if not module or module.startswith("-"):
+                return _refuse(f"`{w} -m` must name the module to run")
+            if module.lower().split(".")[0] in _INLINE_CODE_MODULES:
+                return _refuse(f"`{w} -m {module}` can run arbitrary code")
+            i += 2
+            continue
+        if raw in _EXEC_WRAPPERS or name in _EXEC_WRAPPERS:
+            return _refuse(f"can run arbitrary or destructive commands via `{w}`")
+        i += 1
+    return None
+
+
 def _assess_bash(p: Pattern) -> Assessment:
     spec = p.spec or ""
     if (
@@ -130,14 +166,9 @@ def _assess_bash(p: Pattern) -> Assessment:
             return _refuse("wildcards are only allowed at the end of a Bash pattern")
         head = spec.split("*", 1)[0].strip() if p.kind == "glob" else spec
         words = head.split()
-        for i, w in enumerate(words):
-            raw, name = _word_names(w)
-            if name in _INTERPRETERS_WITH_MODULE_MODE and words[i + 1 : i + 2] == [
-                "-m"
-            ]:
-                continue
-            if raw in _EXEC_WRAPPERS or name in _EXEC_WRAPPERS:
-                return _refuse(f"can run arbitrary or destructive commands via `{w}`")
+        refused = _assess_head_words(words)
+        if refused is not None:
+            return refused
         if "git" in words and ("-c" in words or "config" in words):
             return _refuse("git config can run arbitrary commands")
         if "git" in words and "push" in words:

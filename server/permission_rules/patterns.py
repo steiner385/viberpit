@@ -32,6 +32,18 @@ PROTECTED_PATHS = frozenset(
     }
 )  # fmt: skip
 _NEVER_SUGGEST = frozenset({"ExitPlanMode", "AskUserQuestion"})
+#: Commands whose job is to run the command named after them (``uv run pytest``). A rule must
+#: name that command: the launcher alone covers anything, and the rest of the head is judged
+#: as a head of its own (``safety``). Suggestions grow by one word past a launcher.
+COMMAND_LAUNCHERS: tuple[tuple[str, ...], ...] = (
+    ("uv", "run"), ("npm", "exec"), ("npm", "x"), ("pnpm", "exec"), ("pnpm", "dlx"),
+    ("yarn", "exec"), ("yarn", "dlx"), ("poetry", "run"), ("pipx", "run"), ("npx",), ("bunx",),
+)  # fmt: skip
+
+
+def launcher_len(names: Sequence[str]) -> int:
+    """Number of leading words of ``names`` that form a command launcher (0 if none)."""
+    return next((len(lw) for lw in COMMAND_LAUNCHERS if tuple(names[: len(lw)]) == lw), 0)
 
 _TOOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 # MCP server names routinely contain hyphens/dots (e.g. ``mcp__claude-ai__x``).
@@ -331,6 +343,9 @@ def _suggest_candidates(tool: str, input: dict, cwd: str | None) -> list[str]:
         cmd = _squash(_SAFE_REDIRECT_RE.sub(" ", command))
         words = segs[0].split()
         out = [f"Bash({cmd if len(segs) > 1 else segs[0]})"]
+        # ``python -m <module>`` / ``uv run <command>``: the two-word prefix names no command.
+        if len(words) >= 3 and (words[1] == "-m" or launcher_len(words) == 2):
+            out.append(f"Bash({words[0]} {words[1]} {words[2]}:*)")
         if len(words) >= 2:
             out.append(f"Bash({words[0]} {words[1]}:*)")
         if all(seg.split()[0] == words[0] for seg in segs):
