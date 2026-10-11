@@ -52,6 +52,20 @@ def has_no_pr_dispatch(text: str) -> bool:
     return bool(_NO_PR_DISPATCH_RE.search(text or ""))
 
 
+# Detects a dispatch that FORBIDS arming auto-merge (#2927, #2932): the map-synthesis
+# prompts (``server/pm/classification.py``: the map-changes branch, the coverage
+# critic, the governance doc) and the SDLC stage prompt (``server/sdlc/prompts.py``)
+# keep a human — or the synthesizer loop — as the merge gate. Their finished state is
+# an open, ready PR, and the bar's generic "arm auto-merge" nudge contradicted them.
+_NO_ARM_RE = re.compile(r"\bdo\s+not\s+arm\s+auto[\s-]?merge\b", re.IGNORECASE)
+
+
+def has_no_arm_instruction(text: str | None) -> bool:
+    """True when *text* (the session's initial dispatch prompt) forbids arming
+    auto-merge — "Do NOT arm auto-merge"."""
+    return bool(_NO_ARM_RE.search(text or ""))
+
+
 @dataclass(frozen=True)
 class PrFact:
     number: int
@@ -211,7 +225,11 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     implement", "open no PR", "read-only", "investigate only"), the bar treats that
     as the resolution — ahead of ``pr_resolution`` and the arm-step check — so a
     code-flavored goal title cannot out-vote the session's own dispatch and push it
-    into a self-contradictory nudge."""
+    into a self-contradictory nudge.
+
+    When ``instructions`` forbid arming auto-merge (``has_no_arm_instruction``), an
+    open, ready, non-red PR is met: the dispatch owns a human merge gate, so the
+    open-unarmed nudge to arm would contradict it (#2927, #2932)."""
     merged = facts.merged_pr
     if merged is not None and not (merged.is_docs_only and _is_code_goal(goal)):
         return BarVerdict(True, f"code landed (PR #{merged.number} merged)", None, "high")
@@ -228,6 +246,21 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
                 "checks pass", "high")
         return BarVerdict(True, f"PR #{armed.number} open with auto-merge armed", None, "high")
     unarmed = facts.open_unarmed_pr
+    if unarmed is not None and has_no_arm_instruction(instructions):
+        # The dispatch keeps the merge for a human: ready and green is finished.
+        if unarmed.is_draft or unarmed.state == "draft":
+            return BarVerdict(
+                False, f"PR #{unarmed.number} is still a draft",
+                f"mark it ready for review: `gh pr ready {unarmed.number}` "
+                "(do not arm auto-merge — the dispatch forbids it)", "high")
+        if unarmed.ci_is_red:
+            return BarVerdict(
+                False, f"PR #{unarmed.number} is open but a required check is failing",
+                f"fix the failing CI on PR #{unarmed.number} (do not arm auto-merge — "
+                "the dispatch forbids it)", "high")
+        return BarVerdict(
+            True, f"PR #{unarmed.number} open and ready; the dispatch forbids arming "
+            "auto-merge (human merge gate)", None, "high")
     if unarmed is not None:
         return BarVerdict(
             False, f"PR #{unarmed.number} is open but not armed",
