@@ -806,11 +806,11 @@ class DispatchOutcome(Base):
     pr_url: Mapped[str | None] = mapped_column(String, nullable=True)
     first_pass_merge: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     dispatch_kind: Mapped[str | None] = mapped_column(String, nullable=True)  # DISPATCH_KINDS
-    # #2683: on a ``no_pr`` / ``NOT_NEEDED_CAUSE`` row, the issue's material identity
-    # (``server/pm/outcomes.py:material_fingerprint`` — title, body, labels, newest
-    # human comment) when the verdict was recorded. The queue suppresses the issue
-    # while it is unchanged. NULL on every other row and on rows that predate it
-    # (those fall back to ``body_fingerprint``).
+    # #2683: the issue's material identity (``server/pm/outcomes.py:
+    # material_fingerprint`` — title, body, labels) when the dispatch SPAWNED, beside
+    # ``body_fingerprint``. On a ``no_pr`` / ``NOT_NEEDED_CAUSE`` row the queue
+    # suppresses the issue while it still matches. NULL on rows that predate it (a
+    # not-needed one falls back to ``body_fingerprint``).
     material_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
@@ -2131,6 +2131,11 @@ class WorkItem(Base):
     # session found needed no PR (``server/pm/outcomes.py:material_fingerprint``).
     # NULL for a PR, an issue with no human comment, or a row synced before it.
     last_human_comment_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    # When the issue was last REOPENED (its newest ReopenedEvent), #2683 review: a
+    # reopen after a not-needed verdict lifts the suppression. NULL for a PR, an
+    # issue never reopened, or a row synced before it.
+    last_reopened_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)

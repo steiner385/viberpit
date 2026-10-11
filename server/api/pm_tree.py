@@ -17,7 +17,8 @@ from server.db.models import (
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import LIVE_SESSION_STATUSES
 from server.pm.map_changes import Pointer, open_pointer_rows
-from server.pm.outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
+from server.pm.outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
+                                not_needed_suppression, rows_to_bounces, verdicts_by_ref)
 from server.pm.refs import split_ref
 from server.pm.score import rice_score
 from server.pm.triage_accept import _aware, awaiting_decision_clause
@@ -244,8 +245,33 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
     return {"products": products, "generatedAt": datetime.now(timezone.utc).isoformat()}
 
 
+async def _not_needed_until(db, items: list[WorkItem], now: datetime) -> dict[str, datetime]:
+    """``WorkItem.id`` → when its not-needed suppression ends, for every OPEN item the
+    queue currently skips as ``not_needed`` (#2683 review): the same verdict rows and
+    the same rule (``outcomes.not_needed_suppression``) the queue loader applies, so
+    the Roadmap can say "session judged no PR needed — re-check <date>" instead of
+    the item silently never being picked."""
+    open_items = [w for w in items if w.state == "open"]
+    if not open_items:
+        return {}
+    verdicts = verdicts_by_ref((await db.execute(
+        not_needed_stmt([_ref(w) for w in open_items]))).all())
+    out: dict[str, datetime] = {}
+    for w in open_items:
+        if _ref(w) not in verdicts:
+            continue
+        until, _ = not_needed_suppression(
+            verdicts[_ref(w)], title=w.title, body=w.body, labels=w.labels,
+            last_human_comment_at=w.last_human_comment_at,
+            last_reopened_at=w.last_reopened_at)
+        if until is not None and now < until:
+            out[w.id] = until
+    return out
+
+
 def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | None,
-          parent_ref: str | None, *, reason: str | None = None, bounces: int = 0) -> dict:
+          parent_ref: str | None, *, reason: str | None = None, bounces: int = 0,
+          not_needed_until: datetime | None = None) -> dict:
     score = rice_score(w.reach, w.impact, w.effort, w.confidence)
     held_at = _aware(w.hold_set_at)
     return {
@@ -258,6 +284,9 @@ def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | Non
         "reason": reason, "bounces": bounces,
         "holdKind": w.hold_kind, "holdReason": w.hold_reason, "holdBy": w.hold_by,
         "holdSetAt": held_at.isoformat() if held_at else None,
+        # #2683: a session judged no PR needed and the queue skips the issue until
+        # this moment (or until it materially changes). None when not suppressed.
+        "notNeededUntil": not_needed_until.isoformat() if not_needed_until else None,
     }
 
 
@@ -325,6 +354,7 @@ async def get_leaves(
     parent_ids = {w.parent_work_item_id for w in items if w.parent_work_item_id}
     parents = {p.id: _ref(p) for p in (await db.execute(select(WorkItem).where(
         WorkItem.id.in_(parent_ids)))).scalars().all()} if parent_ids else {}
+    suppressed = await _not_needed_until(db, list(items), datetime.now(timezone.utc))
     leaves = []
     for w in items:
         reason = issue_reason(state=w.state, bounces=bounces[w.id],
@@ -333,6 +363,7 @@ async def get_leaves(
             w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
                          board_status[w.id], reason=reason, hold_kind=w.hold_kind),
             blockers[w.id], session[w.id], parents.get(w.parent_work_item_id),
-            reason=reason, bounces=bounces[w.id]))
+            reason=reason, bounces=bounces[w.id],
+            not_needed_until=suppressed.get(w.id)))
     leaves.sort(key=_leaf_sort_key)
     return {"items": leaves}

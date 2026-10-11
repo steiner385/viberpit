@@ -28,6 +28,7 @@ from typing import Callable, Iterable
 
 from viberpit import brand, gitrepos
 from server.github.host_failures import log_gh_failure
+from server.pm.github_sync import with_automation_marker
 
 from . import backlog_deps
 
@@ -415,8 +416,11 @@ def issue_state_live(ref: str, *, gh_run: GhRun = gitrepos._run_gh) -> str | Non
 # --------------------------------------------------------------------------- #
 
 def _issue_comment(ref: str, body: str, *, gh_run: GhRun) -> bool:
+    # Marked so the mirror never reads the runner's own words as a person's comment
+    # re-arming a not-needed issue (#2683 review) — the token may be a USER's.
     repo, number = _split_ref(ref)
-    proc = gh_run(["issue", "comment", number, "--repo", repo, "--body", body],
+    proc = gh_run(["issue", "comment", number, "--repo", repo, "--body",
+                   with_automation_marker(body)],
                   token=gitrepos.app_token_for_repo(repo))
     return getattr(proc, "returncode", 1) == 0
 

@@ -8,6 +8,7 @@ Decision C-2: a row whose board Status is unset or outside the spec vocabulary
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,8 +42,9 @@ SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 
 # A person's own "not now" on the issue itself (#2683, steiner385/viberpit#1432:
 # parked by label, a decision "Leave parked, no PR now" accepted — which releases
-# the decision hold — and the runner claimed it the next day). Read as ``held``:
-# the person parked it, exactly what a hold says, so no policy can opt back in.
+# the decision hold — and the runner claimed it the next day). Skipped as its own
+# reason, ``parked``, and no policy can opt back in. Not ``held``: the status card's
+# held count is read beside the holds list, which lists real holds only.
 PARKED_LABELS = frozenset({"parked"})
 
 # Self-closing trackers (#2683): issues a CI workflow files AND closes by itself —
@@ -61,19 +63,40 @@ PARKED_LABELS = frozenset({"parked"})
 TRACKER_LABELS = frozenset({"flaky", "nightly-failure", "weekly-failure", "midday-e2e-failure",
                             "red-watchdog", "nightly-consecutive-failure",
                             "forced-deploy-audit", "nightly-scoreboard"})
+# ``flaky`` alone marks a tracker only on an issue an AUTOMATION filed (the flaky
+# detector's): a person's "fix flaky test X" carrying the label is work (#2683
+# review). The detector's ``[flaky]`` title tag counts whoever filed it.
+_AUTOMATION_ONLY_TRACKER_LABELS = frozenset({"flaky"})
+# Exactly the title shapes the KinDash workflows write, nothing looser (#2683
+# review: "Daily backup failed", "Nightly sync failed (calendar)" and "Weekly report
+# failed - timeout" are bug reports, not trackers).
 _TRACKER_TITLE = re.compile(
     r"^\s*\[flaky\]"                         # the per-test flaky tracker's tag
     r"|^\s*flaky test burndown\b"            # … and its burndown digest
     r"|^\s*red-watchdog:"                    # "red-watchdog: workflow "Nightly" — 5+ …"
-    # "Nightly failed — 2026-10-09", "weekly full-ci failed — culprit …": a scheduled
-    # run's verdict. ``failed`` must END a clause, so "Nightly job failed to upload
-    # artifacts" (a bug report) is not a tracker.
-    r"|^\s*(?:nightly|weekly|midday|daily)\b[^—–:]{0,40}?\bfailed\b\s*(?:[—–:(-]|$)",
+    # The scheduled-run rollups: "Nightly failed — 2026-10-09", "Midday e2e failed —
+    # 2026-10-06" (an em/en dash and the run's date), and the auto-revert's
+    # "weekly full-ci failed — culprit identified — …".
+    r"|^\s*(?:nightly|weekly|midday)(?:\s+e2e)?\s+failed\s+[—–]\s+\d{4}-\d{2}-\d{2}\s*$"
+    r"|^\s*(?:nightly|weekly)\s+full-ci\s+failed\s+[—–]\s+culprit\b",
     re.IGNORECASE)
-# A generated report's title-case name ("🧮 UI Maintenance Cost & Architecture ROI
-# Digest"). Case-SENSITIVE on purpose: "feat(email): blog subscriber digest" is a
-# feature request, and human titles end in a lowercase "digest" far more often.
+# A generated report: its title is "<emoji> … Digest" ("🧮 UI Maintenance Cost &
+# Architecture ROI Digest", "📊 CI / Delivery Observability Digest"). The leading
+# pictograph (Unicode category So) is what separates it from a feature named
+# "… Digest" ("Add Weekly Family Digest").
 _DIGEST_TITLE = re.compile(r"\bDigest\s*$")
+
+
+def _is_generated_digest(title: str) -> bool:
+    t = title.strip()
+    return bool(t) and unicodedata.category(t[0]) == "So" and bool(_DIGEST_TITLE.search(t))
+
+
+def is_automation_author(author: str) -> bool:
+    """Whether *author* is a GitHub App/bot as the mirror (``app/<slug>``) or the REST
+    API (``<slug>[bot]``) records one — never a bare login, which a user can own."""
+    login = (author or "").strip().lower()
+    return login.startswith("app/") or login.endswith("[bot]")
 
 # Labels that mark work the queue must serve BEFORE ordinary backlog, whatever
 # its score or age (#16150, #16151). An automation that reports a broken
@@ -92,7 +115,7 @@ _DIGEST_TITLE = re.compile(r"\bDigest\s*$")
 URGENT_LABELS = frozenset({"deploy-monitor"})
 
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
-                 "tracker", "untrusted", "held", "not_needed", "needs_spec")
+                 "tracker", "untrusted", "held", "parked", "not_needed", "needs_spec")
 
 # Logins that file issues which ARE work (deploy-monitor, forced-deploy-audit) — always
 # trusted. Mirrors alert_series.AUTOMATION_LOGINS; pinned by a test rather than imported
@@ -210,17 +233,20 @@ def is_bot_noise(*, author: str, labels: Iterable[str], title: str,
     return (title or "").strip().lower() in SKIP_ISSUE_TITLES
 
 
-def is_self_closing_tracker(labels: Iterable[str], title: str) -> bool:
+def is_self_closing_tracker(labels: Iterable[str], title: str, *, author: str = "") -> bool:
     """THE ``tracker`` verdict (``TRACKER_LABELS`` and the tracker title shapes): an
     issue its own workflow closes. One predicate for the queue's skip, the
     hold-hygiene pass and the approve-escalation tap (``server/pm/policy_skip.py``)
     and the runner's not-needed settle, so they cannot disagree about which issues
     are trackers. Whether a product SKIPS them is its policy's call
     (``product_policy.skips_self_closing_trackers``), not this predicate's."""
-    if {str(lbl).strip().lower() for lbl in labels} & TRACKER_LABELS:
+    found = {str(lbl).strip().lower() for lbl in labels} & TRACKER_LABELS
+    if found - _AUTOMATION_ONLY_TRACKER_LABELS:
+        return True
+    if found and is_automation_author(author):
         return True
     t = title or ""
-    return bool(_TRACKER_TITLE.search(t) or _DIGEST_TITLE.search(t))
+    return bool(_TRACKER_TITLE.search(t) or _is_generated_digest(t))
 
 
 def is_parked(labels: Iterable[str]) -> bool:
@@ -297,8 +323,10 @@ def skip_reason(
     # Checked BEFORE the status gate: the reconciler stamps the held board Status
     # from exactly this hold, so a status-first check would report these rows as
     # plain "status" skips and the card would lose its held gauge.
-    if row.hold_kind in HELD_KINDS or is_parked(row.labels):
+    if row.hold_kind in HELD_KINDS:
         return "held"
+    if is_parked(row.labels):
+        return "parked"
     # #2683: a session found this issue needed no PR and nothing material has
     # changed since — checked before the status gate for the same reason as
     # ``held``: the reason is the useful answer, not "status".
@@ -326,7 +354,7 @@ def skip_reason(
         return "epic_open"
     if _is_bot(row, extra_skip_labels):
         return "bot"
-    if skip_trackers and is_self_closing_tracker(row.labels, row.title):
+    if skip_trackers and is_self_closing_tracker(row.labels, row.title, author=row.author):
         return "tracker"
     if not is_trusted_author(row.author, trusted_authors):
         return "untrusted"

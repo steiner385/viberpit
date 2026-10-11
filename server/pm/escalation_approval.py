@@ -77,7 +77,8 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
         elif not is_trusted_author(wi.author or "", trusted_authors(policy)):
             why = "its author is not a trusted author"
         elif (skips_self_closing_trackers(policy)
-              and is_self_closing_tracker(wi.labels or (), wi.title or "")):
+              and is_self_closing_tracker(wi.labels or (), wi.title or "",
+                                          author=wi.author or "")):
             why = "it is a self-closing tracker"
         else:
             why = "it is bot noise"

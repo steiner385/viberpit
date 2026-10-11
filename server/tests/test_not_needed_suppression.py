@@ -31,17 +31,52 @@ KW = dict(min_status="Backlog", respect_dependencies=True,
           trusted_authors=frozenset({"tony"}))
 
 
-def _verdict(at=T0, *, title=TITLE, body=BODY, labels=LABELS, legacy=False):
+SESSION = timedelta(hours=2)   # how long each verdict's dispatch ran
+
+
+def _verdict(at=T0, *, title=TITLE, body=BODY, labels=LABELS, legacy=False, started=True):
     return NotNeededVerdict(
-        ended_at=at,
+        started_at=at - SESSION if started else None, ended_at=at,
         material_fingerprint=None if legacy else material_fingerprint(title, body, labels),
         body_fingerprint=body_fingerprint(title, body))
 
 
 def _now(verdicts, **over):
-    cur = dict(title=TITLE, body=BODY, labels=LABELS, last_human_comment_at=None)
+    cur = dict(title=TITLE, body=BODY, labels=LABELS, last_human_comment_at=None,
+               last_reopened_at=None)
     cur.update(over)
     return not_needed_suppression(verdicts, **cur)
+
+
+def test_a_comment_made_while_the_session_ran_lifts_suppression():
+    """#2683 review: the baseline is when the dispatch STARTED. A person who commented
+    an hour into a two-hour session added something that session never read."""
+    v = [_verdict()]
+    assert _now(v, last_human_comment_at=T0 - timedelta(hours=1)) == (None, False)
+    # Before the dispatch started: the session saw it.
+    assert _now(v, last_human_comment_at=T0 - timedelta(hours=3))[1] is True
+    # A row with no start time (a §13 recovery insert) falls back to its end.
+    v = [_verdict(started=False)]
+    assert _now(v, last_human_comment_at=T0 - timedelta(hours=1))[1] is True
+
+
+def test_a_reopen_after_the_verdict_lifts_suppression():
+    v = [_verdict()]
+    assert _now(v, last_reopened_at=T0 + timedelta(days=2)) == (None, False)
+    assert _now(v, last_reopened_at=T0 - timedelta(days=2))[1] is True
+
+
+def test_verdicts_before_a_rearm_never_count_toward_the_backoff_rung():
+    """Four verdicts, then a reopen, then one more: the window is the FIRST rung (a
+    day), not the 30-day one the five together would reach."""
+    old = [_verdict(T0 + timedelta(days=40 * n)) for n in range(4)]
+    reopened = T0 + timedelta(days=200)
+    latest = _verdict(reopened + timedelta(days=1))
+    until, standing = _now([*old, latest], last_reopened_at=reopened)
+    assert standing and until == reopened + timedelta(days=2)
+    # The same with a person's comment as the re-arm.
+    until, standing = _now([*old, latest], last_human_comment_at=reopened)
+    assert standing and until == reopened + timedelta(days=2)
 
 
 def test_material_fingerprint_ignores_label_order_and_case_but_not_content():
@@ -82,7 +117,7 @@ def test_a_material_change_lifts_suppression_at_once():
     assert _now(v, labels=("bug", "priority:high"))[0] is None
     # A person commenting AFTER the verdict re-arms; one before it does not.
     assert _now(v, last_human_comment_at=T0 + timedelta(hours=2)) == (None, False)
-    assert _now(v, last_human_comment_at=T0 - timedelta(hours=2))[1] is True
+    assert _now(v, last_human_comment_at=T0 - timedelta(hours=3))[1] is True
 
 
 def test_a_verdict_from_before_material_fingerprints_falls_back_to_the_body():
@@ -93,7 +128,7 @@ def test_a_verdict_from_before_material_fingerprints_falls_back_to_the_body():
 
 
 def test_naive_verdict_times_read_as_utc():
-    naive = NotNeededVerdict(ended_at=T0.replace(tzinfo=None),
+    naive = NotNeededVerdict(started_at=None, ended_at=T0.replace(tzinfo=None),
                              material_fingerprint=material_fingerprint(TITLE, BODY, LABELS),
                              body_fingerprint=None)
     assert _now([naive])[0] == T0 + timedelta(days=1)
@@ -140,7 +175,7 @@ def test_runner_not_needed_holds_go_stale_while_the_verdict_stands():
         _row(number=4, ref="o/r#4", hold_by="runner", not_needed_standing=True,
              hold_kind="owner_action", hold_reason="bounced at fable: no mergeable PR"),
     ]
-    assert [r.number for r in stale_runner_holds(rows, {"p": {}})] == [1]
+    assert [r.number for r in stale_runner_holds(rows, {"p": {}}, now=T0)] == [1]
 
 
 def _db():

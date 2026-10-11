@@ -2837,6 +2837,7 @@ class BacklogRunnerLoop:
           than a release that could loop.
         """
         from server.pm.policy_skip import not_work_by_policy
+        from server.pm.queue import is_parked
         from server.sessions.completion import NOT_NEEDED
 
         sid = st.get("session_id")
@@ -2853,10 +2854,10 @@ class BacklogRunnerLoop:
             why = "issue closed"
         elif issue_state != "open":
             return False
-        elif not_work_by_policy(author=str(info.get("author") or ""),
-                                labels=info.get("labels") or (),
-                                title=str(info.get("title") or ""),
-                                policy=self._policy_for(st.get("product"))):
+        elif is_parked(info.get("labels") or ()) or not_work_by_policy(
+                author=str(info.get("author") or ""), labels=info.get("labels") or (),
+                title=str(info.get("title") or ""),
+                policy=self._policy_for(st.get("product"))):
             why = "the queue skips this issue (self-closing tracker, ignored or parked)"
         else:
             safe = _reason_from_note(info.get("no_pr_note") or None)
