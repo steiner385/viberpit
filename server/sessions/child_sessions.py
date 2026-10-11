@@ -26,8 +26,20 @@ LIVE_CHILD_EXCLUDED: frozenset[str] = frozenset({"complete", "done", "ended", "a
 SUMMARY_LIMIT = 800
 
 
+#: A child in one of these can no longer be answered: its record is gone from the
+#: board. ``complete`` / ``done`` children CAN — a reply re-delegates more work.
+CHILD_UNREPLYABLE: frozenset[str] = frozenset({"ended", "archived"})
+
+#: The pseudo-status a parent's notice carries for a child a daemon restart cut off
+#: mid-turn and that nothing resumed (#2910). Not a session status — the child's own
+#: row reads ``idle`` with the transient interrupted flag.
+INTERRUPTED_NOTICE_STATUS = "interrupted_by_restart"
+
+REPLY_LIMIT = 20_000
+
+
 class ChildSessionLimit(Exception):
-    """A dispatch the policy refuses; ``str(exc)`` is the model-readable reason."""
+    """A dispatch or reply the policy refuses; ``str(exc)`` is the model-readable reason."""
 
 
 def check_limits(*, enabled: bool, parent_depth: int, live_children: int, cap: int,
@@ -76,7 +88,8 @@ def _escape(text: str) -> str:
 
 def build_child_notice(*, session_id: str, name: str, status: str, last_message: str,
                        hand_back_reason: str | None = None,
-                       pr_resolution: str | None = None) -> str:
+                       pr_resolution: str | None = None,
+                       note: str | None = None) -> str:
     """The prompt a parent receives when a child stops (§4.4) — the same shape as the
     CLI's own <task-notification>, so the parent's model reads it the way it already
     reads a finished background task."""
@@ -89,6 +102,54 @@ def build_child_notice(*, session_id: str, name: str, status: str, last_message:
     if pr_resolution:
         lines.append(f"<pr-resolution>{pr_resolution}</pr-resolution>")
     lines.append(f"<summary>{_escape(truncate(last_message))}</summary>")
+    if note:
+        lines.append(f"<next-step>{_escape(note)}</next-step>")
     lines.append(f"<url>/sessions/{session_id}</url>")
     lines.append("</child-session-notification>")
     return "\n".join(lines)
+
+
+def notice_next_step(status: str, session_id: str) -> str | None:
+    """What the parent can DO about this stop (#2911, #2910), or None when nothing.
+    A child waiting on an answer, or stranded by a daemon restart, stalls until
+    somebody prompts it — the parent can, with ``reply_to_child``."""
+    if status in CHILD_ANSWERABLE_STOPS:
+        return (f"The child is waiting. Answer it, tell it to stop, or re-delegate with "
+                f"reply_to_child(child_session_id=\"{session_id}\", message=...); if only "
+                "the user can answer, say so and hand_back yourself.")
+    if status == INTERRUPTED_NOTICE_STATUS:
+        return ("A daemon restart cut the child's turn off and nothing resumed it. Resume "
+                f"it with reply_to_child(child_session_id=\"{session_id}\", message=...) — "
+                "tell it to re-run any command that was killed — or leave it for the user.")
+    return None
+
+
+def check_reply(*, parent_id: str, child: object | None, child_id: str,
+                message: str) -> None:
+    """Refuse a parent's reply the child cannot take (#2911). Raises ChildSessionLimit
+    with the model-readable reason; returns None when the reply may be delivered."""
+    if child is None or getattr(child, "parent_session_id", None) != parent_id:
+        raise ChildSessionLimit(f"{child_id} is not a child of this session; call "
+                                "session_context to list your children")
+    status = getattr(child, "status", None)
+    if status in CHILD_UNREPLYABLE:
+        raise ChildSessionLimit(f"child {child_id} has {status}; dispatch a new child "
+                                "instead")
+    if not message.strip():
+        raise ChildSessionLimit("message must not be empty")
+    if len(message) > REPLY_LIMIT:
+        raise ChildSessionLimit(f"message is {len(message)} characters; keep it under "
+                                f"{REPLY_LIMIT}")
+
+
+def build_parent_reply(*, parent_id: str, parent_name: str, message: str) -> str:
+    """The prompt a child receives when its parent answers it (#2911). Framed like the
+    notice going the other way, so the child knows the parent session — not the user —
+    is talking, and that it may still hand back to reach the user."""
+    return "\n".join([
+        "<parent-session-message>",
+        f"<from-session-id>{parent_id}</from-session-id>",
+        f"<from-name>{_escape(parent_name)}</from-name>",
+        f"<message>{_escape(message)}</message>",
+        "</parent-session-message>",
+    ])

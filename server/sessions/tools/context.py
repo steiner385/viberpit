@@ -30,6 +30,9 @@ class SessionToolContext:
     #: Bound by the orchestrator to ``dispatch_child_session(parent_id, identity=…)``;
     #: the `dispatch_session` handler's ONE call. None when the surface is off.
     dispatch_child: Callable[..., Awaitable[Any]] | None = None
+    #: Bound to ``reply_to_child_session(parent_id, identity=…)``; the
+    #: `reply_to_child` handler's ONE call (#2911). None when the surface is off.
+    reply_child: Callable[..., Awaitable[Any]] | None = None
     #: Live accessor for this session's children (records), read by `session_context`.
     children: Callable[[], list[Any]] | None = None
     #: ``signal_prose(stem) -> str | None``: the prose of the top-level message that

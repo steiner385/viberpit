@@ -55,6 +55,14 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # PermissionRegistry.request's is_mcp_tool branch. Mounted only on the durable
     # surface with the kill switch on (child-session spec §4.2).
     ToolSpec("dispatch_session", ToolClass.MUTATION, "Start a child session"),
+    # SIGNAL, not MUTATION (#2911): it prompts a session this one already created,
+    # owned by the same user and never wider in mode — the reverse of the
+    # <child-session-notification> the harness sends the parent uncarded. A card
+    # would park the parent behind a prompt nobody is there to answer, which is
+    # exactly the stall it exists to remove. Absent from TURN_SIGNAL_NAMES: the
+    # ordinary ToolCall card is the parent transcript's record of what it said.
+    # ``idempotent=False``: a second call sends a second message.
+    ToolSpec("reply_to_child", ToolClass.SIGNAL, "Reply to a child session", idempotent=False),
 ]}
 
 #: THE set of signalling tool names — the permission class: a SIGNAL tool moves
@@ -130,12 +138,12 @@ def mounted_names(*, signalling_tools: bool, self_model_switch: bool,
     """
     names = READ_TOOL_NAMES + mounted_signal_names(
         signalling_tools=signalling_tools, self_model_switch=self_model_switch)
-    # `dispatch_session` rides only on a durable surface — there is no marker for a
+    # `dispatch_session` and its answer half `reply_to_child` ride only on a durable surface — there is no marker for a
     # dispatch — and only while the kill switch (``child_sessions``) is on.
     if signalling_tools:
         names += ("roadmap_resolve", "roadmap_hold", "roadmap_advance")
     if signalling_tools and child_sessions:
-        names = names + ("dispatch_session",)
+        names = names + ("dispatch_session", "reply_to_child")
     return names
 
 

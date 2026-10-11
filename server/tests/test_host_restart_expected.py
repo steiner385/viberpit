@@ -37,7 +37,8 @@ class _Controller:
     def __init__(self, hosts: dict[str, dict]):
         self.status = DeployStatus(target_sha="abc", running=bool(hosts), hosts=hosts)
 
-    async def deploy_once(self, target_sha: str | None = None) -> DeployStatus:
+    async def deploy_once(self, target_sha: str | None = None, *,
+                          force: bool = False) -> DeployStatus:
         # Part of the protocol, never part of this test: /status only reads `.status`.
         raise AssertionError("the /status route must not start a deploy")
 

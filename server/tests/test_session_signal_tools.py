@@ -48,11 +48,12 @@ def test_session_tool_specs_declares_all_nine_unconditionally():
     ninth, both mounted unconditionally with the signalling tools; `dispatch_session`
     (child-session spec §4.2) is the tenth: declared here, mounted only with
     `signalling_tools` and the child-sessions switch. `share_artifact` is the
-    eleventh, mounted unconditionally with the signalling tools."""
+    eleventh, mounted unconditionally with the signalling tools. `reply_to_child`
+    (#2911) rides with `dispatch_session`."""
     assert set(SESSION_TOOL_SPECS) == {"session_context", "report_feedback",
                                        "mark_complete", "mark_no_pr", "hand_back",
                                        "set_hold", "propose_decision", "request_model",
-                                       "dispatch_session", "share_artifact",
+                                       "dispatch_session", "reply_to_child", "share_artifact",
                                        "roadmap_needs_you", "roadmap_item", "roadmap_resolve",
                                        "roadmap_hold", "roadmap_advance"}
 

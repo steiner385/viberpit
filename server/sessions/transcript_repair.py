@@ -32,8 +32,12 @@ INTERRUPT_TEXT = "[Request interrupted by user for tool use]"
 #: daemon restart cut its turn off (#2922): the CLI's own wording blames the user, and
 #: the agent then treats a restart as the user stopping it. Both texts share the
 #: ``[Request interrupted by`` prefix ``transcript_entries`` classifies as plumbing.
+#: It is the tool_result of the call the restart killed, so it also says what that
+#: means for the call (#2910): it did not finish, and its output is not a verdict.
 RESTART_INTERRUPT_TEXT = (
-    f"[Request interrupted by a {brand.NAME} daemon restart — not by the user]")
+    f"[Request interrupted by a {brand.NAME} daemon restart — not by the user. "
+    "This tool call was killed before it finished; re-run it if its result still "
+    "matters]")
 
 
 def _content_blocks(entry: dict) -> list:

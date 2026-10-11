@@ -544,6 +544,14 @@ merge). Tune it with `VIBERPIT_DEPLOY_POLL_INTERVAL=<seconds>` in `viberpit.env`
 `sudo systemctl restart viberpit-deploy-controller.service`. Each tick is one `git fetch` +
 one `gh api` CI check, so even small values stay well under the GitHub rate limit.
 
+**Daemon-restart cooldown.** A deploy whose diff touches daemon code drains and restarts every
+live session, so the controller refuses (in `preflight`, before anything moves) a second such
+deploy within `VIBERPIT_DEPLOY_DAEMON_RESTART_COOLDOWN_SEC` (default **600**; `0` disables) of the
+last one, naming the time a retry will be accepted. Edge-only deploys are never held. The last
+restart time is `daemonRestartedAt` in the persisted status, so it survives a controller restart.
+To override for an urgent fix, start the deploy with `{"force": true}` in the
+`POST /api/deploy/start` body (the UI does not send it).
+
 **Cutover from the old auto-deploy (one-time).** The merge that ships this controller also
 deletes `scripts/auto-deploy.sh`, so the old `ccswitch-deploy.timer` keeps firing against a
 now-missing script (`203/EXEC`) until you disable it. The new controller is a separate systemd

@@ -54,7 +54,8 @@ _BLURBS: dict[str, str] = {
     "roadmap_resolve": "record the user's chosen proposal resolution with tool approval.",
     "roadmap_hold": "hold or release a roadmap item on the user's behalf.",
     "roadmap_advance": "approve the initiative stage the user has reviewed.",
-    "session_context": "how you were dispatched (repo, branch, origin, goal).",
+    "session_context": ("how you were dispatched (repo, branch, origin, goal), and a "
+                        "scratchDir for run logs that survives daemon restarts."),
     "report_feedback": f"a problem with {brand.NAME} itself, never the project.",
     "mark_complete": "you have fully accomplished this session's objective.",
     "mark_no_pr": "the work is finished but no pull request is appropriate.",
@@ -69,6 +70,8 @@ _BLURBS: dict[str, str] = {
                        "collapsed tool result."),
     "request_model": "you want to run the rest of the work on a different model tier.",
     "dispatch_session": "you need a linked child session the user can steer independently.",
+    "reply_to_child": ("a child session handed back or stopped and you can answer, "
+                       "resume or re-direct it yourself."),
 }
 
 #: The ONE cross-tool sentence the index may carry beyond naming tools: the

@@ -28,11 +28,12 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import brand, gh_credential, paths
-from .gitrepos import clone_lock, git_env_for_remote
+from .gitrepos import STALE_LOCK_AGE_S, clone_lock, git_env_for_remote
 
 log = logging.getLogger(__name__)
 
@@ -197,6 +198,91 @@ def current_branch(path: str) -> str | None:
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
+
+
+def git_dir_of(cwd: str) -> tuple[str, str] | None:
+    """``(worktree_top, git_dir)`` for *cwd* without spawning git, or None.
+
+    Walks up from *cwd* to the first ``.git``: a directory is a normal checkout's
+    git dir; a file is a linked worktree's ``gitdir: <path>`` pointer (relative
+    paths resolve against the file's directory).
+    """
+    cur = os.path.realpath(cwd)
+    if not os.path.isdir(cur):
+        return None
+    while True:
+        dot_git = os.path.join(cur, ".git")
+        if os.path.isdir(dot_git):
+            return cur, os.path.realpath(dot_git)
+        if os.path.isfile(dot_git):
+            with open(dot_git, encoding="utf-8") as fh:
+                first = fh.readline().strip()
+            if not first.startswith("gitdir:"):
+                return None
+            target = first[len("gitdir:"):].strip()
+            git_dir = os.path.realpath(os.path.join(cur, target))
+            return (cur, git_dir) if os.path.isdir(git_dir) else None
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _git_pids_in(*paths: str) -> set[int] | None:
+    """PIDs of live ``git`` processes whose cwd is inside any of *paths*.
+
+    None when ``/proc`` itself cannot be listed — the answer is unknowable, and the
+    caller must then keep the lock. A pid that vanished or is not ours to inspect is
+    skipped (a foreign-uid git cannot be holding our session worktree's index).
+    """
+    roots = [os.path.realpath(p) for p in paths]
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    found: set[int] = set()
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/comm", encoding="utf-8") as fh:
+                if fh.read().strip() != "git":
+                    continue
+            proc_cwd = os.path.realpath(os.readlink(f"/proc/{entry}/cwd"))
+        except (PermissionError, FileNotFoundError, ProcessLookupError):
+            continue
+        if any(proc_cwd == r or proc_cwd.startswith(r + os.sep) for r in roots):
+            found.add(int(entry))
+    return found
+
+
+def clear_stale_index_lock(cwd: str, *, min_age_s: float = STALE_LOCK_AGE_S) -> str | None:
+    """Unlink an orphaned ``<gitdir>/index.lock`` for the worktree at *cwd* (#2910).
+
+    A daemon restart can kill a git process mid-commit inside a session worktree;
+    git never removes a dead process's lock, so every later commit fails. The lock
+    is removed only when it is a regular file (not a symlink), older than
+    *min_age_s*, and no live ``git`` process has its cwd inside the worktree or its
+    git dir. Returns the removed path, or None. Never raises.
+    """
+    try:
+        resolved = git_dir_of(cwd)
+        if resolved is None:
+            return None
+        top, git_dir = resolved
+        lock = os.path.join(git_dir, "index.lock")
+        if os.path.islink(lock) or not os.path.isfile(lock):
+            return None
+        if time.time() - os.stat(lock).st_mtime < min_age_s:
+            return None
+        owners = _git_pids_in(top, git_dir)
+        if owners is None or owners:
+            return None
+        os.unlink(lock)
+    except (OSError, ValueError):  # ValueError: NUL in a path, undecodable .git file
+        return None
+    log.info("worktree.stale_index_lock_removed path=%s", lock)
+    return lock
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")

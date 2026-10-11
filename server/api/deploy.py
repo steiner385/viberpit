@@ -68,8 +68,10 @@ async def deploy_status(
 
 class DeployStartBody(BaseModel):
     """Optional start body: deploy an explicit sha (the newest GREEN pending commit,
-    when origin/master's tip is red). Absent means the tip — today's behaviour."""
+    when origin/master's tip is red). Absent means the tip — today's behaviour.
+    ``force`` bypasses the controller's daemon-restart cooldown; default off."""
     targetSha: str | None = None
+    force: bool = False
 
 
 @router.post("/start")
@@ -88,15 +90,16 @@ async def deploy_start(
     # NOTE: this covers deploys that arrive through the edge. The controller's unix
     # socket accepts /start directly, and such a caller never reaches this route.
     target = body.targetSha if body is not None else None
+    force = body.force if body is not None else False
     try:
-        code, resp = await client.start(target)
+        code, resp = await client.start(target, force=force)
     except DeployControllerUnavailable:
         await record_audit(db=db, type="deploy_start", identity=identity,
-                           detail={"targetSha": target, "started": False,
+                           detail={"targetSha": target, "force": force, "started": False,
                                    "reason": "controller unavailable"})
         return JSONResponse({"started": False, "reason": "controller unavailable"}, status_code=503)
     await record_audit(db=db, type="deploy_start", identity=identity,
-                       detail={"targetSha": target, "status": code,
+                       detail={"targetSha": target, "force": force, "status": code,
                                "started": bool(resp.get("started")),
                                "reason": resp.get("reason")})
     return JSONResponse(resp, status_code=code)

@@ -2,9 +2,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from typing import Callable
+
+from server.config import env_float
 
 from server.deploy import git as _git
 from server.deploy import runners as _runners
@@ -15,6 +19,16 @@ from server.hostname import self_host_name
 from server.obs.context import log_event, new_request_id
 
 log = logging.getLogger("server.deploy.controller")
+
+# Minimum gap between two deploy-driven restarts of the session daemon. Every daemon
+# restart drains and restarts every live session, so back-to-back daemon-changing
+# deploys minutes apart interrupted the same sessions repeatedly (#2910). 0 disables.
+DAEMON_RESTART_COOLDOWN_ENV = "VIBERPIT_DEPLOY_DAEMON_RESTART_COOLDOWN_SEC"
+DAEMON_RESTART_COOLDOWN_DEFAULT_S = 600.0
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
@@ -32,7 +46,8 @@ class DeployController:
                  steps_mod=_steps, git_mod=_git, runners_mod=_runners, state_mod=_state,
                  local_name: str | None = None,
                  changed_files_fn: Callable[[str, str, str], list[str] | None] = _default_changed_files,
-                 status_path: str | None = None):
+                 status_path: str | None = None,
+                 clock: Callable[[], datetime] = _utc_now):
         self.repo = repo
         self.health_url = health_url
         self.venv_python = venv_python
@@ -47,6 +62,7 @@ class DeployController:
         self._changed_files = changed_files_fn
         self._lock_acquired = False
         self._status_path = status_path
+        self._clock = clock
         # Set by the runners phase; read by _rollback to rewind the checkouts it moved.
         self._runner_targets: list | None = None
         self._runner_results: dict | None = None
@@ -114,22 +130,60 @@ class DeployController:
                                                local_name=self._local_name,
                                                daemon_changed=daemon_changed)
 
-    async def deploy_once(self, target_sha: str | None = None) -> DeployStatus:
+    def _daemon_restart_hold(self) -> str | None:
+        """Why a daemon restart must wait, or None when it may go ahead.
+
+        Measured from ``status.daemon_restarted_at`` — the end of the last deploy that
+        restarted the daemon — against VIBERPIT_DEPLOY_DAEMON_RESTART_COOLDOWN_SEC."""
+        cooldown = env_float(DAEMON_RESTART_COOLDOWN_ENV, DAEMON_RESTART_COOLDOWN_DEFAULT_S,
+                             minimum=0.0)
+        stamp = self.status.daemon_restarted_at
+        if cooldown <= 0 or not stamp:
+            return None
+        try:
+            last = datetime.fromisoformat(stamp)
+        except ValueError:
+            log.info("deploy: ignoring unparseable daemon_restarted_at %r", stamp)
+            return None
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        now = self._clock()
+        # A stamp in the future (clock stepped back) holds for one cooldown, not longer.
+        elapsed = max(0.0, (now - last).total_seconds())
+        remaining = cooldown - elapsed
+        if remaining <= 0:
+            return None
+        retry_at = (now + timedelta(seconds=remaining)).astimezone(timezone.utc)
+        return (f"daemon restarted {int(elapsed)}s ago; the session daemon is held for the "
+                f"remaining {math.ceil(remaining)}s of the {DAEMON_RESTART_COOLDOWN_ENV} "
+                f"cooldown ({int(cooldown)}s) so live sessions are not interrupted twice — "
+                f"retry after {retry_at:%Y-%m-%d %H:%M:%S} UTC (or start with force=true "
+                "to override)")
+
+    async def deploy_once(self, target_sha: str | None = None, *,
+                          force: bool = False) -> DeployStatus:
         """Run one deploy. Without *target_sha* the deploy targets origin/master's tip,
         exactly as always. With *target_sha* — the green-frontier path, used when the tip
         is red but an older pending commit is green — preflight additionally validates
         that the sha lies inside ``live..origin/master`` and is itself CI-green, and then
         the WHOLE deploy (fast-forward, dep-sync, classification, restarts, publish)
-        targets that sha instead of the tip."""
+        targets that sha instead of the tip.
+
+        A daemon-changing deploy inside the daemon-restart cooldown is refused in
+        preflight; *force* bypasses that hold (never the other preflight checks)."""
         if self._lock_acquired:
             raise RuntimeError("deploy already in progress")
         self._lock_acquired = True
-        self.status = DeployStatus(target_sha="", running=True)
+        self.status = DeployStatus(target_sha="", running=True,
+                                   daemon_restarted_at=self.status.daemon_restarted_at)
         self._deploy_id = new_request_id()
         self._runner_targets = None
         self._runner_results = None
         local = ""
         daemon_changed = False
+        # Set once the runners phase is about to restart daemons: from then on live
+        # sessions have been (or are being) interrupted, whatever the deploy's outcome.
+        daemon_restart_attempted = False
         controller_changed = False
         # The new code is live on THIS host: set once the edge has passed the health gate
         # and the functional probes, i.e. once a rollback is no longer on the table.
@@ -187,6 +241,15 @@ class DeployController:
             broken = await asyncio.to_thread(self._steps.check_unit_interpreters)
             if broken:
                 raise DeployError("preflight", "; ".join(broken))
+            # Classify the change NOW, before anything moves: fetch already brought the
+            # target's objects in, so the diff is the same one the report phase used to
+            # take after the fast-forward — and a refusal here needs no rollback.
+            changed = await asyncio.to_thread(self._changed_files, self.repo, local, remote)
+            daemon_changed = self._steps.classify_change(changed) == "daemon_changed"
+            if daemon_changed and not force:
+                hold = self._daemon_restart_hold()
+                if hold:
+                    raise DeployError("preflight", hold)
             verdict = await asyncio.to_thread(self._steps.ci_verdict, remote)
             if verdict != "green":
                 raise DeployError("preflight", f"CI verdict={verdict}")
@@ -215,8 +278,7 @@ class DeployController:
 
             # --- report ---
             self._set(Phase.REPORT, PhaseState.RUNNING)
-            changed = await asyncio.to_thread(self._changed_files, self.repo, local, remote)
-            daemon_changed = self._steps.classify_change(changed) == "daemon_changed"
+            # (changed / daemon_changed were classified in preflight.)
             # Whether each runner must reinstall its venv. Fails safe on an uncomputable
             # diff (changed is None), exactly as classify_change does.
             deps_changed = (changed is None) or any(
@@ -246,6 +308,7 @@ class DeployController:
                 self.status.warnings.append(
                     "runners: no enabled fleet hosts found — nothing was fanned out "
                     "(is VIBERPIT_DB_URL pointing at the fleet database?)")
+            daemon_restart_attempted = daemon_changed
             results = await self._runners.deploy_runners(
                 targets, target_sha=remote, daemon_changed=daemon_changed,
                 deps_changed=deps_changed, local_name=self._local_name,
@@ -400,5 +463,9 @@ class DeployController:
                     self.status.warnings.append(
                         "deploy code changed but the controller restart could not be "
                         "scheduled — it is still running the previous code")
+            if daemon_restart_attempted:
+                # Stamped at the END of the deploy — after any rollback restarted the
+                # daemon once more — so the cooldown runs from the last interruption.
+                self.status.daemon_restarted_at = self._clock().isoformat()
             self._persist_status()
             self._lock_acquired = False
