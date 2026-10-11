@@ -73,6 +73,11 @@ _EXEC_WRAPPERS = frozenset({
 })  # fmt: skip
 # ``python -m pytest`` runs a named module, not arbitrary code; every other interpreter use is refused.
 _INTERPRETERS_WITH_MODULE_MODE = frozenset({"python", "pythonw"})
+# Package managers with a subcommand that launches an arbitrary command (``npm exec``,
+# ``uv run``, ``yarn dlx`` ...): a head must name the subcommand, never just the manager.
+_PACKAGE_LAUNCHERS = frozenset(
+    {"npm", "pnpm", "yarn", "uv", "poetry", "pipx", "bun", "deno", "npx", "bunx"}
+)
 # Standard-library modules that execute code passed on their own command line.
 _INLINE_CODE_MODULES = frozenset({"timeit", "pdb", "code", "runpy", "cprofile", "profile", "trace"})
 _EXTENSIONS = (
@@ -122,6 +127,11 @@ def _assess_head_words(words: list[str]) -> Assessment | None:
     while i < len(words):
         w = words[i]
         raw, name = _word_names(w)
+        if raw in _PACKAGE_LAUNCHERS:
+            nxt = words[i + 1 : i + 2]
+            if not nxt or nxt[0].startswith("-"):
+                return _refuse(f"`{w}` can launch arbitrary commands (e.g. `npm exec`); "
+                               "name the subcommand")
         n = launcher_len([_word_names(x)[0] for x in words[i:]])
         if n:
             nxt = words[i + n : i + n + 1]

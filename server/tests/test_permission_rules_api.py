@@ -193,14 +193,14 @@ def test_grant_refused_pattern():
 
 def test_grant_warn_needs_confirm():
     client, fake = _make_client()
-    fake.pending[S1] = [_card("p1", "npm test")]
+    fake.pending[S1] = [_card("p1", "make build")]
     with patch.dict(os.environ, _ENV), client:
-        r = _always(client, S1, "p1", "Bash(npm:*)", "session")
+        r = _always(client, S1, "p1", "Bash(make:*)", "session")
         assert r.status_code == 409
         d = r.json()["detail"]
         assert d["code"] == "RULE_NEEDS_CONFIRMATION" and d["level"] == "warn" and d["reasons"]
         assert client.portal.call(_rules) == []
-        r2 = _always(client, S1, "p1", "Bash(npm:*)", "session", confirm=True)
+        r2 = _always(client, S1, "p1", "Bash(make:*)", "session", confirm=True)
         assert r2.status_code == 200
 
 
@@ -334,7 +334,7 @@ def test_patch_and_delete_rule():
     with patch.dict(os.environ, _ENV), client:
         rid = _always(client, S1, "p1", "Bash(npm test:*)", "session").json()["rule"]["id"]
         # warn pattern needs confirmation, refused pattern never passes
-        assert client.patch(f"/api/permission-rules/{rid}", json={"pattern": "Bash(npm:*)"},
+        assert client.patch(f"/api/permission-rules/{rid}", json={"pattern": "Bash(make:*)"},
                             headers=_H).status_code == 409
         assert client.patch(f"/api/permission-rules/{rid}", json={"pattern": "Bash(git *)"},
                             headers=_H).status_code == 400

@@ -23,7 +23,8 @@ from server.permission_rules.safety import (
         ("Bash(sudo:*)", "session", "refuse"),
         ("Bash(git status:*)", "session", "ok"),
         ("Bash(npm test:*)", "global", "ok"),
-        ("Bash(npm:*)", "session", "warn"),
+        ("Bash(npm:*)", "session", "refuse"),
+        ("Bash(make:*)", "session", "warn"),
         ("Bash(npm test)", "session", "ok"),
         ("Edit(src/**)", "repo", "ok"),
         ("Edit(**)", "session", "warn"),
@@ -177,7 +178,8 @@ def test_interpreters_and_git_file(pat, level):
         ("Edit(x/.husky/*)", "refuse"),
         ("Edit(x/.aws/credentials)", "refuse"),
         ("Edit(x/.ssh/*)", "refuse"),
-        ("Bash(npm *)", "ok"),
+        ("Bash(npm *)", "refuse"),
+        ("Bash(npm run *)", "ok"),
         ("Bash(python -m pytest:*)", "ok"),
         ("Bash(git status:*)", "ok"),
         ("Bash(npm test:*)", "ok"),
@@ -230,7 +232,7 @@ def test_quoted_request_keeps_prefix_suggestion():
     [
         "Bash(git status:*)",
         "Bash(git commit:*)",
-        "Bash(npm *)",
+        "Bash(npm run *)",
         "Bash(python -m pytest:*)",
     ],
 )
@@ -354,3 +356,37 @@ def test_ordinary_app_tool_rule_still_ok():
 )
 def test_git_config_injection_forms_refused(pat):
     assert assess(pat, "session").level == "refuse"
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "Bash(npm:*)", "Bash(pnpm:*)", "Bash(yarn:*)", "Bash(uv:*)", "Bash(poetry:*)",
+        "Bash(pipx:*)", "Bash(bun:*)", "Bash(deno:*)", "Bash(npx:*)", "Bash(bunx:*)",
+        "Bash(yarn *)", "Bash(npm *)", "Bash(/usr/bin/npm:*)",
+        # An option before the subcommand names no subcommand either.
+        "Bash(npm --prefix x:*)", "Bash(uv -q:*)",
+        "Bash(bun run:*)", "Bash(bun x:*)",
+    ],
+)
+def test_package_manager_heads_without_a_subcommand_refused(pat):
+    a = assess(pat, "session")
+    assert a.level == "refuse"
+
+
+def test_package_manager_refusal_names_the_reason():
+    assert "launch arbitrary commands" in assess("Bash(npm:*)", "session").reasons[0]
+
+
+@pytest.mark.parametrize(
+    "pat", ["Bash(npm test:*)", "Bash(uv sync:*)", "Bash(npm run:*)", "Bash(npm run build:*)",
+            "Bash(yarn test:*)", "Bash(poetry install:*)"],
+)
+def test_package_manager_subcommand_heads_ok(pat):
+    assert assess(pat, "session").level == "ok"
+
+
+def test_uv_run_suggestions_drop_the_bare_package_manager():
+    pats = _offered("uv run pytest -x")
+    assert "Bash(uv run pytest:*)" in pats
+    assert "Bash(uv:*)" not in pats and "Bash(uv run:*)" not in pats
