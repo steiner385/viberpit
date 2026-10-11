@@ -131,7 +131,12 @@ def test_a_lag_below_the_threshold_never_arms_the_throttle():
 async def test_two_real_stalls_produce_one_line():
     """End-to-end through run(): two blocks inside one window → a single warning."""
     log = _CapturingLog()
-    wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, warn_every=60.0, _log=log)
+    # PSI stubbed absent: on a loaded CI runner the real /proc/pressure can
+    # attribute one block to the host (INFO host_stall) and the other not
+    # (WARNING stall) — two kinds, two throttles, two lines. This test is about
+    # the throttle, not attribution.
+    wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, warn_every=60.0, _log=log,
+                         _psi=lambda: None)
     task = asyncio.create_task(wd.run())
     await asyncio.sleep(0.05)
 

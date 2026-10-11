@@ -1,10 +1,11 @@
 """Startup diagnostics for the Codex boundary: one report, no second opinions.
 
-An operator bringing Codex up on a runner has six independent ways to be wrong —
+An operator bringing Codex up on a runner has seven independent ways to be wrong —
 the binary, the runtime home, the authority, the client certificate, the account
-manifest, and the launch flags — and every one of them currently surfaces as the
-same symptom: "Codex isn't offered". This module turns that single symptom into
-six named, machine-readable verdicts, which is what `deploy/README.md`'s
+manifest, the launch flags, and the host's command sandbox — and the first six
+surface as the same symptom: "Codex isn't offered" (the seventh as sessions that
+cannot run a single command). This module turns them into seven named,
+machine-readable verdicts, which is what `deploy/README.md`'s
 "Codex isn't offered" triage section can then point at.
 
 **It invents no verdicts of its own.** That is the load-bearing rule here:
@@ -110,6 +111,7 @@ class DoctorCheck(StrEnum):
     AUTHORITY = "authority"
     MTLS_IDENTITY = "mtls_identity"
     MANIFEST = "manifest"
+    SANDBOX = "sandbox"
 
 
 def _safe_scalar(value: Any) -> Any:
@@ -647,6 +649,84 @@ def check_manifest(load_entries: ManifestLoader, *, enabled: bool) -> DoctorResu
     )
 
 
+SandboxProbe = Callable[[str], Awaitable[tuple[int, str]]]
+
+#: bubblewrap's stderr when the kernel lets it create a user namespace but its
+#: AppArmor confinement withholds the capabilities to configure loopback inside the
+#: new network namespace (Ubuntu's ``kernel.apparmor_restrict_unprivileged_userns``).
+#: Codex falls back to its own vendored ``bwrap`` when none is on PATH, and only the
+#: system ``/usr/bin/bwrap`` is covered by the ``bwrap-userns-restrict`` profile.
+_USERNS_DENIED_MARKERS: Final[tuple[str, ...]] = (
+    "Failed RTM_NEWADDR",
+    "Failed RTM_NEWLINK",
+    "No permissions to create new namespace",
+    "setting up uid map: Permission denied",
+)
+
+
+async def check_sandbox(
+    probe: SandboxProbe | None,
+    availability: CodexAvailability | None,
+    *,
+    enabled: bool,
+) -> DoctorResult:
+    """Can the binary run a command inside its own workspace sandbox on this host?
+
+    Every asking permission mode runs shell commands in ``workspace-write``. When
+    that sandbox cannot start, every command fails before it executes — even
+    ``pwd`` — while Codex is still offered and its sessions still launch (#2919).
+    Only the unsandboxed ``full-auto``/``bypassPermissions`` profile is unaffected.
+    The probe's stderr is native output, so it is classified here and never reported.
+    """
+    if not enabled:
+        return DoctorResult(
+            DoctorCheck.SANDBOX, DoctorOutcome.SKIPPED, "codex_disabled",
+            detail="VIBERPIT_CODEX_ENABLED is false",
+        )
+    if availability is None or not availability.available or not availability.binary_path:
+        return DoctorResult(
+            DoctorCheck.SANDBOX, DoctorOutcome.SKIPPED, "binary_unavailable",
+            detail="there is no usable Codex binary to probe",
+        )
+    run = probe or codex_process.probe_workspace_sandbox
+    try:
+        code, stderr = await run(availability.binary_path)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- a probe fault is this check's answer
+        return DoctorResult(
+            DoctorCheck.SANDBOX, DoctorOutcome.FAIL, "probe_failed",
+            detail=redaction.scrub_exception(exc),
+        )
+    facts: dict[str, Any] = {"exitCode": code}
+    if code == 0:
+        return DoctorResult(
+            DoctorCheck.SANDBOX, DoctorOutcome.OK, "ready",
+            detail="a command runs inside Codex's workspace-write sandbox",
+            facts=facts,
+        )
+    if any(marker in stderr for marker in _USERNS_DENIED_MARKERS):
+        return DoctorResult(
+            DoctorCheck.SANDBOX, DoctorOutcome.FAIL, "userns_restricted",
+            detail=(
+                "bubblewrap cannot set up the sandbox's network namespace: this host "
+                "restricts unprivileged user namespaces. Install bubblewrap so "
+                "/usr/bin/bwrap is on the daemon's PATH and enforce its AppArmor "
+                "profile (aa-enforce /etc/apparmor.d/bwrap-userns-restrict); until "
+                "then every sandboxed Codex command fails before it runs"
+            ),
+            facts=facts,
+        )
+    return DoctorResult(
+        DoctorCheck.SANDBOX, DoctorOutcome.FAIL, "sandbox_failed",
+        detail=(
+            "a command could not run inside Codex's workspace-write sandbox; "
+            "reproduce with `codex sandbox -c 'sandbox_mode=\"workspace-write\"' -- true`"
+        ),
+        facts=facts,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Composition
 # ---------------------------------------------------------------------------
@@ -686,6 +766,7 @@ async def run_doctor(
     authority_configured: bool | None = None,
     load_tls_files: TLSFilesLoader | None = None,
     load_manifest_entries: ManifestLoader | None = None,
+    sandbox_probe: SandboxProbe | None = None,
     now: datetime | None = None,
 ) -> CodexDoctorReport:
     """Run every check and return a complete report. Never raises.
@@ -748,6 +829,10 @@ async def run_doctor(
             ),
         ),
         _guard(DoctorCheck.MANIFEST, lambda: check_manifest(load_manifest_entries, enabled=enabled)),
+        await _guard_async(
+            DoctorCheck.SANDBOX,
+            lambda: check_sandbox(sandbox_probe, availability, enabled=enabled),
+        ),
     )
     return CodexDoctorReport(results)
 
@@ -756,7 +841,7 @@ def log_report(report: CodexDoctorReport) -> None:
     """Emit the report as one structured record.
 
     One record rather than one per check: an operator greps ``codex.doctor.report``
-    and gets the whole picture, and a boot with Codex off does not add six lines to
+    and gets the whole picture, and a boot with Codex off does not add seven lines to
     every journal.
     """
     level = logging.INFO if report.ok else logging.WARNING

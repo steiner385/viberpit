@@ -578,6 +578,123 @@ def test_manifest_is_skipped_when_codex_is_disabled() -> None:
 
 
 # ---------------------------------------------------------------------------
+# sandbox (#2919)
+# ---------------------------------------------------------------------------
+
+_READY = CodexAvailability.ready(binary_path="/usr/bin/codex", cli_version=PINNED_CLI_VERSION)
+
+#: The exact stderr the #2919 session hit on rocky, from Codex's vendored bwrap.
+_LOOPBACK_DENIED = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n"
+
+
+def _probe(code: int, stderr: str = "") -> Any:
+    seen: list[str] = []
+
+    async def probe(binary: str) -> tuple[int, str]:
+        seen.append(binary)
+        return code, stderr
+
+    probe.seen = seen  # type: ignore[attr-defined]
+    return probe
+
+
+@pytest.mark.asyncio
+async def test_sandbox_ok_when_a_command_runs_in_the_workspace_sandbox() -> None:
+    probe = _probe(0)
+    result = await doctor.check_sandbox(probe, _READY, enabled=True)
+    assert result.outcome is DoctorOutcome.OK
+    assert result.code == "ready"
+    # Probes the binary the availability verdict resolved, never a re-lookup.
+    assert probe.seen == ["/usr/bin/codex"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_names_the_userns_restriction_from_the_2919_stderr() -> None:
+    result = await doctor.check_sandbox(_probe(1, _LOOPBACK_DENIED), _READY, enabled=True)
+    assert result.outcome is DoctorOutcome.FAIL
+    assert result.code == "userns_restricted"
+    assert "bwrap-userns-restrict" in result.detail
+    assert result.facts == {"exitCode": 1}
+
+
+@pytest.mark.asyncio
+async def test_sandbox_never_reports_native_stderr() -> None:
+    native = f"bwrap: something else entirely {FAKE_OPENAI_KEY}"
+    assert FAKE_OPENAI_KEY in native  # non-vacuous
+    result = await doctor.check_sandbox(_probe(1, native), _READY, enabled=True)
+    assert result.outcome is DoctorOutcome.FAIL
+    assert result.code == "sandbox_failed"
+    assert "something else entirely" not in json.dumps(result.to_wire())
+
+
+@pytest.mark.asyncio
+async def test_sandbox_probe_that_raises_becomes_a_fail_with_a_category() -> None:
+    async def probe(binary: str) -> tuple[int, str]:
+        raise TimeoutError
+
+    result = await doctor.check_sandbox(probe, _READY, enabled=True)
+    assert result.outcome is DoctorOutcome.FAIL
+    assert result.code == "probe_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "availability",
+    [
+        None,
+        CodexAvailability.unavailable(
+            CodexUnavailableReason.BINARY_NOT_FOUND, "missing", external_auth=True
+        ),
+    ],
+)
+async def test_sandbox_is_skipped_without_a_usable_binary(
+    availability: CodexAvailability | None,
+) -> None:
+    probe = _probe(0)
+    result = await doctor.check_sandbox(probe, availability, enabled=True)
+    assert result.outcome is DoctorOutcome.SKIPPED
+    assert probe.seen == []
+
+
+@pytest.mark.asyncio
+async def test_sandbox_is_skipped_when_codex_is_disabled() -> None:
+    probe = _probe(0)
+    result = await doctor.check_sandbox(probe, _READY, enabled=False)
+    assert result.outcome is DoctorOutcome.SKIPPED
+    assert probe.seen == []
+
+
+@pytest.mark.asyncio
+async def test_probe_workspace_sandbox_runs_true_under_workspace_write(tmp_path: Path) -> None:
+    """The real spawn path, against a stand-in binary that records how it was run."""
+    from server.codex import process as codex_process
+
+    record = tmp_path / "argv"
+    fake = tmp_path / "codex"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$@" > {record}\n'
+        f'printf "home=%s\\ncwd=%s\\n" "$CODEX_HOME" "$PWD" >> {record}\n'
+        "echo 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' >&2\n"
+        "exit 1\n"
+    )
+    fake.chmod(0o755)
+
+    code, stderr = await codex_process.probe_workspace_sandbox(str(fake), timeout_s=10)
+
+    assert code == 1
+    assert "RTM_NEWADDR" in stderr
+    lines = record.read_text().splitlines()
+    assert lines[:5] == ["sandbox", "-c", 'sandbox_mode="workspace-write"', "--", "true"]
+    home = lines[5].removeprefix("home=")
+    cwd = lines[6].removeprefix("cwd=")
+    # An isolated, throwaway CODEX_HOME inside the throwaway workspace — never the
+    # operator's ~/.codex — and both are gone once the probe returns.
+    assert home == str(Path(cwd) / "home")
+    assert not Path(cwd).exists()
+
+
+# ---------------------------------------------------------------------------
 # run_doctor composition
 # ---------------------------------------------------------------------------
 
@@ -616,6 +733,7 @@ async def test_run_doctor_never_raises_when_a_check_explodes(tmp_path: Path) -> 
         mounts=_local_mounts(str(tmp_path)),
         load_manifest_entries=boom,
         authority_configured=False,
+        sandbox_probe=_probe(0),
     )
     manifest = next(r for r in report.results if r.check is DoctorCheck.MANIFEST)
     # A raising loader is the "unreadable" case, and the report is still complete.
