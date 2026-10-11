@@ -149,6 +149,46 @@ describe('AlwaysAllowDialog', () => {
     expect(screen.getByRole('button', { name: /Confirm|Grant/ })).toBeDisabled()
   })
 
+  it('Enter never sends confirm=true: with a confirm-needed preview it focuses Confirm instead', async () => {
+    const user = userEvent.setup()
+    const onPreview = vi.fn().mockResolvedValue({ ...okPreview, level: 'warn', needsConfirmation: true, reasons: ['broad'] })
+    const { onGrant } = setup({ onPreview })
+    await screen.findByText('broad')
+    patternInput().focus()
+    await user.keyboard('{Enter}')
+    expect(onGrant).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Confirm' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+    expect(onGrant).toHaveBeenCalledWith('Bash(npm test)', 'session', true)
+  })
+
+  it('Enter after a 409 does not confirm; only the Confirm button does', async () => {
+    const user = userEvent.setup()
+    const onGrant = vi.fn()
+      .mockRejectedValueOnce(new ApiRequestError(409, { detail: { code: 'RULE_NEEDS_CONFIRMATION', message: 'm', reasons: ['Matches many'] } }))
+      .mockResolvedValue(undefined)
+    setup({ onGrant })
+    await screen.findByText('Runs npm test')
+    await user.click(screen.getByRole('button', { name: 'Grant' }))
+    await screen.findByText('Matches many')
+    patternInput().focus()
+    await user.keyboard('{Enter}')
+    expect(onGrant).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Confirm' })).toHaveFocus()
+  })
+
+  it('locks the inputs while a grant is in flight', async () => {
+    const user = userEvent.setup()
+    let resolve!: () => void
+    const onGrant = vi.fn().mockReturnValue(new Promise<void>((r) => { resolve = r }))
+    setup({ onGrant })
+    await screen.findByText('Runs npm test')
+    await user.click(screen.getByRole('button', { name: 'Grant' }))
+    expect(patternInput()).toBeDisabled()
+    expect(screen.getByLabelText('All sessions')).toBeDisabled()
+    resolve()
+  })
+
   it('ignores key-repeat Enter', async () => {
     const { onGrant } = setup()
     await screen.findByText('Runs npm test')
