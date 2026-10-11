@@ -79,6 +79,15 @@ class DecisionContext:
     action_applied: bool = False
     # Bind a decision to the live driver generation that supplied its context.
     session_fence: int | None = None
+    # How THIS session signals completion, phrased for a nudge: the tool on a
+    # signalling-tool surface, the completion marker otherwise
+    # (`tools.instruction.finish_signal_instruction`). None = unknown — the composer
+    # then names no finishing mechanism at all rather than guess one (#2928).
+    finish_signal: str | None = None
+    # The session's in-flight turn was dropped by a daemon restart and it has not
+    # taken a turn since. Only then is a restart/resume direction current; once it
+    # clears, restart notices in the transcript are history (#2928).
+    interrupted_by_restart: bool = False
 
 
 @dataclass
@@ -204,6 +213,31 @@ def missing_claimed_prs(ctx: DecisionContext) -> set[tuple[str, int]]:
         elif ctx.repo:
             known.add((ctx.repo.lower(), pr.number))
     return claims - known
+
+
+def strip_restart_notices(transcript_tail: list[dict],
+                          notices: tuple[str, ...]) -> list[dict]:
+    """The tail with harness restart notices cut out of user entries.
+
+    A daemon restart injects a "your turn was interrupted — continue" prompt into the
+    transcript. Once the session has resumed, that text is history, but it stays the
+    latest user-role entry, and the decider and composer read it as the current ask:
+    autopilot kept telling an actively implementing session to resume (#2928). An
+    entry that was only a notice is dropped; one that also carries real content (a
+    re-sent task behind its restart guard) keeps that content.
+    """
+    out: list[dict] = []
+    for entry in transcript_tail or []:
+        text = entry.get("text", "") or ""
+        if entry.get("role") == "user" and any(n in text for n in notices):
+            for n in notices:
+                text = text.replace(n, "")
+            text = text.strip()
+            if not text:
+                continue
+            entry = {**entry, "text": text}
+        out.append(entry)
+    return out
 
 
 def _token_set(text: str) -> set[str]:

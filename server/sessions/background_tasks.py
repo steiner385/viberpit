@@ -46,7 +46,7 @@ _AGENT_TOOLS = frozenset({"Agent", "Task", "SendMessage"})
 # wakeup that is about to fire (or that just fired, racing the new turn's write).
 _WAKEUP_GRACE_SEC = 300.0
 
-_GUARD = ("This task was interrupted by a server restart and may have partially "
+RESTART_GUARD = ("This task was interrupted by a server restart and may have partially "
           "completed. Before redoing work, check current state (e.g. `git status`, "
           "what already exists) and continue from where it left off rather than "
           "restarting blindly.")
@@ -526,7 +526,7 @@ def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:
                      "were stopped. Relaunch each one with exactly the parameters "
                      "shown.")
         if any(t.kind != "monitor" for t in replayable):
-            lines.append(_GUARD)
+            lines.append(RESTART_GUARD)
         for t in replayable:
             label = t.description or t.name
             lines.append(f"- [{t.kind}] {label}: relaunch the {t.name} tool with input "

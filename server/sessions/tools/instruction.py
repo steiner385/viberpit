@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from viberpit import brand
 
-from ..completion import marker_instructions
+from ..completion import COMPLETION_MARKER, marker_instructions
 from .registry import mounted_names
 
 # Shared task policy, independent of the engine and completion signal transport.
@@ -138,3 +138,23 @@ def session_instructions(*, session_tools: bool, signalling_tools: bool,
         instructions = tools_paragraph if signalling_tools else (
             f"{marker_instructions(self_model_switch=self_model_switch)}\n\n{tools_paragraph}")
     return f"{instructions}\n\n{FOLLOW_THROUGH_INSTRUCTION}"
+
+
+def finish_signal_instruction(*, signalling_tools: bool, mcp_namespaced: bool) -> str:
+    """How a nudge tells THIS session to finish, matching what it was told at spawn.
+
+    The same either/or as ``session_instructions``: a session on the signalling-tool
+    surface finishes with ``mark_complete``; any other session was told only the
+    completion marker and has no such tool. Autopilot's composer used to name
+    ``mark_complete`` unconditionally, so a marker-only session was asked for a tool
+    it could not see (#2928). ``mcp_namespaced`` is True for Claude, whose SDK names
+    the tool ``mcp__<server>__mark_complete`` and may defer it behind ToolSearch;
+    Codex declares it as a bare ``dynamicTools`` name.
+    """
+    if not signalling_tools:
+        return f"end the final message with `{COMPLETION_MARKER}` on its own line"
+    name = "mark_complete"
+    if not mcp_namespaced:
+        return f"call the `{name}` tool"
+    return (f"call the `{brand.MCP_TOOL_PREFIX}{name}` tool (load it with ToolSearch "
+            f"first if it is listed as deferred)")

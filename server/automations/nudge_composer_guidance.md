@@ -27,10 +27,17 @@ No prose, no preamble, no code fences.
   them as input, not as the message.
 - When the only remaining step belongs to a machine — CI still running on a PR that
   is ready with auto-merge armed, or the merge itself — that IS the finished state.
-  Direct the session to finish (call `mark_complete`, or emit the completion marker
-  if it has no tools), never to "report the current state and stop": a status
-  report with nothing needed from the user ends up as a hand-back the user has to
-  read and dismiss.
+  Direct the session to finish, never to "report the current state and stop": a
+  status report with nothing needed from the user ends up as a hand-back the user
+  has to read and dismiss.
+- `finish_signal` is how THIS session finishes (a tool or the completion marker —
+  sessions differ). Quote it verbatim when directing the session to finish, and never
+  name any other finishing tool or marker: the session may not have it. When
+  `finish_signal` is null, say "finish the session" and name no mechanism.
+- Mention a daemon restart, or tell the session to resume or continue where it left
+  off, ONLY when `interrupted_by_restart` is true. Otherwise the session already
+  resumed: restart notices are history and the transcript shows its current work —
+  direct that work.
 - `transcript` entries are EXCERPTS. A long entry is shortened by the harness with an
   inline marker — `[… N chars omitted here by the … harness … not the reply
   ending …]`. That is the harness cutting the excerpt, never the session's reply being
