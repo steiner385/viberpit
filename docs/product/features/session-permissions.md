@@ -87,9 +87,9 @@ exception (see Standing rules).
     `trace`), command launchers (`uv run`, `npx`, `npm exec`/`x`, `pnpm exec`/`dlx`,
     `yarn exec`/`dlx`, `poetry run`, `pipx run`, `bunx`) unless followed by the command they run
     — which is then judged as a head of its own (`uv run pytest:*` ok, `uv run python:*`
-    refused) — `git push` except
-    exactly, `git -c` (incl. the attached `-cKEY=VAL` form), `--config-env`, `--exec-path` and `git config`, and WebFetch domains that are wildcards, single-label, IP
-    literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
+    refused) — `git push` except exactly, `git -c` (incl. the attached `-cKEY=VAL` form),
+    `--config-env`, `--exec-path` and `git config`, and WebFetch domains that are wildcards,
+    single-label, IP literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
     `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means
     no rule can ever match those paths. Path matching resolves symlinks and never matches
     outside the worktree. A WebFetch domain rule only matches a plain `http`/`https` URL: one with
@@ -101,9 +101,9 @@ exception (see Standing rules).
     storable, in any mode: `ExitPlanMode`, `AskUserQuestion`, and the app's own tools that widen
     what sessions may do unasked (`resolve_permission`, `set_permission_mode`,
     `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`, under both
-    brand prefixes). A server-wide `mcp__viberpit` / `mcp__ccswitch` rule is refused at every
-    scope. Engine-managed (Codex) cards are never answered by rules: a new rule neither
-    sweeps them nor can be created from one.
+    brand prefixes). A server-wide rule for the app's own MCP server (`mcp__viberpit`, or its
+    legacy name) is refused at every scope. Engine-managed (Codex) cards are never answered by
+    rules: a new rule neither sweeps them nor can be created from one.
   - *Kill switch.* `VIBERPIT_PERMISSION_RULES_ENABLED=false`: nothing is consulted or
     suggested, the rules routes 404, and every prompt cards as before.
   - *Grant cache removed.* The old in-memory 1-hour "always" grant cache is gone; the stored

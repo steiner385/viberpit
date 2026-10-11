@@ -9,6 +9,7 @@ from server.permission_rules import store
 from server.permission_rules.gate import StandingRuleGate, first_match
 from server.permission_rules.patterns import parse
 from server.sessions.permissions import PermissionRegistry
+from viberpit.brand import LEGACY_MCP_TOOL_PREFIX
 
 pytestmark = pytest.mark.usefixtures("isolated_db")
 FACTS = {"s1": ("o/r", "/w/repo"), "s2": (None, "/w/scratch")}
@@ -170,13 +171,13 @@ def test_deny_all_of_another_session_does_not_cancel_request(monkeypatch):
 
 
 @pytest.mark.parametrize("tool", [
-    "mcp__viberpit__resolve_permission", "mcp__ccswitch__set_permission_mode",
+    "mcp__viberpit__resolve_permission", LEGACY_MCP_TOOL_PREFIX + "set_permission_mode",
     "mcp__viberpit__resolve_model_approval",
 ])
 def test_app_server_rule_never_auto_allows_permission_controls(tool):
     async def go():
         await _add("global", None, "mcp__viberpit")
-        await _add("global", None, "mcp__ccswitch")
+        await _add("global", None, LEGACY_MCP_TOOL_PREFIX.removesuffix("__"))
         await _add("global", None, tool)
         reg = _reg()
         pid, _, _ = await _ask(reg, "s1", tool, {"session_id": "x"})

@@ -80,7 +80,7 @@ _EXTENSIONS = (
     " -rf /", " -c x", " -e x",
 )  # fmt: skip
 _OBFUSCATION_CHARS = frozenset("'\"\\$`{}")
-# Server-wide patterns for the app's own MCP server (``mcp__viberpit``, ``mcp__ccswitch``).
+# Server-wide patterns for the app's own MCP server, under both brand names.
 _APP_MCP_SERVERS = frozenset(prefix.removesuffix("__") for prefix in MCP_TOOL_PREFIXES)
 _LOCAL_TLDS = (".local", ".internal", ".localhost", ".lan")
 

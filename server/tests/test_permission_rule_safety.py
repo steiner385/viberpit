@@ -1,4 +1,5 @@
 import pytest
+from viberpit.brand import LEGACY_MCP_TOOL_PREFIX
 
 from server.automations.autopilot_policy import _BASELINE_DENY, matches_denylist
 from server.permission_rules import safety
@@ -319,9 +320,9 @@ def test_launcher_suggestion_names_the_command():
     "pat",
     [
         "mcp__viberpit",
-        "mcp__ccswitch",
+        LEGACY_MCP_TOOL_PREFIX.removesuffix("__"),
         "mcp__viberpit__resolve_permission",
-        "mcp__ccswitch__set_permission_mode",
+        LEGACY_MCP_TOOL_PREFIX + "set_permission_mode",
         "mcp__viberpit__resolve_model_approval",
         "mcp__viberpit__set_autopilot_paused",
         "ExitPlanMode",

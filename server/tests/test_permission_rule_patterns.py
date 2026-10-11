@@ -1,5 +1,6 @@
 import pytest
 
+from viberpit.brand import LEGACY_MCP_TOOL_PREFIX
 from server.permission_rules.patterns import (
     PatternError,
     describe,
@@ -267,11 +268,12 @@ def test_webfetch_plain_urls_still_match(url):
     assert matches_any([p], "WebFetch", {"url": url}, CWD) is p
 
 
+_LEGACY = LEGACY_MCP_TOOL_PREFIX  # the pre-rebrand prefix, never spelled out (brand ratchet)
 _CONTROL_TOOLS = [
     "ExitPlanMode", "AskUserQuestion",
-    "mcp__viberpit__resolve_permission", "mcp__ccswitch__resolve_permission",
-    "mcp__viberpit__set_permission_mode", "mcp__ccswitch__set_permission_mode",
-    "mcp__viberpit__resolve_model_approval", "mcp__ccswitch__resolve_model_approval",
+    "mcp__viberpit__resolve_permission", _LEGACY + "resolve_permission",
+    "mcp__viberpit__set_permission_mode", _LEGACY + "set_permission_mode",
+    "mcp__viberpit__resolve_model_approval", _LEGACY + "resolve_model_approval",
     "mcp__viberpit__set_autopilot_paused", "mcp__viberpit__set_automation_enabled",
 ]
 
