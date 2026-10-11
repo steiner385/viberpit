@@ -1001,3 +1001,163 @@ async def test_status_wire_carries_hosts():
     d = st.to_dict()
     assert d["hosts"]["rocky"]["state"] == "done"
     assert DeployStatus.from_dict(d).hosts == st.hosts
+
+
+# --- daemon-restart cooldown (issue #2910 item 6) --------------------------------------
+# A daemon-changing deploy drains and restarts every live session. Two of them minutes
+# apart interrupt the same sessions twice, so a deploy that would restart the daemon
+# again inside VIBERPIT_DEPLOY_DAEMON_RESTART_COOLDOWN_SEC is refused in preflight —
+# before anything moves — unless the caller forces it.
+
+_COOLDOWN_ENV = "VIBERPIT_DEPLOY_DAEMON_RESTART_COOLDOWN_SEC"
+_DAEMON_DIFF = ["server/sessions/orchestrator.py"]
+_EDGE_DIFF = ["web/src/App.tsx"]
+
+
+class _Clock:
+    def __init__(self):
+        from datetime import datetime, timezone
+        self.now = datetime(2026, 10, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        from datetime import timedelta
+        self.now = self.now + timedelta(seconds=seconds)
+
+
+def _cooldown_controller(g, s, clock, *, diff, runners=None, **kw):
+    return make_controller(g, s, runners=runners, clock=clock,
+                           changed_files_fn=lambda repo, a, b: list(diff), **kw)
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_within_cooldown_is_refused_before_any_change(monkeypatch):
+    monkeypatch.setenv(_COOLDOWN_ENV, "600")
+    clock = _Clock()
+    s, calls = make_steps()
+    first = _cooldown_controller(FakeGit("a", "b", []), s, clock, diff=_DAEMON_DIFF)
+    st = await first.deploy_once()
+    assert st.error is None
+    assert st.daemon_restarted_at == clock.now.isoformat()
+
+    clock.advance(120)
+    s2, calls2 = make_steps()
+    forwarded: list[bool] = []
+    s2.fast_forward = lambda repo, ref="master", run=None: forwarded.append(True)
+    r, rc = make_runners()
+    c = _cooldown_controller(FakeGit("b", "c", []), s2, clock, diff=_DAEMON_DIFF,
+                             runners=(r, rc))
+    c.status.daemon_restarted_at = st.daemon_restarted_at
+    st2 = await c.deploy_once()
+    assert st2.error is not None and st2.error.startswith("preflight:")
+    assert "120s ago" in st2.error and "480s" in st2.error
+    assert _COOLDOWN_ENV in st2.error
+    assert "12:10:00" in st2.error, "names the time a retry would be accepted"
+    assert st2.phases["preflight"] == PhaseState.FAILED.value
+    assert forwarded == [] and rc.deploy_kwargs is None and calls2.restarted == []
+    assert calls2.rolled_back is False
+    # The refusal keeps the original restart time: it did not restart anything.
+    assert st2.daemon_restarted_at == st.daemon_restarted_at
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_allowed_after_cooldown(monkeypatch):
+    monkeypatch.setenv(_COOLDOWN_ENV, "600")
+    clock = _Clock()
+    s, _ = make_steps()
+    c = _cooldown_controller(FakeGit("a", "b", []), s, clock, diff=_DAEMON_DIFF)
+    c.status.daemon_restarted_at = clock.now.isoformat()
+    clock.advance(601)
+    st = await c.deploy_once()
+    assert st.error is None
+    assert st.daemon_restarted_at == clock.now.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_edge_only_deploy_ignores_the_cooldown(monkeypatch):
+    monkeypatch.setenv(_COOLDOWN_ENV, "600")
+    clock = _Clock()
+    s, calls = make_steps()
+    c = _cooldown_controller(FakeGit("a", "b", []), s, clock, diff=_EDGE_DIFF)
+    stamp = clock.now.isoformat()
+    c.status.daemon_restarted_at = stamp
+    clock.advance(30)
+    st = await c.deploy_once()
+    assert st.error is None
+    assert calls.restarted == ["ccswitch.service"]
+    assert st.daemon_restarted_at == stamp, "an edge-only deploy restarts no daemon"
+
+
+@pytest.mark.asyncio
+async def test_force_bypasses_the_cooldown(monkeypatch):
+    monkeypatch.setenv(_COOLDOWN_ENV, "600")
+    clock = _Clock()
+    s, _ = make_steps()
+    c = _cooldown_controller(FakeGit("a", "b", []), s, clock, diff=_DAEMON_DIFF)
+    c.status.daemon_restarted_at = clock.now.isoformat()
+    clock.advance(30)
+    st = await c.deploy_once(force=True)
+    assert st.error is None
+    assert st.daemon_restarted_at == clock.now.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_zero_cooldown_disables_the_hold(monkeypatch):
+    monkeypatch.setenv(_COOLDOWN_ENV, "0")
+    clock = _Clock()
+    s, _ = make_steps()
+    c = _cooldown_controller(FakeGit("a", "b", []), s, clock, diff=_DAEMON_DIFF)
+    c.status.daemon_restarted_at = clock.now.isoformat()
+    clock.advance(1)
+    st = await c.deploy_once()
+    assert st.error is None
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_time_survives_a_fresh_controller(tmp_path, monkeypatch):
+    """The controller restarts itself after a deploy-code change — the stamp must be
+    persisted, or that very restart would wipe the cooldown it is meant to enforce."""
+    monkeypatch.setenv(_COOLDOWN_ENV, "600")
+    path = str(tmp_path / "deploy-status.json")
+    clock = _Clock()
+    s, _ = make_steps()
+    first = _cooldown_controller(FakeGit("a", "b", []), s, clock, diff=_DAEMON_DIFF,
+                                 status_path=path)
+    st = await first.deploy_once()
+    assert st.error is None
+
+    clock.advance(60)
+    reborn = _cooldown_controller(FakeGit("b", "c", []), s, clock, diff=_DAEMON_DIFF,
+                                  status_path=path)
+    assert reborn.status.daemon_restarted_at == st.daemon_restarted_at
+    st2 = await reborn.deploy_once()
+    assert st2.error is not None and "cooldown" in st2.error
+
+    again = _cooldown_controller(FakeGit("b", "c", []), s, clock, diff=_DAEMON_DIFF,
+                                 status_path=path)
+    assert again.status.daemon_restarted_at == st.daemon_restarted_at, \
+        "a refused deploy's persisted status still carries the stamp"
+
+
+@pytest.mark.asyncio
+async def test_failed_daemon_deploy_still_stamps_the_restart(monkeypatch):
+    """A daemon deploy that failed after the runners phase (and rolled back, restarting
+    the daemon again) interrupted sessions just the same — it starts the cooldown."""
+    monkeypatch.setenv(_COOLDOWN_ENV, "600")
+    clock = _Clock()
+    s, calls = make_steps(healthy=False)
+    c = _cooldown_controller(FakeGit("a", "b", []), s, clock, diff=_DAEMON_DIFF)
+    st = await c.deploy_once()
+    assert st.error is not None and calls.rolled_back is True
+    assert st.daemon_restarted_at == clock.now.isoformat()
+
+
+def test_status_wire_carries_daemon_restarted_at():
+    from server.deploy.types import DeployStatus
+    st = DeployStatus(target_sha="x", daemon_restarted_at="2026-10-11T12:00:00+00:00")
+    d = st.to_dict()
+    assert d["daemonRestartedAt"] == "2026-10-11T12:00:00+00:00"
+    assert DeployStatus.from_dict(d).daemon_restarted_at == st.daemon_restarted_at
+    assert DeployStatus.from_dict({}).daemon_restarted_at is None

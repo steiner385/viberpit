@@ -39,13 +39,18 @@ class DeployStatus:
     # ({state, step, error, sha, restore}). One host's failure is reported here and named
     # in `error`; the deploy is not rolled back for it (spec §2, decision 1a).
     hosts: dict[str, dict] = field(default_factory=dict)
+    # When a deploy last restarted the session daemon (ISO-8601 UTC), carried across
+    # deploys and the controller's self-restart: the daemon-restart cooldown keys off it
+    # so back-to-back daemon deploys do not interrupt live sessions twice (#2910).
+    daemon_restarted_at: str | None = None
 
     def to_dict(self) -> dict:
         """The camelCase wire shape — served on /status AND persisted across the
         controller's self-restart. One shape, one source of truth (#865)."""
         return {"running": self.running, "phases": self.phases, "error": self.error,
                 "warnings": self.warnings, "targetSha": self.target_sha,
-                "restore": self.restore, "hosts": self.hosts}
+                "restore": self.restore, "hosts": self.hosts,
+                "daemonRestartedAt": self.daemon_restarted_at}
 
     @classmethod
     def from_dict(cls, d: dict) -> "DeployStatus":
@@ -55,4 +60,5 @@ class DeployStatus:
                    error=d.get("error"),
                    warnings=list(d.get("warnings") or []),
                    restore=dict(d.get("restore") or {}),
-                   hosts=dict(d.get("hosts") or {}))
+                   hosts=dict(d.get("hosts") or {}),
+                   daemon_restarted_at=d.get("daemonRestartedAt") or None)

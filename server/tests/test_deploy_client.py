@@ -56,6 +56,24 @@ async def test_start_without_target_sends_no_body():
 
 
 @pytest.mark.asyncio
+async def test_start_sends_force_only_when_set():
+    import json
+    seen = []
+
+    def handler(req):
+        seen.append(req.read())
+        return httpx.Response(200, json={"started": True})
+    c = DeployControllerClient("/tmp/x.sock")
+    c._http = httpx.AsyncClient(transport=_mock_transport(handler), base_url="http://deploy")
+    await c.start(force=True)
+    await c.start("abc1234", force=True)
+    await c.start("abc1234")
+    assert json.loads(seen[0]) == {"force": True}
+    assert json.loads(seen[1]) == {"targetSha": "abc1234", "force": True}
+    assert json.loads(seen[2]) == {"targetSha": "abc1234"}, "no force key unless forced"
+
+
+@pytest.mark.asyncio
 async def test_connect_error_raises_unavailable():
     def handler(req):
         raise httpx.ConnectError("no sock")

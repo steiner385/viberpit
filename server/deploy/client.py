@@ -37,14 +37,20 @@ class DeployControllerClient:
             raise DeployControllerUnavailable(str(exc)) from exc
         return r.json()
 
-    async def start(self, target_sha: str | None = None) -> tuple[int, dict]:
+    async def start(self, target_sha: str | None = None, *,
+                    force: bool = False) -> tuple[int, dict]:
+        body: dict = {}
+        if target_sha is not None:
+            body["targetSha"] = target_sha
+        if force:
+            body["force"] = True
         try:
-            if target_sha is None:
+            if not body:
                 # No target keeps today's empty-body POST byte for byte (older
                 # controllers reject an unexpected JSON body with a 422).
                 r = await self._http.post("/start")
             else:
-                r = await self._http.post("/start", json={"targetSha": target_sha})
+                r = await self._http.post("/start", json=body)
         except httpx.HTTPError as exc:
             raise DeployControllerUnavailable(str(exc)) from exc
         return r.status_code, r.json()

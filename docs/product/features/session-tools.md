@@ -1,7 +1,7 @@
 ---
 slug: session-tools
 parent: session-workspaces
-title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, share_artifact, request_model)
+title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, share_artifact, request_model, dispatch_session, reply_to_child)
 state: delivering
 links:
   specs:
@@ -23,7 +23,7 @@ links:
     - server/pm/holds.py
 ---
 
-# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, share_artifact, request_model)
+# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, set_hold, propose_decision, share_artifact, request_model, dispatch_session, reply_to_child)
 
 Give coding agents reliable application context and a supported way to report feedback, coordinate child work, signal progress, and put their deliverables in front of the user.
 
@@ -40,7 +40,7 @@ declaration the session made on purpose.
 the operators who triage `session_feedback` rows into the backlog.
 
 **Desired outcome** — every coding session mounts an in-process `viberpit` MCP server with up to
-ten tools:
+eleven tools (plus the roadmap tools):
 
 | Tool | Class | Args | What it does |
 |---|---|---|---|
@@ -48,16 +48,17 @@ ten tools:
 | `report_feedback` | READ | category, impact, title, body, evidence? | Reports a problem with ViberPit itself (not the project). One call per distinct problem, at most `session_feedback_cap` per session. |
 | `mark_complete` | SIGNAL | none | Declares the session's objective is fully done. |
 | `mark_no_pr` | SIGNAL | resolution (`not-needed` \| `cancelled` \| `awaiting-decision`), note? | Declares the work is finished but no PR is appropriate — or, with `awaiting-decision`, that it stopped on a `propose_decision` the person must answer. |
-| `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `waiting_question` ("Answer needed"). |
+| `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `handed_back` (#2321). |
 | `set_hold` | SIGNAL | kind (`evidence`\|`stronger_model`\|null), reason, ref? | Holds (or releases) the issue this session was dispatched for, on the roadmap ladder (spec 2026-09-18 §8). Limited to the two agent-settable kinds — see below. |
 | `propose_decision` | SIGNAL | options (2–6 × {key, label, detail?}), recommended_key, rationale | Parks this session's issue on a PRODUCT DECISION only a person can take: draft the options, name the one you recommend, say why. The person picks one in the Inbox (spec 2026-09-18 §6). |
 | `share_artifact` | SIGNAL | kind (`url`\|`path`\|`image`), value, label, note? | Puts a deliverable in front of the user as an always-visible transcript card: an http(s) URL, an absolute path on the session host (copyable chip), or an image on the session host, which the handler ingests into the attachment store and the card renders inline. See below. |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
 | `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `VIBERPIT_CHILD_SESSIONS_ENABLED`, capped by `VIBERPIT_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |
+| `reply_to_child` | SIGNAL | child_session_id, message | Sends one of this session's children a message as its next prompt — answers a hand-back, resumes a restart-stranded child, stops or re-delegates it (#2911). Mounted with `dispatch_session`; refuses a non-child, an ended/archived child, or a refused delivery as the tool result. See [Child sessions](../guides/child-sessions.md#the-parent-answers-back). |
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
 registry — read-only in effect, since neither changes anything the user can see. `mark_complete`,
-`mark_no_pr`, `hand_back`, `set_hold`, `propose_decision`, `share_artifact` and `request_model` are the newer `ToolClass.SIGNAL` (below): also no permission
+`mark_no_pr`, `hand_back`, `set_hold`, `propose_decision`, `share_artifact`, `request_model` and `reply_to_child` are the newer `ToolClass.SIGNAL` (below): also no permission
 card, but not annotated read-only, because each one moves something the user does see (a status
 badge, a completion-bar verdict, a pending model approval). `PermissionRegistry` resolves both
 classes silently in every session mode, never raising a permission card (pinned by

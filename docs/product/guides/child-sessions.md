@@ -56,6 +56,7 @@ that is `complete`, `ended` or `archived`, which would resurrect a finished sess
 <hand-back-reason>…</hand-back-reason>   (when the child handed back)
 <pr-resolution>…</pr-resolution>         (when the child declared one)
 <summary>the child's last message, ≤ 800 chars</summary>
+<next-step>…</next-step>                 (when the parent can act: see below)
 <url>/sessions/…</url>
 </child-session-notification>
 ```
@@ -73,6 +74,34 @@ Which stops notify is decided by `child_sessions.notify_decision` and persisted 
   directly; both call the same decision before the record is popped.
 
 `session_context` lists the parent's `children` (id, name, status) and its own `parentSessionId`.
+
+## The parent answers back
+
+A child that hands back (`handed_back` / `waiting_question`) stalls until somebody prompts it.
+The parent can, with **`reply_to_child(child_session_id, message)`** (#2911): the message becomes
+the child's next prompt, framed as a `<parent-session-message>` so the child knows its parent —
+not the user — is talking. One tool covers answering the question, resuming the child,
+telling it to stop because the parent is taking the work over, and re-delegating with new
+instructions. It refuses (as the tool result) a session that is not the caller's child, a child
+that has ended or been archived, and a delivery the daemon refused (a deploy drain). It is a
+SIGNAL-class tool — no permission card — because it only prompts a session the parent already
+created, owned by the same user and never wider in mode; it rides with `dispatch_session`. The
+notice's `<next-step>` line names it for every stop the parent can act on.
+
+When the parent cannot act, the human is told directly: a hand-back whose parent is `complete`,
+`ended` or `archived`, or whose notice could not be delivered, fires a `needs_input`
+notification naming the child ("…its parent session has finished — answer it directly") and
+writes a `session.child_escalated` audit row.
+
+## Across daemon restarts
+
+A notice the deploy drain refuses is not lost: the child's `parent_notified_status` guard rolls
+back, and at daemon boot `redeliver_child_notices` (after re-arm and auto-resume) reports every
+child stop its parent has not heard about — through the same guard, so a reported stop never
+repeats. A child the restart cut off mid-turn that auto-resume did not restart is reported as
+`<status>interrupted_by_restart</status>` with a `reply_to_child` resume hint. If the parent was
+itself interrupted, that notice is not allowed to wake it: it is queued in front of the
+parent's own next turn instead.
 
 ## On the board
 

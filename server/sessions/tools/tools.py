@@ -104,12 +104,22 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "engine, model, account, the automation that dispatched it (origin) and its "
                "reference (originRef, e.g. owner/repo#123), the effective goal, the "
                "permission mode, and this session's lineage: parentSessionId and its "
-               "children (id, name, status). Call it when you need to know how you were "
+               "children (id, name, status), plus scratchDir: a private directory that "
+               f"survives {brand.NAME} daemon restarts — write the logs of long test or build "
+               "runs there rather than /tmp, so they are still readable if a restart "
+               "interrupts the run. Call it when you need to know how you were "
                "dispatched or how your child sessions are doing.",
                {"type": "object", "properties": {}, "required": []})
     @guarded
     async def session_context(args: dict[str, Any]) -> Any:
-        return context_snapshot(ctx)
+        import asyncio
+
+        from server.sessions.session_scratch import scratch_dir_for
+        snap = context_snapshot(ctx)
+        scratch = await asyncio.to_thread(scratch_dir_for, snap.get("cwd"), ctx.session_id)
+        if scratch is not None:
+            snap["scratchDir"] = scratch
+        return snap
 
     @spec_tool("report_feedback",
                f"Report a problem with {brand.NAME}, the harness that dispatched and supervises "
@@ -409,6 +419,36 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                         exc_info=True)
             raise ToolArgError(f"could not start the child session: {e}") from e
 
+    @spec_tool("reply_to_child",
+               "Send a message to one of YOUR child sessions (started with dispatch_session) "
+               "as its next prompt: answer the question it handed back, resume a child a "
+               "daemon restart interrupted, tell it to stop because you are taking the work "
+               "over, or re-delegate with new instructions. Use it when a "
+               "<child-session-notification> shows the child waiting and you can answer from "
+               "what you know; if only the user can answer, hand_back yourself instead of "
+               "guessing. child_session_id: the id from the notification or session_context. "
+               "message: what the child should read — it sees it framed as coming from this "
+               "session, not the user. The child resumes at once; you are notified again "
+               "when it next stops.",
+               {"type": "object",
+                "properties": {"child_session_id": {"type": "string"},
+                               "message": {"type": "string"}},
+                "required": ["child_session_id", "message"]})
+    @guarded
+    async def reply_to_child(args: dict[str, Any]) -> Any:
+        child_id = str(args.get("child_session_id") or "").strip()
+        message = str(args.get("message") or "")
+        if not child_id:
+            raise ToolArgError("child_session_id is required")
+        if not message.strip():
+            raise ToolArgError("message must not be empty")
+        if ctx.reply_child is None:
+            raise ToolArgError("child sessions are not available in this session")
+        try:
+            return await ctx.reply_child(child_session_id=child_id, message=message)
+        except ChildSessionLimit as e:
+            raise ToolArgError(str(e)) from e
+
     @spec_tool("share_artifact",
                "Put a link, URL, local path or image IN FRONT OF THE USER as an "
                "always-visible card in the session transcript. Use it for every "
@@ -466,6 +506,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
                "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
                "propose_decision": propose_decision, "dispatch_session": dispatch_session,
+               "reply_to_child": reply_to_child,
                "share_artifact": share_artifact}
     from .roadmap import build_roadmap_tools
     by_name.update(build_roadmap_tools(ctx, spec_tool, guarded))

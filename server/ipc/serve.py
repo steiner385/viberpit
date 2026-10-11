@@ -136,7 +136,9 @@ async def _await_creds_lease(timeout_s: float, poll_s: float) -> None:
 
 async def _boot_resume_pass(orchestrator, *, creds_wait_s: float = BOOT_CREDS_WAIT_S,
                             creds_poll_s: float = 1.0) -> None:
-    """Re-arm, then auto-resume (auto-resume skips what re-arm already replayed)."""
+    """Re-arm, then auto-resume (auto-resume skips what re-arm already replayed), then
+    bring parents up to date on their children — last, so a child auto-resume already
+    restarted is not reported as stranded (#2910)."""
     await _await_creds_lease(creds_wait_s, creds_poll_s)
     try:
         await orchestrator.rearm_background_tasks()
@@ -147,6 +149,10 @@ async def _boot_resume_pass(orchestrator, *, creds_wait_s: float = BOOT_CREDS_WA
         await orchestrator.auto_resume_interrupted()
     except Exception:
         log.error("daemon auto_resume_interrupted() failed", exc_info=True)
+    try:
+        await orchestrator.redeliver_child_notices()
+    except Exception:
+        log.error("daemon redeliver_child_notices() failed", exc_info=True)
 
 
 @asynccontextmanager

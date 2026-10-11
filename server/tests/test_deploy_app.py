@@ -13,13 +13,15 @@ class FakeController:
         self.status = DeployStatus(target_sha="def", running=False)
         self.started = 0
         self.target_shas: list[str | None] = []
+        self.forces: list[bool] = []
         self._running = False
 
-    async def deploy_once(self, target_sha=None):
+    async def deploy_once(self, target_sha=None, *, force=False):
         if self._running:
             raise RuntimeError("deploy already in progress")
         self.started += 1
         self.target_shas.append(target_sha)
+        self.forces.append(force)
         self.status = DeployStatus(target_sha="def", running=False, phases={"update": "done"})
         return self.status
 
@@ -80,6 +82,20 @@ def test_start_with_empty_json_body_passes_no_target(client):
     c, ctrl = client
     assert c.post("/start", json={}).status_code == 200
     assert ctrl.target_shas == [None]
+
+
+def test_start_does_not_force_by_default(client):
+    c, ctrl = client
+    assert c.post("/start").status_code == 200
+    assert c.post("/start", json={"targetSha": "abc1234"}).status_code == 200
+    assert ctrl.forces == [False, False]
+
+
+def test_start_forwards_force_from_body(client):
+    """force=true bypasses the daemon-restart cooldown (#2910)."""
+    c, ctrl = client
+    assert c.post("/start", json={"force": True}).status_code == 200
+    assert ctrl.forces == [True] and ctrl.target_shas == [None]
 
 
 def test_start_conflict_when_running(client):

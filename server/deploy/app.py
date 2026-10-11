@@ -21,8 +21,10 @@ log = logging.getLogger("server.deploy.app")
 
 class StartBody(BaseModel):
     """Optional /start body: an explicit deploy target (the green-frontier sha) —
-    absent/None means "origin/master's tip", today's behaviour."""
+    absent/None means "origin/master's tip", today's behaviour. ``force`` bypasses the
+    daemon-restart cooldown (VIBERPIT_DEPLOY_DAEMON_RESTART_COOLDOWN_SEC); default off."""
     targetSha: str | None = None
+    force: bool = False
 
 
 def _poll_interval() -> float:
@@ -37,7 +39,7 @@ def _poll_interval() -> float:
 class _ControllerLike(Protocol):
     status: DeployStatus
 
-    def deploy_once(self, target_sha: str | None = None
+    def deploy_once(self, target_sha: str | None = None, *, force: bool = False
                     ) -> Coroutine[object, object, DeployStatus]: ...
 
 
@@ -104,7 +106,9 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
         if ctrl.status.running:
             return JSONResponse({"started": False, "reason": "in progress"}, status_code=409)
         target_sha = body.targetSha if body is not None else None
-        task = asyncio.create_task(ctrl.deploy_once(target_sha=target_sha), name="deploy-run")
+        force = body.force if body is not None else False
+        task = asyncio.create_task(ctrl.deploy_once(target_sha=target_sha, force=force),
+                                   name="deploy-run")
         await asyncio.sleep(0)  # yield so the task can run its synchronous guard check
         if task.done() and task.exception() is not None:
             exc = task.exception()

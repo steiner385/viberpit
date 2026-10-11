@@ -275,8 +275,17 @@ _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — th
 
 # Sent to a session whose in-flight turn was dropped by a daemon restart, to continue
 # the work. One text for human + automation sessions (design 2026-09-02).
-RESUME_NUDGE = ("Your previous turn was interrupted by a daemon restart. "
-                "Please continue where you left off.")
+#: The stable head every resume nudge starts with — what the autopilot strips a
+#: resumed session's tail by, so nudges written before the wording below changed are
+#: still recognized.
+RESUME_NUDGE_HEAD = "Your previous turn was interrupted by a daemon restart."
+#: Says WHY and what was lost (#2910): a command running in the cut-off turn — a test
+#: suite, a build — was killed (often reported only as signal 15 / exit 143), not
+#: finished, and must be re-run rather than assumed passed.
+RESUME_NUDGE = (f"{RESUME_NUDGE_HEAD} Any command that was still running then — tests, "
+                "a build, a long script — was killed by the restart, not by a failure "
+                "of its own (it may show as signal 15 or exit 143), so re-run it rather "
+                "than trusting a partial result. Please continue where you left off.")
 
 # Bounded auto-recovery attempts for a session that failed to resume after a
 # daemon-affecting deploy. Past this the session is kept visible (flagged gave-up)
@@ -1998,6 +2007,8 @@ class SessionOrchestrator:
                                 and get_settings().child_sessions_enabled),
             dispatch_child=functools.partial(self.dispatch_child_session, session_id,
                                              identity=identity),
+            reply_child=functools.partial(self.reply_to_child_session, session_id,
+                                          identity=identity),
             children=lambda: self.children_of(session_id),
             # What the user will actually see for a hand-back: the prose of the
             # message that carried the call, read off the live driver (lazily — the
@@ -14505,7 +14516,7 @@ class SessionOrchestrator:
             from server.automations.autopilot_policy import strip_restart_notices
             from server.sessions.background_tasks import RESTART_GUARD
             transcript_tail = strip_restart_notices(
-                transcript_tail, (RESUME_NUDGE, RESTART_GUARD))
+                transcript_tail, (RESUME_NUDGE_HEAD, RESTART_GUARD))
         from server.sessions.tools.instruction import finish_signal_instruction
         finish_signal = finish_signal_instruction(
             signalling_tools=self._signalling_tools_for(rec.engine),
@@ -17100,6 +17111,16 @@ class SessionOrchestrator:
                 pid = getattr(row, "pid", None)
                 if pid is None or not _adopt._pid_alive(pid):
                     healed[row.id] = "idle"
+            # The restart may have killed a git process mid-commit in this worktree,
+            # leaving an orphaned index.lock that fails the next commit (#2910). The
+            # cleaner resolves the git dir itself (a non-git cwd is a no-op), proves no
+            # live git owns the lock, and must never break rehydrate.
+            if was_interrupted and row.cwd:
+                try:
+                    await asyncio.to_thread(worktrees.clear_stale_index_lock, row.cwd)
+                except Exception:
+                    log.debug("rehydrate: index.lock cleanup failed for %s",
+                              row.id, exc_info=True)
             # Backfill the PR-join branch for legacy sessions created before the
             # branch was persisted (NULL column). Derive it once from the session's
             # worktree and write it back so the column becomes the source of truth.
@@ -20704,46 +20725,180 @@ class SessionOrchestrator:
         parent_id = getattr(rec, "parent_session_id", None)
         if not parent_id:
             return
-        notify, guard = _cs.notify_decision(status, getattr(rec, "parent_notified_status", None))
-        if guard != getattr(rec, "parent_notified_status", None):
-            rec.parent_notified_status = guard
-            async with db_session() as db:
-                from sqlalchemy import update as sa_update
-                await db.execute(sa_update(DbSession).where(DbSession.id == rec.id)
-                                 .values(parent_notified_status=guard))
+        prior = getattr(rec, "parent_notified_status", None)
+        notify, guard = _cs.notify_decision(status, prior)
+        if guard != prior:
+            await self._set_parent_notified(rec, guard)
         if not notify:
             return
         text = _cs.build_child_notice(
             session_id=rec.id, name=getattr(rec, "name", None) or rec.id, status=status,
             last_message=await self._last_assistant_prose(rec.id),
             hand_back_reason=hand_back_reason,
-            pr_resolution=getattr(rec, "pr_resolution", None))
-        self._spawn(self._notify_parent(parent_id, rec.id, status, text), name="child-notify")
+            pr_resolution=getattr(rec, "pr_resolution", None),
+            note=_cs.notice_next_step(status, rec.id))
+        self._spawn(self._notify_parent(parent_id, rec.id, status, text, prior_guard=prior),
+                    name="child-notify")
+
+    async def _set_parent_notified(self, rec, guard: str | None) -> None:
+        rec.parent_notified_status = guard
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(sa_update(DbSession).where(DbSession.id == rec.id)
+                             .values(parent_notified_status=guard))
 
     #: Parent statuses that must NOT be woken by a child notice: a finished parent has
     #: had its driver released and its slot freed; resurrecting it to read a notice
     #: would flip it out of "Complete" and retake capacity.
     _CHILD_NOTIFY_SKIP_PARENT = frozenset({"archived", "ended", "complete"})
 
-    async def _notify_parent(self, parent_id: str, child_id: str, status: str, text: str) -> None:
+    async def _notify_parent(self, parent_id: str, child_id: str, status: str, text: str,
+                             *, prior_guard: str | None = None) -> None:
         """Deliver a <child-session-notification> to the parent as a prompt (spec §4.4).
         Resumes a detached parent first — a bare send_prompt drops the text without a
         driver. Best-effort: logs, never raises (it runs as a spawned task off the
-        child's status callback)."""
+        child's status callback).
+
+        A notice that does not land is not lost (#2910): the child's guard goes back to
+        *prior_guard*, so ``redeliver_child_notices`` (run at daemon boot) sends it
+        again — the usual case is a deploy drain refusing every new turn. And a child
+        waiting on an answer its parent cannot give — the parent finished, or the
+        notice could not reach it — is escalated to the human (#2911)."""
         try:
             parent = self._records.get(parent_id)
             if parent is None or getattr(parent, "status", None) in self._CHILD_NOTIFY_SKIP_PARENT:
                 log.info("child_notify.skip parent=%s child=%s parent_status=%s",
                          parent_id, child_id, getattr(parent, "status", None))
+                if status in _cs.CHILD_ANSWERABLE_STOPS:
+                    await self._escalate_child_to_human(
+                        child_id, parent_id, "its parent session has finished")
                 return
             drv = await self.ensure_driver(parent_id, SYSTEM_IDENTITY)
-            if drv is None:
-                log.warning("child_notify.no_driver parent=%s child=%s", parent_id, child_id)
+            result = "no_driver" if drv is None else await self.send_prompt(parent_id, text)
+            if result == "sent":
+                log.info("child_notify.sent parent=%s child=%s status=%s",
+                         parent_id, child_id, status)
                 return
-            await self.send_prompt(parent_id, text)
-            log.info("child_notify.sent parent=%s child=%s status=%s", parent_id, child_id, status)
+            # INFO for a drain: a deploy refuses every new turn by design, and the
+            # boot-time redelivery below is the recovery.
+            log.log(logging.INFO if result == "draining" else logging.WARNING,
+                    "child_notify.undelivered parent=%s child=%s status=%s result=%s",
+                    parent_id, child_id, status, result)
+            await self._rearm_child_notice(child_id, status, prior_guard)
+            if status in _cs.CHILD_ANSWERABLE_STOPS and result != "draining":
+                await self._escalate_child_to_human(
+                    child_id, parent_id, f"the notice could not reach its parent ({result})")
         except Exception:  # noqa: BLE001 — a notice failure must never fail the child's status persist
             log.warning("child_notify.failed parent=%s child=%s", parent_id, child_id, exc_info=True)
+
+    async def _rearm_child_notice(self, child_id: str, status: str,
+                                  prior_guard: str | None) -> None:
+        """Undo the guard an undelivered notice wrote, unless the child has moved on
+        since (its next transition owns the guard then)."""
+        rec = self._records.get(child_id)
+        if rec is not None and getattr(rec, "parent_notified_status", None) == status:
+            await self._set_parent_notified(rec, prior_guard)
+
+    async def _escalate_child_to_human(self, child_id: str, parent_id: str, why: str) -> None:
+        """A child is waiting on an answer its parent cannot give (#2911): tell the
+        human directly, naming the child, so the hand-back does not sit unseen behind
+        a parent nobody is watching."""
+        rec = self._records.get(child_id)
+        name = getattr(rec, "name", None) or child_id
+        log.info("child_notify.escalated parent=%s child=%s why=%s", parent_id, child_id, why)
+        async with db_session() as db:
+            await record_audit(db, "session.child_escalated", SYSTEM_IDENTITY,
+                               {"parentSessionId": parent_id, "childSessionId": child_id,
+                                "why": why}, via="session")
+        await push_mod.notify_event(
+            "needs_input", f"{brand.NAME} — needs you",
+            f"{name}: child session waiting on an answer, and {why} — answer it directly",
+            repo=getattr(rec, "repo", None), account=getattr(rec, "account", None),
+            automation=getattr(rec, "origin", None), session_id=child_id,
+            url=f"/session/{child_id}", orch=self)
+
+    async def reply_to_child_session(self, parent_id: str, *, child_session_id: str,
+                                     message: str, identity: str) -> dict:
+        """A parent answers, steers or re-delegates one of its children (#2911): the
+        message becomes the child's next prompt, resuming a detached child first.
+        Raises ChildSessionLimit with the model-readable reason for every refusal
+        (not its child, child gone, delivery refused)."""
+        child = self._records.get(child_session_id)
+        _cs.check_reply(parent_id=parent_id, child=child, child_id=child_session_id,
+                        message=message)
+        parent = self._records.get(parent_id)
+        text = _cs.build_parent_reply(
+            parent_id=parent_id, parent_name=getattr(parent, "name", None) or parent_id,
+            message=message)
+        if await self.ensure_driver(child_session_id, identity) is None:
+            raise _cs.ChildSessionLimit(f"could not attach child {child_session_id}; "
+                                        "ask the user to open it")
+        result = await self.send_prompt(child_session_id, text, replayable=True)
+        if result != "sent":
+            raise _cs.ChildSessionLimit(
+                f"the reply was not delivered ({result}); "
+                + ("a daemon restart is in progress — try again after it"
+                   if result == "draining" else "try again shortly"))
+        async with db_session() as db:
+            await record_audit(db, "session.child_reply", identity,
+                               {"parentSessionId": parent_id, "childSessionId": child_session_id,
+                                "chars": len(message)}, via="session")
+        log.info("session.child_reply parent=%s child=%s", parent_id, child_session_id)
+        rec = self._records.get(child_session_id)
+        return {"id": child_session_id, "delivered": True,
+                "status": getattr(rec, "status", None)}
+
+    async def redeliver_child_notices(self) -> int:
+        """Daemon boot (#2910): bring every parent up to date with its children.
+
+        * A child whose last stop was never reported — the notice was refused by the
+          deploy drain, or the daemon died first — is reported now, through the same
+          guard ``_child_stop_transition`` uses, so a reported stop never repeats.
+        * A child a restart cut off mid-turn and nothing resumed (auto-resume is
+          opt-in) tells its parent, which can resume it with ``reply_to_child``. A
+          parent that was itself interrupted is not woken for it — the notice waits
+          as a preamble to the parent's own next turn.
+
+        Returns how many notices were delivered or queued. Never raises."""
+        n = 0
+        enabled_hosts = await self._enabled_host_names()
+        for rec in list(self._records.values()):
+            parent_id = getattr(rec, "parent_session_id", None)
+            if not parent_id or not self._owns_record(rec, enabled_hosts):
+                continue
+            try:
+                if getattr(rec, "interrupted_by_restart", False):
+                    n += await self._notify_stranded_child(rec, parent_id)
+                    continue
+                prior = getattr(rec, "parent_notified_status", None)
+                if _cs.notify_decision(rec.status, prior)[0]:
+                    await self._child_stop_transition(
+                        rec, rec.status, getattr(rec, "hand_back_reason", None))
+                    n += 1
+            except Exception:  # noqa: BLE001 - one child must not stop the sweep
+                log.warning("child_notify.redeliver_failed child=%s", rec.id, exc_info=True)
+        if n:
+            log.info("child_notify.redelivered count=%d", n)
+        return n
+
+    async def _notify_stranded_child(self, rec, parent_id: str) -> int:
+        parent = self._records.get(parent_id)
+        if parent is None or getattr(parent, "status", None) in self._CHILD_NOTIFY_SKIP_PARENT:
+            return 0
+        status = _cs.INTERRUPTED_NOTICE_STATUS
+        text = _cs.build_child_notice(
+            session_id=rec.id, name=getattr(rec, "name", None) or rec.id, status=status,
+            last_message=await self._last_assistant_prose(rec.id),
+            note=_cs.notice_next_step(status, rec.id))
+        if getattr(parent, "interrupted_by_restart", False):
+            self._queue_prompt_preamble(parent_id, text)
+            log.info("child_notify.queued parent=%s child=%s status=%s",
+                     parent_id, rec.id, status)
+            return 1
+        self._spawn(self._notify_parent(parent_id, rec.id, status, text,
+                                        prior_guard=getattr(rec, "parent_notified_status", None)),
+                    name="child-notify")
+        return 1
 
     async def stop_subagent(self, session_id, tool_use_id: str) -> str | None:
         """Stop ONE running Task sub-agent of a live session (spec §4.4). Returns the
