@@ -77,7 +77,7 @@ from server.assistant.context import PromptContext
 from server.assistant.suggest_prompt import (
     ASSISTANT_SUGGEST_LIMIT, ASSISTANT_SUGGEST_SYSTEM_PROMPT, build_assistant_suggest_prompt,
 )
-from server.sessions.prompt_origin import PromptOrigin, is_system_origin
+from server.sessions.prompt_origin import PromptOrigin
 from server.audit import record_audit
 from server.permission_rules.gate import StandingRuleGate
 from server.db import db_session
@@ -20515,7 +20515,7 @@ class SessionOrchestrator:
                           interrupt: bool = False,
                           context: PromptContext | None = None,
                           origin: PromptOrigin | None = None,
-                          replayable: bool | None = None) -> str:
+                          replayable: bool = True) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
         stop the in-flight turn and run this prompt next instead of queueing it.
         ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge
@@ -20524,8 +20524,9 @@ class SessionOrchestrator:
 
         ``replayable`` says whether this prompt becomes ``_last_prompt`` — the turn a
         restart (``snapshot_deploy``) or a rate-limit swap re-issues. Defaults to
-        True except for a system-origin nudge (``is_system_origin``); internal system
-        prompts (an orphaned answer, the resume nudge) pass False. A non-replayable
+        True — a completion/autopilot nudge must stay replayable, the driver-release
+        flow re-issues it. Prompts that answer or nudge on the restart itself (an
+        orphaned answer, the resume nudge) pass False. A non-replayable
         prompt that starts a turn also forgets the previous one, so a restart can
         never replay a stale prompt in its place (#2922)."""
         if self._draining:
@@ -20584,8 +20585,6 @@ class SessionOrchestrator:
             async with db_session() as db:
                 resolved = await _attachments.resolve_and_bind(
                     db, session_id, turn_id, ids)
-        if replayable is None:
-            replayable = not is_system_origin(origin)
         if replayable:
             self._last_prompt[session_id] = text
         elif interrupt or getattr(d, "turn_active", False) is not True:

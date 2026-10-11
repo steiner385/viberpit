@@ -42,18 +42,6 @@ ORIGIN_KINDS = frozenset({
     "automation",   # any other automation (PR doctor, backlog runner, …) — see `label`
 })
 
-# Origins that are the system nudging the session, not a request to be done. Such a
-# prompt is never recorded as the turn a restart should replay (#2922): replaying a
-# nudge after a restart presents it as fresh user input. "assistant" acts on the
-# user's behalf and "automation" carries a session's actual work, so both still are.
-SYSTEM_ORIGIN_KINDS = frozenset({"autopilot", "completion"})
-
-
-def is_system_origin(origin: PromptOrigin | None) -> bool:
-    """True when *origin* names a system nudge (see ``SYSTEM_ORIGIN_KINDS``)."""
-    return origin is not None and origin.get("kind") in SYSTEM_ORIGIN_KINDS
-
-
 # Cosmetic only, and rendered into the model's prompt, so it is bounded and single-line.
 # An unusable label is DROPPED rather than rejecting the marker: losing "PR Doctor" off
 # an otherwise-correct "automation" card is a far better failure than showing that card

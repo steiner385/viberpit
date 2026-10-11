@@ -393,7 +393,10 @@ def test_an_orphaned_answer_is_never_replayed_by_a_later_restore(tmp_path):
     asyncio.run(run())
 
 
-def test_system_origin_prompts_are_not_recorded_for_replay():
+def test_nudge_origins_stay_replayable():
+    """Only an explicit ``replayable=False`` (orphaned answer, resume nudge) opts out.
+    A completion/autopilot nudge must stay ``_last_prompt``: the driver-release
+    flow re-issues it on the re-spawned driver (test_completion_releases_driver)."""
     async def run():
         o = SessionOrchestrator.__new__(SessionOrchestrator)
         o._draining = False
@@ -406,10 +409,10 @@ def test_system_origin_prompts_are_not_recorded_for_replay():
             return None
 
         o._retry_unapplied_model = _noop
-        await o.send_prompt("s1", "nudge", origin={"kind": "completion"})
-        assert "s1" not in o._last_prompt
-        await o.send_prompt("s1", "nudge", origin={"kind": "autopilot"})
-        assert "s1" not in o._last_prompt
+        await o.send_prompt("s1", "finish", origin={"kind": "completion"})
+        assert o._last_prompt["s1"] == "finish"
+        await o.send_prompt("s1", "keep going", origin={"kind": "autopilot"})
+        assert o._last_prompt["s1"] == "keep going"
         await o.send_prompt("s1", "do the thing")
         assert o._last_prompt["s1"] == "do the thing"
 
