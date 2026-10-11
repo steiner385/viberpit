@@ -122,3 +122,48 @@ def test_first_match_attributes_hit_to_matching_rule():
     assert first_match(rules, "Bash", {"command": "npm test -w"}, "/w").id == "b"  # type: ignore[arg-type]
     assert first_match(rules, "Bash", {"command": "rm x"}, "/w") is None  # type: ignore[arg-type]
     assert parse("Bash(git status)")
+
+
+@pytest.mark.parametrize("tool,inp", [
+    ("Bash", {"command": "npm test"}),
+    ("mcp__viberpit__rename_session", {"id": "x", "title": "y"}),  # MUTATION branch
+])
+def test_deny_all_during_gate_await_leaves_no_ghost_card(monkeypatch, tool, inp):
+    """A deny_all (interrupt / disconnect / prompt sent) landing while the gate is awaiting
+    must win: no card is created afterwards and the request settles denied (#1504 shape)."""
+    async def go():
+        reg = _reg()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_match(session_id, tool, input):
+            entered.set()
+            await release.wait()
+            return None
+        monkeypatch.setattr(reg.rule_gate, "match", slow_match)
+        task = asyncio.ensure_future(_ask(reg, "s1", tool, inp))
+        await entered.wait()
+        reg.deny_all("s1")
+        release.set()
+        pid, fut, _ = await task
+        assert pid is None and fut.result() is False
+        assert reg.pending("s1") == []
+    asyncio.run(go())
+
+
+def test_deny_all_of_another_session_does_not_cancel_request(monkeypatch):
+    async def go():
+        reg = _reg()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_match(session_id, tool, input):
+            entered.set()
+            await release.wait()
+            return None
+        monkeypatch.setattr(reg.rule_gate, "match", slow_match)
+        task = asyncio.ensure_future(_ask(reg, "s1", "Bash", {"command": "npm test"}))
+        await entered.wait()
+        reg.deny_all("s2")
+        release.set()
+        pid, _, _ = await task
+        assert pid is not None and len(reg.pending("s1")) == 1
+    asyncio.run(go())

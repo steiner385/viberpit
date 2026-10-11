@@ -137,6 +137,11 @@ class PermissionRegistry:
         # perm_id -> (session_id, reason) a deny_all(reason=...) settled it with, read
         # back exactly once by the awaiting can_use_tool (see take_deny_reason).
         self._deny_reasons: dict[str, tuple[str, str]] = {}
+        # session_id -> how many times deny_all has run for it. ``request`` snapshots it
+        # before awaiting the standing-rule gate: a deny_all landing during that await
+        # (interrupt, disconnect, a prompt sent at the parked turn) found no card to
+        # settle, so the request must not create one afterwards (#1504 shape).
+        self._deny_gen: dict[str, int] = {}
 
     def _pend(self, session_id, turn_id, tool, input, *, mode, identity, always_allowed,
               items, parent_tool_use_id=None) -> tuple[str, asyncio.Future]:
@@ -159,8 +164,17 @@ class PermissionRegistry:
                  session_id, tool, mode, pid, always_allowed)
         return pid, fut
 
-    async def _rule_allows(self, session_id, tool, input) -> bool:
-        return self.rule_gate is not None and await self.rule_gate.match(session_id, tool, input) is not None
+    async def _rule_allows(self, session_id, tool, input) -> bool | None:
+        """True when a standing rule covers the request, False when not, None when a
+        deny_all for *session_id* ran while the gate was being consulted (the caller
+        must then settle the request denied without creating a card)."""
+        if self.rule_gate is None:
+            return False
+        gen = self._deny_gen.get(session_id, 0)
+        hit = await self.rule_gate.match(session_id, tool, input)
+        if self._deny_gen.get(session_id, 0) != gen:
+            return None
+        return hit is not None
 
     def suggestions_for(self, perm_id) -> list[dict]:
         """Standing-rule patterns the card for *perm_id* offers (empty once resolved)."""
@@ -213,8 +227,9 @@ class PermissionRegistry:
             # annotation — forward-compatible with tools Task 3.3 adds later).
             # Standing rules are honoured in EVERY mode, INCLUDING "interactive": a rule
             # is an explicit human decision (spec 2026-10-11 §3.1).
-            if await self._rule_allows(session_id, tool, input):
-                return None, _resolved(True), True
+            allowed = await self._rule_allows(session_id, tool, input)
+            if allowed is not False:  # True: a rule covers it; None: denied meanwhile
+                return None, _resolved(allowed is True), True
             pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
                                   identity=identity, always_allowed=True, items=items,
                                   parent_tool_use_id=parent_tool_use_id)
@@ -263,8 +278,10 @@ class PermissionRegistry:
         # it is an explicit human decision (spec 2026-10-11 §3.1), unlike the old
         # per-session grant cache that "ask each time" overrode. Only reached where a
         # card would otherwise be created.
-        if tool not in _NEVER_RULED and await self._rule_allows(session_id, tool, input):
-            return None, _resolved(True), True
+        if tool not in _NEVER_RULED:
+            allowed = await self._rule_allows(session_id, tool, input)
+            if allowed is not False:  # True: a rule covers it; None: denied meanwhile
+                return None, _resolved(allowed is True), True
         pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
                               identity=identity, always_allowed=True, items=items,
                               parent_tool_use_id=parent_tool_use_id)
@@ -376,6 +393,7 @@ class PermissionRegistry:
         # could read one would otherwise keep its entry for the life of the process.
         for pid in [p for p, (sid, _) in self._deny_reasons.items() if sid == session_id]:
             del self._deny_reasons[pid]
+        self._deny_gen[session_id] = self._deny_gen.get(session_id, 0) + 1
         n = 0
         for pid in [p for p, r in self._pending.items() if r["session_id"] == session_id]:
             rec = self._pending.pop(pid)
