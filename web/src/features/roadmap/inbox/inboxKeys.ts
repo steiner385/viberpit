@@ -28,7 +28,7 @@ export interface InboxState {
   cursor: number
   /** The row the cursor is on, by identity. The source of truth. */
   cursorId: string | null
-  /** Proposal ids toggled with `x`, accepted together by `A` or rejected by `R`. */
+  /** Proposal ids toggled with `x`, swept together by `A`, `R` or `D`. */
   selected: Set<string>
   /**
    * The last row ticked WITHOUT shift — the pivot a shift-click range extends

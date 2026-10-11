@@ -257,6 +257,23 @@ describe('AutomationPolicyCard', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(legendFor(screen.getByLabelText('Not yet categorized'))).toBe('Dispatch')
   })
+
+  it('groups the triage dials (#2908) under Gates, with the server schema defaults', () => {
+    Object.assign(h.schema, { data: [
+      ...SCHEMA,
+      { key: 'triage_auto_accept_repeat', label: 'Auto-accept after repeats', type: 'int', default: 3, help: '0 = off', choices: null },
+      { key: 'triage_dismiss_bot_artifacts', label: 'Dismiss bot artifacts', type: 'bool', default: true, help: '', choices: null },
+      { key: 'triage_bot_artifact_patterns', label: 'Bot artifact patterns', type: 'string-list', default: [], help: '', choices: null },
+    ] })
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
+    const repeat = screen.getByLabelText('Auto-accept after repeats')
+    expect(legendFor(repeat)).toBe('Gates')
+    expect(repeat).toHaveValue(3)
+    const dismissBots = screen.getByLabelText('Dismiss bot artifacts')
+    expect(legendFor(dismissBots)).toBe('Gates')
+    expect(dismissBots).toBeChecked()
+    expect(legendFor(screen.getByLabelText('Bot artifact patterns'))).toBe('Gates')
+  })
 })
 
 

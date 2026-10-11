@@ -17,8 +17,8 @@ vi.mock('@/api/client', () => ({
 import { api } from '@/api/client'
 import { fetchHolds } from '@/api/roadmap'
 import {
-  acceptDecision, fetchDecisions, fetchTriage, isDecisionProposal, isTriageProposal,
-  rejectDecision,
+  acceptDecision, dismissBulk, dismissProposal, fetchDecisions, fetchTriage, isDecisionProposal,
+  isTriageProposal, rejectDecision,
 } from '@/api/triage'
 
 const get = vi.mocked(api.get)
@@ -65,6 +65,17 @@ describe('inbox fetchers', () => {
     const v = await fetchHolds()
     expect(v.products).toEqual([])
     expect(v.held).toEqual([])
+  })
+
+  it('dismisses one proposal, with an optional reason, and many in one sweep', async () => {
+    post.mockResolvedValue({ id: 'p 1', status: 'dismissed', workItemId: 'w1' })
+    await dismissProposal('p 1')
+    expect(post).toHaveBeenLastCalledWith('/pm/triage/p%201/dismiss', undefined)
+    await dismissProposal('p1', 'bot noise')
+    expect(post).toHaveBeenLastCalledWith('/pm/triage/p1/dismiss', { reason: 'bot noise' })
+    post.mockResolvedValue({ dismissed: 2, results: [] })
+    await dismissBulk(['a', 'b'])
+    expect(post).toHaveBeenLastCalledWith('/pm/triage/dismiss-bulk', { ids: ['a', 'b'] })
   })
 
   it('answers empty lists without inventing rows', async () => {

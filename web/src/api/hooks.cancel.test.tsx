@@ -18,7 +18,7 @@ import {
   useCancelReauth, useCancelAddAccount,
   useCreateSession, useDispatchBacklogGroup, useConsolidate,
   useAdvanceInitiative, useCreateInitiative, useCreateProject, useSyncProject,
-  useProposeMap, useClassify, useAcceptProposal, useRejectProposal,
+  useProposeMap, useClassify, useAcceptProposal, useRejectProposal, useDismissProposal,
 } from './hooks'
 
 // Mock sonner so toast.error is a spy we can assert on.
@@ -143,6 +143,7 @@ describe('optimistic triage mutations toast exactly once', () => {
   const cases: [string, () => { mutate: (v: never) => void; isError: boolean }][] = [
     ['useAcceptProposal', () => useAcceptProposal()],
     ['useRejectProposal', () => useRejectProposal()],
+    ['useDismissProposal', () => useDismissProposal()],
   ]
 
   it.each(cases)('%s toasts its own message and only its own', async (_name, useHook) => {

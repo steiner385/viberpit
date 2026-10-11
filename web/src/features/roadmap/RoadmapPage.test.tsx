@@ -81,6 +81,7 @@ vi.mock('@/api/hooks', () => ({
   useDecisions: () => decisions,
   useAcceptProposal: (slug?: string) => { acceptScope(slug); return accept },
   useRejectProposal: () => reject,
+  useDismissProposal: () => ({ mutate: vi.fn(), isPending: false }),
   useAcceptDecision: () => acceptDecision,
   useRejectDecision: () => ({ mutate: vi.fn(), isPending: false }),
   // The product Overview's hygiene notice — no data, so it renders nothing.

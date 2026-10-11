@@ -325,6 +325,13 @@ describe('shortcuts registry — roadmap-inbox', () => {
     expect(resolve({ key: 'r' })).toBe('inbox.reject')
   })
 
+  it('keeps `d` (dismiss one) and Shift+D (dismiss the selection) apart too', () => {
+    expect(resolve({ key: 'd' })).toBe('inbox.dismiss')
+    expect(resolve({ key: 'D', shiftKey: true })).toBe('inbox.dismissSelected')
+    // List mode's `d` is delete; the inbox's never leaks into it.
+    expect(matchShortcut(ev({ key: 'd' }), inGroup('list-mode'))?.id).toBe('list.delete')
+  })
+
   it('never fires under a Ctrl/Meta/Alt chord that belongs to the browser', () => {
     expect(resolve({ key: 'a', ctrlKey: true })).toBeUndefined()   // Ctrl+A: select all
     expect(resolve({ key: 'r', metaKey: true })).toBeUndefined()   // ⌘R: reload

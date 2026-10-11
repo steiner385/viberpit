@@ -1,7 +1,11 @@
 /**
  * The Inbox scope of the Roadmap list column (finish-line §4.3, roadmap spec
- * §12): the pending proposals, grouped by product, with the j/k a r e x A R key
- * map and the bulk bar re-homed from the old standalone Triage page.
+ * §12): the pending proposals, grouped by product, with the j/k a r d e x A R D
+ * key map and the bulk bar re-homed from the old standalone Triage page.
+ *
+ * Two different "no"s: `r` / Reject parks the item for its owner under an
+ * owner-action hold; `d` / Dismiss says "not roadmap work" and resolves it with
+ * no hold. Dismiss is classification-only — a decision's refusal IS its reject.
  *
  * Since spec 2026-09-18 §6 the queue carries TWO kinds — classification
  * proposals and decision proposals — through one ordering spec and one key map.
@@ -51,9 +55,13 @@ import {
   isDecisionProposal, isTriageProposal, type InboxProposal, type TriageProposal,
 } from '@/api/triage'
 import {
-  useAcceptBulk, useAcceptProposal, useRejectBulk, useRejectDecision, useRejectProposal,
-  useTriageLive,
+  useAcceptBulk, useAcceptProposal, useDismissBulk, useDismissProposal, useRejectBulk,
+  useRejectDecision, useRejectProposal, useTriageLive,
 } from '@/api/hooks'
+import { relTime } from '@/lib/relativeTime'
+import { useNow } from '@/hooks/useNow'
+import { cn } from '@/lib/utils'
+import { useConfirm } from '@/ui/useConfirm'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { BulkActionBar } from '@/ui/list/BulkActionBar'
 import { SELECT_CHECKBOX_CLS } from '@/ui/list/SelectableRow'
@@ -66,7 +74,7 @@ import { Skeleton } from '@/ui/Skeleton'
 import { useItemOrdering } from '@/session/useSessionOrdering'
 import { overlayIsOpen } from '@/shell/useOverlayState'
 import { inGroup, matchShortcut } from '@/shell/shortcuts'
-import { PRODUCT, ROADMAP } from '@/features/products/vocab'
+import { PRODUCT, ROADMAP, TRIAGE_NO_HINT } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { proposalKey } from '../roadmapNavState'
 import { INBOX_LOAD_ERROR } from './inboxErrors'
@@ -75,7 +83,9 @@ import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
 import { InboxStarvationNotice } from './InboxStarvationNotice'
 import { ProposalCard } from './ProposalCard'
-import { isPending, pendingProposals } from './triageSelectors'
+import {
+  highConfidenceAcceptable, inboxAging, isItemGone, isPending, pendingProposals,
+} from './triageSelectors'
 
 export interface InboxScopeBodyProps {
   proposals: readonly InboxProposal[]
@@ -101,10 +111,22 @@ export function InboxScopeBody({
   useTriageLive()
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
+  // A row whose work item already closed or merged has nothing left to decide;
+  // it leaves the list now rather than when the server's tick resolves it.
+  const live = useMemo(() => proposals.filter((p) => !isItemGone(p)), [proposals])
   const visible = useMemo(
-    () => (q ? proposals.filter((p) => haystack(p).includes(q)) : proposals),
-    [proposals, q],
+    () => (q ? live.filter((p) => haystack(p).includes(q)) : live),
+    [live, q],
   )
+  // The header's "N pending · oldest 6d ago" — over the whole scope, not the
+  // search box's slice, so it says how deep the queue really is. `useNow` keeps
+  // render pure (0 until the first tick, when the age is simply not shown yet);
+  // a minute is plenty for an age measured in days.
+  const now = useNow(60_000)
+  const aging = inboxAging(live, now)
+  const oldestLabel = aging.oldestCreatedAt !== null && now > 0
+    ? relTime(aging.oldestCreatedAt, now)
+    : null
   const ordering = useItemOrdering(visible, INBOX_ORDERING_SPEC)
   const ordered = ordering.orderedSessions
   const ids = useMemo(() => ordered.map((p) => p.id), [ordered])
@@ -162,14 +184,26 @@ export function InboxScopeBody({
   const accept = useAcceptProposal(product ?? undefined)
   const reject = useRejectProposal(product ?? undefined)
   const rejectDecision = useRejectDecision()
+  const dismiss = useDismissProposal(product ?? undefined)
   const bulk = useAcceptBulk(product ?? undefined)
   const bulkReject = useRejectBulk(product ?? undefined)
+  const bulkDismiss = useDismissBulk(product ?? undefined)
   const acceptMutate = accept.mutate
   const rejectMutate = reject.mutate
+  const dismissMutate = dismiss.mutate
   const rejectDecisionMutate = rejectDecision.mutate
   const bulkMutate = bulk.mutate
   const bulkRejectMutate = bulkReject.mutate
-  const sweeping = bulk.isPending || bulkReject.isPending
+  const bulkDismissMutate = bulkDismiss.mutate
+  const sweeping = bulk.isPending || bulkReject.isPending || bulkDismiss.isPending
+  const { confirm, dialog: confirmDialog } = useConfirm()
+
+  // "Accept all high-confidence": the rows on screen (scope + search) that the
+  // classifier rated high AND homed on a real capability (`triageSelectors`).
+  const highConfidenceIds = useMemo(
+    () => highConfidenceAcceptable(visible).map((p) => p.id),
+    [visible],
+  )
 
   // A single accept/reject takes its row out of the list, so it takes the row
   // out of the SELECTION too: a later `A` resending the id gets `not_pending`
@@ -186,6 +220,12 @@ export function InboxScopeBody({
     else rejectMutate({ id: p.id })
     dispatch({ type: 'deselect', id: p.id })
   }, [rejectMutate, rejectDecisionMutate])
+  // Dismiss is classification-only: a decision has no "not roadmap work" route
+  // (refusing its options IS its reject).
+  const dismissOne = useCallback((p: TriageProposal) => {
+    dismissMutate({ id: p.id })
+    dispatch({ type: 'deselect', id: p.id })
+  }, [dismissMutate])
   // Cleared on SUCCESS, not on dispatch: a failed sweep rolls the rows back,
   // and a selection cleared ahead of that leaves them restored but unselected.
   // The `pendingIds` filter is belt to the prune effect's braces: the prune
@@ -197,13 +237,33 @@ export function InboxScopeBody({
     if (sel.length === 0) return
     bulkMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
   }, [bulkMutate, state.selected, pendingIds])
-  // The reject twin — same filter, same clear-on-success, its own endpoint.
+  // The reject and dismiss twins — same filter, same clear-on-success, their
+  // own endpoints.
   const rejectSelected = useCallback(() => {
     const stillPending = new Set(pendingIds)
     const sel = [...state.selected].filter((id) => stillPending.has(id))
     if (sel.length === 0) return
     bulkRejectMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
   }, [bulkRejectMutate, state.selected, pendingIds])
+  const dismissSelected = useCallback(() => {
+    const stillPending = new Set(pendingIds)
+    const sel = [...state.selected].filter((id) => stillPending.has(id))
+    if (sel.length === 0) return
+    bulkDismissMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
+  }, [bulkDismissMutate, state.selected, pendingIds])
+  // A sweep of rows the user has not individually ticked, so it asks first and
+  // names the count. Through the same accept-bulk endpoint (and undo toast).
+  const acceptHighConfidence = useCallback(async () => {
+    const n = highConfidenceIds.length
+    if (n === 0) return
+    const ok = await confirm({
+      title: `Accept ${n} high-confidence proposal${n === 1 ? '' : 's'}?`,
+      description: 'Each is accepted as proposed onto the capability the classifier picked. No-fit proposals are left for you.',
+      confirmLabel: `Accept ${n}`,
+      tone: 'warning',
+    })
+    if (ok) bulkMutate(highConfidenceIds)
+  }, [confirm, bulkMutate, highConfidenceIds])
   // "Select all" ticks every selectable row; ticked again with all of them
   // already in, it clears — the `toggleAll` rule the Sessions lists follow.
   const toggleAll = useCallback(() => {
@@ -252,6 +312,12 @@ export function InboxScopeBody({
           if (isDecisionProposal(current)) onOpen(current)
           else rejectOne(current)
           break
+        // Classification rows only: a decision has no dismiss route, and
+        // opening it here would make `d` a second spelling of `a`/`r`.
+        case 'inbox.dismiss':
+          if (!isPending(current) || isDecisionProposal(current)) return
+          dismissOne(current)
+          break
         case 'inbox.edit':
           // Nothing to edit on a decision: the scores are the classifier's.
           if (!isPending(current) || isDecisionProposal(current)) return
@@ -265,6 +331,10 @@ export function InboxScopeBody({
           if (state.selected.size === 0) return
           rejectSelected()
           break
+        case 'inbox.dismissSelected':
+          if (state.selected.size === 0) return
+          dismissSelected()
+          break
         // Every other key is somebody else's; fall through WITHOUT
         // preventDefault so typing, tabbing and browser shortcuts still work.
         default: return
@@ -273,7 +343,10 @@ export function InboxScopeBody({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ids, current, state.selected, acceptOne, rejectOne, acceptSelected, rejectSelected, onOpen])
+  }, [
+    ids, current, state.selected, acceptOne, rejectOne, dismissOne,
+    acceptSelected, rejectSelected, dismissSelected, onOpen,
+  ])
 
   const emptyTitle = q
     ? 'No matches'
@@ -283,6 +356,31 @@ export function InboxScopeBody({
     <ScopeBody
       controls={
         <div className="flex flex-col gap-2">
+          {/* The queue's depth and age: a backlog nobody is draining shows up
+              as an old "oldest", not just a big number. Warning tone past
+              `INBOX_STALE_AFTER_MS`. */}
+          {aging.pending > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p
+                data-testid="inbox-aging"
+                className={cn('text-xs', aging.stale && now > 0 ? 'font-medium text-warning' : 'text-ink-muted')}
+              >
+                {aging.pending} pending
+                {oldestLabel !== null && (
+                  <span title={aging.oldestCreatedAt ?? undefined}> · oldest {oldestLabel}</span>
+                )}
+              </p>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => { void acceptHighConfidence() }}
+                disabled={highConfidenceIds.length === 0 || sweeping}
+              >
+                Accept all high-confidence ({highConfidenceIds.length})
+              </Button>
+            </div>
+          )}
           <SessionListControls<InboxGroupBy, InboxSortBy>
             groupBy={ordering.groupBy}
             sortBy={ordering.sortBy}
@@ -329,10 +427,11 @@ export function InboxScopeBody({
                 <>
                   {' '}<Kbd keys="a" /> accept ·
                   {' '}<Kbd keys="e" /> edit · <Kbd keys="r" /> reject ·
-                  {' '}<Kbd keys="x" /> select ·
+                  {' '}<Kbd keys="d" /> dismiss · <Kbd keys="x" /> select ·
                 </>
               )}
-            {' '}<Kbd keys="A" /> accept selected · <Kbd keys="R" /> reject selected
+            {' '}<Kbd keys="A" /> accept selected · <Kbd keys="R" /> reject selected ·
+            {' '}<Kbd keys="D" /> dismiss selected
           </p>
           {/* The header tick, over the rows a sweep can act on — hidden when
               there are none, since a tick that can select nothing is a lie. */}
@@ -366,11 +465,30 @@ export function InboxScopeBody({
               {/* Not styled as destructive: a reject parks the item under an
                   owner-action hold and the sweep's toast can undo it, unlike
                   the archive list's Delete. */}
-              <Button type="button" variant="secondary" size="lg" onClick={rejectSelected} disabled={sweeping}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="lg"
+                onClick={rejectSelected}
+                disabled={sweeping}
+                title={TRIAGE_NO_HINT.reject}
+              >
                 Reject selected ({state.selected.size})
+              </Button>
+              {/* Ghost, the quieter "no": not roadmap work, no hold. */}
+              <Button
+                type="button"
+                variant="ghost"
+                size="lg"
+                onClick={dismissSelected}
+                disabled={sweeping}
+                title={TRIAGE_NO_HINT.dismiss}
+              >
+                Dismiss selected ({state.selected.size})
               </Button>
             </BulkActionBar>
           )}
+          {confirmDialog}
         </div>
       }
     >

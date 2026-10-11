@@ -23,6 +23,8 @@ vi.mock('@/api/triage', async (importOriginal) => {
     rejectProposal: vi.fn(),
     acceptBulk: vi.fn(),
     rejectBulk: vi.fn(),
+    dismissProposal: vi.fn(),
+    dismissBulk: vi.fn(),
     updateOverlay: vi.fn(),
     undoProposal: vi.fn(),
     fetchDecisions: vi.fn(),
@@ -34,8 +36,9 @@ vi.mock('@/api/triage', async (importOriginal) => {
 import { toast } from 'sonner'
 import {
   QK, useAcceptProposal, useAcceptBulk, useRejectBulk, useAcceptDecision, useRejectDecision,
-  useUpdateOverlay, useUndoProposal,
+  useUpdateOverlay, useUndoProposal, useDismissProposal, useDismissBulk, useRejectProposal,
 } from '@/api/hooks'
+import { ApiRequestError } from '@/api/client'
 import * as triage from '@/api/triage'
 
 const mocked = vi.mocked(triage)
@@ -202,6 +205,98 @@ describe('useRejectBulk', () => {
       rejected: 0, results: [{ id: 'p1', ok: false, error: 'not_pending' }],
     })
     const { result } = renderHook(() => useRejectBulk(), { wrapper: makeWrapper(qc) })
+    await act(async () => { result.current.mutate(['p1']) })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+})
+
+describe('useDismissProposal', () => {
+  it('removes the row now, and on a server without the route (404) restores it with one toast', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    let release: (() => void) | undefined
+    mocked.dismissProposal.mockImplementationOnce(
+      () => new Promise((_res, rej) => { release = () => rej(new ApiRequestError(404, { detail: 'Not Found' })) }),
+    )
+    const { result } = renderHook(() => useDismissProposal(), { wrapper: makeWrapper(qc) })
+    act(() => result.current.mutate({ id: 'p1' }))
+    await waitFor(() => expect(rowIds(qc)).toEqual(['p2']))
+    await act(async () => { release?.() })
+    await waitFor(() => expect(rowIds(qc)).toEqual(['p1', 'p2']))
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('a landed dismiss offers the same 6 s Undo through the one undo endpoint', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    mocked.dismissProposal.mockResolvedValueOnce({ id: 'p1', status: 'dismissed', workItemId: 'w1' })
+    const { result } = renderHook(() => useDismissProposal(), { wrapper: makeWrapper(qc) })
+    await act(async () => { await result.current.mutateAsync({ id: 'p1' }) })
+    expect(mocked.dismissProposal).toHaveBeenCalledWith('p1')
+    expect(mocked.rejectProposal).not.toHaveBeenCalled()
+    expect(rowIds(qc)).toEqual(['p2'])
+    expect(toast.success).toHaveBeenCalledWith(
+      'Dismissed', expect.objectContaining({ duration: 6000, action: expect.objectContaining({ label: 'Undo' }) }),
+    )
+    mocked.undoProposal.mockResolvedValueOnce({ id: 'p1', status: 'pending', workItemId: 'w1', triageState: 'proposed' })
+    const call = vi.mocked(toast.success).mock.calls.at(-1)![1] as unknown as { action: { onClick: () => void } }
+    await act(async () => { call.action.onClick() })
+    expect(mocked.undoProposal).toHaveBeenCalledWith('p1')
+  })
+
+  it('reject keeps its own endpoint and its own toast', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    mocked.rejectProposal.mockResolvedValueOnce({ id: 'p1', status: 'rejected' })
+    const { result } = renderHook(() => useRejectProposal(), { wrapper: makeWrapper(qc) })
+    await act(async () => { await result.current.mutateAsync({ id: 'p1' }) })
+    expect(mocked.rejectProposal).toHaveBeenCalledWith('p1')
+    expect(mocked.dismissProposal).not.toHaveBeenCalled()
+    expect(toast.success).toHaveBeenCalledWith('Rejected', expect.anything())
+  })
+})
+
+describe('useDismissBulk', () => {
+  it('drops every selected row and rolls all of them back on failure', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    let release: (() => void) | undefined
+    mocked.dismissBulk.mockImplementationOnce(
+      () => new Promise((_res, rej) => { release = () => rej(new ApiRequestError(405, { detail: 'Method Not Allowed' })) }),
+    )
+    const { result } = renderHook(() => useDismissBulk(), { wrapper: makeWrapper(qc) })
+    act(() => result.current.mutate(['p1', 'p2']))
+    await waitFor(() => expect(rowIds(qc)).toEqual([]))
+    await act(async () => { release?.() })
+    await waitFor(() => expect(rowIds(qc)).toEqual(['p1', 'p2']))
+    expect(toast.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports how many were dismissed, with an undo over only the landed ids', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    mocked.dismissBulk.mockResolvedValueOnce({
+      dismissed: 1, results: [{ id: 'p1', ok: true }, { id: 'p2', ok: false, error: 'not_pending' }],
+    })
+    mocked.undoProposal.mockResolvedValue({ id: 'p1', status: 'pending', workItemId: 'w1', triageState: 'proposed' })
+    const { result } = renderHook(() => useDismissBulk(), { wrapper: makeWrapper(qc) })
+    await act(async () => { result.current.mutate(['p1', 'p2']) })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mocked.dismissBulk).toHaveBeenCalledWith(['p1', 'p2'])
+    expect(toast.success).toHaveBeenCalledWith('Dismissed 1', expect.objectContaining({ duration: 6000 }))
+    const call = vi.mocked(toast.success).mock.calls.at(-1)!
+    await act(async () => { (call[1] as unknown as { action: { onClick: () => void } }).action.onClick() })
+    await waitFor(() => expect(mocked.undoProposal).toHaveBeenCalledTimes(1))
+    expect(mocked.undoProposal).toHaveBeenCalledWith('p1')
+  })
+
+  it('says nothing when the sweep landed nothing', async () => {
+    const qc = makeClient()
+    seedRows(qc)
+    mocked.dismissBulk.mockResolvedValueOnce({ dismissed: 0, results: [{ id: 'p1', ok: false, error: 'not_pending' }] })
+    const { result } = renderHook(() => useDismissBulk(), { wrapper: makeWrapper(qc) })
     await act(async () => { result.current.mutate(['p1']) })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(toast.success).not.toHaveBeenCalled()

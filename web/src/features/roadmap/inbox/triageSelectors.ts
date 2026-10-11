@@ -25,13 +25,31 @@
  * shares the word.
  */
 
-/** The only thing either kind of row must carry to be asked this question. */
-interface HasStatus { status: string }
+import { isTriageProposal, type InboxProposal, type TriageProposal } from '@/api/triage'
+import { isValidTimestamp } from '@/lib/relativeTime'
+
+/** The only thing either kind of row must carry to be asked this question.
+ *  `itemState` is the classification row's work-item state (decision rows have
+ *  none, which reads as "still open"). */
+interface HasStatus { status: string; itemState?: string | null }
+
+/** Work-item states that leave nothing to triage. */
+const GONE_ITEM_STATES: ReadonlySet<string> = new Set(['closed', 'merged'])
+
+/**
+ * Is this row's work item already closed or merged? The server's tick resolves
+ * such a proposal eventually; until it does, the inbox must not ask a human to
+ * decide it — so it neither counts as pending nor stays in the list.
+ */
+export function isItemGone<T extends HasStatus>(p: T | null | undefined): boolean {
+  return p?.itemState != null && GONE_ITEM_STATES.has(p.itemState)
+}
 
 /** Is this one proposal still awaiting a human? The ONE `'pending'` literal.
- *  Takes null/undefined because a detail pane renders before its row arrives. */
+ *  Takes null/undefined because a detail pane renders before its row arrives.
+ *  A row whose work item is closed/merged is NOT pending (`isItemGone`). */
 export function isPending<T extends HasStatus>(p: T | null | undefined): p is T {
-  return p?.status === 'pending'
+  return p?.status === 'pending' && !isItemGone(p)
 }
 
 /**
@@ -43,4 +61,55 @@ export function isPending<T extends HasStatus>(p: T | null | undefined): p is T 
  */
 export function pendingProposals<T extends HasStatus>(rows: readonly T[]): T[] {
   return rows.filter((p): p is T => isPending(p))
+}
+
+/** Past this, the oldest pending proposal is overdue and the header warns. */
+export const INBOX_STALE_AFTER_MS = 2 * 86_400_000
+
+export interface InboxAging {
+  /** How many rows await a human (`pendingProposals`). */
+  pending: number
+  /** `createdAt` of the oldest pending row with a usable timestamp, or null. */
+  oldestCreatedAt: string | null
+  /** `now − oldestCreatedAt`, clamped at 0; null when there is no oldest. */
+  oldestAgeMs: number | null
+  /** The oldest has waited longer than `INBOX_STALE_AFTER_MS`. */
+  stale: boolean
+}
+
+/**
+ * The queue's size and how long its oldest row has waited — the inbox header's
+ * "142 pending · oldest 6d ago". Over BOTH card kinds, through `isPending`, so
+ * it can never disagree with the nav badge about the count.
+ */
+export function inboxAging<T extends HasStatus & { createdAt: string | null }>(
+  rows: readonly T[], now: number,
+): InboxAging {
+  const pending = pendingProposals(rows)
+  let oldest: string | null = null
+  let oldestMs = Infinity
+  for (const p of pending) {
+    if (!isValidTimestamp(p.createdAt)) continue
+    const t = new Date(p.createdAt).getTime()
+    if (t < oldestMs) { oldestMs = t; oldest = p.createdAt }
+  }
+  const oldestAgeMs = oldest === null ? null : Math.max(0, now - oldestMs)
+  return {
+    pending: pending.length,
+    oldestCreatedAt: oldest,
+    oldestAgeMs,
+    stale: oldestAgeMs !== null && oldestAgeMs > INBOX_STALE_AFTER_MS,
+  }
+}
+
+/**
+ * The rows "Accept all high-confidence" may sweep: pending CLASSIFICATION
+ * proposals the classifier rated `high` AND homed on a real capability. A
+ * no-fit proposal has no `proposedFeatureId` — accepting it as proposed homes
+ * the item nowhere — and a decision cannot be bulk-accepted at all.
+ */
+export function highConfidenceAcceptable(rows: readonly InboxProposal[]): TriageProposal[] {
+  return pendingProposals(rows)
+    .filter(isTriageProposal)
+    .filter((p) => p.confidenceLevel === 'high' && p.proposedFeatureId != null)
 }

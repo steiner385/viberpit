@@ -22,11 +22,15 @@ const bulk = vi.fn()
 const bulkReject = vi.fn()
 const undo = vi.fn()
 const rejectDecision = vi.fn()
+const dismiss = vi.fn()
+const bulkDismiss = vi.fn()
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: () => ({ mutate: accept, isPending: false }),
   useRejectProposal: () => ({ mutate: reject, isPending: false }),
+  useDismissProposal: () => ({ mutate: dismiss, isPending: false }),
   useAcceptBulk: () => ({ mutate: bulk, isPending: false }),
   useRejectBulk: () => ({ mutate: bulkReject, isPending: false }),
+  useDismissBulk: () => ({ mutate: bulkDismiss, isPending: false }),
   useRejectDecision: () => ({ mutate: rejectDecision, isPending: false }),
   useTriageLive: () => undefined,
   useHolds: () => ({ data: undefined }),
@@ -35,7 +39,12 @@ vi.mock('@/api/hooks', () => ({
   useUndoProposal: () => ({ mutate: undo, isPending: false }),
 }))
 const overlayOpen = vi.fn(() => false)
-vi.mock('@/shell/useOverlayState', () => ({ overlayIsOpen: () => overlayOpen() }))
+// Partial: the confirm dialog (Accept all high-confidence) registers itself
+// through the real overlay stack.
+vi.mock('@/shell/useOverlayState', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/shell/useOverlayState')>()),
+  overlayIsOpen: () => overlayOpen(),
+}))
 
 const p = (over: Partial<TriageProposal> & { id: string }): TriageProposal => ({
   proposalKind: 'triage',
@@ -89,7 +98,7 @@ const scrollIntoView = vi.fn()
 describe('InboxScopeBody', () => {
   beforeEach(() => {
     accept.mockReset(); reject.mockReset(); bulk.mockReset(); bulkReject.mockReset(); undo.mockReset()
-    rejectDecision.mockReset()
+    rejectDecision.mockReset(); dismiss.mockReset(); bulkDismiss.mockReset()
     overlayOpen.mockReturnValue(false)
     localStorage.clear()
     clearInboxOrder()
@@ -234,6 +243,124 @@ describe('InboxScopeBody', () => {
     mount()
     fireEvent.keyDown(window, { key: 'R' })
     expect(bulkReject).not.toHaveBeenCalled()
+  })
+
+  it('d dismisses the cursor row — its own endpoint, never reject', () => {
+    mount()
+    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'd' })
+    expect(dismiss).toHaveBeenCalledWith({ id: 'Third' })
+    expect(reject).not.toHaveBeenCalled()
+  })
+
+  it('d does nothing on a non-pending row', () => {
+    mount({ proposals: [p({ id: 'First', status: 'accepted', classifiedBy: 'auto' }), p({ id: 'Second' })] })
+    fireEvent.keyDown(window, { key: 'd' })
+    expect(dismiss).not.toHaveBeenCalled()
+  })
+
+  it('D dismisses exactly the selection, and the bar has the same button', () => {
+    mount()
+    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(window, { key: 'D' })
+    expect(bulkDismiss).toHaveBeenCalledTimes(1)
+    expect(bulkDismiss.mock.calls[0][0]).toEqual(['First', 'Third'])
+    expect(bulkReject).not.toHaveBeenCalled()
+    const btn = screen.getByRole('button', { name: /Dismiss selected/ })
+    // The copy says what makes it different from Reject.
+    expect(btn).toHaveAttribute('title', 'Not roadmap work — resolve without a hold')
+    fireEvent.click(btn)
+    expect(bulkDismiss).toHaveBeenCalledTimes(2)
+  })
+
+  it('D with nothing selected dismisses nothing', () => {
+    mount()
+    fireEvent.keyDown(window, { key: 'D' })
+    expect(bulkDismiss).not.toHaveBeenCalled()
+  })
+
+  describe('aging header', () => {
+    const ago = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString()
+
+    // The age arrives on `useNow`'s first tick (render stays pure), hence waitFor.
+    it('shows the pending count and the oldest age, in a warning tone past two days', async () => {
+      mount({ proposals: [p({ id: 'First', createdAt: ago(1) }), p({ id: 'Third', createdAt: ago(6) })] })
+      const line = screen.getByTestId('inbox-aging')
+      await vi.waitFor(() => expect(line).toHaveTextContent('2 pending · oldest 6d ago'))
+      expect(line).toHaveClass('text-warning')
+    })
+
+    it('is quiet while the oldest is under two days', async () => {
+      mount({ proposals: [p({ id: 'First', createdAt: ago(1) })] })
+      const line = screen.getByTestId('inbox-aging')
+      await vi.waitFor(() => expect(line).toHaveTextContent('1 pending · oldest 1d ago'))
+      expect(line).not.toHaveClass('text-warning')
+    })
+
+    it('counts only pending rows, and is absent for an empty queue', () => {
+      const { rerender } = mount({
+        proposals: [p({ id: 'First' }), p({ id: 'Auto', status: 'accepted', classifiedBy: 'auto' })],
+      })
+      expect(screen.getByTestId('inbox-aging')).toHaveTextContent(/^1 pending$/)
+      rerender({ proposals: [] })
+      expect(screen.queryByTestId('inbox-aging')).toBeNull()
+    })
+  })
+
+  it('a row whose work item closed or merged leaves the list and the count', () => {
+    mount({
+      proposals: [
+        p({ id: 'First' }),
+        p({ id: 'Closed', itemState: 'closed' }),
+        p({ id: 'Merged', itemState: 'merged' }),
+        p({ id: 'Open', itemState: 'open' }),
+      ],
+    })
+    expect(screen.queryByTestId('row-proposal:Closed')).toBeNull()
+    expect(screen.queryByTestId('row-proposal:Merged')).toBeNull()
+    expect(screen.getByTestId('row-proposal:Open')).toBeInTheDocument()
+    expect(screen.getByTestId('inbox-aging')).toHaveTextContent(/^2 pending/)
+    expect(screen.getByText('Select all (2)')).toBeInTheDocument()
+  })
+
+  describe('Accept all high-confidence', () => {
+    const ELIGIBLE = [
+      p({ id: 'First', confidenceLevel: 'high', proposedFeatureId: 'f1' }),
+      p({ id: 'NoFit', confidenceLevel: 'high', proposedFeatureId: null }),
+      p({ id: 'Medium', confidenceLevel: 'medium', proposedFeatureId: 'f1' }),
+      p({ id: 'Third', confidenceLevel: 'high', proposedFeatureId: 'f2' }),
+    ]
+
+    it('is disabled when nothing qualifies', () => {
+      mount() // ROWS: high, but every one is no-fit
+      expect(screen.getByRole('button', { name: 'Accept all high-confidence (0)' })).toBeDisabled()
+    })
+
+    it('confirms with the count, then accepts exactly the eligible rows through accept-bulk', async () => {
+      mount({ proposals: ELIGIBLE })
+      fireEvent.click(screen.getByRole('button', { name: 'Accept all high-confidence (2)' }))
+      expect(bulk).not.toHaveBeenCalled()
+      expect(await screen.findByText('Accept 2 high-confidence proposals?')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Accept 2' }))
+      await vi.waitFor(() => expect(bulk).toHaveBeenCalledTimes(1))
+      expect([...bulk.mock.calls[0][0]].sort()).toEqual(['First', 'Third'])
+    })
+
+    it('a cancelled confirm accepts nothing', async () => {
+      mount({ proposals: ELIGIBLE })
+      fireEvent.click(screen.getByRole('button', { name: 'Accept all high-confidence (2)' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+      await vi.waitFor(() => expect(screen.queryByText('Accept 2 high-confidence proposals?')).toBeNull())
+      expect(bulk).not.toHaveBeenCalled()
+    })
+
+    it('follows the search box — it sweeps what is on screen', async () => {
+      mount({ proposals: ELIGIBLE })
+      fireEvent.change(screen.getByLabelText('Search inbox'), { target: { value: 'third' } })
+      expect(screen.getByRole('button', { name: 'Accept all high-confidence (1)' })).toBeEnabled()
+    })
   })
 
   it('Select all ticks every selectable row, and again clears them', () => {
@@ -470,6 +597,13 @@ describe('InboxScopeBody', () => {
       fireEvent.keyDown(window, { key: 'x' })
       fireEvent.keyDown(window, { key: 'A' })
       expect(bulk).toHaveBeenCalledWith(['First'], expect.anything())
+    })
+
+    it('d is inert on a decision — it has no dismiss route', () => {
+      const { onOpen } = mount({ proposals: MIXED })
+      fireEvent.keyDown(window, { key: 'd' })
+      expect(dismiss).not.toHaveBeenCalled()
+      expect(onOpen).not.toHaveBeenCalled()
     })
 
     it('search reaches a decision by its option labels', () => {
