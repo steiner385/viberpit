@@ -35,6 +35,9 @@ vi.mock('@/features/sessions/browser/BrowserTab', () => ({
 vi.mock('@/api/hooks', () => ({
   // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
   useSessionMcp: vi.fn(() => ({ data: undefined })),
+  // Per-session standing rules readout (SessionBody → SessionMeta rulesSlot).
+  usePermissionRules: vi.fn(() => ({ data: [] })),
+  useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useModels: () => ({ data: [] }),
   useAccounts: () => ({ data: [] }),

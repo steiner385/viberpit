@@ -5,35 +5,25 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ApiRequestError, apiErrorCode } from '@/api/client'
-import { usePermissionRules, useUpdatePermissionRule, useRevokePermissionRule } from '@/api/hooks'
+import { apiErrorCode } from '@/api/client'
+import { usePermissionRules, useUpdatePermissionRule } from '@/api/hooks'
 import type { RuleWire } from '@/api/types'
 import { relTime, isValidTimestamp } from '@/lib/relativeTime'
 import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
-import { useConfirm } from '@/ui/useConfirm'
-
-interface Detail { message?: string; reasons?: string[] }
-
-function detailOf(err: unknown): Detail {
-  const body = err instanceof ApiRequestError ? err.body : null
-  const d = body?.detail
-  return typeof d === 'object' && d !== null ? (d as Detail) : {}
-}
+import { detailOf, useRevokeRule } from './useRevokeRule'
 
 const when = (iso: string | null) => (isValidTimestamp(iso) ? relTime(iso) : 'never')
 
 function RuleRow({ rule }: { rule: RuleWire }) {
   const update = useUpdatePermissionRule()
-  const revoke = useRevokePermissionRule()
-  const { confirm, dialog } = useConfirm()
+  const { onRevoke, revokeError, dialog } = useRevokeRule(rule.id)
   const [editing, setEditing] = useState(false)
   const [pattern, setPattern] = useState(rule.pattern)
   const [error, setError] = useState<string | null>(null)
   // Set => awaiting explicit confirm, but only for the exact pattern the server reviewed.
   const [needsConfirm, setNeedsConfirm] = useState<{ pattern: string; reasons: string[] } | null>(null)
   const reasons = needsConfirm && needsConfirm.pattern === pattern ? needsConfirm.reasons : null
-  const [revokeError, setRevokeError] = useState<string | null>(null)
 
   const close = () => { setEditing(false); setError(null); setNeedsConfirm(null) }
   const save = async (confirmed: boolean) => {
@@ -52,22 +42,6 @@ function RuleRow({ rule }: { rule: RuleWire }) {
       setError([d.message, ...(d.reasons ?? [])].filter(Boolean).join(' ') || 'Could not update the rule.')
     }
   }
-  const onRevoke = async () => {
-    const ok = await confirm({
-      title: 'Revoke this rule?',
-      description: 'Revoke this rule? Matching requests will ask again.',
-      confirmLabel: 'Revoke',
-      tone: 'danger',
-    })
-    if (!ok) return
-    setRevokeError(null)
-    try {
-      await revoke.mutateAsync(rule.id)
-    } catch (err) {
-      setRevokeError(detailOf(err).message ?? 'Could not revoke the rule.')
-    }
-  }
-
   return (
     <li data-testid={`rule-${rule.id}`} className="rounded border border-edge px-3 py-2 text-sm space-y-1">
       {editing ? (

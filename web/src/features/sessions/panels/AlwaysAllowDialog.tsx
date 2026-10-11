@@ -5,6 +5,7 @@ import { Input } from '@/ui/Input'
 import { Button } from '@/ui/Button'
 import { ApiRequestError, apiErrorCode } from '@/api/client'
 import type { RulePreview, RuleScope } from '@/api/types'
+import { RULE_SCOPE_LABEL } from './ruleScopeLabel'
 import type { Block } from '@/session/reducer'
 
 type PermBlock = Extract<Block, { kind: 'permission' }>
@@ -117,9 +118,9 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
         value={scope}
         onChange={(s) => edit(() => setScope(s))}
         options={[
-          { value: 'session', label: 'This session' },
-          { value: 'repo', label: 'This repo', disabled: !hasRepo, disabledReason: 'Scratch session — no repo' },
-          { value: 'global', label: 'All sessions' },
+          { value: 'session', label: RULE_SCOPE_LABEL.session },
+          { value: 'repo', label: RULE_SCOPE_LABEL.repo, disabled: !hasRepo, disabledReason: 'Scratch session — no repo' },
+          { value: 'global', label: RULE_SCOPE_LABEL.global },
         ]}
       />
       <p className="text-xs text-ink-muted">Repo and All-sessions rules apply on every host and account.</p>

@@ -13,6 +13,7 @@ import { useSearchParamState } from '@/lib/useSearchParamState'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
 import { StatusBar } from './StatusBar'
+import { DeferredSessionRulesReadout } from './DeferredSessionRulesReadout'
 import { DeferredMcpStatusReadout } from './DeferredMcpStatusReadout'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
 import { SessionPlaceholder } from '@/features/sessions/transcript/SessionPlaceholder'
@@ -112,6 +113,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           backgroundWork={rt.backgroundWork}
           statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
           mcpSlot={<DeferredMcpStatusReadout sessionId={rt.sessionId} account={rt.account} live={rt.state.mcpServers} />}
+          rulesSlot={<DeferredSessionRulesReadout sessionId={rt.sessionId} />}
           exportSlot={<ExportMenu sessionId={rt.sessionId} />}
           actionsSlot={actionsSlot}
           models={models}
