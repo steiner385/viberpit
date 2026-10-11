@@ -315,6 +315,17 @@ codex_user_input_ms = Histogram(
     "Time from a Codex request_user_input request arriving to its answer (ms)",
     labelnames=("outcome",),
 )
+# Turns replay had to supply from ViberPit's own completed-turn sidecar because
+# native `thread/read` history lagged it (#2723, #2933). `kind` is closed:
+# "missing" = native omitted the turn entirely, "settled" = native still reported
+# a turn in progress that the live stream saw finish. Counted once per distinct
+# gap per thread (see server/codex/replay.py), so a reload or scrollback page
+# re-reading the same gap does not inflate it.
+codex_replay_backfilled_turns_total = Counter(
+    "codex_replay_backfilled_turns_total",
+    "Codex turns replay backfilled from the sidecar because native history lagged",
+    labelnames=("kind",),
+)
 codex_dynamic_tool_ms = Histogram(
     "codex_dynamic_tool_ms",
     "Time from a Codex item/tool/call arriving to its result (ms)",

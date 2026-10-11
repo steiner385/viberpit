@@ -452,6 +452,106 @@ async def test_saved_terminal_settles_stale_native_in_progress_turn(tmp_path):
     assert window.events[-1].outcome == 'success'
 
 
+def _gap_records(caplog) -> list[dict]:
+    return [r.fields for r in caplog.records
+            if getattr(r, "event", None) == "codex.replay.gap_backfilled"]
+
+
+@pytest.mark.asyncio
+async def test_restart_then_n_turns_then_reload_shows_every_turn_and_reports_the_gap(
+        tmp_path, caplog):
+    """#2933: native history kept only the pre-restart turns while the daemon ran
+    six more. A reload must show all of them, and the healed gap must be visible."""
+    import logging
+
+    from server.codex import replay as replay_mod
+    from server.codex.turn_history import TurnHistoryStore
+    from server.obs.metrics import codex_replay_backfilled_turns_total as metric
+
+    replay_mod._GAP_LOG.clear()
+    caplog.set_level(logging.INFO, logger="server.codex.replay")
+    before = metric.value("missing")
+    pre_restart = [_turn(f"pre-{i}") for i in range(3)]
+    post_restart = [f"post-{i}" for i in range(6)]
+    store = TurnHistoryStore(tmp_path)
+    for tid in post_restart:
+        store.record("thread-1", tid, [
+            ev.UserMessage(tid, f"prompt {tid}"), ev.TurnStart(tid),
+            ev.TextDelta(tid, f"work {tid}"), ev.TurnEnd(tid),
+        ])
+    client = _FakeClient(list(pre_restart))
+    replay = CodexThreadReplay(client, "thread-1", session_id="s-1",
+                               item_times_path=tmp_path / "thread-1.jsonl")
+
+    window = await replay.window(limit=None, drop_incomplete_turn=True)
+    assert window.total_turns == 9
+    assert [e.turn_id for e in window.events if isinstance(e, ev.TurnStart)] == [
+        *(t["id"] for t in pre_restart), *post_restart]
+    assert metric.value("missing") - before == 6
+    [record] = _gap_records(caplog)
+    assert record == {"session": "s-1", "missing": 6, "settled": 0,
+                      "native_turns": 3, "total_turns": 9}
+
+    # Re-reading the same gap (scrollback, a background sweep) is not a new gap.
+    await replay.window(before=5, limit=2)
+    assert metric.value("missing") - before == 6
+    assert len(_gap_records(caplog)) == 1
+
+    # Native catching up leaves nothing to backfill, and nothing to report.
+    client.turns.extend(_turn(tid) for tid in post_restart)
+    caught_up = await replay.window(limit=None)
+    assert caught_up.total_turns == 9
+    assert metric.value("missing") - before == 6
+    assert len(_gap_records(caplog)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_gap_that_changes_shape_reports_again_and_settles_count_apart(
+        tmp_path, caplog):
+    import logging
+
+    from server.codex import replay as replay_mod
+    from server.codex.turn_history import TurnHistoryStore
+    from server.obs.metrics import codex_replay_backfilled_turns_total as metric
+
+    replay_mod._GAP_LOG.clear()
+    caplog.set_level(logging.INFO, logger="server.codex.replay")
+    missing0, settled0 = metric.value("missing"), metric.value("settled")
+    store = TurnHistoryStore(tmp_path)
+
+    def save(tid: str) -> None:
+        store.record("thread-1", tid, [ev.UserMessage(tid, tid), ev.TurnStart(tid),
+                                       ev.TurnEnd(tid)])
+
+    save("t1")
+    replay = CodexThreadReplay(_FakeClient([_turn("t1", status="inProgress")]), "thread-1",
+                               item_times_path=tmp_path / "thread-1.jsonl")
+    await replay.window(limit=None)
+    assert metric.value("settled") - settled0 == 1
+    assert metric.value("missing") - missing0 == 0
+
+    save("t2")
+    await replay.window(limit=None)
+    assert metric.value("missing") - missing0 == 1
+    assert [(r["missing"], r["settled"]) for r in _gap_records(caplog)] == [(0, 1), (1, 1)]
+
+
+@pytest.mark.asyncio
+async def test_a_reload_with_no_gap_reports_nothing(tmp_path, caplog):
+    import logging
+
+    from server.codex.turn_history import TurnHistoryStore
+
+    caplog.set_level(logging.INFO, logger="server.codex.replay")
+    TurnHistoryStore(tmp_path).record("thread-1", "t1", [
+        ev.UserMessage("t1", "t1"), ev.TurnStart("t1"), ev.TurnEnd("t1"),
+    ])
+    replay = CodexThreadReplay(_FakeClient([_turn("t1")]), "thread-1",
+                               item_times_path=tmp_path / "thread-1.jsonl")
+    await replay.window(limit=None)
+    assert _gap_records(caplog) == []
+
+
 @pytest.mark.asyncio
 async def test_steered_prompts_have_distinct_replay_ids_even_with_identical_text():
     turn = _turn("t1", text="continue")
