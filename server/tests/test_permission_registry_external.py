@@ -7,7 +7,6 @@ one. These tests pin the two behaviours that differ, and the two that must not.
 """
 from __future__ import annotations
 
-import time
 
 import pytest
 
@@ -43,7 +42,7 @@ async def test_external_future_carries_the_raw_decision():
 async def test_external_always_is_honoured_natively_not_cached_locally():
     """"Always allow" must become the ENGINE's session-scoped accept.
 
-    A `self._grants` entry would be a second approval policy that the engine
+    A ViberPit-side entry would be a second approval policy that the engine
     never hears about — the "persistent global exception" Task 4.2 forbids.
     """
     registry = PermissionRegistry()
@@ -51,7 +50,10 @@ async def test_external_always_is_honoured_natively_not_cached_locally():
         "s1", "t1", "Bash", {"command": "ls"}, identity="alice")
     assert registry.resolve(perm_id, "always", "alice") is True
     assert await future == "always"
-    assert registry.is_granted("s1", "Bash", {"command": "ls"}, time.time()) is False
+    # Nothing was persisted: the next identical engine prompt asks again.
+    perm_id2, future2 = await registry.request_external(
+        "s1", "t2", "Bash", {"command": "ls"}, identity="alice")
+    assert not future2.done() and [p["permId"] for p in registry.pending("s1")] == [perm_id2]
 
 
 @pytest.mark.asyncio
@@ -84,12 +86,15 @@ async def test_deny_all_dismisses_an_external_prompt():
 
 
 @pytest.mark.asyncio
-async def test_ordinary_always_still_writes_a_local_grant():
-    """The regression guard for the branch added alongside `raw_decision`."""
+async def test_ordinary_always_allows_once_and_persists_nothing():
+    """Spec 2026-10-11 §3.4: the edge makes a rule; the registry keeps no grant."""
     registry = PermissionRegistry()
     perm_id, future, _ = await registry.request(
         "s1", "t1", "Bash", {"command": "ls"}, mode="interactive",
         denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="alice")
     assert registry.resolve(perm_id, "always", "alice") is True
     assert await future is True
-    assert registry.is_granted("s1", "Bash", {"command": "ls"}, time.time()) is True
+    pid2, _, _ = await registry.request(
+        "s1", "t2", "Bash", {"command": "ls"}, mode="interactive",
+        denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="alice")
+    assert pid2 is not None

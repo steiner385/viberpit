@@ -1,4 +1,4 @@
-import asyncio, time
+import asyncio
 from server.sessions.permissions import PermissionRegistry, to_sdk_permission_mode
 
 # ---------------------------------------------------------------------------
@@ -121,19 +121,19 @@ def test_full_auto_allows_bash_without_prompt():
     pid, allowed = asyncio.run(run())
     assert pid is None and allowed is True
 
-def test_always_grant_is_fingerprinted_and_expires():
+def test_always_allows_this_call_but_persists_nothing():
+    """The registry keeps no grant (spec 2026-10-11 §3.4): with no standing rule the next
+    identical request cards again."""
     reg = PermissionRegistry()
     async def run():
-        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"},
-                                     mode="interactive", denylist=PermissionRegistry.DANGEROUS,
-                                     allowlist=True, identity="me")
+        req = dict(mode="allowlist", denylist=PermissionRegistry.DANGEROUS,
+                   allowlist=True, identity="me")
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"}, **req)
         reg.resolve(pid, "always", "me")
-        await fut
+        assert await fut is True
+        pid2, _, _ = await reg.request("s1", "t2", "Bash", {"command": "npm test", "cwd": "/r"}, **req)
+        assert pid2 is not None
     asyncio.run(run())
-    now = time.time()
-    assert reg.is_granted("s1", "Bash", {"command": "npm test", "cwd": "/r"}, now) is True
-    assert reg.is_granted("s1", "Bash", {"command": "rm -rf /", "cwd": "/r"}, now) is False
-    assert reg.is_granted("s1", "Bash", {"command": "npm test", "cwd": "/r"}, now + 4000) is False
 
 def test_resolve_rejects_wrong_identity_and_unknown():
     reg = PermissionRegistry()
@@ -187,19 +187,6 @@ def test_pending_parent_tool_use_id_defaults_to_none_for_main_thread():
         return reg.pending("s1")
     p = asyncio.run(run())
     assert p[0]["parent_tool_use_id"] is None
-
-def test_bash_always_grant_does_not_cover_other_commands():
-    reg = PermissionRegistry()
-    async def run():
-        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"},
-                                     mode="interactive", denylist=PermissionRegistry.DANGEROUS,
-                                     allowlist=True, identity="me")
-        reg.resolve(pid, "always", "me"); await fut
-    asyncio.run(run())
-    now = time.time()
-    assert reg.is_granted("s1", "Bash", {"command": "npm test", "cwd": "/r"}, now) is True
-    assert reg.is_granted("s1", "Bash", {"command": "npm install evil", "cwd": "/r"}, now) is False
-
 
 # ---------------------------------------------------------------------------
 # Auto-allow writes to a managed-account auto-memory directory

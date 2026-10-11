@@ -288,6 +288,10 @@ try:
         # Off = no in-process server is mounted and no instruction is appended.
         session_tools_enabled: bool = Field(
             default=True, alias="VIBERPIT_SESSION_TOOLS_ENABLED")
+        # Standing "always allow" permission rules (spec 2026-10-11). Off = no rule is
+        # consulted or suggested; every prompt cards as before.
+        permission_rules_enabled: bool = Field(
+            default=True, alias="VIBERPIT_PERMISSION_RULES_ENABLED")
         # MCP live status (spec 2026-10-09): driver polling, persistence, probe, readout.
         mcp_status_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_STATUS_ENABLED")
         # Per-repo MCP server scope + live session toggles (spec 2026-10-09 repo-scope).
@@ -611,6 +615,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         session_tools_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        permission_rules_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_PERMISSION_RULES_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         mcp_status_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_MCP_STATUS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
