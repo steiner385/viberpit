@@ -32,7 +32,7 @@ class PmOnboard:
     description = (
         "Feature-map synthesis and its independent completeness critic — the "
         "product-archaeology half of project onboarding. Propose-only: both "
-        "sessions land on ONE non-draft PR and the human merge is the gate. "
+        "sessions land on ONE draft PR and the human merge is the gate. "
         "Triggered from the Projects workspace, not on a schedule.")
     #: No control loop — see the module docstring.
     modes: tuple[str, ...] = ()

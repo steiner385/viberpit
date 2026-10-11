@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from server.automations.completion_bar import (
+    has_keep_draft_instruction,
+    has_no_arm_instruction,
+)
 from server.pm.classification import (
     CLASSIFY_CHUNK_SIZE,
     ClassificationParseError,
@@ -11,6 +15,8 @@ from server.pm.classification import (
     ProposedClassification,
     WorkItemBrief,
     build_classification_prompt,
+    build_constitution_proposal_prompt,
+    build_coverage_critic_prompt,
     build_map_synthesis_prompt,
     feature_doc_path,
     map_branch_name,
@@ -45,7 +51,7 @@ def test_map_prompt_is_propose_only_one_pr():
         slug="viberpit", repo="steiner385/viberpit", default_branch="master",
         open_count=120, closed_count=800)
     assert "docs/product/features/" in p
-    assert "ONE" in p and "non-draft" in p.lower()
+    assert "ONE" in p and "draft" in p.lower()
     assert "auto-merge" in p.lower()          # explicitly forbidden
     assert "Evidence" in p                    # outcome-driven template marker
     assert "120" in p and "800" in p          # backlog scale is context
@@ -304,6 +310,32 @@ def test_initial_and_critic_prompts_still_withhold_auto_merge():
         slug="acme", repo="acme/app", default_branch="main",
         open_count=10, closed_count=20)
     assert "do not arm auto-merge" in initial.lower()
+
+
+def test_human_gated_prompts_open_a_draft_the_repo_sweep_cannot_arm():
+    """#2925: "NON-draft PR" + "Do NOT arm auto-merge" is unenforceable in a repo
+    whose own automation arms every open non-draft PR (cairnea/KinDash's
+    ops-auto-merge.yml re-armed within 35 s of a manual disarm and merged the map
+    PRs unreviewed). A draft is the one state such a sweep — and GitHub
+    auto-merge itself — cannot arm, so every prompt that keeps a HUMAN merge gate
+    opens (or leaves) a draft and says so, and none still asks for a non-draft PR
+    or claims a gate it cannot hold."""
+    initial = build_map_synthesis_prompt(
+        slug="acme", repo="acme/app", default_branch="main",
+        open_count=10, closed_count=20)
+    critic = build_coverage_critic_prompt(
+        slug="acme", repo="acme/app", default_branch="main",
+        branch=map_branch_name("acme"), open_count=10, closed_count=20)
+    constitution = build_constitution_proposal_prompt(
+        slug="acme", repo="acme/app", default_branch="main")
+    for p in (initial, constitution):
+        assert "gh pr create --draft" in p
+    for p in (initial, critic, constitution):
+        pl = p.lower()
+        assert "non-draft" not in pl
+        assert "marked ready for review" not in pl
+        assert has_no_arm_instruction(p)
+        assert has_keep_draft_instruction(p), p
 
 
 # --------------------------------------------------------------------------- #

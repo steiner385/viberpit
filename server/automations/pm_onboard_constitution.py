@@ -35,7 +35,7 @@ class PmOnboardConstitution:
     description = (
         "Drafts a repository constitution from the project's ADRs, AGENTS.md, "
         "and any existing spec-kit templates. Propose-only: the session lands "
-        "on ONE non-draft PR and the human merge is the gate. Offered from the "
+        "on ONE draft PR and the human merge is the gate. Offered from the "
         "Projects onboarding wizard once the map is merged, when the repo's "
         "governance document is missing, still a template, or missing its "
         "version footer — not on a schedule.")
