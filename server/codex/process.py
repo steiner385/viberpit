@@ -313,6 +313,62 @@ async def probe_cli_version(
     return redaction.scrub_secret_shapes(version)[:MAX_CLI_VERSION_CHARS]
 
 
+def _isolated_probe_env(home: Path) -> dict[str, str]:
+    """A probe child's environment: the daemon's own PATH/locale, a throwaway home.
+
+    PATH is inherited deliberately — it decides which ``bwrap`` the binary finds,
+    so a probe that scrubbed it would test a different sandbox than sessions get.
+    """
+    environment = {
+        name: os.environ[name]
+        for name in ("HOME", "LANG", "LC_ALL", "PATH", "TERM")
+        if os.environ.get(name)
+    }
+    environment["CODEX_HOME"] = str(home)
+    return environment
+
+
+async def probe_workspace_sandbox(
+    binary: str,
+    *,
+    timeout_s: float = DEFAULT_VERSION_PROBE_TIMEOUT_S,
+    spawn: Callable[..., Awaitable[Any]] = asyncio.create_subprocess_exec,
+) -> tuple[int, str]:
+    """Run ``true`` inside the binary's own ``workspace-write`` sandbox.
+
+    Returns ``(exit code, stderr)``. The stderr is **native output**: callers
+    classify it and must not log or report it. The sandbox is the one every
+    asking permission mode runs shell commands in (``permissions._ASK_EVERY_ACTION``);
+    on Linux it is bubblewrap in a fresh network namespace, which a host that
+    restricts unprivileged user namespaces breaks before the command runs (#2919).
+    """
+    with tempfile.TemporaryDirectory(prefix="viberpit-codex-sandbox-") as temp:
+        root = Path(temp)
+        home = root / "home"
+        home.mkdir(mode=0o700)
+        child: Any | None = None
+        try:
+            child = await spawn(
+                binary,
+                "sandbox",
+                "-c",
+                'sandbox_mode="workspace-write"',
+                "--",
+                "true",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                env=_isolated_probe_env(home),
+                cwd=str(root),
+            )
+            _, stderr = await asyncio.wait_for(child.communicate(), timeout_s)
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 -- kill, then re-raise
+            if child is not None:
+                await _kill_probe_child(child)
+            raise
+        code = child.returncode if child.returncode is not None else -1
+        return code, (stderr or b"").decode("utf-8", "replace")
+
+
 async def probe_contract_schema(
     binary: str,
     *,
@@ -325,12 +381,7 @@ async def probe_contract_schema(
         home = root / "home"
         output = root / "schema"
         home.mkdir(mode=0o700)
-        environment = {
-            name: os.environ[name]
-            for name in ("HOME", "LANG", "LC_ALL", "PATH", "TERM")
-            if os.environ.get(name)
-        }
-        environment["CODEX_HOME"] = str(home)
+        environment = _isolated_probe_env(home)
         child: Any | None = None
         try:
             child = await spawn(

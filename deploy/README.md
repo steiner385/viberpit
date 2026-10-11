@@ -490,12 +490,27 @@ serving Claude sessions.
 python -m server.codex.doctor        # JSON report; exit 0 when nothing failed
 ```
 
-Six named verdicts for the six independent ways a Codex runner can be
+Seven named verdicts for the seven independent ways a Codex runner can be
 misconfigured — `external_auth`, `binary`, `runtime_home`, `authority`,
-`mtls_identity`, `manifest` — so "Codex isn't offered" stops being one symptom
-with six causes. The daemon runs it once at every boot and logs it as a single
+`mtls_identity`, `manifest`, `sandbox` — so "Codex isn't offered" stops being one
+symptom with six causes. The daemon runs it once at every boot and logs it as a single
 `codex.doctor.report` record; it runs as a supervised background task and can
 never delay or fail a boot. It never prints a token-bearing value.
+
+**`sandbox: userns_restricted`** — Codex is offered and sessions start, but every
+command in an asking mode fails before it runs (`bwrap: loopback: Failed
+RTM_NEWADDR: Operation not permitted`, #2919). The host restricts unprivileged user
+namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), and Codex falls back
+to its vendored `bwrap` when none is on PATH — only `/usr/bin/bwrap` is covered by
+the AppArmor exemption. Fix the host, not the session:
+
+```bash
+sudo apt install bubblewrap                                # provides /usr/bin/bwrap
+sudo aa-enforce /etc/apparmor.d/bwrap-userns-restrict      # ships disabled
+codex sandbox -c 'sandbox_mode="workspace-write"' -- true  # exit 0 = fixed
+```
+
+`full-auto`/`bypassPermissions` run unsandboxed and are unaffected either way.
 
 Metrics are in `server/obs/metrics.py` (`codex_*`) — the runbook's § 8 lists what
 each one is worth alerting on. No label carries a native thread id, prompt,
