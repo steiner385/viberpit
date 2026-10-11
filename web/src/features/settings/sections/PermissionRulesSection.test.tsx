@@ -118,6 +118,52 @@ describe('PermissionRulesSection', () => {
     expect(revoke).not.toHaveBeenCalled()
   })
 
+  it('a 409 for a stale pattern never arms Save anyway for newer text', async () => {
+    const user = userEvent.setup()
+    let reject!: (e: unknown) => void
+    update.mockReturnValueOnce(new Promise((_, rej) => { reject = rej }))
+    mount()
+    await user.click(within(screen.getByTestId('rule-g1')).getByRole('button', { name: 'Edit' }))
+    await user.clear(screen.getByLabelText('Pattern'))
+    await user.type(screen.getByLabelText('Pattern'), 'Bash(*)')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await user.type(screen.getByLabelText('Pattern'), 'x')
+    reject(new ApiRequestError(409, {
+      detail: { code: 'RULE_NEEDS_CONFIRMATION', level: 'high', reasons: ['Too broad'] },
+    }))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(screen.queryByText('Too broad')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save anyway' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+  })
+
+  it('disables the pattern input while a save is pending', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useUpdatePermissionRule).mockReturnValue(
+      mutationResult({ mutateAsync: update, isPending: true } as never) as never)
+    mount()
+    await user.click(within(screen.getByTestId('rule-g1')).getByRole('button', { name: 'Edit' }))
+    expect(screen.getByLabelText('Pattern')).toBeDisabled()
+  })
+
+  it('surfaces a revoke failure inline on the row', async () => {
+    const user = userEvent.setup()
+    revoke.mockRejectedValueOnce(new ApiRequestError(404, { detail: { code: 'RULE_NOT_FOUND', message: 'No such rule.' } }))
+    mount()
+    await user.click(within(screen.getByTestId('rule-g1')).getByRole('button', { name: 'Revoke' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke' }))
+    expect(await within(screen.getByTestId('rule-g1')).findByRole('alert')).toHaveTextContent('No such rule.')
+  })
+
+  it('shows an error state, not the empty state, when the query fails', () => {
+    vi.mocked(hooks.usePermissionRules).mockReturnValue(
+      queryResult(undefined as unknown as RuleWire[], { isError: true, error: new Error('boom') }))
+    mount()
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load')
+    expect(screen.queryByText(/No standing rules yet/)).toBeNull()
+  })
+
   it('renders the empty state', () => {
     vi.mocked(hooks.usePermissionRules).mockReturnValue(queryResult([] as RuleWire[]))
     mount()

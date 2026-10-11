@@ -30,21 +30,25 @@ function RuleRow({ rule }: { rule: RuleWire }) {
   const [editing, setEditing] = useState(false)
   const [pattern, setPattern] = useState(rule.pattern)
   const [error, setError] = useState<string | null>(null)
-  const [reasons, setReasons] = useState<string[] | null>(null) // set => awaiting explicit confirm
+  // Set => awaiting explicit confirm, but only for the exact pattern the server reviewed.
+  const [needsConfirm, setNeedsConfirm] = useState<{ pattern: string; reasons: string[] } | null>(null)
+  const reasons = needsConfirm && needsConfirm.pattern === pattern ? needsConfirm.reasons : null
+  const [revokeError, setRevokeError] = useState<string | null>(null)
 
-  const close = () => { setEditing(false); setError(null); setReasons(null) }
+  const close = () => { setEditing(false); setError(null); setNeedsConfirm(null) }
   const save = async (confirmed: boolean) => {
     setError(null)
+    const sent = pattern
     try {
-      await update.mutateAsync(confirmed ? { id: rule.id, pattern, confirm: true } : { id: rule.id, pattern })
+      await update.mutateAsync(confirmed ? { id: rule.id, pattern: sent, confirm: true } : { id: rule.id, pattern: sent })
       close()
     } catch (err) {
       const d = detailOf(err)
       if (apiErrorCode(err) === 'RULE_NEEDS_CONFIRMATION') {
-        setReasons(d.reasons ?? [])
+        setNeedsConfirm({ pattern: sent, reasons: d.reasons ?? [] })
         return
       }
-      setReasons(null)
+      setNeedsConfirm(null)
       setError([d.message, ...(d.reasons ?? [])].filter(Boolean).join(' ') || 'Could not update the rule.')
     }
   }
@@ -55,7 +59,13 @@ function RuleRow({ rule }: { rule: RuleWire }) {
       confirmLabel: 'Revoke',
       tone: 'danger',
     })
-    if (ok) await revoke.mutateAsync(rule.id)
+    if (!ok) return
+    setRevokeError(null)
+    try {
+      await revoke.mutateAsync(rule.id)
+    } catch (err) {
+      setRevokeError(detailOf(err).message ?? 'Could not revoke the rule.')
+    }
   }
 
   return (
@@ -67,7 +77,8 @@ function RuleRow({ rule }: { rule: RuleWire }) {
             <Input
               className="font-mono"
               value={pattern}
-              onChange={(e) => { setPattern(e.target.value); setReasons(null) }}
+              disabled={update.isPending}
+              onChange={(e) => { setPattern(e.target.value); setNeedsConfirm(null) }}
             />
           </label>
           {reasons && (
@@ -97,6 +108,7 @@ function RuleRow({ rule }: { rule: RuleWire }) {
           </div>
         </div>
       )}
+      {revokeError && <p role="alert" className="text-xs text-danger">{revokeError}</p>}
       {dialog}
     </li>
   )
@@ -113,8 +125,9 @@ function Group({ title, rules }: { title: React.ReactNode; rules: RuleWire[] }) 
 }
 
 export function PermissionRulesSection() {
-  const { data: rules = [], isLoading } = usePermissionRules()
+  const { data: rules = [], isLoading, isError } = usePermissionRules()
   if (isLoading) return <div className="text-sm opacity-60">Loading rules…</div>
+  if (isError) return <p role="alert" className="text-sm text-danger">Could not load the rules.</p>
 
   const global = rules.filter((r) => r.scope === 'global')
   const sessions = rules.filter((r) => r.scope === 'session')
