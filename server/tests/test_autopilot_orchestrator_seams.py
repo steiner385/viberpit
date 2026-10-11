@@ -275,7 +275,7 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
         # Safe perm → approved via the SAME perm_id passed in (no re-fetch).
         assert await orch._autopilot_apply(
             "s1", Decision(action="approve"), _perm_ctx("P1", "pytest")) is True
-        assert calls == [("P1", True)]
+        assert calls == [("P1", "allow")]
 
         # A destructive command reaching apply is blocked by the deny-list re-check;
         # resolve_permission is never called.
@@ -283,6 +283,36 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
         assert await orch._autopilot_apply(
             "s1", Decision(action="approve"), _perm_ctx("P2", "git push --force")) is False
         assert calls == []
+    asyncio.run(run())
+
+
+def test_apply_approve_settles_a_real_registry_future_as_allowed(tmp_path):
+    """End to end through a REAL PermissionRegistry: an autopilot approve must let the
+    tool run. A mock resolve_permission recording the raw argument could not catch the
+    bool-vs-"allow" mismatch that settled every approve as a deny."""
+    async def run():
+        from server.sessions.permissions import PermissionRegistry
+        from server.sessions.types import SYSTEM_IDENTITY, SessionRecord
+        orch = _bare_orch()
+        orch._records["s1"] = SessionRecord(
+            id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+        orch._records["s1"].status = "waiting_input"
+        await _init_db(tmp_path)
+        await seed_authority(orch)
+        reg = PermissionRegistry()
+        pid, fut, _ = await reg.request(
+            "s1", "t1", "Bash", {"command": "pytest"}, mode="interactive",
+            denylist=(), allowlist=True, identity=SYSTEM_IDENTITY)
+
+        async def _ensure(sid, ident=None):
+            return object()
+
+        orch.ensure_driver = _ensure
+        orch.resolve_permission = lambda sid, p, decision, ident: reg.resolve(p, decision, ident)
+        assert await orch._autopilot_apply(
+            "s1", Decision(action="approve"), _perm_ctx(pid, "pytest")) is True
+        assert fut.result() is True
     asyncio.run(run())
 
 

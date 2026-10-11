@@ -14443,8 +14443,11 @@ class SessionOrchestrator:
                     # forever (#2225). Skip instead of retrying; pre_decide's loop
                     # detection escalates once this no-mutation result repeats.
                     return False
+                # The registry takes the decision STRING: a bool here compared
+                # unequal to "allow" and settled every autopilot approve as a deny.
                 ok = bool(self.resolve_permission(
-                    session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))
+                    session_id, stuck["perm_id"], "allow" if act == "approve" else "deny",
+                    SYSTEM_IDENTITY))
             elif act == "answer" and stuck.get("question_id") is not None:
                 driver = await self.ensure_driver(session_id, SYSTEM_IDENTITY)
                 if driver is None:
