@@ -540,7 +540,243 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         raise WorktreeError(msg)
 
 
-def remove_worktree(worktree_path: str, force: bool = False) -> bool:
+# ---------------------------------------------------------------------------
+# Recovery refs (#2913/#2914): a snapshot taken before anything destructive.
+# ---------------------------------------------------------------------------
+
+#: Namespace for recovery snapshots. Lives in the clone's COMMON git dir, so a ref
+#: outlives the worktree it was taken from. Layout:
+#: ``<ns>/<short-session-id>/<utc-ts>-<reason>``.
+RECOVERY_REF_NS = f"refs/{brand.SLUG}/recovery"
+#: Why a ref was written — encoded in its name. Only ``drain`` refs are routine
+#: (every deploy writes one), so only they are pruned; the others mark a single
+#: destructive event and may be the only copy of lost work, so they are kept.
+RECOVERY_DRAIN = "drain"
+RECOVERY_DELETE = "delete"
+RECOVERY_FORCED = "forced"
+RECOVERY_BRANCH = "branch"
+RECOVERY_REASONS: frozenset[str] = frozenset(
+    {RECOVERY_DRAIN, RECOVERY_DELETE, RECOVERY_FORCED, RECOVERY_BRANCH})
+#: Newest ``drain`` refs kept per session.
+RECOVERY_KEEP = 5
+#: Per-git-call ceiling inside a snapshot. A huge untracked tree must not hang a
+#: drain or a delete; the snapshot is then skipped (logged), never raised.
+_RECOVERY_GIT_TIMEOUT_S = 60.0
+_REF_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _recovery_ns(session_id: str) -> str:
+    """Keyed on the SHORT id — the name the session's worktree dir carries — so a
+    caller that only knows the directory (the janitor) writes where every reader
+    looks, whether it was handed the full id or the short one."""
+    part = _REF_SAFE_RE.sub("_", _short(session_id)).strip(".") or "unknown"
+    return f"{RECOVERY_REF_NS}/{part}"
+
+
+def restore_command(ref: str) -> str:
+    """The manual restore a human runs inside the worktree (spec rule 4)."""
+    return f"git restore --source={ref} --worktree --staged -- . && git reset"
+
+
+def _git_timed(args: list[str], env: dict[str, str] | None = None
+               ) -> subprocess.CompletedProcess[str]:
+    """``_run`` with a timeout — raises ``subprocess.TimeoutExpired``."""
+    return subprocess.run(args, capture_output=True, text=True, env=env,
+                          timeout=_RECOVERY_GIT_TIMEOUT_S)
+
+
+def recovery_refs(repo_path: str, session_id: str) -> list[str]:
+    """Recovery refs recorded for *session_id* in *repo_path*'s clone, newest first."""
+    r = _run(["git", "-C", repo_path, "for-each-ref", "--sort=-refname",
+              "--format=%(refname)", f"{_recovery_ns(session_id)}/"])
+    if r.returncode != 0:
+        return []
+    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+
+
+def _newest_ref_matching(repo_path: str, session_id: str, rev_suffix: str,
+                         value: str) -> str | None:
+    """The newest existing recovery ref iff ``<ref><rev_suffix>`` resolves to
+    *value* — i.e. what we are about to keep is already kept."""
+    refs = recovery_refs(repo_path, session_id)
+    if not refs:
+        return None
+    r = _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
+              f"{refs[0]}{rev_suffix}"])
+    return refs[0] if r.returncode == 0 and r.stdout.strip() == value else None
+
+
+def _write_recovery_ref(repo_path: str, session_id: str, commit: str,
+                        reason: str) -> str | None:
+    """Point a fresh ``<ts>-<reason>`` recovery ref at *commit*; prune drain refs."""
+    from datetime import datetime, timezone
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    ref = f"{_recovery_ns(session_id)}/{stamp}-{reason}"
+    r = _git_timed(["git", "-C", repo_path, "update-ref", ref, commit])
+    if r.returncode != 0:
+        log.warning("worktree.recovery_ref_failed session=%s err=%s",
+                    session_id, r.stderr.strip())
+        return None
+    drains = [x for x in recovery_refs(repo_path, session_id)
+              if x.endswith(f"-{RECOVERY_DRAIN}")]
+    for stale in drains[RECOVERY_KEEP:]:
+        _run(["git", "-C", repo_path, "update-ref", "-d", stale])
+    log.info("worktree.recovery_ref session=%s ref=%s restore=%r",
+             session_id, ref, restore_command(ref))
+    return ref
+
+
+def snapshot_recovery_ref(worktree: str, session_id: str, *, reason: str) -> str | None:
+    """Record the worktree's FULL state (staged, unstaged, untracked) as a commit
+    under ``refs/viberpit/recovery/<short-sid>/<utc-ts>-<reason>`` without touching
+    the user's index or files: ``git add -A`` runs against a temp copy of the index.
+
+    *reason* is one of ``drain`` / ``delete`` / ``forced`` (it names the ref and
+    decides pruning). Returns the ref; the newest existing ref when it already holds
+    this exact tree (nothing new is written, so repeated drains never rotate the one
+    copy out); or None when the tree is clean (equals ``HEAD^{tree}``) or the
+    snapshot could not be taken. Never raises — every caller is about to do
+    something destructive (or is draining) and must not be blocked by a failed
+    safety net; a failure is logged instead.
+    """
+    import tempfile
+    if reason not in RECOVERY_REASONS - {RECOVERY_BRANCH}:
+        log.warning("worktree.recovery_snapshot_failed session=%s bad reason=%r",
+                    session_id, reason)
+        return None
+    try:
+        if not os.path.isdir(worktree):
+            return None
+        idx = _git_timed(["git", "-C", worktree, "rev-parse", "--path-format=absolute",
+                          "--git-path", "index"])
+        if idx.returncode != 0:
+            return None
+        head_r = _git_timed(["git", "-C", worktree, "rev-parse", "--verify", "--quiet", "HEAD"])
+        head = head_r.stdout.strip() if head_r.returncode == 0 else None
+        ident = {"GIT_AUTHOR_NAME": brand.NAME, "GIT_AUTHOR_EMAIL": f"{brand.SLUG}@localhost",
+                 "GIT_COMMITTER_NAME": brand.NAME,
+                 "GIT_COMMITTER_EMAIL": f"{brand.SLUG}@localhost"}
+        with tempfile.TemporaryDirectory(prefix=f"{brand.SLUG}-recovery-") as td:
+            tmp_index = os.path.join(td, "index")
+            real_index = idx.stdout.strip()
+            if os.path.exists(real_index):
+                shutil.copy2(real_index, tmp_index)
+            env = {**os.environ, "GIT_INDEX_FILE": tmp_index, **ident}
+            add = _git_timed(["git", "-C", worktree, "add", "-A"], env=env)
+            if add.returncode != 0:
+                log.warning("worktree.recovery_snapshot_failed session=%s step=add err=%s",
+                            session_id, add.stderr.strip())
+                return None
+            wt_r = _git_timed(["git", "-C", worktree, "write-tree"], env=env)
+            if wt_r.returncode != 0:
+                log.warning("worktree.recovery_snapshot_failed session=%s step=write-tree "
+                            "err=%s", session_id, wt_r.stderr.strip())
+                return None
+        tree = wt_r.stdout.strip()
+        if head is not None:
+            head_tree = _git_timed(["git", "-C", worktree, "rev-parse", f"{head}^{{tree}}"])
+            if head_tree.returncode == 0 and head_tree.stdout.strip() == tree:
+                return None
+        else:
+            listed = _git_timed(["git", "-C", worktree, "ls-tree", tree])
+            if listed.returncode == 0 and not listed.stdout.strip():
+                return None
+        same = _newest_ref_matching(worktree, session_id, "^{tree}", tree)
+        if same is not None:
+            return same
+        cmd = ["git", "-C", worktree, "commit-tree", tree]
+        if head is not None:
+            cmd += ["-p", head]
+        cmd += ["-m", f"{brand.SLUG} recovery: {reason}"]
+        commit = _git_timed(cmd, env={**os.environ, **ident})
+        if commit.returncode != 0:
+            log.warning("worktree.recovery_snapshot_failed session=%s step=commit-tree "
+                        "err=%s", session_id, commit.stderr.strip())
+            return None
+        return _write_recovery_ref(worktree, session_id, commit.stdout.strip(), reason)
+    except Exception:
+        log.warning("worktree.recovery_snapshot_failed session=%s path=%s",
+                    session_id, worktree, exc_info=True)
+        return None
+
+
+def _branch_has_unpushed_commits(repo_top: str, branch: str) -> bool:
+    """True when *branch* holds commits reachable from no remote-tracking ref and no
+    OTHER local branch — work that ``git branch -D`` would leave unreferenced."""
+    r = _run(["git", "-C", repo_top, "rev-list", "--count", f"refs/heads/{branch}",
+              "--not", "--remotes", f"--exclude={branch}", "--branches"])
+    if r.returncode != 0:
+        return False
+    try:
+        return int(r.stdout.strip() or "0") > 0
+    except ValueError:
+        return False
+
+
+def snapshot_branch_tip(repo_top: str, branch: str, session_id: str) -> str | None:
+    """Before a session branch is deleted, keep its tip as
+    ``refs/viberpit/recovery/<short-sid>/<ts>-branch`` iff it has unpushed commits.
+    Never raises."""
+    try:
+        if not _branch_has_unpushed_commits(repo_top, branch):
+            return None
+        tip = _run(["git", "-C", repo_top, "rev-parse", "--verify", "--quiet",
+                    f"refs/heads/{branch}"])
+        if tip.returncode != 0:
+            return None
+        sha = tip.stdout.strip()
+        same = _newest_ref_matching(repo_top, session_id, "", sha)
+        if same is not None:
+            return same
+        return _write_recovery_ref(repo_top, session_id, sha, RECOVERY_BRANCH)
+    except Exception:
+        log.warning("worktree.recovery_branch_failed session=%s branch=%s",
+                    session_id, branch, exc_info=True)
+        return None
+
+
+def recreate_worktree(repo_path: str, path: str, branch: str) -> bool:
+    """Re-add a missing (or EMPTY) managed worktree at *path* from its LOCAL *branch*.
+
+    An empty directory is the leftover of the old unconditional ``mkdir`` (the
+    literal #2913 state) and holds nothing to lose, so it is recreated in place.
+    Returns False — touching nothing at *path* — when the path exists and is not an
+    empty directory (a present tree is never recreated, spec rule 1), the branch is
+    not in the local clone, or ``git worktree add`` refuses. Clears only *path*'s
+    own stale admin record first (``clear_stale_registration``), never a
+    repo-global prune.
+    """
+    if not branch or branch.startswith("-"):
+        return False
+    dest = Path(path)
+    if dest.exists() and not (dest.is_dir() and not any(dest.iterdir())):
+        return False
+    top = _run(["git", "-C", repo_path, "rev-parse", "--show-toplevel"])
+    if top.returncode != 0:
+        return False
+    repo_top = top.stdout.strip()
+    if _run(["git", "-C", repo_top, "rev-parse", "--verify", "--quiet",
+             f"refs/heads/{branch}"]).returncode != 0:
+        return False
+    with clone_lock(repo_top):
+        if dest.exists():
+            try:
+                os.rmdir(dest)   # raises rather than remove anything non-empty
+            except OSError:
+                return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        clear_stale_registration(repo_top, dest)
+        r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
+        if r.returncode != 0:
+            log.warning("worktree.recreate_failed path=%s branch=%s err=%s",
+                        dest, branch, r.stderr.strip())
+            return False
+        lock_worktree(repo_top, dest)
+    return True
+
+
+def remove_worktree(worktree_path: str, force: bool = False, *,
+                    session_id: str | None = None) -> bool:
     """Remove a ViberPit worktree IFF it has no uncommitted changes.
 
     Returns True if removed, False if it was left in place (dirty — we never
@@ -550,6 +786,12 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     ``force=True`` bypasses the dirty guard and uses ``git worktree remove
     --force``.  Only the janitor's max-age eviction path should set this —
     normal teardown must never discard uncommitted work.
+
+    Before anything is discarded a recovery ref is written (#2913): a forced
+    removal of a dirty tree snapshots it, and a session branch about to be
+    ``branch -D``'d keeps its tip when it holds unpushed commits. *session_id*
+    names the refs; it defaults to the worktree's directory name (the session's
+    short id, which is how managed worktrees are named).
 
     Every ``False`` leaves a journal line naming why.  The two pre-flight
     refusals below used to return silently, which is what made the janitor's
@@ -589,6 +831,9 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     if is_dirty and not force:
         log.info("worktree.keep_dirty path=%s", wt)
         return False
+    sid = session_id or os.path.basename(wt.rstrip("/"))
+    if is_dirty:
+        snapshot_recovery_ref(wt, sid, reason=RECOVERY_FORCED)
 
     branch_r = _run(["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch_r.stdout.strip() if branch_r.returncode == 0 else ""
@@ -612,6 +857,7 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     # `remove` already deregisters this worktree; no global prune (it could reap a
     # sibling session's live worktree — #177).
     if brand.is_session_branch(branch):
+        snapshot_branch_tip(repo_top, branch, sid)
         _run(["git", "-C", repo_top, "branch", "-D", branch])
     log.info("worktree.remove path=%s branch=%s force=%s", wt, branch, force)
     return True

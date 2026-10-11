@@ -261,7 +261,7 @@ def finalize(bundle: Bundle, worktree_path: str) -> bool:
         return False
     if bundle.wip_commit and _rev(worktree_path, "HEAD") == bundle.head_sha:
         _run(["git", "-C", worktree_path, "reset", "-q", "--soft", bundle.base_sha])
-    removed = remove_worktree(worktree_path, force=True)
+    removed = remove_worktree(worktree_path, force=True, session_id=bundle.session_id)
     log.info("transfer.finalize session=%s removed=%s path=%s",
              bundle.session_id, removed, worktree_path)
     return removed
