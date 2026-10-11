@@ -88,6 +88,7 @@ def test_pending_carries_suggestions_and_always_allowed():
         pid, _, _ = await _ask(reg, "s1", "Bash", {"command": "npm test"})
         [p] = reg.pending("s1")
         assert p["always_allowed"] is True and p["engine_managed"] is False
+        assert p["owner"] == "me"
         assert p["suggestions"][0]["pattern"] == "Bash(npm test)"
         assert reg.suggestions_for(pid) == p["suggestions"]
     asyncio.run(go())

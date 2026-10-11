@@ -119,17 +119,21 @@ def require_rules_enabled() -> None:
         raise ActionError("RULES_DISABLED", "Always-allow rules are turned off.", 404)
 
 
+def _not_owned() -> ActionError:
+    return ActionError(
+        "PERMISSION_NOT_OWNED",
+        "That permission request is still pending, but it was raised under a "
+        "different identity than yours, so your decision was refused. A chat "
+        "message will deny it with your reply.",
+        403,
+    )
+
+
 async def _permission_refused(orch, session_id: str, perm_id: str) -> ActionError:
     """Why ``orch.resolve_permission`` returned False: still pending under another
     identity (403) vs. gone (404)."""
     if any(p.get("permId") == perm_id for p in await orch.pending_permissions(session_id)):
-        return ActionError(
-            "PERMISSION_NOT_OWNED",
-            "That permission request is still pending, but it was raised under a "
-            "different identity than yours, so your decision was refused. A chat "
-            "message will deny it with your reply.",
-            403,
-        )
+        return _not_owned()
     return ActionError(
         "PERMISSION_NOT_PENDING",
         "That permission request is no longer pending — the session may have "
@@ -167,6 +171,15 @@ def check_pattern_for_scope(pattern: str, scope: str, confirm: bool) -> None:
                           {"level": a.level, "reasons": list(a.reasons)})
 
 
+def sweepable(parsed, card: dict, cwd: str | None) -> bool:
+    """Would a new rule resolve this OTHER pending card? One predicate for the grant sweep and
+    the preview's ``alsoPending`` count, so the number shown is the number resolved."""
+    from server.permission_rules.patterns import matches_any  # noqa: PLC0415
+
+    return bool(card.get("always_allowed", True)
+                and matches_any([parsed], card["tool"], card["input"], cwd) is not None)
+
+
 async def _sweep_candidates(db, session_id: str, scope: str,
                             repo: str | None, cwd: str | None) -> list[tuple[str, str | None]]:
     if scope == "session":
@@ -193,8 +206,8 @@ async def grant_always(
     from server.permission_rules.patterns import PatternError, matches_any, parse  # noqa: PLC0415
     from server.permission_rules.safety import SCOPES  # noqa: PLC0415
 
-    require_human(identity, via)
     require_rules_enabled()
+    require_human(identity, via)
     if scope not in SCOPES:
         raise ActionError("INVALID_SCOPE", f"Scope must be one of {', '.join(SCOPES)}.", 400)
     card = next((p for p in await orch.pending_permissions(session_id)
@@ -202,6 +215,10 @@ async def grant_always(
     if card is None:
         raise ActionError("PERMISSION_NOT_PENDING",
                           "That permission request is no longer pending.", 404)
+    # Refuse BEFORE any write: a card raised under another identity would refuse our
+    # "allow" after the rule was already committed and enforced.
+    if card.get("owner") not in (None, identity):
+        raise _not_owned()
     if not card.get("always_allowed", True) or card.get("engine_managed"):
         raise ActionError("RULE_NOT_ALLOWED",
                           "This request cannot be turned into an always-allow rule.", 400)
@@ -226,23 +243,22 @@ async def grant_always(
                        via=via)
     await db.commit()  # durable before any card resolves: a crash mid-sweep keeps the rule
 
+    # The rule is durable now. If the originating card vanished in the race window the
+    # rule still stands: report it with only what was actually resolved (200, not an error).
+    resolved: list[str] = []
     ok = await orch.resolve_permission(session_id, perm_id, "allow", identity)
     await orch.note_user_interaction(session_id)
-    if not ok:
-        raise await _permission_refused(orch, session_id, perm_id)
-    await _audit(db, "permission.rule_allow", identity,
-                 {"sessionId": session_id, "permId": perm_id, "ruleId": rule.id,
-                  "pattern": pattern, "trigger": "grant"}, via)
-
-    resolved = [perm_id]
+    if ok:
+        resolved.append(perm_id)
+        await _audit(db, "permission.rule_allow", identity,
+                     {"sessionId": session_id, "permId": perm_id, "ruleId": rule.id,
+                      "pattern": pattern, "trigger": "grant"}, via)
     for sid, sid_cwd in await _sweep_candidates(db, session_id, scope, repo, cwd):
         try:
             for other in await orch.pending_permissions(sid):
                 if sid == session_id and other["permId"] == perm_id:
                     continue
-                if not other.get("always_allowed", True):
-                    continue
-                if matches_any([parsed], other["tool"], other["input"], sid_cwd) is None:
+                if not sweepable(parsed, other, sid_cwd):
                     continue
                 if await orch.resolve_permission(sid, other["permId"], "allow", identity):
                     resolved.append(other["permId"])
@@ -250,8 +266,13 @@ async def grant_always(
                                  {"sessionId": sid, "permId": other["permId"],
                                   "ruleId": rule.id, "pattern": pattern, "trigger": "grant"},
                                  via)
-        except Exception:
-            log.warning("grant_always: sweep of session %s failed", sid, exc_info=True)
+        except Exception as exc:
+            from server.ipc.client import DaemonUnavailable  # noqa: PLC0415
+
+            # A daemon blip is transient (restart/rollout), not a defect: INFO keeps the
+            # auto-error sink quiet; anything else is a WARNING.
+            level = logging.INFO if isinstance(exc, DaemonUnavailable) else logging.WARNING
+            log.log(level, "grant_always: sweep of session %s failed", sid, exc_info=True)
     return {"rule": rule.to_wire(), "resolvedPermIds": resolved}
 
 

@@ -29,14 +29,15 @@ S2 = "22222222-2222-4222-8222-222222222222"
 REPO = "owner/repo"
 
 
-def _card(perm_id, command, *, engine_managed=False, always_allowed=True, suggestions=None):
+def _card(perm_id, command, *, engine_managed=False, always_allowed=True, suggestions=None,
+          owner="testuser@example.com"):
     return {
         "permId": perm_id, "tool": "Bash", "input": {"command": command}, "turn_id": "t",
         "items": None, "parent_tool_use_id": None, "always_allowed": always_allowed,
         "suggestions": ([] if engine_managed else (
             suggestions if suggestions is not None else
             [{"pattern": f"Bash({command})", "description": "d", "level": "ok"}])),
-        "engine_managed": engine_managed,
+        "engine_managed": engine_managed, "owner": owner,
     }
 
 
@@ -371,6 +372,8 @@ def test_kill_switch_off_404s_every_route_and_degrades_legacy_always():
     with patch.dict(os.environ, env), client:
         r = _always(client, S1, "p1", "Bash(npm test:*)", "session")
         assert r.status_code == 404 and r.json()["detail"]["code"] == "RULES_DISABLED"
+        lc = TestClient(client.app, client=("127.0.0.1", 5000), raise_server_exceptions=False)
+        assert lc.delete("/api/permission-rules/x", headers=_H).status_code == 404
         assert client.get("/api/permission-rules", headers=_H).status_code == 404
         assert client.post("/api/permission-rules/preview", headers=_H, json={
             "sessionId": S1, "pattern": "Bash(npm test:*)", "scope": "session"}
@@ -382,3 +385,61 @@ def test_kill_switch_off_404s_every_route_and_degrades_legacy_always():
                         headers=_H)
         assert r.status_code == 200
     assert [c[2] for c in fake.resolve_calls] == ["allow"]
+
+
+def test_grant_refuses_up_front_when_card_is_owned_by_another_identity():
+    client, fake = _make_client()
+    fake.pending[S1] = [_card("p1", "npm test", owner="someone-else@example.com")]
+    with patch.dict(os.environ, _ENV), client:
+        r = _always(client, S1, "p1", "Bash(npm test:*)", "session")
+        assert r.status_code == 403
+        assert r.json()["detail"]["code"] == "PERMISSION_NOT_OWNED"
+        assert client.portal.call(_rules) == []
+        assert fake.resolve_calls == []
+
+
+def test_grant_when_origin_card_vanishes_in_race_keeps_rule_and_returns_200():
+    client, fake = _make_client()
+    fake.pending[S1] = [_card("p1", "npm test"), _card("p2", "npm test -w web")]
+    fake.resolve_result = False
+    with patch.dict(os.environ, _ENV), client:
+        client.portal.call(_seed_sessions)
+        r = _always(client, S1, "p1", "Bash(npm test:*)", "session")
+        assert r.status_code == 200
+        assert r.json()["resolvedPermIds"] == []
+        assert len(client.portal.call(_rules)) == 1
+
+
+def test_preview_also_pending_and_sweep_skip_cards_that_cannot_be_always_allowed():
+    client, fake = _make_client()
+    fake.pending[S1] = [_card("p1", "npm test"), _card("p2", "npm test -w web"),
+                        _card("p3", "npm test -w api", always_allowed=False)]
+    with patch.dict(os.environ, _ENV), client:
+        client.portal.call(_seed_sessions)
+        body = {"sessionId": S1, "permId": "p1", "pattern": "Bash(npm test:*)", "scope": "session"}
+        assert client.post("/api/permission-rules/preview", json=body,
+                           headers=_H).json()["alsoPending"] == 1
+        r = _always(client, S1, "p1", "Bash(npm test:*)", "session")
+        assert r.json()["resolvedPermIds"] == ["p1", "p2"]
+
+
+def test_sweep_survives_daemon_unavailable_at_info_level(caplog):
+    import logging
+
+    from server.ipc.client import DaemonUnavailable
+
+    client, fake = _make_client()
+    fake.pending[S1] = [_card("p1", "npm test")]
+    orig = fake.pending_permissions
+
+    async def flaky(sid):
+        if sid == S2:
+            raise DaemonUnavailable("down")
+        return await orig(sid)
+
+    fake.pending_permissions = flaky
+    with patch.dict(os.environ, _ENV), client, caplog.at_level(logging.INFO):
+        client.portal.call(_seed_sessions)
+        assert _always(client, S1, "p1", "Bash(npm test:*)", "repo").status_code == 200
+    recs = [r for r in caplog.records if "sweep of session" in r.getMessage()]
+    assert recs and all(r.levelno == logging.INFO for r in recs)

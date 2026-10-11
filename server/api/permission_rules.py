@@ -61,8 +61,8 @@ async def grant_always(session_id: str, perm_id: str, body: AlwaysRequest, reque
 async def preview_rule(body: PreviewRequest, request: Request,
                        identity: str = Depends(current_identity), db=Depends(get_db)):
     try:
-        session_actions.require_human(identity, _via(request))
         session_actions.require_rules_enabled()
+        session_actions.require_human(identity, _via(request))
         if body.scope not in SCOPES:
             raise ActionError("INVALID_SCOPE", f"Scope must be one of {', '.join(SCOPES)}.", 400)
         orch = _get_orchestrator(request)
@@ -79,10 +79,9 @@ async def preview_rule(body: PreviewRequest, request: Request,
     covers: bool | None = None
     also = 0
     for card in await orch.pending_permissions(body.sessionId):
-        hit = matches_any([parsed], card["tool"], card["input"], cwd) is not None
         if card["permId"] == body.permId:
-            covers = hit
-        elif hit:
+            covers = matches_any([parsed], card["tool"], card["input"], cwd) is not None
+        elif session_actions.sweepable(parsed, card, cwd):
             also += 1
     return {"valid": True, "level": a.level, "reasons": list(a.reasons),
             "description": describe(body.pattern),
@@ -111,8 +110,8 @@ async def update_rule(rule_id: str, body: RulePatch, request: Request,
                       identity: str = Depends(current_identity), db=Depends(get_db)):
     via = _via(request)
     try:
-        session_actions.require_human(identity, via)
         session_actions.require_rules_enabled()
+        session_actions.require_human(identity, via)
         rule = await store.get_rule(db, rule_id)
         if rule is None:
             raise ActionError("RULE_NOT_FOUND", "No such rule.", 404)
@@ -137,8 +136,8 @@ async def revoke_rule(rule_id: str, request: Request,
                       identity: str = Depends(current_identity), db=Depends(get_db)):
     via = _via(request)
     try:
-        session_actions.require_human(identity, via)
         session_actions.require_rules_enabled()
+        session_actions.require_human(identity, via)
         rule = await store.revoke_rule(db, rule_id)
         if rule is None:
             raise ActionError("RULE_NOT_FOUND", "No such rule.", 404)

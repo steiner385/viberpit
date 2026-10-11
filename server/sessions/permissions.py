@@ -335,7 +335,10 @@ class PermissionRegistry:
                  "items": r.get("items"), "parent_tool_use_id": r.get("parent_tool_use_id"),
                  "always_allowed": r.get("always_allowed", True),
                  "suggestions": r.get("suggestions") or [],
-                 "engine_managed": bool(r.get("raw_decision"))}
+                 "engine_managed": bool(r.get("raw_decision")),
+                 # Who may resolve it (the identity it was raised under). Server-side
+                 # only: the WS re-emit copies selected keys, never this one.
+                 "owner": r["identity"]}
                 for pid, r in self._pending.items() if r["session_id"] == session_id]
 
     def rethread_identity(self, session_id, old, new) -> int:
