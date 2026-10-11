@@ -7,6 +7,7 @@ import {
   fetchConsolidation, postConsolidate, fetchBacklogGroups,
   fetchBacklogCandidates, postDispatchGroup,
   fetchInboxClusters, postClusterDraft, postClusterFile, postClusterDismiss, postClusterAttach,
+  postClusterRestore,
   type InboxClusters, type ClusterDraft, type ClusterAttachTarget,
   type Automation, type AutomationEvent, type AutomationPatch,
   type ActionableItem, type TriggerResult, type ConsolidationView,
@@ -1402,6 +1403,11 @@ export function useDismissFeedbackCluster(id: string) {
 
 export function useAttachFeedbackCluster(id: string) {
   return useInboxWrite<{ ids: string[] } & ClusterAttachTarget>(id, (b) => postClusterAttach(id, b))
+}
+
+/** Aged-out reports back into the inbox (they rejoin the clusters and the badge). */
+export function useRestoreFeedbackReports(id: string) {
+  return useInboxWrite<{ ids: string[] }>(id, (b) => postClusterRestore(id, b))
 }
 
 export function useConsolidation(enabled = true) {

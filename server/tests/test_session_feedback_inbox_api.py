@@ -75,11 +75,15 @@ def test_routes_reach_the_inbox_seam_with_their_params():
                       headers=H).status_code == 200
         assert c.post(f"{BASE}/attach", json={"ids": ["a"], "issue": 9},
                       headers=H).json()["status"] == "attach_issue"
+        assert c.post(f"{BASE}/restore", json={"ids": ["a"]},
+                      headers=H).json()["status"] == "restore"
+        assert c.post(f"{BASE}/restore", json={"ids": ["bad"]}, headers=H).status_code == 422
     ops = [(op, params) for _, op, params, _ in stub.calls]
     assert ops == [("clusters", {}), ("draft", {"ids": ["a"]}),
                    ("file", {"ids": ["a"], "title": "T", "body": "B"}),
                    ("dismiss", {"ids": ["a"], "fixedBy": 12}),
-                   ("attach_issue", {"ids": ["a"], "issue": 9})]
+                   ("attach_issue", {"ids": ["a"], "issue": 9}),
+                   ("restore", {"ids": ["a"]}), ("restore", {"ids": ["bad"]})]
     assert all(identity for *_, identity in stub.calls)       # the actor rides along
 
 

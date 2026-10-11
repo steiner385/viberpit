@@ -373,7 +373,7 @@ async def trigger_automation_action(automation_id: str, body: TriggerBody, reque
 
 
 # -- the clustered inbox (#2936) ------------------------------------------------
-# One generic seam (orch.automation_inbox) under five routes. Today only Session
+# One generic seam (orch.automation_inbox) under six routes. Today only Session
 # Feedback offers an inbox; any other automation 404s like a missing provider.
 
 class ClusterIdsBody(BaseModel):
@@ -412,8 +412,16 @@ async def _inbox(request: Request, automation_id: str, op: str, params: dict) ->
 @router.get("/{automation_id}/clusters")
 async def list_inbox_clusters(automation_id: str, request: Request,
                               _identity: str = Depends(current_identity)) -> dict:
-    """The automation's inbox grouped into clusters: ``{clusters, llm, total}``."""
+    """The automation's inbox grouped into clusters: ``{clusters, llm, total, digest}``
+    — each cluster with its ``possiblyFixed`` PRs, ``digest`` the aged-out reports."""
     return await _inbox(request, automation_id, "clusters", {})
+
+
+@router.post("/{automation_id}/clusters/restore")
+async def restore_inbox_reports(automation_id: str, body: ClusterIdsBody, request: Request,
+                                _identity: str = Depends(current_identity)) -> dict:
+    """Bring the aged-out reports *ids* back into the inbox."""
+    return await _inbox(request, automation_id, "restore", {"ids": body.ids})
 
 
 @router.post("/{automation_id}/clusters/draft")

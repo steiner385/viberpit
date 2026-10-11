@@ -264,6 +264,18 @@ export interface ReportCluster {
   fingerprints: string[]
   /** Newest first. */
   members: InboxReport[]
+  /** Up to two merged PRs whose titles match, merged after the first report —
+   *  a hint, never applied on its own. Best first. */
+  possiblyFixed: PossibleFix[]
+}
+
+export interface PossibleFix {
+  number: number
+  title: string
+  url: string | null
+  mergedAt: string | null
+  /** Title-word overlap, 0–1. */
+  score: number
 }
 
 export interface InboxClusters {
@@ -272,6 +284,9 @@ export interface InboxClusters {
    *  (similarity groups only), or turned off in the config. */
   llm: 'applied' | 'pending' | 'failed' | 'off'
   total: number
+  /** Reports that aged out of the inbox (never badged): the exact count and the
+   *  newest few, each restorable. */
+  digest: { count: number; items: InboxReport[] }
 }
 
 export interface ClusterDraft extends TriggerResult {
@@ -306,6 +321,10 @@ export function postClusterAttach(
   id: string, body: { ids: string[] } & ClusterAttachTarget,
 ): Promise<TriggerResult> {
   return api.post<TriggerResult>(`/automations/${id}/clusters/attach`, body)
+}
+
+export function postClusterRestore(id: string, body: { ids: string[] }): Promise<TriggerResult> {
+  return api.post<TriggerResult>(`/automations/${id}/clusters/restore`, body)
 }
 
 // --- PR-doctor consolidation -------------------------------------------------

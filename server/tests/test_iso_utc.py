@@ -8,7 +8,7 @@ dashboard's relative-time clamp pins every session card to "active 0s ago".
 """
 from datetime import datetime, timedelta, timezone
 
-from server.time_iso import iso_utc
+from server.time_iso import aware_utc, iso_utc
 
 
 def test_naive_datetime_is_tagged_utc():
@@ -32,3 +32,14 @@ def test_aware_non_utc_datetime_converted_to_utc():
 
 def test_none_passthrough():
     assert iso_utc(None) is None
+
+
+def test_aware_utc_makes_naive_and_aware_columns_comparable():
+    # A DateTime column (naive UTC) against a DateTime(timezone=True) column read
+    # back on Postgres (aware, any offset): raw comparison raises TypeError.
+    naive = datetime(2026, 6, 22, 11, 58, 0)
+    eastern = datetime(2026, 6, 22, 7, 59, 0, tzinfo=timezone(timedelta(hours=-4)))
+    assert aware_utc(naive) < aware_utc(eastern)
+    assert aware_utc(eastern) == datetime(2026, 6, 22, 11, 59, 0, tzinfo=timezone.utc)
+    assert aware_utc(eastern).tzinfo is timezone.utc
+    assert aware_utc(None) is None

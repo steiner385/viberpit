@@ -1079,6 +1079,7 @@ class SessionFeedback(Base):
     # model, host, account (display name only), session_url.
     context: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # pending | filed | merged | capped | throttled | dismissed (server/sessions/feedback.py)
+    # | archived (aged out of the inbox, server/automations/session_feedback.py)
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="pending")
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     reported_at: Mapped[datetime | None] = mapped_column(
@@ -1086,8 +1087,9 @@ class SessionFeedback(Base):
     filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     # How an operator inbox action settled the row (#2936), e.g.
     # {"kind": "filed_cluster", "issue": 2909} | {"kind": "attached_issue", "issue": N}
-    # | {"kind": "attached_session", "sessionId": ...} | {"kind": "dismissed_fixed", "pr": N}.
-    # NULL for rows the filer loop settled on its own.
+    # | {"kind": "attached_session", "sessionId": ...} | {"kind": "dismissed_fixed", "pr": N}
+    # | {"kind": "aged_out", "at": iso} (status archived) | {"kind": "restored", "at": iso}
+    # (back to pending; never aged out again). NULL for rows the filer settled on its own.
     resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
     __table_args__ = (
