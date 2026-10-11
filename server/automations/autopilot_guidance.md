@@ -36,6 +36,11 @@ The marker means the HARNESS cut the excerpt; the session's reply was complete. 
 conclude a reply was "cut off" or truncated, and never nudge a session to re-post or
 finish a reply because of it.
 
+## Restarts (`interrupted_by_restart`)
+Only when `interrupted_by_restart` is true was the session's turn dropped by a daemon
+restart and not yet resumed. When it is false, the session has resumed: never choose a
+"resume after the restart" nudge — judge the work the transcript shows now.
+
 ## Handed back (`waiting_question` with no `question` in `stuck`)
 The session explicitly handed itself back to the user (`hand_back`) or ended on a
 question for them. That turn is the user's — a guardrail escalates it before you see

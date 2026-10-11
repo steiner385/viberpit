@@ -455,10 +455,15 @@ class AutopilotLoop:
         marked decision without text escalates — never a template."""
         from .autopilot_policy import near_duplicate
         if self._compose is None:
-            if (decision.prompt or "").strip():
-                return decision
-            await self._record_futile(sid, ctx.ledger or {}, ctx)
-            return Decision(action="escalate", reason="nudge needs composition — no composer")
+            if not (decision.prompt or "").strip():
+                await self._record_futile(sid, ctx.ledger or {}, ctx)
+                return Decision(action="escalate", reason="nudge needs composition — no composer")
+            # A gate-authored prompt is held to the same anti-repetition rule as a
+            # composed one: identical text for an unchanged state is never re-sent.
+            if near_duplicate(decision.prompt or "", (ctx.ledger or {}).get("recent_nudges", []), now):
+                await self._record_futile(sid, ctx.ledger or {}, ctx)
+                return Decision(action="suppressed", reason="near-duplicate nudge suppressed")
+            return decision
         text = await self._compose(ctx, decision)
         if not (text or "").strip():
             await self._record_futile(sid, ctx.ledger or {}, ctx)
@@ -501,5 +506,39 @@ class AutopilotLoop:
         new = dict(ledger)
         new.update(escalated=True, last_fingerprint=fp)
         await self._store(sid, new, ctx)
-        await self._ctx.emit("warn", f"{sid}: needs human — {decision.reason}",
+        reason = decision.reason
+        if ctx.status != "handed_back":
+            reason += await self._escalation_pr_note(sid, ctx)
+        await self._ctx.emit("warn", f"{sid}: needs human — {reason}",
                              kind="escalated", session_id=sid)
+
+    async def _escalation_pr_note(self, sid: str, ctx: DecisionContext) -> str:
+        """Fresh PR facts for an escalation the human is about to read.
+
+        Hard-rule escalations (loop, recovery cap) return before ``_verify_facts``,
+        so they used to hand a human whatever the poller cache last said (#2928).
+        Runs once per escalation episode (the dedupe above returns first), never
+        for a hand-back — that turn is the user's and names its own ask. A
+        failed refresh says so rather than presenting the cache as verified.
+        """
+        if self._refresh_facts is None or ctx.pr_facts is None or not ctx.pr_facts.has_repo:
+            return ""
+        from .completion_bar import PrFacts, met_bar
+        from .fleet_context import pr_summary
+        if not ctx.facts_verified:  # already fetched this tick by _verify_facts
+            try:
+                fresh = await self._refresh_facts(sid)
+            except Exception:
+                log.warning("autopilot.escalation_facts_refresh_failed sid=%s", sid,
+                            exc_info=True)
+                fresh = None
+            if fresh is None:
+                return " (PR facts could not be refreshed)"
+            ctx.pr_facts = cast(PrFacts, fresh)
+            ctx.facts_verified = True
+        summary = pr_summary(ctx.pr_facts) or "no PR"
+        verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts,
+                          ctx.pr_resolution, instructions=ctx.instructions)
+        likely = "; likely complete" if verdict.met and (
+            ctx.pr_facts.merged_pr or ctx.pr_facts.armed_pr) else ""
+        return f" (verified on GitHub: {summary}{likely})"

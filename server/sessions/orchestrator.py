@@ -1926,7 +1926,7 @@ class SessionOrchestrator:
             self_model_switch=bool(
                 caps is not None and caps.self_model_switch
                 and get_settings().self_model_switch_enabled),
-            signalling_tools=bool(caps is not None and caps.durable_tool_surface),
+            signalling_tools=self._signalling_tools_for(selected),
             # Child sessions (spec §4.2): the dispatch handler's ONE call is bound here
             # with the parent's id and owner identity, never taken from tool args.
             child_sessions=bool(caps is not None and caps.durable_tool_surface
@@ -1947,6 +1947,20 @@ class SessionOrchestrator:
         from server.sessions.tools.server import build_session_server
         self.register_overlay(
             session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
+
+    def _signalling_tools_for(self, engine: AgentEngine | str) -> bool:
+        """Whether a session on *engine* is mounted with the signalling tools
+        (``mark_complete`` & co.) rather than told the markers. THE predicate both the
+        overlay above and autopilot's finish-signal phrasing read, so a nudge can never
+        name a tool the session was not given (#2928). Unknown capabilities answer
+        False — the overlay's safe side."""
+        from server.config import get_settings
+        if not get_settings().session_tools_enabled:
+            return False
+        registry = getattr(self, "_engine_registry", None)
+        caps = (registry.capabilities_for(parse_agent_engine(engine, legacy_default=True))
+                if registry is not None else None)
+        return bool(caps is not None and caps.durable_tool_surface)
 
     async def _note_shared_pr(self, session_id: str, repo: str, number: int, *,
                               refresh: bool = True) -> bool:
@@ -14050,6 +14064,18 @@ class SessionOrchestrator:
         _secs_since_human = (_dtmod.utcnow() - _last).total_seconds() if _last is not None else None
         pr_facts = self._autopilot_pr_facts(rec)
         transcript_tail = await self._autopilot_transcript_tail(session_id)
+        interrupted = bool(getattr(rec, "interrupted_by_restart", False))
+        if not interrupted:
+            # Resumed (or never interrupted): a restart notice still in the tail is
+            # history, not the current ask (#2928).
+            from server.automations.autopilot_policy import strip_restart_notices
+            from server.sessions.background_tasks import RESTART_GUARD
+            transcript_tail = strip_restart_notices(
+                transcript_tail, (RESUME_NUDGE, RESTART_GUARD))
+        from server.sessions.tools.instruction import finish_signal_instruction
+        finish_signal = finish_signal_instruction(
+            signalling_tools=self._signalling_tools_for(rec.engine),
+            mcp_namespaced=rec.engine is AgentEngine.CLAUDE_CODE)
         # Context assembly (including this resolution) runs BEFORE pre_decide, so
         # human-deference / budget / loop-detection skips do not suppress it.
         pr_resolution = await self._autopilot_resolve_pr_intent(
@@ -14068,7 +14094,9 @@ class SessionOrchestrator:
             fleet_context=await self._autopilot_fleet_context(session_id),
             pr_resolution=pr_resolution,
             instructions=getattr(rec, "initial_prompt", None),
-            origin=getattr(rec, "origin", None))
+            origin=getattr(rec, "origin", None),
+            finish_signal=finish_signal,
+            interrupted_by_restart=interrupted)
 
     async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
         """Summarize recent manual reversals of auto-archives into a compact caution the

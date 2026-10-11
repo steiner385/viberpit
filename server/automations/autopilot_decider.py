@@ -80,6 +80,7 @@ def _build_prompt(ctx: DecisionContext) -> str:
         "unlinked_pr_claims": sorted(missing_claimed_prs(ctx)),
         "reversal_hint": ctx.reversal_hint,
         "fleet": ctx.fleet_context,
+        "interrupted_by_restart": ctx.interrupted_by_restart,
         "transcript_tail": ctx.transcript_tail[-12:],
     }, indent=2, default=str)
     # The format demand must live in the USER prompt too (the proven one-shot
