@@ -913,6 +913,23 @@ async def test_an_item_already_set_aside_is_not_recorded_again():
 
 
 @pytest.mark.asyncio
+async def test_a_failed_policy_read_holds_back_recognisable_bot_output():
+    """Fail closed, like the auto-accept pass: with policies unknown, items the
+    built-in recogniser flags (a [bot] login, a built-in title) stay out of this
+    tick's classify batch — nothing is recorded (no policy, no set-aside), and
+    real work still classifies. The default policy would have held them anyway."""
+    pending = [_item(1, title="docs(fix-patterns): regenerate index"),
+               _item(2, title="Bump lodash", author="dependabot[bot]"),
+               _item(3, title="Fix the login bug"),
+               _item(4, title="Weekly failed — 2026-10-10", author="app/github-actions")]
+    ctx = Ctx()
+    loop, rec = _loop(ctx, pending=pending, candidates=[], policies=None)
+    await loop.tick()
+    assert rec["classified"] == [[3, 4]]
+    assert rec["ignored"] == []
+
+
+@pytest.mark.asyncio
 async def test_a_failing_ignore_warns_and_still_keeps_the_item_out_of_classify():
     pending = [_item(1, title="docs(fix-patterns): regenerate index"), _item(2)]
     ctx = Ctx()

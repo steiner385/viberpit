@@ -236,6 +236,54 @@ async def test_classify_run_self_select_skips_untrusted_authors(db_env):
     assert "UNTRUSTED-BODY" not in rec.calls[0]["initial_prompt"]
 
 
+async def _add_bot_artifact_item() -> None:
+    async with db_session() as db:
+        db.add(WorkItem(author="tony", repo="steiner385/viberpit", number=300, kind="pr",
+                        title="docs(fix-patterns): regenerate index", body="BOT-BODY",
+                        state="open", triage_state="unclassified"))
+
+
+async def _set_bot_dismissal(on: bool) -> None:
+    from sqlalchemy import select
+    async with db_session() as db:
+        p = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+        p.automation_policy = {**(p.automation_policy or {}),
+                               "triage_dismiss_bot_artifacts": on}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dismissal_on", [True, False])
+async def test_classify_run_self_select_honours_the_bot_artifact_gate(db_env, dismissal_on):
+    """#2683: a bot artifact the loop set aside stays ``unclassified`` (so turning
+    the setting off can bring it back) — the onboarding self-select must apply
+    the same gate, or it spends a classify session on exactly that item."""
+    await _seed(db_env)
+    await _add_bot_artifact_item()
+    await _set_bot_dismissal(dismissal_on)
+    orch = _bare_orch()
+    rec = FakeAutomationContext()
+    orch._pm_classify_ctx = rec
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    with patch(_ENSURE_CLONE, return_value="/tmp/clone"):
+        n = await orch.pm_classify_run("viberpit")
+    assert n == (3 if dismissal_on else 4)
+    assert ("BOT-BODY" in rec.calls[0]["initial_prompt"]) is (not dismissal_on)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dismissal_on", [True, False])
+async def test_onboarding_count_excludes_set_aside_bot_artifacts(db_env, dismissal_on):
+    """The wizard offers "Classify" while this count is non-zero; counting an item
+    the self-select will never take keeps offering a button that does nothing."""
+    project_id = await _seed(db_env)
+    before = (await _bare_orch().pm_onboarding_counts(project_id)).open_unclassified_count
+    await _add_bot_artifact_item()
+    await _set_bot_dismissal(dismissal_on)
+    after = (await _bare_orch().pm_onboarding_counts(project_id)).open_unclassified_count
+    assert after == before + (0 if dismissal_on else 1)
+
+
 @pytest.mark.asyncio
 async def test_classify_run_injected_batch_drops_untrusted_authors(db_env):
     await _seed(db_env)

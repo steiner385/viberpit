@@ -108,6 +108,20 @@ def is_bot_artifact(title: str | None, author: str | None = None,
     return any(p.search(title) for p in pats)
 
 
+def sets_aside_bot_output(policy: Mapping | None, title: str | None,
+                          author: str | None) -> bool:
+    """THE policy gate around ``is_bot_artifact``: whether a product with
+    *policy* keeps this item out of triage — its ``triage_dismiss_bot_artifacts``
+    is on AND the item is bot output by the one recogniser, with the product's
+    own ``triage_bot_artifact_patterns``. ``None`` (no owning product) never
+    sets anything aside. Shared by the PM Triage loop (pre-classify set-aside
+    and dismiss pass), the onboarding classify self-select and the onboarding
+    count, so none of them can disagree about which items classification skips."""
+    p = policy or {}
+    return bool(p.get("triage_dismiss_bot_artifacts")) and is_bot_artifact(
+        title, author, p.get("triage_bot_artifact_patterns") or ())
+
+
 # Which rule admitted an auto-accept — carried on the ``pm.triage.auto_accept``
 # audit detail and the loop's event, so an operator can see WHY the machine took it.
 RULE_CONFIDENCE = "confidence"
