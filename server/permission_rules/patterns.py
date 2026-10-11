@@ -28,7 +28,7 @@ PROTECTED_PATHS = frozenset(
         "**/.mcp.json", "**/.husky/**", "**/.vscode/**", "**/.idea/**", "**/.ssh/**",
         "**/.aws/**", "**/.gnupg/**", "**/.npmrc", "**/.pypirc", "**/.netrc", "**/.bashrc",
         "**/.zshrc", "**/.profile", "**/*.pem", "**/*.key", "**/id_rsa*", "**/id_ed25519*",
-        "**/credentials*", "**/secrets/**",
+        "**/credentials*", "**/.docker/config.json", "**/.kube/**", "**/.pgpass", "**/secrets/**",
     }
 )  # fmt: skip
 _NEVER_SUGGEST = frozenset({"ExitPlanMode", "AskUserQuestion"})

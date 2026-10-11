@@ -186,3 +186,52 @@ def test_interpreters_and_git_file(pat, level):
 )
 def test_round2(pat, level):
     assert assess(pat, "session").level == level
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "Bash('python' -c:*)",
+        "Bash(py\\thon -c:*)",
+        "Bash(${X}python -c:*)",
+        'Bash("sudo":*)',
+        "Bash(su\\do:*)",
+        'Bash(s""udo:*)',
+        "Bash($sudo:*)",
+        "Bash(sudo\\ :*)",
+        'Bash(git commit -m "msg")',
+        "Bash(.:*)",
+        "Bash(. x:*)",
+        "Bash(source:*)",
+        "Bash(SUDO:*)",
+        "Bash(Python -c:*)",
+        "WebFetch(domain:foo.local..)",
+        "Edit(x/.docker/config.json)",
+        "Edit(x/.kube/*)",
+        "Edit(.pgpass)",
+        "Bash(git -c x=y status:*)",
+        "Bash(git config:*)",
+    ],
+)
+def test_round3_refused(pat):
+    assert assess(pat, "session").level == "refuse"
+
+
+def test_quoted_request_keeps_prefix_suggestion():
+    out = offered_suggestions("Bash", {"command": 'git commit -m "msg"'}, "/w")
+    pats = [s["pattern"] for s in out]
+    assert "Bash(git commit:*)" in pats
+    assert 'Bash(git commit -m "msg")' not in pats
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "Bash(git status:*)",
+        "Bash(git commit:*)",
+        "Bash(npm *)",
+        "Bash(python -m pytest:*)",
+    ],
+)
+def test_round3_usability(pat):
+    assert assess(pat, "session").level == "ok"

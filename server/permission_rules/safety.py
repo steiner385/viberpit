@@ -54,7 +54,7 @@ _DANGER_PROBES: tuple[str, ...] = (
 )
 
 _SECRET_PROBES: tuple[str, ...] = (
-    ".env", ".git", "pkg/.git/hooks/pre-commit", "x/.husky/y", "x/.vscode/settings.json", "x/.idea/y", "x/.aws/credentials", "x/.gnupg/y", "x/.mcp.json", "x/.netrc", "x/.pypirc", "x/.ssh/y", "a/.env.local", ".envrc", ".git/hooks/pre-commit", ".git/config",
+    ".env", ".git", "x/.docker/config.json", "x/.kube/config", ".pgpass", "pkg/.git/hooks/pre-commit", "x/.husky/y", "x/.vscode/settings.json", "x/.idea/y", "x/.aws/credentials", "x/.gnupg/y", "x/.mcp.json", "x/.netrc", "x/.pypirc", "x/.ssh/y", "a/.env.local", ".envrc", ".git/hooks/pre-commit", ".git/config",
     ".claude/hooks/x.py", ".claude/settings.json", "a/.claude/x", ".mcp.json",
     ".husky/pre-commit", ".vscode/settings.json", ".idea/x", ".ssh/authorized_keys",
     ".ssh/id_rsa", "a/.ssh/x", ".aws/credentials", ".gnupg/x", ".npmrc", "a/.npmrc",
@@ -74,6 +74,7 @@ _EXTENSIONS = (
     " --force", " -f", " --mirror", " --delete x", " -D x", " --hard origin/master", " -fdx",
     " -rf /", " -c x", " -e x",
 )  # fmt: skip
+_OBFUSCATION_CHARS = frozenset("'\"\\$`{}")
 _LOCAL_TLDS = (".local", ".internal", ".localhost", ".lan")
 
 _WORKFLOW_PROBE = ".github/workflows/ci.yml"
@@ -97,9 +98,10 @@ def _verdict(warnings: list[str]) -> Assessment:
     return Assessment("warn", tuple(warnings)) if warnings else Assessment("ok", ())
 
 
-def _normalise_word(word: str) -> str:
-    """``\\/usr/bin/python3.12`` -> ``python``: basename, no escaping, no version suffix."""
-    return re.sub(r"[\d.]+$", "", os.path.basename(word.lstrip("\\")))
+def _word_names(word: str) -> tuple[str, str]:
+    """Lowercased basename of ``word`` (backslashes stripped), raw and version-suffix-stripped."""
+    base = os.path.basename(word.lstrip("\\")).lower()
+    return base, re.sub(r"(?<=[a-z])[\d.]+$", "", base) or base
 
 
 def _assess_bash(p: Pattern) -> Assessment:
@@ -112,6 +114,11 @@ def _assess_bash(p: Pattern) -> Assessment:
         return _refuse("allows every shell command")
     if any(tok in spec for tok in _UNMATCHABLE_BASH):
         return _refuse("pattern can never match a command")
+    if any(ch in spec.split("*", 1)[0] for ch in _OBFUSCATION_CHARS):
+        return _refuse(
+            "quoting, escapes and variables are not allowed in standing Bash rules; "
+            "use the plain command"
+        )
     for probe in _DANGER_PROBES:
         if matches_any([p], "Bash", {"command": probe}, _PROBE_CWD):
             return _refuse(f"would allow a dangerous command, e.g. `{probe}`")
@@ -124,13 +131,15 @@ def _assess_bash(p: Pattern) -> Assessment:
         head = spec.split("*", 1)[0].strip() if p.kind == "glob" else spec
         words = head.split()
         for i, w in enumerate(words):
-            name = _normalise_word(w)
+            raw, name = _word_names(w)
             if name in _INTERPRETERS_WITH_MODULE_MODE and words[i + 1 : i + 2] == [
                 "-m"
             ]:
                 continue
-            if name in _EXEC_WRAPPERS:
+            if raw in _EXEC_WRAPPERS or name in _EXEC_WRAPPERS:
                 return _refuse(f"can run arbitrary or destructive commands via `{w}`")
+        if "git" in words and ("-c" in words or "config" in words):
+            return _refuse("git config can run arbitrary commands")
         if "git" in words and "push" in words:
             return _refuse("pushes must be granted as an exact command")
         for ext in _EXTENSIONS:
@@ -168,7 +177,7 @@ def _assess_path(p: Pattern, scope: str) -> Assessment:
 
 
 def _assess_domain(dom: str) -> Assessment:
-    dom = dom.removesuffix(".")
+    dom = dom.rstrip(".")
     if "*" in dom:
         return _refuse("wildcard domains allow every host")
     try:
