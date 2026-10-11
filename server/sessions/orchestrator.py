@@ -1279,6 +1279,8 @@ class SessionOrchestrator:
         # Sessions whose background tasks have been re-armed this process (dedup the
         # auto pass against retry-on-attach). Cleared by a fresh process start.
         self._rearmed: set[str] = set()
+        # Re-arms in flight (boot pass vs. attach retry racing on one session).
+        self._rearming: set[str] = set()
         # Sessions whose restart-interrupted prompt has been replayed this process —
         # by restore_deploy (the snapshot's lastPrompt) or _rearm_session (the drain's
         # pending_prompt). Each checks it before replaying, so the two together replay
@@ -17396,13 +17398,23 @@ class SessionOrchestrator:
             log_event(log, logging.INFO, "rearm.deferred_for_orphaned_ask",
                       session_id=sid, kind=kind)
             return False
-        driver = await self.ensure_driver(sid)
-        if driver is None:
+        # Claimed synchronously, before the first await: the boot pass runs behind the
+        # daemon's yield, so an attach can arrive while it is still resuming this same
+        # session, and `_rearmed` is only set after the send.
+        if sid in self._rearmed or sid in self._rearming:
             return False
-        text = await self._rearm_text(sid, tasks)
-        if text:
-            await driver.send_prompt(text)
-        await self._replay_pending_prompt(sid, driver, prompt)
+        self._rearming.add(sid)
+        try:
+            driver = await self.ensure_driver(sid)
+            if driver is None:
+                return False
+            text = await self._rearm_text(sid, tasks)
+            if text:
+                await driver.send_prompt(text)
+            await self._replay_pending_prompt(sid, driver, prompt)
+            self._rearmed.add(sid)
+        finally:
+            self._rearming.discard(sid)
         await self._clear_rearm_snapshot(sid)
         return True
 

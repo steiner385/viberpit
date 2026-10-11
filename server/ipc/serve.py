@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 
 from server.aio import cancel_and_reap
-from server.config import get_settings
+from server.config import env_float, get_settings
 from server.db import init_db
 from server.http_keepalive import SERVER_KEEPALIVE_TIMEOUT_S
 from server.ipc.daemon import create_daemon_app
@@ -24,6 +24,7 @@ from server.ipc.paths import Endpoint, sessiond_endpoint
 from server.ipc.tls import DaemonTLSFiles, daemon_tls_files, daemon_ssl_context_factory, client_allowlist
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.x11manager import build_x11_manager
+from viberpit import credential_envelope, fleet_role
 
 log = logging.getLogger("server.ipc.serve")
 
@@ -37,6 +38,11 @@ _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 # shutdown, orchestrator stop) never runs, and systemd SIGKILLs at TimeoutStopSec
 # on every deploy (transcript audit V4 — same defect as the edge's ccswitch.service).
 _DAEMON_GRACEFUL_SHUTDOWN_TIMEOUT_S = 10
+
+# How long the boot resume pass waits for the edge to renew a lapsed credential lease: two
+# push ticks, so one missed push does not send every resumed session out tokenless.
+BOOT_CREDS_WAIT_S = env_float("VIBERPIT_BOOT_CREDS_WAIT_S",
+                              2 * credential_envelope.CREDS_PUSH_INTERVAL_S, minimum=0.0)
 
 
 def uvicorn_run_kwargs(endpoint: Endpoint, *, daemon_tls: DaemonTLSFiles | None = None,
@@ -104,6 +110,43 @@ def build_daemon(orchestrator=None):
     from server.mcp_auth import build_default_manager as _build_mcp_auth
     app.state.mcp_auth = _build_mcp_auth()
     return app, orchestrator
+
+
+async def _await_creds_lease(timeout_s: float, poll_s: float) -> None:
+    """On a broker worker, wait (bounded) for the edge to renew the envelope lease.
+
+    The cached lease (``CREDS_LEASE_S``) never survives a deploy restart — the drain alone can
+    outlast it — and a lapsed lease makes ``oauth_env_for`` fail closed, so a session resumed
+    now launches with no token and 401s into an auth-recovery relaunch. The edge's
+    ``creds_sync`` lands within one push tick of the socket binding. Past *timeout_s* the pass
+    proceeds anyway: the auth-recovery ladder still backstops a missed push.
+    """
+    if not fleet_role.is_worker():
+        return
+    store = credential_envelope.runner_store()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while store.awaiting_renewal():
+        if loop.time() >= deadline:
+            log.warning("daemon boot: credential lease still lapsed after %.0fs — "
+                        "resuming sessions without waiting further", timeout_s)
+            return
+        await asyncio.sleep(poll_s)
+
+
+async def _boot_resume_pass(orchestrator, *, creds_wait_s: float = BOOT_CREDS_WAIT_S,
+                            creds_poll_s: float = 1.0) -> None:
+    """Re-arm, then auto-resume (auto-resume skips what re-arm already replayed)."""
+    await _await_creds_lease(creds_wait_s, creds_poll_s)
+    try:
+        await orchestrator.rearm_background_tasks()
+    except Exception as exc:
+        log.error("daemon rearm_background_tasks() failed", exc_info=True)
+        orchestrator.note_startup_failure("rearm", exc)
+    try:
+        await orchestrator.auto_resume_interrupted()
+    except Exception:
+        log.error("daemon auto_resume_interrupted() failed", exc_info=True)
 
 
 @asynccontextmanager
@@ -188,15 +231,6 @@ async def daemon_lifespan(app, orchestrator):
         # Feed the startup report (surfaced via /api/daemon/health on the edge) so a
         # boot that silently restored nothing is observable, not just a log line.
         orchestrator.note_startup_failure("rehydrate", exc)
-    try:
-        await orchestrator.rearm_background_tasks()
-    except Exception as exc:
-        log.error("daemon rearm_background_tasks() failed", exc_info=True)
-        orchestrator.note_startup_failure("rearm", exc)
-    try:
-        await orchestrator.auto_resume_interrupted()
-    except Exception:
-        log.error("daemon auto_resume_interrupted() failed", exc_info=True)
     await orchestrator.start()
     # Drain in-flight turns on SIGTERM before uvicorn begins shutting down, whoever
     # sent it (deploy, watchdog, a bare `systemctl restart`). Needs KillMode=mixed and
@@ -248,10 +282,22 @@ async def daemon_lifespan(app, orchestrator):
         app.state.reauth.sweep_stale()
     except Exception:
         log.warning("daemon startup: reauth sweep_stale failed", exc_info=True)
+    # Re-arm drain-interrupted sessions, then auto-resume, BEHIND the yield: uvicorn
+    # binds its socket only once this lifespan yields, and each re-arm resumes a
+    # session under the orchestrator's global `_ensure_lock` (~1 min apiece). Awaited
+    # inline, five interrupted sessions held rocky off :9443 for 6.5 min and failed
+    # the deploy's 180 s verify. Placed after install_drain_on_sigterm so a stop that
+    # lands mid-pass still drains the turns it started; a cancelled pass keeps its
+    # unsent snapshots for the next boot or attach (`_maybe_rearm_on_attach`).
+    app.state.boot_resume_task = supervise(
+        asyncio.create_task(_boot_resume_pass(orchestrator), name="daemon-boot-resume"),
+        name="daemon-boot-resume",
+    )
     try:
         yield
     finally:
         uninstall_drain_on_sigterm()
+        await cancel_and_reap(app.state.boot_resume_task, phase="daemon.boot-resume")
         # Drain the Codex app-servers first. By the time this runs, install_drain_on_sigterm
         # has already let in-flight turns settle, so no thread is mid-turn — which is the
         # ordering the plan requires ("after driver turns settle and before daemon shutdown

@@ -30,6 +30,10 @@ KINDS = (SETUP_TOKEN, OAUTH_ACCESS)
 
 _CACHE_FILE = "envelopes.json"
 
+# Broker cadence: the edge pushes every CREDS_PUSH_INTERVAL_S with a lease of four missed pushes.
+CREDS_PUSH_INTERVAL_S = 30.0
+CREDS_LEASE_S = 120.0
+
 
 @dataclass(frozen=True)
 class Envelope:
@@ -136,6 +140,13 @@ class EnvelopeStore:
         now = time.time() if now is None else now
         with self._lock:
             return self._synced_at is not None and now < self._synced_at + self._lease_s
+
+    def awaiting_renewal(self, now: float | None = None) -> bool:
+        """True when the broker has vended envelopes here but the lease has lapsed — the state
+        every worker restart wakes into, until the edge's next sync."""
+        with self._lock:
+            held = bool(self._held)
+        return held and not self.lease_valid(now)
 
     def launch_token(self, account: str, *, skew_s: float = 0.0,
                      now: float | None = None) -> str | None:
