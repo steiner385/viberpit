@@ -12,7 +12,9 @@ from pathlib import Path
 
 from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
+from server.sessions.helper_call import (
+    HelperCredentialsPending, helper_credentials_pending, helper_cwd, run_helper_call,
+    stateless_helper_options)
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +84,10 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
                 # Same contract as autopilot_decider.decide: an empty config dir can
                 # only answer "Not logged in" — decline (the loop escalates) rather
                 # than spawn a CLI that is certain to fail.
+                if helper_credentials_pending():
+                    log.info("nudge_composer deferred: helper credentials pending (sid=%s)",
+                             getattr(ctx, "session_id", "?"))
+                    raise HelperCredentialsPending()
                 log.warning("nudge_composer skipped: no helper account (sid=%s)",
                             getattr(ctx, "session_id", "?"))
                 return None
@@ -119,6 +125,8 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
             return None
         text = str(obj.get("nudge", "")).strip()
         return text[:_MAX_NUDGE_CHARS] or None
+    except HelperCredentialsPending:
+        raise  # a wait, not a decline — the loop retries next tick
     except Exception as exc:  # model down / bad options — caller escalates
         log.warning("nudge_composer failed: %s", exc)
         return None

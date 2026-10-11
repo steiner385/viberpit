@@ -13,7 +13,8 @@ from dataclasses import dataclass
 
 from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
+from server.sessions.helper_call import (
+    helper_credentials_pending, helper_cwd, run_helper_call, stateless_helper_options)
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +92,10 @@ async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
         # the orchestrator passed no config dir at all, so every one of the 44 classify
         # calls in the preceding 14 days failed this way and the no-PR salvage never
         # ran once. Degrade without a spawn (the bar then nudges, as it always did).
-        log.warning("pr_intent.classify skipped: no helper account")
+        # Inside a worker restart's lease-renewal window that is expected and clears
+        # by itself, so it is not worth an auto-filed issue (#2953).
+        log.log(logging.INFO if helper_credentials_pending() else logging.WARNING,
+                "pr_intent.classify skipped: no helper account")
         return _UNRESOLVED
     try:
         query_fn = _query_fn or _default_sdk_query_fn()

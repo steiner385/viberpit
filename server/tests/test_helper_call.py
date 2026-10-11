@@ -613,3 +613,40 @@ def test_non_envelope_account_ignores_empty_token_env(monkeypatch):
     monkeypatch.setattr(accounts, "runner_uses_envelope", lambda name: False)
     monkeypatch.setattr(account_auth, "oauth_env_for", lambda name: {})
     assert helper_call.is_account_helper_ready("browser-oauth") is True
+
+
+# #2953: a worker daemon wakes from a restart with every envelope-held account
+# unlaunchable until the edge's next creds_sync, so the helper pickers find no
+# account for a few minutes. Callers need to tell that self-healing window apart
+# from a steady-state "no helper account" — this is the one predicate they ask.
+def test_helper_credentials_pending_tracks_the_worker_lease(monkeypatch, tmp_path):
+    from viberpit import credential_envelope as ce
+    from server.sessions.helper_call import helper_credentials_pending
+
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_CLAUDE_CREDS_DIR", str(tmp_path))
+    ce.reset_runner_store()
+    try:
+        assert helper_credentials_pending() is False  # nothing ever vended: pre-broker path
+        env = ce.Envelope("a", ce.SETUP_TOKEN, "TOK", None, 1)
+        ce.runner_store().sync([env], -1)  # held, lease lapsed — the restart window
+        assert helper_credentials_pending() is True
+        ce.runner_store().sync([env], 3600)  # the edge's creds_sync landed
+        assert helper_credentials_pending() is False
+        ce.runner_store().sync([env], -1)
+        monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "primary")
+        assert helper_credentials_pending() is False  # the primary holds no lease
+    finally:
+        ce.reset_runner_store()
+
+
+def test_helper_credentials_pending_fails_to_false(monkeypatch):
+    """An unreadable store must never turn a real outage into a silent deferral."""
+    from viberpit import credential_envelope as ce
+    from server.sessions.helper_call import helper_credentials_pending
+
+    def boom():
+        raise OSError("unreadable cache")
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setattr(ce, "runner_store", boom)
+    assert helper_credentials_pending() is False

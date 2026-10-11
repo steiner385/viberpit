@@ -1149,3 +1149,33 @@ async def test_lowered_hourly_cap_deadline_waits_for_enough_expirations():
     loop._clock = lambda: 10_000.0
     await loop.tick()
     assert ctx.states['s1']['observation']['deadline'] == 12_602.0
+
+
+@pytest.mark.asyncio
+async def test_credentials_pending_decision_waits_without_escalating():
+    """#2953: the decider's post-restart deferral is a wait — no escalation, no action."""
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="skip", reason="helper credentials pending",
+                                        waiting_reason="credentials_pending"))
+    await loop.tick()
+    assert loop._applied == []
+    assert not any(kind == "escalated" for _, _, kind in ctx.emits)
+    assert ctx.states["s1"]["observation"]["reason"] == "credentials_pending"
+
+
+@pytest.mark.asyncio
+async def test_composer_credentials_pending_waits_without_escalating():
+    """#2953: a gate-authored nudge reaching the composer inside the creds window waits
+    the window out instead of escalating as a composer failure."""
+    from server.sessions.helper_call import HelperCredentialsPending
+    ctx = FakeCtx()
+
+    async def compose(dc, decision):
+        raise HelperCredentialsPending()
+
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="hint"), compose=compose)
+    await loop.tick()
+    assert loop._applied == []
+    assert not any(kind == "escalated" for _, _, kind in ctx.emits)
+    assert ctx.states["s1"]["observation"]["reason"] == "credentials_pending"
+    assert not ctx.states["s1"].get("repeat_count")

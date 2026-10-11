@@ -11,7 +11,8 @@ from pathlib import Path
 
 from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import helper_cwd, run_helper_call, stateless_helper_options
+from server.sessions.helper_call import (
+    helper_credentials_pending, helper_cwd, run_helper_call, stateless_helper_options)
 
 from .autopilot_policy import Decision, DecisionContext, missing_claimed_prs
 
@@ -144,6 +145,14 @@ async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd
                 # CLAUDE_CONFIG_DIR). A spawn would only answer "Not logged in" and
                 # raise — 2026-09-09 that cost 4.5h of doomed calls and 270 feed
                 # events for one Codex-account session. Known answer, no spawn.
+                if helper_credentials_pending():
+                    # A worker restart's lease-renewal window, not an outage: the
+                    # next creds_sync restores the accounts, so wait for the next
+                    # tick instead of handing the session to a human (#2953).
+                    log.info("autopilot.decide deferred: helper credentials pending "
+                             "(sid=%s)", ctx.session_id)
+                    return Decision(action="skip", reason="helper credentials pending",
+                                    waiting_reason="credentials_pending")
                 log.warning("autopilot.decide skipped: no helper account (sid=%s)",
                             ctx.session_id)
                 return Decision(action="escalate", reason="decider-skipped:no-helper-account")

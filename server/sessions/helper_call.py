@@ -186,6 +186,35 @@ def _envelope_launchable(name: str) -> bool:
     return bool(oauth_env_for(name))
 
 
+class HelperCredentialsPending(Exception):
+    """A helper found no account inside the worker's lease-renewal window.
+
+    Raised by a helper whose return value has no room for "wait" (the nudge
+    composer's ``None`` already means "declined" and escalates), so its caller can
+    wait the window out instead. See :func:`helper_credentials_pending`.
+    """
+
+
+def helper_credentials_pending() -> bool:
+    """True while this worker is waiting for the edge to renew its envelope lease.
+
+    Every worker restart wakes into that state (``EnvelopeStore.awaiting_renewal``):
+    each envelope-held account is unlaunchable (:func:`_envelope_launchable`), so the
+    pickers below find no helper account until the next ``creds_sync`` — minutes at
+    most. A caller that finds none asks this to tell that self-healing window from a
+    steady-state "no helper account": on 2026-10-11 the two were one outcome, and 25
+    sessions' worth of decides escalated to a human for a condition that cleared by
+    itself (#2953). A lease the edge never renews is not hidden by deferring on it:
+    the edge reports that host itself (``fleet.creds_sync … unreachable``).
+    Fails to False — an unreadable store must not turn a real outage into a wait.
+    """
+    try:
+        from viberpit import credential_envelope, fleet_role
+        return fleet_role.is_worker() and credential_envelope.runner_store().awaiting_renewal()
+    except Exception:
+        return False
+
+
 def _pick_enabled_account(provider: str) -> str | None:
     """Return the name of the first live, enabled account for *provider*.
 
@@ -203,7 +232,7 @@ def _pick_enabled_account(provider: str) -> str | None:
                 continue
             return name
     except Exception:
-        pass
+        log.debug("helper account pick failed (provider=%s)", provider, exc_info=True)
     return None
 
 

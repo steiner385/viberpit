@@ -83,3 +83,19 @@ async def test_no_helper_account_is_unresolved_without_opening_the_model_door(mo
     v = await pi.classify_pr_intent([], "goal", _config_dir="")
     assert v == pi.PrIntentVerdict(False, "", "low")
     assert opened == [], "the SDK door must not be opened without a helper account"
+
+
+@pytest.mark.asyncio
+async def test_no_helper_account_during_lease_renewal_logs_at_info(monkeypatch, caplog):
+    """#2953 sibling: the post-restart creds window is self-healing — still unresolved
+    (the bar nudges, as it always did), but no WARNING for the error triage to file."""
+    import logging
+
+    import server.automations.pr_intent as pi
+
+    monkeypatch.setattr(pi, "helper_credentials_pending", lambda: True)
+    with caplog.at_level(logging.INFO, logger="server.automations.pr_intent"):
+        v = await pi.classify_pr_intent([], "goal", _config_dir="")
+    assert v == pi.PrIntentVerdict(False, "", "low")
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("no helper account" in r.getMessage() for r in caplog.records)

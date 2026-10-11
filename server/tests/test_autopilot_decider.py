@@ -226,3 +226,39 @@ async def test_failure_log_and_reason_name_the_classified_kind(caplog):
         assert "organization has disabled" in logged
     finally:
         decider_mod._consecutive_decide_failures = 0
+
+
+# #2953: rocky 2026-10-11 — 25 "skipped: no helper account" WARNINGs in the ~3
+# minutes after a worker restart, each escalating a real session to a human, all
+# before the edge's first creds_sync renewed the envelope lease. That window
+# clears by itself: wait it out quietly; keep escalate + WARNING for the rest.
+@pytest.mark.asyncio
+async def test_no_helper_account_during_lease_renewal_waits_quietly(monkeypatch, caplog):
+    import logging
+
+    import server.automations.autopilot_decider as mod
+
+    def never():
+        raise AssertionError("the SDK door must not be opened without a helper account")
+    monkeypatch.setattr(mod, "_default_sdk_query_fn", never)
+    monkeypatch.setattr(mod, "helper_credentials_pending", lambda: True)
+    with caplog.at_level(logging.INFO, logger="server.automations.autopilot_decider"):
+        d = await decide(_ctx(), _config_dir="", _cwd="/tmp")
+    assert d.action == "skip"
+    assert d.waiting_reason == "credentials_pending"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("credential" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_no_helper_account_outside_the_renewal_window_still_escalates(monkeypatch, caplog):
+    import logging
+
+    import server.automations.autopilot_decider as mod
+
+    monkeypatch.setattr(mod, "helper_credentials_pending", lambda: False)
+    with caplog.at_level(logging.WARNING, logger="server.automations.autopilot_decider"):
+        d = await decide(_ctx(), _config_dir="", _cwd="/tmp")
+    assert (d.action, d.reason) == ("escalate", "decider-skipped:no-helper-account")
+    assert any("no helper account" in r.getMessage() and r.levelno == logging.WARNING
+               for r in caplog.records)

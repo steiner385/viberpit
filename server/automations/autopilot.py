@@ -9,6 +9,8 @@ import asyncio
 import logging
 from typing import Awaitable, Callable, cast
 
+from server.sessions.helper_call import HelperCredentialsPending
+
 from .autopilot_policy import (
     Decision, DecisionContext, fingerprint, post_validate, pre_decide,
 )
@@ -123,7 +125,8 @@ class AutopilotLoop:
         degraded = False
         governed = await self._list_governed()
         counts = {"waiting": 0, "deferring": 0, "budget_blocked": 0,
-                  "paused": 0, "handed_back": 0, "pr_facts_unavailable": 0, "policy_paused": 0}
+                  "paused": 0, "handed_back": 0, "pr_facts_unavailable": 0, "policy_paused": 0,
+                  "credentials_pending": 0}
         for sid, reason in getattr(self._ctx, "autopilot_withheld", {}).items():
             try:
                 context = await self._get_context(sid)
@@ -256,6 +259,9 @@ class AutopilotLoop:
                 await self._observe(sid, ctx.ledger, "budget_blocked", ctx=ctx)
                 return False, False
             decision = await self._compose_nudge_decision(sid, ctx, decision, now)
+            if decision.action == "skip":
+                await self._observe(sid, ctx.ledger, decision.waiting_reason or "waiting", ctx=ctx)
+                return False, False
             if decision.action == "suppressed":
                 await self._observe(sid, ctx.ledger, "waiting", ctx=ctx)
                 return False, False
@@ -317,6 +323,7 @@ class AutopilotLoop:
                   "policy_paused": "session assistance is paused by product policy",
                   "handed_back": "waiting for your response",
                   "pr_facts_unavailable": "waiting for verified PR facts",
+                  "credentials_pending": "waiting for helper credentials",
                   "proposed": "assistance proposed for review",
                   "archive_paused": "automatic archive is paused",
                   "escalated": "waiting for human review", "waiting": "waiting"}
@@ -464,7 +471,13 @@ class AutopilotLoop:
                 await self._record_futile(sid, ctx.ledger or {}, ctx)
                 return Decision(action="suppressed", reason="near-duplicate nudge suppressed")
             return decision
-        text = await self._compose(ctx, decision)
+        try:
+            text = await self._compose(ctx, decision)
+        except HelperCredentialsPending:
+            # Not a decline: nothing was attempted, so it is neither futile nor a
+            # reason to hand the session to a human — the next tick retries (#2953).
+            return Decision(action="skip", reason="helper credentials pending",
+                            waiting_reason="credentials_pending")
         if not (text or "").strip():
             await self._record_futile(sid, ctx.ledger or {}, ctx)
             return Decision(action="escalate",
