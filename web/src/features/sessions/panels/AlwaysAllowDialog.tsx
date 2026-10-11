@@ -142,11 +142,11 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
 
       <div className="flex justify-end gap-2">
         {stale ? (
-          <Button variant="secondary" onClick={onClose}>Close</Button>
+          <Button variant="secondary" size="lg" onClick={onClose}>Close</Button>
         ) : (
           <>
-            <Button variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button onClick={() => void grant()} disabled={!canGrant}>
+            <Button variant="secondary" size="lg" onClick={onClose}>Cancel</Button>
+            <Button size="lg" onClick={() => void grant()} disabled={!canGrant}>
               {!needsConfirm ? 'Grant' : scope === 'global' ? 'Confirm — allow everywhere' : 'Confirm'}
             </Button>
           </>
