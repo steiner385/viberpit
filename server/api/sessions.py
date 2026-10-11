@@ -1884,7 +1884,7 @@ class SetModelRequest(BaseModel):
 def _action_error_response(exc: ActionError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.http,
-        content={"detail": {"code": exc.code, "message": exc.message}},
+        content={"detail": {"code": exc.code, "message": exc.message, **(exc.extra or {})}},
     )
 
 
