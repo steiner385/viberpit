@@ -96,10 +96,10 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/prs"),
         # PR detail (spec v2 §4.6, Pack G, Task 7.5).
         ("GET", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+"),
-        # GitHub writes (spec v2 §4.6, Pack G, Task 7.6). These are the assistant's only
-        # PUBLIC side effects — everything else it can reach mutates ViberPit's own
-        # state — so both are MUTATION-class (a permission card) and both carry an
-        # authorship trailer on the way out.
+        # GitHub writes (spec v2 §4.6, Pack G, Task 7.6). The assistant's only free-form
+        # PUBLIC side effects (the Session Feedback inbox rows below also reach GitHub,
+        # but as that automation's own filing) — so both are MUTATION-class (a
+        # permission card) and both carry an authorship trailer on the way out.
         ("POST", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+/comments"),
         ("POST", r"/api/github/issues"),
         ("GET", r"/api/pipeline/insights/checks"),
@@ -129,6 +129,11 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"/api/automations/[A-Za-z0-9_-]+/trigger"),
         ("POST", r"/api/automations/backlog-runner/dispatch"),
         ("POST", r"/api/automations/pr-doctor/consolidate"),
+        # Session Feedback's clustered inbox (#2936). Pinned to that automation, the
+        # only one with an inbox, and to the four ops the tools wrap — the generic
+        # routes' other ops (e.g. a later `restore`) get no row until a tool needs one.
+        ("GET", r"/api/automations/session-feedback/clusters"),
+        ("POST", r"/api/automations/session-feedback/clusters/(draft|file|dismiss|attach)"),
         ("GET", r"/api/deploy/status"),
         ("GET", r"/api/auth/me"),
         ("GET", r"/api/sessions/adoptable"),
@@ -231,4 +236,5 @@ def route_allowed(method: str, path: str, *, operator: bool = False) -> bool:
 # render). The conformance test (server/tests/test_assistant_conformance.py) lets a
 # READ tool use POST only when it is listed here. Later tasks add names to this set.
 READ_POSTS: frozenset[str] = frozenset({"test_notification", "preview_schedule",
-                                        "suggest_next_prompt", "render_template"})
+                                        "suggest_next_prompt", "render_template",
+                                        "draft_feedback_cluster_issue"})

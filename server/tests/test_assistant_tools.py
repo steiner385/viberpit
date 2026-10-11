@@ -1472,6 +1472,104 @@ async def test_consolidate_prs_rejects_an_empty_number_list_locally():
     assert out["is_error"] is True
 
 
+# --- Session Feedback inbox tools (#2936) --------------------------------------------
+# Thin adapters over the clustered-inbox routes (server/api/automations.py). The two
+# reads change nothing; the four writes file/comment publicly or move reports out of
+# the inbox, so each raises a card like trigger_automation_action.
+
+_FB = "/api/automations/session-feedback/clusters"
+_INBOX_WRITE_TOOLS = ("file_feedback_cluster", "dismiss_feedback_cluster",
+                      "attach_feedback_to_issue", "attach_feedback_to_session")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args,method,path,body", [
+    ("get_feedback_clusters", {}, "GET", _FB, None),
+    ("draft_feedback_cluster_issue", {"ids": ["r1", "r2"]}, "POST", f"{_FB}/draft",
+     {"ids": ["r1", "r2"]}),
+    ("file_feedback_cluster", {"ids": ["r1"], "title": "T", "body": "B"}, "POST",
+     f"{_FB}/file", {"ids": ["r1"], "title": "T", "body": "B"}),
+    ("dismiss_feedback_cluster", {"ids": ["r1", "r2"]}, "POST", f"{_FB}/dismiss",
+     {"ids": ["r1", "r2"]}),
+    ("dismiss_feedback_cluster", {"ids": ["r1"], "fixed_by": "2950"}, "POST",
+     f"{_FB}/dismiss", {"ids": ["r1"], "fixedBy": 2950}),
+    ("attach_feedback_to_issue", {"ids": ["r1"], "issue": "77"}, "POST",
+     f"{_FB}/attach", {"ids": ["r1"], "issue": 77}),
+    ("attach_feedback_to_session", {"ids": ["r1"], "session_id": "s-9"}, "POST",
+     f"{_FB}/attach", {"ids": ["r1"], "sessionId": "s-9"}),
+])
+async def test_feedback_inbox_tools_hit_their_endpoint(name, args, method, path, body):
+    seen: list[tuple[str, str, object]] = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path, json.loads(req.content) if req.content else None))
+        return httpx.Response(200, json={"status": "ok", "level": "ok", "message": "done"})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert "is_error" not in out
+    assert seen == [(method, path, body)]
+
+
+@pytest.mark.asyncio
+async def test_get_feedback_clusters_caps_the_cluster_list():
+    rows = [{"id": f"c{i}", "title": "t", "count": 1, "members": []} for i in range(60)]
+
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json={"clusters": rows, "llm": "applied", "total": 60})
+
+    out = await _tool(build_tools(_api(handler)), "get_feedback_clusters").handler({})
+    body = json.loads(out["content"][0]["text"])
+    assert len(body["data"]["clusters"]) == 50 and body["data"]["total"] == 60
+    assert body["truncated"] == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("draft_feedback_cluster_issue", {"ids": []}),
+    ("draft_feedback_cluster_issue", {"ids": "r1"}),
+    ("file_feedback_cluster", {"ids": ["r1"], "title": "", "body": "B"}),
+    ("file_feedback_cluster", {"ids": ["r1"], "title": "T", "body": "  "}),
+    ("file_feedback_cluster", {"ids": [], "title": "T", "body": "B"}),
+    ("dismiss_feedback_cluster", {"ids": ["r1", ""]}),
+    ("dismiss_feedback_cluster", {"ids": ["r1"], "fixed_by": 12.5}),
+    ("attach_feedback_to_issue", {"ids": ["r1"]}),
+    ("attach_feedback_to_issue", {"ids": ["r1"], "issue": "seventy"}),
+    ("attach_feedback_to_session", {"ids": ["r1"], "session_id": ""}),
+])
+async def test_feedback_inbox_tools_reject_bad_args_locally(name, args):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected argument must never reach the API"
+
+
+def test_feedback_inbox_classes():
+    """The reads change nothing (draft is a POST that files nothing — READ_POSTS); the
+    writes file or comment publicly, or empty the inbox, so each gets a card in every
+    mode exactly like trigger_automation_action."""
+    from server.assistant.policy import READ_POSTS
+    for name in ("get_feedback_clusters", "draft_feedback_cluster_issue"):
+        assert TOOL_SPECS[name].tool_class is ToolClass.READ
+    assert "draft_feedback_cluster_issue" in READ_POSTS
+    for name in _INBOX_WRITE_TOOLS:
+        assert TOOL_SPECS[name].tool_class is TOOL_SPECS["trigger_automation_action"].tool_class
+        assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.DESTRUCTIVE
+
+
+def test_feedback_inbox_write_descriptions_name_the_effect_and_the_card():
+    tools = build_tools(_api(lambda r: httpx.Response(200, json={})))
+    effects = {"file_feedback_cluster": "public", "dismiss_feedback_cluster": "inbox",
+               "attach_feedback_to_issue": "public", "attach_feedback_to_session": "prompt"}
+    for name, effect in effects.items():
+        text = _tool(tools, name).description.lower()
+        assert "permission card" in text and effect in text, f"{name}: {text}"
+
+
 # ---------------------------------------------------------------------------
 # Batch tools (spec v2 B4): archive_sessions, unarchive_sessions, resume_sessions,
 # rotate_sessions, delete_sessions.
