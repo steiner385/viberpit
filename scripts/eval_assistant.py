@@ -1302,8 +1302,8 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
         return httpx.Response(200, json={**row, "stage": next_stage, "status": "active"})
     if method == "POST" and path.startswith("/api/pm/triage/"):
         pid, _, decision = path[len("/api/pm/triage/"):].partition("/")
-        return httpx.Response(200, json={
-            "id": pid, "status": "accepted" if decision == "accept" else "rejected"})
+        status = {"accept": "accepted", "dismiss": "dismissed"}.get(decision, "rejected")
+        return httpx.Response(200, json={"id": pid, "status": status})
     if method == "POST" and path.startswith("/api/pm/projects/") and path.endswith("/sync"):
         return httpx.Response(202, json={"requested": True})
     # Pack G writes. Canned, like every other mutation here: the eval grades which tool the
