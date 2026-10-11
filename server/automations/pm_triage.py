@@ -68,6 +68,7 @@ from server.pm.triage_accept import (
     is_bot_artifact,
     item_is_open,
     repeat_threshold_for,
+    sets_aside_bot_output,
 )
 
 from .base import AutomationStatus, ConfigField
@@ -396,15 +397,6 @@ class PmTriageLoop:
                                  kind="auto_accept_skipped")
             return None
 
-    @staticmethod
-    def _dismisses_bot_output(policy: dict | None, title: str | None,
-                              author: str | None) -> bool:
-        """Whether *policy* has bot-artifact dismissal on AND this item is bot
-        output by the ONE verdict (``is_bot_artifact``) with the product's own
-        patterns. Shared by the pre-classify skip and the dismiss pass."""
-        return bool(policy and policy.get("triage_dismiss_bot_artifacts")) and is_bot_artifact(
-            title, author, (policy or {}).get("triage_bot_artifact_patterns") or ())
-
     async def _skip_bot_artifacts(self, items: list[PendingItemView],
                                   policies: dict[str, dict] | None) -> list[PendingItemView]:
         """#2683: bot output never reaches a classify session. An item the
@@ -417,13 +409,23 @@ class PmTriageLoop:
         the item is parked: switching ``triage_dismiss_bot_artifacts`` off sends
         it back to classification on the next tick. Dropped from the batch even
         when the seam fails (classifying bot output is the waste the rule stops;
-        the next tick retries the record). An unowned item is not judged."""
+        the next tick retries the record). An unowned item is not judged.
+
+        FAIL CLOSED when the policy read failed (wired, but ``policies`` is
+        ``None``), like the auto-accept pass: an item the built-in recogniser
+        alone flags — a ``[bot]`` login or a built-in title — is held back from
+        this tick's batch without recording anything (there is no policy to
+        record it under). That is exactly what the default policy does, so a DB
+        blip never spends a classify session on bot output; a product that
+        turned dismissal off only waits a tick."""
+        if self._read_policies is not None and policies is None:
+            return [i for i in items if not is_bot_artifact(i.title, i.author)]
         if self._mark_ignored is None or not policies:
             return items
         kept: list[PendingItemView] = []
         for item in items:
             policy = policies.get(item.product_slug) if item.product_slug else None
-            if not self._dismisses_bot_output(policy, item.title, item.author):
+            if not sets_aside_bot_output(policy, item.title, item.author):
                 kept.append(item)
                 continue
             if item.dismissed_before:
@@ -518,7 +520,7 @@ class PmTriageLoop:
                 continue
             policy = policies.get(slug) or {}
             if self._auto_dismiss is not None and not cand.auto_undone \
-                    and self._dismisses_bot_output(policy, cand.title, cand.author):
+                    and sets_aside_bot_output(policy, cand.title, cand.author):
                 await self._dismiss(cand, DISMISS_REASON_BOT_ARTIFACT,
                                     f"auto-dismissed bot artifact {target}")
                 continue

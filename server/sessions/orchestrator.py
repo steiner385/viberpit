@@ -11673,8 +11673,16 @@ class SessionOrchestrator:
         Both branches keep only items whose author is trusted under the owning
         product's policy (``dispatch_trust``; fail-closed when no product owns the
         repo): each item's title and body go verbatim into the session's prompt, and
-        on a public repo anyone can open an issue or PR."""
+        on a public repo anyone can open an issue or PR.
+
+        The self-select also skips bot output the product sets aside
+        (``sets_aside_bot_output``, #2683) — the same gate the PM Triage loop
+        applies before ITS batches (which arrive here already filtered). A set-aside
+        item stays ``unclassified`` so switching the setting off brings it back;
+        without this gate onboarding would spend a session on exactly those items."""
         from sqlalchemy import select, tuple_ as sa_tuple
+        from server.automations.product_policy import effective_policy
+        from server.pm.triage_accept import sets_aside_bot_output
         from server.db.models import (
             Feature, Project, ProjectRepo, TriageProposal, WorkItem)
         from server.pm.classification import (
@@ -11712,14 +11720,17 @@ class SessionOrchestrator:
                 # load the chunk: filtering after a LIMIT would let a flood of
                 # untrusted issues starve every trusted one out of the window.
                 trusted = await trusted_authors_by_repo(db, repo_names)
+                policy = effective_policy(proj.automation_policy)
                 candidates = (await db.execute(select(
-                    WorkItem.id, WorkItem.repo, WorkItem.author).where(
+                    WorkItem.id, WorkItem.repo, WorkItem.author, WorkItem.title).where(
                     WorkItem.repo.in_(repo_names), WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified"
                 ).order_by(WorkItem.gh_updated_at.desc()))).all()
-                chunk_ids = [wid for wid, repo_, author in candidates
+                chunk_ids = [wid for wid, repo_, author, title in candidates
                              if wid not in pending_ids
-                             and author_trusted(trusted, repo_, author)][:CLASSIFY_CHUNK_SIZE]
+                             and author_trusted(trusted, repo_, author)
+                             and not sets_aside_bot_output(policy, title, author)
+                             ][:CLASSIFY_CHUNK_SIZE]
                 if not chunk_ids:
                     return 0
                 by_id = {w.id: w for w in (await db.execute(select(WorkItem).where(
@@ -12303,11 +12314,14 @@ class SessionOrchestrator:
         from sqlalchemy import func, select
         from server.db.models import (
             Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+        from server.automations.product_policy import effective_policy
         from server.pm.onboarding import ProjectOnboardingView
-        from server.pm.triage_accept import awaiting_decision_clause
+        from server.pm.triage_accept import awaiting_decision_clause, sets_aside_bot_output
         async with db_session() as db:
             repos = (await db.execute(select(ProjectRepo).where(
                 ProjectRepo.project_id == project_id))).scalars().all()
+            proj = (await db.execute(select(Project).where(
+                Project.id == project_id))).scalar_one()
             repo_names = [r.repo for r in repos if r.repo]
             feature_count = (await db.execute(select(func.count(Feature.id)).where(
                 Feature.project_id == project_id,
@@ -12315,17 +12329,21 @@ class SessionOrchestrator:
             open_unclassified = 0
             pending = 0
             if repo_names:
-                open_unclassified = (await db.execute(select(
-                    func.count(WorkItem.id)).where(
-                        WorkItem.repo.in_(repo_names), WorkItem.state == "open",
-                        WorkItem.triage_state == "unclassified"))).scalar_one()
+                # What ``pm_classify_run``'s self-select could take: bot output the
+                # product sets aside is not "to classify" (#2683) — counting it kept
+                # the wizard offering a Classify that dispatches nothing.
+                policy = effective_policy(proj.automation_policy)
+                open_unclassified = sum(
+                    1 for title, author in (await db.execute(select(
+                        WorkItem.title, WorkItem.author).where(
+                            WorkItem.repo.in_(repo_names), WorkItem.state == "open",
+                            WorkItem.triage_state == "unclassified"))).all()
+                    if not sets_aside_bot_output(policy, title, author))
                 pending = (await db.execute(select(func.count(
                     TriageProposal.id)).join(
                     WorkItem, WorkItem.id == TriageProposal.work_item_id).where(
                         WorkItem.repo.in_(repo_names),
                         awaiting_decision_clause()))).scalar_one()
-            proj = (await db.execute(select(Project).where(
-                Project.id == project_id))).scalar_one()
         return ProjectOnboardingView(
             state=proj.onboarding_state or "registered",
             repo_count=len(repos),

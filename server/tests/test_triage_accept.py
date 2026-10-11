@@ -342,3 +342,20 @@ async def test_a_requeued_dismissal_leaves_the_item_classifiable(tmp_path, monke
         wi = await db.get(WorkItem, wid)
         assert wi.triage_state == "unclassified" and wi.hold_kind is None
         assert (await db.get(TriageProposal, pid)).undo_snapshot["triageState"] == "proposed"
+
+
+def test_sets_aside_bot_output_is_the_one_policy_gate():
+    """Recognizer + the product's switch + its own patterns, in ONE call — the
+    loop, the onboarding classify self-select and the onboarding count share it."""
+    from server.automations.product_policy import effective_policy
+    from server.pm.triage_accept import sets_aside_bot_output
+    on = effective_policy(None)                                   # dismissal defaults on
+    off = {**on, "triage_dismiss_bot_artifacts": False}
+    mine = {**on, "triage_bot_artifact_patterns": [r"^chore: audit codebase for\b"]}
+    assert sets_aside_bot_output(on, "docs(fix-patterns): regenerate index", "tony")
+    assert sets_aside_bot_output(on, "Fix it", "dependabot[bot]")
+    assert not sets_aside_bot_output(on, "Weekly failed — 2026-10-10", "app/github-actions")
+    assert not sets_aside_bot_output(off, "docs(fix-patterns): regenerate index", "tony")
+    assert not sets_aside_bot_output(None, "docs(fix-patterns): regenerate index", "tony")
+    assert sets_aside_bot_output(mine, "chore: audit codebase for X", "tony")
+    assert not sets_aside_bot_output(on, "chore: audit codebase for X", "tony")
