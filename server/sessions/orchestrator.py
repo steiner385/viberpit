@@ -296,6 +296,13 @@ COMPLETE_NUDGE_CAP: int = 3
 # session ungoverned; 60s comfortably covers the interrupt unwind + replay pickup.
 TURN_RESTART_DEFER_S: float = 60.0
 
+# How long the pm-triage drift latch trusts an auto-archived map-diff session's
+# "PR still open" snapshot (``archive_context.pr_state``, frozen at archive time).
+# A PR that merges latches through the indexed Feature long before this runs out.
+# An "open" snapshot older than this belongs to a PR nobody merged, and it must
+# not hold back new work on that capability for good (#2927).
+MAP_DIFF_IN_FLIGHT_MAX_AGE_S: float = 7 * 86_400.0
+
 # Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
 # Derived from the same vocabulary as server/sessions/status.py — not a parallel list.
 PUSH_STATUSES: frozenset[str] = frozenset(
@@ -10830,6 +10837,14 @@ class SessionOrchestrator:
           (b) already in flight — a non-terminal session exists for the map-diff
               spawn's ``origin_ref``/``dedupe_key`` ``<slug>:map-diff:<suggestion>``;
               or
+          (b') still in flight after its session left — an archived session for
+              that key whose archive snapshot shows its PR open or draft, archived
+              within ``MAP_DIFF_IN_FLIGHT_MAX_AGE_S``. Completion archives a
+              propose-only session as soon as its PR is armed. Until that PR merges
+              and pm-sync indexes it, (a) cannot hold and (b) no longer does, so
+              without this the next tick opens a second PR for the same capability
+              (#2926 #2927 #2929 #2931 #2932). It is a bounded in-flight hold, not
+              a disposition, so it does not contradict (d); or
           (c) unresolvable — the cluster's repo maps to no project, so
               ``_pm_triage_propose_map_diff`` can only skip. Latching it keeps a
               dead cluster from monopolising the branch and starving the clusters
@@ -10881,6 +10896,26 @@ class SessionOrchestrator:
                     # deduplicates an overlapping driver turn-end callback.
                     await self._certify_unmarked_map_diff_turn(
                         rec, rec.updated_at, rec.last_user_interaction_at)
+        # (b') Same key as (b), read from the archived rows instead. The snapshot
+        # is the one completion/autopilot wrote, and archive_audit reads it too.
+        in_flight = {f"{slugs[c.repo]}:map-diff:{c.suggestion}": c.suggestion
+                     for c in clusters
+                     if c.suggestion not in latched and slugs.get(c.repo) is not None}
+        if in_flight:
+            from datetime import datetime, timedelta, timezone
+            from server.automations.archive_audit import archived_pr_numbers
+            cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+                      - timedelta(seconds=MAP_DIFF_IN_FLIGHT_MAX_AGE_S))
+            async with db_session() as db:
+                archived = (await db.execute(
+                    select(DbSession.origin_ref, DbSession.archive_context).where(
+                        DbSession.origin == self._pm_onboard_ctx.automation_id,
+                        DbSession.origin_ref.in_(list(in_flight)),
+                        DbSession.status == "archived",
+                        DbSession.archived_at >= cutoff))).all()
+            for ref, context in archived:
+                if archived_pr_numbers(context, states=("open", "draft")):
+                    latched.add(in_flight[ref])
         return tuple(sorted(latched))
 
     async def _pm_triage_count_state(self):
@@ -11044,6 +11079,10 @@ class SessionOrchestrator:
             await self._pm_onboard_observe_map_diff_not_needed(
                 legacy_archive, disposition_source="human-archive")
         if await self._pm_onboard_observe_map_diff_not_needed(target):
+            await self._pm_triage_ctx.emit(
+                "info",
+                f"'{suggestion}' is already covered on {repo}'s default branch — "
+                "no map diff", kind="skipped", target=target.origin_ref)
             return None
         return await self.pm_onboard_spawn_map(
             owner.slug, scope="diff", suggestion=suggestion,

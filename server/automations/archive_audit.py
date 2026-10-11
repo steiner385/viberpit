@@ -22,6 +22,7 @@ from .completion_bar import BarVerdict, PrFact, PrFacts, _is_code_goal, met_bar
 from .engine_policy import EnginePolicy
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from datetime import datetime
 
 log = logging.getLogger(__name__)
@@ -203,16 +204,23 @@ def referenced_pr_numbers(goal: str, initial_prompt: str | None) -> list[int]:
     return sorted(nums)
 
 
-def archived_pr_numbers(archive_context: "dict | None") -> list[int]:
+def archived_pr_numbers(archive_context: dict | None, *,
+                        states: Iterable[str] | None = None) -> list[int]:
     """PR numbers already known at archive time, from the ``pr_state`` snapshot
     written by ``SessionOrchestrator._auto_archive_completed``/``_autopilot_archive``
     (``PrFacts.to_prompt()``). Seeding ``ref_numbers`` from this closes the gap where
     a PR lived on a branch the session never recorded in ``authored_branches`` — the
     live poller found it via the population cache, but the retro audit otherwise has
-    no fallback (issue #1756)."""
+    no fallback (issue #1756).
+
+    *states* keeps only PRs whose snapshot ``state`` (``PrFact.state``: open, draft,
+    merged, closed) is one of them. The pm-triage drift latch asks for the PRs
+    that were still in flight when the session was archived (#2927)."""
     ctx = archive_context or {}
     pr_state = ctx.get("pr_state") or {}
-    return sorted({int(p["number"]) for p in pr_state.get("prs") or [] if "number" in p})
+    wanted = None if states is None else set(states)
+    return sorted({int(p["number"]) for p in pr_state.get("prs") or []
+                   if "number" in p and (wanted is None or p.get("state") in wanted)})
 
 
 def _pr_fact_from_gh(d: dict) -> PrFact:

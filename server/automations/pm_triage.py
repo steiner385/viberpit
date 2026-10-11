@@ -303,13 +303,17 @@ class PmTriageLoop:
         if isinstance(action, ClassifyBatch):
             await self._classify_batch(still_pending, action.count)
         elif isinstance(action, ProposeFeatureMapDiff):
-            await self._propose_map_diff(action.suggestion, action.item_numbers,
-                                         action.repo)
-            await self._ctx.emit(
-                "info", f"proposed feature-map diff for '{action.suggestion}'",
-                kind="drift_proposed", target=action.repo,
-                detail={"suggestion": action.suggestion,
-                        "items": list(action.item_numbers)})
+            # The seam answers None when it spawned nothing: no owning project,
+            # already covered on the default branch, engine refused, or no
+            # account. Reporting "proposed" anyway reads as a re-fire on the
+            # feed (#2926).
+            if await self._propose_map_diff(action.suggestion, action.item_numbers,
+                                            action.repo) is not None:
+                await self._ctx.emit(
+                    "info", f"proposed feature-map diff for '{action.suggestion}'",
+                    kind="drift_proposed", target=action.repo,
+                    detail={"suggestion": action.suggestion,
+                            "items": list(action.item_numbers)})
         elif isinstance(action, NudgeStale):
             await self._mark_stale(action.slugs)
         elif isinstance(action, NeedsHuman):
