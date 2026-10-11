@@ -21,14 +21,14 @@ const turn = (...blocks: ReturnType<typeof perm>[]) => ({
 describe('PendingPermissionPanel', () => {
   it('renders nothing when there is no open permission', () => {
     const { container } = render(
-      <PendingPermissionPanel turns={[turn()]} permissionMode="interactive" onDecision={vi.fn()} />,
+      <PendingPermissionPanel turns={[turn()]} onDecision={vi.fn()} />,
     )
     expect(container).toBeEmptyDOMElement()
   })
 
   it('pins the first open permission with actionable allow/deny controls', () => {
     render(
-      <PendingPermissionPanel turns={[turn(perm('p1'))]} permissionMode="interactive" onDecision={vi.fn()} />,
+      <PendingPermissionPanel turns={[turn(perm('p1'))]} onDecision={vi.fn()} />,
     )
     // The actionable card — role="group" "Permission request" — is rendered in the panel.
     expect(screen.getByRole('group', { name: /permission request/i })).toBeInTheDocument()
@@ -37,7 +37,7 @@ describe('PendingPermissionPanel', () => {
 
   it('exposes role="region" with accessible name "Pending permission"', () => {
     render(
-      <PendingPermissionPanel turns={[turn(perm('p1'))]} permissionMode="interactive" onDecision={vi.fn()} />,
+      <PendingPermissionPanel turns={[turn(perm('p1'))]} onDecision={vi.fn()} />,
     )
     expect(screen.getByRole('region', { name: /pending permission/i })).toBeInTheDocument()
   })
@@ -47,7 +47,7 @@ describe('PendingPermissionPanel', () => {
     // detail / diff preview would push the allow/deny buttons below the fold with
     // no reachable scroll. It must bound its own height and scroll within.
     render(
-      <PendingPermissionPanel turns={[turn(perm('p1'))]} permissionMode="interactive" onDecision={vi.fn()} />,
+      <PendingPermissionPanel turns={[turn(perm('p1'))]} onDecision={vi.fn()} />,
     )
     const region = screen.getByRole('region', { name: /pending permission/i })
     expect(region).toHaveClass('overflow-y-auto', 'overscroll-contain', 'max-h-[50vh]')
@@ -56,7 +56,7 @@ describe('PendingPermissionPanel', () => {
   it('clicking allow calls onDecision with the permId and decision', () => {
     const onDecision = vi.fn()
     render(
-      <PendingPermissionPanel turns={[turn(perm('p1'))]} permissionMode="interactive" onDecision={onDecision} />,
+      <PendingPermissionPanel turns={[turn(perm('p1'))]} onDecision={onDecision} />,
     )
     fireEvent.click(screen.getByRole('button', { name: /^allow/i }))
     expect(onDecision).toHaveBeenCalledWith('p1', 'allow')
@@ -66,7 +66,6 @@ describe('PendingPermissionPanel', () => {
     render(
       <PendingPermissionPanel
         turns={[turn(perm('p1', 'Write'), perm('p2', 'Bash'))]}
-        permissionMode="interactive"
         onDecision={vi.fn()}
       />,
     )

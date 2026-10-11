@@ -1,4 +1,7 @@
+import { useState } from 'react'
 import type { Block } from '@/session/reducer'
+import type { RulePreview, RuleScope } from '@/api/types'
+import { AlwaysAllowDialog } from './AlwaysAllowDialog'
 import { cn } from '@/lib/utils'
 import { useCardKeyboard } from '@/features/sessions/useCardKeyboard'
 import { toolLabel, toolDetail } from '@/session/toolSummary'
@@ -8,9 +11,12 @@ type Decision = 'allow' | 'deny' | 'always'
 
 interface Props {
   block: PermBlock
-  /** The session permission mode (e.g. 'interactive', 'auto', 'plan'). */
-  mode?: string
   onDecision: (permId: string, decision: Decision) => void
+  /** Standing-rule wiring. All three present → "Always allow…" opens the chooser; otherwise
+   *  (sub-agent page, assistant drawer) it falls back to the direct session-wide decision. */
+  hasRepo?: boolean
+  onPreviewRule?: (permId: string, pattern: string, scope: RuleScope) => Promise<RulePreview>
+  onGrantRule?: (permId: string, pattern: string, scope: RuleScope, confirm: boolean) => Promise<unknown>
 }
 
 // Weighting is the message (2026-09-29 critique, P0): the ONE-TIME grant is the
@@ -39,34 +45,54 @@ const tertiaryBtn = cn(
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
 )
 
-export function PermissionCard({ block, mode, onDecision }: Props) {
+export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGrantRule }: Props) {
+  const [chooserOpen, setChooserOpen] = useState(false)
   const label = toolLabel(block.tool, block.toolKind, block.input)
   // The whole request, not the 60-char gist: a command the operator cannot read
   // is a command they approve blind.
   const detail = toolDetail(block.toolKind, block.input)
-  const isInteractive = mode === 'interactive'
   // Destructive app-action tools (spec §4.4) never offer "Always allow", in
   // every mode — the server marks this on the request rather than the client
   // inferring it from toolKind, since a MUTATION app_action IS grantable.
-  const canAlwaysAllow = block.alwaysAllowed !== false
+  const canAlwaysAllow = block.alwaysAllowed !== false && !block.plan
+  // Server-proposed standing rules → the chooser. A grantable card with none is
+  // engine-managed (Codex): its session-wide accept stays a direct decision.
+  const hasSuggestions = canAlwaysAllow && (block.ruleSuggestions?.length ?? 0) > 0
+  const rules = hasSuggestions && onPreviewRule && onGrantRule && hasRepo !== undefined
+    ? { hasRepo, onPreviewRule, onGrantRule }
+    : null
 
   // Ordered actions matching the rendered buttons; digit/arrow indices map here.
-  const actions: Decision[] = block.plan
-    ? ['allow', 'deny']
-    : isInteractive || !canAlwaysAllow
-      ? ['allow', 'deny']
-      : ['allow', 'deny', 'always']
+  const actions: Decision[] = canAlwaysAllow ? ['allow', 'deny', 'always'] : ['allow', 'deny']
+
+  const activate = (d: Decision) => {
+    if (d === 'always' && rules) setChooserOpen(true)
+    else onDecision(block.permId, d)
+  }
 
   const kb = useCardKeyboard({
     count: actions.length,
-    onActivate: (i) => onDecision(block.permId, actions[i]),
+    onActivate: (i) => activate(actions[i]),
   })
 
+  // `A` opens the chooser from anywhere inside the card (not from a text field).
+  const onCardKeyDown = (e: React.KeyboardEvent) => {
+    if (!rules || e.metaKey || e.ctrlKey || e.altKey) return
+    const tag = (e.target as HTMLElement).tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return
+    if (e.key === 'a' || e.key === 'A') {
+      e.preventDefault(); e.stopPropagation()
+      setChooserOpen(true)
+    }
+  }
+
   return (
+    <>
     <div
       role="group"
       aria-label={`Permission request: ${label}`}
       className="rounded border border-warning bg-warning-wash p-3 my-1"
+      onKeyDown={onCardKeyDown}
     >
       <div className="mb-2 flex flex-wrap items-baseline gap-x-2 text-sm">
         <span className="font-medium text-ink">
@@ -117,22 +143,35 @@ export function PermissionCard({ block, mode, onDecision }: Props) {
           <>
             <button type="button" {...kb.itemProps(0)} onClick={() => onDecision(block.permId, 'allow')}
               aria-label={`Allow ${label}`} className={allowBtn}>
-              Allow
+              Allow once
             </button>
             <button type="button" {...kb.itemProps(1)} onClick={() => onDecision(block.permId, 'deny')}
               aria-label={`Deny ${label}`} className={secondaryBtn}>
               Deny
             </button>
-            {!isInteractive && canAlwaysAllow && (
-              <button type="button" {...kb.itemProps(2)} onClick={() => onDecision(block.permId, 'always')}
+            {canAlwaysAllow && (
+              <button type="button" {...kb.itemProps(2)} onClick={() => activate('always')}
                 aria-label={`Always allow ${label}`} className={cn(tertiaryBtn, 'sm:ml-auto')}
-                title="Grant this for the rest of the session">
-                Always allow
+                title={hasSuggestions ? 'Choose a standing rule' : 'Grant this for the rest of the session'}>
+                {hasSuggestions ? 'Always allow…' : 'Always allow (this session)'}
               </button>
             )}
           </>
         )}
       </div>
     </div>
+    {rules && (
+      // Outside the card div: a portaled dialog's key events bubble through the React tree,
+      // and must not reach the card's digit/A shortcuts.
+      <AlwaysAllowDialog
+        open={chooserOpen}
+        block={block}
+        hasRepo={rules.hasRepo}
+        onPreview={(pattern, scope) => rules.onPreviewRule(block.permId, pattern, scope)}
+        onGrant={(pattern, scope, confirm) => rules.onGrantRule(block.permId, pattern, scope, confirm)}
+        onClose={() => setChooserOpen(false)}
+      />
+    )}
+    </>
   )
 }

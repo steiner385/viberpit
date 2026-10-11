@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react'
 import type { Turn, Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
 import { PermissionCard } from './PermissionCard'
@@ -6,9 +7,11 @@ type PermissionBlock = Extract<Block, { kind: 'permission' }>
 
 interface Props {
   turns: Turn[]
-  /** The session permission mode (e.g. 'interactive', 'auto', 'plan'). */
-  permissionMode: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
+  /** Standing-rule wiring, passed straight to the card (see PermissionCard). */
+  hasRepo?: boolean
+  onPreviewRule?: ComponentProps<typeof PermissionCard>['onPreviewRule']
+  onGrantRule?: ComponentProps<typeof PermissionCard>['onGrantRule']
 }
 
 /** First open permission across all turns (one-at-a-time pinning). */
@@ -28,7 +31,7 @@ function findFirstOpenPermission(turns: Turn[]): PermissionBlock | null {
  * pending permission below the fold left the user with a "Permission needed" status
  * and no reachable buttons.
  */
-export function PendingPermissionPanel({ turns, permissionMode, onDecision }: Props) {
+export function PendingPermissionPanel({ turns, onDecision, hasRepo, onPreviewRule, onGrantRule }: Props) {
   const perm = findFirstOpenPermission(turns)
   if (!perm) return null
   return (
@@ -47,7 +50,13 @@ export function PendingPermissionPanel({ turns, permissionMode, onDecision }: Pr
       )}
       data-testid="pending-permission-panel"
     >
-      <PermissionCard block={perm} mode={permissionMode} onDecision={onDecision} />
+      <PermissionCard
+        block={perm}
+        onDecision={onDecision}
+        hasRepo={hasRepo}
+        onPreviewRule={onPreviewRule}
+        onGrantRule={onGrantRule}
+      />
     </div>
   )
 }

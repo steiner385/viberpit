@@ -116,7 +116,6 @@ export function SubAgentReaderPage({ sessionId, agentId }: { sessionId: string; 
         />
         <PendingPermissionPanel
           turns={turns}
-          permissionMode={rt.mode}
           onDecision={rt.onDecision}
         />
       </PageContent>
