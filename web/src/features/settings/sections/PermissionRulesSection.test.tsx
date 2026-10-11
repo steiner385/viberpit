@@ -169,4 +169,29 @@ describe('PermissionRulesSection', () => {
     mount()
     expect(screen.getByText(/No standing rules yet/)).toBeInTheDocument()
   })
+
+  it('groups several rules of one session under a single heading', () => {
+    vi.mocked(hooks.usePermissionRules).mockReturnValue(queryResult([
+      rule({ id: 's1', scope: 'session', scopeKey: 'abcdef123456', pattern: 'Edit' }),
+      rule({ id: 's2', scope: 'session', scopeKey: 'abcdef123456', pattern: 'Read' }),
+    ]))
+    mount()
+    expect(screen.getAllByRole('link', { name: 'abcdef12' })).toHaveLength(1)
+    expect(screen.getByTestId('rule-s1')).toBeInTheDocument()
+    expect(screen.getByTestId('rule-s2')).toBeInTheDocument()
+  })
+
+  it('keeps a loaded list when a background refetch fails', () => {
+    vi.mocked(hooks.usePermissionRules).mockReturnValue(
+      queryResult(RULES, { isError: true, error: new Error('boom') }))
+    mount()
+    expect(screen.queryByText(/Could not load/)).toBeNull()
+    expect(screen.getByText('Read')).toBeInTheDocument()
+  })
+
+  it('pluralizes the hit count', () => {
+    vi.mocked(hooks.usePermissionRules).mockReturnValue(queryResult([rule({ hitCount: 1 })]))
+    mount()
+    expect(screen.getByText(/^1 hit · last/)).toBeInTheDocument()
+  })
 })

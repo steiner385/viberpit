@@ -38,6 +38,18 @@ describe('SessionRulesReadout', () => {
     expect(screen.getByText(/3 hits/)).toBeInTheDocument()
   })
 
+  it('singularizes one hit', () => {
+    useRules.mockReturnValue({ data: [rule({ hitCount: 1 })] })
+    render(<SessionRulesReadout sessionId="s1" />)
+    expect(screen.getByText('1 hit')).toBeInTheDocument()
+  })
+
+  it('gives the revoke button the full touch target', () => {
+    useRules.mockReturnValue({ data: [rule({})] })
+    render(<SessionRulesReadout sessionId="s1" />)
+    expect(screen.getByRole('button', { name: /Revoke rule/ })).toHaveClass('min-h-target', 'min-w-target')
+  })
+
   it('revokes after confirmation', async () => {
     useRules.mockReturnValue({ data: [rule({})] })
     revokeAsync.mockResolvedValue(undefined)

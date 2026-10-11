@@ -5,13 +5,14 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiErrorCode } from '@/api/client'
+import { apiErrorCode, apiErrorDetail } from '@/api/client'
 import { usePermissionRules, useUpdatePermissionRule } from '@/api/hooks'
 import type { RuleWire } from '@/api/types'
 import { relTime, isValidTimestamp } from '@/lib/relativeTime'
 import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
-import { detailOf, useRevokeRule } from './useRevokeRule'
+import { RULE_SCOPE_LABEL, hitsLabel } from '@/features/permissionRules/ruleScopeLabel'
+import { useRevokeRule } from '@/features/permissionRules/useRevokeRule'
 
 const when = (iso: string | null) => (isValidTimestamp(iso) ? relTime(iso) : 'never')
 
@@ -33,7 +34,7 @@ function RuleRow({ rule }: { rule: RuleWire }) {
       await update.mutateAsync(confirmed ? { id: rule.id, pattern: sent, confirm: true } : { id: rule.id, pattern: sent })
       close()
     } catch (err) {
-      const d = detailOf(err)
+      const d = apiErrorDetail(err)
       if (apiErrorCode(err) === 'RULE_NEEDS_CONFIRMATION') {
         setNeedsConfirm({ pattern: sent, reasons: d.reasons ?? [] })
         return
@@ -74,7 +75,7 @@ function RuleRow({ rule }: { rule: RuleWire }) {
             <code className="font-mono break-all">{rule.pattern}</code>
             <div className="text-xs opacity-70">{rule.description}</div>
             <div className="text-xs opacity-60">by {rule.createdBy} · {when(rule.createdAt)}</div>
-            <div className="text-xs opacity-60">{rule.hitCount} hits · last {when(rule.lastHitAt)}</div>
+            <div className="text-xs opacity-60">{hitsLabel(rule.hitCount)} · last {when(rule.lastHitAt)}</div>
           </div>
           <div className="flex gap-1 shrink-0">
             <Button size="sm" variant="secondary" onClick={() => { setPattern(rule.pattern); setEditing(true) }}>Edit</Button>
@@ -101,15 +102,19 @@ function Group({ title, rules }: { title: React.ReactNode; rules: RuleWire[] }) 
 export function PermissionRulesSection() {
   const { data: rules = [], isLoading, isError } = usePermissionRules()
   if (isLoading) return <div className="text-sm opacity-60">Loading rules…</div>
-  if (isError) return <p role="alert" className="text-sm text-danger">Could not load the rules.</p>
+  if (isError && rules.length === 0) return <p role="alert" className="text-sm text-danger">Could not load the rules.</p>
 
   const global = rules.filter((r) => r.scope === 'global')
-  const sessions = rules.filter((r) => r.scope === 'session')
-  const repos = new Map<string, RuleWire[]>()
-  for (const r of rules.filter((x) => x.scope === 'repo')) {
-    const key = r.scopeKey ?? ''
-    repos.set(key, [...(repos.get(key) ?? []), r])
+  const byKey = (scope: RuleWire['scope']) => {
+    const groups = new Map<string, RuleWire[]>()
+    for (const r of rules.filter((x) => x.scope === scope)) {
+      const key = r.scopeKey ?? ''
+      groups.set(key, [...(groups.get(key) ?? []), r])
+    }
+    return groups
   }
+  const repos = byKey('repo')
+  const sessions = byKey('session')
 
   return (
     <div className="space-y-4">
@@ -122,7 +127,7 @@ export function PermissionRulesSection() {
         </p>
       ) : (
         <>
-          <Group title="All sessions" rules={global} />
+          <Group title={RULE_SCOPE_LABEL.global} rules={global} />
           {repos.size > 0 && (
             <section className="space-y-2">
               <h4 className="text-xs font-semibold uppercase tracking-wide opacity-70">Repos</h4>
@@ -134,17 +139,17 @@ export function PermissionRulesSection() {
               ))}
             </section>
           )}
-          {sessions.length > 0 && (
+          {sessions.size > 0 && (
             <section className="space-y-2">
               <h4 className="text-xs font-semibold uppercase tracking-wide opacity-70">Sessions</h4>
-              {sessions.map((r) => (
-                <div key={r.id} className="space-y-1 pl-2">
-                  {r.scopeKey && (
+              {[...sessions].map(([key, rs]) => (
+                <div key={key} className="space-y-1 pl-2">
+                  {key && (
                     <h5 className="text-xs">
-                      <Link to={`/sessions/${r.scopeKey}`} className="font-mono text-accent hover:underline">{r.scopeKey.slice(0, 8)}</Link>
+                      <Link to={`/sessions/${key}`} className="font-mono text-accent hover:underline">{key.slice(0, 8)}</Link>
                     </h5>
                   )}
-                  <ul><RuleRow rule={r} /></ul>
+                  <ul className="space-y-1">{rs.map((r) => <RuleRow key={r.id} rule={r} />)}</ul>
                 </div>
               ))}
             </section>

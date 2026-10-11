@@ -3,9 +3,9 @@ import { Dialog } from '@/ui/Dialog'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Input } from '@/ui/Input'
 import { Button } from '@/ui/Button'
-import { ApiRequestError, apiErrorCode } from '@/api/client'
+import { apiErrorCode, apiErrorDetail } from '@/api/client'
 import type { RulePreview, RuleScope } from '@/api/types'
-import { RULE_SCOPE_LABEL } from './ruleScopeLabel'
+import { RULE_SCOPE_LABEL } from '@/features/permissionRules/ruleScopeLabel'
 import type { Block } from '@/session/reducer'
 
 type PermBlock = Extract<Block, { kind: 'permission' }>
@@ -21,14 +21,6 @@ interface Props {
 }
 
 const PREVIEW_DEBOUNCE_MS = 300
-
-/** `{detail: {message, reasons}}` off an `ApiRequestError`; the server owns the copy. */
-function errorDetail(err: unknown): { message: string; reasons: string[] } {
-  const detail = err instanceof ApiRequestError ? (err.body.detail as Record<string, unknown> | undefined) : undefined
-  const reasons = Array.isArray(detail?.reasons) ? (detail.reasons as string[]) : []
-  const message = typeof detail?.message === 'string' ? detail.message : 'Could not save the rule'
-  return { message, reasons }
-}
 
 function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'open'>) {
   const suggestions = block.ruleSuggestions ?? []
@@ -82,7 +74,9 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
       onClose()
     } catch (err) {
       const code = apiErrorCode(err)
-      const { message, reasons } = errorDetail(err)
+      const d = apiErrorDetail(err)
+      const message = d.message ?? 'Could not save the rule'
+      const reasons = d.reasons ?? []
       if (code === 'RULE_NEEDS_CONFIRMATION') setConfirmed409({ key, reasons })
       else setError({ code, message })
     } finally {

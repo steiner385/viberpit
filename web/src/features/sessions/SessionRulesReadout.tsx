@@ -6,8 +6,8 @@
 import { X } from 'lucide-react'
 import { usePermissionRules } from '@/api/hooks'
 import type { RuleWire } from '@/api/types'
-import { useRevokeRule } from '@/features/settings/sections/useRevokeRule'
-import { RULE_SCOPE_LABEL } from './panels/ruleScopeLabel'
+import { useRevokeRule } from '@/features/permissionRules/useRevokeRule'
+import { RULE_SCOPE_LABEL, hitsLabel } from '@/features/permissionRules/ruleScopeLabel'
 
 function RuleChip({ rule }: { rule: RuleWire }) {
   const { onRevoke, revokeError, dialog } = useRevokeRule(rule.id)
@@ -15,11 +15,11 @@ function RuleChip({ rule }: { rule: RuleWire }) {
     <li data-testid={`session-rule-${rule.id}`} className="inline-flex items-center gap-1.5">
       <code className="font-mono break-all">{rule.pattern}</code>
       <span className="rounded bg-surface-2 px-1 text-ink-muted">{RULE_SCOPE_LABEL[rule.scope]}</span>
-      <span className="text-ink-muted tabular-nums">{rule.hitCount} hits</span>
+      <span className="text-ink-muted tabular-nums">{hitsLabel(rule.hitCount)}</span>
       <button
         type="button"
         aria-label={`Revoke rule ${rule.pattern}`}
-        className="inline-flex min-h-6 min-w-6 items-center justify-center rounded hover:bg-surface-2"
+        className="inline-flex min-h-target min-w-target items-center justify-center rounded hover:bg-surface-2"
         onClick={() => void onRevoke()}
       >
         <X className="h-3 w-3" aria-hidden />

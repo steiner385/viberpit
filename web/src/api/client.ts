@@ -39,6 +39,19 @@ export function apiErrorCode(err: unknown): string | null {
   return typeof record.error === 'string' ? record.error : null
 }
 
+/** The `{detail: {message, reasons}}` a rule endpoint returns on failure; the server owns the copy. */
+export interface ApiErrorDetail { message?: string; reasons?: string[] }
+
+export function apiErrorDetail(err: unknown): ApiErrorDetail {
+  const d = err instanceof ApiRequestError ? (err.body as { detail?: unknown } | null)?.detail : undefined
+  if (typeof d !== 'object' || d === null) return {}
+  const { message, reasons } = d as Record<string, unknown>
+  return {
+    message: typeof message === 'string' ? message : undefined,
+    reasons: Array.isArray(reasons) ? (reasons as string[]) : undefined,
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
