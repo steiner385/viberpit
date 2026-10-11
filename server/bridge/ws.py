@@ -1504,6 +1504,22 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 log_event(log, logging.INFO, "ws.session.resume",
                           session_id=session_id, resume_ms=resume_ms, ok=False)
                 return False
+            if session_id not in attached:
+                # The socket no longer views this session — typically the client's
+                # held retry of a promptRejected prompt, flushed socket-wide after the
+                # user navigated away (#2959). Wake the driver so the prompt lands, but
+                # open NO forwarder: nothing would ever tear it down (detach already
+                # ran), and its frames reach a browser not viewing the session, where
+                # they read as srcSeq gaps. Every frame below is view state too, so it
+                # waits for the next attach — except the deferred initial prompt, which
+                # must still go ahead of the typed one. Callers hold _attach_lock, so a
+                # concurrent attach cannot slip in between this check and the return.
+                await _send_deferred_initial_prompt(session_id)
+                log_event(log, logging.INFO, "ws.session.resume",
+                          session_id=session_id, resume_ms=resume_ms,
+                          total_ms=round((time.monotonic() - started) * 1000, 1),
+                          ok=True, streamed=False)
+                return True
             # Same uniform interface as _handle_attach (no replay here, so there is
             # no settle race to close — but ONE way of opening a live stream keeps
             # the two paths from drifting). No awaits between open and task start,

@@ -103,7 +103,8 @@ export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; e
  *
  * Events without a `seq` (replay content, lifecycle frames) are always dispatched
  * and never affect gap tracking. Events tagged with a `sessionId` other than the
- * active one are dropped (a single socket can interleave multiple sessions).
+ * active one — or tagged at all while none is active — are dropped (a single
+ * socket can interleave multiple sessions).
  *
  * Wire fields: `seq` is the per-attach dedup/heal key (restarts at 0 each attach).
  * `srcSeq` (optional, remote mode only — audit W2.3) is the daemon's end-to-end
@@ -183,8 +184,12 @@ export function handleLiveBatch(
         else state.srcEpoch.delete(sid)
       }
     }
-    // Drop events explicitly owned by a different session.
-    if (meta.sessionId && activeSessionId && meta.sessionId !== activeSessionId) continue
+    // Drop events explicitly owned by a different session — including when NO
+    // session is active (a non-session page, or between detach and the next
+    // attach): nothing views them, and tracking them would record that session's
+    // sampled frames as srcSeq gaps against a stale baseline (#2959). Legacy
+    // untagged frames still fall through to the active view.
+    if (meta.sessionId && meta.sessionId !== activeSessionId) continue
 
     if (typeof meta.seq === 'number' && meta.sessionId) {
       const prev = state.lastSeq.get(meta.sessionId)
