@@ -102,6 +102,10 @@ class PendingItemView:
     linked_issue_numbers: tuple[int, ...]
     author: str | None = None        # bot-artifact recognition (#2683)
     product_slug: str | None = None  # the owning product, whose policy judges it
+    # A machine dismissal already recorded this item (a bot artifact set aside on
+    # an earlier tick, or a proposal dismissed when the item closed) — the
+    # set-aside is not written twice.
+    dismissed_before: bool = False
 
 
 @dataclass(frozen=True)
@@ -404,13 +408,16 @@ class PmTriageLoop:
     async def _skip_bot_artifacts(self, items: list[PendingItemView],
                                   policies: dict[str, dict] | None) -> list[PendingItemView]:
         """#2683: bot output never reaches a classify session. An item the
-        owning product's policy recognises as a bot artifact is taken out of the
-        classify queue through the injected ``mark_ignored`` seam instead (audited
-        by the seam) — no proposal, no inbox card, no session spent on it.
+        owning product's policy recognises as a bot artifact is kept out of this
+        tick's batch, and the FIRST time it is, the injected ``mark_ignored`` seam
+        records that as a dismissed proposal (audited, undoable from the inbox)
+        — no session spent on it, no pending card.
 
-        Dropped from THIS tick's batch even when the seam fails: classifying bot
-        output is exactly the waste the rule exists to stop, and the next tick
-        retries the mark. An unowned item (no product, no policy) is not judged."""
+        The check runs every tick against the CURRENT policy, and nothing about
+        the item is parked: switching ``triage_dismiss_bot_artifacts`` off sends
+        it back to classification on the next tick. Dropped from the batch even
+        when the seam fails (classifying bot output is the waste the rule stops;
+        the next tick retries the record). An unowned item is not judged."""
         if self._mark_ignored is None or not policies:
             return items
         kept: list[PendingItemView] = []
@@ -419,6 +426,8 @@ class PmTriageLoop:
             if not self._dismisses_bot_output(policy, item.title, item.author):
                 kept.append(item)
                 continue
+            if item.dismissed_before:
+                continue                          # already recorded; just keep it out
             target = f"{item.repo}#{item.number}"
             try:
                 ignored = await self._mark_ignored(item)

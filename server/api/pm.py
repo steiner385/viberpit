@@ -78,6 +78,7 @@ from server.pm.triage_accept import (
     apply_accept,
     apply_dismiss,
     awaiting_decision_clause,
+    item_is_open,
     pending_proposal_stmt,
 )
 
@@ -1901,6 +1902,13 @@ async def undo_triage(
             "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
+    if wi is not None and not item_is_open(wi.state):
+        # Back to pending on a closed item would be a proposal no list shows —
+        # ``awaiting_decision_clause`` filters it out of the inbox and every
+        # count — so nobody could ever decide it (#2683). Undo after it reopens.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "item_closed",
+            "message": f"the work item is {wi.state}; reopen it before undoing this decision"})
     if snap.get("decidedBy") == DECIDED_BY_AUTO and prop.status in (
             "accepted", "rejected", "dismissed"):
         # The decision being undone was the machine's: never let it re-decide.

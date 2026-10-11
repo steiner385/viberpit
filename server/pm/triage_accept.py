@@ -22,8 +22,8 @@ from sqlalchemy import ColumnElement, Select, and_, or_, select
 
 from server.audit import record_audit
 from server.db.models import Feature, TriageProposal, WorkItem
-from server.pm.alert_series import AUTOMATION_LOGINS, is_automation_login
 from server.pm.classification import CONFIDENCE_LEVELS
+from server.pm.queue import is_bot_login
 from server.pm.repo_project import (OwnershipConflict, RepoOwnershipSnapshot,
     gather_repo_ownership_snapshot, require_mutation_owner)
 
@@ -92,27 +92,15 @@ def _compiled(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     return tuple(out)
 
 
-def is_bot_author(login: str | None) -> bool:
-    """Whether *login* is a bot whose output never belongs in triage.
-
-    ``alert_series.is_automation_login`` is the strict reading (a BARE login is a
-    user, so a squatter cannot join an alert series); this one also takes the
-    bare ``AUTOMATION_LOGINS`` spellings GraphQL rows mirrored before the mirror
-    recorded ``app/<slug>``. The looser match is safe HERE because its only
-    consequence is an undoable dismissal of that author's own item. Our own app
-    (``app/viberpit``) is deliberately NOT a bot author: it files the auto-error
-    stream, which is real classified work."""
-    norm = (login or "").strip().lower()
-    return is_automation_login(norm) or norm in AUTOMATION_LOGINS
-
-
 def is_bot_artifact(title: str | None, author: str | None = None,
                     extra_patterns: Iterable[str] = ()) -> bool:
-    """THE bot-output verdict for triage (#2683): a bot author, a built-in
-    ``BOT_ARTIFACT_TITLE_PATTERNS`` title, or one of the product's own
-    *extra_patterns* (case-insensitive regexes). Both the loop's pre-classify
-    skip and its dismiss pass call this — do not copy it."""
-    if is_bot_author(author):
+    """THE bot-output verdict for triage (#2683): a bot author by the queue's own
+    rule (``queue.is_bot_login`` — a ``[bot]`` login, so ``github-actions``' CI
+    alert issues stay real work), a built-in ``BOT_ARTIFACT_TITLE_PATTERNS``
+    title whoever authored it, or one of the product's own *extra_patterns*
+    (case-insensitive regexes). Both the loop's pre-classify set-aside and its
+    dismiss pass call this — do not copy it."""
+    if is_bot_login(author):
         return True
     if not title:
         return False
@@ -131,15 +119,22 @@ RULE_REPEAT = "repeat"
 _REPEAT_REFUSED_FEATURE_STATES = frozenset({"sunset"})
 
 
-def repeat_threshold_for(policy: "Mapping | None") -> int:
+def repeat_threshold_for(policy: Mapping | None) -> int:
     """The ``triage_auto_accept_repeat`` threshold the loop applies to a product
     — 0 (off) unless the product has ALREADY opted in to auto-accept, through
-    ``triage_auto_accept`` or ``triage_auto_accept_dispatch_off``. A product that
-    never opted in never sees a machine accept; the repeat rule widens an opt-in,
-    it is not one. The ONE place that governance lives."""
+    ``triage_auto_accept``, or through ``triage_auto_accept_dispatch_off`` WHILE
+    its Dispatch is off. The latter consents to accepts "while nothing is
+    dispatched"; with Dispatch on, a repeat accept becomes Ready and gets
+    dispatched, which that flag never agreed to (the loop reads the flag the
+    same way). A product that never opted in never sees a machine accept; the
+    repeat rule widens an opt-in, it is not one. The ONE place that governance
+    lives."""
+    # Lazy: server.automations' package init imports pm_triage, which imports
+    # this module — a top-level import here is a cycle.
+    from server.automations.product_policy import is_on
     p = policy or {}
     opted_in = p.get("triage_auto_accept") in CONFIDENCE_LEVELS \
-        or bool(p.get("triage_auto_accept_dispatch_off"))
+        or (bool(p.get("triage_auto_accept_dispatch_off")) and not is_on(dict(p)))
     if not opted_in:
         return 0
     try:
@@ -375,26 +370,24 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
     await db.flush()
 
 
-# The triage state a dismissed item is left in (#2683) — for a dismissed
-# proposal AND a bot artifact the loop keeps away from classification, through
-# the ONE ``mark_dismissed`` below. ``proposed`` because it is the only state
-# that does all three things a dismissal needs:
+# The triage state a HUMAN dismissal leaves the item in (#2683). ``proposed``:
 # * it is not ``unclassified``, so neither the classify candidate set
 #   (``_pm_triage_list_pending``) nor its count re-propose the item;
-# * it is never rewritten back — nothing but an undo's snapshot restore sets an
-#   item ``unclassified`` again;
+# * nothing but an undo's snapshot restore sets it back;
 # * it derives to Backlog on the board (``desired_state.derive_status``), the
 #   same as an untriaged item. ``classified`` would derive to Ready, putting a
 #   dismissed issue in front of the Backlog Runner at the default
 #   ``queue_min_status`` — a dismissal must never PROMOTE an item.
-# It is also literally what a dismissed proposal's item already holds:
-# ``_pm_classify_ingest`` stamps ``proposed`` the moment a proposal exists.
+# It is also what the item already holds: ``_pm_classify_ingest`` stamps
+# ``proposed`` the moment a proposal exists.
+#
+# A MACHINE dismissal passes ``requeue=True`` instead and leaves the item
+# ``unclassified``: its reason is a condition that can change. A closed item is
+# kept out of classification by its state alone (candidates must be open) and is
+# re-triaged if it reopens; a bot artifact is kept out by the loop only while the
+# product's ``triage_dismiss_bot_artifacts`` is on, so switching it off lets the
+# item flow back.
 DISMISSED_TRIAGE_STATE = "proposed"
-
-# ``WorkItem.classified_by`` provenance of a dismissal: shown on the overlay so a
-# person can tell "dismissed" from "proposal pending" on the same state.
-DISMISSED_BY = "dismissed"
-DISMISSED_BY_BOT_ARTIFACT = "bot-artifact"
 
 # Why a proposal was dismissed, on the audit detail. A human route may pass a free
 # text reason instead.
@@ -402,33 +395,28 @@ DISMISS_REASON_BOT_ARTIFACT = "bot_artifact"
 DISMISS_REASON_ITEM_CLOSED = "item_closed"
 
 
-def mark_dismissed(wi: WorkItem, *, by: str) -> None:
-    """Leave *wi* where no triage pass picks it up again, with NO hold and NO
-    feature (see ``DISMISSED_TRIAGE_STATE``). The one writer for both the
-    dismiss path and the pre-classify bot-artifact skip."""
-    wi.triage_state = DISMISSED_TRIAGE_STATE
-    wi.classified_by = by
-
-
 async def apply_dismiss(db, proposal: TriageProposal, *, decided_by: str,
-                        audit_identity: str, reason: str | None = None) -> None:
-    """THE dismiss path (#2683) — the inbox's dismiss routes and the loop's
-    auto-dismiss (bot artifacts, closed items) all call this. Resolves the
-    proposal ``dismissed`` WITHOUT the owner hold a reject sets: there was no
-    decision to make, so nothing is parked for the owner. The overlay snapshot,
-    stamped ``decidedBy`` like ``apply_accept``'s, makes it undoable for the same
-    window — and an undo of a ``decidedBy: auto`` dismissal arms ``auto_undone``
-    so the loop never re-dismisses what a person brought back.
+                        audit_identity: str, reason: str | None = None,
+                        requeue: bool = False) -> None:
+    """THE dismiss path (#2683) — the inbox's dismiss routes and every loop
+    dismissal (bot artifacts, closed items, the pre-classify set-aside) call
+    this. Resolves the proposal ``dismissed`` WITHOUT the owner hold a reject
+    sets and without a feature: there was no decision to make. The overlay
+    snapshot, stamped ``decidedBy`` like ``apply_accept``'s, makes it undoable
+    for the same window — and an undo of a ``decidedBy: auto`` dismissal arms
+    ``auto_undone`` so the loop never re-dismisses what a person brought back.
 
-    Audits ``pm.triage.dismiss`` (a person) or ``pm.triage.auto_dismiss`` (the
-    loop). A missing work item still resolves the proposal (as reject does)."""
+    The item is left ``DISMISSED_TRIAGE_STATE``, or ``unclassified`` when
+    *requeue* (see the comment on ``DISMISSED_TRIAGE_STATE``). Audits
+    ``pm.triage.dismiss`` (a person) or ``pm.triage.auto_dismiss`` (the loop).
+    A missing work item still resolves the proposal (as reject does)."""
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
     snapshot = _overlay_snapshot(wi) if wi is not None else {}
     snapshot["decidedBy"] = decided_by
     proposal.undo_snapshot = snapshot
     if wi is not None:
-        mark_dismissed(wi, by=DISMISSED_BY)
+        wi.triage_state = "unclassified" if requeue else DISMISSED_TRIAGE_STATE
     proposal.status = "dismissed"
     proposal.resolved_at = datetime.now(timezone.utc)
     await db.flush()

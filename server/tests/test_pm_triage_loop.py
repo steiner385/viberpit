@@ -30,10 +30,12 @@ class _Sess:
         self.id = sid
 
 
-def _item(number, kind="issue", links=(), *, title=None, author="tony", product="viberpit"):
+def _item(number, kind="issue", links=(), *, title=None, author="tony", product="viberpit",
+          dismissed_before=False):
     return PendingItemView(
         repo="o/r", number=number, kind=kind, title=title or f"#{number}", body="",
-        labels=(), linked_issue_numbers=tuple(links), author=author, product_slug=product)
+        labels=(), linked_issue_numbers=tuple(links), author=author, product_slug=product,
+        dismissed_before=dismissed_before)
 
 
 def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
@@ -864,28 +866,50 @@ async def test_proposals_for_closed_or_merged_items_are_dismissed_always():
 @pytest.mark.asyncio
 async def test_bot_artifact_items_are_ignored_before_classification():
     pending = [_item(1, title="docs(fix-patterns): regenerate index"),
-               _item(2, title="Fix the login bug", author="github-actions"),
+               _item(2, title="Fix the login bug", author="dependabot[bot]"),
                _item(3, title="Fix the login bug"),
-               _item(4, title="docs(fix-patterns): regenerate index", product=None)]
+               _item(4, title="docs(fix-patterns): regenerate index", product=None),
+               # #2680: github-actions files the recurring CI alert issues the runner
+               # works — real work, classified like any other.
+               _item(5, title="Weekly failed — 2026-10-10", author="app/github-actions"),
+               _item(6, title="Weekly failed — 2026-10-10", author="github-actions")]
     ctx = Ctx()
     loop, rec = _loop(ctx, pending=pending, candidates=[],
                       policies={"viberpit": _policy("off", triage_dismiss_bot_artifacts=True)})
     await loop.tick()
     assert rec["ignored"] == [1, 2]
-    assert rec["classified"] == [[3, 4]]          # an unowned item is not judged here
+    assert rec["classified"] == [[3, 4, 5, 6]]    # an unowned item is not judged here
     kinds = [e[2].get("kind") for e in ctx.events]
     assert kinds.count("bot_artifact_ignored") == 2
 
 
 @pytest.mark.asyncio
 async def test_bot_artifact_items_are_classified_when_dismissal_is_off():
-    pending = [_item(1, title="docs(fix-patterns): regenerate index")]
+    """Turning the setting off lets items flow back — including ones an earlier
+    tick already set aside (they carry a dismissed proposal, nothing more)."""
+    pending = [_item(1, title="docs(fix-patterns): regenerate index"),
+               _item(2, title="docs(fix-patterns): regenerate index", dismissed_before=True)]
     ctx = Ctx()
     loop, rec = _loop(ctx, pending=pending, candidates=[],
                       policies={"viberpit": _policy("off")})
     await loop.tick()
     assert rec["ignored"] == []
-    assert rec["classified"] == [[1]]
+    assert rec["classified"] == [[1, 2]]
+
+
+@pytest.mark.asyncio
+async def test_an_item_already_set_aside_is_not_recorded_again():
+    """The set-aside writes ONE dismissed proposal; every later tick keeps the
+    item out of classification without writing (or announcing) another."""
+    pending = [_item(1, title="docs(fix-patterns): regenerate index", dismissed_before=True),
+               _item(2)]
+    ctx = Ctx()
+    loop, rec = _loop(ctx, pending=pending, candidates=[],
+                      policies={"viberpit": _policy("off", triage_dismiss_bot_artifacts=True)})
+    await loop.tick()
+    assert rec["ignored"] == []
+    assert rec["classified"] == [[2]]
+    assert not [e for e in ctx.events if e[2].get("kind") == "bot_artifact_ignored"]
 
 
 @pytest.mark.asyncio

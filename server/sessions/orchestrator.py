@@ -10657,6 +10657,12 @@ class SessionOrchestrator:
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
             )).scalars().all()
+            # Items a machine dismissal already recorded (a bot artifact set aside,
+            # an item that closed and reopened): the loop must not record them again.
+            dismissed_ids = set((await db.execute(
+                select(TriageProposal.work_item_id)
+                .where(TriageProposal.status == "dismissed")
+            )).scalars().all()) if rows else set()
             repos = {w.repo for w in rows if w.repo}
             trusted = await trusted_authors_by_repo(db, repos)
             # The owning product rides on the item so the loop judges bot output
@@ -10669,6 +10675,7 @@ class SessionOrchestrator:
                 linked_issue_numbers=tuple(w.linked_issue_numbers or ()),
                 author=w.author,
                 product_slug=(o.slug if (o := owners.get(w.repo or "")) else None),
+                dismissed_before=w.id in dismissed_ids,
             ) for w in rows if w.id not in pending_ids
                 and author_trusted(trusted, w.repo, w.author)]
 
@@ -11136,7 +11143,13 @@ class SessionOrchestrator:
         """The loop's ``auto_dismiss`` seam (#2683): re-read under the same row
         lock as accept, then dismiss through the inbox's own ``apply_dismiss``
         (``decidedBy: auto``, so a person's undo arms ``auto_undone``). False when
-        a human resolved it first."""
+        a human resolved it first.
+
+        ``requeue``: every machine reason is a condition that can change, so the
+        item goes back to ``unclassified`` rather than being parked — a closed
+        item is kept out of classification by its state and re-triaged if it
+        reopens; a bot artifact is kept out by the loop only while the product's
+        setting is on."""
         from server.pm.triage_accept import (DECIDED_BY_AUTO, apply_dismiss,
                                              pending_proposal_stmt)
         async with db_session() as db:
@@ -11145,20 +11158,26 @@ class SessionOrchestrator:
             if prop is None or prop.status != "pending":
                 return False
             await apply_dismiss(db, prop, decided_by=DECIDED_BY_AUTO,
-                                audit_identity="pm-triage", reason=reason)
+                                audit_identity="pm-triage", reason=reason, requeue=True)
             return True
 
     async def _pm_triage_mark_ignored(self, item) -> bool:
-        """The loop's ``mark_ignored`` seam (#2683): take a bot artifact out of
-        the classify queue BEFORE any session sees it, through the dismiss path's
-        own ``mark_dismissed`` (no hold, no feature — see ``DISMISSED_TRIAGE_STATE``
-        for why that state). Re-checks the candidate predicate under the write so
-        an item classified or proposed since the listing is left alone (False).
-        Audited ``pm.triage.bot_artifact_ignored``."""
+        """The loop's ``mark_ignored`` seam (#2683): RECORD that a bot artifact
+        was set aside before classification, visibly and reversibly — a
+        ``TriageProposal`` born and immediately resolved ``dismissed`` through the
+        inbox's own ``apply_dismiss`` (no feature, no hold, ``decidedBy: auto``,
+        reason ``bot_artifact``, with the undo snapshot), so the audit shows it
+        and the inbox's undo route can bring it back as a pending proposal.
+
+        The item stays ``unclassified`` (``requeue``): what keeps it out of a
+        classify session is the loop's per-tick policy check, so switching
+        ``triage_dismiss_bot_artifacts`` off lets it flow back. One record per
+        item — False (nothing written) when it already carries a dismissed
+        proposal, a pending one, or has left the candidate set since the listing."""
         from sqlalchemy import select
-        from server.audit import record_audit
         from server.db.models import TriageProposal, WorkItem
-        from server.pm.triage_accept import DISMISSED_BY_BOT_ARTIFACT, mark_dismissed
+        from server.pm.triage_accept import (DECIDED_BY_AUTO, DISMISS_REASON_BOT_ARTIFACT,
+                                             apply_dismiss)
         async with db_session() as db:
             wi = (await db.execute(select(WorkItem).where(
                 WorkItem.repo == item.repo, WorkItem.number == item.number,
@@ -11166,17 +11185,20 @@ class SessionOrchestrator:
                 WorkItem.triage_state == "unclassified"))).scalar_one_or_none()
             if wi is None:
                 return False
-            pending = (await db.execute(select(TriageProposal.id).where(
+            existing = (await db.execute(select(TriageProposal.id).where(
                 TriageProposal.work_item_id == wi.id,
-                TriageProposal.status == "pending"))).first()
-            if pending is not None:
+                TriageProposal.status.in_(("pending", "dismissed"))))).first()
+            if existing is not None:
                 return False
-            mark_dismissed(wi, by=DISMISSED_BY_BOT_ARTIFACT)
-            await record_audit(db=db, type="pm.triage.bot_artifact_ignored",
-                               identity="pm-triage",
-                               detail={"workItemId": wi.id, "repo": wi.repo,
-                                       "number": wi.number, "author": wi.author,
-                                       "product": item.product_slug})
+            prop = TriageProposal(
+                work_item_id=wi.id, status="pending", proposed_feature_id=None,
+                rationale="Bot output: set aside before classification "
+                          "(triage_dismiss_bot_artifacts).")
+            db.add(prop)
+            await db.flush()
+            await apply_dismiss(db, prop, decided_by=DECIDED_BY_AUTO,
+                                audit_identity="pm-triage",
+                                reason=DISMISS_REASON_BOT_ARTIFACT, requeue=True)
             return True
 
     async def _pm_triage_auto_accept(self, proposal_id: str, rule: str) -> "dict | None":

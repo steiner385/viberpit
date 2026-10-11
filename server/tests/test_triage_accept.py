@@ -220,18 +220,42 @@ def test_repeat_threshold_applies_only_to_a_product_that_opted_in_to_auto_accept
     assert repeat_threshold_for(None) == 0
 
 
-@pytest.mark.parametrize("author", ["dependabot[bot]", "github-actions", "app/github-actions",
-                                    "GitHub-Actions", "renovate[bot]"])
+def test_dispatch_off_opt_in_does_not_arm_the_repeat_rule_while_dispatch_is_on():
+    """The Dispatch-off flag consents to accepts "while nothing is dispatched".
+    With Dispatch ON a repeat accept becomes Ready and gets dispatched — that is
+    not what the product agreed to, so the flag alone is no opt-in then."""
+    from server.automations.product_policy import effective_policy
+    from server.pm.triage_accept import repeat_threshold_for
+    on = {**effective_policy(None), "dispatch": "auto", "triage_auto_accept": "off",
+          "triage_auto_accept_dispatch_off": True}
+    assert repeat_threshold_for(on) == 0
+    assert repeat_threshold_for({**on, "triage_auto_accept": "high"}) == 3
+
+
+@pytest.mark.parametrize("author", ["dependabot[bot]", "renovate[bot]"])
 def test_bot_authors_are_bot_artifacts_whatever_the_title(author):
     from server.pm.triage_accept import is_bot_artifact
     assert is_bot_artifact("Fix the login bug", author)
 
 
-@pytest.mark.parametrize("author", [None, "", "tony", "app/viberpit", "github-actionsx"])
-def test_people_and_our_own_app_are_not_bot_authors(author):
-    """``app/viberpit`` files the auto-error stream, which IS classified work."""
+@pytest.mark.parametrize("author", [None, "", "tony", "app/viberpit", "github-actions",
+                                    "app/github-actions"])
+def test_people_our_own_app_and_the_ci_alert_filer_are_not_bot_authors(author):
+    """``app/viberpit`` files the auto-error stream and ``github-actions`` the
+    recurring CI alert issues (#2680) — both real work the runner takes on."""
     from server.pm.triage_accept import is_bot_artifact
-    assert not is_bot_artifact("Fix the login bug", author)
+    assert not is_bot_artifact("Weekly failed — 2026-10-10", author)
+
+
+@pytest.mark.parametrize("author", [None, "", "tony", "dependabot[bot]", "github-actions",
+                                    "app/github-actions", "app/dependabot"])
+def test_the_author_leg_is_the_queues_own_bot_rule(author):
+    """Constitution VI: triage and the queue judge bot authorship by ONE rule."""
+    from server.pm.queue import is_bot_noise
+    from server.pm.triage_accept import is_bot_artifact
+    title = "an ordinary title"
+    assert is_bot_artifact(title, author) == is_bot_noise(author=author or "", labels=(),
+                                                          title=title)
 
 
 def test_extra_patterns_match_case_insensitively_and_a_bad_one_is_ignored():
@@ -289,3 +313,32 @@ async def test_apply_dismiss_resolves_without_a_hold_or_a_feature(tmp_path, monk
             AuditEvent.type == "pm.triage.dismiss"))).scalars().all()
         assert [a.detail for a in audits] == [{"proposalId": pid, "workItemId": wid,
                                                "reason": "noise", "decidedBy": "human"}]
+
+
+@pytest.mark.asyncio
+async def test_a_requeued_dismissal_leaves_the_item_classifiable(tmp_path, monkeypatch):
+    """A closed-item or bot-artifact dismissal must not strand the item: it goes
+    back to ``unclassified`` so a reopened item (or a product that turns bot
+    dismissal off) is triaged again. The proposal still resolves ``dismissed``."""
+    from server.db import db_session, init_db
+    from server.db.models import TriageProposal, WorkItem
+    from server.pm.triage_accept import DECIDED_BY_AUTO, apply_dismiss
+    url = f"sqlite+aiosqlite:///{tmp_path}/t.db"
+    monkeypatch.setenv("VIBERPIT_DB_URL", url)
+    await init_db(url)
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=1, kind="issue", title="a", state="closed",
+                      triage_state="proposed", author="tony")
+        db.add(wi)
+        await db.flush()
+        prop = TriageProposal(work_item_id=wi.id, status="pending")
+        db.add(prop)
+        await db.flush()
+        await apply_dismiss(db, prop, decided_by=DECIDED_BY_AUTO, audit_identity="pm-triage",
+                            reason="item_closed", requeue=True)
+        pid, wid = prop.id, wi.id
+    async with db_session() as db:
+        assert (await db.get(TriageProposal, pid)).status == "dismissed"
+        wi = await db.get(WorkItem, wid)
+        assert wi.triage_state == "unclassified" and wi.hold_kind is None
+        assert (await db.get(TriageProposal, pid)).undo_snapshot["triageState"] == "proposed"
