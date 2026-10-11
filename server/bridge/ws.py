@@ -327,29 +327,38 @@ def _redact_buffer(buf: list[dict]) -> list[dict]:
     return out
 
 
-async def _orphaned_question_frames(orchestrator, session_id: str) -> list[dict]:
-    """Wire frames re-offering a question whose waiter died with the daemon.
+async def _orphaned_ask_frames(orchestrator, session_id: str) -> list[dict]:
+    """Wire frames re-offering an ask whose waiter died with the daemon.
 
-    Empty unless the session has NO live pending question (that path already
-    re-emits, and a second copy would duplicate the card) and its pre-restart
-    status was waiting_question. The ids come from replay, so the client's reducer
-    upgrades the card already on screen rather than appending a duplicate.
+    Covers every kind ``orphaned_asks`` defines (#2922): a question is rebuilt by
+    ``last_question_events``, a permission / plan approval by
+    ``last_orphaned_permission``. Empty unless the session has NO live pending ask
+    of that kind (that path already re-emits, and a second copy would duplicate the
+    card). Question ids come from replay, so the client's reducer upgrades the card
+    already on screen rather than appending a duplicate.
     """
     from server.sessions.facade import _maybe_await
 
-    if await orchestrator.pending_questions(session_id):
+    kind = await _maybe_await(orchestrator.orphaned_interaction(session_id))
+    if kind is None:
         return []
-    if await _maybe_await(orchestrator.orphaned_interaction(session_id)) != "question":
+    if kind == "question":
+        if await orchestrator.pending_questions(session_id):
+            return []
+    elif await orchestrator.pending_permissions(session_id):
         return []
     path = await _maybe_await(orchestrator.transcript_path(session_id))
     if not path:
         return []
-    from server.sessions.replay import last_question_events
-    # Off the event loop: last_question_events reads and json-parses the ENTIRE
-    # transcript, and this runs on every attach. A multi-MB transcript would stall
-    # the whole daemon loop. Same treatment as replay_window / replay_events.
-    qs = await asyncio.to_thread(last_question_events, path)
-    return [q.to_wire() for q in qs]
+    from server.sessions.replay import last_orphaned_permission, last_question_events
+    # Off the event loop: both readers parse the ENTIRE transcript, and this runs on
+    # every attach. A multi-MB transcript would stall the whole daemon loop. Same
+    # treatment as replay_window / replay_events.
+    if kind == "question":
+        qs = await asyncio.to_thread(last_question_events, path)
+        return [q.to_wire() for q in qs]
+    req = await asyncio.to_thread(last_orphaned_permission, path, plan=(kind == "plan"))
+    return [req.to_wire()] if req is not None else []
 
 
 async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None]",
@@ -1047,15 +1056,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         parent_tool_use_id=q.get("parent_tool_use_id"),
                     ).to_wire(), "sessionId": session_id})
 
-            # Re-offer a question whose waiter died with the daemon. The loop above
-            # only ever finds LIVE questions; after a restart the registry is empty
-            # by construction, so without this the replayed card stays read-only and
-            # the session sits in an unknown state (see orphaned_asks.py).
+            # Re-offer a question / permission / plan approval whose waiter died
+            # with the daemon. The loops above only ever find LIVE asks; after a
+            # restart the registries are empty by construction, so without this the
+            # session sits on an ask nobody can answer (see orphaned_asks.py).
             try:
-                for frame in await _orphaned_question_frames(orchestrator, session_id):
+                for frame in await _orphaned_ask_frames(orchestrator, session_id):
                     out_q.put_nowait({**frame, "sessionId": session_id})
             except Exception:
-                log.warning("ws.attach: orphaned question re-offer failed for %s",
+                log.warning("ws.attach: orphaned ask re-offer failed for %s",
                             session_id, exc_info=True)
 
             # Emit the current live status so a client attaching or reconnecting mid-turn

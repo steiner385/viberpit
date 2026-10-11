@@ -17,7 +17,9 @@ Not a human prompt:
   ``<local-command-stderr>…`` entries, of which only the caveat is flagged ``isMeta``.
   Observed 2026-09-02: a fresh Fable session's transcript opened with exactly those
   three and the titler named it "Set model to Fable".
-* ``[Request interrupted by user…]`` — the interrupt marker.
+* ``[Request interrupted by user…]`` — the interrupt marker, and its restart twin
+  ``transcript_repair.RESTART_INTERRUPT_TEXT`` (``[Request interrupted by a … daemon
+  restart…]``), which the shared ``[Request interrupted by`` prefix covers.
 * A tool's result — the CLI feeds every ``tool_result`` back to the model as a
   ``type:"user"`` entry (``toolUseResult`` at top level, ``tool_result`` blocks in
   the content). Unlike the rest of this list it is not even a turn boundary: the
@@ -35,7 +37,7 @@ _LOCAL_COMMAND_PREFIXES: tuple[str, ...] = (
 _PLUMBING_PREFIXES: tuple[str, ...] = (
     *_LOCAL_COMMAND_PREFIXES,
     "<task-notification>",
-    "[Request interrupted by user",
+    "[Request interrupted by ",
 )
 
 

@@ -24,6 +24,8 @@ class MiniOrch:
     restore_deploy = SessionOrchestrator.restore_deploy
     _owns_record = SessionOrchestrator._owns_record
     _owns_record_by_stamp = SessionOrchestrator._owns_record_by_stamp
+    orphaned_interaction = SessionOrchestrator.orphaned_interaction
+    _replayed_ids = SessionOrchestrator._replayed_ids
 
     def __init__(self, drivers, records, resumable, last_prompts=None, enabled_hosts=None,
                  archived=None):

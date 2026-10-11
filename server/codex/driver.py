@@ -836,8 +836,13 @@ class CodexAgentDriver:
             await self.aclose()
         return True
 
-    async def aclose(self) -> None:
-        """Release the thread. The manager owns the process — nothing is killed."""
+    async def aclose(self, *, reason: str | None = None) -> None:
+        """Release the thread. The manager owns the process — nothing is killed.
+
+        ``reason`` (the engine contract's restart marker) needs no handling here: on
+        a daemon shutdown the Codex app-servers are stopped BEFORE the drivers are
+        closed (``server/ipc/serve.py``), so no approval or question is still
+        awaiting an answer this driver could word differently."""
         self._closing = True
         thread_id = self._thread_id
         if thread_id is not None:

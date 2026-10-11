@@ -646,3 +646,107 @@ def test_scan_background_state_reads_the_transcript_once(tmp_path, monkeypatch):
     assert bt.scan_background_state(str(path)) == ([], None)
     assert bt.is_parked(str(path)) is False
     assert len(opened) == 2   # one read per call, not two
+
+
+# ── #2922: truthful background-wait rearm ────────────────────────────────────
+
+_ACK_TEXT = ("Command running in background with ID: b77. Output is being written to: "
+             "{path}.")
+
+
+def test_scan_records_the_background_output_file(tmp_path):
+    out = "/tmp/claude-1000/-repo/tasks/b77.output"
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_bg", "Bash", {"command": "pytest -q",
+                                             "run_in_background": True}),
+        _ack("toolu_bg", {"backgroundTaskId": "b77"}, _ACK_TEXT.format(path=out)),
+    ])
+    [task] = scan_open_background_tasks(path)
+    assert task.output_path == out
+    assert OpenBgTask.from_dict(task.to_dict()).output_path == out
+
+
+def test_scan_records_the_output_file_of_a_command_moved_to_the_background(tmp_path):
+    out = "/tmp/claude-1000/-repo/tasks/b78.output"
+    text = ("Command did not complete within its 120s timeout and was moved to the "
+            f"background (ID: b78). Output is being written to: {out}.")
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_slow", "Bash", {"command": "make"}),
+        _ack("toolu_slow", {"backgroundTaskId": "b78"}, text),
+    ])
+    [task] = scan_open_background_tasks(path)
+    assert task.output_path == out
+
+
+def test_from_dict_of_an_old_snapshot_has_no_output_path():
+    assert OpenBgTask.from_dict({"tool_use_id": "t", "kind": "task", "name": "Bash",
+                                 "input": {}, "description": ""}).output_path is None
+
+
+def test_rearm_prompt_tells_the_agent_to_read_an_existing_output_file(tmp_path):
+    out = tmp_path / "b77.output"
+    out.write_text("== 120 passed ==\n")
+    bash = OpenBgTask("toolu_bg", "task", "Bash",
+                      {"command": "pytest -q", "run_in_background": True}, "Run tests",
+                      output_path=str(out))
+    p = build_rearm_prompt([bash])
+    assert "`pytest -q` was started in the background before the restart" in p
+    assert f"`{out}`" in p
+    assert "exists: yes" in p and "last modified" in p
+    assert "read it first and relaunch only if it is incomplete" in p
+    assert "Relaunch each one with exactly the parameters shown" not in p
+
+
+def test_rearm_prompt_reports_a_missing_output_file(tmp_path):
+    bash = OpenBgTask("toolu_bg", "task", "Bash",
+                      {"command": "pytest -q", "run_in_background": True}, "Run tests",
+                      output_path=str(tmp_path / "gone.output"))
+    assert "exists: no" in build_rearm_prompt([bash])
+
+
+def test_rearm_prompt_does_not_rearm_a_monitor_whose_target_finished(tmp_path):
+    out = str(tmp_path / "b77.output")
+    mon = OpenBgTask("toolu_mon", "monitor", "Monitor",
+                     {"command": f"tail -f {out} | grep -m1 passed"}, "Watch tests")
+    p = build_rearm_prompt([mon])
+    assert "target finished before restart" in p
+    assert f"output at `{out}`" in p
+    assert "relaunch the Monitor tool" not in p
+
+
+def test_rearm_prompt_rearms_a_monitor_whose_target_is_still_open(tmp_path):
+    out = str(tmp_path / "b77.output")
+    bash = OpenBgTask("toolu_bg", "task", "Bash",
+                      {"command": "pytest -q", "run_in_background": True}, "Run tests",
+                      output_path=out)
+    mon = OpenBgTask("toolu_mon", "monitor", "Monitor",
+                     {"command": f"tail -f {out}"}, "Watch tests")
+    p = build_rearm_prompt([bash, mon])
+    assert "relaunch the Monitor tool" in p
+    assert "target finished" not in p
+
+
+def test_rearm_prompt_rearms_a_monitor_without_a_file_target():
+    mon = OpenBgTask("toolu_mon", "monitor", "Monitor", {"command": "gh pr checks 1 --watch"},
+                     "Watch CI")
+    assert "relaunch the Monitor tool" in build_rearm_prompt([mon])
+
+
+def test_still_open_drops_snapshot_entries_finished_since():
+    from server.sessions.background_tasks import still_open
+    done = OpenBgTask("toolu_done", "task", "Bash", {"command": "pytest"}, "t")
+    live = OpenBgTask("toolu_live", "monitor", "Monitor", {"command": "z"}, "m")
+    codex = OpenBgTask("term-1", "terminal", "BackgroundTerminal", {"command": "x"}, "c",
+                       replayable=False)
+    fresh = [OpenBgTask("toolu_live", "monitor", "Monitor", {"command": "z"}, "m")]
+    kept = still_open([done, live, codex], fresh)
+    assert [t.tool_use_id for t in kept] == ["toolu_live", "term-1"]
+
+
+def test_still_open_takes_the_output_path_from_the_fresh_scan():
+    from server.sessions.background_tasks import still_open
+    snap = OpenBgTask("toolu_bg", "task", "Bash", {"command": "pytest"}, "t")
+    fresh = [OpenBgTask("toolu_bg", "task", "Bash", {"command": "pytest"}, "t",
+                        output_path="/tmp/x.output")]
+    [kept] = still_open([snap], fresh)
+    assert kept.output_path == "/tmp/x.output"

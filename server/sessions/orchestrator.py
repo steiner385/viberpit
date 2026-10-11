@@ -77,7 +77,7 @@ from server.assistant.context import PromptContext
 from server.assistant.suggest_prompt import (
     ASSISTANT_SUGGEST_LIMIT, ASSISTANT_SUGGEST_SYSTEM_PROMPT, build_assistant_suggest_prompt,
 )
-from server.sessions.prompt_origin import PromptOrigin
+from server.sessions.prompt_origin import PromptOrigin, is_system_origin
 from server.audit import record_audit
 from server.permission_rules.gate import StandingRuleGate
 from server.db import db_session
@@ -121,7 +121,8 @@ from server.sessions.failure import classify as classify_failure
 from server.sessions.failure import log_level as failure_log_level
 from server.sessions.model_policy import quota_model
 from server.sessions import orphan_cli as _orphan_cli
-from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
+from server.sessions.orphaned_asks import (CLOSE_REASON_RESTART, orphaned_answer_prompt,
+                                           orphaned_ask_kind)
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
@@ -148,7 +149,7 @@ from server.sessions.display_policy import (
 )
 from server.sessions.background_tasks import (
     EMPTY_BACKGROUND_WORK, OpenBgTask, background_work_snapshot, build_rearm_prompt,
-    scan_open_background_tasks)
+    scan_open_background_tasks, still_open)
 from server.sessions import child_sessions as _cs
 from server.obs.context import bind_session, log_event, PROC_EPOCH
 from server.obs.logdedupe import LogThrottle, log_event_throttled
@@ -1278,6 +1279,11 @@ class SessionOrchestrator:
         # Sessions whose background tasks have been re-armed this process (dedup the
         # auto pass against retry-on-attach). Cleared by a fresh process start.
         self._rearmed: set[str] = set()
+        # Sessions whose restart-interrupted prompt has been replayed this process —
+        # by restore_deploy (the snapshot's lastPrompt) or _rearm_session (the drain's
+        # pending_prompt). Each checks it before replaying, so the two together replay
+        # a prompt at most once (#2922).
+        self._replayed: set[str] = set()
         # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
         # on entry; cleared when the session transitions out so re-entry fires again.
         self._pushed: set[str] = set()
@@ -2584,6 +2590,7 @@ class SessionOrchestrator:
     ) -> AgentDriver:
         """Build one driver through the canonical engine registry."""
         execution_id = uuid.uuid4().hex
+        rec = getattr(self, "_records", {}).get(session_id)
         return self._engine_registry.create(engine, AgentDriverConfig(
             session_id=session_id,
             account=account,
@@ -2592,6 +2599,8 @@ class SessionOrchestrator:
             mode=mode,
             identity=identity,
             resume=resume,
+            resumed_after_restart=bool(
+                resume and getattr(rec, "interrupted_by_restart", False) is True),
             reasoning_effort=reasoning_effort,
             desired_disabled_mcp=desired_disabled_mcp,
             before_execution=functools.partial(self._automation_before_execution, session_id,
@@ -3514,8 +3523,17 @@ class SessionOrchestrator:
             if driver is not None:
                 # suppress() covers the synchronous aclose() call itself (a stand-in
                 # without the method); bounded_wait never raises once awaited.
+                # A daemon stop is a restart as far as the session is concerned:
+                # its pending asks must settle as "interrupted by a restart", not as
+                # the user refusing them (#2922).
                 with contextlib.suppress(Exception):
-                    await bounded_wait(driver.aclose(),
+                    try:
+                        closing = driver.aclose(reason=CLOSE_REASON_RESTART)
+                    except TypeError:
+                        # A driver whose aclose() predates ``reason`` raises here, at
+                        # call time and inside the suppress() — it must still close.
+                        closing = driver.aclose()
+                    await bounded_wait(closing,
                                        timeout=_STOP_DRIVER_CLOSE_TIMEOUT_S,
                                        phase=f"stop:driver-close:{sid}")
         await bounded_wait(self._poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
@@ -14948,7 +14966,7 @@ class SessionOrchestrator:
                     return False
                 # The registry takes the decision STRING: a bool here compared
                 # unequal to "allow" and settled every autopilot approve as a deny.
-                ok = bool(self.resolve_permission(
+                ok = bool(await self.resolve_permission(
                     session_id, stuck["perm_id"], "allow" if act == "approve" else "deny",
                     SYSTEM_IDENTITY))
             elif act == "answer" and stuck.get("question_id") is not None:
@@ -17314,9 +17332,47 @@ class SessionOrchestrator:
         self._startup_note("rearmed", (self.startup_report().get("rearmed") or 0) + n)
         return n
 
+    def _replayed_ids(self) -> set[str]:
+        """``_replayed``, tolerant of a ``__new__``-built orchestrator (tests)."""
+        replayed = getattr(self, "_replayed", None)
+        if replayed is None:
+            replayed = self._replayed = set()
+        return replayed
+
+    async def _rearm_text(self, sid: str, tasks: list[OpenBgTask]) -> str | None:
+        """The rearm turn for *tasks* as they stand NOW, or None when nothing is left.
+
+        The drain-time snapshot can be up to a whole drain window old, so the
+        transcript is rescanned first and anything that finished since is dropped
+        (``background_tasks.still_open``). Only a Claude transcript can be rescanned
+        (``transcript_path`` is None for every other engine); without one — or if the
+        read fails — the snapshot is used as it is.
+        """
+        if not tasks:
+            return None
+        try:
+            path = await asyncio.to_thread(self.transcript_path, sid)
+            if path:
+                fresh = await asyncio.to_thread(scan_open_background_tasks, path)
+                kept = still_open(tasks, fresh)
+                if len(kept) != len(tasks):
+                    log_event(log, logging.INFO, "rearm.finished_since_drain",
+                              session_id=sid, dropped=len(tasks) - len(kept))
+                tasks = kept
+        except Exception:
+            log.info("rearm: transcript rescan failed for %s; using the drain snapshot",
+                     sid, exc_info=True)
+        return build_rearm_prompt(tasks) if tasks else None
+
+    async def _clear_rearm_snapshot(self, sid: str) -> None:
+        from sqlalchemy import update as sa_update
+        self._rearmed.add(sid)
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                             .values(pending_rearm=None, pending_prompt=None))
+
     async def _rearm_session(self, sid: str, snap: list | None,
                              prompt: str | None = None) -> bool:
-        from sqlalchemy import update as sa_update
         tasks = [OpenBgTask.from_dict(d) for d in (snap or []) if isinstance(d, dict)]
         if not tasks and not prompt:
             return False
@@ -17329,18 +17385,48 @@ class SessionOrchestrator:
         # writing DB state from a read path.
         if is_assistant(self._records.get(sid)):
             return False
+        kind = self.orphaned_interaction(sid)
+        if kind is not None:
+            # A restart orphaned a question / permission / plan card (#2922). Any turn
+            # started now clears interrupted_by_restart, and the re-offered card can
+            # no longer be answered. Hold everything: the snapshot stays in the DB,
+            # and _deliver_orphaned_answer folds it into the user's answer.
+            log_event(log, logging.INFO, "rearm.deferred_for_orphaned_ask",
+                      session_id=sid, kind=kind)
+            return False
         driver = await self.ensure_driver(sid)
         if driver is None:
             return False
-        if tasks:
-            await driver.send_prompt(build_rearm_prompt(tasks))
-        if prompt:
-            await driver.send_prompt(prompt)
-        self._rearmed.add(sid)
-        async with db_session() as db:
-            await db.execute(sa_update(DbSession).where(DbSession.id == sid)
-                             .values(pending_rearm=None, pending_prompt=None))
+        text = await self._rearm_text(sid, tasks)
+        if text:
+            await driver.send_prompt(text)
+        await self._replay_pending_prompt(sid, driver, prompt)
+        await self._clear_rearm_snapshot(sid)
         return True
+
+    async def _replay_pending_prompt(self, sid: str, driver, prompt: str | None) -> None:
+        """Re-send the drain's in-flight foreground prompt unless restore_deploy
+        already replayed this session's interrupted prompt (#2922)."""
+        if not prompt:
+            return
+        if sid in self._replayed_ids():
+            log_event(log, logging.INFO, "rearm.prompt_already_replayed", session_id=sid)
+            return
+        self._replayed_ids().add(sid)
+        await driver.send_prompt(prompt)
+
+    async def _take_deferred_rearm(self, sid: str) -> tuple[list | None, str | None]:
+        """The rearm snapshot ``_rearm_session`` deferred for an orphaned ask:
+        ``(pending_rearm, pending_prompt)`` from the row, or ``(None, None)``."""
+        if sid in self._rearmed:
+            return None, None
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            row = (await db.execute(sa_select(DbSession).where(
+                DbSession.id == sid))).scalar_one_or_none()
+        if row is None:
+            return None, None
+        return row.pending_rearm, row.pending_prompt
 
     async def _maybe_rearm_on_attach(self, session_id: str) -> None:
         """Retry a pending re-arm when a session is attached (covers sessions the auto
@@ -19373,7 +19459,7 @@ class SessionOrchestrator:
             return f"skipped:{reason}"
         if await self.ensure_driver(session_id, identity) is None:
             return "no_driver"
-        result = await self.send_prompt(session_id, RESUME_NUDGE)
+        result = await self.send_prompt(session_id, RESUME_NUDGE, replayable=False)
         return "resumed" if result == "sent" else result
 
     async def reload_session(self, session_id: str,
@@ -20272,9 +20358,33 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         return None if rec is None else (rec.repo, rec.cwd)
 
-    def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
+    async def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
+        """Decide a pending permission / plan card.
+
+        Live path first, unchanged. If no live waiter took it AND a restart orphaned
+        a permission or plan approval for this session, the decision is delivered as
+        the next turn's prompt (``orphaned_answer_prompt``) — the same fallback a
+        question gets in :meth:`answer_question` (#2922).
+        """
         d = self._drivers.get(session_id)
-        return d.resolve_permission(perm_id, decision, identity) if d else False
+        if d is not None and d.resolve_permission(perm_id, decision, identity):
+            return True
+        kind = self.orphaned_interaction(session_id)
+        if kind not in ("permission", "plan") or decision not in ("allow", "always", "deny"):
+            return False
+        tool = None
+        try:
+            path = await asyncio.to_thread(self.transcript_path, session_id)
+            if path:
+                from server.sessions.replay import last_orphaned_permission
+                req = await asyncio.to_thread(last_orphaned_permission, path,
+                                              plan=(kind == "plan"))
+                tool = req.tool if req is not None else None
+        except Exception:
+            log.info("orphaned_answer: could not name the tool for %s", session_id,
+                     exc_info=True)
+        return await self._deliver_orphaned_answer(session_id, kind, decision, identity,
+                                                   tool=tool)
 
     def orphaned_interaction(self, session_id: str) -> str | None:
         """The kind of human-facing ask a restart orphaned for this session, or None.
@@ -20305,21 +20415,49 @@ class SessionOrchestrator:
             return True
         if self.orphaned_interaction(session_id) != "question":
             return False
-        return await self._deliver_orphaned_answer(session_id, selected, identity)
+        return await self._deliver_orphaned_answer(session_id, "question", list(selected),
+                                                   identity)
 
-    async def _deliver_orphaned_answer(self, session_id: str, selected: list[str],
-                                       identity: str) -> bool:
-        """Send an orphaned question's answer as the next turn's prompt."""
+    async def _deliver_orphaned_answer(self, session_id: str, kind: str,
+                                       answer: list[str] | str, identity: str, *,
+                                       tool: str | None = None) -> bool:
+        """Send the user's response to a restart-orphaned ask as the next turn's prompt.
+
+        The rearm ``_rearm_session`` deferred while the ask was orphaned is folded in
+        here (#2922): its background-work report rides in the same prompt, and the
+        drain's pending prompt (if restore_deploy has not replayed it) queues right
+        behind. The prompt is not replayable — it is the user's answer to a card, not
+        a request a later restart should re-issue.
+        """
         if await self.ensure_driver(session_id, identity) is None:
             log.warning("orphaned_answer: no driver for %s — answer not delivered",
                         session_id)
             return False
-        result = await self.send_prompt(session_id, orphaned_answer_prompt(list(selected)))
+        snap: list | None = None
+        pending: str | None = None
+        try:
+            snap, pending = await self._take_deferred_rearm(session_id)
+        except Exception:
+            # The snapshot stays in the DB; _maybe_rearm_on_attach delivers it once
+            # the answer's turn has cleared the orphan.
+            log.info("orphaned_answer: deferred rearm unreadable for %s", session_id,
+                     exc_info=True)
+        tasks = [OpenBgTask.from_dict(x) for x in (snap or []) if isinstance(x, dict)]
+        context = await self._rearm_text(session_id, tasks)
+        prompt = orphaned_answer_prompt(kind, answer, tool=tool, context=context)
+        result = await self.send_prompt(session_id, prompt, replayable=False)
         if result != "sent":
             log.warning("orphaned_answer: send_prompt returned %r for %s", result, session_id)
             return False
+        if snap or pending:
+            driver = self._drivers.get(session_id)
+            if driver is not None:
+                await self._replay_pending_prompt(session_id, driver, pending)
+            await self._clear_rearm_snapshot(session_id)
         log_event(log, logging.INFO, "session.orphaned_answer_delivered",
-                  session_id=session_id, **{"selected": list(selected)})
+                  session_id=session_id, kind=kind,
+                  **{"answer": answer if isinstance(answer, str) else list(answer),
+                     "rearm": bool(context)})
         return True
 
     def pending_questions(self, session_id: str) -> list[dict]:
@@ -20374,12 +20512,20 @@ class SessionOrchestrator:
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
                           interrupt: bool = False,
                           context: PromptContext | None = None,
-                          origin: PromptOrigin | None = None) -> str:
+                          origin: PromptOrigin | None = None,
+                          replayable: bool | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
         stop the in-flight turn and run this prompt next instead of queueing it.
         ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge
         validates it and passes it only for an assistant-kind session — forwarded
-        here as-is."""
+        here as-is.
+
+        ``replayable`` says whether this prompt becomes ``_last_prompt`` — the turn a
+        restart (``snapshot_deploy``) or a rate-limit swap re-issues. Defaults to
+        True except for a system-origin nudge (``is_system_origin``); internal system
+        prompts (an orphaned answer, the resume nudge) pass False. A non-replayable
+        prompt that starts a turn also forgets the previous one, so a restart can
+        never replay a stale prompt in its place (#2922)."""
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -20436,7 +20582,12 @@ class SessionOrchestrator:
             async with db_session() as db:
                 resolved = await _attachments.resolve_and_bind(
                     db, session_id, turn_id, ids)
-        self._last_prompt[session_id] = text
+        if replayable is None:
+            replayable = not is_system_origin(origin)
+        if replayable:
+            self._last_prompt[session_id] = text
+        elif interrupt or getattr(d, "turn_active", False) is not True:
+            self._last_prompt.pop(session_id, None)
         rec = self._records.get(session_id)
         if rec is not None:
             await self._retry_unapplied_model(d, rec)
@@ -24639,9 +24790,25 @@ class SessionOrchestrator:
             restored.append(sid)
             last = entry.get("lastPrompt")
             if last and entry.get("status") in _REPLAY_STATUSES:
+                # At most one replay per restart (#2922): never while a re-offered
+                # card is waiting on the user (the turn would consume it), and never
+                # a second copy of what _rearm_session already re-sent. A driver
+                # already mid-turn (the rearm turn started first) still gets it: the
+                # send queues behind that turn, and this is the prompt's only
+                # replayer when the drain recorded no pending_prompt.
+                skip = ("orphaned_ask" if self.orphaned_interaction(sid) is not None
+                        else "already_replayed" if sid in self._replayed_ids()
+                        else None)
+                if skip is not None:
+                    log_event(log, logging.INFO, "deploy.restore.replay_skipped",
+                              session_id=sid, reason=skip)
+                    if skip != "orphaned_ask":
+                        self._last_prompt[sid] = last
+                    continue
                 # Seed this process's prompt memory BEFORE the send so the 429/401
                 # replay machinery can re-drive the turn again later if needed.
                 self._last_prompt[sid] = last
+                self._replayed_ids().add(sid)
                 try:
                     await driver.send_prompt(last)
                     replayed.append(sid)

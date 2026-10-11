@@ -10,7 +10,8 @@ class QuestionRegistry:
     """Lifecycle analogue to PermissionRegistry, but for AskUserQuestion.
 
     The future resolves to the tuple (selected_labels, mode), or None if the
-    question was dismissed (via deny_all on disconnect/interrupt).
+    question was dismissed (via deny_all on disconnect/interrupt). A deny_all
+    with a ``mode`` (a daemon restart) resolves to ``([], mode)`` instead.
     """
 
     def __init__(self):
@@ -171,13 +172,18 @@ class QuestionRegistry:
                 moved += 1
         return moved
 
-    def deny_all(self, session_id: str) -> None:
+    def deny_all(self, session_id: str, *, mode: str | None = None) -> None:
         """Resolve all pending questions for session_id with None (dismissed sentinel).
 
         Must be called on disconnect/interrupt/close so the blocked can_use_tool
         callback is never left awaiting forever.
+
+        ``mode`` names a non-user settlement instead of a dismissal — a daemon
+        restart passes ``orphaned_asks.QUESTION_MODE_INTERRUPTED`` — and the future
+        then resolves to ``([], mode)`` so the waiter can tell the agent the truth.
         """
+        result: tuple[list[str], str] | None = None if mode is None else ([], mode)
         for qid in [q for q, r in self._pending.items() if r["session_id"] == session_id]:
             rec = self._pending.pop(qid)
             if not rec["future"].done():
-                rec["future"].set_result(None)
+                rec["future"].set_result(result)

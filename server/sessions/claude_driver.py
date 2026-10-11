@@ -35,10 +35,13 @@ from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
                      AgentDriverFactory, AgentEngine, _EffortUnchanged)
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
+from .orphaned_asks import (CLOSE_REASON_RESTART, QUESTION_MODE_INTERRUPTED,
+                            RESTART_ASK_MESSAGE)
 from .questions import QuestionRegistry
 from .sdk_contract import is_turn_message
 from .status import SEEDABLE_STATUSES, StatusSignals, derive_status
-from .transcript_repair import find_transcript, repair_resumed_transcript
+from .transcript_repair import (INTERRUPT_TEXT, RESTART_INTERRUPT_TEXT, find_transcript,
+                                repair_resumed_transcript)
 from .types import ASSISTANT_KIND, is_assistant_kind
 
 _IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
@@ -303,7 +306,8 @@ class ClaudeAgentDriver:
                  on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  before_execution=None,
-                 automation_execution_id=None, after_execution_close=None):
+                 automation_execution_id=None, after_execution_close=None,
+                 resumed_after_restart: bool = False):
         self.automation_execution_id = automation_execution_id
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_tasks: set[str] = set()
@@ -326,6 +330,9 @@ class ClaudeAgentDriver:
         self._identity = identity
         self.denylist = denylist
         self.resume = resume
+        # Resuming a turn a daemon restart cut off (#2922): the transcript repair at
+        # start() then blames the restart, not the user.
+        self._resumed_after_restart = resumed_after_restart
         self._engine_session_id: str | None = None
         self._on_session_id = on_session_id
         self._on_sync_back = on_sync_back
@@ -801,6 +808,19 @@ class ClaudeAgentDriver:
 
         # Build the deny message.
         questions_list = [q for q, _ in pending]
+        if any(a is not None and a[1] == QUESTION_MODE_INTERRUPTED for a in answers):
+            # A daemon restart closed the driver (#2922): nobody answered OR refused.
+            # The card is re-offered after the restart and its answer arrives as a
+            # new prompt, so the agent must wait rather than read a dismissal.
+            # An answer given before the restart (a multi-question call) still counts.
+            lines = [RESTART_ASK_MESSAGE]
+            for q_obj, answer in zip(questions_list, answers):
+                q_text = q_obj.get("question") or ""
+                if answer is None or answer[1] == QUESTION_MODE_INTERRUPTED:
+                    lines.append(f"- {q_text} → (not answered yet)")
+                else:
+                    lines.append(self._format_answer_line(q_text, *answer))
+            return PermissionResultDeny(message="\n".join(lines))
         if len(questions_list) == 1:
             q_text = questions_list[0].get("question") or ""
             answer = answers[0]
@@ -837,6 +857,8 @@ class ClaudeAgentDriver:
         try:
             res = fut.result()
             selected, mode = res if res is not None else (None, "dismissed")
+            if mode == QUESTION_MODE_INTERRUPTED:
+                selected = None   # nobody answered — the card is re-offered (#2922)
             self._emit(ev.QuestionResolved(
                 question_id=question_id, turn_id=turn_id,
                 selected=selected, mode=mode))
@@ -992,9 +1014,11 @@ class ClaudeAgentDriver:
         # error_during_execution / [ede_diagnostic] and every turn dead-ends. Heal it
         # before handing the session back to the SDK. Best-effort — never block start.
         if self.resume:
+            text = RESTART_INTERRUPT_TEXT if self._resumed_after_restart else INTERRUPT_TEXT
             try:
                 await asyncio.to_thread(
-                    repair_resumed_transcript, self.config_dir, self.resume)
+                    functools.partial(repair_resumed_transcript, text=text),
+                    self.config_dir, self.resume)
             except Exception:
                 log.warning("driver.start: transcript repair failed session=%s",
                             self.session_id, exc_info=True)
@@ -2349,7 +2373,12 @@ class ClaudeAgentDriver:
                 return
             await asyncio.sleep(_TRANSCRIPT_FLUSH_POLL_S)
 
-    async def aclose(self):
+    async def aclose(self, *, reason: str | None = None):
+        """Tear the driver down. ``reason=CLOSE_REASON_RESTART`` (the orchestrator's
+        daemon-shutdown ``stop()``) settles pending asks with the restart message
+        rather than as a user dismissal/denial (#2922); every other close keeps the
+        user-facing wording."""
+        restart = reason == CLOSE_REASON_RESTART
         try:
             # No more listening: an idle driver's listener is parked on the cursor and
             # must not be counted as a live turn to flush (the grace below is for those).
@@ -2358,8 +2387,10 @@ class ClaudeAgentDriver:
             self._cancel_suggest()
             if self._mcp_poll_task is not None:
                 await cancel_and_reap(self._mcp_poll_task, phase=f"driver.mcp-poll:{self.session_id}")
-            self._reg.deny_all(self.session_id)
-            self._qreg.deny_all(self.session_id)
+            self._reg.deny_all(self.session_id,
+                               reason=RESTART_ASK_MESSAGE if restart else None)
+            self._qreg.deny_all(self.session_id,
+                                mode=QUESTION_MODE_INTERRUPTED if restart else None)
             grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
             if self._pump is not None and not self._pump.done():
                 # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
@@ -2460,4 +2491,5 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             before_execution=config.before_execution,
             automation_execution_id=config.automation_execution_id,
             after_execution_close=config.after_execution_close,
+            resumed_after_restart=config.resumed_after_restart,
         )

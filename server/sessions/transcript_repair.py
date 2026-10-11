@@ -22,9 +22,18 @@ import logging
 import os
 import uuid as _uuid
 
+from viberpit import brand
+
 log = logging.getLogger(__name__)
 
 INTERRUPT_TEXT = "[Request interrupted by user for tool use]"
+
+#: Written instead of :data:`INTERRUPT_TEXT` when the session is being resumed after a
+#: daemon restart cut its turn off (#2922): the CLI's own wording blames the user, and
+#: the agent then treats a restart as the user stopping it. Both texts share the
+#: ``[Request interrupted by`` prefix ``transcript_entries`` classifies as plumbing.
+RESTART_INTERRUPT_TEXT = (
+    f"[Request interrupted by a {brand.NAME} daemon restart — not by the user]")
 
 
 def _content_blocks(entry: dict) -> list:
@@ -55,11 +64,14 @@ def _tool_result_ids(entry: dict) -> set[str]:
     return out
 
 
-def plan_repair(entries: list[dict], *, uuid_factory=None, now_iso: str) -> list[dict]:
+def plan_repair(entries: list[dict], *, uuid_factory=None, now_iso: str,
+                text: str = INTERRUPT_TEXT) -> list[dict]:
     """Return synthetic tool_result entries to append, or [] if the tail is clean.
 
     Repairs only a TRAILING orphan: the last main-thread message must be an
     assistant ``tool_use`` whose ids have no matching ``tool_result`` after it.
+    ``text`` is the tool_result body — :data:`RESTART_INTERRUPT_TEXT` after a
+    daemon restart, else the CLI's own :data:`INTERRUPT_TEXT`.
     """
     uuid_factory = uuid_factory or (lambda: _uuid.uuid4().hex)
     # Mirror the binary's terminal-state check (S_o): it looks at the last
@@ -91,12 +103,12 @@ def plan_repair(entries: list[dict], *, uuid_factory=None, now_iso: str) -> list
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{"type": "tool_result", "content": INTERRUPT_TEXT,
+            "content": [{"type": "tool_result", "content": text,
                          "is_error": True, "tool_use_id": tid} for tid in orphan_ids],
         },
         "uuid": uuid_factory(),
         "timestamp": now_iso,
-        "toolUseResult": f"Error: {INTERRUPT_TEXT}",
+        "toolUseResult": f"Error: {text}",
         "sourceToolAssistantUUID": anchor_uuid,
         "userType": "external",
         "entrypoint": "sdk-py",
@@ -158,7 +170,8 @@ def truncate_corrupt_tail(path: str) -> int:
     return 1
 
 
-def repair_transcript(path: str, *, now_iso: str | None = None) -> int:
+def repair_transcript(path: str, *, now_iso: str | None = None,
+                      text: str = INTERRUPT_TEXT) -> int:
     """Append synthetic tool_results to heal a trailing orphaned tool_use.
 
     Returns the number of entries appended (0 = nothing to do / file absent).
@@ -171,7 +184,7 @@ def repair_transcript(path: str, *, now_iso: str | None = None) -> int:
     if now_iso is None:
         from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    plan = plan_repair(entries, now_iso=now_iso)
+    plan = plan_repair(entries, now_iso=now_iso, text=text)
     if not plan:
         return 0
     with open(path, "a") as f:
@@ -188,12 +201,14 @@ def find_transcript(config_dir: str, session_id: str) -> str | None:
     return matches[0] if matches else None
 
 
-def repair_resumed_transcript(config_dir: str, session_id: str) -> int:
+def repair_resumed_transcript(config_dir: str, session_id: str, *,
+                              text: str = INTERRUPT_TEXT) -> int:
     """Heal the transcript for a session about to be resumed. Best-effort: a
-    missing file or unreadable transcript returns 0 rather than raising."""
+    missing file or unreadable transcript returns 0 rather than raising.
+    ``text`` — see :func:`plan_repair`."""
     if not config_dir or not session_id:
         return 0
     path = find_transcript(config_dir, session_id)
     if path is None:
         return 0
-    return repair_transcript(path)
+    return repair_transcript(path, text=text)

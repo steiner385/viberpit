@@ -44,7 +44,7 @@ def test_answer_prompt_carries_the_selection_and_corrects_the_false_rejection():
     """The CLI closes out the dangling tool_use with 'The user doesn't want to
     proceed… STOP' (observed in prod, transcript line 128). The assistant reads that
     BEFORE our prompt, so the prompt must explicitly disown it or the assistant stops."""
-    text = orphaned_answer_prompt(["Close #15205 as duplicate"])
+    text = orphaned_answer_prompt("question", ["Close #15205 as duplicate"])
     assert "Close #15205 as duplicate" in text
     assert "restart" in text.lower()
     assert "not" in text.lower() and "reject" in text.lower()
@@ -55,7 +55,7 @@ def test_answer_prompt_renders_multiple_entries_one_per_line():
     "<header>: <label>" per question (QuestionGroup.submitAll flattens them,
     because only the first per-question frame can be delivered). A "; " join
     makes that mapping unreadable, so each entry gets its own line."""
-    text = orphaned_answer_prompt(["Disposition: Close it", "Owner: Me"])
+    text = orphaned_answer_prompt("question", ["Disposition: Close it", "Owner: Me"])
     assert "- Disposition: Close it" in text
     assert "- Owner: Me" in text
     assert "; " not in text.split("Note:")[0]
@@ -63,14 +63,14 @@ def test_answer_prompt_renders_multiple_entries_one_per_line():
 
 def test_answer_prompt_keeps_the_single_entry_form():
     """One answer stays a one-liner — no bullet, no pluralisation."""
-    text = orphaned_answer_prompt(["Alpha"])
+    text = orphaned_answer_prompt("question", ["Alpha"])
     assert "My answer: Alpha" in text
     assert "- Alpha" not in text
 
 
 def test_answer_prompt_handles_an_empty_selection():
     """Never emit a prompt that reads as an answer with nothing in it."""
-    text = orphaned_answer_prompt([])
+    text = orphaned_answer_prompt("question", [])
     assert text.strip()
     assert "(no option selected)" in text
 
@@ -79,6 +79,46 @@ def test_answer_prompt_survives_non_string_client_input():
     """``selected`` comes straight off client JSON with no validation
     (server/bridge/ws.py), and the call is not inside a try — a TypeError here
     would kill the WS message loop for the whole socket."""
-    text = orphaned_answer_prompt([{"a": 1}, 42])   # type: ignore[list-item]
+    text = orphaned_answer_prompt("question", [{"a": 1}, 42])   # type: ignore[list-item]
     assert "42" in text
     assert "a" in text
+
+
+# ── #2922: permission / plan orphans and the folded restart context ──────────
+
+def test_permission_allow_prompt_names_the_tool_and_says_rerun():
+    text = orphaned_answer_prompt("permission", "allow", tool="Bash")
+    assert "Bash permission request" in text
+    assert "ALLOWED" in text
+    assert "Re-run the tool call" in text
+    assert "restart" in text.lower()
+
+
+def test_permission_always_reads_as_allowed():
+    assert "ALLOWED" in orphaned_answer_prompt("permission", "always", tool="Edit")
+
+
+def test_permission_deny_prompt_says_do_not_run():
+    text = orphaned_answer_prompt("permission", "deny", tool="Bash")
+    assert "DENIED" in text
+    assert "Re-run" not in text
+
+
+def test_plan_approve_and_reject_prompts():
+    approved = orphaned_answer_prompt("plan", "allow")
+    assert "APPROVED" in approved and "plan" in approved.lower()
+    rejected = orphaned_answer_prompt("plan", "deny")
+    assert "REJECTED" in rejected
+
+
+def test_context_is_folded_into_the_answer_prompt():
+    text = orphaned_answer_prompt("question", ["Alpha"], context="REARM-CONTEXT-LINE")
+    assert "My answer: Alpha" in text
+    assert "REARM-CONTEXT-LINE" in text
+    assert text.index("My answer: Alpha") < text.index("REARM-CONTEXT-LINE")
+
+
+def test_an_unknown_kind_is_refused():
+    import pytest
+    with pytest.raises(ValueError):
+        orphaned_answer_prompt("bogus", "allow")

@@ -120,7 +120,7 @@ def test_rethread_makes_question_asked_under_system_answerable(tmp_path):
         await _ensure(orch, tmp_path, "s3", "user@example.test")
         listed = [q["question_id"] for q in orch.pending_questions("s3")]
         answered = await orch.answer_question("s3", qid, ["A"], "user@example.test")
-        approved = orch.resolve_permission("s3", pid, "allow", "user@example.test")
+        approved = await orch.resolve_permission("s3", pid, "allow", "user@example.test")
         return qid, listed, answered, approved, await fut, await pfut
 
     qid, listed, answered, approved, result, perm = asyncio.run(run())

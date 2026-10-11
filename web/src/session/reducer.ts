@@ -1134,6 +1134,10 @@ export function transcriptReducer(
     // real job is re-resolving the block that a mid-turn reattach's ring resupply
     // recreates live, and resolving cards in OTHER attached clients.
     case 'questionResolved': {
+      // A daemon restart cut the question off (#2922): nobody answered, and the
+      // restarted daemon re-offers it. Resolving it here would mark it answered and
+      // block that re-offer's live upgrade, so the card stays exactly as it is.
+      if (ev.mode === 'interrupted') return state
       const selected = ev.selected ?? []
       const next = resolveQuestionInPlace(state, ev.questionId, selected)
       // A composer prompt sent while this question was pending is delivered by the
