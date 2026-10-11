@@ -163,6 +163,37 @@ def test_orchestrator_stop_closes_drivers_for_a_restart():
     assert seen == [CLOSE_REASON_RESTART]
 
 
+def test_orchestrator_stop_still_closes_a_driver_without_the_reason_kwarg():
+    """A driver whose aclose() predates ``reason`` must still be closed by stop():
+    the TypeError from the keyword is raised at call time, inside the suppress()
+    that guards the close, so without a fallback the driver was silently skipped
+    and its pump could outlive teardown."""
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    closed: list = []
+
+    class _Legacy:
+        async def aclose(self):
+            closed.append(True)
+
+    async def run():
+        o = SessionOrchestrator.__new__(SessionOrchestrator)
+        o._bg_tasks = set()
+        o._drivers = {"s1": _Legacy()}
+
+        class _Stopper:
+            async def stop(self):
+                return None
+
+        o._poller = o._process_quota = o._pr_poller = _Stopper()
+        o._pr_population = o._deploy_watcher = _Stopper()
+        o._pr_branch_task = None
+        await o.stop()
+
+    asyncio.run(run())
+    assert closed == [True]
+
+
 def test_restart_close_keeps_an_answer_given_before_the_restart():
     from claude_agent_sdk import PermissionResultDeny
 

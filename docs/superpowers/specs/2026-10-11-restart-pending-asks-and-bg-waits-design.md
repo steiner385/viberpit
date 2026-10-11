@@ -39,7 +39,7 @@
    - A Monitor is re-armed only if its target is still running. Otherwise it is reported as "target finished before restart, output at X".
    - All of this lives in `background_tasks.build_rearm_prompt`, its single home.
 6. **Replay at most once.**
-   - `restore_deploy` skips the replay when `_rearm_session` already replayed `pending_prompt` for that session (track it in `_rearmed`/`_replayed`), or when the driver is already mid-turn.
+   - `restore_deploy` skips the replay when `_rearm_session` already replayed `pending_prompt` for that session (track it in `_rearmed`/`_replayed`), or while a re-offered ask is waiting on the user. A driver that is already mid-turn still gets the replay, queued behind the current turn: when the drain recorded no `pending_prompt`, `restore_deploy` is the only replayer, so skipping it would lose the interrupted request.
    - Prompts whose `origin` is a system kind (orphaned answer, completion nudge, resume nudge, rearm) are never recorded in `_last_prompt`, so they can never be replayed as user input.
 
 ## Tests

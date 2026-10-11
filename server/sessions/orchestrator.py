@@ -3521,7 +3521,13 @@ class SessionOrchestrator:
                 # its pending asks must settle as "interrupted by a restart", not as
                 # the user refusing them (#2922).
                 with contextlib.suppress(Exception):
-                    await bounded_wait(driver.aclose(reason=CLOSE_REASON_RESTART),
+                    try:
+                        closing = driver.aclose(reason=CLOSE_REASON_RESTART)
+                    except TypeError:
+                        # A driver whose aclose() predates ``reason`` raises here, at
+                        # call time and inside the suppress() — it must still close.
+                        closing = driver.aclose()
+                    await bounded_wait(closing,
                                        timeout=_STOP_DRIVER_CLOSE_TIMEOUT_S,
                                        phase=f"stop:driver-close:{sid}")
         await bounded_wait(self._poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
@@ -24640,12 +24646,13 @@ class SessionOrchestrator:
             last = entry.get("lastPrompt")
             if last and entry.get("status") in _REPLAY_STATUSES:
                 # At most one replay per restart (#2922): never while a re-offered
-                # card is waiting on the user (the turn would consume it), never a
-                # second copy of what _rearm_session already re-sent, and never into
-                # a driver that is already mid-turn.
+                # card is waiting on the user (the turn would consume it), and never
+                # a second copy of what _rearm_session already re-sent. A driver
+                # already mid-turn (the rearm turn started first) still gets it: the
+                # send queues behind that turn, and this is the prompt's only
+                # replayer when the drain recorded no pending_prompt.
                 skip = ("orphaned_ask" if self.orphaned_interaction(sid) is not None
                         else "already_replayed" if sid in self._replayed_ids()
-                        else "mid_turn" if getattr(driver, "turn_active", False) is True
                         else None)
                 if skip is not None:
                     log_event(log, logging.INFO, "deploy.restore.replay_skipped",

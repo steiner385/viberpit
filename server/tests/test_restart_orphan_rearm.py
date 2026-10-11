@@ -345,12 +345,16 @@ async def test_restore_then_rearm_produces_exactly_one_replay(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_restore_skips_the_replay_when_the_driver_is_mid_turn(tmp_path):
+async def test_restore_still_replays_into_a_driver_already_mid_turn(tmp_path):
+    """A rearm turn that started first must not swallow the user's interrupted
+    prompt: when the drain had no pending_prompt (the turn had already produced
+    output), restore_deploy is its ONLY replayer, so it queues behind the rearm turn
+    exactly as before #2922 rather than being skipped and lost."""
     p = str(tmp_path / "live.json")
     ds.write_snapshot([{"id": "s1", "status": "in_progress", "lastPrompt": "go on"}], path=p)
     o, built = _restore_orch({"s1": _Rec("idle")}, drivers={"s1": _D(turn_active=True)})
     res = await o.restore_deploy(path=p)
-    assert res["replayed"] == [] and built["s1"].sent == []
+    assert res["replayed"] == ["s1"] and built["s1"].sent == ["go on"]
 
 
 @pytest.mark.asyncio
