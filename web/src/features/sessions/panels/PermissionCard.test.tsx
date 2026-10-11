@@ -78,6 +78,13 @@ describe('PermissionCard — Always allow… chooser', () => {
     expect(screen.getByRole('dialog', { name: 'Always allow' })).toBeInTheDocument()
   })
 
+  it('without rule props, suggestions still present, labels the direct session-wide grant honestly', () => {
+    render(<PermissionCard block={sugPerm} onDecision={vi.fn()} />)
+    const btn = screen.getByRole('button', { name: /^Always allow Bash/ })
+    expect(btn).toHaveTextContent('Always allow (this session)')
+    expect(btn).toHaveAttribute('title', 'Grant this for the rest of the session')
+  })
+
   it('without rule props, Always allow… falls back to the direct decision', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()

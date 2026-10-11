@@ -8,6 +8,8 @@
 // Without it the prompt is orphaned and the transcript stays empty (2026-09-02).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import React from 'react'
 
 const attach = vi.fn()
 vi.mock('@/ws/client', () => ({
@@ -35,12 +37,17 @@ vi.mock('@/api/hooks', () => ({
 
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 
+// useSessionRuntime invalidates permission-rules after a grant, so it needs a client.
+function wrapper({ children }: { children: React.ReactNode }) {
+  return React.createElement(QueryClientProvider, { client: new QueryClient() }, children)
+}
+
 describe('re-attach when the session leaves a pre-spawn state', () => {
   beforeEach(() => { attach.mockClear(); sessionsData = [] })
 
   it('re-sends attach once pending_approval → idle (approved from the open view)', () => {
     sessionsData = [{ id: 's1', status: 'pending_approval' }]
-    const { rerender } = renderHook(() => useSessionRuntime('s1'))
+    const { rerender } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     expect(attach).toHaveBeenCalledTimes(1)
     sessionsData = [{ id: 's1', status: 'idle' }]
     rerender()
@@ -50,7 +57,7 @@ describe('re-attach when the session leaves a pre-spawn state', () => {
 
   it('re-sends attach once queued → in_progress (a capacity slot freed)', () => {
     sessionsData = [{ id: 's1', status: 'queued' }]
-    const { rerender } = renderHook(() => useSessionRuntime('s1'))
+    const { rerender } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     sessionsData = [{ id: 's1', status: 'in_progress' }]
     rerender()
     expect(attach).toHaveBeenCalledTimes(2)
@@ -58,7 +65,7 @@ describe('re-attach when the session leaves a pre-spawn state', () => {
 
   it('does not re-attach on ordinary live transitions', () => {
     sessionsData = [{ id: 's1', status: 'idle' }]
-    const { rerender } = renderHook(() => useSessionRuntime('s1'))
+    const { rerender } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     sessionsData = [{ id: 's1', status: 'in_progress' }]
     rerender()
     sessionsData = [{ id: 's1', status: 'complete' }]
@@ -67,7 +74,7 @@ describe('re-attach when the session leaves a pre-spawn state', () => {
   })
 
   it('does not re-attach when the record first appears already live', () => {
-    const { rerender } = renderHook(() => useSessionRuntime('s1'))
+    const { rerender } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     sessionsData = [{ id: 's1', status: 'idle' }]
     rerender()
     expect(attach).toHaveBeenCalledTimes(1)
@@ -75,7 +82,7 @@ describe('re-attach when the session leaves a pre-spawn state', () => {
 
   it('does not re-attach for another session\'s transition', () => {
     sessionsData = [{ id: 's1', status: 'idle' }, { id: 's2', status: 'pending_approval' }]
-    const { rerender } = renderHook(() => useSessionRuntime('s1'))
+    const { rerender } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     sessionsData = [{ id: 's1', status: 'idle' }, { id: 's2', status: 'idle' }]
     rerender()
     expect(attach).toHaveBeenCalledTimes(1)

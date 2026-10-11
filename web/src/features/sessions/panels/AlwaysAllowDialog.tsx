@@ -3,8 +3,9 @@ import { Dialog } from '@/ui/Dialog'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Input } from '@/ui/Input'
 import { Button } from '@/ui/Button'
-import { ApiRequestError, apiErrorCode } from '@/api/client'
+import { apiErrorCode, apiErrorDetail } from '@/api/client'
 import type { RulePreview, RuleScope } from '@/api/types'
+import { RULE_SCOPE_LABEL } from '@/features/permissionRules/ruleScopeLabel'
 import type { Block } from '@/session/reducer'
 
 type PermBlock = Extract<Block, { kind: 'permission' }>
@@ -21,14 +22,6 @@ interface Props {
 
 const PREVIEW_DEBOUNCE_MS = 300
 
-/** `{detail: {message, reasons}}` off an `ApiRequestError`; the server owns the copy. */
-function errorDetail(err: unknown): { message: string; reasons: string[] } {
-  const detail = err instanceof ApiRequestError ? (err.body.detail as Record<string, unknown> | undefined) : undefined
-  const reasons = Array.isArray(detail?.reasons) ? (detail.reasons as string[]) : []
-  const message = typeof detail?.message === 'string' ? detail.message : 'Could not save the rule'
-  return { message, reasons }
-}
-
 function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'open'>) {
   const suggestions = block.ruleSuggestions ?? []
   const [pattern, setPattern] = useState(suggestions[0]?.pattern ?? '')
@@ -41,8 +34,11 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
   const onPreviewRef = useRef(onPreview)
   useEffect(() => { onPreviewRef.current = onPreview }, [onPreview])
   const key = JSON.stringify([pattern, scope])
-  // Set by a 409: the next explicit click is the one that sends confirm=true.
-  const [confirmStep, setConfirmStep] = useState<string[] | null>(null)
+  // Set by a 409, keyed to the pattern/scope it was issued for: the next explicit Confirm click
+  // is the one that sends confirm=true.
+  const [confirmed409, setConfirmed409] = useState<{ key: string; reasons: string[] } | null>(null)
+  const confirmStep = confirmed409?.key === key ? confirmed409.reasons : null
+  const confirmRef = useRef<HTMLButtonElement>(null)
   const [error, setError] = useState<{ code: string | null; message: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -59,7 +55,7 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
     return () => { cancelled = true; clearTimeout(t) }
   }, [pattern, scope, key])
 
-  const edit = (next: () => void) => { next(); setConfirmStep(null); setError(null) }
+  const edit = (next: () => void) => { next(); setError(null) }
 
   const current = settled?.key === key
   const preview = current ? settled.preview : null
@@ -69,17 +65,19 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
   const stale = error?.code === 'PERMISSION_NOT_PENDING'
   const canGrant = pattern.trim() !== '' && current && !refused && !notCovered && !busy && !stale
 
-  const grant = async () => {
+  const grant = async (confirm: boolean) => {
     if (!canGrant) return
     setBusy(true)
     setError(null)
     try {
-      await onGrant(pattern, scope, needsConfirm)
+      await onGrant(pattern, scope, confirm)
       onClose()
     } catch (err) {
       const code = apiErrorCode(err)
-      const { message, reasons } = errorDetail(err)
-      if (code === 'RULE_NEEDS_CONFIRMATION') setConfirmStep(reasons)
+      const d = apiErrorDetail(err)
+      const message = d.message ?? 'Could not save the rule'
+      const reasons = d.reasons ?? []
+      if (code === 'RULE_NEEDS_CONFIRMATION') setConfirmed409({ key, reasons })
       else setError({ code, message })
     } finally {
       setBusy(false)
@@ -99,6 +97,7 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
           value: s.pattern,
           label: s.pattern,
           description: s.description,
+          disabled: busy,
         }))}
       />
       <label className="block space-y-1 text-sm font-medium text-ink">
@@ -107,7 +106,14 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
           className="font-mono"
           value={pattern}
           onChange={(e) => edit(() => setPattern(e.target.value))}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.repeat) { e.preventDefault(); void grant() } }}
+          disabled={busy}
+          // Enter only ever grants unconfirmed; confirm=true comes solely from the Confirm button.
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || e.repeat) return
+            e.preventDefault()
+            if (needsConfirm) confirmRef.current?.focus()
+            else void grant(false)
+          }}
           invalid={refused}
         />
       </label>
@@ -117,9 +123,9 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
         value={scope}
         onChange={(s) => edit(() => setScope(s))}
         options={[
-          { value: 'session', label: 'This session' },
-          { value: 'repo', label: 'This repo', disabled: !hasRepo, disabledReason: 'Scratch session — no repo' },
-          { value: 'global', label: 'All sessions' },
+          { value: 'session', label: RULE_SCOPE_LABEL.session, disabled: busy },
+          { value: 'repo', label: RULE_SCOPE_LABEL.repo, disabled: !hasRepo || busy, disabledReason: hasRepo ? undefined : 'Scratch session — no repo' },
+          { value: 'global', label: RULE_SCOPE_LABEL.global, disabled: busy },
         ]}
       />
       <p className="text-xs text-ink-muted">Repo and All-sessions rules apply on every host and account.</p>
@@ -146,7 +152,7 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
         ) : (
           <>
             <Button variant="secondary" size="lg" onClick={onClose}>Cancel</Button>
-            <Button size="lg" onClick={() => void grant()} disabled={!canGrant}>
+            <Button size="lg" ref={confirmRef} onClick={() => void grant(needsConfirm)} disabled={!canGrant}>
               {!needsConfirm ? 'Grant' : scope === 'global' ? 'Confirm — allow everywhere' : 'Confirm'}
             </Button>
           </>

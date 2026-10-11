@@ -532,4 +532,38 @@ describe('useSessionRuntime rule callbacks', () => {
     })
     expect(permCount(result)).toBe(1)
   })
+
+  it('onGrantRule invalidates permission-rules and clears swept sibling cards without a notice', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const w = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children)
+    vi.spyOn(api, 'post').mockResolvedValue({ rule: { id: 'r1' }, resolvedPermIds: ['p1', 'p2'] })
+    const { result } = renderHook(() => useSessionRuntime('sess1'), { wrapper: w })
+    act(() => {
+      seedPermission()
+      capturedSessionEventHandler?.({ type: 'permissionRequest', permId: 'p2', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { command: 'npm test' }, plan: false })
+    })
+    expect(permCount(result)).toBe(2)
+    await act(async () => { await result.current.onGrantRule('p1', 'Bash(npm test:*)', 'session', false) })
+    expect(permCount(result)).toBe(0)
+    const notices = result.current.state.turns.flatMap((t) => t.blocks).filter((b) => b.kind === 'notice')
+    expect(notices).toHaveLength(1)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['permission-rules'] })
+  })
+
+  it('a legacy "always" decision invalidates permission-rules', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const w = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children)
+    const { result } = renderHook(() => useSessionRuntime('sess1'), { wrapper: w })
+    act(() => { seedPermission() })
+    mockPermissionResponse.mockReturnValue(true)
+    invalidate.mockClear()
+    act(() => { result.current.onDecision('p1', 'allow') })
+    expect(invalidate).not.toHaveBeenCalled()
+    act(() => { result.current.onDecision('p1', 'always') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['permission-rules'] })
+  })
 })

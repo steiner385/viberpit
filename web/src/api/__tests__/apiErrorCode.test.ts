@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ApiRequestError, apiErrorCode } from '../client'
+import { ApiRequestError, apiErrorCode, apiErrorDetail } from '../client'
 
 describe('apiErrorCode', () => {
   it('reads nested error.code / detail.code / top-level code', () => {
@@ -16,5 +16,18 @@ describe('apiErrorCode', () => {
   it('returns null when there is no code', () => {
     expect(apiErrorCode(new ApiRequestError(500, {}))).toBeNull()
     expect(apiErrorCode(null)).toBeNull()
+  })
+})
+
+describe('apiErrorDetail', () => {
+  it('reads message and reasons off detail', () => {
+    expect(apiErrorDetail(new ApiRequestError(409, { detail: { message: 'm', reasons: ['r'] } })))
+      .toEqual({ message: 'm', reasons: ['r'] })
+  })
+
+  it('is empty for prose detail, non-API errors and missing bodies', () => {
+    expect(apiErrorDetail(new ApiRequestError(400, { detail: 'prose' }))).toEqual({})
+    expect(apiErrorDetail(new Error('x'))).toEqual({})
+    expect(apiErrorDetail(new ApiRequestError(500, null as never))).toEqual({})
   })
 })

@@ -1,6 +1,6 @@
 import type * as React from 'react'
 import {
-  SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck,
+  SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck, ListChecks,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
   Rocket, Gauge, Send, Route,
   type LucideIcon,
@@ -22,6 +22,7 @@ import { FleetSection } from './sections/FleetSection'
 import { PresetsSection } from './sections/PresetsSection'
 import { TemplatesSection } from './sections/TemplatesSection'
 import { PermissionProfilesSection } from './sections/PermissionProfilesSection'
+import { PermissionRulesSection } from './sections/PermissionRulesSection'
 import { PluginsSection } from './sections/PluginsSection'
 import { SkillsSection } from './sections/SkillsSection'
 import { CommandsSection } from './sections/CommandsSection'
@@ -93,6 +94,8 @@ const DEFS = [
     description: 'Reusable prompt templates with {{variable}} placeholders.' },
   { id: 'profiles',      group: 'sessions',  label: 'Permission profiles', icon: ShieldCheck,       scope: 'server',  component: PermissionProfilesSection,
     description: 'Named tool-permission sets a session can adopt.' },
+  { id: 'always-allow', group: 'sessions',  label: 'Always-allow rules',  icon: ListChecks,        scope: 'server',  component: PermissionRulesSection,
+    description: 'Standing permission rules created from session cards, with who made each and how often it fired.', keywords: ['permission', 'allow', 'rule'] },
   // What the fleet can run (spec 2026-09-20 D1/D2): supply, not spend. Delivery →
   // Capacity is the other half — how automation spends it — and the two link.
   { id: 'capacity',      group: 'capacity',  label: 'Limits',              icon: Gauge,             scope: 'server',  component: LimitsSection, ownsChassis: true,

@@ -6,13 +6,13 @@ import {
 import { readLastSection, writeLastSection, LAST_SECTION_KEY } from './lastSection'
 
 describe('settingsDefs', () => {
-  it('has 20 sections in 5 groups, ids unique and URL-safe, every def described', () => {
-    expect(SETTINGS_DEFS).toHaveLength(20)
+  it('has 21 sections in 5 groups, ids unique and URL-safe, every def described', () => {
+    expect(SETTINGS_DEFS).toHaveLength(21)
     expect(SETTINGS_GROUPS.map((g) => g.id)).toEqual(['workspace', 'sessions', 'capacity', 'claude', 'about'])
     const ids = SETTINGS_DEFS.map((d) => d.id)
     expect(new Set(ids).size).toBe(ids.length)
     for (const d of SETTINGS_DEFS) {
-      expect(d.id).toMatch(/^[a-z]+$/)
+      expect(d.id).toMatch(/^[a-z]+(-[a-z]+)*$/)
       expect(d.description.length).toBeGreaterThan(10)
       expect(SETTINGS_GROUPS.some((g) => g.id === d.group)).toBe(true)
     }
@@ -44,7 +44,7 @@ describe('settingsDefs', () => {
 
   it('groups sections in nav order; Accounts carries the attention badge', () => {
     expect(sectionsInGroup('workspace').map((d) => d.id)).toEqual(['general', 'appearance', 'notifications', 'channels', 'rules'])
-    expect(sectionsInGroup('sessions').map((d) => d.id)).toEqual(['sessions', 'presets', 'templates', 'profiles'])
+    expect(sectionsInGroup('sessions').map((d) => d.id)).toEqual(['sessions', 'presets', 'templates', 'profiles', 'always-allow'])
     expect(sectionsInGroup('capacity').map((d) => d.id)).toEqual(['capacity', 'fleet', 'accounts'])
     expect(sectionsInGroup('about').map((d) => d.id)).toEqual(['deploy', 'about'])
     expect(SETTINGS_BY_ID.accounts.badge).toBe('accountsAttention')
