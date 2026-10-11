@@ -7654,7 +7654,7 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
 
         from server.automations.product_policy import (
-            is_on, policies_by_slug, skip_labels, trusted_authors)
+            is_on, policies_by_slug, skip_labels, skips_self_closing_trackers, trusted_authors)
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
         from server.pm.queue import rank, rank_key, to_candidate
@@ -7719,7 +7719,8 @@ class SessionOrchestrator:
                 # D8: THE bounce threshold, from this product's own policy.
                 give_up_after_bounces=int(policy["give_up_after_bounces"]),
                 extra_skip_labels=skip_labels(policy),
-                trusted_authors=trusted_authors(policy))
+                trusted_authors=trusted_authors(policy),
+                skip_trackers=skips_self_closing_trackers(policy))
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
@@ -8284,22 +8285,28 @@ class SessionOrchestrator:
         from server.pm.refs import split_ref
         issue_state = await asyncio.to_thread(
             backlog_github.issue_state_live, target, gh_run=self._gh_run)
-        hold_kind = hold_by = note = None
+        hold_kind = hold_by = note = title = author = None
+        labels: list = []
         mirrored = False
         parts = split_ref(target)
         async with db_session() as db:
             if parts is not None:
                 repo, number = parts
                 row = (await db.execute(sa_select(
-                    WorkItem.hold_kind, WorkItem.hold_by).where(
+                    WorkItem.hold_kind, WorkItem.hold_by, WorkItem.labels, WorkItem.title,
+                    WorkItem.author).where(
                         WorkItem.kind == "issue", WorkItem.repo == repo,
                         WorkItem.number == number))).first()
                 if row is not None:
                     mirrored = True
-                    hold_kind, hold_by = row
+                    hold_kind, hold_by, row_labels, title, author = row
+                    labels = list(row_labels or [])
             note = (await self._session_no_pr(db, session_id))["note"]
+        # ``labels``/``title``/``author`` (#2683): the not-needed settle asks whether
+        # the product's policy skips this issue, through the queue's own predicates.
         return {"issue_state": issue_state, "mirrored": mirrored,
-                "hold_kind": hold_kind, "hold_by": hold_by, "no_pr_note": note}
+                "hold_kind": hold_kind, "hold_by": hold_by, "no_pr_note": note,
+                "labels": labels, "title": title, "author": author}
 
     @staticmethod
     async def _session_no_pr(db, session_id: str | None) -> dict:

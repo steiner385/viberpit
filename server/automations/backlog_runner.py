@@ -559,7 +559,8 @@ Escalate = Callable[[str, str, str], Awaitable[None]]
 ModelQuotaOut = Callable[[str], Awaitable["str | None"]]
 # INVESTIGATION settle (spec 2026-09-18 §5): ``investigation_state(target, session_id)``
 # -> ``{"issue_state": "open"|"closed"|None, "mirrored": bool, "hold_kind",
-# "hold_by", "no_pr_note"}``. An investigation opens no PR, so its exit is legible
+# "hold_by", "no_pr_note", "labels", "title", "author"}`` (the last three off the
+# mirror row, for the not-needed settle's policy-skip read, #2683). An investigation opens no PR, so its exit is legible
 # only from the issue (live GitHub, not the lagging mirror), the hold still on it —
 # whose KIND says whether it is still the evidence hold this dispatch was for and
 # whose ACTOR says who parked it if not — and the note its ``mark_no_pr`` call left
@@ -2820,12 +2821,21 @@ class BacklogRunnerLoop:
         investigation settle reads):
 
         - issue **closed** → done: finalise the outcome row ``no_pr`` and release;
+        - issue **open** but NOT WORK under its product's policy (#2683 — a
+          self-closing tracker, ``viberpit-ignore``, a ``skip_labels`` label:
+          ``policy_skip.not_work_by_policy``, the queue's own ``bot``/``tracker``
+          verdicts) → finalise and release like a closed issue. The queue skips it
+          from now on, so no hold is needed to stop a re-dispatch, and an owner hold
+          would only ask a person about an issue its own workflow closes. A product
+          that opted back in to trackers gets the next branch instead: the queue
+          would re-dispatch it, so the hold is what stops the loop;
         - issue **open** → park it for the owner through the existing ``_give_up``
           (owner_action hold + comment) with the session's own note, so the item does
           not re-enter the queue and re-dispatch;
         - state **unknown** → ``False``: the ordinary path, which terminates, rather
           than a release that could loop.
         """
+        from server.pm.policy_skip import not_work_by_policy
         from server.sessions.completion import NOT_NEEDED
 
         sid = st.get("session_id")
@@ -2847,6 +2857,17 @@ class BacklogRunnerLoop:
             return True
         if issue_state != "open":
             return False
+        if not_work_by_policy(author=str(info.get("author") or ""),
+                              labels=info.get("labels") or (),
+                              title=str(info.get("title") or ""),
+                              policy=self._policy_for(st.get("product"))):
+            if await self._write_state(target, st, None, outcome={
+                    "outcome": "no_pr", "cause": NOT_NEEDED_CAUSE, "fallback": fallback}):
+                await self._ctx.emit(
+                    "info", f"{target}: no PR needed — the queue skips this issue "
+                    "(self-closing tracker or ignored), so no owner hold",
+                    kind=NOT_NEEDED_CAUSE, target=target)
+            return True
         safe = _reason_from_note(info.get("no_pr_note") or None)
         reason = "session found no PR is needed (not-needed)" + (f": {safe}" if safe else "")
         await self._give_up(target, st, reason, outcome={

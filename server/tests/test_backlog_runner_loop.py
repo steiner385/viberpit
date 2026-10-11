@@ -4274,7 +4274,8 @@ def test_a_raising_escalate_leaves_the_claim_for_the_next_sweep_to_retry(tmp_pat
 # An ended session that PROPOSED A DECISION (spec 2026-09-18 §6)               #
 # --------------------------------------------------------------------------- #
 
-async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=None, **kw):
+async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=None,
+                              policy_over: dict | None = None, **kw):
     """Dispatch one implement batch, end its session, and sweep once.
 
     ``resolution`` is what the ``session_resolution`` seam answers — the token the
@@ -4288,7 +4289,7 @@ async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=None, **k
     await _seed_product()
     loop, rec, ctx = build_loop(
         config=make_config(max_concurrent=1), candidates=[batch("o/r#1")],
-        policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+        policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, **(policy_over or {}))},
         spawn_result=SimpleNamespace(id="sess-1", model="sonnet"),
         session_resolution=resolution, held=held, **kw)
     await loop.tick()                        # dispatch on sonnet
@@ -4345,6 +4346,57 @@ def test_a_not_needed_ending_on_an_open_issue_parks_for_the_owner_not_the_ladder
             ("no_pr", NOT_NEEDED_CAUSE)]
         assert rec.escalations == []
         assert len(rec.needs_humans) == 1 and "fixed by #9" in rec.needs_humans[0][1]
+
+    asyncio.run(run())
+
+
+FLAKY_TRACKER = {"issue_state": "open", "no_pr_note": "tracker auto-closes after 10 passes",
+                 "labels": ["flaky"], "author": "app/github-actions",
+                 "title": "[flaky] tasks/kanban-board.spec.ts › Kanban Board › Escape (fp:102b4b8a)"}
+
+
+@pytest.mark.parametrize("info", [
+    FLAKY_TRACKER,
+    {"issue_state": "open", "labels": ["bug", "ci-infrastructure", "weekly-failure"],
+     "title": "Weekly failed — 2026-09-20", "author": "app/github-actions"},
+    {"issue_state": "open", "labels": ["technical-debt", "viberpit-ignore"],
+     "title": "🧮 UI Maintenance Cost & Architecture ROI Digest", "author": "app/github-actions"},
+    # The operator's ignore label alone, on an issue that is no tracker at all.
+    {"issue_state": "open", "labels": ["viberpit-ignore"], "title": "ops: budget",
+     "author": "steiner385"},
+], ids=["flaky", "weekly", "digest", "viberpit-ignore"])
+def test_a_not_needed_open_issue_the_queue_skips_settles_without_an_owner_hold(tmp_path, info):
+    """#2683: KinDash's Held inbox filled with "session found no PR is needed" holds on
+    issues their own workflow closes. The queue skips such an issue from now on, so
+    nothing needs a hold to stop a re-dispatch — finalise, release, say so, no owner."""
+    async def run():
+        from server.db.models import NOT_NEEDED_CAUSE
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "not_needed_tracker.db", "not-needed", held=(),
+            investigation_state=info)
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", NOT_NEEDED_CAUSE)]
+        assert not await ctx.get_target_state("o/r#1")   # claim released, no gave_up row
+        assert rec.escalations == [] and rec.needs_humans == []
+        assert [e["target"] for e in await ctx.list_events(kind=NOT_NEEDED_CAUSE)] == [
+            "o/r#1"]
+
+    asyncio.run(run())
+
+
+def test_a_not_needed_tracker_keeps_the_owner_hold_when_the_product_works_trackers(tmp_path):
+    """A product that opted back in (``skip_self_closing_trackers: false``) would have
+    the queue re-dispatch the tracker the moment the claim is released — the owner
+    hold is what stops that loop, so the ordinary hand-off stands."""
+    async def run():
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "not_needed_tracker_opt_out.db", "not-needed", held=(),
+            investigation_state=FLAKY_TRACKER,
+            policy_over={"skip_self_closing_trackers": False})
+        assert len(rec.needs_humans) == 1
+        assert "auto-closes after 10 passes" in rec.needs_humans[0][1]
+        st = await ctx.get_target_state("o/r#1")
+        assert st.get("gave_up") is True
 
     asyncio.run(run())
 

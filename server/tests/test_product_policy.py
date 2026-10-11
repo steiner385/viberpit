@@ -11,7 +11,8 @@ def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "max_pipeline_prs",
                     "ladder_top", "give_up_after_bounces", "default_model",
-                    "respect_dependencies", "skip_labels", "trusted_authors", "auto_escalate_match",
+                    "respect_dependencies", "skip_labels", "skip_self_closing_trackers",
+                    "trusted_authors", "auto_escalate_match",
                     "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
                     "triage_dismiss_bot_artifacts", "risk_tolerance",
                     "max_initiatives_in_flight", "unattended_model_floor", "session_assistance",
@@ -21,7 +22,8 @@ def test_schema_keys_and_defaults():
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
         "capacity_mode": "auto",
         "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
-        "respect_dependencies": True, "skip_labels": [], "trusted_authors": [],
+        "respect_dependencies": True, "skip_labels": [], "skip_self_closing_trackers": True,
+        "trusted_authors": [],
         "auto_escalate_match": [],
         "auto_escalate_budget": 0, "triage_auto_accept": "off", "triage_auto_accept_dispatch_off": False,
         "triage_dismiss_bot_artifacts": False, "risk_tolerance": "cautious",
@@ -37,6 +39,18 @@ def test_skip_labels_is_additive_string_list_defaulting_empty():
     # A non-list value is a corrupt row, not a schema violation the client fixes:
     # falls back to pure defaults like any other unparseable field (never raises).
     assert effective_policy({"dispatch": "auto", "skip_labels": "on-hold"})["skip_labels"] == []
+
+
+def test_skip_self_closing_trackers_defaults_on_and_reads_through_one_function():
+    """#2683: the queue skips self-closing trackers unless a product opts back in;
+    ``skips_self_closing_trackers`` is the one reading every queue caller passes."""
+    from server.automations.product_policy import skips_self_closing_trackers
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["skip_self_closing_trackers"]
+    assert field.type == "bool" and field.default is True
+    assert skips_self_closing_trackers(effective_policy({"dispatch": "auto"})) is True
+    assert skips_self_closing_trackers(None) is True and skips_self_closing_trackers({}) is True
+    off = effective_policy({"dispatch": "auto", "skip_self_closing_trackers": False})
+    assert skips_self_closing_trackers(off) is False
 
 
 def test_ladder_top_choices_are_the_tier_order_and_max_attempts_is_gone():

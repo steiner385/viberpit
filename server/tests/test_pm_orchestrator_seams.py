@@ -1891,7 +1891,9 @@ async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note
     orch = _bare_orch()
     orch._gh_run = object()
     async with db_session() as db:
-        wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B")
+        # labels/title/author ride along for the not-needed settle's policy read (#2683).
+        wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B",
+                      labels=["flaky"], author="app/github-actions")
         set_evidence_hold(wi, reason="auto-filed error report", actor=ERROR_TRIAGE_ACTOR,
                           now=datetime.now(timezone.utc))
         db.add(wi)
@@ -1904,14 +1906,16 @@ async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note
         info = await orch._backlog_investigation_state("o/r#1", "sess-1")
     assert info == {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
                     "hold_by": ERROR_TRIAGE_ACTOR,
-                    "no_pr_note": "converted to a fix: the counter never resets"}
+                    "no_pr_note": "converted to a fix: the counter never resets",
+                    "labels": ["flaky"], "title": "T", "author": "app/github-actions"}
 
     # Unknown stays unknown, and a dispatch with no session id still answers the
     # issue/hold half rather than raising.
     with patch("server.automations.backlog_github.issue_state_live", return_value=None):
         info = await orch._backlog_investigation_state("o/r#1", None)
     assert info == {"issue_state": None, "mirrored": True, "hold_kind": "evidence",
-                    "hold_by": ERROR_TRIAGE_ACTOR, "no_pr_note": None}
+                    "hold_by": ERROR_TRIAGE_ACTOR, "no_pr_note": None,
+                    "labels": ["flaky"], "title": "T", "author": "app/github-actions"}
 
     # An issue with no mirror row says so, instead of reporting the same
     # ``hold_kind: None`` a CLEARED hold does — only the second is a conversion.
@@ -1919,6 +1923,7 @@ async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note
         info = await orch._backlog_investigation_state("o/r#404", "sess-1")
     assert info["mirrored"] is False and info["hold_kind"] is None
     assert info["hold_by"] is None
+    assert info["labels"] == [] and info["title"] is None and info["author"] is None
 
 
 @pytest.mark.asyncio

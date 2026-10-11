@@ -3283,9 +3283,12 @@ def test_approve_escalation_refuses_an_issue_the_products_policy_skips():
         orch.backlog_runner_dispatch.assert_not_awaited()
         detail = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS).json()
         assert detail["holdKind"] == "owner_action"
-        # Drop the label from the policy and the same tap goes through.
+        # Drop the label from the policy and the same tap goes through — for a
+        # product that works its trackers, since ``forced-deploy-audit`` is a
+        # built-in tracker label (#2683).
         r = c.patch("/api/pm/projects/viberpit/policy",
-                    json={"policy": {"skip_labels": []}}, headers=IDENTITY_HEADERS)
+                    json={"policy": {"skip_labels": [], "skip_self_closing_trackers": False}},
+                    headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         orch.backlog_runner_dispatch = AsyncMock(return_value={
             "status": "spawned", "session_id": "s-1", "session_name": None})
@@ -3294,3 +3297,44 @@ def test_approve_escalation_refuses_an_issue_the_products_policy_skips():
                    json={"model": "fable"}, headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         orch.backlog_runner_dispatch.assert_awaited_once_with(["o/r#1"], model="fable")
+
+
+def test_approve_escalation_refuses_a_self_closing_tracker_unless_the_product_works_them():
+    """#2683: a ``[flaky]`` tracker is skipped by the queue as ``tracker`` by default,
+    so approving its escalation would dispatch what the policy says is not work. A
+    product that opted back in (``skip_self_closing_trackers: false``) may approve."""
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import WorkItem
+
+        async def _label():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(WorkItem.id == wid))).scalar_one()
+                w.labels = ["flaky"]
+                w.title = "[flaky] tasks/kanban-board.spec.ts › Escape (fp:102b4b8a)"
+                w.author = "app/github-actions"
+        c.portal.call(_label)
+        _hold_for_escalation(c, wid)
+        orch = c.app.state.sessions
+        orch.backlog_runner_dispatch = AsyncMock()
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "skipped_by_policy"
+        assert "self-closing tracker" in r.json()["detail"]["message"]
+        orch.backlog_runner_dispatch.assert_not_awaited()
+        r = c.patch("/api/pm/projects/viberpit/policy",
+                    json={"policy": {"skip_self_closing_trackers": False}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        orch.backlog_runner_dispatch = AsyncMock(return_value={
+            "status": "spawned", "session_id": "s-1", "session_name": None})
+        orch.resolve_model_approval = AsyncMock(return_value=None)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text

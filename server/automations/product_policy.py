@@ -127,7 +127,15 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     ConfigField(key="skip_labels", label="Labels to skip", type="string-list", default=[],
                 help="Issues carrying any of these labels are skipped by the queue for "
                      "this product, in addition to the built-in bot-noise filter "
-                     "(dependencies, renovate)."),
+                     "(dependencies, renovate, viberpit-ignore)."),
+    # #2683: ``server.pm.queue.is_self_closing_tracker``. On by default — such an issue
+    # closes itself, so a dispatch mostly ends "no PR needed" — but a flaky tracker IS
+    # fixable, so a product that wants its trackers worked turns this off.
+    ConfigField(key="skip_self_closing_trackers", label="Skip self-closing trackers",
+                type="bool", default=True,
+                help="Skip issues a CI workflow files and closes by itself: [flaky] test "
+                     "trackers, 'Nightly/Weekly … failed' rollups and recurring '… Digest' "
+                     "reports. Turn off to have the runner work them."),
     ConfigField(key="trusted_authors", label="Trusted issue authors", type="string-list",
                 default=[],
                 help="GitHub logins whose issues the queue may dispatch. Anyone else's "
@@ -143,7 +151,9 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 type="string-list", default=[],
                 help="Issues carrying one of these as a label, or containing it in the "
                      "title (e.g. flaky, [flaky], deploy-verify), have an escalation that "
-                     "needs approval approved automatically while the budget lasts."),
+                     "needs approval approved automatically while the budget lasts. A "
+                     "self-closing tracker (e.g. [flaky]) is only worked with 'Skip "
+                     "self-closing trackers' off."),
     ConfigField(key="auto_escalate_budget", label="Auto-approved escalations per week",
                 type="int", default=0, min=0,
                 help="How many escalations the runner may approve by itself in any 7 days. "
@@ -354,6 +364,13 @@ def skip_labels(policy: "Mapping | None") -> frozenset[str]:
     """
     return frozenset(str(lbl).strip().lower() for lbl in (policy or {}).get("skip_labels") or ()
                      if str(lbl).strip())
+
+
+def skips_self_closing_trackers(policy: "Mapping | None") -> bool:
+    """THE queue-shaped reading of ``skip_self_closing_trackers`` — what
+    ``queue.skip_reason`` takes as ``skip_trackers``. Same single-reader rule as
+    ``skip_labels``; a partial row or ``None`` reads as the schema default (on)."""
+    return bool((policy or {}).get("skip_self_closing_trackers", True))
 
 
 def trusted_authors(policy: "Mapping | None") -> frozenset[str]:
