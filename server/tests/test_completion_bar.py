@@ -4,6 +4,7 @@ from server.automations.completion_bar import (
     PrFacts,
     _has_explicit_arm_step,
     has_no_pr_dispatch,
+    has_no_arm_instruction,
     is_unverified_self_resolution,
     met_bar,
 )
@@ -498,3 +499,47 @@ def test_an_empty_branch_without_a_no_pr_claim_is_still_nudged_by_the_arm_step()
     v = met_bar(_CODE_GOAL, "inferred", _branch(0), instructions=_BACKLOG_PROMPT)
     assert v.met is False and v.confidence == "high"
     assert "arm auto-merge" in (v.remedy or "")
+
+
+# A dispatch that forbids arming (the map-synthesis prompts in server/pm/classification.py,
+# the SDLC stage prompt in server/sdlc/prompts.py) owns a HUMAN merge gate: an open,
+# ready PR is its finished state. Nudging "arm auto-merge" there contradicts the
+# dispatch the session was given (#2927, #2932).
+_NO_ARM = ("4. Do NOT arm auto-merge on it: a human merges or abandons that pull "
+           "request from the roadmap.")
+
+
+def test_no_arm_instruction_is_recognised_in_every_dispatch_phrasing():
+    for text in (_NO_ARM, "DO NOT open a new pull request. DO NOT arm auto-merge.",
+                 "5. Do NOT arm auto-merge: the synthesizer loop is the single writer",
+                 "do not arm auto merge"):
+        assert has_no_arm_instruction(text), text
+    for text in ("", None, "Arm auto-merge on the PR (`gh pr merge --auto`).",
+                 "do not leave it unarmed"):
+        assert not has_no_arm_instruction(text), text
+
+
+def test_open_ready_pr_meets_a_dispatch_that_forbids_arming():
+    v = met_bar("feature map diff", "explicit", _facts([_pr(state="open")]),
+                instructions=_NO_ARM)
+    assert v.met and v.confidence == "high" and v.remedy is None
+    assert "arm" not in (v.remedy or "")
+
+
+def test_draft_pr_under_a_no_arm_dispatch_is_told_to_ready_it_not_to_arm_it():
+    v = met_bar("feature map diff", "explicit",
+                _facts([_pr(state="draft", is_draft=True)]), instructions=_NO_ARM)
+    assert not v.met and v.confidence == "high"
+    assert "gh pr ready 1" in v.remedy and "--auto" not in v.remedy
+
+
+def test_failing_ci_under_a_no_arm_dispatch_is_not_met():
+    v = met_bar("feature map diff", "explicit",
+                _facts([_pr(state="open", checks="failing")]), instructions=_NO_ARM)
+    assert not v.met and v.confidence == "high" and "--auto" not in (v.remedy or "")
+
+
+def test_open_unarmed_pr_without_a_no_arm_dispatch_still_nudges_to_arm():
+    v = met_bar("fix ci", "explicit", _facts([_pr(state="open")]),
+                instructions="Arm auto-merge on the PR (`gh pr merge --auto`).")
+    assert not v.met and "--squash --auto" in v.remedy
