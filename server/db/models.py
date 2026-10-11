@@ -1320,9 +1320,9 @@ class PermissionRuleStats(Base):
     pattern: Mapped[str] = mapped_column(String, nullable=False)
     created_by: Mapped[str] = mapped_column(String, nullable=False)
     created_via: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (UniqueConstraint("profile_id", "pattern", name="uq_permission_rule_stats_profile_pattern"),)
 

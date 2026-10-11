@@ -33,6 +33,11 @@ def profile_name(scope: str, scope_key: str | None) -> str:
     return f"{PROFILE_PREFIX}{scope}:{scope_key}"
 
 
+def _iso(ts: datetime) -> str:
+    """Stored timestamps are naive UTC; mark them so the wire format is unambiguous."""
+    return ts.isoformat() + "Z" if ts.tzinfo is None else ts.isoformat()
+
+
 @dataclass
 class RuleView:
     id: str
@@ -57,9 +62,9 @@ class RuleView:
             "position": self.position,
             "createdBy": self.created_by,
             "createdVia": self.created_via,
-            "createdAt": self.created_at.isoformat(),
+            "createdAt": _iso(self.created_at),
             "hitCount": self.hit_count,
-            "lastHitAt": self.last_hit_at.isoformat() if self.last_hit_at else None,
+            "lastHitAt": _iso(self.last_hit_at) if self.last_hit_at else None,
         }
 
 
@@ -86,10 +91,16 @@ async def _profile_for_stats(db: AsyncSession, stats: PermissionRuleStats) -> Pe
     )).scalar_one_or_none()
 
 
+def _check_managed(profile: PermissionProfile, scope: str, scope_key: str | None) -> None:
+    if profile.scope != scope or profile.scope_key != scope_key:
+        raise RuntimeError(f"profile {profile.name!r} is not the managed {scope} auto-profile")
+
+
 async def _get_or_create_profile(db: AsyncSession, scope: str, scope_key: str | None) -> PermissionProfile:
     name = profile_name(scope, scope_key)
     profile = await _locked_profile(db, name)
     if profile is not None:
+        _check_managed(profile, scope, scope_key)
         return profile
     try:
         async with db.begin_nested():
@@ -100,7 +111,9 @@ async def _get_or_create_profile(db: AsyncSession, scope: str, scope_key: str | 
     except IntegrityError:  # lost the race on the unique name; the winner's row is there now
         pass
     profile = await _locked_profile(db, name)
-    assert profile is not None
+    if profile is None:
+        raise RuntimeError(f"auto-profile {name!r} vanished after create")
+    _check_managed(profile, scope, scope_key)
     return profile
 
 
@@ -188,8 +201,11 @@ async def update_rule(db: AsyncSession, rule_id: str, *, new_pattern: str) -> Ru
     if stats is None:
         return None
     profile = await _profile_for_stats(db, stats)
-    patterns = list(profile.patterns or []) if profile else []
-    if profile is None or stats.pattern not in patterns:
+    if profile is None:
+        return None
+    await db.refresh(stats)  # re-read under the profile lock: a concurrent writer may have moved it
+    patterns = list(profile.patterns or [])
+    if stats.pattern not in patterns:
         return None
     if new_pattern == stats.pattern:
         return _view(profile, stats, patterns.index(stats.pattern))
@@ -211,6 +227,8 @@ async def revoke_rule(db: AsyncSession, rule_id: str) -> RuleView | None:
     if stats is None:
         return None
     profile = await _profile_for_stats(db, stats)
+    if profile is not None:
+        await db.refresh(stats)
     patterns = list(profile.patterns or []) if profile else []
     view = (_view(profile, stats, patterns.index(stats.pattern))
             if profile is not None and stats.pattern in patterns else None)

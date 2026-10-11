@@ -159,6 +159,8 @@ async def update_profile(
     fields = body.model_fields_set
     if "name" in fields and body.name:
         if body.name != profile.name:
+            if body.name.startswith(PROFILE_PREFIX):
+                raise _managed_profile_error()
             clash = (await db.execute(
                 select(PermissionProfile).where(PermissionProfile.name == body.name)
             )).scalar_one_or_none()

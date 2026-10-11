@@ -163,3 +163,38 @@ def test_profile_api_hides_and_guards_scoped_profiles():
             assert r.json()["detail"]["error"] == "managed_profile"
         r = client.post("/api/permission-profiles", json={"name": "always-allow:x"}, headers=_H)
         assert r.status_code == 409 and r.json()["detail"]["error"] == "managed_profile"
+
+
+@pytest.mark.usefixtures("isolated_db")
+class TestFixRound1:
+    def test_record_hit_sets_last_hit_at_after_created_and_wire_is_utc(self):
+        async def go():
+            async with db_session() as db:
+                r = await _add(db, "global", None, "WebSearch")
+                await store.record_hit(db, r.id)
+                await store.record_hit(db, "missing-id")  # no-op, no error
+            async with db_session() as db:
+                got = await store.get_rule(db, r.id)
+                # SQLite CURRENT_TIMESTAMP has 1s resolution
+                assert got.last_hit_at >= got.created_at.replace(microsecond=0) and got.hit_count == 1
+                assert got.created_at.tzinfo is None
+                w = got.to_wire()
+                assert w["createdAt"].endswith("Z") and w["lastHitAt"].endswith("Z")
+        _run(go())
+
+    def test_add_rule_refuses_unscoped_profile_squatting_the_name(self):
+        async def go():
+            async with db_session() as db:
+                db.add(PermissionProfile(name="always-allow:global", patterns=[]))
+            async with db_session() as db:
+                with pytest.raises(RuntimeError):
+                    await _add(db, "global", None, "WebSearch")
+        _run(go())
+
+
+def test_profile_rename_into_managed_namespace_is_refused():
+    client = _client()
+    with patch.dict(os.environ, _ENV), client:
+        pid = client.post("/api/permission-profiles", json={"name": "mine"}, headers=_H).json()["id"]
+        r = client.patch(f"/api/permission-profiles/{pid}", json={"name": "always-allow:global"}, headers=_H)
+        assert r.status_code == 409 and r.json()["detail"]["error"] == "managed_profile"

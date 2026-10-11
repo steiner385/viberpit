@@ -24,9 +24,9 @@ def upgrade() -> None:
         sa.Column('pattern', sa.String(), nullable=False),
         sa.Column('created_by', sa.String(), nullable=False),
         sa.Column('created_via', sa.String(), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('hit_count', sa.Integer(), nullable=False, server_default='0'),
-        sa.Column('last_hit_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('last_hit_at', sa.DateTime(), nullable=True),
         sa.UniqueConstraint('profile_id', 'pattern', name='uq_permission_rule_stats_profile_pattern'),
     )
     op.create_index('ix_permission_rule_stats_profile_id', 'permission_rule_stats', ['profile_id'])
