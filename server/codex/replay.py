@@ -16,6 +16,8 @@ for twice.
 Completed live turns also have ViberPit-owned sidecar snapshots. When native
 history omits a resumed turn, replay inserts its saved normalized events rather
 than silently rolling back the conversation. Native turns win once they catch up.
+Each healed gap is logged and counted (#2933), so native history lagging the
+live stream is visible rather than silently papered over.
 
 Cursor semantics are inherited from `server/sessions/replay.py`, not reinvented:
 `before` and `limit` are ordinals in a turn space, `earliest_turn` is the ordinal
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from pathlib import Path
 from typing import Protocol
 
@@ -35,8 +38,16 @@ from server.codex.images import PendingToolImages, materialize_images
 from server.codex.item_times import EMPTY_ITEM_TIMES, ItemTimes, load_item_times, uuid7_ms
 from server.codex.translator import CodexEventTranslator
 from server.codex.turn_history import RecordedTurn, TurnHistoryStore
+from server.obs.context import log_event
+from server.obs.logdedupe import LogThrottle
+from server.obs.metrics import codex_replay_backfilled_turns_total
 from server.sessions import events as ev
 from server.sessions.replay import ReplayWindow
+
+log = logging.getLogger(__name__)
+
+# One window per (thread, gap shape); see `CodexThreadReplay._report_gap`.
+_GAP_LOG = LogThrottle()
 
 
 def _turn_started_ms(turn: schema.Turn) -> float | None:
@@ -228,6 +239,7 @@ class CodexThreadReplay:
             self._turn_history.load, self._thread_id,
         ))
         turns = _merge_saved_turns(thread.turns, saved)
+        self._report_gap(thread.turns, turns)
         if drop_incomplete_turn:
             while (turns and isinstance(turns[-1], schema.Turn)
                    and turns[-1].status is schema.TurnStatus.IN_PROGRESS):
@@ -259,6 +271,40 @@ class CodexThreadReplay:
         out = [await materialize_images(e, session_id=self._session_id,
                                         thread_id=self._thread_id) for e in out]
         return ReplayWindow(events=out, earliest_turn=start, total_turns=total)
+
+    def _report_gap(
+        self,
+        native: tuple[schema.Turn, ...],
+        merged: list[schema.Turn | RecordedTurn],
+    ) -> None:
+        """Log and count a native-history gap the sidecar just healed (#2933).
+
+        Without this the backfill is silent: a reload looks right, and nothing
+        says native history is lagging the live stream — the condition behind a
+        transcript that "lost" post-restart turns. INFO, not WARNING: the user
+        sees every turn, so this is a measurement, not a fault to file.
+
+        Reported once per distinct gap per thread per throttle window. Every
+        scrollback page and background sweep re-reads the same gap, and counting
+        each read would measure page loads rather than gaps. A gap that changes
+        shape (another turn goes missing, or native catches up on one) reports
+        again.
+        """
+        native_ids = {t.id for t in native}
+        recorded = [t for t in merged if isinstance(t, RecordedTurn)]
+        if not recorded:
+            return
+        settled = sum(1 for t in recorded if t.turn_id in native_ids)
+        missing = len(recorded) - settled
+        if not _GAP_LOG.should_log(f"{self._thread_id}:{missing}:{settled}"):
+            return
+        if missing:
+            codex_replay_backfilled_turns_total.labels("missing").inc(missing)
+        if settled:
+            codex_replay_backfilled_turns_total.labels("settled").inc(settled)
+        log_event(log, logging.INFO, "codex.replay.gap_backfilled",
+                  session=self._session_id, missing=missing, settled=settled,
+                  native_turns=len(native), total_turns=len(merged))
 
     async def user_prompts(self) -> list[str]:
         """Return the ordered, non-empty human prompts from every turn's
