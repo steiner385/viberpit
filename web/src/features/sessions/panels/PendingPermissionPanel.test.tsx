@@ -72,4 +72,20 @@ describe('PendingPermissionPanel', () => {
     const groups = screen.getAllByRole('group', { name: /permission request/i })
     expect(groups).toHaveLength(1)
   })
+
+  it('closes an open chooser when the pinned permission is replaced by another', () => {
+    const sug = [{ pattern: 'Write(/tmp/x.md)', description: 'd', level: 'ok' as const }]
+    const withSug = (id: string) => ({ ...perm(id), ruleSuggestions: sug })
+    const props = {
+      onDecision: vi.fn(), hasRepo: true,
+      onPreviewRule: vi.fn().mockResolvedValue({ valid: true, level: 'ok', reasons: [], description: 'd', needsConfirmation: false, coversRequest: true, alsoPending: 0 }),
+      onGrantRule: vi.fn(),
+    }
+    const { rerender } = render(<PendingPermissionPanel turns={[turn(withSug('p1'), withSug('p2'))]} {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Always allow/ }))
+    expect(screen.getByRole('dialog', { name: 'Always allow' })).toBeInTheDocument()
+    // p1 resolved elsewhere; p2 becomes the pinned card.
+    rerender(<PendingPermissionPanel turns={[turn(withSug('p2'))]} {...props} />)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
 })

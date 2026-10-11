@@ -51,6 +51,8 @@ export function PendingPermissionPanel({ turns, onDecision, hasRepo, onPreviewRu
       data-testid="pending-permission-panel"
     >
       <PermissionCard
+        // Keyed so an open chooser cannot retarget to the next request when this one resolves.
+        key={perm.permId}
         block={perm}
         onDecision={onDecision}
         hasRepo={hasRepo}

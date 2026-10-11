@@ -152,8 +152,8 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
             {canAlwaysAllow && (
               <button type="button" {...kb.itemProps(2)} onClick={() => activate('always')}
                 aria-label={`Always allow ${label}`} className={cn(tertiaryBtn, 'sm:ml-auto')}
-                title={hasSuggestions ? 'Choose a standing rule' : 'Grant this for the rest of the session'}>
-                {hasSuggestions ? 'Always allow…' : 'Always allow (this session)'}
+                title={rules ? 'Choose a standing rule' : 'Grant this for the rest of the session'}>
+                {rules ? 'Always allow…' : 'Always allow (this session)'}
               </button>
             )}
           </>
