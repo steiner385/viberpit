@@ -1024,6 +1024,111 @@ def _seed_one_pending(c, *, feature_slug=None, no_fit_suggestion=None, repo="o/r
     return c.portal.call(_run)
 
 
+def _set_item_state(c, wid, state, *, proposal_age_days=None):
+    from datetime import datetime, timedelta, timezone
+
+    from server.db import db_session
+    from server.db.models import TriageProposal, WorkItem
+    from sqlalchemy import select
+
+    async def _run():
+        async with db_session() as db:
+            (await db.get(WorkItem, wid)).state = state
+            if proposal_age_days is not None:
+                for p in (await db.execute(select(TriageProposal).where(
+                        TriageProposal.work_item_id == wid))).scalars():
+                    p.created_at = datetime.now(timezone.utc) - timedelta(days=proposal_age_days)
+    c.portal.call(_run)
+
+
+def test_triage_dismiss_resolves_without_a_hold_and_is_undoable():
+    """#2683: a dismiss is "no decision to make here" — the proposal resolves
+    ``dismissed``, the item gets NO hold and NO feature, is not re-proposed, and
+    the undo window restores it exactly like a reject."""
+    with _client() as c:
+        _register(c, "viberpit", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                      headers=IDENTITY_HEADERS).json()
+        r = c.post(f"/api/pm/triage/{pid}/dismiss", json={"reason": "noise"},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"id": pid, "status": "dismissed", "workItemId": wid}
+        after = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                        headers=IDENTITY_HEADERS).json()
+        assert after["holdKind"] is None and after["featureId"] is None
+        assert after["triageState"] != "unclassified"     # the classify loop won't re-propose
+        assert all(p["id"] != pid for p in c.get("/api/pm/triage",
+                                                 headers=IDENTITY_HEADERS).json())
+        # already resolved → 409; unknown → 404; a bare POST (no body) works too
+        assert c.post(f"/api/pm/triage/{pid}/dismiss",
+                      headers=IDENTITY_HEADERS).status_code == 409
+        assert c.post("/api/pm/triage/nope/dismiss", headers=IDENTITY_HEADERS).status_code == 404
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "pending"
+        back = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                       headers=IDENTITY_HEADERS).json()
+        assert back["triageState"] == pre["triageState"]
+        assert back["classifiedBy"] == pre["classifiedBy"]
+
+        async def _audits():
+            from sqlalchemy import select
+
+            from server.db import db_session
+            from server.db.models import AuditEvent
+            async with db_session() as db:
+                return [(a.identity, a.detail) for a in (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.triage.dismiss"))).scalars()]
+        assert c.portal.call(_audits) == [
+            ("testuser@example.com", {"proposalId": pid, "workItemId": wid,
+                                      "reason": "noise", "decidedBy": "human"})]
+
+
+def test_triage_dismiss_bulk_reports_per_id():
+    with _client() as c:
+        _register(c, "viberpit", repo="o/r")
+        p1, _ = _seed_one_pending(c, feature_slug="sessions", number=1)
+        p2, _ = _seed_one_pending(c, number=2)
+        assert c.post(f"/api/pm/triage/{p2}/accept", headers=IDENTITY_HEADERS).status_code == 200
+        r = c.post("/api/pm/triage/dismiss-bulk", json={"ids": [p1, p2, "ghost"]},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["dismissed"] == 1
+        by_id = {row["id"]: row for row in body["results"]}
+        assert by_id[p1] == {"id": p1, "ok": True}
+        assert by_id[p2]["ok"] is False and by_id[p2]["error"] == "not_pending"
+        assert by_id["ghost"] == {"id": "ghost", "ok": False, "error": "not_found"}
+
+
+def test_triage_list_drops_pending_proposals_for_closed_items_and_carries_item_state():
+    with _client() as c:
+        _register(c, "viberpit", repo="o/r")
+        open_pid, _ = _seed_one_pending(c, feature_slug="sessions", number=1)
+        closed_pid, closed_wid = _seed_one_pending(c, number=2)
+        merged_pid, merged_wid = _seed_one_pending(c, number=3)
+        _set_item_state(c, closed_wid, "closed")
+        _set_item_state(c, merged_wid, "merged")
+        for params in ({}, {"pendingOnly": "true"}):
+            rows = c.get("/api/pm/triage", params=params, headers=IDENTITY_HEADERS).json()
+            assert [r["id"] for r in rows] == [open_pid]
+            assert rows[0]["itemState"] == "open"
+        assert closed_pid and merged_pid
+
+
+def test_roadmap_health_stale_inbox_ignores_proposals_for_closed_items():
+    with _client() as c:
+        _register(c, "viberpit", repo="o/r")
+        _, open_wid = _seed_one_pending(c, feature_slug="sessions", number=1)
+        _, closed_wid = _seed_one_pending(c, number=2)
+        _set_item_state(c, open_wid, "open", proposal_age_days=60)
+        _set_item_state(c, closed_wid, "closed", proposal_age_days=60)
+        health = c.get("/api/pm/projects/viberpit/health", headers=IDENTITY_HEADERS)
+        assert health.status_code == 200, health.text
+        assert health.json()["staleInbox"] == 1
+
+
 def test_accept_bulk_copies_overlay():
     """accept-bulk runs the SAME copy-onto-overlay path as single-accept and
     reports per-id outcomes in a 200 aggregate."""

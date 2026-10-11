@@ -8,6 +8,7 @@ from server.db.models import (
     FEATURE_LIFECYCLE_STATES,
     PROJECT_EDGE_KINDS,
     PROJECT_ONBOARDING_STATES,
+    PROPOSAL_DECISION_STATUSES,
     TRIAGE_PROPOSAL_STATUSES,
     WORK_ITEM_TRIAGE_STATES,
     Base,
@@ -114,7 +115,7 @@ async def test_materialization_proposal_defaults(db_session):
     await db_session.flush()
     assert m.id
     assert m.status == "pending"
-    assert m.status in TRIAGE_PROPOSAL_STATUSES
+    assert m.status in PROPOSAL_DECISION_STATUSES
     assert m.created_at is not None
     assert m.resolved_at is None
     assert m.payload["tasks"][0]["title"] == "T1"

@@ -20,7 +20,7 @@ from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
 from server.pm.refs import split_ref
 from server.pm.score import rice_score
-from server.pm.triage_accept import _aware
+from server.pm.triage_accept import _aware, awaiting_decision_clause
 from server.pm.tree import (
     CapabilityIn, InitiativeIn, ProductIn, build_product_tree, derived_stage, issue_reason,
     issue_tier)
@@ -187,8 +187,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
     if all_repos:
         pending = (await db.execute(select(WorkItem.repo).join(
             TriageProposal, TriageProposal.work_item_id == WorkItem.id).where(
-            WorkItem.repo.in_(all_repos), WorkItem.state == "open",
-            TriageProposal.status == "pending"))).all()
+            WorkItem.repo.in_(all_repos), awaiting_decision_clause()))).all()
         for (repo,) in pending:
             pending_by_repo[repo] = pending_by_repo.get(repo, 0) + 1
         needs_home = (await db.execute(needs_home_stmt(all_repos).with_only_columns(WorkItem.repo))).all()

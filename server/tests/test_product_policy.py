@@ -13,7 +13,8 @@ def test_schema_keys_and_defaults():
                     "ladder_top", "give_up_after_bounces", "default_model",
                     "respect_dependencies", "skip_labels", "trusted_authors", "auto_escalate_match",
                     "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
-                    "triage_dismiss_bot_artifacts", "risk_tolerance",
+                    "triage_auto_accept_repeat", "triage_dismiss_bot_artifacts",
+                    "triage_bot_artifact_patterns", "risk_tolerance",
                     "max_initiatives_in_flight", "unattended_model_floor", "session_assistance",
                     "artifact_layout"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
@@ -24,9 +25,31 @@ def test_schema_keys_and_defaults():
         "respect_dependencies": True, "skip_labels": [], "trusted_authors": [],
         "auto_escalate_match": [],
         "auto_escalate_budget": 0, "triage_auto_accept": "off", "triage_auto_accept_dispatch_off": False,
-        "triage_dismiss_bot_artifacts": False, "risk_tolerance": "cautious",
+        "triage_auto_accept_repeat": 3, "triage_dismiss_bot_artifacts": True,
+        "triage_bot_artifact_patterns": [], "risk_tolerance": "cautious",
         "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "session_assistance": "on",
         "artifact_layout": "docs_sdlc"}
+
+
+def test_triage_auto_accept_repeat_is_a_non_negative_int():
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["triage_auto_accept_repeat"]
+    assert field.type == "int" and field.default == 3 and field.min == 0
+    # The governance caveat is user-facing: the rule never fires for a product
+    # that has not opted in to auto-accept.
+    assert "opted in" in field.help or "opt" in field.help
+    from server.automations.product_policy import merge_policy_patch
+    with pytest.raises(ValueError):
+        merge_policy_patch(None, {"triage_auto_accept_repeat": -1})
+
+
+def test_bot_artifact_patterns_must_compile_on_write():
+    from server.automations.product_policy import merge_policy_patch
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["triage_bot_artifact_patterns"]
+    assert field.type == "string-list" and field.default == []
+    assert merge_policy_patch(None, {"triage_bot_artifact_patterns": [r"^chore: audit\b"]}) == {
+        "triage_bot_artifact_patterns": [r"^chore: audit\b"]}
+    with pytest.raises(ValueError, match="triage_bot_artifact_patterns"):
+        merge_policy_patch(None, {"triage_bot_artifact_patterns": ["(unclosed"]})
 
 
 def test_skip_labels_is_additive_string_list_defaulting_empty():

@@ -13,13 +13,16 @@ cycle. ``server/api/pm.py`` imports them back from here.
 """
 from __future__ import annotations
 
+import functools
 import re
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 
-from sqlalchemy import Select, select
+from sqlalchemy import ColumnElement, Select, and_, or_, select
 
 from server.audit import record_audit
 from server.db.models import Feature, TriageProposal, WorkItem
+from server.pm.alert_series import AUTOMATION_LOGINS, is_automation_login
 from server.pm.classification import CONFIDENCE_LEVELS
 from server.pm.repo_project import (OwnershipConflict, RepoOwnershipSnapshot,
     gather_repo_ownership_snapshot, require_mutation_owner)
@@ -66,43 +69,143 @@ def pending_proposal_stmt(proposal_id: str) -> Select[tuple[TriageProposal]]:
 
 
 # Titles of bot output that is never a product decision (#2683): recurring
-# digests and generated-index PRs. The ONE list — the loop's dismiss pass reads it.
+# digests and generated-index PRs. The built-in half of ``is_bot_artifact``; a
+# product adds its own through ``triage_bot_artifact_patterns``.
 BOT_ARTIFACT_TITLE_PATTERNS = (
     re.compile(r"\bcost\s*&\s*architecture\s+roi\s+digest\b", re.IGNORECASE),
     re.compile(r"^docs\(fix-patterns\):\s*regenerate\s+index\b", re.IGNORECASE),
 )
 
 
-def is_bot_artifact(title: str | None) -> bool:
-    return title is not None and any(p.search(title) for p in BOT_ARTIFACT_TITLE_PATTERNS)
+@functools.lru_cache(maxsize=64)
+def _compiled(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """A product's ``triage_bot_artifact_patterns``, compiled once per distinct
+    list. One that does not compile is skipped, never raised: the policy write
+    rejects it (``product_policy._reject_bad_patterns``), so only a hand-edited
+    row can carry one, and that must not take the triage tick down."""
+    out = []
+    for raw in patterns:
+        try:
+            out.append(re.compile(raw, re.IGNORECASE))
+        except re.error:
+            continue
+    return tuple(out)
+
+
+def is_bot_author(login: str | None) -> bool:
+    """Whether *login* is a bot whose output never belongs in triage.
+
+    ``alert_series.is_automation_login`` is the strict reading (a BARE login is a
+    user, so a squatter cannot join an alert series); this one also takes the
+    bare ``AUTOMATION_LOGINS`` spellings GraphQL rows mirrored before the mirror
+    recorded ``app/<slug>``. The looser match is safe HERE because its only
+    consequence is an undoable dismissal of that author's own item. Our own app
+    (``app/viberpit``) is deliberately NOT a bot author: it files the auto-error
+    stream, which is real classified work."""
+    norm = (login or "").strip().lower()
+    return is_automation_login(norm) or norm in AUTOMATION_LOGINS
+
+
+def is_bot_artifact(title: str | None, author: str | None = None,
+                    extra_patterns: Iterable[str] = ()) -> bool:
+    """THE bot-output verdict for triage (#2683): a bot author, a built-in
+    ``BOT_ARTIFACT_TITLE_PATTERNS`` title, or one of the product's own
+    *extra_patterns* (case-insensitive regexes). Both the loop's pre-classify
+    skip and its dismiss pass call this — do not copy it."""
+    if is_bot_author(author):
+        return True
+    if not title:
+        return False
+    pats = BOT_ARTIFACT_TITLE_PATTERNS + _compiled(tuple(str(p) for p in extra_patterns or ()))
+    return any(p.search(title) for p in pats)
+
+
+# Which rule admitted an auto-accept — carried on the ``pm.triage.auto_accept``
+# audit detail and the loop's event, so an operator can see WHY the machine took it.
+RULE_CONFIDENCE = "confidence"
+RULE_DISPATCH_OFF = "dispatch_off"
+RULE_REPEAT = "repeat"
+
+# Lifecycle states the repeat rule refuses even though it waives ``proposed``:
+# a retired capability is not where new work belongs, whatever the history.
+_REPEAT_REFUSED_FEATURE_STATES = frozenset({"sunset"})
+
+
+def repeat_threshold_for(policy: "Mapping | None") -> int:
+    """The ``triage_auto_accept_repeat`` threshold the loop applies to a product
+    — 0 (off) unless the product has ALREADY opted in to auto-accept, through
+    ``triage_auto_accept`` or ``triage_auto_accept_dispatch_off``. A product that
+    never opted in never sees a machine accept; the repeat rule widens an opt-in,
+    it is not one. The ONE place that governance lives."""
+    p = policy or {}
+    opted_in = p.get("triage_auto_accept") in CONFIDENCE_LEVELS \
+        or bool(p.get("triage_auto_accept_dispatch_off"))
+    if not opted_in:
+        return 0
+    try:
+        return max(0, int(p.get("triage_auto_accept_repeat") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def auto_accept_eligible(*, tier: str, confidence_level: str | None,
                          proposed_feature_id: str | None, feature_state: str | None,
-                         auto_undone: bool | None, dispatch_off_accept: bool = False) -> bool:
-    """Whether the loop may accept this proposal under a product's
-    ``triage_auto_accept`` *tier* (spec §8, §13).
+                         auto_undone: bool | None, dispatch_off_accept: bool = False,
+                         repeat_threshold: int = 0, prior_human_accepts: int = 0) -> str | None:
+    """Which rule lets the loop accept this proposal — ``RULE_CONFIDENCE``,
+    ``RULE_DISPATCH_OFF`` or ``RULE_REPEAT`` — or ``None`` (spec §8, §13).
 
     ``medium`` includes ``high`` (index order in ``CONFIDENCE_LEVELS``). A
     confidence outside the vocabulary — including ``None`` — reads as ``low`` and
     is never accepted. Never a no-fit (creating a capability is a human call),
-    never a target capability still ``proposed`` (its doc is unmerged), never a
-    proposal a human already undid once (``auto_undone``).
+    never a missing target row, never a proposal a human already undid once
+    (``auto_undone``).
 
-    *dispatch_off_accept* (#2683) waives the confidence bar only: the caller sets
-    it when the product's Dispatch is off, so nothing the accept touches is ever
-    dispatched. Every structural guard above still applies.
+    The confidence and Dispatch-off rules also refuse a target capability still
+    ``proposed`` (its doc is unmerged). *dispatch_off_accept* (#2683) waives the
+    confidence bar only: the caller sets it when the product's Dispatch is off.
+
+    The repeat rule (#2683 follow-up) waives BOTH the confidence bar and the
+    ``proposed`` guard: *prior_human_accepts* earlier proposals onto this same
+    capability, accepted as proposed by a PERSON, at or above *repeat_threshold*
+    (0 = off; the caller passes ``repeat_threshold_for(policy)``) — the human
+    pattern is the endorsement. It still refuses a ``sunset`` capability.
     """
-    if proposed_feature_id is None or auto_undone:
-        return False
-    if feature_state is None or feature_state == "proposed":
-        return False
-    if dispatch_off_accept:
-        return True
-    if tier not in CONFIDENCE_LEVELS:            # "off" or garbage
-        return False
-    level = confidence_level if confidence_level in CONFIDENCE_LEVELS else "low"
-    return CONFIDENCE_LEVELS.index(level) >= CONFIDENCE_LEVELS.index(tier)
+    if proposed_feature_id is None or auto_undone or feature_state is None:
+        return None
+    if feature_state != "proposed":
+        if tier in CONFIDENCE_LEVELS:
+            level = confidence_level if confidence_level in CONFIDENCE_LEVELS else "low"
+            if CONFIDENCE_LEVELS.index(level) >= CONFIDENCE_LEVELS.index(tier):
+                return RULE_CONFIDENCE
+        if dispatch_off_accept:
+            return RULE_DISPATCH_OFF
+    if (repeat_threshold > 0 and prior_human_accepts >= repeat_threshold
+            and feature_state not in _REPEAT_REFUSED_FEATURE_STATES):
+        return RULE_REPEAT
+    return None
+
+
+# Work item states with no triage decision left to make (#2683): the item closed
+# or merged while its proposal waited.
+CLOSED_ITEM_STATES: tuple[str, ...] = ("closed", "merged")
+
+
+def item_is_open(state: str | None) -> bool:
+    """Whether an item in *state* still has a triage decision to make. ``None``
+    (never mirrored a state) reads as open — absence of evidence is not closure.
+    The Python twin of ``awaiting_decision_clause``."""
+    return state not in CLOSED_ITEM_STATES
+
+
+def awaiting_decision_clause() -> ColumnElement[bool]:
+    """THE "pending proposal a human still has to decide" predicate, shared by
+    ``GET /triage``, the roadmap-health inbox count, the pm tree's per-repo
+    count and the triage loop's status-card count so they cannot disagree.
+    The statement must (outer-)join ``WorkItem`` on the proposal's item; a
+    proposal whose row is gone keeps showing, as before."""
+    return and_(TriageProposal.status == "pending",
+                or_(WorkItem.state.is_(None), WorkItem.state.not_in(CLOSED_ITEM_STATES)))
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -272,24 +375,68 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
     await db.flush()
 
 
-async def apply_auto_dismiss(db, proposal: TriageProposal, *, audit_identity: str) -> bool:
-    """Resolve a bot-artifact proposal as ``rejected`` WITHOUT the owner hold a
-    human reject sets (#2683) — the item was never the owner's to decide. The
-    snapshot (stamped ``decidedBy: auto``) makes it undoable for the same window.
-    Returns False when the work item is gone."""
+# The triage state a dismissed item is left in (#2683) — for a dismissed
+# proposal AND a bot artifact the loop keeps away from classification, through
+# the ONE ``mark_dismissed`` below. ``proposed`` because it is the only state
+# that does all three things a dismissal needs:
+# * it is not ``unclassified``, so neither the classify candidate set
+#   (``_pm_triage_list_pending``) nor its count re-propose the item;
+# * it is never rewritten back — nothing but an undo's snapshot restore sets an
+#   item ``unclassified`` again;
+# * it derives to Backlog on the board (``desired_state.derive_status``), the
+#   same as an untriaged item. ``classified`` would derive to Ready, putting a
+#   dismissed issue in front of the Backlog Runner at the default
+#   ``queue_min_status`` — a dismissal must never PROMOTE an item.
+# It is also literally what a dismissed proposal's item already holds:
+# ``_pm_classify_ingest`` stamps ``proposed`` the moment a proposal exists.
+DISMISSED_TRIAGE_STATE = "proposed"
+
+# ``WorkItem.classified_by`` provenance of a dismissal: shown on the overlay so a
+# person can tell "dismissed" from "proposal pending" on the same state.
+DISMISSED_BY = "dismissed"
+DISMISSED_BY_BOT_ARTIFACT = "bot-artifact"
+
+# Why a proposal was dismissed, on the audit detail. A human route may pass a free
+# text reason instead.
+DISMISS_REASON_BOT_ARTIFACT = "bot_artifact"
+DISMISS_REASON_ITEM_CLOSED = "item_closed"
+
+
+def mark_dismissed(wi: WorkItem, *, by: str) -> None:
+    """Leave *wi* where no triage pass picks it up again, with NO hold and NO
+    feature (see ``DISMISSED_TRIAGE_STATE``). The one writer for both the
+    dismiss path and the pre-classify bot-artifact skip."""
+    wi.triage_state = DISMISSED_TRIAGE_STATE
+    wi.classified_by = by
+
+
+async def apply_dismiss(db, proposal: TriageProposal, *, decided_by: str,
+                        audit_identity: str, reason: str | None = None) -> None:
+    """THE dismiss path (#2683) — the inbox's dismiss routes and the loop's
+    auto-dismiss (bot artifacts, closed items) all call this. Resolves the
+    proposal ``dismissed`` WITHOUT the owner hold a reject sets: there was no
+    decision to make, so nothing is parked for the owner. The overlay snapshot,
+    stamped ``decidedBy`` like ``apply_accept``'s, makes it undoable for the same
+    window — and an undo of a ``decidedBy: auto`` dismissal arms ``auto_undone``
+    so the loop never re-dismisses what a person brought back.
+
+    Audits ``pm.triage.dismiss`` (a person) or ``pm.triage.auto_dismiss`` (the
+    loop). A missing work item still resolves the proposal (as reject does)."""
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
-    if wi is None:
-        return False
-    snapshot = _overlay_snapshot(wi)
-    snapshot["decidedBy"] = DECIDED_BY_AUTO
+    snapshot = _overlay_snapshot(wi) if wi is not None else {}
+    snapshot["decidedBy"] = decided_by
     proposal.undo_snapshot = snapshot
-    proposal.status = "rejected"
+    if wi is not None:
+        mark_dismissed(wi, by=DISMISSED_BY)
+    proposal.status = "dismissed"
     proposal.resolved_at = datetime.now(timezone.utc)
     await db.flush()
-    await record_audit(db=db, type="pm.triage.auto_dismiss", identity=audit_identity,
-                       detail={"proposalId": proposal.id, "workItemId": wi.id})
-    return True
+    await record_audit(
+        db=db, identity=audit_identity,
+        type="pm.triage.auto_dismiss" if decided_by == DECIDED_BY_AUTO else "pm.triage.dismiss",
+        detail={"proposalId": proposal.id, "workItemId": proposal.work_item_id,
+                "reason": reason, "decidedBy": decided_by})
 
 
 async def gather_accept_ownership(proposal_ids: list[str]) -> RepoOwnershipSnapshot:

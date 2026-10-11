@@ -19,11 +19,17 @@ A tick, in order (design §6):
      highest-priority action; execute it. Classify sessions are bounded by a
      rolling daily cap (like SdlcIntakeLoop).
   N+1. The auto-accept pass (spec §8): for a product whose policy opts in via
-     ``triage_auto_accept``, accept its qualifying pending proposals through the
-     SAME ``apply_accept`` the inbox uses — audited, undoable, capped at
-     ``MAX_AUTO_ACCEPTS_PER_TICK`` per product per tick. Propose-only stays the
-     default: the mode vocabulary is unchanged and a product that never opts in
-     never sees a machine accept.
+     ``triage_auto_accept`` (or Dispatch-off), accept its qualifying pending
+     proposals through the SAME ``apply_accept`` the inbox uses — audited,
+     undoable, capped at ``MAX_AUTO_ACCEPTS_PER_TICK`` per product per tick. The
+     repeat rule (#2683) widens an opt-in, never replaces one. Propose-only stays
+     the default: the mode vocabulary is unchanged and a product that never opts
+     in never sees a machine accept. The same pass dismisses (no hold, undoable)
+     proposals for closed items and bot artifacts.
+
+Bot artifacts never reach step 1..N at all (#2683): after auto-linking, an item
+its product's policy recognises as bot output is set aside through the
+``mark_ignored`` seam instead of being classified.
 
 **The engine is told the truth about budget and backlog.** ``count_state``
 cannot see the loop's in-memory spawn ledger and its unclassified query can
@@ -53,7 +59,16 @@ from server.pm.engine import (
     qualifying_clusters,
 )
 from server.automations.product_policy import is_on
-from server.pm.triage_accept import auto_accept_eligible, is_bot_artifact
+from server.pm.triage_accept import (
+    DISMISS_REASON_BOT_ARTIFACT,
+    DISMISS_REASON_ITEM_CLOSED,
+    RULE_DISPATCH_OFF,
+    RULE_REPEAT,
+    auto_accept_eligible,
+    is_bot_artifact,
+    item_is_open,
+    repeat_threshold_for,
+)
 
 from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
@@ -85,6 +100,8 @@ class PendingItemView:
     body: str
     labels: tuple[str, ...]
     linked_issue_numbers: tuple[int, ...]
+    author: str | None = None        # bot-artifact recognition (#2683)
+    product_slug: str | None = None  # the owning product, whose policy judges it
 
 
 @dataclass(frozen=True)
@@ -100,6 +117,11 @@ class AutoAcceptCandidateView:
     feature_state: str | None      # the target capability's lifecycle state (None if no row)
     auto_undone: bool | None
     title: str | None = None       # the work item's title (bot-artifact recognition)
+    author: str | None = None      # the work item's author (bot-artifact recognition)
+    item_state: str | None = None  # open | closed | merged — a closed item is dismissed
+    # Earlier proposals onto ``proposed_feature_id`` a PERSON accepted as proposed
+    # (the repeat rule, #2683); machine accepts never count.
+    prior_human_accepts: int = 0
 
 
 class PmTriage:
@@ -153,11 +175,14 @@ ProposeMapDiff = Callable[[str, tuple[int, ...], str], Awaitable[Any]]
 MarkStale = Callable[[tuple[str, ...]], Awaitable[None]]
 ReadPolicies = Callable[[], Awaitable[dict[str, dict]]]
 ListAutoAcceptCandidates = Callable[[], Awaitable[list[AutoAcceptCandidateView]]]
-# proposal_id -> audit detail ({"workItemId", "featureId", "confidence"}) or None
-# when the proposal was no longer pending (a human got there first).
-AutoAccept = Callable[[str], Awaitable["dict | None"]]
-# proposal_id -> True when dismissed, False when no longer pending (#2683).
-AutoDismiss = Callable[[str], Awaitable[bool]]
+# (proposal_id, rule) -> audit detail ({"workItemId", "featureId", "confidence",
+# "rule"}) or None when the proposal was no longer pending (a human got there first).
+AutoAccept = Callable[[str, str], Awaitable["dict | None"]]
+# (proposal_id, reason) -> True when dismissed, False when no longer pending (#2683).
+AutoDismiss = Callable[[str, str], Awaitable[bool]]
+# item -> True when the bot artifact was taken out of the classify queue, False
+# when it had already left it (#2683).
+MarkIgnored = Callable[[PendingItemView], Awaitable[bool]]
 
 
 class PmTriageLoop:
@@ -180,6 +205,7 @@ class PmTriageLoop:
         list_auto_accept_candidates: ListAutoAcceptCandidates | None = None,
         auto_accept: AutoAccept | None = None,
         auto_dismiss: AutoDismiss | None = None,
+        mark_ignored: MarkIgnored | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -197,6 +223,7 @@ class PmTriageLoop:
         self._list_candidates = list_auto_accept_candidates
         self._auto_accept = auto_accept
         self._auto_dismiss = auto_dismiss
+        self._mark_ignored = mark_ignored
         self._spawns_today: list[float] = []
         self._was_capped = False
 
@@ -219,6 +246,9 @@ class PmTriageLoop:
             return
 
         self._observation_degraded = False
+        # Read once per tick: the pre-classify bot-artifact skip and the
+        # auto-accept pass judge each product by the same snapshot.
+        policies = await self._policies_for_tick()
         pending = await self._list_pending()
 
         # 0. Mechanical auto-link pass (design §6.2): PRs whose closing refs point
@@ -247,6 +277,7 @@ class PmTriageLoop:
                         kind="auto_linked", target=f"{item.repo}#{item.number}")
                     continue
             still_pending.append(item)
+        still_pending = await self._skip_bot_artifacts(still_pending, policies)
 
         self._prune_day()
         state = self._budgeted(await self._count_state(), config, still_pending)
@@ -284,7 +315,7 @@ class PmTriageLoop:
         # of them — it is policy-driven bookkeeping over proposals that already
         # exist, so it runs on every propose-mode tick regardless of which
         # action fired (a classify-saturated backlog must not stall accepts).
-        await self._auto_accept_pass()
+        await self._auto_accept_pass(policies)
 
         # The status card counts drift through the ENGINE's own rule — threshold
         # AND latch. Re-implementing the threshold half here would pin the card
@@ -345,42 +376,113 @@ class PmTriageLoop:
             kind="classify", session_id=getattr(session, "id", None),
             detail={"numbers": [i.number for i in batch]})
 
-    async def _auto_accept_pass(self) -> None:
-        """Spec §8: for every product whose policy sets ``triage_auto_accept``,
-        accept the pending proposals at or above that tier — through the SAME
-        ``apply_accept`` the inbox uses (injected as ``auto_accept``), audited by
-        the seam, undoable for the same window. Runs every tick so a policy
-        change catches up on the next one.
-
-        Fail-safe by construction: either DB read failing (policies, candidates)
-        → no accepts this tick, with a warn, and the tick carries on to
-        ``_stash``; one proposal's failure is logged and skipped, never the
-        pass; a proposal a human resolved between the list and the accept
-        answers ``None`` from the seam and is silently dropped.
-        """
-        if (self._read_policies is None or self._list_candidates is None
-                or self._auto_accept is None):
-            return
+    async def _policies_for_tick(self) -> dict[str, dict] | None:
+        """slug → validated product policy for this tick, or ``None`` when the
+        seam is not wired or the read failed. A failure warns ONCE (it skips both
+        the pre-classify bot-artifact skip and the auto-accept pass) — ``{}``
+        would read as "no product opted in" and hide the outage."""
+        if self._read_policies is None:
+            return None
         try:
-            policies = await self._read_policies()
+            return await self._read_policies()
         except Exception as exc:
             self._observation_degraded = True
             log.warning("pm_triage.policy_read_failed", exc_info=True)
             await self._ctx.emit("warn", f"auto-accept skipped: policy read failed: {exc}",
                                  kind="auto_accept_skipped")
+            return None
+
+    @staticmethod
+    def _dismisses_bot_output(policy: dict | None, title: str | None,
+                              author: str | None) -> bool:
+        """Whether *policy* has bot-artifact dismissal on AND this item is bot
+        output by the ONE verdict (``is_bot_artifact``) with the product's own
+        patterns. Shared by the pre-classify skip and the dismiss pass."""
+        return bool(policy and policy.get("triage_dismiss_bot_artifacts")) and is_bot_artifact(
+            title, author, (policy or {}).get("triage_bot_artifact_patterns") or ())
+
+    async def _skip_bot_artifacts(self, items: list[PendingItemView],
+                                  policies: dict[str, dict] | None) -> list[PendingItemView]:
+        """#2683: bot output never reaches a classify session. An item the
+        owning product's policy recognises as a bot artifact is taken out of the
+        classify queue through the injected ``mark_ignored`` seam instead (audited
+        by the seam) — no proposal, no inbox card, no session spent on it.
+
+        Dropped from THIS tick's batch even when the seam fails: classifying bot
+        output is exactly the waste the rule exists to stop, and the next tick
+        retries the mark. An unowned item (no product, no policy) is not judged."""
+        if self._mark_ignored is None or not policies:
+            return items
+        kept: list[PendingItemView] = []
+        for item in items:
+            policy = policies.get(item.product_slug) if item.product_slug else None
+            if not self._dismisses_bot_output(policy, item.title, item.author):
+                kept.append(item)
+                continue
+            target = f"{item.repo}#{item.number}"
+            try:
+                ignored = await self._mark_ignored(item)
+            except Exception as exc:
+                self._observation_degraded = True
+                log.warning("pm_triage.bot_artifact_ignore_failed", exc_info=True)
+                await self._ctx.emit("warn", f"could not set aside bot artifact {target}: {exc}",
+                                     kind="bot_artifact_ignore_failed", target=target)
+                continue
+            if ignored:
+                await self._ctx.emit(
+                    "info", f"set aside bot artifact {target} (not sent to classification)",
+                    kind="bot_artifact_ignored", target=target,
+                    detail={"product": item.product_slug})
+        return kept
+
+    async def _dismiss(self, cand: AutoAcceptCandidateView, reason: str, text: str) -> None:
+        """One auto-dismissal through the injected seam (``apply_dismiss``),
+        guarded per proposal like an accept."""
+        if self._auto_dismiss is None:
             return
-        tiers = {slug: (p.get("triage_auto_accept") or "off") for slug, p in policies.items()}
-        # #2683: both rules are per-product opt-ins, like the tier.
-        dispatch_off = {slug: bool(p.get("triage_auto_accept_dispatch_off")) and not is_on(p)
-                        for slug, p in policies.items()}
-        dismiss = {slug for slug, p in policies.items()
-                   if p.get("triage_dismiss_bot_artifacts") and self._auto_dismiss is not None}
-        if all(t == "off" for t in tiers.values()) and not any(dispatch_off.values()) \
-                and not dismiss:
+        target = f"{cand.repo}#{cand.number}"
+        try:
+            dismissed = await self._auto_dismiss(cand.proposal_id, reason)
+        except Exception as exc:
+            self._observation_degraded = True
+            log.warning("pm_triage.auto_dismiss_failed", exc_info=True)
+            await self._ctx.emit("warn", f"auto-dismiss failed for {target}: {exc}",
+                                 kind="auto_dismiss_failed", target=target)
+            return
+        if dismissed:
+            await self._ctx.emit(
+                "info", text, kind="auto_dismissed", target=target,
+                detail={"proposalId": cand.proposal_id, "product": cand.product_slug,
+                        "reason": reason})
+
+    async def _auto_accept_pass(self, policies: dict[str, dict] | None) -> None:
+        """Spec §8: for every product whose policy opts in, accept the pending
+        proposals one of the rules admits (``auto_accept_eligible`` names it:
+        the ``triage_auto_accept`` confidence tier, Dispatch-off, or the repeat
+        rule) — through the SAME ``apply_accept`` the inbox uses (injected as
+        ``auto_accept``), audited by the seam with the rule, undoable for the same
+        window. Runs every tick so a policy change catches up on the next one.
+
+        Before any accept, two dismissals (#2683) through the SAME
+        ``apply_dismiss`` the inbox's dismiss route uses — no hold, undoable:
+        a proposal whose work item closed or merged (ALWAYS — a closed item has
+        no decision left, so there is no policy key and no product needed), and
+        a bot artifact for a product with ``triage_dismiss_bot_artifacts`` on.
+        Neither touches a proposal a human already undid (``auto_undone``).
+
+        Fail-safe by construction: either DB read failing (policies, candidates)
+        → nothing this tick, with a warn, and the tick carries on to ``_stash``;
+        one proposal's failure is logged and skipped, never the pass; a proposal
+        a human resolved between the list and the write answers ``None``/False
+        from the seam and is silently dropped. Accepts are capped at
+        ``MAX_AUTO_ACCEPTS_PER_TICK`` per product, whatever the rule.
+        """
+        if (policies is None or self._list_candidates is None
+                or self._auto_accept is None):
             return
         accepted_by_product: dict[str, int] = {}
         capped: set[str] = set()
-        # The pass's OTHER DB read, guarded like the policy read above (R2-7).
+        # The pass's OTHER DB read, guarded like the policy read (R2-7).
         # Unguarded, a transient failure here escapes ``_run`` and takes the
         # WHOLE tick with it — including the ``_stash`` that feeds the status
         # card — so a blip in this optional pass would blank counts the tick had
@@ -396,37 +498,38 @@ class PmTriageLoop:
                                  kind="auto_accept_skipped")
             return
         for cand in candidates:
+            target = f"{cand.repo}#{cand.number}"
+            if self._auto_dismiss is not None and not cand.auto_undone \
+                    and not item_is_open(cand.item_state):
+                await self._dismiss(cand, DISMISS_REASON_ITEM_CLOSED,
+                                    f"auto-dismissed {target}: the item is {cand.item_state}")
+                continue
             slug = cand.product_slug
             if not slug:
                 continue
-            tier = tiers.get(slug, "off")
-            target = f"{cand.repo}#{cand.number}"
-            if (self._auto_dismiss is not None and slug in dismiss and not cand.auto_undone and is_bot_artifact(cand.title)):
-                try:
-                    dismissed = await self._auto_dismiss(cand.proposal_id)
-                except Exception as exc:
-                    self._observation_degraded = True
-                    log.warning("pm_triage.auto_dismiss_failed", exc_info=True)
-                    await self._ctx.emit("warn", f"auto-dismiss failed for {target}: {exc}",
-                                         kind="auto_dismiss_failed", target=target)
-                    continue
-                if dismissed:
-                    await self._ctx.emit(
-                        "info", f"auto-dismissed bot artifact {target}",
-                        kind="auto_dismissed", target=target,
-                        detail={"proposalId": cand.proposal_id, "product": slug})
+            policy = policies.get(slug) or {}
+            if self._auto_dismiss is not None and not cand.auto_undone \
+                    and self._dismisses_bot_output(policy, cand.title, cand.author):
+                await self._dismiss(cand, DISMISS_REASON_BOT_ARTIFACT,
+                                    f"auto-dismissed bot artifact {target}")
                 continue
-            if not auto_accept_eligible(
-                    tier=tier, confidence_level=cand.confidence_level,
-                    proposed_feature_id=cand.proposed_feature_id,
-                    feature_state=cand.feature_state, auto_undone=cand.auto_undone,
-                    dispatch_off_accept=dispatch_off.get(slug, False)):
+            rule = auto_accept_eligible(
+                tier=policy.get("triage_auto_accept") or "off",
+                confidence_level=cand.confidence_level,
+                proposed_feature_id=cand.proposed_feature_id,
+                feature_state=cand.feature_state, auto_undone=cand.auto_undone,
+                # #2683: Dispatch-off is a per-product opt-in, like the tier.
+                dispatch_off_accept=bool(policy.get("triage_auto_accept_dispatch_off"))
+                and not is_on(policy),
+                repeat_threshold=repeat_threshold_for(policy),
+                prior_human_accepts=cand.prior_human_accepts)
+            if rule is None:
                 continue
             if accepted_by_product.get(slug, 0) >= MAX_AUTO_ACCEPTS_PER_TICK:
                 capped.add(slug)
                 continue
             try:
-                detail = await self._auto_accept(cand.proposal_id)
+                detail = await self._auto_accept(cand.proposal_id, rule)
             except Exception as exc:
                 self._observation_degraded = True
                 log.warning("pm_triage.auto_accept_failed", exc_info=True)
@@ -437,14 +540,25 @@ class PmTriageLoop:
                 continue          # a human resolved it first
             accepted_by_product[slug] = accepted_by_product.get(slug, 0) + 1
             await self._ctx.emit(
-                "info", f"auto-accepted {target} ({cand.confidence_level})",
+                "info", f"auto-accepted {target} ({self._rule_text(rule, cand)})",
                 kind="auto_accepted", target=target,
-                detail={"proposalId": cand.proposal_id, "product": slug, **detail})
+                detail={"proposalId": cand.proposal_id, "product": slug,
+                        **detail, "rule": rule})
         for slug in sorted(capped):
             await self._ctx.emit(
                 "info", f"auto-accept cap reached for {slug} this tick "
                         f"({MAX_AUTO_ACCEPTS_PER_TICK}); the rest wait",
                 kind="auto_accept_capped", target=slug)
+
+    @staticmethod
+    def _rule_text(rule: str, cand: AutoAcceptCandidateView) -> str:
+        """The feed's account of WHY the machine took a proposal."""
+        if rule == RULE_REPEAT:
+            return (f"repeat rule: {cand.prior_human_accepts} earlier human accepts "
+                    f"onto this capability")
+        if rule == RULE_DISPATCH_OFF:
+            return f"Dispatch-off rule, {cand.confidence_level or 'low'} confidence"
+        return f"confidence rule, {cand.confidence_level}"
 
     def _prune_day(self) -> None:
         cutoff = self._clock() - _DAY_SECONDS

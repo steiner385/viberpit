@@ -968,9 +968,9 @@ async def test_auto_accept_seam_accepts_audits_and_returns_detail(db_env):
     await _seed(db_env)
     ids = await _auto_accept_fixture()
     orch = _triage_orch()
-    detail = await orch._pm_triage_auto_accept(ids["p1"])
+    detail = await orch._pm_triage_auto_accept(ids["p1"], "confidence")
     assert detail == {"workItemId": ids["w1"], "featureId": ids["live_feature"],
-                      "confidence": "high"}
+                      "confidence": "high", "rule": "confidence"}
     async with db_session() as db:
         prop = (await db.execute(select(TriageProposal).where(
             TriageProposal.id == ids["p1"]))).scalars().one()
@@ -987,7 +987,7 @@ async def test_auto_accept_seam_accepts_audits_and_returns_detail(db_env):
         assert audits[0].identity == "pm-triage"
         assert audits[0].detail == {"proposalId": ids["p1"], "workItemId": ids["w1"],
                                     "featureId": ids["live_feature"],
-                                    "confidence": "high"}
+                                    "confidence": "high", "rule": "confidence"}
 
 
 @pytest.mark.asyncio
@@ -1004,7 +1004,7 @@ async def test_auto_accept_seam_answers_none_when_a_human_got_there_first(db_env
             TriageProposal.id == ids["p1"]))).scalars().one()
         prop.status = "accepted"
     orch = _triage_orch()
-    assert await orch._pm_triage_auto_accept(ids["p1"]) is None
+    assert await orch._pm_triage_auto_accept(ids["p1"], "confidence") is None
     async with db_session() as db:
         audits = (await db.execute(select(AuditEvent).where(
             AuditEvent.type == "pm.triage.auto_accept"))).scalars().all()
@@ -1023,7 +1023,7 @@ async def test_auto_accept_seam_answers_none_when_the_work_item_is_gone(db_env):
     async with db_session() as db:
         await db.execute(delete(WorkItem).where(WorkItem.id == ids["w1"]))
     orch = _triage_orch()
-    assert await orch._pm_triage_auto_accept(ids["p1"]) is None
+    assert await orch._pm_triage_auto_accept(ids["p1"], "confidence") is None
     async with db_session() as db:
         audits = (await db.execute(select(AuditEvent).where(
             AuditEvent.type == "pm.triage.auto_accept"))).scalars().all()
@@ -1058,3 +1058,108 @@ def test_pm_triage_loop_is_wired_with_the_three_seams(db_env):
     assert loop._read_policies == orch._pm_triage_load_policies
     assert loop._list_candidates == orch._pm_triage_list_auto_accept_candidates
     assert loop._auto_accept == orch._pm_triage_auto_accept
+    assert loop._auto_dismiss == orch._pm_triage_auto_dismiss
+    assert loop._mark_ignored == orch._pm_triage_mark_ignored
+
+
+# --------------------------------------------------------------------------- #
+# #2683 follow-up: repeat counts, closed items, dismiss + ignore seams         #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_candidates_carry_prior_human_accepts_author_and_item_state(db_env):
+    """Only HUMAN accepts that landed on the proposed feature count — a machine
+    accept must never feed the repeat rule (self-reinforcement), and an accept
+    edited onto another capability is not an accept "as proposed"."""
+    from server.pm.triage_accept import _overlay_snapshot
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    async with db_session() as db:
+        def accepted(n, *, landed_on):
+            w = WorkItem(author="tony", repo=REPO, number=n, kind="issue", title=f"a{n}",
+                         state="open", triage_state="classified", feature_id=landed_on)
+            db.add(w)
+            return w
+        # The fourth was proposed onto "later" but a human edited it onto "sessions".
+        rows = [accepted(100, landed_on=ids["proposed_feature"]),
+                accepted(101, landed_on=ids["proposed_feature"]),
+                accepted(102, landed_on=ids["proposed_feature"]),
+                accepted(103, landed_on=ids["live_feature"])]
+        await db.flush()
+        for w, by in zip(rows, ("human", "human", "auto", "human")):
+            db.add(TriageProposal(work_item_id=w.id, status="accepted",
+                                  proposed_feature_id=ids["proposed_feature"],
+                                  undo_snapshot={**_overlay_snapshot(w), "decidedBy": by}))
+        closed = (await db.get(WorkItem, ids["w1"]))
+        closed.state = "closed"
+        closed.author = "app/github-actions"
+    orch = _triage_orch()
+    by_id = {c.proposal_id: c for c in await orch._pm_triage_list_auto_accept_candidates()}
+    assert by_id[ids["p2"]].prior_human_accepts == 2
+    assert by_id[ids["p1"]].prior_human_accepts == 0
+    assert by_id[ids["p3"]].prior_human_accepts == 0          # a no-fit has no feature
+    assert by_id[ids["p1"]].item_state == "closed"
+    assert by_id[ids["p1"]].author == "app/github-actions"
+    assert by_id[ids["p2"]].item_state == "open"
+
+
+@pytest.mark.asyncio
+async def test_auto_dismiss_seam_dismisses_with_its_reason_and_no_hold(db_env):
+    from sqlalchemy import select
+    from server.db.models import AuditEvent
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    orch = _triage_orch()
+    assert await orch._pm_triage_auto_dismiss(ids["p1"], "item_closed") is True
+    assert await orch._pm_triage_auto_dismiss(ids["p1"], "item_closed") is False  # resolved
+    async with db_session() as db:
+        prop = await db.get(TriageProposal, ids["p1"])
+        assert prop.status == "dismissed"
+        assert prop.undo_snapshot["decidedBy"] == "auto"
+        wi = await db.get(WorkItem, ids["w1"])
+        assert wi.hold_kind is None and wi.feature_id is None
+        audits = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.triage.auto_dismiss"))).scalars().all()
+        assert len(audits) == 1 and audits[0].identity == "pm-triage"
+        assert audits[0].detail["reason"] == "item_closed"
+
+
+@pytest.mark.asyncio
+async def test_mark_ignored_takes_a_bot_artifact_out_of_the_classify_queue(db_env):
+    from sqlalchemy import select
+    from server.db.models import AuditEvent
+    await _seed(db_env)
+    async with db_session() as db:
+        db.add(WorkItem(author="app/github-actions", repo=REPO, number=7, kind="pr",
+                        title="docs(fix-patterns): regenerate index", state="open",
+                        triage_state="unclassified"))
+    async with db_session() as db:
+        p = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+        p.automation_policy = {**p.automation_policy,
+                               "trusted_authors": ["tony", "app/github-actions"]}
+    orch = _triage_orch()
+    [item] = await orch._pm_triage_list_pending()
+    assert item.author == "app/github-actions" and item.product_slug == "viberpit"
+    assert await orch._pm_triage_mark_ignored(item) is True
+    assert await orch._pm_triage_list_pending() == []
+    state, _ = await _clusters(orch)
+    assert state.unclassified_count == 0
+    assert await orch._pm_triage_mark_ignored(item) is False      # already out
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(WorkItem.number == 7))).scalar_one()
+        assert wi.hold_kind is None and wi.classified_by == "bot-artifact"
+        audits = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.triage.bot_artifact_ignored"))).scalars().all()
+        assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_count_state_pending_excludes_proposals_for_closed_items(db_env):
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    orch = _triage_orch()
+    before = (await orch._pm_triage_count_state()).pending_count
+    async with db_session() as db:
+        (await db.get(WorkItem, ids["w1"])).state = "merged"
+    assert (await orch._pm_triage_count_state()).pending_count == before - 1

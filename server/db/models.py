@@ -1857,14 +1857,20 @@ WORK_ITEM_TRIAGE_STATES: tuple[str, ...] = ("unclassified", "proposed", "classif
 # pending ``decision`` render as "Needs you"; the other two exit on their own.
 HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_action")
 
-# Also the lifecycle of a MaterializationProposal (spec 003 §7b) — one proposal
-# vocabulary, not one per proposal kind (constitution VI).
-TRIAGE_PROPOSAL_STATUSES: tuple[str, ...] = ("pending", "accepted", "rejected")
+# The accept/reject lifecycle every proposal kind shares: a MaterializationProposal
+# (spec 003 §7b) and a DecisionProposal (spec 2026-09-18 §6) live on exactly these
+# three — one proposal vocabulary, not one per proposal kind (constitution VI).
+PROPOSAL_DECISION_STATUSES: tuple[str, ...] = ("pending", "accepted", "rejected")
+
+# A TriageProposal adds ``dismissed`` (#2683): "there is no decision to make here"
+# — bot output, an item closed while it waited. Unlike ``rejected`` it parks the
+# work item under NO hold (server/pm/triage_accept.py:apply_dismiss).
+TRIAGE_PROPOSAL_STATUSES: tuple[str, ...] = (*PROPOSAL_DECISION_STATUSES, "dismissed")
 
 # Spec 2026-09-18 §6 names the DecisionProposal lifecycle in its own right, and the
 # service/route code reads better saying so — but it is the SAME vocabulary, so this
 # is an ALIAS, never a second spelling of the three strings (constitution VI).
-DECISION_PROPOSAL_STATUSES: tuple[str, ...] = TRIAGE_PROPOSAL_STATUSES
+DECISION_PROPOSAL_STATUSES: tuple[str, ...] = PROPOSAL_DECISION_STATUSES
 
 
 class Feature(Base):
@@ -2328,7 +2334,7 @@ class MaterializationProposal(Base):
     (epic_title / epic_body / tasks[title, body, depends_on]); accepting it
     creates the epic, its sub-issues and the blocked-by chain through the
     journal, and this row remains as audit. Same pending→accepted/rejected
-    lifecycle as TriageProposal — see TRIAGE_PROPOSAL_STATUSES."""
+    lifecycle as TriageProposal — see PROPOSAL_DECISION_STATUSES."""
 
     __tablename__ = "materialization_proposals"
 
@@ -2337,7 +2343,7 @@ class MaterializationProposal(Base):
         String, ForeignKey("initiatives.id"), nullable=True, index=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     status: Mapped[str | None] = mapped_column(
-        String, nullable=True, default="pending", index=True)  # TRIAGE_PROPOSAL_STATUSES
+        String, nullable=True, default="pending", index=True)  # PROPOSAL_DECISION_STATUSES
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     rationale: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

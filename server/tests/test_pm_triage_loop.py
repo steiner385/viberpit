@@ -30,16 +30,16 @@ class _Sess:
         self.id = sid
 
 
-def _item(number, kind="issue", links=()):
+def _item(number, kind="issue", links=(), *, title=None, author="tony", product="viberpit"):
     return PendingItemView(
-        repo="o/r", number=number, kind=kind, title=f"#{number}", body="",
-        labels=(), linked_issue_numbers=tuple(links))
+        repo="o/r", number=number, kind=kind, title=title or f"#{number}", body="",
+        labels=(), linked_issue_numbers=tuple(links), author=author, product_slug=product)
 
 
 def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
           autolink_pred=None, clock=None, list_pending=None,
           policies=None, candidates=None, accept_fails=(), accept_none=(),
-          candidate_list_fails=False, classify_spawns=True):
+          candidate_list_fails=False, classify_spawns=True, ignore_fails=()):
     """Wire a loop over recorder fakes. Returns (loop, rec).
 
     The auto-accept seams are wired whenever *candidates* is given; ``policies=None``
@@ -48,7 +48,8 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
     ``classify_spawns=False`` makes the classify seam answer falsy — the shape of
     a dedupe hit / refusal that spawned nothing (#2235)."""
     rec = {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
-           "auto_accepted": [], "auto_dismissed": []}
+           "auto_accepted": [], "auto_dismissed": [], "rules": {}, "reasons": {},
+           "ignored": []}
     cfg = dict(config or {"drift_threshold": 5, "batch_size": 50,
                           "max_spawns_per_day": 8, "stale_days": 14})
 
@@ -93,17 +94,25 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
             raise RuntimeError("candidate read failed")
         return list(candidates or [])
 
-    async def auto_accept(proposal_id):
+    async def auto_accept(proposal_id, rule):
         if proposal_id in accept_fails:
             raise RuntimeError("accept blew up")
         if proposal_id in accept_none:
             return None
         rec["auto_accepted"].append(proposal_id)
+        rec["rules"][proposal_id] = rule
         return {"workItemId": f"w-{proposal_id}", "featureId": "f1",
-                "confidence": "high"}
+                "confidence": "high", "rule": rule}
 
-    async def auto_dismiss(proposal_id):
+    async def auto_dismiss(proposal_id, reason):
         rec["auto_dismissed"].append(proposal_id)
+        rec["reasons"][proposal_id] = reason
+        return True
+
+    async def mark_ignored(item):
+        if item.number in ignore_fails:
+            raise RuntimeError("ignore blew up")
+        rec["ignored"].append(item.number)
         return True
 
     wired = candidates is not None
@@ -116,21 +125,27 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
         read_policies=read_policies if wired else None,
         list_auto_accept_candidates=list_candidates if wired else None,
         auto_accept=auto_accept if wired else None,
-        auto_dismiss=auto_dismiss if wired else None)
+        auto_dismiss=auto_dismiss if wired else None,
+        mark_ignored=mark_ignored if wired else None)
     return loop, rec
 
 
 def _cand(pid, *, product="viberpit", level="high", feature="f1", state="live",
-          undone=None, number=1, title=None):
+          undone=None, number=1, title=None, author="tony", item_state="open",
+          prior=0):
     return AutoAcceptCandidateView(
         proposal_id=pid, work_item_id=f"w-{pid}", product_slug=product, repo="o/r",
         number=number, confidence_level=level, proposed_feature_id=feature,
-        feature_state=state, auto_undone=undone, title=title)
+        feature_state=state, auto_undone=undone, title=title, author=author,
+        item_state=item_state, prior_human_accepts=prior)
 
 
-def _policy(tier):
+def _policy(tier, **over):
+    """A product policy at auto-accept *tier*. Bot-artifact dismissal is pinned OFF
+    unless a test asks for it, so the accept tests are not shaped by its default."""
     from server.automations.product_policy import effective_policy
-    return {**effective_policy(None), "triage_auto_accept": tier}
+    return {**effective_policy(None), "triage_auto_accept": tier,
+            "triage_dismiss_bot_artifacts": False, **over}
 
 
 @pytest.mark.asyncio
@@ -212,7 +227,8 @@ async def test_idle_tick_records_no_work():
     loop, rec = _loop(ctx, pending=[], state=st)
     await loop.tick()
     assert rec == {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
-                   "auto_accepted": [], "auto_dismissed": []}
+                   "auto_accepted": [], "auto_dismissed": [], "rules": {}, "reasons": {},
+                   "ignored": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -730,19 +746,154 @@ async def test_dispatch_off_flag_accepts_low_confidence_only_while_dispatch_is_o
 
 
 @pytest.mark.asyncio
-async def test_bot_artifacts_are_dismissed_only_when_the_product_opts_in():
+async def test_bot_artifacts_are_dismissed_unless_the_product_opts_out():
+    """Dismissal is ON by default (bot output never belongs in triage; it is
+    undoable and parks nothing) and a product may still switch it off."""
     from server.automations.product_policy import effective_policy
     cands = [_cand("d1", title="UI Maintenance Cost & Architecture ROI Digest", level="low"),
              _cand("d2", title="docs(fix-patterns): regenerate index", number=2),
+             _cand("d3", title="Bump lodash", author="dependabot[bot]", level="low", number=4),
              _cand("real", title="Fix the login bug", level="low", number=3)]
-    on = {**effective_policy(None), "triage_dismiss_bot_artifacts": True}
-    ctx = Ctx()
-    loop, rec = _loop(ctx, policies={"viberpit": on}, candidates=cands)
-    await loop.tick()
-    assert rec["auto_dismissed"] == ["d1", "d2"]
-    assert rec["auto_accepted"] == []
-
     ctx = Ctx()
     loop, rec = _loop(ctx, policies={"viberpit": effective_policy(None)}, candidates=cands)
     await loop.tick()
+    assert rec["auto_dismissed"] == ["d1", "d2", "d3"]
+    assert set(rec["reasons"].values()) == {"bot_artifact"}
+    assert rec["auto_accepted"] == []
+
+    ctx = Ctx()
+    off = {**effective_policy(None), "triage_dismiss_bot_artifacts": False}
+    loop, rec = _loop(ctx, policies={"viberpit": off}, candidates=cands)
+    await loop.tick()
     assert rec["auto_dismissed"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_products_own_bot_artifact_patterns_are_dismissed():
+    pats = {"triage_bot_artifact_patterns": [r"^chore: audit codebase for\b"]}
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("off", triage_dismiss_bot_artifacts=True,
+                                                          **pats)},
+                      candidates=[_cand("a1", title="chore: audit codebase for X failure mode"),
+                                  _cand("keep", title="chore: tidy", number=2)])
+    await loop.tick()
+    assert rec["auto_dismissed"] == ["a1"]
+
+
+# --------------------------------------------------------------------------- #
+# #2683 follow-up: the repeat rule                                             #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_repeat_rule_accepts_onto_a_proposed_capability_humans_keep_accepting():
+    """The technical-debt-audits case: low confidence, capability still proposed,
+    but humans accepted N onto it already — the loop takes it, names the rule."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("medium")},
+                      candidates=[_cand("p1", level="low", state="proposed", prior=3),
+                                  _cand("p2", level="low", state="proposed", prior=2,
+                                        number=2)])
+    await loop.tick()
+    assert rec["auto_accepted"] == ["p1"]
+    assert rec["rules"] == {"p1": "repeat"}
+    ev = next(e for e in ctx.events if e[2].get("kind") == "auto_accepted")
+    assert "repeat" in ev[1] and "3" in ev[1]
+    assert ev[2]["detail"]["rule"] == "repeat"
+
+
+@pytest.mark.asyncio
+async def test_repeat_rule_never_fires_for_a_product_that_never_opted_in():
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("off")},
+                      candidates=[_cand("p1", level="low", prior=50)])
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+
+
+@pytest.mark.asyncio
+async def test_repeat_rule_respects_the_per_tick_cap():
+    ctx = Ctx()
+    cands = [_cand(f"r{n}", level="low", state="proposed", prior=9, number=n)
+             for n in range(MAX_AUTO_ACCEPTS_PER_TICK + 5)]
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("high")}, candidates=cands)
+    await loop.tick()
+    assert len(rec["auto_accepted"]) == MAX_AUTO_ACCEPTS_PER_TICK
+    assert [e for e in ctx.events if e[2].get("kind") == "auto_accept_capped"]
+
+
+@pytest.mark.asyncio
+async def test_confidence_accepts_are_labelled_with_their_rule():
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("high")},
+                      candidates=[_cand("p1", level="high")])
+    await loop.tick()
+    assert rec["rules"] == {"p1": "confidence"}
+
+
+# --------------------------------------------------------------------------- #
+# #2683 follow-up: stale proposals (item closed / merged)                      #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_proposals_for_closed_or_merged_items_are_dismissed_always():
+    """Always on — no policy key, no opt-in, not even an owning product: a
+    closed item has no decision left to make."""
+    from server.automations.product_policy import effective_policy
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": {**effective_policy(None),
+                                                  "triage_dismiss_bot_artifacts": False}},
+                      candidates=[_cand("c1", item_state="closed"),
+                                  _cand("m1", item_state="merged", number=2, product=None),
+                                  _cand("open", level="low", number=3),
+                                  _cand("undone", item_state="closed", undone=True, number=4)])
+    await loop.tick()
+    assert rec["auto_dismissed"] == ["c1", "m1"]
+    assert rec["reasons"] == {"c1": "item_closed", "m1": "item_closed"}
+    assert rec["auto_accepted"] == []
+    kinds = [e[2].get("kind") for e in ctx.events]
+    assert kinds.count("auto_dismissed") == 2
+
+
+# --------------------------------------------------------------------------- #
+# #2683 follow-up: bot artifacts never reach a classify session                 #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_bot_artifact_items_are_ignored_before_classification():
+    pending = [_item(1, title="docs(fix-patterns): regenerate index"),
+               _item(2, title="Fix the login bug", author="github-actions"),
+               _item(3, title="Fix the login bug"),
+               _item(4, title="docs(fix-patterns): regenerate index", product=None)]
+    ctx = Ctx()
+    loop, rec = _loop(ctx, pending=pending, candidates=[],
+                      policies={"viberpit": _policy("off", triage_dismiss_bot_artifacts=True)})
+    await loop.tick()
+    assert rec["ignored"] == [1, 2]
+    assert rec["classified"] == [[3, 4]]          # an unowned item is not judged here
+    kinds = [e[2].get("kind") for e in ctx.events]
+    assert kinds.count("bot_artifact_ignored") == 2
+
+
+@pytest.mark.asyncio
+async def test_bot_artifact_items_are_classified_when_dismissal_is_off():
+    pending = [_item(1, title="docs(fix-patterns): regenerate index")]
+    ctx = Ctx()
+    loop, rec = _loop(ctx, pending=pending, candidates=[],
+                      policies={"viberpit": _policy("off")})
+    await loop.tick()
+    assert rec["ignored"] == []
+    assert rec["classified"] == [[1]]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_ignore_warns_and_still_keeps_the_item_out_of_classify():
+    pending = [_item(1, title="docs(fix-patterns): regenerate index"), _item(2)]
+    ctx = Ctx()
+    loop, rec = _loop(ctx, pending=pending, candidates=[], ignore_fails=(1,),
+                      policies={"viberpit": _policy("off", triage_dismiss_bot_artifacts=True)})
+    await loop.tick()
+    assert rec["classified"] == [[2]]
+    assert [e for e in ctx.events if e[2].get("kind") == "bot_artifact_ignore_failed"]
