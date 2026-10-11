@@ -351,3 +351,88 @@ async def test_dispatch_skip_for_an_already_merged_doc_is_reported(db_env, monke
     kinds = [(kw.get("kind"), kw.get("target")) for _l, _s, kw in
              orch._pm_triage_ctx.events]
     assert ("skipped", f"{SLUG}:map-diff:ci-test-reliability") in kinds
+
+
+# --------------------------------------------------------------------------- #
+# The live PR-population cache outranks the frozen archive snapshot            #
+# --------------------------------------------------------------------------- #
+
+
+class _Population:
+    """The ``PrPopulationPoller.cached(repo)`` surface the latch reads."""
+
+    def __init__(self, prs: dict[str, list]) -> None:
+        self._prs = prs
+
+    def cached(self, repo):
+        return tuple(self._prs.get(repo, ()))
+
+
+def _cached_pr(state: str, number: int = 15688):
+    from server.github.pr_status import PullRequestInfo
+    return PullRequestInfo(number=number, state=state, checks="pending",
+                           title="docs(product): propose a capability",
+                           url=f"https://github.com/{REPO}/pull/{number}",
+                           is_draft=state == "draft", repo=REPO)
+
+
+async def _latched_with(db_env, *, cache: list | None, days_ago: float) -> tuple:
+    await _seed(db_env)
+    await _add_cluster("ui-framework-overhaul", [15138, 15139, 15254, 15256, 15257])
+    async with db_session() as db:
+        db.add(_archived_map_diff("ui-framework-overhaul", prs=[_pr("open")],
+                                  archived_at=_utcnow() - timedelta(days=days_ago)))
+    orch = _orch()
+    if cache is not None:
+        orch._pr_population = _Population({REPO: cache})
+    return (await orch._pm_triage_count_state()).open_map_diff_suggestions
+
+
+@pytest.mark.asyncio
+async def test_unreviewed_map_diff_pr_still_open_on_day_8_keeps_the_latch(db_env):
+    """Map-diff PRs never arm auto-merge, so a review can take longer than the
+    snapshot's 7-day trust window. While the cache still sees the PR open, the
+    capability must not get a second PR."""
+    assert await _latched_with(db_env, cache=[_cached_pr("open")], days_ago=8) == (
+        "ui-framework-overhaul",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["closed", "merged"])
+async def test_pr_closed_or_merged_in_cache_releases_the_latch(db_env, state):
+    """The snapshot froze "open", but the cache knows better. A merged PR latches
+    through the indexed Feature once pm-sync sees it. A closed one is a human's
+    no, and new work on the capability may be proposed again."""
+    assert await _latched_with(db_env, cache=[_cached_pr(state)], days_ago=1) == ()
+
+
+@pytest.mark.asyncio
+async def test_pr_missing_from_cache_falls_back_to_the_snapshot_window(db_env):
+    """No cache entry for the PR (poller not warmed up, repo not watched):
+    the 7-day snapshot rule decides."""
+    assert await _latched_with(db_env, cache=[_cached_pr("open", number=1)],
+                               days_ago=1) == ("ui-framework-overhaul",)
+
+
+@pytest.mark.asyncio
+async def test_pr_missing_from_cache_past_the_window_releases(db_env):
+    assert await _latched_with(db_env, cache=[], days_ago=8) == ()
+
+
+# --------------------------------------------------------------------------- #
+# One spelling of the map-diff dedupe key                                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_map_diff_key_round_trips():
+    from server.pm.map_resolution import map_diff_key, parse_map_diff_key
+    key = map_diff_key("kindash", "ci-test-reliability")
+    assert key == "kindash:map-diff:ci-test-reliability"
+    assert parse_map_diff_key(key) == ("kindash", "ci-test-reliability")
+
+
+@pytest.mark.parametrize("ref", [None, "", "kindash:feature-map", "kindash:map-diff:",
+                                 "kindash:map-diff:   ", ":map-diff:x"])
+def test_parse_map_diff_key_rejects_non_map_diff_refs(ref):
+    from server.pm.map_resolution import parse_map_diff_key
+    assert parse_map_diff_key(ref) is None

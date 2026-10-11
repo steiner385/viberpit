@@ -83,6 +83,7 @@ from server.db import db_session
 from server.db.transient import is_transient_db_failure
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.automations.claim_liveness import DEAD_CLAIM_STATUSES
+from server.pm.map_resolution import map_diff_key, parse_map_diff_key
 from server.sessions import adopt as _adopt
 from server.sessions.helper_call import helper_cwd
 from server.sessions.account_auth import account_store_io, oauth_env_for
@@ -297,10 +298,9 @@ COMPLETE_NUDGE_CAP: int = 3
 TURN_RESTART_DEFER_S: float = 60.0
 
 # How long the pm-triage drift latch trusts an auto-archived map-diff session's
-# "PR still open" snapshot (``archive_context.pr_state``, frozen at archive time).
-# A PR that merges latches through the indexed Feature long before this runs out.
-# An "open" snapshot older than this belongs to a PR nobody merged, and it must
-# not hold back new work on that capability for good (#2927).
+# "PR still open" snapshot (``archive_context.pr_state``, frozen at archive time)
+# when the PR-population cache has no entry for that PR. A cache entry always
+# wins: open holds the latch at any age, merged or closed releases it (#2927).
 MAP_DIFF_IN_FLIGHT_MAX_AGE_S: float = 7 * 86_400.0
 
 # Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
@@ -10988,8 +10988,10 @@ class SessionOrchestrator:
               spawn's ``origin_ref``/``dedupe_key`` ``<slug>:map-diff:<suggestion>``;
               or
           (b') still in flight after its session left — an archived session for
-              that key whose archive snapshot shows its PR open or draft, archived
-              within ``MAP_DIFF_IN_FLIGHT_MAX_AGE_S``. Completion archives a
+              that key whose archive snapshot shows its PR open or draft, and the
+              PR-population cache still has it open (or, with no cache entry, it
+              was archived within ``MAP_DIFF_IN_FLIGHT_MAX_AGE_S``; see
+              ``_map_diff_pr_in_flight``). Completion archives a
               propose-only session as soon as its PR is armed. Until that PR merges
               and pm-sync indexes it, (a) cannot hold and (b) no longer does, so
               without this the next tick opens a second PR for the same capability
@@ -11032,8 +11034,8 @@ class SessionOrchestrator:
             slug = slugs.get(c.repo)
             if slug is None:  # pragma: no cover — already latched by (c)
                 continue
-            key = f"{slug}:map-diff:{c.suggestion}"
-            existing = await self._pm_onboard_ctx._existing_session(key)
+            existing = await self._pm_onboard_ctx._existing_session(
+                map_diff_key(slug, c.suggestion))
             if existing is not None:
                 latched.add(c.suggestion)
                 rec = getattr(self, "_records", {}).get(existing.id)
@@ -11048,7 +11050,7 @@ class SessionOrchestrator:
                         rec, rec.updated_at, rec.last_user_interaction_at)
         # (b') Same key as (b), read from the archived rows instead. The snapshot
         # is the one completion/autopilot wrote, and archive_audit reads it too.
-        in_flight = {f"{slugs[c.repo]}:map-diff:{c.suggestion}": c.suggestion
+        in_flight = {map_diff_key(slugs[c.repo], c.suggestion): c
                      for c in clusters
                      if c.suggestion not in latched and slugs.get(c.repo) is not None}
         if in_flight:
@@ -11058,15 +11060,34 @@ class SessionOrchestrator:
                       - timedelta(seconds=MAP_DIFF_IN_FLIGHT_MAX_AGE_S))
             async with db_session() as db:
                 archived = (await db.execute(
-                    select(DbSession.origin_ref, DbSession.archive_context).where(
+                    select(DbSession.origin_ref, DbSession.archive_context,
+                           DbSession.archived_at).where(
                         DbSession.origin == self._pm_onboard_ctx.automation_id,
                         DbSession.origin_ref.in_(list(in_flight)),
-                        DbSession.status == "archived",
-                        DbSession.archived_at >= cutoff))).all()
-            for ref, context in archived:
-                if archived_pr_numbers(context, states=("open", "draft")):
-                    latched.add(in_flight[ref])
+                        DbSession.status == "archived"))).all()
+            for ref, context, archived_at in archived:
+                cluster = in_flight[ref]
+                snapshot_fresh = archived_at is not None and archived_at >= cutoff
+                if any(self._map_diff_pr_in_flight(cluster.repo, n, snapshot_fresh)
+                       for n in archived_pr_numbers(context, states=("open", "draft"))):
+                    latched.add(cluster.suggestion)
         return tuple(sorted(latched))
+
+    def _map_diff_pr_in_flight(self, repo: str, number: int, snapshot_fresh: bool) -> bool:
+        """Is a map-diff PR the archive snapshot saw open still in flight?
+
+        The PR-population cache is live (no API call here) and outranks the
+        frozen snapshot: open or draft there holds the latch however old the
+        archive is, because map-diff PRs never arm auto-merge and a review can
+        outlast ``MAP_DIFF_IN_FLIGHT_MAX_AGE_S``. Merged or closed there releases
+        it. Only when the cache has no entry for the PR (poller not warmed up,
+        repo not watched, a closed PR aged out) does the snapshot's age decide."""
+        population = getattr(self, "_pr_population", None)
+        if population is not None:
+            for info in population.cached(repo):
+                if info.number == number:
+                    return info.state in ("open", "draft")
+        return snapshot_fresh
 
     async def _pm_triage_count_state(self):
         """Build the pure engine view from DB counts (design §6). Excludes
@@ -11216,7 +11237,7 @@ class SessionOrchestrator:
             return None
         from types import SimpleNamespace
         target = SimpleNamespace(origin=self._pm_onboard_ctx.automation_id,
-                                 origin_ref=f"{owner.slug}:map-diff:{suggestion}", repo=repo)
+                                 origin_ref=map_diff_key(owner.slug, suggestion), repo=repo)
         from sqlalchemy import select
         async with db_session() as db:
             legacy_archive = (await db.execute(select(DbSession).where(
@@ -11669,7 +11690,7 @@ class SessionOrchestrator:
                 map_branch = (pointer.branch or None) if pointer is not None else None
         repo = resolved_repo
         if scope == "diff":
-            origin_ref = f"{slug}:map-diff:{suggestion}"
+            origin_ref = map_diff_key(slug, suggestion or "")
             name = f"pm map-diff {slug}"
             detail: dict = {"slug": slug, "kind": "feature-map-diff",
                             "suggestion": suggestion,
@@ -12254,7 +12275,7 @@ class SessionOrchestrator:
     def _pm_onboard_is_map_diff(rec) -> bool:
         return (getattr(rec, "origin", None) == "pm-onboard"
                 and bool(getattr(rec, "repo", None))
-                and ":map-diff:" in str(getattr(rec, "origin_ref", None) or ""))
+                and parse_map_diff_key(getattr(rec, "origin_ref", None)) is not None)
 
     async def _pm_onboard_observe_map_diff_not_needed(
             self, rec, *, disposition_source: str | None = None) -> bool:
@@ -12269,11 +12290,10 @@ class SessionOrchestrator:
         """
         ref = str(getattr(rec, "origin_ref", None) or "")
         repo = str(getattr(rec, "repo", None) or "")
-        if not self._pm_onboard_is_map_diff(rec):
+        parsed = parse_map_diff_key(ref) if self._pm_onboard_is_map_diff(rec) else None
+        if parsed is None:
             return False
-        suggestion = ref.split(":map-diff:", 1)[1].strip()
-        if not suggestion:
-            return False
+        _project, suggestion = parsed
         from datetime import datetime, timezone
         from sqlalchemy import select
         from server.db.models import TriageProposal, WorkItem
@@ -12302,7 +12322,7 @@ class SessionOrchestrator:
                 or_(WorkItem.gh_updated_at.is_(None), WorkItem.gh_updated_at <= cutoff))
         async with db_session() as db:
             owner = (await owning_projects_by_repo(db, {repo})).get(repo)
-            if owner is None or ref != f"{owner.slug}:map-diff:{suggestion}":
+            if owner is None or ref != map_diff_key(owner.slug, suggestion):
                 return False
             rows = (await db.execute(stmt)).all()
             inputs = {p.id: map_resolution_inputs(p, w) for p, w in rows
