@@ -411,6 +411,21 @@ def test_review_round_refused(pat):
     assert assess(pat, "session").level == "refuse"
 
 
+@pytest.mark.parametrize(
+    "pat",
+    ["Bash(npm create x:*)", "Bash(pnpm create x:*)", "Bash(yarn create x:*)",
+     "Bash(npm create:*)", "Bash(npm init x:*)", "Bash(pnpx x:*)"],
+)
+def test_scaffolders_are_package_runners(pat):
+    # `<pm> create <pkg>` / `npm init <pkg>` / pnpx download <pkg> and run it.
+    assert assess(pat, "session").level == "refuse"
+
+
+def test_create_command_suggestions_fall_back_to_the_exact_command():
+    out = [s["pattern"] for s in offered_suggestions("Bash", {"command": "npm create vite"}, "/w")]
+    assert out == ["Bash(npm create vite)"]
+
+
 def test_mid_word_glob_reason():
     assert "space" in assess("Bash(npm e*)", "session").reasons[0]
 

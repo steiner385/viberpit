@@ -64,7 +64,9 @@ COMMAND_LAUNCHERS: tuple[tuple[str, ...], ...] = (
 #: rule through one is always refused, whatever follows; only an exact command may be stored.
 PACKAGE_RUNNERS: tuple[tuple[str, ...], ...] = (
     ("npx",), ("bunx",), ("uvx",), ("npm", "exec"), ("npm", "x"), ("pnpm", "dlx"),
-    ("yarn", "dlx"), ("pipx", "run"), ("uv", "tool", "run"),
+    ("yarn", "dlx"), ("pipx", "run"), ("uv", "tool", "run"), ("pnpx",),
+    # Scaffolders: `<pm> create <pkg>` / `npm init <pkg>` fetch create-<pkg> and run it.
+    ("npm", "create"), ("npm", "init"), ("pnpm", "create"), ("yarn", "create"),
 )  # fmt: skip
 
 
