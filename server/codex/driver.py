@@ -1608,6 +1608,7 @@ class CodexAgentDriver:
                     ev.tool_kind(tool),
                     arguments,
                     always_allowed=always_allowed,
+                    rule_suggestions=self._reg.suggestions_for(perm_id),
                 )
             )
             await self._emit_status()
