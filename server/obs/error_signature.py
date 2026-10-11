@@ -157,8 +157,11 @@ def signature_of(record: logging.LogRecord, *, source: str, host: str) -> Signat
             fingerprint=_fp(parts), source="client", level=level, logger="client",
             event=event, title=f"{level} client: {summary[:_TITLE_SUMMARY_MAX]}",
             sample_message=_clip(msg) or "", sample_exc=_clip(stack) or None,
+            # client_id is the per-page-load tab id (web/src/obs/logger.ts):
+            # context, never fingerprint — error triage uses it to collapse one
+            # tab's burst of distinct messages into one issue (#2683).
             context={**base_ctx, "app_version": fields.get("app_version"),
-                     "url": fields.get("url")},
+                     "url": fields.get("url"), "client_id": fields.get("client_id")},
             session_id=session_id,
         )
 

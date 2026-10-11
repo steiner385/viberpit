@@ -129,10 +129,17 @@ def test_issue_body_contents_and_safety():
 
 def test_recurrence_comment():
     from server.automations.error_triage import recurrence_comment
-    text = recurrence_comment(_row(count_since_filed=5), since=datetime(2026, 9, 6, 8, 0))
+    text = recurrence_comment([_row(count_since_filed=5)], since=datetime(2026, 9, 6, 8, 0))
     assert "5 more occurrence(s) since 2026-09-06 08:00 UTC" in text
     assert "last at 2026-09-07 13:40 UTC" in text
-    assert "`a1b2c3d4e5f60718`" in text
+    assert "Fingerprint `a1b2c3d4e5f60718`." in text
+    # Collapsed siblings on one issue: one comment, summed, each named (#2683).
+    both = recurrence_comment([_row(count_since_filed=5),
+                               _row(fingerprint="b2", count_since_filed=2,
+                                    last_seen_at=datetime(2026, 9, 7, 14, 0))],
+                              since=datetime(2026, 9, 6, 8, 0))
+    assert "7 more occurrence(s)" in both and "last at 2026-09-07 14:00 UTC" in both
+    assert "`a1b2c3d4e5f60718` (5)" in both and "`b2` (2)" in both
 
 
 def test_issue_body_worst_case_sample_stays_under_cap():
@@ -150,3 +157,63 @@ def test_issue_body_worst_case_sample_stays_under_cap():
                        regression_of=None, repo="o/r")
     assert len(body2) <= BODY_MAX_CHARS
     assert body2.rstrip().endswith("Fingerprint: `a1b2c3d4e5f60718`")
+
+
+# -- duplicate collapse (#2683) -------------------------------------------------
+
+def test_collapse_key_is_the_issue_title_minus_its_prefix():
+    """One function renders both, so the dedupe key cannot drift from what a
+    human reads: #2776/#2777/#2784/#2787 shared a title and were four issues."""
+    from server.automations.error_triage import collapse_key, issue_title
+    for title in ("ERROR server: unhandled exception: [errno <n>] connection refused",
+                  "x" * 500):
+        r = _row(title=title)
+        assert issue_title(r, regression=False) == ("[auto-error] " + collapse_key(r))[:120]
+        assert issue_title(r, regression=True) == \
+            ("[auto-error][regression] " + collapse_key(r))[:120]
+    assert collapse_key(_row(title=None, fingerprint="ffff")) == "ffff"
+    # Differing frame/source (hence fingerprint) but one rendered title → one key.
+    a = _row(fingerprint="a" * 16, source="edge", title="ERROR server: boom")
+    b = _row(fingerprint="b" * 16, source="daemon", title="ERROR server: boom")
+    assert collapse_key(a) == collapse_key(b)
+
+
+def test_client_burst_window_and_client_id():
+    from datetime import timedelta
+    from server.automations.error_triage import CLIENT_BURST_WINDOW, collapses_into
+    t0 = datetime(2026, 9, 7, 9, 0)
+    lead = _row(source="client", title="ERROR client: failed to fetch", first_seen_at=t0,
+                sample_context={"client_id": "tab-1"})
+    near = _row(source="client", title="ERROR client: api error <n>",
+                first_seen_at=t0 + CLIENT_BURST_WINDOW, sample_context={"client_id": "tab-1"})
+    far = _row(source="client", title="ERROR client: api error <n>",
+               first_seen_at=t0 + CLIENT_BURST_WINDOW + timedelta(seconds=1),
+               sample_context={"client_id": "tab-1"})
+    other_tab = _row(source="client", title="ERROR client: api error <n>",
+                     first_seen_at=t0, sample_context={"client_id": "tab-2"})
+    no_id = _row(source="client", title="ERROR client: api error <n>",
+                 first_seen_at=t0, sample_context={})
+    server = _row(source="edge", title="ERROR server: other", first_seen_at=t0)
+    assert collapses_into(near, lead)
+    assert not collapses_into(far, lead)
+    assert not collapses_into(other_tab, lead)
+    assert collapses_into(no_id, lead)          # no tab recorded → window alone
+    assert not collapses_into(server, lead)     # the burst rule is client-only
+    assert collapses_into(_row(title=lead.title, source="edge", first_seen_at=None), lead)
+
+
+def test_issue_body_lists_collapsed_siblings():
+    from server.automations.error_triage import issue_body
+    sib = _row(fingerprint="feedfacecafebeef", title="ERROR client: failed to fetch <!-- x -->")
+    body = issue_body(_row(), regression_of=None, repo="o/r", collapsed=[sib])
+    assert "`feedfacecafebeef`" in body and "failed to fetch" in body
+    assert "<!--" not in body
+    assert body.rstrip().endswith("Fingerprint: `a1b2c3d4e5f60718`")
+    assert "Collapsed" not in issue_body(_row(), regression_of=None, repo="o/r")
+
+
+def test_collapse_comment_names_the_sibling_fingerprint():
+    from server.automations.error_triage import collapse_comment
+    text = collapse_comment(_row(count_since_filed=3))
+    assert "`a1b2c3d4e5f60718`" in text and "collapsed" in text.lower()
+    assert "3 occurrence(s)" in text
