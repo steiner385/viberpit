@@ -3158,6 +3158,7 @@ def _observe_orch(root: str):
     from server.automations.context import AutomationContext
     orch = _bare_orch()
     orch._pm_onboard_ctx = AutomationContext("pm-onboard")
+    orch._pm_triage_ctx = FakeAutomationContext(automation_id="pm-triage")
 
     async def _default_branch(repo: str) -> str:
         return "main"
@@ -3282,6 +3283,7 @@ async def test_map_preflight_resolves_renamed_doc_without_spawning(db_env):
             raise AssertionError("covered cluster must never launch a session")
         orch.pm_onboard_spawn_map = never_spawn
         assert await orch._pm_triage_propose_map_diff("offline-mode", (100, 101, 102), _OBS_REPO) is None
+        assert [(lvl, kw["kind"]) for lvl, _, kw in orch._pm_triage_ctx.events] == [("info", "skipped")]
         assert (await orch._pm_triage_count_state()).no_fit_clusters == ()
 
 
