@@ -292,6 +292,76 @@ class WorktreeLockingTests(unittest.TestCase):
         self.assertFalse(self._is_registered(info.path))
 
 
+def _cfg(cwd: str, key: str) -> str:
+    return subprocess.run(["git", "-C", cwd, "config", "--get", key],
+                          capture_output=True, text=True).stdout.strip()
+
+
+class WorktreeConfigIsolationTests(unittest.TestCase):
+    """#2935 — all worktrees of a clone share ONE ``.git/config``, so a hooks
+    install (``git config core.hooksPath …``) in one session used to swap the
+    hooks of every sibling session, mid-commit included."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "myrepo"
+        _make_repo(self.repo, branch="main")
+        self.default_hooks = str(self.repo / ".git" / "hooks")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _pair(self) -> tuple[str, str]:
+        a = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        b = worktrees.create_worktree(str(self.repo), None, "bbbbbbbb-0002", str(self.root))
+        return a.path, b.path
+
+    def test_shared_hooks_path_write_in_one_worktree_does_not_reach_a_sibling(self) -> None:
+        a, b = self._pair()
+        _git("config", "core.hooksPath", ".husky/_", cwd=a)   # what husky runs
+        self.assertEqual(_cfg(b, "core.hooksPath"), self.default_hooks)
+
+    def test_per_worktree_hooks_path_change_stays_in_that_worktree(self) -> None:
+        a, b = self._pair()
+        _git("config", "--worktree", "core.hooksPath", ".husky/_", cwd=a)
+        self.assertEqual(_cfg(a, "core.hooksPath"), ".husky/_")
+        self.assertEqual(_cfg(b, "core.hooksPath"), self.default_hooks)
+        self.assertEqual(_cfg(str(self.repo), "core.hooksPath"), "")
+
+    def test_hooks_install_in_one_session_does_not_run_in_another_sessions_commit(self) -> None:
+        a, b = self._pair()
+        hooks = Path(a) / "evil-hooks"
+        hooks.mkdir()
+        pre = hooks / "pre-commit"
+        pre.write_text("#!/bin/sh\nexit 1\n")
+        pre.chmod(0o755)
+        _git("config", "core.hooksPath", str(hooks), cwd=a)
+        _git("config", "user.email", "t@example.com", cwd=b)
+        _git("config", "user.name", "Test", cwd=b)
+        (Path(b) / "x.txt").write_text("x\n")
+        _git("add", "x.txt", cwd=b)
+        _git("commit", "-m", "unaffected", cwd=b)   # check=True: raises if the hook ran
+
+    def test_existing_shared_value_is_pinned_as_it_stood(self) -> None:
+        _git("config", "core.hooksPath", ".githooks", cwd=str(self.repo))
+        a, _ = self._pair()
+        _git("config", "core.hooksPath", ".husky/_", cwd=str(self.repo))
+        self.assertEqual(_cfg(a, "core.hooksPath"), ".githooks")
+
+    def test_relock_keeps_a_sessions_own_per_worktree_choice(self) -> None:
+        a, _ = self._pair()
+        _git("config", "--worktree", "core.hooksPath", ".husky/_", cwd=a)
+        worktrees.lock_worktree(str(self.repo), Path(a))   # recovery re-lock path
+        self.assertEqual(_cfg(a, "core.hooksPath"), ".husky/_")
+
+    def test_core_worktree_in_shared_config_skips_isolation(self) -> None:
+        _git("config", "core.worktree", str(self.repo), cwd=str(self.repo))
+        a = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        self.assertTrue(os.path.isdir(a.path))
+        self.assertEqual(_cfg(str(self.repo), "extensions.worktreeConfig"), "")
+
+
 class WorktreeFreshFromOriginTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
