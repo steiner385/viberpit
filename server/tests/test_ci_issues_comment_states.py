@@ -18,7 +18,8 @@ def test_comment_on_issue_posts_and_returns_url():
                            run=_runner(calls, stdout=json.dumps({"html_url": "https://x/c/1"})))
     assert url == "https://x/c/1"
     assert calls[0][:2] == ["api", "repos/o/r/issues/7/comments"]
-    assert "body=hello" in calls[0]
+    # The body carries the automation marker after the text (#2683 review).
+    assert any(a.startswith("body=hello") for a in calls[0])
 
 
 def test_comment_on_issue_failure_returns_none():

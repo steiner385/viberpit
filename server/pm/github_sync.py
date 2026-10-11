@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from viberpit import brand
+
 _PAGE_ISSUES = 100
 _PAGE_PRS = 50
 
@@ -35,7 +37,7 @@ _ISSUE_COMMENTS = """
 #: ``backlog_github._issue_comment`` and ``ci_issues.comment_on_issue``, the two
 #: choke points — so the mirror never mistakes ViberPit's own words for a person's
 #: (#2683 review). Quoted log text cannot forge it: ``issue_filing.neutralize_markers``.
-AUTOMATION_COMMENT_MARKER = "<!-- viberpit:automation -->"
+AUTOMATION_COMMENT_MARKER = f"<!-- {brand.SLUG}:automation -->"
 
 
 def with_automation_marker(body: str) -> str:
