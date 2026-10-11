@@ -18,6 +18,8 @@ from collections.abc import Sequence
 
 from viberpit import brand, gitrepos
 
+from server.pm.github_sync import with_automation_marker
+
 from .host_failures import log_gh_failure
 
 log = logging.getLogger(__name__)
@@ -136,9 +138,13 @@ def comment_on_issue(repo: str, number: int, body: str, *,
     issues and PRs) — kept as its own name so call sites in the filers read as
     what they are. Reached through ``issue_filing.apply`` by all three filers:
     error triage, the session-feedback filer (#1434) and the CI/CD Doctor (#1433).
+
+    Marked ``AUTOMATION_COMMENT_MARKER`` so the mirror never reads it as a person's
+    comment re-arming a not-needed issue (#2683 review).
     """
     try:
-        proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}"])
+        proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f",
+                    f"body={with_automation_marker(body)}"])
         if proc.returncode != 0:
             log_gh_failure(log, proc.stderr, "github.issue_comment_failed repo=%s #%s: %s",
                            repo, number, proc.stderr.strip())

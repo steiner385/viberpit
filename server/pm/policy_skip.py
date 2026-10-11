@@ -22,6 +22,7 @@ Only the runner's own holds: a person who parked a skipped issue meant to.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 
 from server.automations.product_policy import (skip_labels, skips_self_closing_trackers,
                                                trusted_authors)
@@ -33,29 +34,33 @@ from server.pm.queue import (QueueRow, is_bot_noise, is_parked, is_self_closing_
 def not_work_by_policy(*, author: str, labels: Iterable[str], title: str,
                        policy: Mapping | None) -> bool:
     """Whether the queue skips this issue as NOT WORK under *policy*: ``bot``
-    (the built-in filter plus the product's ``skip_labels``), ``tracker`` (a
-    self-closing tracker, unless the product opted back in) or parked by a
-    person's ``parked`` label — ``queue.skip_reason``'s verdicts for the issue
-    itself, through the same predicates. Author trust
-    is not part of it (see ``stale_runner_holds``). The runner's not-needed settle
-    reads it too: an issue the queue will never dispatch needs no owner hold to
-    keep it from re-dispatching (#2683)."""
+    (the built-in filter plus the product's ``skip_labels``) or ``tracker`` (a
+    self-closing tracker, unless the product opted back in) — ``queue.skip_reason``'s
+    verdicts on what the issue IS, through the same predicates. A person's
+    ``parked`` label is not part of it: that is a park, not a verdict that the issue
+    is not work, and it must not end the runner's own hand-off hold (#2683 review;
+    ``skipped_by_policy`` and the not-needed settle add it themselves). Author trust
+    is not part of it either (see ``stale_runner_holds``)."""
     labels = tuple(labels)
-    if is_parked(labels) or is_bot_noise(author=author, labels=labels, title=title,
-                                         extra_skip_labels=skip_labels(policy)):
+    if is_bot_noise(author=author, labels=labels, title=title,
+                    extra_skip_labels=skip_labels(policy)):
         return True
-    return skips_self_closing_trackers(policy) and is_self_closing_tracker(labels, title)
+    return (skips_self_closing_trackers(policy)
+            and is_self_closing_tracker(labels, title, author=author))
 
 
 def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
                       policy: Mapping | None) -> bool:
-    """Whether the queue would skip this issue as ``bot``, ``tracker`` or
-    ``untrusted`` under *policy* — ``not_work_by_policy``, plus an author outside its
-    ``trusted_authors``. ``None`` (no policy for the product) applies the built-in
-    filters and trusts only automation logins (fail-closed)."""
+    """Whether the queue would skip this issue as ``bot``, ``tracker``, ``parked`` or
+    ``untrusted`` under *policy* — ``not_work_by_policy``, a person's ``parked``
+    label, or an author outside its ``trusted_authors``: the approve-escalation tap's
+    refusal. ``None`` (no policy for the product) applies the built-in filters and
+    trusts only automation logins (fail-closed)."""
     if not is_trusted_author(author, trusted_authors(policy)):
         return True
-    return not_work_by_policy(author=author, labels=labels, title=title, policy=policy)
+    labels = tuple(labels)
+    return is_parked(labels) or not_work_by_policy(author=author, labels=labels,
+                                                   title=title, policy=policy)
 
 
 #: The reason the runner wrote, before #2683, when a session found an OPEN issue
@@ -65,24 +70,50 @@ def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
 NOT_NEEDED_HOLD_PREFIX = "session found no PR is needed"
 
 
-def _not_needed_hold_still_stands(row: QueueRow) -> bool:
+#: How many "no PR is needed" holds whose suppression window has ALREADY ended one
+#: hygiene pass may release (#2683 review). Releasing such a hold makes the issue
+#: dispatchable at once, so a pass that released them all after a deploy would
+#: burst-dispatch every one; one per pass (the backlog tick) drips them out.
+EXPIRED_NOT_NEEDED_RELEASES_PER_PASS = 1
+
+
+def _is_not_needed_hold(row: QueueRow) -> bool:
     return (row.not_needed_standing
             and (row.hold_reason or "").startswith(NOT_NEEDED_HOLD_PREFIX))
 
 
-def stale_runner_holds(rows: Iterable[QueueRow],
-                       policies: Mapping[str, Mapping]) -> list[QueueRow]:
-    """The rows whose ``owner_action`` hold the RUNNER wrote and whose issue the
-    owning product's policy now skips as ``bot`` or ``tracker``
-    (``not_work_by_policy``), or whose "session found no PR is needed" hold is
-    covered by a not-needed verdict that still stands (#2683: the queue suppresses
-    the issue on its own until it materially changes), in the order given. A person's hold,
-    a hold of another kind, and an issue the policy still treats as work are not stale.
-    Author TRUST is deliberately not part of this: an untrusted author's issue is not
-    dispatched, but the owner's inbox must not be emptied because a product has not
-    (yet) listed its trusted authors."""
-    return [row for row in rows
-            if row.hold_kind == "owner_action" and row.hold_by == RUNNER_ACTOR
-            and (_not_needed_hold_still_stands(row)
-                 or not_work_by_policy(author=row.author, labels=row.labels,
-                                       title=row.title, policy=policies.get(row.product)))]
+def stale_runner_holds(rows: Iterable[QueueRow], policies: Mapping[str, Mapping], *,
+                       now: datetime) -> list[QueueRow]:
+    """The RUNNER-written ``owner_action`` holds the hygiene pass ends, in the order
+    given:
+
+    - the owning product's policy now skips the issue as ``bot`` or ``tracker``
+      (``not_work_by_policy``) — the queue's ordinary skip takes over;
+    - a "session found no PR is needed" hold whose not-needed verdict still stands
+      (#2683): while its suppression window is open the issue stays skipped as
+      ``not_needed`` after the release, so releasing it changes nothing but the
+      inbox. Once the window has ended, release makes the issue dispatchable at
+      once, so at most ``EXPIRED_NOT_NEEDED_RELEASES_PER_PASS`` of those go per pass.
+
+    A person's hold, a hold of another kind, and an issue the policy still treats as
+    work are not stale. Neither is a runner hold on an issue a person has since
+    labelled ``parked`` — the label keeps it out of the queue, and the hand-off is
+    still the owner's to read (#2683 review). Author TRUST is deliberately not part
+    of this: an untrusted author's issue is not dispatched, but the owner's inbox
+    must not be emptied because a product has not (yet) listed its trusted
+    authors."""
+    out: list[QueueRow] = []
+    expired_budget = EXPIRED_NOT_NEEDED_RELEASES_PER_PASS
+    for row in rows:
+        if row.hold_kind != "owner_action" or row.hold_by != RUNNER_ACTOR:
+            continue
+        if not_work_by_policy(author=row.author, labels=row.labels, title=row.title,
+                              policy=policies.get(row.product)):
+            out.append(row)
+        elif _is_not_needed_hold(row):
+            if row.not_needed_until is not None and now < row.not_needed_until:
+                out.append(row)
+            elif expired_budget > 0:
+                expired_budget -= 1
+                out.append(row)
+    return out

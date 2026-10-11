@@ -82,8 +82,8 @@ def test_stale_runner_holds_picks_only_the_runners_owner_action_holds_on_skipped
         _row(number=9, hold_kind="owner_action", hold_by="runner", hold_reason=ESCALATION,
              labels=("dependencies",), product="unknown"),
     ]
-    assert [r.number for r in stale_runner_holds(rows, policies)] == [1, 2, 8, 9]
-    assert stale_runner_holds([], policies) == []
+    assert [r.number for r in stale_runner_holds(rows, policies, now=NOW)] == [1, 2, 8, 9]
+    assert stale_runner_holds([], policies, now=NOW) == []
 
 
 def test_approval_tap_refuses_an_untrusted_author():
@@ -101,8 +101,8 @@ def test_trust_never_makes_a_runner_hold_stale():
                author="stranger", labels=("bug",))
     assert skipped_by_policy(author="stranger", labels=("bug",), title="t",
                              policy=policies["kindash"])
-    assert stale_runner_holds([row], policies) == []
-    assert stale_runner_holds([row], {}) == []
+    assert stale_runner_holds([row], policies, now=NOW) == []
+    assert stale_runner_holds([row], {}, now=NOW) == []
 
 
 def test_a_self_closing_tracker_is_not_work_unless_the_product_works_trackers():
@@ -122,9 +122,46 @@ def test_a_self_closing_tracker_is_not_work_unless_the_product_works_trackers():
     # Ordinary work stays work.
     assert not not_work_by_policy(author="app/github-actions", labels=("bug",), title="t",
                                   policy={})
-    # A person's ``parked`` label is never work, whatever the policy (viberpit#1432).
-    assert not_work_by_policy(author="tony", labels=("bug", "parked"), title="t",
-                              policy={"skip_self_closing_trackers": False})
+    # A person's ``parked`` label is a park, not a not-work verdict: the approve tap
+    # refuses it (viberpit#1432), the not-work rule — which ends runner holds — does
+    # not name it (#2683 review).
+    parked = dict(author="tony", labels=("bug", "parked"), title="t")
+    assert not not_work_by_policy(policy={"trusted_authors": ["tony"]}, **parked)
+    assert skipped_by_policy(policy={"trusted_authors": ["tony"]}, **parked)
+
+
+def test_a_parked_label_never_ends_the_runners_give_up_hold():
+    rows = [_row(number=1, hold_kind="owner_action", hold_by="runner", hold_reason=ESCALATION,
+                 author="tony", labels=("bug", "parked"))]
+    assert stale_runner_holds(rows, {"kindash": {}}, now=NOW) == []
+
+
+def _not_needed_hold(number, *, until):
+    return _row(number=number, hold_kind="owner_action", hold_by="runner", author="tony",
+                hold_reason="session found no PR is needed (not-needed): ops tracking issue",
+                labels=("ops",), not_needed_standing=True, not_needed_until=until)
+
+
+def test_not_needed_holds_clear_inside_the_window_and_drip_once_it_has_ended():
+    """#2683 review: a hold whose suppression window is still open is released — the
+    issue stays skipped as ``not_needed`` until the window ends. One whose window has
+    already ended would be dispatchable at once, so a pass releases at most
+    ``EXPIRED_NOT_NEEDED_RELEASES_PER_PASS`` of those: a deploy must not burst-dispatch
+    every legacy hold."""
+    from datetime import timedelta
+
+    from server.pm.policy_skip import EXPIRED_NOT_NEEDED_RELEASES_PER_PASS
+    assert EXPIRED_NOT_NEEDED_RELEASES_PER_PASS == 1
+    rows = [
+        _not_needed_hold(1, until=NOW - timedelta(days=9)),
+        _not_needed_hold(2, until=NOW + timedelta(hours=5)),
+        _not_needed_hold(3, until=NOW - timedelta(days=2)),
+        _not_needed_hold(4, until=NOW + timedelta(days=3)),
+    ]
+    assert [r.number for r in stale_runner_holds(rows, {"kindash": {}}, now=NOW)] == [1, 2, 4]
+    # The next pass (row 1 now released) takes the next expired one.
+    assert [r.number for r in stale_runner_holds(rows[1:], {"kindash": {}}, now=NOW)] == [
+        2, 3, 4]
 
 
 def test_runner_holds_on_self_closing_trackers_go_stale():
@@ -145,7 +182,7 @@ def test_runner_holds_on_self_closing_trackers_go_stale():
         _row(number=4, hold_kind="owner_action", hold_by="runner", hold_reason=reason,
              title="ops: actions budget / runner tier", labels=("ops",)),
     ]
-    assert [r.number for r in stale_runner_holds(rows, {"kindash": {}})] == [1, 2, 3]
+    assert [r.number for r in stale_runner_holds(rows, {"kindash": {}}, now=NOW)] == [1, 2, 3]
     # Opted back in: only the ignore label still releases.
     works = {"kindash": {"skip_self_closing_trackers": False}}
-    assert [r.number for r in stale_runner_holds(rows, works)] == [3]
+    assert [r.number for r in stale_runner_holds(rows, works, now=NOW)] == [3]

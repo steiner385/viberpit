@@ -195,18 +195,22 @@ def not_needed_backoff(verdicts: int) -> timedelta:
 
 @dataclass(frozen=True)
 class NotNeededVerdict:
-    """One finalised ``no_pr`` / ``NOT_NEEDED_CAUSE`` row, as suppression reads it."""
+    """One finalised ``no_pr`` / ``NOT_NEEDED_CAUSE`` row, as suppression reads it.
+    ``started_at`` is the dispatch's start — the material baseline (#2683 review);
+    ``None`` on a §13 recovery insert, which then falls back to ``ended_at``."""
 
+    started_at: datetime | None
     ended_at: datetime | None
     material_fingerprint: str | None
     body_fingerprint: str | None
 
 
 def not_needed_stmt(refs: Iterable[str]) -> Select:
-    """Every not-needed verdict for *refs*: ``(target_ref, ended_at,
+    """Every not-needed verdict for *refs*: ``(target_ref, started_at, ended_at,
     material_fingerprint, body_fingerprint)``. Implement dispatches only, like every
-    other attempt read."""
-    return (select(DispatchOutcome.target_ref, DispatchOutcome.ended_at,
+    other attempt read. Rows go through :func:`verdicts_by_ref`."""
+    return (select(DispatchOutcome.target_ref, DispatchOutcome.started_at,
+                   DispatchOutcome.ended_at,
                    DispatchOutcome.material_fingerprint, DispatchOutcome.body_fingerprint)
             .where(DispatchOutcome.outcome == "no_pr",
                    DispatchOutcome.cause == NOT_NEEDED_CAUSE,
@@ -221,32 +225,56 @@ def _utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=timezone.utc)
 
 
+def verdicts_by_ref(rows: Iterable[Any]) -> dict[str, list[NotNeededVerdict]]:
+    """:func:`not_needed_stmt`'s rows grouped per ref — the one reshaping both the
+    queue loader and the Roadmap leaves use."""
+    out: dict[str, list[NotNeededVerdict]] = {}
+    for ref, started_at, ended_at, material_fp, body_fp in rows:
+        out.setdefault(ref, []).append(NotNeededVerdict(
+            started_at=started_at, ended_at=ended_at, material_fingerprint=material_fp,
+            body_fingerprint=body_fp))
+    return out
+
+
 def not_needed_suppression(verdicts: Iterable[NotNeededVerdict], *, title: str | None,
                            body: str | None, labels: Iterable[str] | None,
                            last_human_comment_at: datetime | None,
+                           last_reopened_at: datetime | None = None,
                            ) -> tuple[datetime | None, bool]:
     """``(suppressed_until, standing)`` for an issue as it is NOW.
 
-    *standing* — some not-needed verdict still matches the issue's current material
-    (``material_fingerprint``; a row from before that column falls back to its
-    ``body_fingerprint``) and no person has commented since the newest such verdict.
-    *suppressed_until* — when a standing verdict's window ends: the newest matching
-    verdict plus ``not_needed_backoff(<matching verdicts>)``; ``None`` when nothing
-    stands. The window may already be in the past — the queue compares it with
-    ``now``; the hold-hygiene pass reads *standing* alone."""
+    A verdict COUNTS while it still matches the issue's current material — its
+    ``material_fingerprint``, taken when the dispatch spawned (a row from before
+    that column falls back to its ``body_fingerprint``) — and nothing re-armed the
+    issue after the dispatch STARTED: a person's comment or a reopen. The start, not
+    the end, is the baseline (#2683 review): a person who commented, or edited, an
+    hour into a long session added something the session never read. A verdict
+    re-armed this way is gone for good, so a reopened or newly discussed issue
+    starts again at the first backoff rung.
+
+    *standing* — some verdict counts. *suppressed_until* — the newest counting
+    verdict's end plus ``not_needed_backoff(<counting verdicts>)``; ``None`` when
+    nothing stands. The window may already be in the past — the queue compares it
+    with ``now``; the hold-hygiene pass reads both."""
     material = material_fingerprint(title, body, labels)
     body_fp = body_fingerprint(title, body)
-    ended = [at for v in verdicts
-             if (at := _utc(v.ended_at)) is not None
-             and (v.material_fingerprint == material if v.material_fingerprint
-                  else v.body_fingerprint == body_fp)]
+    rearmed = max((at for at in (_utc(last_human_comment_at), _utc(last_reopened_at))
+                   if at is not None), default=None)
+    ended: list[datetime] = []
+    for v in verdicts:
+        end = _utc(v.ended_at)
+        if end is None:
+            continue
+        if not (v.material_fingerprint == material if v.material_fingerprint
+                else v.body_fingerprint == body_fp):
+            continue
+        baseline = _utc(v.started_at) or end
+        if rearmed is not None and rearmed > baseline:
+            continue
+        ended.append(end)
     if not ended:
         return None, False
-    newest = max(ended)
-    commented = _utc(last_human_comment_at)
-    if commented is not None and commented > newest:
-        return None, False
-    return newest + not_needed_backoff(len(ended)), True
+    return max(ended) + not_needed_backoff(len(ended)), True
 
 
 def list_outcomes_stmt(target_ref: str) -> Select:

@@ -236,9 +236,10 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "assigned": _row(assignees=("steiner385",)),
         "epic_open": _row(open_children=1),
         "bot": _row(author="renovate[bot]"),
-        "tracker": _row(labels=("flaky",)),
+        "tracker": _row(labels=("red-watchdog",)),
         "untrusted": _row(author="stranger"),
         "held": _row(hold_kind="owner_action"),
+        "parked": _row(labels=("parked",)),
         "not_needed": _row(not_needed_until=NOW + timedelta(days=1),
                            not_needed_standing=True),
         "needs_spec": _row(bounces=2),
@@ -370,6 +371,13 @@ NOT_TRACKERS = {
                                             "notification emails"),
     "feature digest at end": dict(labels=(), title="Implement notification digest"),
     "digest mismatch": dict(labels=(), title="chore: prisma-build digest-mismatch (ARC)"),
+    # #2683 review: a schedule word + "failed" is not a tracker unless it is the
+    # workflow's own verdict shape ("— <date>" or "full-ci failed — culprit").
+    "daily backup failed": dict(labels=(), title="Daily backup failed"),
+    "nightly sync failed": dict(labels=(), title="Nightly sync failed (calendar)"),
+    "weekly report failed": dict(labels=(), title="Weekly report failed - timeout"),
+    # A feature named "... Digest" — no emoji prefix, so not a generated report.
+    "family digest": dict(labels=(), title="Add Weekly Family Digest"),
 }
 
 
@@ -377,7 +385,7 @@ NOT_TRACKERS = {
 def test_every_self_closing_tracker_shape_is_skipped_as_tracker(shape):
     from server.pm.queue import is_self_closing_tracker
     over = TRACKERS[shape]
-    assert is_self_closing_tracker(over["labels"], over["title"])
+    assert is_self_closing_tracker(over["labels"], over["title"], author="app/github-actions")
     row = _row(author="app/github-actions", **over)
     kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
     assert skip_reason(row, **kw) == "tracker"
@@ -389,9 +397,25 @@ def test_every_self_closing_tracker_shape_is_skipped_as_tracker(shape):
 def test_work_that_merely_resembles_a_tracker_is_not_skipped(shape):
     from server.pm.queue import is_self_closing_tracker
     over = NOT_TRACKERS[shape]
-    assert not is_self_closing_tracker(over["labels"], over["title"])
+    assert not is_self_closing_tracker(over["labels"], over["title"],
+                                       author="app/github-actions")
     assert skip_reason(_row(author="app/github-actions", **over), min_status="Ready",
                        respect_dependencies=True, now=NOW) is None
+
+
+def test_a_flaky_label_alone_is_a_tracker_only_when_an_automation_filed_it():
+    """#2683 review: a person's "fix flaky test X" carrying the ``flaky`` label is
+    work; the detector's issue (automation author) or a ``[flaky]`` title is not."""
+    from server.pm.queue import is_self_closing_tracker
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+    person = _row(author="tony", labels=("flaky",), title="Fix flaky kanban test")
+    assert not is_self_closing_tracker(person.labels, person.title, author=person.author)
+    assert skip_reason(person, **kw) is None
+    for author in ("app/github-actions", "renovate[bot]"):
+        assert is_self_closing_tracker(("flaky",), "Fix flaky kanban test", author=author)
+    # The detector's title tag marks it whoever the mirror says filed it.
+    assert skip_reason(_row(author="tony", labels=("flaky",),
+                            title="[flaky] kanban.spec.ts › Escape (fp:1)"), **kw) == "tracker"
 
 
 def test_a_product_that_works_its_trackers_opts_back_in():
@@ -415,8 +439,12 @@ def test_viberpit_ignore_is_a_built_in_skip_for_every_product():
 
 def test_a_parked_label_is_a_persons_park():
     kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
-    assert skip_reason(_row(labels=("bug", "Parked")), **kw) == "held"
-    assert skip_reason(_row(labels=("parked",)), skip_trackers=False, **kw) == "held"
+    # Its own reason, not ``held``: the status card's held count must equal the
+    # holds list, which only lists real holds (#2683 review).
+    assert skip_reason(_row(labels=("bug", "Parked")), **kw) == "parked"
+    assert skip_reason(_row(labels=("parked",)), skip_trackers=False, **kw) == "parked"
+    # A real hold still reads ``held``.
+    assert skip_reason(_row(labels=("parked",), hold_kind="owner_action"), **kw) == "held"
 
 
 # Regression cases named after the issues the runner looped on (#2683). Each is the
@@ -468,7 +496,7 @@ def test_viberpit_1432_parked_with_an_accepted_no_pr_decision_is_not_dispatched(
     row = _row(labels=("bug", "parked"), hold_kind=None,
                title="Recovery can resume a foreign-host session and strand UI routing "
                      "despite a valid lease")
-    assert skip_reason(row, **KW) == "held"
+    assert skip_reason(row, **KW) == "parked"
 
 
 def test_viberpit_2921_forced_deploy_audit_is_not_dispatched_by_default():

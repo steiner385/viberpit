@@ -112,38 +112,34 @@ def _check_dispatch_kind(kind: str) -> str:
     return kind
 
 
+async def _fingerprints_for(db, target: str) -> tuple[str | None, str | None]:
+    """``(body_fingerprint, material_fingerprint)`` for ``owner/repo#N`` off its
+    mirror row, ``(None, None)`` when the ref is unparseable or unmirrored — a row
+    with no fingerprint can never be counted against a body nobody has seen. THE
+    reading for both INSERT paths (spawn-time ``record_outcome`` and
+    ``finalize_outcome``'s §13 fallback): a second copy would let a recovered row be
+    counted against a different body than the one the dispatch actually ran on.
+
+    The material one (``outcomes.material_fingerprint``) is taken at SPAWN like the
+    body one (#2683 review): it is the baseline not-needed suppression compares the
+    issue against, so an edit made while the session ran — which the session never
+    read — must already count as a change."""
+    parts = split_ref(target)
+    if parts is None:
+        return None, None
+    repo, number = parts
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.repo == repo, WorkItem.number == number,
+        WorkItem.kind == "issue"))).scalars().first()
+    if wi is None:
+        return None, None
+    return (body_fingerprint(wi.title, wi.body),
+            material_fingerprint(wi.title, wi.body, wi.labels))
+
+
 async def _fingerprint_for(db, target: str) -> str | None:
-    """The D8 body fingerprint for ``owner/repo#N`` off its mirror row, or None when
-    the ref is unparseable or unmirrored — a row with no fingerprint can never be
-    counted against a body nobody has seen. THE reading for both INSERT paths
-    (spawn-time ``record_outcome`` and ``finalize_outcome``'s §13 fallback): a
-    second copy would let a recovered row be counted against a different body than
-    the one the dispatch actually ran on."""
-    parts = split_ref(target)
-    if parts is None:
-        return None
-    repo, number = parts
-    wi = (await db.execute(select(WorkItem).where(
-        WorkItem.repo == repo, WorkItem.number == number,
-        WorkItem.kind == "issue"))).scalars().first()
-    return body_fingerprint(wi.title, wi.body) if wi is not None else None
-
-
-async def _material_fingerprint_for(db, target: str, cause: str | None) -> str | None:
-    """The issue's material identity (``outcomes.material_fingerprint``) off its mirror
-    row, for a ``NOT_NEEDED_CAUSE`` verdict only — the one row not-needed suppression
-    reads (#2683). ``None`` for any other cause, an unparseable ref or an unmirrored
-    issue (suppression then falls back to the row's ``body_fingerprint``)."""
-    if cause != NOT_NEEDED_CAUSE:
-        return None
-    parts = split_ref(target)
-    if parts is None:
-        return None
-    repo, number = parts
-    wi = (await db.execute(select(WorkItem).where(
-        WorkItem.repo == repo, WorkItem.number == number,
-        WorkItem.kind == "issue"))).scalars().first()
-    return material_fingerprint(wi.title, wi.body, wi.labels) if wi is not None else None
+    """The D8 body fingerprint alone (``_fingerprints_for``)."""
+    return (await _fingerprints_for(db, target))[0]
 
 
 def _account_defaults_for(account: str) -> dict:
@@ -629,10 +625,11 @@ class AutomationContext:
                     row.ended_at, row.updated_at = now, now
                     row.duration_s = _elapsed_s(row.started_at, now)
                 project_id = await project_id_for_slug(db, product_slug)
-                fingerprint = await _fingerprint_for(db, target)
+                fingerprint, material = await _fingerprints_for(db, target)
                 db.add(DispatchOutcome(
                     automation_id=self.automation_id, project_id=project_id,
-                    target_ref=target, body_fingerprint=fingerprint, session_id=session_id,
+                    target_ref=target, body_fingerprint=fingerprint,
+                    material_fingerprint=material, session_id=session_id,
                     model=model, attempt_no=attempt_no, dispatch_kind=dispatch_kind,
                     started_at=datetime.now(timezone.utc), outcome="running"))
         except Exception:
@@ -721,11 +718,12 @@ class AutomationContext:
                             "automation_context.finalize_outcome_already_recorded target=%s",
                             target)
                         return
+                    fingerprint, material = await _fingerprints_for(db, target)
                     db.add(DispatchOutcome(
                         automation_id=self.automation_id,
                         project_id=await project_id_for_slug(db, fallback.get("product_slug")),
                         target_ref=target,
-                        body_fingerprint=await _fingerprint_for(db, target),
+                        body_fingerprint=fingerprint,
                         session_id=fallback.get("session_id"),
                         model=fallback.get("model"),
                         attempt_no=fallback.get("attempt_no"),
@@ -734,8 +732,7 @@ class AutomationContext:
                         outcome=outcome, cause=cause,
                         pr_number=pr_number, pr_url=pr_url,
                         first_pass_merge=first_pass_merge,
-                        material_fingerprint=await _material_fingerprint_for(
-                            db, target, cause)))
+                        material_fingerprint=material))
                     log.info("automation_context.finalize_outcome_recovered_row target=%s",
                              target)
                     return
@@ -744,7 +741,10 @@ class AutomationContext:
                              target)
                     return
                 row.outcome, row.cause = outcome, cause
-                row.material_fingerprint = await _material_fingerprint_for(db, target, cause)
+                if row.material_fingerprint is None and cause == NOT_NEEDED_CAUSE:
+                    # A dispatch spawned before ``record_outcome`` took the material
+                    # fingerprint: the finalise-time one is the best baseline left.
+                    row.material_fingerprint = (await _fingerprints_for(db, target))[1]
                 if pr_number is not None:
                     row.pr_number = pr_number
                 if pr_url is not None:

@@ -926,8 +926,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("get_priority_queue",
                "The global priority queue — what agents will pick up next, ranked across "
                "every onboarded product. `skipped` counts why items did NOT make the "
-               "queue, keyed by reason: 'held' (an owner_action or decision hold, or a "
-               "'parked' label), "
+               "queue, keyed by reason: 'held' (an owner_action or decision hold), "
+               "'parked' (a person's 'parked' label), "
                "'blocked' (an open dependency), 'status' "
                "(below the product's minimum board status), 'epic_open', 'assigned', "
                "'claimed', 'live_session', 'bot', 'tracker' (an issue its own CI workflow "

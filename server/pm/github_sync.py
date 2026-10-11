@@ -19,12 +19,30 @@ _ITEM_FIELDS = """
       labels(first: 20) { nodes { name } }
       assignees(first: 10) { nodes { login } }"""
 
-# Issues only (#2683): the newest comments, so the mirror knows when a PERSON last
-# commented — one of the "material changes" that re-arms an issue a session found
-# needed no PR. A comment by a Bot/App (the runner's own, a workflow's) never counts.
-# Twenty is enough: a re-arm only cares whether a human commented AFTER the verdict.
+# Issues only (#2683): the newest comments and the newest reopen, so the mirror
+# knows when a PERSON last commented and when the issue was last reopened — the
+# "material changes" that re-arm an issue a session found needed no PR. A comment by
+# a Bot/App, or one carrying ``AUTOMATION_COMMENT_MARKER`` (ViberPit's own posts,
+# which may go out under the operator's USER token), never counts. The bodies are
+# fetched only to look for the marker; ten comments is enough, since a re-arm only
+# cares whether a person commented after the verdict's dispatch started.
 _ISSUE_COMMENTS = """
-      comments(last: 20) { nodes { createdAt author { __typename login } } }"""
+      comments(last: 10) { nodes { createdAt body author { __typename login } } }
+      timelineItems(itemTypes: [REOPENED_EVENT], last: 1) {
+        nodes { ... on ReopenedEvent { createdAt } } }"""
+
+#: Appended (as an invisible HTML comment) to every issue comment ViberPit posts —
+#: ``backlog_github._issue_comment`` and ``ci_issues.comment_on_issue``, the two
+#: choke points — so the mirror never mistakes ViberPit's own words for a person's
+#: (#2683 review). Quoted log text cannot forge it: ``issue_filing.neutralize_markers``.
+AUTOMATION_COMMENT_MARKER = "<!-- viberpit:automation -->"
+
+
+def with_automation_marker(body: str) -> str:
+    """*body* with ``AUTOMATION_COMMENT_MARKER`` appended, exactly once."""
+    if AUTOMATION_COMMENT_MARKER in body:
+        return body
+    return f"{body.rstrip()}\n\n{AUTOMATION_COMMENT_MARKER}"
 
 
 @dataclass(frozen=True)
@@ -51,6 +69,8 @@ class WorkItemView:
     # Newest comment by a User among the issue's recent comments (#2683); None for a
     # PR, or an issue with none.
     last_human_comment_at: datetime | None = None
+    # The issue's newest reopen (#2683 review); None for a PR or a never-reopened issue.
+    last_reopened_at: datetime | None = None
 
 
 def _owner_name(repo: str) -> tuple[str, str]:
@@ -134,8 +154,10 @@ def _author(author) -> str:
 
 
 def _last_human_comment_at(node: dict) -> datetime | None:
-    """The newest ``createdAt`` among *node*'s comments whose author is a User — a
-    Bot author (``__typename == "Bot"``) or a deleted one (no author) never counts."""
+    """The newest ``createdAt`` among *node*'s comments whose author is a User and
+    whose body does not carry ``AUTOMATION_COMMENT_MARKER`` — a Bot author
+    (``__typename == "Bot"``), a deleted one (no author) or ViberPit's own marked
+    post never counts."""
     newest: datetime | None = None
     for c in ((node.get("comments") or {}).get("nodes") or []):
         if not isinstance(c, dict):
@@ -143,7 +165,19 @@ def _last_human_comment_at(node: dict) -> datetime | None:
         author = c.get("author")
         if not isinstance(author, dict) or author.get("__typename") != "User":
             continue
+        if AUTOMATION_COMMENT_MARKER in str(c.get("body") or ""):
+            continue
         at = _parse_dt(c.get("createdAt"))
+        if at is not None and (newest is None or at > newest):
+            newest = at
+    return newest
+
+
+def _last_reopened_at(node: dict) -> datetime | None:
+    """The newest ReopenedEvent's ``createdAt`` (the query asks for the last one)."""
+    newest: datetime | None = None
+    for ev in ((node.get("timelineItems") or {}).get("nodes") or []):
+        at = _parse_dt(ev.get("createdAt")) if isinstance(ev, dict) else None
         if at is not None and (newest is None or at > newest):
             newest = at
     return newest
@@ -197,5 +231,6 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
                 a["login"] for a in ((node.get("assignees") or {}).get("nodes") or [])
                 if isinstance(a, dict) and a.get("login")),
             last_human_comment_at=_last_human_comment_at(node) if kind == "issue" else None,
+            last_reopened_at=_last_reopened_at(node) if kind == "issue" else None,
         ))
     return items, info.get("endCursor"), bool(info.get("hasNextPage"))

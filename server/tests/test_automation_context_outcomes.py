@@ -47,6 +47,24 @@ async def _rows() -> list[DispatchOutcome]:
 
 
 @pytest.mark.asyncio
+async def test_the_material_fingerprint_is_taken_at_spawn_not_at_finalise(db_env):
+    """#2683 review: the not-needed baseline is the issue AS THE SESSION SAW IT. An
+    edit made while it ran must read as a change, so finalise never re-takes it."""
+    from server.db.models import NOT_NEEDED_CAUSE
+    from server.pm.outcomes import material_fingerprint
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
+                             model="sonnet", attempt_no=0)
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(WorkItem.number == 7))).scalar_one()
+        wi.body = "B — edited while the session ran"
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause=NOT_NEEDED_CAUSE)
+    (r,) = await _rows()
+    assert r.material_fingerprint == material_fingerprint("T", "B", None)
+
+
+@pytest.mark.asyncio
 async def test_record_then_finalize_writes_one_row(db_env):
     await _seed(db_env)
     ctx = AutomationContext("backlog-runner")

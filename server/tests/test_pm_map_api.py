@@ -337,6 +337,57 @@ def test_leaves_carry_hold_fields():
             assert by_ref["o/r#2"]["holdSetAt"] is None
 
 
+def test_leaves_show_not_needed_suppression_with_its_recheck_time():
+    """#2683 review: an issue the queue skips as ``not_needed`` is not invisible — its
+    leaf carries ``notNeededUntil`` (when it will be looked at again), its tier
+    untouched: suppressed is not "needs you"."""
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from server.db import db_session, init_db
+    from server.db.models import NOT_NEEDED_CAUSE, DispatchOutcome, Feature, Project, WorkItem
+    from server.pm.outcomes import body_fingerprint, material_fingerprint
+
+    ended = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    async def _seed(db_url: str) -> str:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product")
+            db.add(prod)
+            await db.flush()
+            cap = Feature(project_id=prod.id, slug="dictation", title="Dictation", state="live")
+            db.add(cap)
+            await db.flush()
+            db.add_all([
+                WorkItem(repo="o/r", number=1, kind="issue", state="open", title="Judged",
+                         body="b", labels=["ops"], feature_id=cap.id),
+                WorkItem(repo="o/r", number=2, kind="issue", state="open", title="Plain",
+                         body="b", feature_id=cap.id),
+                DispatchOutcome(automation_id="backlog-runner", target_ref="o/r#1",
+                                outcome="no_pr", cause=NOT_NEEDED_CAUSE,
+                                started_at=ended - timedelta(hours=1), ended_at=ended,
+                                body_fingerprint=body_fingerprint("Judged", "b"),
+                                material_fingerprint=material_fingerprint(
+                                    "Judged", "b", ["ops"])),
+            ])
+            await db.commit()
+            return cap.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        cap_id = asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            r = c.get(f"/api/pm/leaves?capability={cap_id}", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            by_ref = {i["ref"]: i for i in r.json()["items"]}
+            until = datetime.fromisoformat(by_ref["o/r#1"]["notNeededUntil"])
+            assert abs(until - (ended + timedelta(days=1))) < timedelta(seconds=1)
+            assert by_ref["o/r#1"]["tier"] == by_ref["o/r#2"]["tier"]
+            assert by_ref["o/r#2"]["notNeededUntil"] is None
+
+
 def test_leaves_and_map_surface_needs_spec_bounces():
     """D8: a product's `give_up_after_bounces` policy turns FINALISED non-merged
     outcomes at an issue's CURRENT body into a `needs_spec` reason — on

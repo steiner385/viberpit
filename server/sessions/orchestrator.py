@@ -9760,8 +9760,9 @@ class SessionOrchestrator:
         from server.pm.policy_skip import stale_runner_holds
         released: list[str] = []
         try:
+            from datetime import datetime, timezone
             rows, policies = await self._backlog_queue_inputs()
-            stale = stale_runner_holds(rows, policies)
+            stale = stale_runner_holds(rows, policies, now=datetime.now(timezone.utc))
             if not stale:
                 return released
             refs = [row.ref for row in stale]
@@ -10491,6 +10492,7 @@ class SessionOrchestrator:
                 existing.gh_updated_at = item.gh_updated_at
                 existing.gh_closed_at = item.gh_closed_at
                 existing.last_human_comment_at = item.last_human_comment_at
+                existing.last_reopened_at = item.last_reopened_at
                 existing.last_synced_at = now
                 if (is_new and item.kind == "issue" and item.state == "open"
                         and AUTO_ERROR_LABEL in (item.labels or ())):
