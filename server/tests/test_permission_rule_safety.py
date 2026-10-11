@@ -151,3 +151,38 @@ def test_still_ok(pat):
 )
 def test_interpreters_and_git_file(pat, level):
     assert assess(pat, "session").level == level
+
+
+@pytest.mark.parametrize(
+    "pat,level",
+    [
+        ("Bash(git * origin)", "refuse"),
+        ("Bash(git * --force)", "refuse"),
+        ("Bash(* sudo)", "refuse"),
+        ("Bash(* bash -c x)", "refuse"),
+        ("Bash(python3.12 -c:*)", "refuse"),
+        ("Bash(/usr/bin/python3.11 -c:*)", "refuse"),
+        ("Bash(python3.11:*)", "refuse"),
+        ("Bash(nodejs:*)", "refuse"),
+        ("Bash(pythonw:*)", "refuse"),
+        ("Bash(deno:*)", "refuse"),
+        ("Bash(bun:*)", "refuse"),
+        ("Bash(pwsh:*)", "refuse"),
+        ("Bash(osascript:*)", "refuse"),
+        ("Bash(\\sudo:*)", "refuse"),
+        ("WebFetch(domain:localhost.)", "refuse"),
+        ("WebFetch(domain:foo.local.)", "refuse"),
+        ("Edit(a/.git/hooks/pre-commit)", "refuse"),
+        ("Edit(x/.husky/*)", "refuse"),
+        ("Edit(x/.aws/credentials)", "refuse"),
+        ("Edit(x/.ssh/*)", "refuse"),
+        ("Bash(npm *)", "ok"),
+        ("Bash(python -m pytest:*)", "ok"),
+        ("Bash(git status:*)", "ok"),
+        ("Bash(npm test:*)", "ok"),
+        ("Edit(src/**)", "ok"),
+        ("WebFetch(domain:docs.python.org)", "ok"),
+    ],
+)
+def test_round2(pat, level):
+    assert assess(pat, "session").level == level

@@ -24,11 +24,11 @@ PATH_TOOLS = FILE_TOOLS | {"Read"}
 # enforced by the matcher itself so even a broad ``Edit(**)`` never auto-allows them.
 PROTECTED_PATHS = frozenset(
     {
-        ".env", "**/.env", ".git", "**/.git", "**/.env.*", ".envrc", "**/.envrc", ".git/**", ".claude/**",
-        "**/.claude/**", ".mcp.json", ".husky/**", ".vscode/**", ".idea/**", ".ssh/**",
-        "**/.ssh/**", ".aws/**", ".gnupg/**", ".npmrc", "**/.npmrc", ".pypirc", ".netrc",
-        ".bashrc", ".zshrc", ".profile", "**/*.pem", "**/*.key", "**/id_rsa*",
-        "**/id_ed25519*", "**/credentials*", "**/secrets/**",
+        "**/.env", "**/.env.*", "**/.envrc", "**/.git", "**/.git/**", "**/.claude/**",
+        "**/.mcp.json", "**/.husky/**", "**/.vscode/**", "**/.idea/**", "**/.ssh/**",
+        "**/.aws/**", "**/.gnupg/**", "**/.npmrc", "**/.pypirc", "**/.netrc", "**/.bashrc",
+        "**/.zshrc", "**/.profile", "**/*.pem", "**/*.key", "**/id_rsa*", "**/id_ed25519*",
+        "**/credentials*", "**/secrets/**",
     }
 )  # fmt: skip
 _NEVER_SUGGEST = frozenset({"ExitPlanMode", "AskUserQuestion"})
@@ -172,7 +172,7 @@ def _protected_regexes() -> tuple[re.Pattern[str], ...]:
     return tuple(re.compile(_path_glob_to_regex(g).pattern, re.IGNORECASE) for g in PROTECTED_PATHS)
 
 
-def _is_protected(rel: str) -> bool:
+def is_protected_path(rel: str) -> bool:
     # Case-insensitive: on case-insensitive filesystems ``.GIT`` is ``.git``.
     return any(rx.fullmatch(rel) for rx in _protected_regexes())
 
@@ -208,7 +208,7 @@ def _hostname(input: dict) -> str | None:
 
 def _covers(p: Pattern, input: dict, cwd: str | None) -> bool:
     rel = _rel_path(input, cwd)
-    if rel is None or _is_protected(rel):
+    if rel is None or is_protected_path(rel):
         return False
     return p.kind == "bare" or path_spec_matches(p.spec or "", rel)
 

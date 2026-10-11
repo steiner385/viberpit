@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from dataclasses import dataclass
 
 from server.automations.autopilot_policy import matches_denylist
@@ -19,6 +20,7 @@ from server.permission_rules.patterns import (
     Pattern,
     PatternError,
     describe,
+    is_protected_path,
     matches_any,
     parse,
     path_spec_matches,
@@ -52,7 +54,7 @@ _DANGER_PROBES: tuple[str, ...] = (
 )
 
 _SECRET_PROBES: tuple[str, ...] = (
-    ".env", ".git", "a/.env.local", ".envrc", ".git/hooks/pre-commit", ".git/config",
+    ".env", ".git", "pkg/.git/hooks/pre-commit", "x/.husky/y", "x/.vscode/settings.json", "x/.idea/y", "x/.aws/credentials", "x/.gnupg/y", "x/.mcp.json", "x/.netrc", "x/.pypirc", "x/.ssh/y", "a/.env.local", ".envrc", ".git/hooks/pre-commit", ".git/config",
     ".claude/hooks/x.py", ".claude/settings.json", "a/.claude/x", ".mcp.json",
     ".husky/pre-commit", ".vscode/settings.json", ".idea/x", ".ssh/authorized_keys",
     ".ssh/id_rsa", "a/.ssh/x", ".aws/credentials", ".gnupg/x", ".npmrc", "a/.npmrc",
@@ -61,13 +63,13 @@ _SECRET_PROBES: tuple[str, ...] = (
 )  # fmt: skip
 
 _EXEC_WRAPPERS = frozenset({
-    "sudo", "doas", "su", "env", "timeout", "nohup", "command", "exec", "xargs", "time", "nice",
+    "nodejs", "pythonw", "deno", "bun", "pwsh", "osascript", "sudo", "doas", "su", "env", "timeout", "nohup", "command", "exec", "xargs", "time", "nice",
     "ionice", "stdbuf", "setsid", "bash", "sh", "zsh", "dash", "fish", "ksh", "eval", "source",
     ".", "python", "python3", "node", "perl", "ruby", "php", "ssh", "rm", "dd", "mkfs", "shred",
     "chmod", "chown", "curl", "wget", "find",
 })  # fmt: skip
 # ``python -m pytest`` runs a named module, not arbitrary code; every other interpreter use is refused.
-_INTERPRETERS_WITH_MODULE_MODE = frozenset({"python", "python3"})
+_INTERPRETERS_WITH_MODULE_MODE = frozenset({"python", "pythonw"})
 _EXTENSIONS = (
     " --force", " -f", " --mirror", " --delete x", " -D x", " --hard origin/master", " -fdx",
     " -rf /", " -c x", " -e x",
@@ -95,6 +97,11 @@ def _verdict(warnings: list[str]) -> Assessment:
     return Assessment("warn", tuple(warnings)) if warnings else Assessment("ok", ())
 
 
+def _normalise_word(word: str) -> str:
+    """``\\/usr/bin/python3.12`` -> ``python``: basename, no escaping, no version suffix."""
+    return re.sub(r"[\d.]+$", "", os.path.basename(word.lstrip("\\")))
+
+
 def _assess_bash(p: Pattern) -> Assessment:
     spec = p.spec or ""
     if (
@@ -112,10 +119,12 @@ def _assess_bash(p: Pattern) -> Assessment:
         if matches_denylist("Bash", {"command": spec}, []):
             return _refuse("command is on the destructive-command deny list")
     else:
+        if p.kind == "glob" and "*" in spec[:-1]:
+            return _refuse("wildcards are only allowed at the end of a Bash pattern")
         head = spec.split("*", 1)[0].strip() if p.kind == "glob" else spec
         words = head.split()
         for i, w in enumerate(words):
-            name = os.path.basename(w)
+            name = _normalise_word(w)
             if name in _INTERPRETERS_WITH_MODULE_MODE and words[i + 1 : i + 2] == [
                 "-m"
             ]:
@@ -148,6 +157,8 @@ def _assess_path(p: Pattern, scope: str) -> Assessment:
         if scope == "global":
             return _refuse("every file in the worktree, across all repos")
         return _verdict(["every file in the worktree"])
+    if is_protected_path(spec):
+        return _refuse(f"would allow writing secrets or tool config, e.g. {spec}")
     for path in _SECRET_PROBES:
         if path_spec_matches(spec, path):
             return _refuse(f"would allow writing secrets or tool config, e.g. {path}")
@@ -157,6 +168,7 @@ def _assess_path(p: Pattern, scope: str) -> Assessment:
 
 
 def _assess_domain(dom: str) -> Assessment:
+    dom = dom.removesuffix(".")
     if "*" in dom:
         return _refuse("wildcard domains allow every host")
     try:
