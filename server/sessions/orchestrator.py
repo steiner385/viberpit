@@ -79,6 +79,7 @@ from server.assistant.suggest_prompt import (
 )
 from server.sessions.prompt_origin import PromptOrigin
 from server.audit import record_audit
+from server.permission_rules.gate import StandingRuleGate
 from server.db import db_session
 from server.db.transient import is_transient_db_failure
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -998,6 +999,7 @@ class SessionOrchestrator:
         # Injectable so tests can stub it without a live SDK call.
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
+        self._registry.rule_gate = StandingRuleGate(self._rule_facts)
         self._custom_driver_registry = driver_registry is not None
         self._engine_registry = driver_registry or AgentDriverRegistry(
             self._default_driver_factories())
@@ -20119,6 +20121,11 @@ class SessionOrchestrator:
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
                  session_id, claude_session_id, resumed, terminated_pid)
         return rec, {"resumed": resumed, "terminatedPid": terminated_pid}
+
+    def _rule_facts(self, session_id: str) -> tuple[str | None, str | None] | None:
+        """(repo, cwd) a standing-rule check needs (spec 2026-10-11 §3.2); None = unknown."""
+        rec = self._records.get(session_id)
+        return None if rec is None else (rec.repo, rec.cwd)
 
     def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
         d = self._drivers.get(session_id)

@@ -57,7 +57,7 @@ def _auto_approved(mode: str) -> frozenset[str]:
             perm_id, fut, _always = await reg.request(
                 "s1", "t1", tool, {"command": "echo hi", "file_path": "/tmp/x"},
                 mode=mode, denylist=PermissionRegistry.DANGEROUS,
-                allowlist=True, identity="tester")
+                identity="tester")
             if perm_id is None:
                 assert fut.result() is True
                 allowed.add(tool)

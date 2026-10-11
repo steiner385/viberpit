@@ -109,8 +109,7 @@ async def test_allow_answers_accept_once(harness):
 @pytest.mark.asyncio
 async def test_always_answers_the_engine_s_session_scoped_accept(harness):
     """"Always" is honoured by Codex for this session only. It must never write a
-    ViberPit grant (that cache is not consulted for an engine that enforces
-    approvals itself) and never a persisted global exception."""
+    ViberPit-side rule and never a persisted global exception."""
     driver = await harness.boot()
     await harness.run_turn("build it")
     request_id = await _ask(harness)
@@ -119,7 +118,6 @@ async def test_always_answers_the_engine_s_session_scoped_accept(harness):
     reply = await _reply(harness, request_id)
 
     assert reply["result"] == {"decision": "acceptForSession"}
-    assert harness.registry._grants == {}
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ async def test_signal_tool_auto_allows_with_no_card_in_every_mode(mode):
     try:
         reg = PermissionRegistry()
         pid, fut, _ = await reg.request("s1", "t1", "mcp__viberpit__sig_probe", {}, mode=mode,
-                                        denylist=(), allowlist=True, identity="u")
+                                        denylist=(), identity="u")
         assert pid is None, "a SIGNAL tool must never create a pending permission card"
         assert fut.done() and fut.result() is True
     finally:

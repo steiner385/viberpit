@@ -200,7 +200,7 @@ def test_interrupt_denies_pending_and_stops():
         await d.interrupt()
         # a pending permission for this session would now be denied
         pid, fut, _ = await reg.request("s2", "t1", "Bash", {"command": "ls"}, mode="interactive",
-                                     denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="me")
+                                     denylist=PermissionRegistry.DANGEROUS, identity="me")
         reg.deny_all("s2")
         await d.aclose()
         return await fut

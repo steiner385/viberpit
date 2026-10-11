@@ -303,7 +303,7 @@ def test_apply_approve_settles_a_real_registry_future_as_allowed(tmp_path):
         reg = PermissionRegistry()
         pid, fut, _ = await reg.request(
             "s1", "t1", "Bash", {"command": "pytest"}, mode="interactive",
-            denylist=(), allowlist=True, identity=SYSTEM_IDENTITY)
+            denylist=(), identity=SYSTEM_IDENTITY)
 
         async def _ensure(sid, ident=None):
             return object()

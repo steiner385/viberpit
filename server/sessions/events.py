@@ -237,11 +237,14 @@ class PermissionRequest:
     # The spawning Task's tool-use id when the request came from a sub-agent (its
     # can_use_tool ctx.agent_id, mapped by the driver). None for the main thread.
     parent_tool_use_id: str | None = None
+    # Standing-rule patterns the card may offer ("Always allow …"); None/[] = none offered.
+    rule_suggestions: list[dict] | None = None
     ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "permissionRequest", "permId": self.perm_id, "turnId": self.turn_id,
                                "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan,
                                "alwaysAllowed": self.always_allowed, "items": self.items,
-                               "parentToolUseId": self.parent_tool_use_id, "ts": self.ts}
+                               "parentToolUseId": self.parent_tool_use_id,
+                               "ruleSuggestions": self.rule_suggestions or [], "ts": self.ts}
 
 @dataclass
 class PermissionResolved:

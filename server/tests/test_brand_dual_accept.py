@@ -159,7 +159,7 @@ def test_resumed_codex_thread_with_legacy_tool_names_still_gates_destructive(fak
         return await reg.request(
             "s1", "t1", legacy_name, {"id": "s9"},
             mode="full-auto", denylist=PermissionRegistry.DANGEROUS,
-            allowlist=True, identity="me")
+            identity="me")
 
     pid, fut, always_allowed = asyncio.run(run())
     assert pid is not None, "a legacy-named destructive tool must still surface a card"

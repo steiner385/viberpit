@@ -1021,6 +1021,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     out_q.put_nowait({**PermissionRequest(
                         p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
                         p["input"], plan=(p["tool"] == "ExitPlanMode"), items=p.get("items"),
+                        # Missing = an older daemon: never offer "Always allow" blind.
+                        always_allowed=p.get("always_allowed", False),
+                        rule_suggestions=p.get("suggestions") or [],
                         parent_tool_use_id=p.get("parent_tool_use_id"),
                     ).to_wire(), "sessionId": session_id})
 

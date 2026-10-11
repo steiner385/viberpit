@@ -110,6 +110,20 @@ async def test_resolve_permission_always_forbidden_via_assistant_before_orchestr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["mcp-external", "cli", "internal", "session"])
+async def test_resolve_permission_always_from_other_non_human_via_is_rules_human_only(orch, via):
+    with _patched_audit() as audit:
+        with pytest.raises(sa.ActionError) as exc_info:
+            await sa.resolve_permission(
+                orch, db=object(), session_id="s1", perm_id="p1", decision="always",
+                identity="u@example.com", via=via)
+    assert exc_info.value.code == "RULES_HUMAN_ONLY"
+    assert exc_info.value.http == 403
+    orch.resolve_permission.assert_not_awaited()
+    audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resolve_permission_always_allowed_for_human(orch):
     with _patched_audit():
         result = await sa.resolve_permission(

@@ -321,3 +321,29 @@ async def test_a_coding_session_can_still_change_mode(harness):
     await driver.set_permission_mode("plan")
     await harness.settle()
     assert driver.mode == "plan"
+
+
+@pytest.mark.asyncio
+async def test_a_dynamic_tool_card_carries_the_registrys_rule_suggestions(harness, overlay):
+    """Same card contract as the Claude driver: the PermissionRequest carries the
+    standing-rule suggestions the registry computed for that card."""
+    offered = [{"pattern": MCP_PREFIX + "archive_session", "description": "d", "level": "ok"}]
+
+    class _Gate:
+        async def match(self, session_id, tool, input):
+            return None
+
+        def suggestions(self, session_id, tool, input):
+            return offered
+
+    driver = await harness.boot(assistant_overlay=overlay)
+    harness.registry.rule_gate = _Gate()  # type: ignore[assignment]
+    request_id = harness.server.request(TOOL_CALL, _call("archive_session", {"id": "abc"}))
+    for _ in range(200):
+        if harness.of(ev.PermissionRequest):
+            break
+        await asyncio.sleep(0.005)
+    [card] = harness.of(ev.PermissionRequest)
+    assert card.rule_suggestions == offered
+    driver.resolve_permission(card.perm_id, "deny", "user@example.com")
+    await _await_reply(harness, request_id)

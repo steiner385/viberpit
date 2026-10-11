@@ -1,9 +1,14 @@
 from __future__ import annotations
-import asyncio, logging, os, time, uuid as _uuid
+import asyncio, logging, os, uuid as _uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from viberpit import paths as _paths
 from server.mcp_spec import is_mcp_tool
+from server.permission_rules.patterns import NEVER_RULED_TOOLS
+
+if TYPE_CHECKING:
+    from server.permission_rules.gate import StandingRuleGate
 
 log = logging.getLogger(__name__)
 
@@ -121,25 +126,19 @@ class PermissionRegistry:
     # Used by the "allowlist" mode ("Allowlist read-only, prompt the rest") to decide
     # which tools to auto-approve; everything else — including TodoWrite — must prompt.
     READ_ONLY = frozenset({"Read", "Grep", "Glob", "LS"})
-    GRANT_TTL = 3600  # seconds
 
     def __init__(self):
         self._pending: dict[str, dict] = {}              # perm_id -> {future, identity, session_id, tool, input, turn_id}
-        self._grants: dict[tuple[str, str], float] = {}  # (session_id, fingerprint) -> expires_at
+        # Set by the orchestrator. None = no standing rules (bare registries in tests).
+        self.rule_gate: StandingRuleGate | None = None
         # perm_id -> (session_id, reason) a deny_all(reason=...) settled it with, read
         # back exactly once by the awaiting can_use_tool (see take_deny_reason).
         self._deny_reasons: dict[str, tuple[str, str]] = {}
-
-    @staticmethod
-    def fingerprint(tool: str, input: dict) -> str:
-        if tool == "Bash":
-            cmd = " ".join((input.get("command") or "").split())   # full normalized command, not just argv[0]
-            return f"Bash:{cmd}:{input.get('cwd', '')}"
-        if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
-            return f"{tool}:{input.get('file_path') or input.get('notebook_path', '')}"
-        if tool in ("WebFetch", "WebSearch"):
-            return f"{tool}:{input.get('url') or input.get('query', '')}"
-        return tool
+        # session_id -> how many times deny_all has run for it. ``request`` snapshots it
+        # before awaiting the standing-rule gate: a deny_all landing during that await
+        # (interrupt, disconnect, a prompt sent at the parked turn) found no card to
+        # settle, so the request must not create one afterwards (#1504 shape).
+        self._deny_gen: dict[str, int] = {}
 
     def _pend(self, session_id, turn_id, tool, input, *, mode, identity, always_allowed,
               items, parent_tool_use_id=None) -> tuple[str, asyncio.Future]:
@@ -149,29 +148,38 @@ class PermissionRegistry:
         That line is what distinguishes "the operator chose a prompting mode" from
         "a full-auto driver was rebuilt as interactive" (2026-09-07), which no other
         signal exposes: the card itself looks identical either way."""
+        suggestions = (self.rule_gate.suggestions(session_id, tool, input)
+                       if self.rule_gate and always_allowed and tool not in NEVER_RULED_TOOLS else [])
         pid = _uuid.uuid4().hex
         fut = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                               "tool": tool, "input": input, "turn_id": turn_id,
                               "always_allowed": always_allowed, "items": items,
-                              "parent_tool_use_id": parent_tool_use_id}
+                              "parent_tool_use_id": parent_tool_use_id,
+                              "suggestions": suggestions}
         log.info("permission.card session=%s tool=%s mode=%s perm_id=%s always_allowed=%s",
                  session_id, tool, mode, pid, always_allowed)
         return pid, fut
 
-    def is_granted(self, session_id, tool, input, now) -> bool:
-        key = (session_id, self.fingerprint(tool, input))
-        exp = self._grants.get(key)
-        if exp is None:
+    async def _rule_allows(self, session_id, tool, input) -> bool | None:
+        """True when a standing rule covers the request, False when not, None when a
+        deny_all for *session_id* ran while the gate was being consulted (the caller
+        must then settle the request denied without creating a card)."""
+        if self.rule_gate is None:
             return False
-        if exp <= now:
-            del self._grants[key]
-            return False
-        return True
+        gen = self._deny_gen.get(session_id, 0)
+        hit = await self.rule_gate.match(session_id, tool, input)
+        if self._deny_gen.get(session_id, 0) != gen:
+            return None
+        return hit is not None
 
-    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity,
+    def suggestions_for(self, perm_id) -> list[dict]:
+        """Standing-rule patterns the card for *perm_id* offers (empty once resolved)."""
+        rec = self._pending.get(perm_id)
+        return list(rec.get("suggestions") or []) if rec else []
+
+    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, identity,
                       items: list[str] | None = None, parent_tool_use_id: str | None = None):
-        now = time.time()
         # Our own MCP server (`mcp__viberpit__*`, and `mcp__ccswitch__*` from
         # before the rebrand) is the app talking to
         # itself, not a third-party integration trusted unconditionally like the
@@ -203,7 +211,7 @@ class PermissionRegistry:
             if ann is not None and ann.tool_class in (ToolClass.READ, ToolClass.SIGNAL):
                 return None, _resolved(True), True
             if ann is not None and ann.tool_class == ToolClass.DESTRUCTIVE:
-                # Never consults the grant cache, in ANY mode — a destructive
+                # Never consults standing rules, in ANY mode — a destructive
                 # ViberPit action always surfaces a card, and that card never
                 # offers "Always allow" (always_allowed=False on the pending
                 # record; resolve() below refuses to persist a grant for it).
@@ -214,13 +222,13 @@ class PermissionRegistry:
             # MUTATION, or an unknown/not-yet-registered ViberPit tool (treated
             # conservatively as mutation-like rather than raising on a None
             # annotation — forward-compatible with tools Task 3.3 adds later).
-            # Grant cache is honoured in EVERY mode, INCLUDING "interactive" —
-            # unlike the generic grant-cache check below, which deliberately
-            # skips "interactive" for ordinary tools. This is deliberate here:
-            # the operator granting "always allow" on a ViberPit mutation tool
-            # is trusting the APP, not accepting session-mode risk.
-            if self.is_granted(session_id, tool, input, now):
-                return None, _resolved(True), True
+            # Standing rules are honoured in EVERY mode, INCLUDING "interactive": a rule
+            # is an explicit human decision (spec 2026-10-11 §3.1).
+            # Tools that widen what sessions may do unasked (NEVER_RULED_TOOLS) skip it.
+            allowed = (await self._rule_allows(session_id, tool, input)
+                       if tool not in NEVER_RULED_TOOLS else False)
+            if allowed is not False:  # True: a rule covers it; None: denied meanwhile
+                return None, _resolved(allowed is True), True
             pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
                                   identity=identity, always_allowed=True, items=items,
                                   parent_tool_use_id=parent_tool_use_id)
@@ -232,16 +240,11 @@ class PermissionRegistry:
             # authority so the outcome is identical whether or not the SDK routes
             # the call through can_use_tool.
             return None, _resolved(True), True
-        # Grant-cache bypass ("Always allow this exact command/file") is honoured in all
-        # modes EXCEPT "interactive" ("Ask each time").  A user who chose interactive
-        # explicitly wants approval every time, so previous "always" grants are ignored.
-        if mode != "interactive" and allowlist and self.is_granted(session_id, tool, input, now):
-            return None, _resolved(True), True
         # Auto-allow the agent's own auto-memory writes (managed-account memory dir).
         # Honoured in EVERY mode, including "interactive": these writes are sandboxed
         # to cfg_root() (see _is_account_memory_path) and can never reach a real repo,
         # so they are pure bookkeeping noise the user should never have to approve.
-        # Unlike the grant-cache bypass above, "ask each time" does not apply here —
+        # Unlike a standing rule, "ask each time" does not apply here —
         # there is no user-facing action to ask about.
         if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
                 input.get("file_path") or input.get("notebook_path")):
@@ -270,6 +273,14 @@ class PermissionRegistry:
             # its own worktree proceeds without a human, while shell/network calls — a
             # materially larger blast radius — remain gated.
             return None, _resolved(True), True
+        # A standing "always allow" rule is checked in EVERY mode, including interactive:
+        # it is an explicit human decision (spec 2026-10-11 §3.1), unlike the old
+        # per-session grant cache that "ask each time" overrode. Only reached where a
+        # card would otherwise be created.
+        if tool not in NEVER_RULED_TOOLS:
+            allowed = await self._rule_allows(session_id, tool, input)
+            if allowed is not False:  # True: a rule covers it; None: denied meanwhile
+                return None, _resolved(allowed is True), True
         pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
                               identity=identity, always_allowed=True, items=items,
                               parent_tool_use_id=parent_tool_use_id)
@@ -293,10 +304,8 @@ class PermissionRegistry:
           the modes where ViberPit wanted the prompt — and it would answer it
           ``allow``.
         * **The future carries the decision, not a boolean, and "always" never
-          writes a local grant.** ``self._grants`` is ViberPit's own cache, and
-          it is never consulted for an engine that enforces approvals itself, so
-          an entry there would be a second, invisible policy that no longer
-          matches what the engine was told. The caller maps ``"always"`` onto the
+          writes a ViberPit-side rule here.** A ViberPit entry would be a second,
+          invisible policy that no longer matches what the engine was told. The caller maps ``"always"`` onto the
           engine's own SESSION-SCOPED accept instead — never a persistent global
           exception (plan, Task 4.2).
 
@@ -310,7 +319,8 @@ class PermissionRegistry:
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                               "tool": tool, "input": input, "turn_id": turn_id,
-                              "always_allowed": always_allowed, "raw_decision": True}
+                              "always_allowed": always_allowed, "raw_decision": True,
+                              "suggestions": []}
         return pid, fut
 
     def resolve(self, perm_id, decision, identity) -> bool:
@@ -326,22 +336,25 @@ class PermissionRegistry:
             return False
         del self._pending[perm_id]
         raw = rec.get("raw_decision", False)
-        if decision == "always":
-            if rec.get("always_allowed", True) and not raw:
-                fp = self.fingerprint(rec["tool"], rec["input"])
-                self._grants[(rec["session_id"], fp)] = time.time() + self.GRANT_TTL
-            # else: a destructive ViberPit tool, or an engine-enforced prompt whose
-            # "always" is honoured natively — allow this ONE call but never persist a
-            # ViberPit grant, so the next request() for the same tool asks again.
-            if not raw:
-                decision = "allow"
+        if decision == "always" and not raw:
+            # "Always" on a ViberPit-gated prompt allows THIS call only. The edge turned a
+            # standing-rule "always" into a stored rule before calling here (spec §3.4);
+            # nothing is cached in the registry, so a destructive tool or an unsafe
+            # pattern simply asks again next time.
+            decision = "allow"
         if not rec["future"].done():
             rec["future"].set_result(decision if raw else decision == "allow")
         return True
 
     def pending(self, session_id) -> list[dict]:
         return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"],
-                 "items": r.get("items"), "parent_tool_use_id": r.get("parent_tool_use_id")}
+                 "items": r.get("items"), "parent_tool_use_id": r.get("parent_tool_use_id"),
+                 "always_allowed": r.get("always_allowed", True),
+                 "suggestions": r.get("suggestions") or [],
+                 "engine_managed": bool(r.get("raw_decision")),
+                 # Who may resolve it (the identity it was raised under). Server-side
+                 # only: the WS re-emit copies selected keys, never this one.
+                 "owner": r["identity"]}
                 for pid, r in self._pending.items() if r["session_id"] == session_id]
 
     def rethread_identity(self, session_id, old, new) -> int:
@@ -379,6 +392,7 @@ class PermissionRegistry:
         # could read one would otherwise keep its entry for the life of the process.
         for pid in [p for p, (sid, _) in self._deny_reasons.items() if sid == session_id]:
             del self._deny_reasons[pid]
+        self._deny_gen[session_id] = self._deny_gen.get(session_id, 0) + 1
         n = 0
         for pid in [p for p, r in self._pending.items() if r["session_id"] == session_id]:
             rec = self._pending.pop(pid)

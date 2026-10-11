@@ -10,6 +10,8 @@ links:
     - server/sessions/model_policy.py
     - server/sessions/model_catalog.py
     - server/api/permission_profiles.py
+    - server/permission_rules/
+    - server/api/permission_rules.py
     - server/api/dispatch.py
     - server/api/settings.py
     - server/sessions/driver.py
@@ -50,8 +52,9 @@ modes with a unified SDK mapping (#758); gated models (e.g. `fable`) held pendin
 **Non-goals** — Not a sandbox or a hard security boundary against a malicious agent — permission
 modes govern which tool calls auto-approve vs. prompt within the Claude Agent SDK, not OS-level
 isolation (that is the config-dir/process isolation of constitution Principle II and the worktree
-isolation feature). Tool-pattern strings in profiles are stored as-is and applied client-side, not
-server-validated.
+isolation feature). Tool-pattern strings in *named* profiles are stored as-is and applied client-side, not
+server-validated (and not yet enforced); standing always-allow rules are the validated, enforced
+exception (see Standing rules).
 
 **Notes**
 - **Permission modes.** `VALID_SESSION_MODES` (`server/sessions/types.py`) is the single source of
@@ -61,6 +64,65 @@ server-validated.
   `acceptEdits` (auto-approve file writes, prompt shell/network), and `bypassPermissions`.
   `permissions.py::PermissionRegistry` enforces these; `to_sdk_permission_mode()` maps them onto the
   SDK's own `default`/`plan`/`acceptEdits`/`bypassPermissions` (#758, #232, #200/#84 auto-memory).
+- **Standing rules ("always allow").** A rule is one pattern string stored in an auto-managed,
+  scoped `PermissionProfile` (`always-allow:*`, hidden from the named-profile API) with a
+  `PermissionRuleStats` row for id, author and hit counters. Code: `server/permission_rules/`
+  (`patterns.py` grammar/matcher, `safety.py` assessment, `store.py`, `gate.py` enforcement),
+  `server/api/permission_rules.py`, `session_actions.grant_always`.
+  - *Grammar.* Claude-Code style: `Tool`, `Tool(spec)`, `mcp__server[__tool]`. Bash accepts an
+    exact command, a `prefix:*` form, or a glob where `*` is allowed **only at the end, after a
+    space** (whole words: `npm run *`, never `np*`). Quoting,
+    escapes and variables are refused in Bash rules, and compound commands are matched per
+    segment (each must be covered). Path tools (Read/Edit/Write/MultiEdit/NotebookEdit) take
+    worktree-relative globs; WebFetch takes `domain:host`.
+  - *Scopes.* `session`, `repo`, `global`. A repo or global rule reaches **every** session on
+    that repo or the whole fleet (all accounts and hosts), including sessions already running.
+  - *Human-only.* Creating, editing or revoking a rule needs a person in the UI. The assistant
+    and other token-borne callers are refused (`resolve_permission` is allow/deny only), and a
+    grant refuses a card owned by another identity. Legacy plain "always" is now a **session**
+    rule built from the card's first `ok` suggestion (plain allow when none exists or rules are
+    off).
+  - *Safety tiers.* `assess()` returns refuse / warn / ok. Refused in a prefix/glob head:
+    - exec wrappers and interpreters (`python`/`python3` only as `-m <module>`, and never with an
+      inline-code module: `timeit`, `pdb`, `code`, `runpy`, `cProfile`, `profile`, `trace`,
+      `IPython`, `idlelib`);
+    - package runners, whatever follows, because the next word is a package fetched from the
+      network: `npx`, `bunx`, `uvx`, `npm exec`/`x`, `pnpm dlx`, `yarn dlx`, `pipx run`,
+      `uv tool run` (an exact command such as `Bash(npx tsc --noEmit)` can still be stored);
+    - local command launchers (`uv run`, `pnpm exec`, `yarn exec`, `poetry run`) unless followed
+      by the command they run, which is then judged as a head of its own (`uv run pytest:*` ok,
+      `uv run python:*` refused);
+    - a package manager that can launch arbitrary commands (`npm`, `pnpm`, `yarn`, `uv`,
+      `poetry`, `pipx`, `bun`, `deno`, `uvx`, ...) with no subcommand after it, an option first,
+      or a head that stops partway into a launcher (`Bash(npm:*)`, `Bash(npm *)`,
+      `Bash(npm --prefix x:*)`, `Bash(uv tool:*)`; `Bash(npm test:*)`, `Bash(uv sync:*)` and
+      `Bash(npm run *)` stay ok);
+    - `git push` except exactly, `git -c` (incl. the attached `-cKEY=VAL` form), `--config-env`,
+      `--exec-path` and `git config`.
+
+    Every Bash rule is also probed against representative dangerous commands. WebFetch domains
+    that are wildcards, single-label, IP literals or internal suffixes (`.local`, `.internal`,
+    ...) are refused. Broad-but-legal patterns need
+    `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means
+    no rule can ever match those paths. Path matching resolves symlinks and never matches
+    outside the worktree. A WebFetch domain rule only matches a plain `http`/`https` URL: one with
+    userinfo (`user@`), a backslash, whitespace or control characters, or a non-numeric port is
+    never matched (Python's and Node's URL parsers disagree on those) and is always carded.
+  - *Enforcement.* `StandingRuleGate` is consulted wherever a card would otherwise be created,
+    in **every** mode including `interactive`; it fails closed (any error = ask the human).
+    Hits are counted and audited. `patterns.NEVER_RULED_TOOLS` is never matched, suggested or
+    storable, in any mode: `ExitPlanMode`, `AskUserQuestion`; the app's own tools that widen
+    what sessions may do unasked (`resolve_permission`, `set_permission_mode`,
+    `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`); and those that
+    settle a human-in-the-loop decision (`answer_question`, `resolve_decision`, `resolve_triage`,
+    `advance_initiative`, and the session tools `roadmap_resolve`, `roadmap_advance`). App
+    tools are covered under both brand prefixes. A server-wide rule for the app's own MCP server (`mcp__viberpit`, or its
+    legacy name) is refused at every scope. Engine-managed (Codex) cards are never answered by
+    rules: a new rule neither sweeps them nor can be created from one.
+  - *Kill switch.* `VIBERPIT_PERMISSION_RULES_ENABLED=false`: nothing is consulted or
+    suggested, the rules routes 404, and every prompt cards as before.
+  - *Grant cache removed.* The old in-memory 1-hour "always" grant cache is gone; the stored
+    session rule replaces it and survives restarts.
 - **Plan mode.** `plan` is a temporary overlay, not persisted. `SessionDriver.set_permission_mode`
   saves the current mode in `_pre_plan_mode` on entering `plan`, and on exit (`default` sentinel)
   restores that prior mode — so a full-auto session returns to full-auto, not to prompt-everything

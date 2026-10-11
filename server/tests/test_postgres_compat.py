@@ -222,6 +222,8 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "session_presets": {"name": "dtcheck-preset"},
     "prompt_templates": {"name": "dtcheck-template"},
     "permission_profiles": {"name": "dtcheck-profile"},
+    "permission_rule_stats": {"profile_id": "dtcheck-profile-id", "pattern": "Bash(true)",
+                              "created_by": "dtcheck"},
     # hosts.last_probe_at makes this table part of the sweep; name is the PK and
     # endpoint is NOT NULL, and neither has a synthesizable default (a host row
     # without an endpoint is unreachable by definition).
@@ -998,3 +1000,30 @@ async def test_quick_reply_profile_roundtrip_on_postgres(pg_engine):
         assert (row.attempted_at, row.curated_at) == (1.5, 1.75)
         await db.execute(delete(QuickReplyProfile).where(QuickReplyProfile.identity == identity))
         await db.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_permission_rule_record_hit_writes_naive_utc_on_postgres(pg_engine):
+    """record_hit's db_utc_now() must land as naive UTC (not re-cast through the session TZ)."""
+    from datetime import datetime, timedelta
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import PermissionProfile, PermissionRuleStats
+    from server.permission_rules import store
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        rule = await store.add_rule(s, scope="session", scope_key="dtcheck-hit", pattern="Bash(true)",
+                                    created_by="dtcheck", created_via=None)
+        await store.record_hit(s, rule.id)
+        await s.commit()
+    try:
+        async with Session() as s:
+            got = await store.get_rule(s, rule.id)
+            assert got.hit_count == 1
+            assert abs(got.last_hit_at - datetime.utcnow()) < timedelta(seconds=60)
+    finally:
+        async with Session() as s:
+            await s.execute(delete(PermissionRuleStats).where(PermissionRuleStats.profile_id == rule.profile_id))
+            await s.execute(delete(PermissionProfile).where(PermissionProfile.id == rule.profile_id))
+            await s.commit()

@@ -115,7 +115,7 @@ def test_rethread_makes_question_asked_under_system_answerable(tmp_path):
                                        d_sys.identity)
         pid, pfut, _ = await d_sys._reg.request(
             "s3", "t1", "Bash", {"command": "make"}, mode="interactive",
-            denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity=d_sys.identity)
+            denylist=PermissionRegistry.DANGEROUS, identity=d_sys.identity)
         # Now the real user attaches (WS attach → ensure_driver with their identity).
         await _ensure(orch, tmp_path, "s3", "user@example.test")
         listed = [q["question_id"] for q in orch.pending_questions("s3")]
