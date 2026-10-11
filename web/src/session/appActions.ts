@@ -99,6 +99,12 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   trigger_automation_action: 'Triggered an automation action',
   dispatch_backlog: 'Dispatched backlog work',
   consolidate_prs: 'Started a PR consolidation',
+  get_feedback_clusters: 'Read session feedback clusters',
+  draft_feedback_cluster_issue: 'Drafted a feedback issue',
+  file_feedback_cluster: 'Filed feedback as one issue',
+  dismiss_feedback_cluster: 'Dismissed feedback reports',
+  attach_feedback_to_issue: 'Attached feedback to an issue',
+  attach_feedback_to_session: 'Sent feedback to a session',
   // Operator tier (spec v2 §7, Pack O) — only ever called when operator tools are
   // enabled (server/assistant/policy.py:operator_tools_enabled).
   start_deploy: 'Started a deploy',

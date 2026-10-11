@@ -75,6 +75,10 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("get_pr_doctor_consolidation", ToolClass.READ, "Get PR consolidation candidates"),
     ToolSpec("get_pr_doctor_job", ToolClass.READ, "Get PR doctor job status"),
     ToolSpec("preview_schedule", ToolClass.READ, "Preview an automation schedule"),
+    # Session Feedback's clustered inbox (#2936), read half. The draft is a POST that
+    # files nothing (READ_POSTS).
+    ToolSpec("get_feedback_clusters", ToolClass.READ, "Get session feedback clusters"),
+    ToolSpec("draft_feedback_cluster_issue", ToolClass.READ, "Draft a feedback cluster issue"),
     # Pack C — session-start conveniences (spec v2 §4.5): presets, templates and
     # permission profiles a session can be started from.
     ToolSpec("list_presets", ToolClass.READ, "List presets"),
@@ -103,7 +107,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("rotate_sessions", ToolClass.MUTATION, "Rotate sessions"),
     ToolSpec("set_autopilot_paused", ToolClass.MUTATION, "Pause/resume autopilot"),
     ToolSpec("fix_pr", ToolClass.MUTATION, "Fix a pull request"),
-    # Pack G writes: the only two tools whose effect is visible outside ViberPit.
+    # Pack G writes: free-form GitHub writes, signed with an authorship trailer. (The
+    # Session Feedback inbox writes below also reach GitHub, as that automation.)
     ToolSpec("comment_on_pr", ToolClass.MUTATION, "Comment on a pull request"),
     ToolSpec("create_issue", ToolClass.MUTATION, "File a GitHub issue"),
     ToolSpec("set_automation_enabled", ToolClass.MUTATION, "Enable/disable automation"),
@@ -134,6 +139,15 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("trigger_automation_action", ToolClass.DESTRUCTIVE, "Trigger automation action"),
     ToolSpec("dispatch_backlog", ToolClass.DESTRUCTIVE, "Dispatch backlog work"),
     ToolSpec("consolidate_prs", ToolClass.DESTRUCTIVE, "Consolidate pull requests"),
+    # Session Feedback inbox writes (#2936), the same class as trigger_automation_action:
+    # each files or comments publicly on GitHub, prompts a live session, or takes reports
+    # out of the inbox for good, so the card is asked in every mode.
+    ToolSpec("file_feedback_cluster", ToolClass.DESTRUCTIVE, "File feedback reports as one issue"),
+    ToolSpec("dismiss_feedback_cluster", ToolClass.DESTRUCTIVE, "Dismiss feedback reports"),
+    ToolSpec("attach_feedback_to_issue", ToolClass.DESTRUCTIVE,
+             "Attach feedback reports to an issue"),
+    ToolSpec("attach_feedback_to_session", ToolClass.DESTRUCTIVE,
+             "Attach feedback reports to a session"),
     # Operator tier (spec v2 §7, Pack O) — only registered and route-allowlisted when
     # `operator_tools_enabled(db)` is true (Task 9.2). See OPERATOR_TOOLS below.
     ToolSpec("start_deploy", ToolClass.DESTRUCTIVE, "Start deploy"),
@@ -1624,6 +1638,96 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                               {"repo": _nonempty(args.get("repo"), field="repo"),
                                "numbers": _int_list(args.get("numbers"), field="numbers")})
 
+    # -- Session Feedback inbox (#2936) -------------------------------------------------
+    # Thin adapters over the clustered-inbox routes (server/api/automations.py). The
+    # routes are generic per automation; these tools are named for Session Feedback, the
+    # one automation with an inbox, so — like the backlog-runner/pr-doctor tools above —
+    # they hard-code its id rather than take one. `ids` are REPORT ids (a cluster's
+    # members[].id), never the cluster id: a cluster is a view, the reports are the rows.
+
+    def _feedback_ids(args: dict[str, Any]) -> list[str]:
+        return _str_list(args.get("ids"), field="ids")
+
+    def _whole(v: Any, field: str) -> int:
+        return _int_list([v], field=field)[0]
+
+    @spec_tool("get_feedback_clusters",
+               "The Session Feedback inbox — problems coding sessions reported about "
+               f"{brand.NAME} itself — grouped into clusters of the same underlying issue: "
+               "each with a title, count, category, impact, first/last seen and its member "
+               "reports (each member's id is what the other feedback tools take as ids). "
+               "Looking changes nothing.", {})
+    @guarded
+    async def get_feedback_clusters(args: dict[str, Any]) -> Any:
+        data = await api.get("/api/automations/session-feedback/clusters")
+        rows = data.get("clusters") or []
+        return Trimmed({**data, "clusters": rows[:_AUTOMATION_LIST_CAP]},
+                       max(0, len(rows) - _AUTOMATION_LIST_CAP))
+
+    @spec_tool("draft_feedback_cluster_issue",
+               "Draft the GitHub issue {title, body} that would file the given feedback "
+               "reports (ids from get_feedback_clusters) as ONE issue. Nothing is filed — "
+               "show or edit the draft, then file it with file_feedback_cluster.",
+               _schema(("ids",), ids=_STR_ARRAY))
+    @guarded
+    async def draft_feedback_cluster_issue(args: dict[str, Any]) -> Any:
+        return await api.post("/api/automations/session-feedback/clusters/draft",
+                              {"ids": _feedback_ids(args)})
+
+    @spec_tool("file_feedback_cluster",
+               "File ONE public GitHub issue on Session Feedback's target repo for the "
+               "given feedback reports (ids from get_feedback_clusters), with this title "
+               "and markdown body — draft_feedback_cluster_issue gives a starting point. "
+               "Every report leaves the inbox linked to that issue. Report the issue "
+               "number back. The user confirms via the permission card this call raises "
+               "— call it directly once the user has asked to file, don't ask again in chat.",
+               _schema(("ids", "title", "body"), ids=_STR_ARRAY, title=str, body=str))
+    @guarded
+    async def file_feedback_cluster(args: dict[str, Any]) -> Any:
+        return await api.post("/api/automations/session-feedback/clusters/file", {
+            "ids": _feedback_ids(args),
+            "title": _bounded_text(args.get("title"), "title", 256),
+            "body": _bounded_text(args.get("body"), "body", _GH_BODY_MAX)})
+
+    @spec_tool("dismiss_feedback_cluster",
+               "Dismiss the given feedback reports (ids from get_feedback_clusters): they "
+               "leave the inbox without filing anything. Pass fixed_by (a merged PR "
+               "number) when they were dismissed because that PR fixed them. The user "
+               "confirms via the permission card this call raises — call it directly once "
+               "the user has asked to dismiss, don't ask again in chat.",
+               _schema(("ids",), ids=_STR_ARRAY, fixed_by=int))
+    @guarded
+    async def dismiss_feedback_cluster(args: dict[str, Any]) -> Any:
+        body: dict[str, Any] = {"ids": _feedback_ids(args)}
+        if args.get("fixed_by") is not None:
+            body["fixedBy"] = _whole(args["fixed_by"], "fixed_by")
+        return await api.post("/api/automations/session-feedback/clusters/dismiss", body)
+
+    @spec_tool("attach_feedback_to_issue",
+               "Attach the given feedback reports (ids from get_feedback_clusters) to an "
+               "EXISTING issue on Session Feedback's target repo: posts one public comment "
+               "with their evidence on that issue, and the reports leave the inbox linked "
+               "to it. The user confirms via the permission card this call raises — call "
+               "it directly once the user has asked, don't ask again in chat.",
+               _schema(("ids", "issue"), ids=_STR_ARRAY, issue=int))
+    @guarded
+    async def attach_feedback_to_issue(args: dict[str, Any]) -> Any:
+        return await api.post("/api/automations/session-feedback/clusters/attach", {
+            "ids": _feedback_ids(args), "issue": _whole(args.get("issue"), "issue")})
+
+    @spec_tool("attach_feedback_to_session",
+               "Hand the given feedback reports (ids from get_feedback_clusters) to a live "
+               "coding session: their evidence is sent to it as a prompt, which it acts "
+               "on, and the reports leave the inbox. Refused when that session is not "
+               "live. The user confirms via the permission card this call raises — call it "
+               "directly once the user has asked, don't ask again in chat.",
+               _schema(("ids", "session_id"), ids=_STR_ARRAY, session_id=str))
+    @guarded
+    async def attach_feedback_to_session(args: dict[str, Any]) -> Any:
+        return await api.post("/api/automations/session-feedback/clusters/attach", {
+            "ids": _feedback_ids(args),
+            "sessionId": _nonempty(args.get("session_id"), field="session_id")})
+
     # -- Operator tier (spec v2 §7, Pack O, class D/M) ---------------------------------
     # Registered only when `operator=True` (Task 9.2). Each is still a thin adapter
     # over ONE endpoint; the route allowlist independently requires `operator=True` too
@@ -1701,7 +1805,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             set_quiet_hours, advance_initiative, resolve_triage, resolve_decision,
             request_product_sync,
             delete_session, delete_sessions, cancel_queued_session, ready_merge_pr,
-            trigger_automation_action, dispatch_backlog, consolidate_prs]
+            trigger_automation_action, dispatch_backlog, consolidate_prs,
+            get_feedback_clusters, draft_feedback_cluster_issue, file_feedback_cluster,
+            dismiss_feedback_cluster, attach_feedback_to_issue, attach_feedback_to_session]
     operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,
                       start_reauth]
     return base_tools + (operator_tools if operator else [])

@@ -154,7 +154,9 @@ def test_destructive_viberpit_tool_always_decision_does_not_grant(fake_specs):
 
 
 @pytest.mark.parametrize("name", ["trigger_automation_action", "dispatch_backlog",
-                                  "consolidate_prs"])
+                                  "consolidate_prs", "file_feedback_cluster",
+                                  "dismiss_feedback_cluster", "attach_feedback_to_issue",
+                                  "attach_feedback_to_session"])
 def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name):
     """No `fake_specs` here on purpose (plan Task 6.4): these three are registered
     DESTRUCTIVE in the REAL TOOL_SPECS, so the card in full-auto — the only thing

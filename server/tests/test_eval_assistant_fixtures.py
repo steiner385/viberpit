@@ -30,6 +30,8 @@ def client(fixture=None):
 # f5d3ec9e7eb0c6f35113420dd5a55974e656250fa2e456ef622900b324131ac1
 # Before triage-dismiss-proposal (#2683, 129 cases):
 # c78f1a7d53459a2aa4682d008d3dc5affa339eb9c736ac8b3ce0d554f1f63852
+# Before the Session Feedback inbox tools (#2936, 130 cases):
+# 79ca4b875008304b9ae35fea7a855a9797d9dd6b8091bca68aa126e11e5b0cb8
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -37,8 +39,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "79ca4b875008304b9ae35fea7a855a9797d9dd6b8091bca68aa126e11e5b0cb8"
-    assert len(rows) == 130
+    assert digest == "255b8959cfae685b78e851187caaab3d34b3ff458f015f861ea6bc941564d3ee"
+    assert len(rows) == 136
     assert sum(bool(r.get("operator")) for r in rows) == 5
 
 
@@ -668,3 +670,29 @@ def test_holds_and_decisions_fixtures_match_the_real_wire():
         row = by_id[d["id"]]
         assert row["options"] == d["options"] and row["recommendedKey"] == d["recommendedKey"]
         assert d["recommendedKey"] in {o["key"] for o in d["options"]}
+
+
+def test_feedback_inbox_fixture_routes():
+    """The Session Feedback inbox canned routes (#2936): the clusters list carries the
+    report ids the eval cases name, ops on known ids answer TriggerResult-shaped, and an
+    unknown id or a not-live session gets the route's real refusal."""
+    base = "/api/automations/session-feedback/clusters"
+    with client() as c:
+        body = c.get(base).json()
+        members = {cl["title"]: sorted(m["id"] for m in cl["members"])
+                   for cl in body["clusters"]}
+        assert members["Permission card reappears after it was approved"] == [
+            "fb-1", "fb-2", "fb-3"]
+        assert body["total"] == 6 and body["clusters"][0]["themed"] is True
+        assert c.post(f"{base}/draft", json={"ids": ["fb-1"]}).json()["title"]
+        assert c.post(f"{base}/file", json={"ids": ["fb-1"], "title": "t", "body": "b"}
+                      ).json()["issue"] == 2961
+        assert "#2950" in c.post(f"{base}/dismiss", json={"ids": ["fb-4"], "fixedBy": 2950}
+                                 ).json()["message"]
+        assert c.post(f"{base}/attach", json={"ids": ["fb-1"], "issue": 2900}
+                      ).json()["status"] == "attached"
+        assert c.post(f"{base}/attach", json={"ids": ["fb-4"], "sessionId": ev.S2}
+                      ).json()["status"] == "attached"
+        assert c.post(f"{base}/attach", json={"ids": ["fb-4"], "sessionId": ev.S7}
+                      ).status_code == 409
+        assert c.post(f"{base}/dismiss", json={"ids": ["nope"]}).status_code == 422
