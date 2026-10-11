@@ -198,9 +198,31 @@ def _tool_in_scope(p: Pattern, tool: str) -> bool:
 # ---------------------------------------------------------------- matching
 
 
+_PORT_RE = re.compile(r"[0-9]+")
+
+
 def _hostname(input: dict) -> str | None:
+    """Lowercased host of an http(s) URL, or None (unmatchable) when the URL is ambiguous.
+
+    Python's ``urlsplit`` and the WHATWG parser the CLI uses disagree on backslashes,
+    userinfo, stripped whitespace/control characters and odd ports (e.g.
+    ``https://attacker.com\\@docs.python.org`` is docs.python.org here, attacker.com in Node),
+    so any URL carrying one of those is refused rather than guessed at.
+    """
+    url = str(input.get("url", ""))
+    if "\\" in url or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
+        return None
     try:
-        host = urlsplit(str(input.get("url", ""))).hostname
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or "@" in parts.netloc:
+            return None
+        if parts.username is not None or parts.password is not None:
+            return None
+        hostport = parts.netloc
+        rest = hostport.rsplit("]", 1)[1] if hostport.startswith("[") else hostport
+        if ":" in rest and not _PORT_RE.fullmatch(rest.rsplit(":", 1)[1]):
+            return None
+        host = parts.hostname
     except ValueError:
         return None
     return host.lower() if host else None

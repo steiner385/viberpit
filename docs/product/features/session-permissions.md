@@ -87,7 +87,9 @@ exception (see Standing rules).
     literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
     `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means
     no rule can ever match those paths. Path matching resolves symlinks and never matches
-    outside the worktree.
+    outside the worktree. A WebFetch domain rule only matches a plain `http`/`https` URL: one with
+    userinfo (`user@`), a backslash, whitespace or control characters, or a non-numeric port is
+    never matched (Python's and Node's URL parsers disagree on those) and is always carded.
   - *Enforcement.* `StandingRuleGate` is consulted wherever a card would otherwise be created,
     in **every** mode including `interactive`; it fails closed (any error = ask the human).
     Hits are counted and audited. Engine-managed (Codex) cards are swept by new rules but a

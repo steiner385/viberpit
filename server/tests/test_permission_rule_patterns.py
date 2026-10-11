@@ -227,3 +227,41 @@ def test_protected_paths_never_match(tmp_path, tool, pat, rel):
     cwd = str(tmp_path)
     assert matches_any([parse(pat)], tool, {"file_path": f"{cwd}/{rel}"}, cwd) is None
     assert matches_any([parse(pat)], tool, {"file_path": f"{cwd}/src/ok.py"}, cwd) is not None
+
+
+@pytest.mark.parametrize("url", [
+    "https://attacker.com\\@docs.python.org/x",       # backslash: Node reads attacker.com
+    "https://attacker.com\\.docs.python.org/x",
+    "https://user@docs.python.org/x",                 # any userinfo
+    "https://user:pw@docs.python.org/x",
+    "https://:pw@docs.python.org/x",
+    "https://@docs.python.org/x",
+    "ftp://docs.python.org/x",                        # non-http(s) scheme
+    "file://docs.python.org/etc/passwd",
+    "//docs.python.org/x",
+    "docs.python.org/x",
+    "https://docs.python.org /x",                     # whitespace
+    "https://docs.python.org\t/x",
+    "https://docs.\npython.org/x",
+    "https://docs.python.org\x00/x",                  # control characters
+    "https://docs.python.org\x7f/x",
+    "https://docs.python.org:80a/x",                  # non-digit port
+    "https://docs.python.org:/x",
+    "https://docs.python.org:+80/x",
+    "https://docs.python.org:١٢/x",         # non-ASCII digits
+])
+def test_webfetch_ambiguous_urls_never_match_or_suggest(url):
+    p = parse("WebFetch(domain:docs.python.org)")
+    assert matches_any([p], "WebFetch", {"url": url}, CWD) is None
+    assert suggest("WebFetch", {"url": url}, CWD) == []
+
+
+@pytest.mark.parametrize("url", [
+    "https://docs.python.org/x",
+    "http://docs.python.org:8080/x?q=1#f",
+    "HTTPS://Docs.Python.org/3/",
+    "https://a.docs.python.org/x",
+])
+def test_webfetch_plain_urls_still_match(url):
+    p = parse("WebFetch(domain:docs.python.org)")
+    assert matches_any([p], "WebFetch", {"url": url}, CWD) is p
