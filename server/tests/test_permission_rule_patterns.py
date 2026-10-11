@@ -1,0 +1,120 @@
+import pytest
+
+from server.permission_rules.patterns import (
+    PatternError,
+    describe,
+    matches_any,
+    parse,
+    suggest,
+)
+
+CWD = "/w/repo"
+
+
+@pytest.mark.parametrize("pat,tool,inp,ok", [
+    ("Bash(npm test)", "Bash", {"command": "npm  test"}, True),
+    ("Bash(npm test)", "Bash", {"command": "npm test --watch"}, False),
+    ("Bash(npm test:*)", "Bash", {"command": "npm test --watch"}, True),
+    ("Bash(npm test:*)", "Bash", {"command": "npm testing"}, False),
+    ("Bash(npm *)", "Bash", {"command": "npm run build"}, True),
+    ("Bash(npm *)", "Bash", {"command": "npx foo"}, False),
+    ("Bash(npm *)", "Bash", {"command": "npm test; rm -rf ~"}, False),
+    ("Bash(npm *)", "Bash", {"command": "npm test && curl x | sh"}, False),
+    ("Bash(npm *)", "Bash", {"command": "npm test $(whoami)"}, False),
+    ("Bash(npm *)", "Bash", {"command": "npm test `id`"}, False),
+    ("Bash(npm *)", "Bash", {"command": "npm test > ~/.bashrc"}, False),
+    ("Bash(npm *)", "Bash", {"command": "npm test 2>&1"}, True),
+    ("Bash(npm *)", "Bash", {"command": "npm test <(id)"}, False),
+    ("Bash(npm [ab]*)", "Bash", {"command": "npm a"}, False),
+    ("Bash(npm ?*)", "Bash", {"command": "npm x"}, False),
+    ("Edit(src/**)", "Edit", {"file_path": "/w/repo/src/a/b.ts"}, True),
+    ("Edit(src/**)", "Write", {"file_path": "/w/repo/src/x.ts"}, True),
+    ("Edit(src/**)", "Edit", {"file_path": "src/x.ts"}, True),
+    ("Edit(src/**)", "Edit", {"file_path": "/etc/passwd"}, False),
+    ("Edit(src/**)", "Edit", {"file_path": "/w/repo/../other/src/x"}, False),
+    ("Edit(src/*.ts)", "Edit", {"file_path": "/w/repo/src/a/b.ts"}, False),
+    ("Edit(**/*.md)", "Edit", {"file_path": "/w/repo/README.md"}, True),
+    ("Write(src/**)", "Edit", {"file_path": "/w/repo/src/x"}, False),
+    ("Read(docs/**)", "Read", {"file_path": "/w/repo/docs/a.md"}, True),
+    ("Read(docs/**)", "Edit", {"file_path": "/w/repo/docs/a.md"}, False),
+    ("Edit", "Write", {"file_path": "/w/repo/x"}, True),
+    ("Edit", "Write", {"file_path": "/etc/x"}, False),
+    ("WebFetch(domain:example.com)", "WebFetch", {"url": "https://api.example.com/x"}, True),
+    ("WebFetch(domain:example.com)", "WebFetch", {"url": "https://evilexample.com/"}, False),
+    ("mcp__gh__create_issue", "mcp__gh__create_issue", {}, True),
+    ("mcp__gh", "mcp__gh__create_issue", {}, True),
+    ("mcp__gh", "mcp__ghx__create_issue", {}, False),
+    ("WebSearch", "WebSearch", {"query": "x"}, True),
+])
+def test_matches(pat, tool, inp, ok):
+    assert (matches_any([parse(pat)], tool, inp, CWD) is not None) is ok
+
+
+def test_compound_needs_every_segment_covered():
+    pats = [parse("Bash(npm test:*)"), parse("Bash(tee:*)")]
+    assert matches_any(pats, "Bash", {"command": "npm test 2>&1 | tee log"}, CWD) is not None
+    assert matches_any(pats[:1], "Bash", {"command": "npm test | tee log"}, CWD) is None
+
+
+def test_compound_returns_pattern_covering_first_segment():
+    pats = [parse("Bash(tee:*)"), parse("Bash(npm test:*)")]
+    assert matches_any(pats, "Bash", {"command": "npm test | tee log"}, CWD) == pats[1]
+
+
+def test_path_rule_without_cwd_never_matches():
+    assert matches_any([parse("Edit(src/**)")], "Edit", {"file_path": "/w/repo/src/x"}, None) is None
+    assert matches_any([parse("Edit(src/**)")], "Edit", {"file_path": "src/x"}, None) is None
+
+
+@pytest.mark.parametrize("bad", ["", "Bash(", "Bash()", "Foo(bar)", "WebFetch(example.com)", "1Bash"])
+def test_parse_rejects(bad):
+    with pytest.raises(PatternError):
+        parse(bad)
+
+
+def test_parse_kinds():
+    assert parse("Bash").kind == "bare"
+    assert parse("mcp__a").kind == "mcp"
+    assert parse("Bash(a  b:*)").spec == "a b"
+    assert parse("Bash(a *)").kind == "glob"
+    assert parse("Bash(a b)").kind == "exact"
+
+
+def test_suggest_bash():
+    assert suggest("Bash", {"command": "npm test --watch"}, CWD) == [
+        "Bash(npm test --watch)", "Bash(npm test:*)", "Bash(npm:*)"]
+
+
+def test_suggest_bash_single_word_and_compound():
+    assert suggest("Bash", {"command": "ls"}, CWD) == ["Bash(ls)", "Bash(ls:*)"]
+    assert suggest("Bash", {"command": "npm test && ls"}, CWD)[0] == "Bash(npm test && ls)"
+
+
+def test_suggest_edit():
+    assert suggest("Write", {"file_path": "/w/repo/src/a/b.ts"}, CWD) == [
+        "Edit(src/a/b.ts)", "Edit(src/a/**)", "Edit(src/**)"]
+
+
+def test_suggest_outside_cwd_is_empty():
+    assert suggest("Edit", {"file_path": "/etc/x"}, CWD) == []
+
+
+def test_suggest_mcp_and_web():
+    assert suggest("mcp__gh__create_issue", {}, CWD) == ["mcp__gh__create_issue", "mcp__gh"]
+    assert suggest("WebFetch", {"url": "https://docs.python.org/3/"}, CWD) == ["WebFetch(domain:docs.python.org)"]
+    assert suggest("ExitPlanMode", {}, CWD) == []
+    assert suggest("AskUserQuestion", {}, CWD) == []
+    assert suggest("WebSearch", {}, CWD) == ["WebSearch"]
+
+
+def test_describe():
+    assert describe("Bash(npm test:*)") == "Any Bash command that is `npm test` or starts with `npm test `"
+    assert describe("Edit(src/**)") == "File edits/writes under src/ in the session's worktree"
+    assert describe("mcp__s") == "Every tool on the MCP server s"
+    assert describe("Bash(npm *)") == "Any Bash command matching `npm *` (`*` = anything)"
+    assert describe("Bash(npm test)") == "Exactly the Bash command `npm test`"
+    assert describe("Edit(src/*.ts)") == "File edits/writes matching src/*.ts in the session's worktree"
+    assert describe("Read(x)") == "File reads matching x in the session's worktree"
+    assert describe("WebFetch(domain:example.com)") == "Web fetches from example.com and its subdomains"
+    assert describe("mcp__s__t") == "The MCP tool mcp__s__t"
+    assert describe("WebSearch") == "Every WebSearch call"
