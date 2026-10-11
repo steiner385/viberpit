@@ -1,13 +1,13 @@
 """Not-needed suppression re-arm (#2683): work_items.last_reopened_at.
 
-Revision ID: 0085_work_item_last_reopened_at
-Revises: 0084_session_feedback_resolution
+Revision ID: 0086_work_item_last_reopened_at
+Revises: 0085_permission_rule_scopes
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0085_work_item_last_reopened_at"
-down_revision = "0084_session_feedback_resolution"
+revision = "0086_work_item_last_reopened_at"
+down_revision = "0085_permission_rule_scopes"
 branch_labels = None
 depends_on = None
 
