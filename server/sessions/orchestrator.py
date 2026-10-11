@@ -1468,6 +1468,7 @@ class SessionOrchestrator:
             list_auto_accept_candidates=self._pm_triage_list_auto_accept_candidates,
             auto_accept=self._pm_triage_auto_accept,
             auto_dismiss=self._pm_triage_auto_dismiss,
+            mark_ignored=self._pm_triage_mark_ignored,
         )
         self._pm_triage_task: asyncio.Task | None = None
         # Per-repo label→feature route map cache for `_pm_triage_route_by_label`
@@ -10644,6 +10645,7 @@ class SessionOrchestrator:
         from server.automations.pm_triage import PendingItemView
         from server.db.models import TriageProposal, WorkItem
         from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
+        from server.pm.repo_project import owning_projects_by_repo
         async with db_session() as db:
             pending_ids = set((await db.execute(
                 select(TriageProposal.work_item_id)
@@ -10655,12 +10657,18 @@ class SessionOrchestrator:
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
             )).scalars().all()
-            trusted = await trusted_authors_by_repo(db, {w.repo for w in rows})
+            repos = {w.repo for w in rows if w.repo}
+            trusted = await trusted_authors_by_repo(db, repos)
+            # The owning product rides on the item so the loop judges bot output
+            # by THAT product's policy (#2683) — the ONE repo→project resolver.
+            owners = await owning_projects_by_repo(db, repos) if repos else {}
             return [PendingItemView(
                 repo=w.repo or "", number=w.number or 0, kind=w.kind or "issue",
                 title=w.title or "", body=w.body or "",
                 labels=tuple(w.labels or ()),
                 linked_issue_numbers=tuple(w.linked_issue_numbers or ()),
+                author=w.author,
+                product_slug=(o.slug if (o := owners.get(w.repo or "")) else None),
             ) for w in rows if w.id not in pending_ids
                 and author_trusted(trusted, w.repo, w.author)]
 
@@ -10879,6 +10887,7 @@ class SessionOrchestrator:
         from server.db.models import Feature, TriageProposal, WorkItem
         from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
         from server.pm.engine import NoFitCluster, StaleFeature, TriageState
+        from server.pm.triage_accept import awaiting_decision_clause
         mode, config = await self._pm_triage_read_config()
         stale_days = int(config.get("stale_days", 14))
         now = datetime.now(timezone.utc)
@@ -10887,13 +10896,18 @@ class SessionOrchestrator:
                 select(TriageProposal.work_item_id)
                 .where(TriageProposal.status == "pending")
             )).scalars().all())
+            # The status card's "awaiting accept" — the inbox's own predicate, so a
+            # proposal whose item closed drops off both at once (#2683).
+            pending_count = (await db.execute(
+                select(func.count(TriageProposal.id))
+                .outerjoin(WorkItem, WorkItem.id == TriageProposal.work_item_id)
+                .where(awaiting_decision_clause()))).scalar_one()
             open_unclassified = (await db.execute(
                 select(WorkItem.id, WorkItem.repo, WorkItem.author).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
             )).all()
-            pending_count = len(pending_ids)
             # Drift clusters: accepted no_fit proposals grouped by
             # (suggestion, repo) — NOT by suggestion alone. A map-diff PR targets
             # exactly one repo, so merging every repo's item numbers under the
@@ -11062,11 +11076,23 @@ class SessionOrchestrator:
         on Postgres that is one ``CURRENT_TIMESTAMP`` for every row in it — ties
         are the common case. Which of a tied batch the per-product cap admits
         would otherwise be back to the storage engine. The id is arbitrary, but
-        it is STABLE, which is the whole property the cap needs."""
+        it is STABLE, which is the whole property the cap needs.
+
+        ``prior_human_accepts`` (the repeat rule, #2683) is counted in ONE query
+        over every candidate feature: accepted proposals onto that feature whose
+        work item still sits on it (accepted AS PROPOSED — an accept edited onto
+        another capability is not an endorsement of this one), decided by a
+        person. Provenance is the proposal's own ``undo_snapshot["decidedBy"]``,
+        the record ``apply_accept`` stamps and ``undo_triage`` trusts; a machine
+        accept never counts, or the rule would feed on itself, and an accept
+        older than that stamp (no ``decidedBy``) does not count either. A feature
+        id is unique to its project, so the count is per product by construction."""
+        from collections import Counter
         from sqlalchemy import select
         from server.automations.pm_triage import AutoAcceptCandidateView
         from server.db.models import Feature, TriageProposal, WorkItem
         from server.pm.repo_project import owning_projects_by_repo
+        from server.pm.triage_accept import DECIDED_BY_HUMAN
         async with db_session() as db:
             rows = (await db.execute(
                 select(TriageProposal, WorkItem)
@@ -11077,10 +11103,18 @@ class SessionOrchestrator:
             owners = await owning_projects_by_repo(db, repos) if repos else {}
             feature_ids = {p.proposed_feature_id for p, _ in rows if p.proposed_feature_id}
             states: dict[str, str | None] = {}
+            prior: Counter[str] = Counter()
             if feature_ids:
                 states = {fid: st for fid, st in (await db.execute(
                     select(Feature.id, Feature.state).where(
                         Feature.id.in_(feature_ids)))).all()}
+                prior.update(fid for fid, snap in (await db.execute(
+                    select(TriageProposal.proposed_feature_id, TriageProposal.undo_snapshot)
+                    .join(WorkItem, WorkItem.id == TriageProposal.work_item_id)
+                    .where(TriageProposal.status == "accepted",
+                           TriageProposal.proposed_feature_id.in_(feature_ids),
+                           WorkItem.feature_id == TriageProposal.proposed_feature_id)
+                )).all() if (snap or {}).get("decidedBy") == DECIDED_BY_HUMAN)
             out = []
             for prop, wi in rows:
                 owner = owners.get(wi.repo or "")
@@ -11092,26 +11126,66 @@ class SessionOrchestrator:
                     proposed_feature_id=prop.proposed_feature_id,
                     feature_state=(states.get(prop.proposed_feature_id)
                                    if prop.proposed_feature_id else None),
-                    auto_undone=prop.auto_undone, title=wi.title))
+                    auto_undone=prop.auto_undone, title=wi.title, author=wi.author,
+                    item_state=wi.state,
+                    prior_human_accepts=(prior[prop.proposed_feature_id]
+                                         if prop.proposed_feature_id else 0)))
             return out
 
-    async def _pm_triage_auto_dismiss(self, proposal_id: str) -> bool:
+    async def _pm_triage_auto_dismiss(self, proposal_id: str, reason: str) -> bool:
         """The loop's ``auto_dismiss`` seam (#2683): re-read under the same row
-        lock as accept, then dismiss through ``apply_auto_dismiss``."""
-        from server.pm.triage_accept import apply_auto_dismiss, pending_proposal_stmt
+        lock as accept, then dismiss through the inbox's own ``apply_dismiss``
+        (``decidedBy: auto``, so a person's undo arms ``auto_undone``). False when
+        a human resolved it first."""
+        from server.pm.triage_accept import (DECIDED_BY_AUTO, apply_dismiss,
+                                             pending_proposal_stmt)
         async with db_session() as db:
             prop = (await db.execute(
                 pending_proposal_stmt(proposal_id))).scalar_one_or_none()
             if prop is None or prop.status != "pending":
                 return False
-            return await apply_auto_dismiss(db, prop, audit_identity="pm-triage")
+            await apply_dismiss(db, prop, decided_by=DECIDED_BY_AUTO,
+                                audit_identity="pm-triage", reason=reason)
+            return True
 
-    async def _pm_triage_auto_accept(self, proposal_id: str) -> "dict | None":
+    async def _pm_triage_mark_ignored(self, item) -> bool:
+        """The loop's ``mark_ignored`` seam (#2683): take a bot artifact out of
+        the classify queue BEFORE any session sees it, through the dismiss path's
+        own ``mark_dismissed`` (no hold, no feature — see ``DISMISSED_TRIAGE_STATE``
+        for why that state). Re-checks the candidate predicate under the write so
+        an item classified or proposed since the listing is left alone (False).
+        Audited ``pm.triage.bot_artifact_ignored``."""
+        from sqlalchemy import select
+        from server.audit import record_audit
+        from server.db.models import TriageProposal, WorkItem
+        from server.pm.triage_accept import DISMISSED_BY_BOT_ARTIFACT, mark_dismissed
+        async with db_session() as db:
+            wi = (await db.execute(select(WorkItem).where(
+                WorkItem.repo == item.repo, WorkItem.number == item.number,
+                WorkItem.kind == item.kind,
+                WorkItem.triage_state == "unclassified"))).scalar_one_or_none()
+            if wi is None:
+                return False
+            pending = (await db.execute(select(TriageProposal.id).where(
+                TriageProposal.work_item_id == wi.id,
+                TriageProposal.status == "pending"))).first()
+            if pending is not None:
+                return False
+            mark_dismissed(wi, by=DISMISSED_BY_BOT_ARTIFACT)
+            await record_audit(db=db, type="pm.triage.bot_artifact_ignored",
+                               identity="pm-triage",
+                               detail={"workItemId": wi.id, "repo": wi.repo,
+                                       "number": wi.number, "author": wi.author,
+                                       "product": item.product_slug})
+            return True
+
+    async def _pm_triage_auto_accept(self, proposal_id: str, rule: str) -> "dict | None":
         """The loop's ``auto_accept`` seam: ONE transaction — re-read the
         proposal (a human may have resolved it since the list), accept through
         the shared ``apply_accept`` with ``decided_by="auto"``, audit
-        ``pm.triage.auto_accept`` as ``pm-triage``. Returns the audit detail, or
-        ``None`` when there was nothing left to accept.
+        ``pm.triage.auto_accept`` as ``pm-triage`` with the *rule* that admitted
+        it (``confidence`` | ``dispatch_off`` | ``repeat``). Returns the audit
+        detail, or ``None`` when there was nothing left to accept.
 
         The re-read takes a row lock (the shared ``pending_proposal_stmt``,
         which explains it): this loop and a human at the inbox are two writers
@@ -11147,11 +11221,11 @@ class SessionOrchestrator:
             wi_id = prop.work_item_id
             detail = {"proposalId": prop.id, "workItemId": wi_id,
                       "featureId": prop.proposed_feature_id,
-                      "confidence": prop.confidence_level}
+                      "confidence": prop.confidence_level, "rule": rule}
             await record_audit(db=db, type="pm.triage.auto_accept",
                                identity="pm-triage", detail=detail)
             return {"workItemId": wi_id, "featureId": prop.proposed_feature_id,
-                    "confidence": prop.confidence_level}
+                    "confidence": prop.confidence_level, "rule": rule}
 
     async def _pm_triage_tick_loop(self, interval: float) -> None:
         """Periodic driver for the pm-triage control loop (mirrors _pm_sync_tick_loop)."""
@@ -12202,6 +12276,7 @@ class SessionOrchestrator:
         from server.db.models import (
             Feature, Project, ProjectRepo, TriageProposal, WorkItem)
         from server.pm.onboarding import ProjectOnboardingView
+        from server.pm.triage_accept import awaiting_decision_clause
         async with db_session() as db:
             repos = (await db.execute(select(ProjectRepo).where(
                 ProjectRepo.project_id == project_id))).scalars().all()
@@ -12220,7 +12295,7 @@ class SessionOrchestrator:
                     TriageProposal.id)).join(
                     WorkItem, WorkItem.id == TriageProposal.work_item_id).where(
                         WorkItem.repo.in_(repo_names),
-                        TriageProposal.status == "pending"))).scalar_one()
+                        awaiting_decision_clause()))).scalar_one()
             proj = (await db.execute(select(Project).where(
                 Project.id == project_id))).scalar_one()
         return ProjectOnboardingView(

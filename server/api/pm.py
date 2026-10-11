@@ -76,6 +76,8 @@ from server.pm.triage_accept import (
     _overlay_snapshot,
     _restore_overlay,
     apply_accept,
+    apply_dismiss,
+    awaiting_decision_clause,
     pending_proposal_stmt,
 )
 
@@ -378,7 +380,7 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
     if repo_names:
         props = [c for c, in (await db.execute(select(TriageProposal.created_at).join(
             WorkItem, WorkItem.id == TriageProposal.work_item_id).where(
-            TriageProposal.status == "pending",
+            awaiting_decision_clause(),
             WorkItem.repo.in_(repo_names)))).all()]
     now = datetime.now(timezone.utc)
     unindexed = [(d.get("path", ""), d.get("error", "")) for d in (p.unindexed_docs or [])]
@@ -1522,6 +1524,10 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
         "kind": wi.kind if wi else None,
         "title": wi.title if wi else None,
         "url": wi.url if wi else None,
+        # open | closed | merged (#2683). A pending proposal for a closed item is
+        # never listed — the loop dismisses it — so a row reads "open" unless it
+        # is a resolved one shown for its undo window.
+        "itemState": wi.state if wi else None,
         "proposedFeatureId": prop.proposed_feature_id,
         "proposedFeatureSlug": feat_slug,
         "noFitSuggestion": prop.no_fit_suggestion,
@@ -1566,11 +1572,17 @@ async def list_triage(
     rather than filtering client-side), and for those a fresh auto-accept is a
     decision already taken: including it over-counts the queue and invites a
     "3 proposals need you" that names rows nobody has to touch.
+
+    A pending proposal whose work item has closed or merged is never listed
+    (#2683): it has no decision left, the PM Triage loop dismisses it on its
+    next tick, and the shared ``awaiting_decision_clause`` drops it here (and
+    from every count that uses it) immediately.
     """
     since = datetime.now(timezone.utc) - timedelta(seconds=TRIAGE_UNDO_WINDOW_S)
-    stmt = select(TriageProposal).where(
-        TriageProposal.status == "pending" if pendingOnly else or_(
-            TriageProposal.status == "pending",
+    stmt = select(TriageProposal).outerjoin(
+        WorkItem, WorkItem.id == TriageProposal.work_item_id).where(
+        awaiting_decision_clause() if pendingOnly else or_(
+            awaiting_decision_clause(),
             and_(TriageProposal.status == "accepted",
                  TriageProposal.resolved_at >= since)))
     if confidenceLevel:
@@ -1831,14 +1843,38 @@ async def apply_reject(
                        detail={"proposalId": prop.id})
 
 
+class DismissBody(BaseModel):
+    """``POST /triage/{id}/dismiss``'s optional body: a free-text reason for the audit."""
+    reason: str | None = None
+
+
+@router.post("/triage/{proposal_id}/dismiss")
+async def dismiss_triage(
+    proposal_id: str,
+    body: DismissBody | None = Body(default=None),
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Dismiss the proposal — "there is no decision to make here" (#2683): bot
+    output, an item that no longer matters. Unlike reject, the work item gets
+    NO owner hold and NO feature; it leaves the classify queue for good and the
+    undo window restores it. Same write path as the loop's auto-dismiss
+    (``apply_dismiss``); the batch form is ``dismiss-bulk``."""
+    prop = await _load_pending_proposal(db, proposal_id)
+    await apply_dismiss(db, prop, decided_by=DECIDED_BY_HUMAN, audit_identity=identity,
+                        reason=body.reason if body else None)
+    return {"id": prop.id, "status": "dismissed", "workItemId": prop.work_item_id}
+
+
 @router.post("/triage/{proposal_id}/undo")
 async def undo_triage(
     proposal_id: str,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Put an accepted or rejected proposal back to pending and restore the work
-    item's overlay from the snapshot accept/reject took (roadmap spec §10, §12).
+    """Put an accepted, rejected or dismissed proposal back to pending and restore
+    the work item's overlay from the snapshot accept/reject/dismiss took (roadmap
+    spec §10, §12).
     Only within TRIAGE_UNDO_WINDOW_S of resolution; siblings re-proposed by the
     drift latch are NOT restored (their no_fit_suggestion is gone)."""
     prop = (await db.execute(select(TriageProposal).where(
@@ -1865,7 +1901,8 @@ async def undo_triage(
             "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
-    if snap.get("decidedBy") == DECIDED_BY_AUTO and prop.status in ("accepted", "rejected"):
+    if snap.get("decidedBy") == DECIDED_BY_AUTO and prop.status in (
+            "accepted", "rejected", "dismissed"):
         # The decision being undone was the machine's: never let it re-decide.
         #
         # Read from the SNAPSHOT (`apply_accept` stamps `decidedBy` there), not
@@ -1892,7 +1929,7 @@ async def undo_triage(
 
 
 class BulkIdsBody(BaseModel):
-    """The selection a bulk sweep (`accept-bulk`, `reject-bulk`) acts on."""
+    """The selection a bulk sweep (`accept-bulk`, `reject-bulk`, `dismiss-bulk`) acts on."""
     ids: list[str]
 
 
@@ -1993,6 +2030,46 @@ async def reject_bulk(
                        detail={"proposalIds": landed, "requestedIds": body.ids,
                                "rejected": len(landed)})
     return {"rejected": len(landed), "results": results}
+
+
+@router.post("/triage/dismiss-bulk")
+async def dismiss_bulk(
+    body: BulkIdsBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Dismiss many proposals in one call (#2683). The dismiss twin of
+    ``reject_bulk``, and the same contract: every id runs the SAME
+    ``apply_dismiss`` path as single-dismiss inside its OWN savepoint, per-id
+    failures land in ``results``, and the response is always HTTP 200 with a
+    207-style aggregate."""
+    results: list[dict] = []
+    landed: list[str] = []          # ids that actually committed, for the audit
+    for pid in body.ids:
+        proposal = (await db.execute(
+            select(TriageProposal).where(TriageProposal.id == pid)
+        )).scalar_one_or_none()
+        if proposal is None:
+            results.append({"id": pid, "ok": False, "error": "not_found"})
+            continue
+        if proposal.status != "pending":
+            results.append({"id": pid, "ok": False, "error": "not_pending"})
+            continue
+        try:
+            async with db.begin_nested():
+                await apply_dismiss(db, proposal, decided_by=DECIDED_BY_HUMAN,
+                                    audit_identity=identity)
+            results.append({"id": pid, "ok": True})
+            landed.append(pid)
+        except Exception:
+            log.warning("dismiss-bulk: proposal %s failed", pid, exc_info=True)
+            results.append({"id": pid, "ok": False, "error": "failed"})
+    await db.flush()
+    await record_audit(db=db, type="pm.triage.dismiss_bulk", identity=identity,
+                       # the ids that actually landed, NOT the requested list
+                       detail={"proposalIds": landed, "requestedIds": body.ids,
+                               "dismissed": len(landed)})
+    return {"dismissed": len(landed), "results": results}
 
 
 def _work_item_to_dict(w: WorkItem) -> dict:

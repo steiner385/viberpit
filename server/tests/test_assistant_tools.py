@@ -1021,8 +1021,10 @@ async def test_resolve_triage_routes_by_decision_and_rejects_others():
     tools = build_tools(_api(handler))
     await _tool(tools, "resolve_triage").handler({"proposal_id": "p1", "decision": "accept"})
     await _tool(tools, "resolve_triage").handler({"proposal_id": "p1", "decision": "reject"})
+    await _tool(tools, "resolve_triage").handler({"proposal_id": "p1", "decision": "dismiss"})
     bad = await _tool(tools, "resolve_triage").handler({"proposal_id": "p1", "decision": "maybe"})
-    assert seen == ["/api/pm/triage/p1/accept", "/api/pm/triage/p1/reject"]
+    assert seen == ["/api/pm/triage/p1/accept", "/api/pm/triage/p1/reject",
+                    "/api/pm/triage/p1/dismiss"]
     assert bad["is_error"] is True
 
 

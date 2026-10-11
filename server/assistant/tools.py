@@ -119,7 +119,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("delete_watch", ToolClass.MUTATION, "Delete a watch"),
     ToolSpec("set_quiet_hours", ToolClass.MUTATION, "Set quiet hours"),
     ToolSpec("advance_initiative", ToolClass.MUTATION, "Advance initiative"),
-    ToolSpec("resolve_triage", ToolClass.MUTATION, "Accept/reject triage proposal"),
+    ToolSpec("resolve_triage", ToolClass.MUTATION, "Accept/reject/dismiss triage proposal"),
     ToolSpec("resolve_decision", ToolClass.MUTATION, "Accept/reject decision proposal"),
     ToolSpec("request_product_sync", ToolClass.MUTATION, "Request product sync"),
     # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
@@ -1481,16 +1481,18 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.post(f"/api/sdlc/initiatives/{_slug(args['slug'])}/advance")
 
     @spec_tool("resolve_triage",
-               "Accept or reject ONE AI triage proposal from the inbox — list_triage gives "
-               "the ids. Accepting copies the proposed feature and RICE scores onto the "
+               "Accept, reject or dismiss ONE AI triage proposal from the inbox — list_triage "
+               "gives the ids. Accepting copies the proposed feature and RICE scores onto the "
                "issue and marks it classified; rejecting parks the issue as an owner-action "
-               "hold. "
-               "decision is 'accept' or 'reject'.", {"proposal_id": str, "decision": str})
+               "hold; dismissing resolves it with no hold and no feature (bot output, or "
+               "nothing to decide). "
+               "decision is 'accept', 'reject' or 'dismiss'.",
+               {"proposal_id": str, "decision": str})
     @guarded
     async def resolve_triage(args: dict[str, Any]) -> Any:
         decision = args.get("decision")
-        if decision not in ("accept", "reject"):
-            raise ToolArgError("decision must be 'accept' or 'reject'")
+        if decision not in ("accept", "reject", "dismiss"):
+            raise ToolArgError("decision must be 'accept', 'reject' or 'dismiss'")
         pid = str(args["proposal_id"])
         if not _OPAQUE_ID.match(pid):
             raise ToolArgError("proposal_id must be a proposal id from list_triage")

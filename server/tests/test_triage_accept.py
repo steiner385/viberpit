@@ -166,3 +166,126 @@ def test_bot_artifact_titles():
     assert is_bot_artifact("docs(fix-patterns): regenerate index")
     assert not is_bot_artifact("docs(fix-patterns): add a pattern")
     assert not is_bot_artifact(None)
+
+
+# --------------------------------------------------------------------------- #
+# #2683 (follow-up): the repeat rule, the rule name, bot authors, the dismiss   #
+# write path                                                                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_eligible_names_the_rule_that_admitted_it():
+    from server.pm.triage_accept import RULE_CONFIDENCE, RULE_DISPATCH_OFF, RULE_REPEAT
+    assert _ok(tier="high", confidence_level="high") == RULE_CONFIDENCE
+    assert _ok(tier="off", confidence_level="low", dispatch_off_accept=True) == RULE_DISPATCH_OFF
+    assert _ok(tier="off", confidence_level="low", repeat_threshold=3,
+               prior_human_accepts=3) == RULE_REPEAT
+    assert _ok(tier="off", confidence_level="low") is None
+
+
+def test_repeat_rule_waives_the_confidence_bar_and_the_proposed_guard():
+    """89 human accepts onto a still-``proposed`` capability ARE the endorsement."""
+    from server.pm.triage_accept import RULE_REPEAT
+    assert _ok(tier="off", confidence_level="low", feature_state="proposed",
+               repeat_threshold=3, prior_human_accepts=89) == RULE_REPEAT
+    assert _ok(tier="off", confidence_level=None, repeat_threshold=3,
+               prior_human_accepts=3) == RULE_REPEAT
+
+
+def test_repeat_rule_needs_the_threshold_and_is_off_at_zero():
+    assert _ok(tier="off", confidence_level="low", repeat_threshold=3,
+               prior_human_accepts=2) is None
+    assert _ok(tier="off", confidence_level="low", repeat_threshold=0,
+               prior_human_accepts=500) is None
+
+
+def test_repeat_rule_keeps_the_structural_guards():
+    base = dict(tier="off", confidence_level="low", repeat_threshold=1, prior_human_accepts=5)
+    assert _ok(**base, proposed_feature_id=None) is None        # never a no-fit
+    assert _ok(**base, auto_undone=True) is None                # never re-decide an undo
+    assert _ok(**base, feature_state=None) is None              # no feature row
+    assert _ok(**base, feature_state="sunset") is None          # a retired capability
+
+
+def test_repeat_threshold_applies_only_to_a_product_that_opted_in_to_auto_accept():
+    from server.automations.product_policy import effective_policy
+    from server.pm.triage_accept import repeat_threshold_for
+    base = effective_policy(None)
+    assert base["triage_auto_accept_repeat"] == 3
+    assert repeat_threshold_for(base) == 0                       # never opted in
+    assert repeat_threshold_for({**base, "triage_auto_accept": "high"}) == 3
+    assert repeat_threshold_for({**base, "triage_auto_accept_dispatch_off": True}) == 3
+    assert repeat_threshold_for({**base, "triage_auto_accept": "medium",
+                                 "triage_auto_accept_repeat": 0}) == 0
+    assert repeat_threshold_for(None) == 0
+
+
+@pytest.mark.parametrize("author", ["dependabot[bot]", "github-actions", "app/github-actions",
+                                    "GitHub-Actions", "renovate[bot]"])
+def test_bot_authors_are_bot_artifacts_whatever_the_title(author):
+    from server.pm.triage_accept import is_bot_artifact
+    assert is_bot_artifact("Fix the login bug", author)
+
+
+@pytest.mark.parametrize("author", [None, "", "tony", "app/viberpit", "github-actionsx"])
+def test_people_and_our_own_app_are_not_bot_authors(author):
+    """``app/viberpit`` files the auto-error stream, which IS classified work."""
+    from server.pm.triage_accept import is_bot_artifact
+    assert not is_bot_artifact("Fix the login bug", author)
+
+
+def test_extra_patterns_match_case_insensitively_and_a_bad_one_is_ignored():
+    from server.pm.triage_accept import is_bot_artifact
+    pats = [r"^chore: audit codebase for\b", "(unclosed"]
+    assert is_bot_artifact("CHORE: Audit codebase for retry-storm failure mode", "tony", pats)
+    assert not is_bot_artifact("chore: tidy imports", "tony", pats)
+    assert is_bot_artifact("docs(fix-patterns): regenerate index", "tony", pats)
+
+
+def test_dismissed_is_a_proposal_status():
+    from server.db.models import DECISION_PROPOSAL_STATUSES, TRIAGE_PROPOSAL_STATUSES
+    assert "dismissed" in TRIAGE_PROPOSAL_STATUSES
+    # A decision proposal is accepted or rejected, never dismissed.
+    assert "dismissed" not in DECISION_PROPOSAL_STATUSES
+
+
+def test_closed_items_are_not_awaiting_a_decision():
+    from server.pm.triage_accept import item_is_open
+    assert item_is_open("open") and item_is_open(None)
+    assert not item_is_open("closed") and not item_is_open("merged")
+
+
+@pytest.mark.asyncio
+async def test_apply_dismiss_resolves_without_a_hold_or_a_feature(tmp_path, monkeypatch):
+    from sqlalchemy import select
+
+    from server.db import db_session, init_db
+    from server.db.models import AuditEvent, TriageProposal, WorkItem
+    from server.pm.triage_accept import (DECIDED_BY_HUMAN, DISMISSED_TRIAGE_STATE,
+                                         apply_dismiss)
+    url = f"sqlite+aiosqlite:///{tmp_path}/t.db"
+    monkeypatch.setenv("VIBERPIT_DB_URL", url)
+    await init_db(url)
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=1, kind="issue", title="a", state="open",
+                      triage_state="proposed", author="tony")
+        db.add(wi)
+        await db.flush()
+        prop = TriageProposal(work_item_id=wi.id, status="pending", proposed_feature_id=None,
+                              confidence_level="high")
+        db.add(prop)
+        await db.flush()
+        await apply_dismiss(db, prop, decided_by=DECIDED_BY_HUMAN, audit_identity="tester",
+                            reason="noise")
+        pid, wid = prop.id, wi.id
+    async with db_session() as db:
+        prop = await db.get(TriageProposal, pid)
+        wi = await db.get(WorkItem, wid)
+        assert prop.status == "dismissed" and prop.resolved_at is not None
+        assert prop.undo_snapshot["decidedBy"] == DECIDED_BY_HUMAN
+        assert wi.hold_kind is None and wi.feature_id is None
+        assert wi.triage_state == DISMISSED_TRIAGE_STATE
+        audits = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.triage.dismiss"))).scalars().all()
+        assert [a.detail for a in audits] == [{"proposalId": pid, "workItemId": wid,
+                                               "reason": "noise", "decidedBy": "human"}]

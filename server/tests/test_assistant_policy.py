@@ -135,6 +135,7 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("POST", "/api/pm/projects/acme-billing/sync", True),
     ("POST", "/api/pm/triage/tp-1/accept", True),
     ("POST", "/api/pm/triage/tp-1/reject", True),
+    ("POST", "/api/pm/triage/tp-1/dismiss", True),
     ("GET", "/api/pm/decisions", True),
     ("POST", "/api/pm/decisions/dp-1/accept", True),
     ("POST", "/api/pm/decisions/dp-1/reject", True),
@@ -165,6 +166,7 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     # edit — those are a human's decisions to make.
     ("POST", "/api/pm/triage/accept-bulk", False),
     ("POST", "/api/pm/triage/reject-bulk", False),
+    ("POST", "/api/pm/triage/dismiss-bulk", False),
     ("PATCH", "/api/pm/work-items/w1/overlay", False),
     ("POST", "/api/pm/work-items/w1/hold/release", False),
     # Blocked-row dispositions (finish-line row 8, #1472) are a human's calls:

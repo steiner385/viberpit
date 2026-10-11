@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
@@ -163,11 +164,30 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Accept this product's classification proposals whatever their confidence "
                      "while Dispatch is off: nothing is dispatched, so a wrong accept costs "
                      "nothing. Still never a no-fit or a proposed capability. Undoable."),
+    # #2683 follow-up: N human accepts onto one capability ARE the endorsement. Read
+    # through ``server.pm.triage_accept.repeat_threshold_for`` — the ONE place the
+    # opt-in governance below is applied.
+    ConfigField(key="triage_auto_accept_repeat", label="Auto-accept after repeat human accepts",
+                type="int", default=3, min=0,
+                help="Accept a proposal whatever its confidence once a person has accepted "
+                     "this many earlier proposals onto the same capability as proposed, even "
+                     "while that capability is still proposed. Machine accepts never count. "
+                     "Applies only to a product that has opted in to auto-accept (Triage "
+                     "auto-accept above off, or Auto-accept while Dispatch is off); a product "
+                     "that never opted in never sees a machine accept. Never a no-fit. 0 "
+                     "turns it off. Undoable."),
     ConfigField(key="triage_dismiss_bot_artifacts", label="Dismiss bot artifacts", type="bool",
-                default=False,
-                help="Resolve proposals for recognised bot output (recurring digests, "
-                     "regenerated-index PRs) without parking the item under an owner hold. "
-                     "Undoable."),
+                default=True,
+                help="Keep bot output out of triage: items authored by a bot, or titled like "
+                     "recognised bot output (recurring digests, regenerated-index PRs, and "
+                     "the patterns below), are never sent to classification, and a pending "
+                     "proposal for one is dismissed. A dismissal parks nothing under an "
+                     "owner hold and is undoable."),
+    ConfigField(key="triage_bot_artifact_patterns", label="Bot artifact title patterns",
+                type="string-list", default=[],
+                help="Extra title patterns (case-insensitive regular expressions) treated as "
+                     "bot output for this product, on top of the built-in ones, e.g. "
+                     "^chore: audit codebase for\\b"),
     # Roadmap auto-execution (spec 2026-09-14 D2/D3): how bold the SDLC front chain
     # may be for this product. The gate registry (server/sdlc/gates.py) decides
     # which gates each level covers; `cautious` is today's behaviour.
@@ -274,6 +294,18 @@ def _reject_bare_app_logins(entries: object) -> None:
                 f"login, not the app; write the app as 'app/{login}'")
 
 
+def _reject_bad_patterns(entries: object) -> None:
+    """``triage_bot_artifact_patterns`` must compile: a typo'd regex rejected on
+    write is a 422 the operator sees; accepted, it would silently match nothing
+    (the reader, ``triage_accept.is_bot_artifact``, skips one that does not)."""
+    for entry in entries or ():  # type: ignore[attr-defined]
+        try:
+            re.compile(str(entry), re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(
+                f"triage_bot_artifact_patterns: {entry!r} is not a valid pattern: {exc}") from None
+
+
 def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
     """Validate both inputs, retaining only explicitly stored/supplied keys.
 
@@ -292,6 +324,7 @@ def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
     validate_config(PRODUCT_POLICY_SCHEMA, current, retired=PRODUCT_POLICY_RETIRED_KEYS)
     validate_config(PRODUCT_POLICY_SCHEMA, patch, retired=PRODUCT_POLICY_RETIRED_KEYS)
     _reject_bare_app_logins(patch.get("trusted_authors"))
+    _reject_bad_patterns(patch.get("triage_bot_artifact_patterns"))
     merged = {k: v for k, v in {**current, **patch}.items()
               if k not in PRODUCT_POLICY_RETIRED_KEYS}
     validated = validate_config(PRODUCT_POLICY_SCHEMA, merged, retired=PRODUCT_POLICY_RETIRED_KEYS)
