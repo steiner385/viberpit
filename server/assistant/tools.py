@@ -1184,9 +1184,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "— NOT running yet — any other status means it started immediately. Use only "
                "when the user wants new work started; to add to work already running use "
                "send_prompt instead. preset and permission_profile ids can be discovered via "
-               "list_presets / list_permission_profiles. Note: permission_profile's patterns "
-               "are recorded on the session but not yet enforced — no tool restriction happens "
-               "today.",
+               "list_presets / list_permission_profiles. A permission_profile's patterns "
+               "auto-allow matching tool calls in the new session (like always-allow rules); "
+               "they never restrict which tools it can use.",
                _schema(("prompt",), prompt=str, repo=str, model=str, permission_mode=str,
                        account=str, branch=str, preset=str, permission_profile=str))
     @guarded

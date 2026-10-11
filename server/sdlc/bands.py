@@ -21,8 +21,8 @@ lets through, and the loader keeps the two consistent.
 ViberPit has no *arbitrary* per-session tool allowlist. The SDK's
 ``allowed_tools`` is only reachable on the one-shot query path
 (``nudge_composer``, ``autopilot_decider``), which cannot host a repo
-investigation, and ``Session.tool_allowlist`` is a dormant column with no readers
-(``server/api/sessions.py`` says so at its only writer). What ViberPit *does*
+investigation, and ``Session.tool_allowlist`` (a launch profile's patterns) only
+auto-allows matching calls, never restricts the rest. What ViberPit *does*
 enforce is the permission mode, and one mode — ``allowlist`` — is exactly a
 read-only gate: ``PermissionRegistry.READ_ONLY`` auto-approves, everything else
 prompts, and an unattended session has nobody to answer a prompt. So a tier on

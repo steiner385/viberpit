@@ -212,3 +212,97 @@ class TestWireDescription:
                 with patch.object(store, "describe", side_effect=ValueError("bad")):
                     assert got.to_wire()["description"] == "WebSearch"
         _run(go())
+
+
+@pytest.mark.usefixtures("isolated_db")
+class TestFollowups2952:
+    def test_delete_session_rules_drops_profile_and_stats_only_for_that_session(self):
+        async def go():
+            async with db_session() as db:
+                await _add(db, "session", "s1", "Bash(ls)")
+                await _add(db, "session", "s1", "Bash(make)")
+                keep = await _add(db, "session", "s2", "Bash(ls)")
+                await _add(db, "global", None, "WebSearch")
+                await db.commit()
+            async with db_session() as db:
+                assert await store.delete_session_rules(db, "s1") == 2
+                assert await store.delete_session_rules(db, "nope") == 0
+                await db.commit()
+            async with db_session() as db:
+                left = [(r.scope, r.scope_key) for r in await store.list_rules(db)]
+                assert left == [("session", "s2"), ("global", None)]
+                stats = (await db.execute(select(PermissionRuleStats))).scalars().all()
+                assert keep.id in {s.id for s in stats} and len(stats) == 2
+        _run(go())
+
+    @pytest.mark.parametrize("op", ["update", "revoke"])
+    def test_rule_deleted_while_waiting_on_the_lock_is_not_found(self, monkeypatch, op):
+        """A concurrent revoke that commits while we wait on the profile lock leaves our
+        loaded stats row stale: refresh must report the rule gone, not raise (a 500)."""
+        real = store._profile_for_stats
+
+        async def deleted_meanwhile(db, stats):
+            from sqlalchemy import delete
+            await db.execute(delete(PermissionRuleStats).where(PermissionRuleStats.id == stats.id))
+            return await real(db, stats)
+
+        async def go():
+            async with db_session() as db:
+                r = await _add(db, "global", None, "WebSearch")
+                await db.commit()
+            monkeypatch.setattr(store, "_profile_for_stats", deleted_meanwhile)
+            async with db_session() as db:
+                if op == "update":
+                    assert await store.update_rule(db, r.id, new_pattern="WebFetch") is None
+                else:
+                    assert await store.revoke_rule(db, r.id) is None
+        _run(go())
+
+    def test_launch_patterns_reads_the_session_row(self):
+        async def go():
+            from server.db.models import Session
+            async with db_session() as db:
+                db.add(Session(id="s1", name="n", account_name="a", cwd="/w",
+                               tool_allowlist=["Bash(npm test:*)", 3]))
+                await db.commit()
+            async with db_session() as db:
+                assert await store.launch_patterns(db, "s1") == ["Bash(npm test:*)"]
+                assert await store.launch_patterns(db, "missing") == []
+        _run(go())
+
+
+def test_profile_patterns_are_safety_checked_and_human_only():
+    client = _client()
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post("/api/permission-profiles",
+                        json={"name": "p", "patterns": ["Bash(npm test:*)", "Bash(git *)", "Bash"]},
+                        headers=_H)
+        assert r.status_code == 400
+        d = r.json()["detail"]
+        assert d["error"] == "pattern_refused" and len(d["reasons"]) == 2
+        assert d["reasons"][0].startswith("Bash(git *): ")
+        ok = client.post("/api/permission-profiles",
+                         json={"name": "p", "patterns": ["Bash(npm test:*)", "Bash(make:*)"]},
+                         headers=_H)
+        assert ok.status_code == 201  # a warning-level pattern may be saved
+        pid = ok.json()["id"]
+        r = client.patch(f"/api/permission-profiles/{pid}", json={"patterns": ["Edit"]},
+                         headers=_H)
+        assert r.status_code == 200  # bare Edit warns at session scope
+        r = client.patch(f"/api/permission-profiles/{pid}", json={"patterns": ["Edit(.env)"]},
+                         headers=_H)
+        assert r.status_code == 400
+        # A description-only patch touches no patterns and stays open.
+        assert client.patch(f"/api/permission-profiles/{pid}", json={"description": "d"},
+                            headers=_H).status_code == 200
+
+    from server.api.permission_profiles import _validate_patterns
+    from fastapi import HTTPException
+
+    class _Req:
+        class state:
+            via = "assistant"
+    with pytest.raises(HTTPException) as exc:
+        _validate_patterns(["Bash(npm test)"], "me@x", _Req())  # type: ignore[arg-type]
+    assert exc.value.status_code == 403
+    _validate_patterns([], "me@x", _Req())  # type: ignore[arg-type]  # no patterns: no check

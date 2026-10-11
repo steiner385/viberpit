@@ -171,17 +171,27 @@ def check_pattern_for_scope(pattern: str, scope: str, confirm: bool) -> None:
                           {"level": a.level, "reasons": list(a.reasons)})
 
 
+def rule_input(card: dict) -> dict:
+    """What a standing rule is matched against for a pending card: the script inside an
+    engine's shell wrapper for a Codex command, else the tool input (an older daemon sends
+    no ``rule_input``)."""
+    return card.get("rule_input") or card["input"]
+
+
+def covers_card(parsed, card: dict, cwd: str | None) -> bool:
+    from server.permission_rules.patterns import matches_any  # noqa: PLC0415
+
+    return matches_any([parsed], card["tool"], rule_input(card), cwd) is not None
+
+
 def sweepable(parsed, card: dict, cwd: str | None) -> bool:
     """Would a new rule resolve this OTHER pending card? One predicate for the grant sweep and
     the preview's ``alsoPending`` count, so the number shown is the number resolved.
 
-    Engine-managed (Codex) cards are skipped: rules never apply to them at enforcement, so a
-    grant must not answer them either. A card without ``always_allowed`` comes from an older
-    daemon and fails closed."""
-    from server.permission_rules.patterns import matches_any  # noqa: PLC0415
-
-    return bool(card.get("always_allowed", False) and not card.get("engine_managed")
-                and matches_any([parsed], card["tool"], card["input"], cwd) is not None)
+    Engine-managed (Codex) cards are swept like any other: rules apply to them at enforcement
+    too (``PermissionRegistry.request_external``). A card without ``always_allowed`` comes
+    from an older daemon and fails closed."""
+    return bool(card.get("always_allowed", False) and covers_card(parsed, card, cwd))
 
 
 async def _sweep_candidates(db, session_id: str, scope: str,
@@ -207,7 +217,7 @@ async def grant_always(
     pending card (this session / its repo / anywhere, by scope) the new rule covers
     (spec §3.3, §5)."""
     from server.permission_rules import store  # noqa: PLC0415
-    from server.permission_rules.patterns import PatternError, matches_any, parse  # noqa: PLC0415
+    from server.permission_rules.patterns import PatternError, parse  # noqa: PLC0415
     from server.permission_rules.safety import SCOPES  # noqa: PLC0415
 
     require_rules_enabled()
@@ -223,7 +233,7 @@ async def grant_always(
     # "allow" after the rule was already committed and enforced.
     if card.get("owner") not in (None, identity):
         raise _not_owned()
-    if not card.get("always_allowed", False) or card.get("engine_managed"):
+    if not card.get("always_allowed", False):
         raise ActionError("RULE_NOT_ALLOWED",
                           "This request cannot be turned into an always-allow rule.", 400)
     repo, cwd = await session_facts(orch, db, session_id)
@@ -235,7 +245,7 @@ async def grant_always(
         parsed = parse(pattern)
     except PatternError:  # assess() already refused anything unparsable; defensive
         raise ActionError("RULE_REFUSED", "That pattern is not valid.", 400) from None
-    if matches_any([parsed], card["tool"], card["input"], cwd) is None:
+    if not covers_card(parsed, card, cwd):
         raise ActionError("PATTERN_DOES_NOT_COVER",
                           "That pattern does not cover the request being approved.", 400)
 
@@ -288,10 +298,11 @@ async def resolve_permission(
 
     ``"always"`` is human-only (spec §4): the assistant keeps its historical 400, every
     other token-borne caller gets ``RULES_HUMAN_ONLY``. For a human it creates a
-    session-scope rule from the first ``ok`` suggestion and allows the card; an
-    engine-managed (Codex) card, or a card that is not pending, passes ``"always"`` through
-    unchanged (Codex's acceptForSession / today's 404-403 handling); with the rules kill
-    switch off or no ``ok`` suggestion it degrades to a plain ``"allow"``."""
+    session-scope rule from the first ``ok`` suggestion and allows the card. Without such a
+    suggestion (or with the rules kill switch off) it degrades to a plain ``"allow"``, except
+    on an engine-managed (Codex) card, where it passes through unchanged and becomes the
+    engine's own session-scoped accept. A card that is not pending passes it through to
+    today's 404/403 handling."""
     if decision == "always":
         if via == "assistant":
             raise ActionError(
@@ -302,20 +313,17 @@ async def resolve_permission(
         require_human(identity, via)
         card = next((p for p in await orch.pending_permissions(session_id)
                      if p.get("permId") == perm_id), None)
-        if card is not None and not card.get("engine_managed"):
-            if not rules_enabled():
+        if card is not None:
+            best = next((s for s in card.get("suggestions") or []
+                         if s.get("level") == "ok"), None) if rules_enabled() else None
+            if best is not None:
+                await grant_always(
+                    orch, db, session_id=session_id, perm_id=perm_id,
+                    pattern=best["pattern"], scope="session", confirm=False,
+                    identity=identity, via=via)
+                return {"ok": True}
+            if not card.get("engine_managed"):
                 decision = "allow"
-            else:
-                best = next((s for s in card.get("suggestions") or []
-                             if s.get("level") == "ok"), None)
-                if best is None:
-                    decision = "allow"
-                else:
-                    await grant_always(
-                        orch, db, session_id=session_id, perm_id=perm_id,
-                        pattern=best["pattern"], scope="session", confirm=False,
-                        identity=identity, via=via)
-                    return {"ok": True}
     ok = await orch.resolve_permission(session_id, perm_id, decision, identity)
     await orch.note_user_interaction(session_id)
     await _audit(db, "permission." + decision, identity,

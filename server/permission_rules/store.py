@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import delete, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.clock import db_utc_now
-from server.db.models import PermissionProfile, PermissionRuleStats, _utcnow
+from server.db.models import PermissionProfile, PermissionRuleStats, Session, _utcnow
 from server.permission_rules.patterns import describe
 from server.permission_rules.safety import SCOPES
 
@@ -123,6 +123,16 @@ async def _get_or_create_profile(db: AsyncSession, scope: str, scope_key: str | 
     return profile
 
 
+async def _refreshed(db: AsyncSession, stats: PermissionRuleStats) -> bool:
+    """Re-read ``stats`` once its profile is locked: a concurrent writer may have moved it, or
+    revoked it while we waited on the lock (False -- the rule is gone)."""
+    try:
+        await db.refresh(stats)
+    except InvalidRequestError:
+        return False
+    return True
+
+
 async def _stats_for(db: AsyncSession, profile_id: str, pattern: str) -> PermissionRuleStats | None:
     return (await db.execute(
         select(PermissionRuleStats).where(
@@ -180,13 +190,23 @@ async def get_rule(db: AsyncSession, rule_id: str) -> RuleView | None:
 
 
 async def list_rules(db: AsyncSession, *,
-                     scopes: list[tuple[str, str | None]] | None = None) -> list[RuleView]:
+                     scopes: list[tuple[str, str | None]] | None = None,
+                     hide_archived_sessions: bool = False) -> list[RuleView]:
+    """Every rule, or those in ``scopes``. ``hide_archived_sessions`` drops the rule sets of
+    archived sessions (unarchiving brings them back; a permanent delete removes them)."""
     profiles = list((await db.execute(
         select(PermissionProfile).where(PermissionProfile.scope.is_not(None))
     )).scalars().all())
     if scopes is not None:
         wanted = set(scopes)
         profiles = [p for p in profiles if (p.scope, p.scope_key) in wanted]
+    if hide_archived_sessions:
+        keys = [p.scope_key for p in profiles if p.scope == "session" and p.scope_key]
+        archived = set((await db.execute(
+            select(Session.id).where(Session.id.in_(keys), Session.status == "archived")
+        )).scalars().all()) if keys else set()
+        profiles = [p for p in profiles
+                    if not (p.scope == "session" and p.scope_key in archived)]
     return sorted(await _views_for(db, profiles), key=_sort_key)
 
 
@@ -202,14 +222,36 @@ async def applicable_rules(db: AsyncSession, session_id: str, repo: str | None) 
     return await list_rules(db, scopes=applicable_scopes(session_id, repo))
 
 
+async def launch_patterns(db: AsyncSession, session_id: str) -> list[str]:
+    """The patterns of the profile the session was launched with (``Session.tool_allowlist``),
+    unassessed; empty when it had none."""
+    raw = (await db.execute(
+        select(Session.tool_allowlist).where(Session.id == session_id)
+    )).scalar_one_or_none()
+    return [p for p in raw if isinstance(p, str)] if isinstance(raw, list) else []
+
+
+async def delete_session_rules(db: AsyncSession, session_id: str) -> int:
+    """Drop a session's own rule set and its stats rows (the session is being permanently
+    deleted). Returns how many rules went."""
+    profile = await _locked_profile(db, profile_name("session", session_id))
+    if profile is None:
+        return 0
+    n = len(profile.patterns or [])
+    await db.execute(
+        delete(PermissionRuleStats).where(PermissionRuleStats.profile_id == profile.id))
+    await db.delete(profile)
+    await db.flush()
+    return n
+
+
 async def update_rule(db: AsyncSession, rule_id: str, *, new_pattern: str) -> RuleView | None:
     stats = await db.get(PermissionRuleStats, rule_id)
     if stats is None:
         return None
     profile = await _profile_for_stats(db, stats)
-    if profile is None:
+    if profile is None or not await _refreshed(db, stats):
         return None
-    await db.refresh(stats)  # re-read under the profile lock: a concurrent writer may have moved it
     patterns = list(profile.patterns or [])
     if stats.pattern not in patterns:
         return None
@@ -233,8 +275,8 @@ async def revoke_rule(db: AsyncSession, rule_id: str) -> RuleView | None:
     if stats is None:
         return None
     profile = await _profile_for_stats(db, stats)
-    if profile is not None:
-        await db.refresh(stats)
+    if profile is not None and not await _refreshed(db, stats):
+        return None
     patterns = list(profile.patterns or []) if profile else []
     view = (_view(profile, stats, patterns.index(stats.pattern))
             if profile is not None and stats.pattern in patterns else None)

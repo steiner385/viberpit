@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { usePermissionProfiles, useCreatePermissionProfile, useUpdatePermissionProfile, useDeletePermissionProfile } from '@/api/hooks'
 import type { PermissionProfile } from '@/api/types'
+import { apiErrorDetail } from '@/api/client'
 
 const MODES = ['interactive', 'auto', 'allowlist', 'full-auto']
 
@@ -16,8 +17,13 @@ export function PermissionProfilesSection() {
   const [editing, setEditing] = useState<PermissionProfile | null>(null)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ name: '', description: '', mode: '', patterns: '' })
+  // A refused save (e.g. a pattern the always-allow safety check rejects): the server owns the copy.
+  const [saveError, setSaveError] = useState<{ message: string; reasons: string[] } | null>(null)
 
-  const resetForm = () => setForm({ name: '', description: '', mode: '', patterns: '' })
+  const resetForm = () => {
+    setForm({ name: '', description: '', mode: '', patterns: '' })
+    setSaveError(null)
+  }
   const parsePatterns = (s: string) => s.split('\n').map(p => p.trim()).filter(Boolean)
 
   const handleSave = async () => {
@@ -27,12 +33,18 @@ export function PermissionProfilesSection() {
       mode: form.mode || undefined,
       patterns: parsePatterns(form.patterns),
     }
-    if (editing) {
-      await updateProfile.mutateAsync({ id: editing.id, ...body })
-      setEditing(null)
-    } else {
-      await createProfile.mutateAsync(body)
-      setCreating(false)
+    try {
+      if (editing) {
+        await updateProfile.mutateAsync({ id: editing.id, ...body })
+        setEditing(null)
+      } else {
+        await createProfile.mutateAsync(body)
+        setCreating(false)
+      }
+    } catch (err) {
+      const { message, reasons } = apiErrorDetail(err)
+      setSaveError({ message: message ?? 'Could not save the profile.', reasons: reasons ?? [] })
+      return
     }
     resetForm()
   }
@@ -40,6 +52,7 @@ export function PermissionProfilesSection() {
   const startEdit = (p: PermissionProfile) => {
     setEditing(p)
     setCreating(false)
+    setSaveError(null)
     setForm({
       name: p.name,
       description: p.description ?? '',
@@ -95,15 +108,21 @@ export function PermissionProfilesSection() {
             </select>
           </label>
           <label className="flex flex-col gap-0.5">
-            <span className="text-xs opacity-70">{'Tool patterns (one per line, e.g. Bash(git *))'}</span>
+            <span className="text-xs opacity-70">{'Tool patterns (one per line, e.g. Bash(npm test:*)). Sessions launched with this profile run matching tools without asking.'}</span>
             <textarea
               className="border border-edge rounded px-2 py-1 text-sm bg-transparent font-mono resize-none"
               rows={4}
-              placeholder={'Read\nBash(git *)\nWebFetch'}
+              placeholder={'Read(docs/**)\nBash(npm test:*)\nWebFetch(domain:docs.python.org)'}
               value={form.patterns}
               onChange={e => setForm(f => ({ ...f, patterns: e.target.value }))}
             />
           </label>
+          {saveError && (
+            <div role="alert" className="text-xs text-danger space-y-0.5">
+              <div>{saveError.message}</div>
+              {saveError.reasons.map(r => <div key={r} className="font-mono">{r}</div>)}
+            </div>
+          )}
           <div className="flex gap-2">
             <button
               className="text-xs px-3 py-1 rounded bg-accent text-accent-ink disabled:opacity-50"

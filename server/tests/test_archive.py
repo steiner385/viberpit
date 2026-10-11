@@ -456,6 +456,32 @@ def test_permanent_delete_removes_folder_and_db_row(tmp_path):
     assert not folder_exists
 
 
+def test_permanent_delete_removes_the_session_s_always_allow_rules(tmp_path):
+    """A session's own rule set binds to its id, so it goes with the row (#2952); other
+    sessions' rules and repo/global rules stay."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+
+    async def run():
+        from server.permission_rules import store
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="s21", name="Delete Me", account_name="acc1",
+                     engine_session_id=None, status="archived", cwd="/old/cwd/s21"),
+            ])
+            async with db_session() as db:
+                for scope, key in (("session", "s21"), ("session", "s22"), ("global", None)):
+                    await store.add_rule(db, scope=scope, scope_key=key, pattern="Bash(ls)",
+                                         created_by="me", created_via=None)
+                await db.commit()
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            assert await orch.permanent_delete("s21") is True
+            async with db_session() as db:
+                return [(r.scope, r.scope_key) for r in await store.list_rules(db)]
+
+    assert asyncio.run(run()) == [("session", "s22"), ("global", None)]
+
+
 def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
     """permanent_delete on a LIVE session archives it first, then hard-deletes.
 

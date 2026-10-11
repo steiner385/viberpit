@@ -320,3 +320,56 @@ async def test_a_request_arriving_after_teardown_is_never_answered_by_the_driver
     reply = await _reply(harness, request_id)
     assert "result" not in reply
     assert harness.registry.pending(SESSION) == []
+
+
+# ---------------------------------------------------------------------------
+# Standing always-allow rules (#2952)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRuleGate:
+    """Stands in for ``StandingRuleGate``: answers every check with ``hit``."""
+
+    def __init__(self, hit: bool):
+        self.hit = hit
+        self.checked: list[dict[str, Any]] = []
+
+    async def match(self, session_id, tool, input):
+        self.checked.append(input)
+        return object() if self.hit else None
+
+    def suggestions(self, session_id, tool, input):
+        return [{"pattern": f"Bash({input['command']})", "description": "d", "level": "ok"}]
+
+
+@pytest.mark.asyncio
+async def test_a_standing_rule_answers_accept_with_no_card(harness):
+    gate = _FakeRuleGate(hit=True)
+    harness.registry.rule_gate = gate
+    await harness.boot()
+    await harness.run_turn("build it")
+    params = {**_command_params(), "command": "/bin/bash -lc 'npm test'"}
+    request_id = harness.server.request(APPROVAL, params)
+
+    reply = await _reply(harness, request_id)
+
+    assert reply["result"] == {"decision": "accept"}
+    assert harness.of(ev.PermissionRequest) == []
+    assert harness.registry.pending(SESSION) == []
+    # Rules see the script, not Codex's shell wrapper.
+    assert gate.checked[0]["command"] == "npm test"
+
+
+@pytest.mark.asyncio
+async def test_an_uncovered_request_cards_with_rule_suggestions(harness):
+    harness.registry.rule_gate = _FakeRuleGate(hit=False)
+    driver = await harness.boot()
+    await harness.run_turn("build it")
+    request_id = await _ask(harness)
+
+    card = harness.of(ev.PermissionRequest)[-1]
+    assert card.input["command"] == "rm -rf build"
+    assert [s["pattern"] for s in card.rule_suggestions] == ["Bash(rm -rf build)"]
+
+    driver.resolve_permission(_perm_id(harness), "allow", driver.identity)
+    assert (await _reply(harness, request_id))["result"] == {"decision": "accept"}

@@ -40,10 +40,9 @@ async def test_external_future_carries_the_raw_decision():
 
 @pytest.mark.asyncio
 async def test_external_always_is_honoured_natively_not_cached_locally():
-    """"Always allow" must become the ENGINE's session-scoped accept.
-
-    A ViberPit-side entry would be a second approval policy that the engine
-    never hears about — the "persistent global exception" Task 4.2 forbids.
+    """A plain "always" that reaches the registry becomes the ENGINE's session-scoped
+    accept and persists nothing here: a standing rule is created at the edge, visibly
+    and revocably, never as a hidden registry entry.
     """
     registry = PermissionRegistry()
     perm_id, future = await registry.request_external(

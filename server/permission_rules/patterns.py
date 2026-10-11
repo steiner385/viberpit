@@ -303,27 +303,58 @@ def matches(p: Pattern, tool: str, input: dict, cwd: str | None) -> bool:
     return False
 
 
+def covering(
+    patterns: Sequence[Pattern], tool: str, input: dict, cwd: str | None
+) -> list[Pattern]:
+    """The distinct patterns that together cover the request, in first-use order; empty when
+    it is not covered.
+
+    For Bash every segment must be covered by some pattern, and each segment is credited to
+    the first pattern (sequence order) that covers it, so ``npm test && ruff check`` covered by
+    two rules credits both. Any other tool is covered by at most one pattern.
+    """
+    if tool != "Bash":
+        hit = next((p for p in patterns if matches(p, tool, input, cwd)), None)
+        return [] if hit is None else [hit]
+    segs = _bash_segments(str(input.get("command", "")))
+    if not segs:
+        return []
+    out: list[Pattern] = []
+    for seg in segs:
+        cover = next((p for p in patterns if _segment_matches(p, seg)), None)
+        if cover is None:
+            return []
+        if not any(c is cover for c in out):
+            out.append(cover)
+    return out
+
+
 def matches_any(
     patterns: Sequence[Pattern], tool: str, input: dict, cwd: str | None
 ) -> Pattern | None:
-    """First pattern (sequence order) covering the request, else None.
+    """First pattern covering the request (the one covering a Bash command's first segment),
+    else None. ``covering`` lists every pattern involved."""
+    found = covering(patterns, tool, input, cwd)
+    return found[0] if found else None
 
-    For Bash every segment must be covered by some pattern; the pattern returned is the one
-    covering the first segment.
+
+# Codex reports a shell command as the argv it will exec: ``/bin/bash -lc 'npm test'``. The
+# script inside a single-quoted argument is literal text, and a double-quoted one is literal
+# when it has nothing bash expands there; anything else stays wrapped (and so unmatchable).
+_SHELL_WRAPPER_RE = re.compile(
+    r"""(?:/usr)?(?:/bin/)?(?:ba|z)?sh\s+-l?c\s+(?:'([^']*)'|"([^"$`\\!]*)")""")
+
+
+def unwrap_shell(command: str) -> str:
+    """The script a ``<shell> -c '<script>'`` command runs, or ``command`` unchanged.
+
+    Rules are written against what the operator would type (``Bash(npm test)``), so an
+    engine that wraps commands in a shell invocation is matched on the script it runs.
     """
-    if tool != "Bash":
-        return next((p for p in patterns if matches(p, tool, input, cwd)), None)
-    segs = _bash_segments(str(input.get("command", "")))
-    if not segs:
-        return None
-    first: Pattern | None = None
-    for i, seg in enumerate(segs):
-        cover = next((p for p in patterns if _segment_matches(p, seg)), None)
-        if cover is None:
-            return None
-        if i == 0:
-            first = cover
-    return first
+    m = _SHELL_WRAPPER_RE.fullmatch(command.strip())
+    if m is None:
+        return command
+    return m.group(1) if m.group(1) is not None else m.group(2)
 
 
 # ---------------------------------------------------------------- describe / suggest

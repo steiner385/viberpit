@@ -15,7 +15,7 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.permission_rules import store
-from server.permission_rules.patterns import PatternError, describe, matches_any, parse
+from server.permission_rules.patterns import PatternError, describe, parse
 from server.permission_rules.safety import SCOPES, assess, needs_confirmation
 from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
@@ -80,7 +80,7 @@ async def preview_rule(body: PreviewRequest, request: Request,
     also = 0
     for card in await orch.pending_permissions(body.sessionId):
         if card["permId"] == body.permId:
-            covers = matches_any([parsed], card["tool"], card["input"], cwd) is not None
+            covers = session_actions.covers_card(parsed, card, cwd)
         elif session_actions.sweepable(parsed, card, cwd):
             also += 1
     return {"valid": True, "level": a.level, "reasons": list(a.reasons),
@@ -95,7 +95,8 @@ async def list_rules(request: Request, sessionId: str | None = Query(default=Non
     try:
         session_actions.require_rules_enabled()
         if sessionId is None:
-            rules = await store.list_rules(db)
+            # An archived session's own rules apply to nothing until it is unarchived.
+            rules = await store.list_rules(db, hide_archived_sessions=True)
         else:
             repo, _cwd = await session_actions.session_facts(
                 _get_orchestrator(request), db, sessionId)

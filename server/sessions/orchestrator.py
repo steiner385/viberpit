@@ -79,6 +79,7 @@ from server.assistant.suggest_prompt import (
 )
 from server.sessions.prompt_origin import PromptOrigin
 from server.audit import record_audit
+from server.permission_rules import store as _rule_store
 from server.permission_rules.gate import StandingRuleGate
 from server.db import db_session
 from server.db.transient import is_transient_db_failure
@@ -24456,12 +24457,18 @@ class SessionOrchestrator:
                 sa_update(DispatchOutcome).where(DispatchOutcome.session_id == session_id)
                 .values(session_id=None)
             )
+            # Its own always-allow rule set can never match again (rules bind to one
+            # session id), so it goes with the row instead of piling up in the rules list.
+            n_rules = await _rule_store.delete_session_rules(db, session_id)
             await db.execute(
                 sa_delete(DbSession).where(DbSession.id == session_id)
             )
         if n_att:
             log.info("session.permanent_delete id=%s removed %d attachment(s)",
                      session_id, n_att)
+        if n_rules:
+            log.info("session.permanent_delete id=%s removed %d always-allow rule(s)",
+                     session_id, n_rules)
         log.info("session.permanent_delete id=%s db row removed", session_id)
         self._settle_claims_on_terminal(session_id)
         return True

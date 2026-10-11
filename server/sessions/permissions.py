@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from viberpit import paths as _paths
 from server.mcp_spec import is_mcp_tool
-from server.permission_rules.patterns import NEVER_RULED_TOOLS
+from server.permission_rules.patterns import NEVER_RULED_TOOLS, unwrap_shell
 
 if TYPE_CHECKING:
     from server.permission_rules.gate import StandingRuleGate
@@ -134,11 +134,14 @@ class PermissionRegistry:
         # perm_id -> (session_id, reason) a deny_all(reason=...) settled it with, read
         # back exactly once by the awaiting can_use_tool (see take_deny_reason).
         self._deny_reasons: dict[str, tuple[str, str]] = {}
-        # session_id -> how many times deny_all has run for it. ``request`` snapshots it
-        # before awaiting the standing-rule gate: a deny_all landing during that await
-        # (interrupt, disconnect, a prompt sent at the parked turn) found no card to
-        # settle, so the request must not create one afterwards (#1504 shape).
+        # session_id -> how many times deny_all has run for it while a standing-rule check
+        # was in flight. ``request`` snapshots it before awaiting the gate: a deny_all
+        # landing during that await (interrupt, disconnect, a prompt sent at the parked
+        # turn) found no card to settle, so the request must not create one afterwards
+        # (#1504 shape). Only sessions with a check in flight (``_gate_inflight``) have an
+        # entry; the last check out drops both, so neither grows with every session seen.
         self._deny_gen: dict[str, int] = {}
+        self._gate_inflight: dict[str, int] = {}
 
     def _pend(self, session_id, turn_id, tool, input, *, mode, identity, always_allowed,
               items, parent_tool_use_id=None) -> tuple[str, asyncio.Future]:
@@ -148,8 +151,7 @@ class PermissionRegistry:
         That line is what distinguishes "the operator chose a prompting mode" from
         "a full-auto driver was rebuilt as interactive" (2026-09-07), which no other
         signal exposes: the card itself looks identical either way."""
-        suggestions = (self.rule_gate.suggestions(session_id, tool, input)
-                       if self.rule_gate and always_allowed and tool not in NEVER_RULED_TOOLS else [])
+        suggestions = self._suggestions(session_id, tool, input, always_allowed)
         pid = _uuid.uuid4().hex
         fut = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
@@ -161,6 +163,11 @@ class PermissionRegistry:
                  session_id, tool, mode, pid, always_allowed)
         return pid, fut
 
+    def _suggestions(self, session_id, tool, input, always_allowed) -> list[dict]:
+        if self.rule_gate is None or not always_allowed or tool in NEVER_RULED_TOOLS:
+            return []
+        return self.rule_gate.suggestions(session_id, tool, input)
+
     async def _rule_allows(self, session_id, tool, input) -> bool | None:
         """True when a standing rule covers the request, False when not, None when a
         deny_all for *session_id* ran while the gate was being consulted (the caller
@@ -168,8 +175,18 @@ class PermissionRegistry:
         if self.rule_gate is None:
             return False
         gen = self._deny_gen.get(session_id, 0)
-        hit = await self.rule_gate.match(session_id, tool, input)
-        if self._deny_gen.get(session_id, 0) != gen:
+        self._gate_inflight[session_id] = self._gate_inflight.get(session_id, 0) + 1
+        try:
+            hit = await self.rule_gate.match(session_id, tool, input)
+            denied_meanwhile = self._deny_gen.get(session_id, 0) != gen
+        finally:
+            left = self._gate_inflight[session_id] - 1
+            if left:
+                self._gate_inflight[session_id] = left
+            else:
+                del self._gate_inflight[session_id]
+                self._deny_gen.pop(session_id, None)
+        if denied_meanwhile:
             return None
         return hit is not None
 
@@ -293,21 +310,28 @@ class PermissionRegistry:
         decision string (``"allow"`` / ``"deny"`` / ``"always"``) — or ``False``
         if it was dismissed by :meth:`deny_all`.
 
+        When a standing always-allow rule covers the request no card is created:
+        ``perm_id`` is None and the future is already ``"allow"`` (or ``False`` when
+        a deny_all ran during the check). Rules are matched on the script inside the
+        engine's shell wrapper (``/bin/bash -lc 'npm test'`` is ``npm test``), and
+        the card offers the same rule suggestions an ordinary prompt does.
+
         Two differences from :meth:`request`, both forced by who is deciding:
 
-        * **No auto-approval, in any mode.** ``request`` re-derives "does this
+        * **No mode-based auto-approval.** ``request`` re-derives "does this
           need a human?" from the ViberPit mode because the Claude SDK asks about
           every tool. An external engine asks only when *its own* policy already
           concluded a human is required, and that policy was itself derived from
           the same ViberPit mode (``server/codex/permissions.py``). Re-applying
           the mode here would auto-answer a question the engine only raises in
           the modes where ViberPit wanted the prompt — and it would answer it
-          ``allow``.
+          ``allow``. A standing rule is different: it is an explicit, durable
+          human decision, honoured in every mode, exactly as in :meth:`request`.
         * **The future carries the decision, not a boolean, and "always" never
-          writes a ViberPit-side rule here.** A ViberPit entry would be a second,
-          invisible policy that no longer matches what the engine was told. The caller maps ``"always"`` onto the
-          engine's own SESSION-SCOPED accept instead — never a persistent global
-          exception (plan, Task 4.2).
+          writes a ViberPit-side rule here.** The edge turns a chooser grant into a
+          visible, revocable standing rule before resolving the card with
+          ``"allow"``; a plain ``"always"`` that reaches the registry is mapped by
+          the caller onto the engine's own SESSION-SCOPED accept.
 
         Everything else is deliberately shared with ordinary prompts: the same
         ``perm_id`` namespace, the same identity ownership check in
@@ -315,12 +339,21 @@ class PermissionRegistry:
         :meth:`deny_all` semantics, and therefore the same WebSocket frames, REST
         route and UI card. There is no parallel approval registry.
         """
+        rule_input = _rule_input(tool, input)
+        if always_allowed and tool not in NEVER_RULED_TOOLS:
+            allowed = await self._rule_allows(session_id, tool, rule_input)
+            if allowed is not False:  # True: a rule covers it; None: denied meanwhile
+                settled: asyncio.Future = asyncio.get_running_loop().create_future()
+                settled.set_result("allow" if allowed else False)
+                return None, settled
         pid = _uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
-                              "tool": tool, "input": input, "turn_id": turn_id,
-                              "always_allowed": always_allowed, "raw_decision": True,
-                              "suggestions": []}
+                              "tool": tool, "input": input, "rule_input": rule_input,
+                              "turn_id": turn_id, "always_allowed": always_allowed,
+                              "raw_decision": True,
+                              "suggestions": self._suggestions(session_id, tool, rule_input,
+                                                               always_allowed)}
         return pid, fut
 
     def resolve(self, perm_id, decision, identity) -> bool:
@@ -347,7 +380,10 @@ class PermissionRegistry:
         return True
 
     def pending(self, session_id) -> list[dict]:
-        return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"],
+        return [{"permId": pid, "tool": r["tool"], "input": r["input"],
+                 # What standing rules match: the input, or the script inside an
+                 # engine's shell wrapper (request_external).
+                 "rule_input": r.get("rule_input") or r["input"], "turn_id": r["turn_id"],
                  "items": r.get("items"), "parent_tool_use_id": r.get("parent_tool_use_id"),
                  "always_allowed": r.get("always_allowed", True),
                  "suggestions": r.get("suggestions") or [],
@@ -392,7 +428,8 @@ class PermissionRegistry:
         # could read one would otherwise keep its entry for the life of the process.
         for pid in [p for p, (sid, _) in self._deny_reasons.items() if sid == session_id]:
             del self._deny_reasons[pid]
-        self._deny_gen[session_id] = self._deny_gen.get(session_id, 0) + 1
+        if session_id in self._gate_inflight:
+            self._deny_gen[session_id] = self._deny_gen.get(session_id, 0) + 1
         n = 0
         for pid in [p for p, r in self._pending.items() if r["session_id"] == session_id]:
             rec = self._pending.pop(pid)
@@ -411,6 +448,16 @@ class PermissionRegistry:
             return None
         entry = self._deny_reasons.pop(perm_id, None)
         return None if entry is None else entry[1]
+
+def _rule_input(tool, input):
+    """The request as standing rules see it: a Bash command wrapped in an engine's shell
+    invocation is matched on the script it runs (``patterns.unwrap_shell``)."""
+    command = input.get("command") if tool == "Bash" and isinstance(input, dict) else None
+    if not isinstance(command, str):
+        return input
+    script = unwrap_shell(command)
+    return input if script == command else {**input, "command": script}
+
 
 def _resolved(value: bool):
     fut = asyncio.get_running_loop().create_future()
