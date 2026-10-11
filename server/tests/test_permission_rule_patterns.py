@@ -87,7 +87,7 @@ def test_suggest_bash():
 
 def test_suggest_bash_single_word_and_compound():
     assert suggest("Bash", {"command": "ls"}, CWD) == ["Bash(ls)", "Bash(ls:*)"]
-    assert suggest("Bash", {"command": "npm test && ls"}, CWD)[0] == "Bash(npm test && ls)"
+    assert suggest("Bash", {"command": "npm test && ls"}, CWD) == []
 
 
 def test_suggest_edit():
@@ -148,3 +148,50 @@ def test_redirect_then_chain_needs_both_covered():
 @pytest.mark.parametrize("cmd", ["echo $(id)", "echo `id`", "cat <(id)", "echo hi > f", "a & b >x"])
 def test_suggest_unmatchable_bash_is_empty(cmd):
     assert suggest("Bash", {"command": cmd}, CWD) == []
+
+
+def test_symlink_escape_does_not_match(tmp_path):
+    wt = tmp_path / "wt"
+    outside = tmp_path / "outside"
+    (wt / "src").mkdir(parents=True)
+    outside.mkdir()
+    (wt / "src" / "link").symlink_to(outside)
+    pats = [parse("Edit(src/**)")]
+    esc = {"file_path": str(wt / "src" / "link" / "authorized_keys")}
+    assert matches_any(pats, "Edit", esc, str(wt)) is None
+    assert suggest("Edit", esc, str(wt)) == []
+
+
+def test_nonexistent_file_under_real_dir_matches(tmp_path):
+    (tmp_path / "src").mkdir()
+    inp = {"file_path": str(tmp_path / "src" / "new" / "x.ts")}
+    assert matches_any([parse("Edit(src/**)")], "Write", inp, str(tmp_path)) is not None
+
+
+def test_read_rules_never_match_outside_worktree():
+    for pat in ("Read", "Read(**)", "Read(docs/**)"):
+        assert matches_any([parse(pat)], "Read", {"file_path": "/home/u/.ssh/id_rsa"}, CWD) is None
+    assert matches_any([parse("Read")], "Read", {"file_path": "/w/repo/a"}, CWD) is not None
+
+
+def test_suggest_multi_segment():
+    assert suggest("Bash", {"command": "npm test && npm run lint"}, CWD) == ["Bash(npm:*)"]
+    assert suggest("Bash", {"command": "npm test && make"}, CWD) == []
+
+
+@pytest.mark.parametrize("tool,inp", [
+    ("Bash", {"command": "npm test --watch"}),
+    ("Bash", {"command": "ls"}),
+    ("Bash", {"command": "npm test 2>&1 && npm run lint"}),
+    ("Bash", {"command": "git status && git diff"}),
+    ("Write", {"file_path": "/w/repo/src/a/b.ts"}),
+    ("Read", {"file_path": "docs/a.md"}),
+    ("WebFetch", {"url": "https://docs.python.org/3/"}),
+    ("mcp__gh__create_issue", {}),
+    ("WebSearch", {"query": "x"}),
+])
+def test_every_suggestion_covers_its_request(tool, inp):
+    sugg = suggest(tool, inp, CWD)
+    assert sugg
+    for c in sugg:
+        assert matches_any([parse(c)], tool, inp, CWD) is not None

@@ -1,6 +1,7 @@
 """Permission-rule pattern grammar: parse, match, describe and suggest.
 
-Pure module (no I/O, no database). Grammar and semantics: spec section 1 of
+Pure apart from one filesystem read: path matching resolves symlinks (``os.path.realpath``) so a
+symlink inside the worktree cannot smuggle a path outside it. No database access. Grammar and semantics: spec section 1 of
 ``docs/superpowers/specs/2026-10-11-always-allow-permission-rules-design.md``.
 Safety assessment (what may be stored) lives elsewhere; the matcher here stays honest
 about what a pattern literally covers.
@@ -155,11 +156,11 @@ def _rel_path(input: dict, cwd: str | None) -> str | None:
     raw = input.get("file_path") or input.get("notebook_path") or input.get("path")
     if not cwd or not raw or not isinstance(raw, str):
         return None
-    path = os.path.normpath(os.path.abspath(os.path.join(cwd, raw)))
-    rel = os.path.relpath(path, os.path.normpath(os.path.abspath(cwd)))
-    if rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
+    base = os.path.realpath(cwd)
+    path = os.path.realpath(os.path.join(base, raw))
+    if os.path.commonpath([path, base]) != base or path == base:
         return None
-    return rel.replace(os.sep, "/")
+    return os.path.relpath(path, base).replace(os.sep, "/")
 
 
 def _tool_in_scope(p: Pattern, tool: str) -> bool:
@@ -195,7 +196,7 @@ def matches(p: Pattern, tool: str, input: dict, cwd: str | None) -> bool:
     if not _tool_in_scope(p, tool):
         return False
     if p.kind == "bare":
-        return tool not in FILE_TOOLS or _rel_path(input, cwd) is not None
+        return tool not in _PATH_TOOLS or _rel_path(input, cwd) is not None
     if p.kind == "path":
         rel = _rel_path(input, cwd)
         return rel is not None and _path_glob_to_regex(p.spec or "").fullmatch(rel) is not None
@@ -252,7 +253,18 @@ def describe(pattern: str) -> str:
 
 
 def suggest(tool: str, input: dict, cwd: str | None) -> list[str]:
-    """Candidate rules, narrowest first. Unfiltered: callers apply the safety assessor."""
+    """Candidate rules, narrowest first; each is guaranteed to cover the request itself.
+
+    Not filtered for safety: callers apply the safety assessor.
+    """
+    return [
+        c
+        for c in _suggest_candidates(tool, input, cwd)
+        if matches_any([parse(c)], tool, input, cwd) is not None
+    ]
+
+
+def _suggest_candidates(tool: str, input: dict, cwd: str | None) -> list[str]:
     if tool in _NEVER_SUGGEST:
         return []
     if tool.startswith("mcp__"):
@@ -267,7 +279,8 @@ def suggest(tool: str, input: dict, cwd: str | None) -> list[str]:
         out = [f"Bash({cmd if len(segs) > 1 else segs[0]})"]
         if len(words) >= 2:
             out.append(f"Bash({words[0]} {words[1]}:*)")
-        out.append(f"Bash({words[0]}:*)")
+        if all(seg.split()[0] == words[0] for seg in segs):
+            out.append(f"Bash({words[0]}:*)")
         return list(dict.fromkeys(out))
     if tool in _PATH_TOOLS:
         rel = _rel_path(input, cwd)
