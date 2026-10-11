@@ -275,6 +275,11 @@ _CONTROL_TOOLS = [
     "mcp__viberpit__set_permission_mode", _LEGACY + "set_permission_mode",
     "mcp__viberpit__resolve_model_approval", _LEGACY + "resolve_model_approval",
     "mcp__viberpit__set_autopilot_paused", "mcp__viberpit__set_automation_enabled",
+    # Human-in-the-loop decisions (assistant drawer and coding-session tools).
+    "mcp__viberpit__answer_question", "mcp__viberpit__resolve_decision",
+    "mcp__viberpit__resolve_triage", "mcp__viberpit__advance_initiative",
+    "mcp__viberpit__roadmap_resolve", "mcp__viberpit__roadmap_advance",
+    _LEGACY + "roadmap_advance",
 ]
 
 
@@ -294,3 +299,14 @@ def test_never_ruled_tools_never_match_or_suggest(tool):
 
 def test_app_server_rule_still_matches_ordinary_app_tools():
     assert matches_any([parse("mcp__viberpit")], "mcp__viberpit__rename_session", {}, CWD)
+
+
+def test_never_ruled_app_tools_all_exist():
+    """Every app tool on the list is a real registered tool: a typo would silently protect
+    nothing."""
+    from server.assistant import tools as _assistant_tools  # noqa: F401 - registers surface
+    from server.mcp_spec import annotation_for
+    from server.permission_rules.patterns import NEVER_RULED_TOOLS
+    from server.sessions.tools import registry as _session_registry  # noqa: F401
+    for tool in NEVER_RULED_TOOLS - {"ExitPlanMode", "AskUserQuestion"}:
+        assert annotation_for(tool) is not None, tool

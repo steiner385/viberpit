@@ -34,9 +34,10 @@ PROTECTED_PATHS = frozenset(
     }
 )  # fmt: skip
 #: Prompts no standing rule may ever answer, in any mode: plan approval and clarifying questions
-#: are conversations with the human, and the app's own tools that widen what sessions may do
+#: are conversations with the human; the app's own tools that widen what sessions may do
 #: without asking (resolve a permission card, change a permission mode, approve a parked model,
-#: unpause autopilot, enable an automation). Under BOTH brand prefixes. The single list read by
+#: unpause autopilot, enable an automation); and the ones that settle a human-in-the-loop
+#: decision. Under BOTH brand prefixes. The single list read by
 #: the matcher, ``suggest``, ``safety.assess`` and ``PermissionRegistry``.
 NEVER_RULED_TOOLS = frozenset(
     {"ExitPlanMode", "AskUserQuestion"}
@@ -46,6 +47,10 @@ NEVER_RULED_TOOLS = frozenset(
         for name in (
             "resolve_permission", "set_permission_mode", "resolve_model_approval",
             "set_autopilot_paused", "set_automation_enabled",
+            # Human-in-the-loop decisions: another session's question, a decision or triage
+            # proposal, an initiative stage, a roadmap proposal.
+            "answer_question", "resolve_decision", "resolve_triage", "advance_initiative",
+            "roadmap_resolve", "roadmap_advance",
         )
     }
 )  # fmt: skip

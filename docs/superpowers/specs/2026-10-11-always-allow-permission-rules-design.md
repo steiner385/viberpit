@@ -48,7 +48,10 @@ The guard against non-human grants has a hole. `session_actions.resolve_permissi
 - **Destructive ViberPit tools** (`ToolClass.DESTRUCTIVE`), plan approvals (`ExitPlanMode`),
   `AskUserQuestion`, and the app tools that widen what sessions may do unasked
   (`resolve_permission`, `set_permission_mode`, `resolve_model_approval`, `set_autopilot_paused`,
-  `set_automation_enabled`; one list, `patterns.NEVER_RULED_TOOLS`) are never rule-resolvable.
+  `set_automation_enabled`), and the tools that settle a human-in-the-loop decision
+  (`answer_question`, `resolve_decision`, `resolve_triage`, `advance_initiative`,
+  `roadmap_resolve`, `roadmap_advance`) are never rule-resolvable — one list,
+  `patterns.NEVER_RULED_TOOLS`.
   A server-wide rule for the app's own MCP server is refused at every scope.
 
 ## 1. Pattern grammar

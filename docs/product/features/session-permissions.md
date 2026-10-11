@@ -87,7 +87,10 @@ exception (see Standing rules).
     `trace`), command launchers (`uv run`, `npx`, `npm exec`/`x`, `pnpm exec`/`dlx`,
     `yarn exec`/`dlx`, `poetry run`, `pipx run`, `bunx`) unless followed by the command they run
     — which is then judged as a head of its own (`uv run pytest:*` ok, `uv run python:*`
-    refused) — `git push` except exactly, `git -c` (incl. the attached `-cKEY=VAL` form),
+    refused) — a package manager that can launch arbitrary commands (`npm`, `pnpm`, `yarn`,
+    `uv`, `poetry`, `pipx`, `bun`, `deno`, `npx`, `bunx`) with no subcommand after it or an
+    option first (`Bash(npm:*)`, `Bash(yarn *)`, `Bash(npm --prefix x:*)`; `Bash(npm test:*)`
+    and `Bash(uv sync:*)` stay ok), `git push` except exactly, `git -c` (incl. the attached `-cKEY=VAL` form),
     `--config-env`, `--exec-path` and `git config`, and WebFetch domains that are wildcards,
     single-label, IP literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
     `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means
@@ -98,10 +101,12 @@ exception (see Standing rules).
   - *Enforcement.* `StandingRuleGate` is consulted wherever a card would otherwise be created,
     in **every** mode including `interactive`; it fails closed (any error = ask the human).
     Hits are counted and audited. `patterns.NEVER_RULED_TOOLS` is never matched, suggested or
-    storable, in any mode: `ExitPlanMode`, `AskUserQuestion`, and the app's own tools that widen
+    storable, in any mode: `ExitPlanMode`, `AskUserQuestion`; the app's own tools that widen
     what sessions may do unasked (`resolve_permission`, `set_permission_mode`,
-    `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`, under both
-    brand prefixes). A server-wide rule for the app's own MCP server (`mcp__viberpit`, or its
+    `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`); and those that
+    settle a human-in-the-loop decision (`answer_question`, `resolve_decision`, `resolve_triage`,
+    `advance_initiative`, and the session tools `roadmap_resolve`, `roadmap_advance`). App
+    tools are covered under both brand prefixes. A server-wide rule for the app's own MCP server (`mcp__viberpit`, or its
     legacy name) is refused at every scope. Engine-managed (Codex) cards are never answered by
     rules: a new rule neither sweeps them nor can be created from one.
   - *Kill switch.* `VIBERPIT_PERMISSION_RULES_ENABLED=false`: nothing is consulted or
