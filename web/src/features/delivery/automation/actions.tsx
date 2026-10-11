@@ -131,9 +131,13 @@ export function ActionButton(
  *  (docs/PAGE-TABS.md §5: a preview is at most three rows + "See all N"). */
 export const PREVIEW_ROWS = 3
 
-export function AutomationActions({ automationId, enabled, variant, onSeeAll }: {
+export function AutomationActions({ automationId, enabled, variant, paused = false, onSeeAll }: {
   automationId: string
   enabled: boolean
+  /** The automation is paused (`Automation.paused`): its decisions are parked —
+   *  still listed with working buttons, headed "Paused — N parked" so the
+   *  operator knows why the Delivery badge left them out (#2936). */
+  paused?: boolean
   /** `preview`: the Overview's notice — heading, three rows, "See all N",
    *  nothing at all when empty. `full`: the Needs you tab — every row on the
    *  page scroll, a sentence when empty. */
@@ -146,11 +150,12 @@ export function AutomationActions({ automationId, enabled, variant, onSeeAll }: 
   // signature, a File-now on a row the loop itself throttled) is settled
   // housekeeping — said, folded, never counted (2026-10-01 Delivery critique, P0).
   const { decisions, maintenance } = splitActionable(actionable.data ?? [])
+  const parkedHeading = paused && decisions.length > 0 ? `Paused — ${decisions.length} parked` : null
   if (variant === 'preview') {
     if (decisions.length === 0) return null
     return (
       <section className="space-y-2">
-        <SectionHeading>Actionable items</SectionHeading>
+        <SectionHeading>{parkedHeading ?? 'Actionable items'}</SectionHeading>
         <div className="rounded-md border border-edge p-2">
           <ActionableRows items={decisions.slice(0, PREVIEW_ROWS)} automationId={automationId} />
         </div>
@@ -164,6 +169,14 @@ export function AutomationActions({ automationId, enabled, variant, onSeeAll }: 
   }
   return (
     <div className="space-y-3">
+      {parkedHeading && (
+        <div className="space-y-1">
+          <SectionHeading>{parkedHeading}</SectionHeading>
+          <p className="max-w-prose text-sm text-ink-muted">
+            Not counted in the Delivery badge while this automation is paused. You can still act on them here.
+          </p>
+        </div>
+      )}
       {decisions.length === 0
         ? <p className="text-sm text-ink-muted">Nothing needs you.</p>
         : <ActionableRows items={decisions} automationId={automationId} />}

@@ -650,6 +650,10 @@ class DeployMonitorLoop:
             return "dismissed", None
         if kind != "file_now":
             return "failed", None
+        # Kept, unlike session-feedback/error-triage (#2936): an off monitor stops
+        # observing, so the incident state is stale — the deploy may have
+        # recovered — and filing would assert a live failure. The card does not
+        # offer "File issue" while off either (``actionable_items``).
         if mode == "off":
             return "off", None
         if state.get("muted"):

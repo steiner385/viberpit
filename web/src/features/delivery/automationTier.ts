@@ -5,7 +5,7 @@ import { TIER_LABEL } from '@/features/products/vocab'
 import { TIER_RANK } from '@/features/roadmap/roadmapTier'
 
 export type AutomationTier = Extract<RoadmapTier, 'needs-you' | 'blocked' | 'in-flight' | 'idle'>
-type TierInput = Pick<Automation, 'enabled' | 'status' | 'activeSessions' | 'actionableCount' | 'maintenanceCount'>
+type TierInput = Pick<Automation, 'enabled' | 'status' | 'activeSessions' | 'actionableCount' | 'maintenanceCount' | 'parkedCount'>
 
 /** A warn-level observation with NO typed waiting reason is the automation
  *  refusing or failing to do its job — "Reconcile refused: master is 9 commits
@@ -34,6 +34,9 @@ export function automationTierLine(tier: AutomationTier, a: TierInput): string {
   if (a.status.level === 'unknown') parts.push('Status unknown')
   if (a.actionableCount == null) parts.push('Actionable count unknown')
   else if (a.actionableCount > 0) parts.push(`${a.actionableCount} actionable`)
+  // A paused automation's decisions are parked: said, never tiered or badged —
+  // the server already left them out of `actionableCount` (#2936).
+  else if ((a.parkedCount ?? 0) > 0) parts.push('Paused', `${a.parkedCount} parked`)
   else parts.push('0 actionable')
   // Settled housekeeping a human may revisit: said, never tiered or badged
   // (2026-10-01 Delivery critique, P0 — 96 of a 103 badge were these).

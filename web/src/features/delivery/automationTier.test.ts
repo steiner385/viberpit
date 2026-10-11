@@ -28,6 +28,18 @@ describe('automation attention', () => {
     expect(automationTierLine(automationTier(base), { ...base, maintenanceCount: 0 })).not.toMatch(/maintenance/)
   })
 
+  // #2936: a paused automation's decisions are parked — said, never tiered.
+  it('says a paused automation\'s parked items without tiering needs-you', () => {
+    const a = { ...base, enabled: false, paused: true, actionableCount: 0, parkedCount: 50 }
+    expect(automationTier(a)).toBe('idle')
+    expect(automationTierLine(automationTier(a), a)).toBe('Paused · 50 parked')
+    const withMaintenance = { ...a, maintenanceCount: 3 }
+    expect(automationTierLine(automationTier(withMaintenance), withMaintenance)).toBe('Paused · 50 parked · 3 maintenance')
+    // Nothing parked: the line is unchanged.
+    const empty = { ...a, parkedCount: 0 }
+    expect(automationTierLine(automationTier(empty), empty)).toBe('Idle · 0 actionable')
+  })
+
   it('preserves live sessions during expected schedule pauses without claiming blocked', () => {
     const a: typeof base = { ...base, activeSessions: 3, status: { text: 'Paused', level: 'warn', waitingReason: 'schedule', counts: null } }
     expect(automationTier(a)).toBe('in-flight')

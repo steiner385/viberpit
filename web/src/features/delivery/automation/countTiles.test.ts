@@ -22,6 +22,12 @@ describe('countTiles', () => {
     // The server tiles stay untoned and unclickable: they map to no tab.
     expect(tiles[1]).toEqual({ label: 'Products', value: 6 })
   })
+  // #2936: a paused automation's decisions are parked — named, not amber.
+  it('a parked lead says Parked and is untoned, still opening the tab', () => {
+    const onClick = vi.fn()
+    const [lead] = countTiles({ failing: 1 }, { value: 50, onClick, parked: true })
+    expect(lead).toEqual({ label: 'Parked', value: 50, onClick })
+  })
   it('omits the lead while the actionable count is unknown, without letting a fourth server tile take its place', () => {
     const counts = { a: 1, b: 2, c: 3, d: 4 }
     expect(countTiles(counts).map((t) => t.label)).toEqual(['A', 'B', 'C'])

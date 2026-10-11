@@ -33,6 +33,20 @@ describe('AutomationActions', () => {
     expect(screen.getByRole('button', { name: 'Resolve conflicts' })).toBeInTheDocument()
   })
 
+  // #2936: a paused automation's decisions stay listed and actionable, under a
+  // heading that says why the Delivery badge left them out.
+  it('paused: both variants keep the rows and their buttons, headed "Paused — N parked"', () => {
+    items = [1, 2].map((n) => ({ id: `o/r#${n}`, title: `report ${n}`,
+      actions: [{ kind: 'file_now', label: 'File now', style: 'safe' }] }))
+    const { unmount } = render(<AutomationActions automationId="session-feedback" enabled variant="full" paused />)
+    expect(screen.getByRole('heading', { name: 'Paused — 2 parked' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'File now' })).toHaveLength(2)
+    unmount()
+    render(<AutomationActions automationId="session-feedback" enabled variant="preview" paused />)
+    expect(screen.getByRole('heading', { name: 'Paused — 2 parked' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Actionable items' })).toBeNull()
+  })
+
   it('preview: three rows, a "See all N" button that hands off, and nothing at all when empty', () => {
     const onSeeAll = vi.fn()
     items = [1, 2, 3, 4, 5].map((n) => ({ id: `o/r#${n}`, title: `item ${n}`, actions: [] , status: 'waiting' }))

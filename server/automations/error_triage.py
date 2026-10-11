@@ -730,7 +730,7 @@ class ErrorTriageLoop:
         from sqlalchemy import select, update
         from server.db import db_session
         from server.db.models import ErrorSignature as ES
-        mode, config = await self._read_config()
+        _, config = await self._read_config()
         now = self._clock()
         async with db_session() as db:
             row = (await db.execute(select(ES).where(ES.fingerprint == fingerprint))).scalars().one_or_none()
@@ -760,8 +760,8 @@ class ErrorTriageLoop:
                 return "unmuted", None
             if kind != "file_now":
                 return "failed", None
-            if mode == "off":
-                return "off", None
+            # No ``mode == "off"`` refusal: "File now" is an explicit operator
+            # action on a listed (parked) signature (#2936).
             repo = str(config.get("target_repo") or "")
             if not ci_issues.valid_repo(repo) or row.status not in ("observed", "resolved", "filed"):
                 return "failed", None
@@ -795,7 +795,6 @@ _ACTION_STATUS = {
     "muted": ("ok", "Muted — it will not be filed or commented on again"),
     "unmuted": ("ok", "Unmuted"),
     "not_found": ("warn", "That signature no longer exists"),
-    "off": ("warn", "Error Triage is off — enable it first"),
     "failed": ("error", "Action failed — see the feed"),
 }
 

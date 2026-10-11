@@ -38,7 +38,8 @@ export type NavBadges = Record<NavBadgeKey, boolean | AttentionCount | undefined
  * `roadmap` is the Inbox queue: proposals and decisions awaiting a human.
  *
  * `delivery` is the decisions the automations are waiting on (the
- * `actionableCount` each row carries, decisions only since #2579), as an amber
+ * `actionableCount` each row carries, decisions only since #2579; a paused
+ * automation's are `parkedCount` instead, never badged — #2936), as an amber
  * count; with none, an amber dot while something still wants eyes — an
  * automation at the needs-you or blocked tier (unknown observation, error,
  * refusal, defect), the list failing to load, or the capacity readout naming a

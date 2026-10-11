@@ -339,13 +339,18 @@ def test_list_uses_one_overview_for_counts_and_missing_entries_are_unknown():
         overview.assert_awaited_once()
         rows = {a["id"]: a for a in response.json()}
         assert rows["pr-doctor"]["status"]["level"] == "idle"
+        # A fresh DB has every automation disabled, so its decisions are parked
+        # rather than badged (#2936); the enabled pass-through is covered below.
         assert rows["pr-doctor"]["actionableCount"] == 0
-        assert rows["backlog-runner"]["actionableCount"] == 4
+        assert rows["pr-doctor"]["parkedCount"] == 0
+        assert rows["backlog-runner"]["actionableCount"] == 0
+        assert rows["backlog-runner"]["parkedCount"] == 4
         assert rows["pm-sync"]["status"]["level"] == "unknown"
         assert rows["pm-sync"]["actionableCount"] is None
+        assert rows["pm-sync"]["parkedCount"] is None
         # Decisions badge; housekeeping rides beside it and is None when the
         # daemon predates the split (2026-10-01 Delivery critique, P0).
-        assert rows["error-triage"]["actionableCount"] == 7
+        assert rows["error-triage"]["parkedCount"] == 7
         assert rows["error-triage"]["maintenanceCount"] == 47
         assert rows["pr-doctor"]["maintenanceCount"] is None
 
@@ -390,7 +395,49 @@ def test_list_suppresses_obsolete_waits_when_off_without_hiding_human_decisions(
             assert automation["status"]["text"] == observed["text"]
             assert automation["status"]["level"] == "error"
             assert automation["activeSessions"] == live
-            assert automation["actionableCount"] == actionable
+            # A paused automation's decisions are parked, not waiting on the
+            # operator (#2936) — the human wait above is a separate signal.
+            paused = not enabled or mode == "off"
+            assert automation["paused"] is paused
+            assert automation["actionableCount"] == (0 if paused else actionable)
+            assert automation["parkedCount"] == (actionable if paused else 0)
+    asyncio.run(check())
+
+
+def test_list_parks_a_paused_automations_decisions_out_of_the_badge():
+    """#2936: Session Feedback was disabled yet its 50 pending reports were 50 of
+    the Delivery badge's 52. A paused automation publishes ``actionableCount: 0``
+    and the decisions as ``parkedCount``; they stay listed and actionable on its
+    own page. An unknown count stays unknown either way."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from server.api.automations import list_automations
+
+    async def listed(enabled, mode, count):
+        row = SimpleNamespace(enabled=enabled, mode=mode, config={},
+                              schedule=None, last_active_at=None)
+        overview = AsyncMock(return_value={
+            "statuses": {}, "actionableCounts": {"session-feedback": count},
+            "maintenanceCounts": {"session-feedback": 3}})
+        request = SimpleNamespace(app=SimpleNamespace(
+            state=SimpleNamespace(sessions=SimpleNamespace(automation_overview=overview))))
+        db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])))
+        with patch("server.api.automations._row", new=AsyncMock(return_value=row)):
+            rows = await list_automations(request, _identity="test", db=db)
+        return next(a for a in rows if a["id"] == "session-feedback")
+
+    async def check():
+        disabled = await listed(False, "file", 50)
+        assert (disabled["paused"], disabled["actionableCount"], disabled["parkedCount"]) == (True, 0, 50)
+        assert disabled["maintenanceCount"] == 3
+        off = await listed(True, "off", 50)
+        assert (off["paused"], off["actionableCount"], off["parkedCount"]) == (True, 0, 50)
+        running = await listed(True, "file", 50)
+        assert (running["paused"], running["actionableCount"], running["parkedCount"]) == (False, 50, 0)
+        unknown = await listed(False, "file", None)
+        assert (unknown["actionableCount"], unknown["parkedCount"]) == (None, None)
     asyncio.run(check())
 
 

@@ -61,6 +61,20 @@ describe('AutomationDetail', () => {
     mount(AUTOMATIONS[2], '/delivery/automations/pm-classify')
     expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
   })
+  // #2936: a paused automation's decisions are parked — still listed and
+  // actionable, but the tab does not call for attention, and says why.
+  it('Needs you: a paused automation keeps its items listed without attention, labelled parked', () => {
+    const paused = { ...prDoctor, enabled: false, paused: true, actionableCount: 0, parkedCount: 1,
+      status: { ...prDoctor.status, counts: { failing: 2 } } }
+    mount(paused, '/delivery/automations/pr-doctor?tab=needs-you')
+    expect(screen.getByRole('tab', { name: 'Needs you (1)', selected: true })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /needs attention/ })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Paused — 1 parked' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Fix' })).toBeInTheDocument()
+    // The band's lead tile names the parked items too, not an amber "Needs you".
+    expect(screen.getByRole('button', { name: 'Parked: 1' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Needs you:/ })).toBeNull()
+  })
   it('Needs you: the fetched list length wins even when actionableCount is null (F3)', () => {
     // Review focus 1, updated: `actionableCount: null` used to force a bare
     // tab; now the list has loaded (1 item) and that is what counts.

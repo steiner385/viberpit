@@ -1713,7 +1713,7 @@ async def test_list_automations_projects_by_default_and_keeps_products():
                       "counts": {"eligible": 3, "held": 4},
                       "products": [{"slug": "kindash", "eligible": 0, "held": 4}],
                       "waitingReason": "human"},
-           "actionableCount": 2, "oversight": {"x": 1},
+           "actionableCount": 2, "parkedCount": 0, "paused": False, "oversight": {"x": 1},
            "configSchema": [{"key": "k"}] * 20, "enginePolicy": "claude_only",
            "operatorTriggered": False, "workClass": "development",
            "config": {"max_concurrent": 2}, "schedule": None,
@@ -1726,7 +1726,7 @@ async def test_list_automations_projects_by_default_and_keeps_products():
     out = json.loads((await _tool(tools, "list_automations").handler({}))["content"][0]["text"])
     a = out["data"][0]
     assert set(a) == {"id", "name", "enabled", "mode", "status", "actionableCount",
-                      "lastActiveAt", "activeSessions", "workClass"}
+                      "parkedCount", "lastActiveAt", "activeSessions", "workClass"}
     assert a["status"]["products"] == row["status"]["products"]
     assert a["status"]["counts"] == {"eligible": 3, "held": 4}
     out = json.loads((await _tool(tools, "list_automations").handler(

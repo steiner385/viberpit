@@ -50,6 +50,8 @@ export function AutomationRow({ automation: a, selected, focusable, idScope, onO
             <TierDot tier={tier} />
             <span className="truncate text-sm font-medium text-ink">{a.name}</span>
             {a.actionableCount != null && a.actionableCount > 0 && <Badge tone="accent" count={a.actionableCount} title="Actionable items" />}
+            {/* A paused automation's decisions: a count, never a call for attention (#2936). */}
+            {a.parkedCount != null && a.parkedCount > 0 && <Badge tone="neutral" count={a.parkedCount} title="Parked items" />}
           </span>
         }
         trailing={
