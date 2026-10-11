@@ -5,7 +5,14 @@ import { useUpdatePending } from '@/hooks/useUpdatePending'
 export interface InputHoldState {
   holding: boolean
   count: number
-  mode: 'updating' | 'reconnecting'
+  /** 'updating' = a deploy drain; 'reconnecting' = the socket is down; 'retrying' = the
+   *  socket is up but a session refused a prompt (driver gone/recovering), retried on a
+   *  backoff. */
+  mode: 'updating' | 'reconnecting' | 'retrying'
+  /** Stop waiting and send what is held now. */
+  sendNow: () => void
+  /** Drop every held message. */
+  discard: () => void
 }
 
 function tryGetSocket() {
@@ -71,7 +78,12 @@ export function useInputHold(): InputHoldState {
   return {
     holding: pending.active || pending.count > 0 || reconnecting,
     count: pending.count,
-    // 'updating' is the richer deploy message; otherwise we're just reconnecting.
-    mode: pending.active ? 'updating' : 'reconnecting',
+    // 'updating' is the richer deploy message. Held messages on a live socket are a
+    // session's refusal, not a lost connection — saying "Connection lost" there is false.
+    mode: pending.active ? 'updating'
+      : reconnecting || socket?.connectionState !== 'connected' ? 'reconnecting'
+      : 'retrying',
+    sendNow: () => socket?.sendHeldNow(),
+    discard: () => socket?.discardHeld(),
   }
 }

@@ -44,7 +44,8 @@ export function useAppBanners({
     {
       id: 'input-hold', priority: 60, tone: 'info',
       node: inputHold.holding
-        ? <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode} />
+        ? <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode}
+            onSendNow={inputHold.sendNow} onDiscard={inputHold.discard} />
         : null,
     },
     // A deploy FAILURE only (2026-10-01 shell critique, P2): pending commits

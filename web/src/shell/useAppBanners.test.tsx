@@ -10,7 +10,7 @@ const NONE = { allLimitedReset: undefined, onDismissAllLimited: () => {} }
 
 describe('useAppBanners', () => {
   beforeEach(() => {
-    vi.mocked(useInputHold).mockReturnValue({ holding: false, count: 0, mode: 'updating' })
+    vi.mocked(useInputHold).mockReturnValue({ holding: false, count: 0, mode: 'updating', sendNow: () => {}, discard: () => {} })
   })
 
   it('declares every banner exactly once', () => {
@@ -66,7 +66,7 @@ describe('useAppBanners', () => {
   })
 
   it('renders the input-hold node once useInputHold reports holding', () => {
-    vi.mocked(useInputHold).mockReturnValue({ holding: true, count: 2, mode: 'reconnecting' })
+    vi.mocked(useInputHold).mockReturnValue({ holding: true, count: 2, mode: 'reconnecting', sendNow: () => {}, discard: () => {} })
     const { result } = renderHook(() => useAppBanners(NONE))
     expect(result.current.find((i) => i.id === 'input-hold')?.node).not.toBeNull()
   })
