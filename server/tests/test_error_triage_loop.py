@@ -140,8 +140,9 @@ def test_ignored_logger_and_invalid_repo(tmp_path):
 
 def test_daily_cap_counts_todays_filings(tmp_path):
     async def body():
-        await _seed(fingerprint="a", last_seen_at=NOW - timedelta(minutes=5))
-        await _seed(fingerprint="b", last_seen_at=NOW - timedelta(minutes=1))
+        # Distinct titles: same-titled rows would collapse into one issue (#2683).
+        await _seed(fingerprint="a", title="ERROR server.x: a", last_seen_at=NOW - timedelta(minutes=5))
+        await _seed(fingerprint="b", title="ERROR server.x: b", last_seen_at=NOW - timedelta(minutes=1))
         await _seed(fingerprint="old", status="filed", issue_number=9,
                     filed_at=NOW - timedelta(days=1, minutes=1), count_since_filed=0)
         gh = FakeGh()
@@ -310,4 +311,213 @@ def test_retention_deletes_stale_unfiled_only(tmp_path):
         async with db_session() as db:
             left = set((await db.execute(select(ErrorSignature.fingerprint))).scalars().all())
         assert left == {"fil", "mut"}
+    _run(body, tmp_path)
+
+
+# -- duplicate collapse (#2683) -------------------------------------------------
+# #2776/#2777/#2784/#2787: one Postgres outage, one rendered title, four
+# fingerprints (frame/source differ) → four issues. #2727/#2728/#2729: one
+# browser tab, three messages within a minute → three issues.
+
+REFUSED = "ERROR server: unhandled exception: [errno <n>] connection refused"
+
+
+def test_same_title_links_to_earliest_open_issue_without_creating(tmp_path):
+    async def body():
+        await _seed(fingerprint="old60", title=REFUSED, status="filed", issue_number=60,
+                    repo="o/r", filed_at=NOW - timedelta(days=1), count_since_filed=0)
+        await _seed(fingerprint="old50", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", filed_at=NOW - timedelta(days=2), count_since_filed=0)
+        await _seed(fingerprint="new", title=REFUSED, source="edge", count_since_filed=4, count=4)
+        gh = FakeGh()
+        gh.states = {50: (False, None), 60: (False, None)}
+        ctx = AutomationContext("error-triage")
+        await _loop(ctx, gh).tick()
+        assert gh.creates == []
+        row = await _row("new")
+        assert row.status == "filed" and row.issue_number == 50 and row.repo == "o/r"
+        assert row.filed_at is None                 # a link is not a filing: no cap spent
+        assert row.count_since_filed == 0 and row.last_commented_at == NOW
+        assert len(gh.comments) == 1 and gh.comments[0][1].endswith("/issues/50/comments")
+        assert any("`new`" in part for part in gh.comments[0])
+        assert ctx.error_triage_counts["filed_today"] == 0
+    _run(body, tmp_path)
+
+
+def test_same_title_link_respects_the_issue_comment_throttle(tmp_path):
+    async def body():
+        await _seed(fingerprint="old", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", filed_at=NOW - timedelta(days=2), count_since_filed=0,
+                    last_commented_at=NOW - timedelta(hours=1))
+        await _seed(fingerprint="new", title=REFUSED, count_since_filed=4)
+        gh = FakeGh()
+        gh.states = {50: (False, None)}
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        row = await _row("new")
+        assert row.status == "filed" and row.issue_number == 50
+        assert gh.creates == [] and gh.comments == []
+        # Occurrences stay counted: the recurrence comment reports them once the
+        # issue's throttle lapses, on the issue's clock — not a fresh one.
+        assert row.count_since_filed == 4
+        assert row.last_commented_at == NOW - timedelta(hours=1)
+    _run(body, tmp_path)
+
+
+def test_closed_earlier_issue_does_not_absorb(tmp_path):
+    async def body():
+        await _seed(fingerprint="old", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", filed_at=NOW - timedelta(days=2), count_since_filed=0)
+        await _seed(fingerprint="new", title=REFUSED, count_since_filed=1)
+        gh = FakeGh()
+        gh.states = {50: (True, "completed")}
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert len(gh.creates) == 1 and gh.comments == []
+        assert (await _row("new")).issue_number == 42
+        assert (await _row("old")).status == "resolved"
+    _run(body, tmp_path)
+
+
+def test_muted_sibling_does_not_absorb_and_stays_muted(tmp_path):
+    async def body():
+        await _seed(fingerprint="old", title=REFUSED, status="muted", issue_number=50,
+                    muted_by="github:not_planned", count_since_filed=9)
+        await _seed(fingerprint="new", title=REFUSED, count_since_filed=1)
+        gh = FakeGh()
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert len(gh.creates) == 1 and gh.comments == []
+        assert (await _row("old")).status == "muted"
+    _run(body, tmp_path)
+
+
+def test_regression_stays_a_regression_beside_an_open_sibling(tmp_path):
+    """A fingerprint whose own issue was closed as fixed and then recurred is
+    evidence the fix failed: it keeps the regress path even when a same-titled
+    sibling is still open."""
+    async def body():
+        await _seed(fingerprint="open", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", count_since_filed=0)
+        await _seed(fingerprint="reg", title=REFUSED, status="resolved", issue_number=41,
+                    count_since_filed=1)
+        gh = FakeGh()
+        gh.states = {50: (False, None)}
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert len(gh.creates) == 1
+        assert any(c.startswith("title=[auto-error][regression] ") for c in gh.creates[0])
+        assert any("| Regression of | #41 |" in c for c in gh.creates[0])
+        assert (await _row("reg")).issue_number == 42
+    _run(body, tmp_path)
+
+
+def test_same_title_fingerprints_in_one_pass_file_once(tmp_path):
+    async def body():
+        for i, src in enumerate(("edge", "daemon", "edge", "daemon")):
+            await _seed(fingerprint=f"fp{i}", title=REFUSED, source=src,
+                        first_seen_at=NOW - timedelta(minutes=10 - i), count_since_filed=2)
+        gh = FakeGh()
+        ctx = AutomationContext("error-triage")
+        await _loop(ctx, gh).tick()
+        assert len(gh.creates) == 1
+        body_arg = next(c for c in gh.creates[0] if c.startswith("body="))
+        assert all(f"`fp{i}`" in body_arg for i in range(4))
+        rows = [await _row(f"fp{i}") for i in range(4)]
+        assert {r.issue_number for r in rows} == {42}
+        assert {r.status for r in rows} == {"filed"}
+        assert [r.count_since_filed for r in rows] == [0, 0, 0, 0]
+        assert rows[0].filed_at == NOW                        # earliest leads
+        assert [r.filed_at for r in rows[1:]] == [None, None, None]
+        assert ctx.error_triage_counts["filed_today"] == 1
+    _run(body, tmp_path)
+
+
+def _client(fp, title, *, seen, client_id="tab-1"):
+    return _seed(fingerprint=fp, title=title, source="client", logger="client",
+                 event="client.error", first_seen_at=seen, last_seen_at=seen,
+                 sample_context={"recent_sessions": [], "client_id": client_id})
+
+
+def test_client_burst_within_window_files_one_issue(tmp_path):
+    async def body():
+        t0 = NOW - timedelta(minutes=5)
+        await _client("c2", "ERROR client: failed to fetch", seen=t0 + timedelta(seconds=20))
+        await _client("c1", "ERROR client: api error <n>", seen=t0)
+        await _client("c3", "ERROR client: mutation: something went wrong",
+                      seen=t0 + timedelta(seconds=50))
+        gh = FakeGh()
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert len(gh.creates) == 1
+        assert any(c == "title=[auto-error] ERROR client: api error <n>" for c in gh.creates[0])
+        assert {(await _row(f)).issue_number for f in ("c1", "c2", "c3")} == {42}
+    _run(body, tmp_path)
+
+
+def test_client_errors_outside_window_or_other_tab_file_separately(tmp_path):
+    async def body():
+        t0 = NOW - timedelta(minutes=30)
+        await _client("c1", "ERROR client: api error <n>", seen=t0)
+        await _client("late", "ERROR client: failed to fetch", seen=t0 + timedelta(minutes=10))
+        await _client("tab2", "ERROR client: mutation failed", seen=t0 + timedelta(seconds=5),
+                      client_id="tab-2")
+        gh = FakeGh()
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert len(gh.creates) == 3
+    _run(body, tmp_path)
+
+
+def test_client_burst_straddling_ticks_joins_the_open_issue(tmp_path):
+    """The tick runs every 60 s, so a burst can split across two passes: the
+    second half links to the issue the first half opened."""
+    async def body():
+        t0 = NOW - timedelta(minutes=2)
+        await _client("c1", "ERROR client: api error <n>", seen=t0)
+        await _seed(fingerprint="c1x", title="x")  # unrelated, files on its own
+        async with db_session() as db:
+            r = (await db.execute(select(ErrorSignature).where(
+                ErrorSignature.fingerprint == "c1"))).scalars().one()
+            r.status, r.issue_number, r.repo, r.count_since_filed = "filed", 50, "o/r", 0
+        await _client("c2", "ERROR client: failed to fetch", seen=t0 + timedelta(seconds=40))
+        gh = FakeGh()
+        gh.states = {50: (False, None)}
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert (await _row("c2")).issue_number == 50
+        assert len(gh.creates) == 1                     # only the unrelated "x"
+        assert any("`c2`" in part for part in gh.comments[0])
+    _run(body, tmp_path)
+
+
+def test_collapse_costs_no_cap(tmp_path):
+    async def body():
+        # Today's cap is already spent…
+        await _seed(fingerprint="today", title="ERROR other", status="filed", issue_number=9,
+                    repo="o/r", filed_at=NOW - timedelta(hours=1), count_since_filed=0)
+        await _seed(fingerprint="open", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", filed_at=NOW - timedelta(days=3), count_since_filed=0)
+        # …yet a same-titled newcomer still links, and a brand-new title waits.
+        await _seed(fingerprint="new", title=REFUSED, count_since_filed=1)
+        await _seed(fingerprint="fresh", title="ERROR brand new", count_since_filed=1)
+        gh = FakeGh()
+        gh.states = {9: (False, None), 50: (False, None)}
+        ctx = AutomationContext("error-triage")
+        await _loop(ctx, gh, config={"daily_cap": 1}).tick()
+        assert (await _row("new")).issue_number == 50
+        assert (await _row("fresh")).status == "observed"
+        assert gh.creates == []
+        assert ctx.error_triage_counts["filed_today"] == 1
+        assert ctx.error_triage_counts["candidates"] == 1
+    _run(body, tmp_path)
+
+
+def test_failed_leader_keeps_followers_waiting_then_links_them(tmp_path):
+    async def body():
+        await _seed(fingerprint="a", title=REFUSED, first_seen_at=NOW - timedelta(hours=2))
+        await _seed(fingerprint="b", title=REFUSED, first_seen_at=NOW - timedelta(hours=1))
+        gh = FakeGh()
+        gh.fail_create = True
+        loop = _loop(AutomationContext("error-triage"), gh)
+        await loop.tick()
+        assert len(gh.creates) == 1
+        assert (await _row("b")).status == "observed"   # not claimed: no orphan retry
+        gh.fail_create = False
+        await loop.tick()
+        assert len(gh.creates) == 2                      # the leader's retry, nothing else
+        assert {(await _row(f)).issue_number for f in ("a", "b")} == {42}
     _run(body, tmp_path)

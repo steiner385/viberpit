@@ -180,11 +180,14 @@ def test_client_event_record_becomes_client_signature():
     rec = _rec("client.error", name="client", event="client.error",
                fields={"msg": "TypeError: x is undefined", "stack": "TypeError: x\n    at f (https://h/assets/app-abc123.js:1:2)",
                        "url": "https://vp/sessions/1", "app_version": "4d2096a5",
-                       "identity": "someone@example"})
+                       "identity": "someone@example", "client_id": "tab-1"})
     sig = _sig(rec=rec)
     assert sig.source == "client"
     assert sig.logger == "client"
     assert sig.context["app_version"] == "4d2096a5"
+    # The per-page-load tab id: error triage collapses one tab's burst into one
+    # issue (#2683). Context only — the fingerprint below ignores it.
+    assert sig.context["client_id"] == "tab-1"
     assert "identity" not in sig.context
     assert sig.sample_exc.startswith("TypeError: x")
     # line:col do not change the fingerprint

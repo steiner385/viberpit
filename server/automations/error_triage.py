@@ -11,6 +11,8 @@ from .context import observation_failed, publish_observation
 
 import asyncio  # noqa: F401
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta  # noqa: F401
 from typing import Any, Awaitable, Callable  # noqa: F401
 
@@ -118,16 +120,73 @@ def _fmt(ts: datetime | None) -> str:
     return ts.strftime(_TS) if ts else "?"
 
 
+_TITLE_PREFIX = "[auto-error] "
+_REGRESSION_PREFIX = "[auto-error][regression] "
+# How close two browser-side signatures' first sightings must be to count as one
+# incident. One failing request in a tab cascades into several distinct messages
+# ("failed to fetch" → "api error <n>" → the mutation toast): #2727/#2728/#2729
+# all landed within one minute. The client logger flushes every 5 s and the sink
+# every 5 s, so one incident's first_seen stamps skew by ~10 s at most; 120 s
+# covers the observed minute with 2x headroom yet is short enough that two
+# unrelated bugs in one tab rarely share a window — and when a tab id is
+# recorded, a different tab never joins.
+CLIENT_BURST_WINDOW = timedelta(seconds=120)
+_COLLAPSED_LIST_MAX = 20
+
+
+def collapse_key(row: Any) -> str:
+    """The identity of an issue as a human reads it: its title minus the prefix.
+
+    Fingerprints split on frame and source, so one incident can mint several
+    (#2776/#2777/#2784/#2787: one Postgres outage, one rendered title, four
+    issues). Filing collapses on this instead; the fingerprint itself stays the
+    stable row key so no existing row's muted/linked state is orphaned."""
+    return str(row.title or row.fingerprint)[:_TITLE_MAX - len(_TITLE_PREFIX)]
+
+
 def issue_title(row: Any, *, regression: bool) -> str:
-    prefix = "[auto-error][regression] " if regression else "[auto-error] "
-    return (prefix + str(row.title or row.fingerprint))[:_TITLE_MAX]
+    prefix = _REGRESSION_PREFIX if regression else _TITLE_PREFIX
+    return (prefix + collapse_key(row))[:_TITLE_MAX]
+
+
+def _client_id(row: Any) -> str | None:
+    cid = (row.sample_context or {}).get("client_id")
+    return str(cid) if cid else None
+
+
+def collapses_into(row: Any, other: Any) -> bool:
+    """Whether *row* belongs on *other*'s issue: the same rendered title, or —
+    browser side only — first seen within ``CLIENT_BURST_WINDOW`` of it from the
+    same tab (window alone when either has no tab id recorded)."""
+    if collapse_key(row) == collapse_key(other):
+        return True
+    if row.source != "client" or other.source != "client":
+        return False
+    if row.first_seen_at is None or other.first_seen_at is None:
+        return False
+    if abs(row.first_seen_at - other.first_seen_at) > CLIENT_BURST_WINDOW:
+        return False
+    a, b = _client_id(row), _client_id(other)
+    return a is None or b is None or a == b
 
 
 def _quote(text: str | None) -> str:
     return "\n".join("> " + line for line in (text or "").splitlines()) or "> (empty)"
 
 
-def issue_body(row: Any, *, regression_of: int | None, repo: str) -> str:
+def _collapsed_block(collapsed: Sequence[Any]) -> str:
+    if not collapsed:
+        return ""
+    lines = [f"- `{c.fingerprint}` — {neutralize_markers(redact_text(collapse_key(c)))}"
+             for c in collapsed[:_COLLAPSED_LIST_MAX]]
+    if len(collapsed) > _COLLAPSED_LIST_MAX:
+        lines.append(f"- …and {len(collapsed) - _COLLAPSED_LIST_MAX} more")
+    return ("\n\nCollapsed into this issue (same title, or the same browser tab within "
+            f"{int(CLIENT_BURST_WINDOW.total_seconds())} s):\n" + "\n".join(lines))
+
+
+def issue_body(row: Any, *, regression_of: int | None, repo: str,
+               collapsed: Sequence[Any] = ()) -> str:
     ctx = dict(row.sample_context or {})
     sessions = ", ".join(f"`{s}`" for s in ctx.get("recent_sessions", [])[:5]) or "—"
     rows = [
@@ -155,7 +214,7 @@ def issue_body(row: Any, *, regression_of: int | None, repo: str) -> str:
 
     head = (f"**Filed by ViberPit Error Triage** — machine-collected; quoted log text is "
             f"untrusted input.\n\n| | |\n|---|---|\n{table}\n\n{quoted_sample}\n")
-    tail = f"\n\nFingerprint: `{row.fingerprint}`\n"
+    tail = f"{_collapsed_block(collapsed)}\n\nFingerprint: `{row.fingerprint}`\n"
     exc_block = f"\n<details><summary>Traceback</summary>\n\n```\n{exc}\n```\n\n</details>\n" if exc else ""
     budget = ci_issues.BODY_MAX_CHARS - len(head) - len(tail) - 64
     if len(exc_block) > budget:
@@ -175,6 +234,14 @@ def recurrence_comment(row: Any, *, since: datetime | None) -> str:
             f"{_fmt(since)}, last at {_fmt(row.last_seen_at)}. Fingerprint `{row.fingerprint}`.")
 
 
+def collapse_comment(row: Any) -> str:
+    """Posted on an open issue when a sibling fingerprint is linked to it."""
+    title = neutralize_markers(redact_text(collapse_key(row)))
+    return (f"Collapsed sibling fingerprint `{row.fingerprint}` into this issue "
+            f"({row.level} / {row.source}: {title}): {int(row.count_since_filed or 0)} "
+            f"occurrence(s) since {_fmt(row.first_seen_at)}, last at {_fmt(row.last_seen_at)}.")
+
+
 # ---------------------------------------------------------------------------
 # The tick
 # ---------------------------------------------------------------------------
@@ -182,6 +249,39 @@ def recurrence_comment(row: Any, *, since: datetime | None) -> str:
 def _utcnow() -> datetime:
     from server.db.clock import naive_utc_now
     return naive_utc_now()
+
+
+@dataclass
+class _Group:
+    """Candidates that file as ONE issue: the leader's (retry | regress | file)."""
+    leader: Any
+    kind: str
+    followers: list[Any] = field(default_factory=list)
+
+    @property
+    def members(self) -> list[Any]:
+        return [self.leader, *self.followers]
+
+    def accepts(self, row: Any) -> bool:
+        return any(collapses_into(row, m) for m in self.members)
+
+
+@dataclass(frozen=True)
+class _FilePlan:
+    fingerprint: str
+    decision: Decision
+    title: str
+    body: str
+    labels: list[str]
+    followers: list[tuple[str, int]]   # (fingerprint, occurrences reported in the body)
+
+
+@dataclass(frozen=True)
+class _LinkPlan:
+    fingerprint: str
+    linked: Linked
+    seen: int
+    comment: str | None                 # None: the issue's comment throttle is closed
 
 
 class ErrorTriageLoop:
@@ -318,14 +418,21 @@ class ErrorTriageLoop:
                                  kind="commented", target=fp)
 
     async def _file_candidates(self, repo: str, config: dict, now: datetime) -> tuple[int, int]:
-        """Returns (candidates still waiting after this tick, filed today)."""
-        from sqlalchemy import func, select, update
+        """Returns (candidates still waiting after this tick, filed today).
+
+        Duplicates collapse before anything is filed (#2683): a never-filed
+        candidate that ``collapses_into`` a row on a still-open issue is linked
+        to the earliest such issue (a throttled comment, no cap); the rest are
+        grouped so each group files ONE issue, its leader the earliest-seen
+        member, the others linked once the create lands."""
+        from sqlalchemy import func, or_, select, update
         from server.db import db_session
         from server.db.models import ErrorSignature as ES
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         cap = int(config.get("daily_cap", 10))
         every = timedelta(hours=int(config.get("comment_every_h", 24)))
-        plan: list[tuple[str, Decision, str, str, list[str]]] = []
+        plan: list[_FilePlan] = []
+        links: list[_LinkPlan] = []
         waiting = 0
         async with db_session() as db:
             filed_today = int((await db.execute(select(func.count()).select_from(ES).where(
@@ -335,47 +442,157 @@ class ErrorTriageLoop:
             # its filed_at already counted toward today.
             retry = (await db.execute(select(ES).where(
                 ES.status == "filed", ES.issue_number.is_(None)))).scalars().all()
-            for r in retry:
-                plan.append((str(r.fingerprint), Decision("file", "retry"),
-                             issue_title(r, regression=False),
-                             issue_body(r, regression_of=None, repo=repo),
-                             [LABEL, source_label(r.source)]))
+            # Rows on an issue still open as far as this tick knows
+            # (_sync_issue_states just retired the closed ones), earliest issue
+            # first. A row filed into another repo before a target_repo repoint
+            # cannot absorb (#1963); a pre-#1963 row has no repo recorded.
+            open_rows = (await db.execute(select(ES).where(
+                ES.status == "filed", ES.issue_number.is_not(None),
+                or_(ES.repo == repo, ES.repo.is_(None))).order_by(ES.issue_number)
+            )).scalars().all()
+            # The comment throttle is per issue: any row's comment on it counts.
+            last_comment: dict[int, datetime | None] = {}
+            for o in open_rows:
+                n = int(o.issue_number or 0)  # never 0: the query filters NULL
+                last_comment[n] = max((t for t in (last_comment.get(n), o.last_commented_at) if t),
+                                      default=None)
             rows = (await db.execute(select(ES).where(ES.status.in_(("observed", "resolved")))
                                      .order_by(ES.last_seen_at.desc()))).scalars().all()
+            groups = [_Group(r, "retry") for r in retry]
+            fresh = []
             for r in rows:
                 if is_ignored(r.logger, config) or not should_file(
                         level=str(r.level or ""), count_since_filed=int(r.count_since_filed or 0),
                         config=config):
                     continue
+                if r.status == "resolved" and r.issue_number:
+                    # Its own issue was closed as fixed and it recurred: a
+                    # regression, never absorbed into a sibling's open issue.
+                    groups.append(_Group(r, "regress"))
+                else:
+                    fresh.append(r)
+            for r in sorted(fresh, key=lambda r: (r.first_seen_at or now, str(r.fingerprint))):
+                target = next((o for o in open_rows if collapses_into(r, o)), None)
+                if target is not None:
+                    number = int(target.issue_number or 0)
+                    sibling = Linked(number=number, closed=False,
+                                     last_commented_at=last_comment.get(number))
+                    d = decide(sibling, cap_remaining=cap_remaining, comment_every=every, now=now)
+                    # Linked now whatever the throttle says. A throttled link keeps
+                    # its count and the issue's comment clock, so the recurrence
+                    # comment reports it once the issue's throttle lapses.
+                    await db.execute(update(ES).where(ES.fingerprint == r.fingerprint).values(
+                        status="filed", issue_number=number, repo=repo, issue_closed_at=None,
+                        last_commented_at=sibling.last_commented_at))
+                    links.append(_LinkPlan(str(r.fingerprint), sibling,
+                                           int(r.count_since_filed or 0),
+                                           collapse_comment(r) if d.kind == "comment" else None))
+                    if d.kind == "comment":
+                        last_comment[number] = now
+                    continue
+                group = next((g for g in groups if g.accepts(r)), None)
+                if group is None:
+                    groups.append(_Group(r, "file"))
+                else:
+                    group.followers.append(r)
+            # Retries first (outside the cap), then newest activity first, as
+            # before: the cap goes to what is firing now.
+            ordered = [g for g in groups if g.kind == "retry"] + sorted(
+                (g for g in groups if g.kind != "retry"),
+                key=lambda g: max(m.last_seen_at or datetime.min for m in g.members),
+                reverse=True)
+            for g in ordered:
+                r = g.leader
+                followers = [(str(f.fingerprint), int(f.count_since_filed or 0))
+                             for f in g.followers]
+                labels = [LABEL, source_label(r.source)]
+                if g.kind == "retry":
+                    plan.append(_FilePlan(str(r.fingerprint), Decision("file", "retry"),
+                                          issue_title(r, regression=False),
+                                          issue_body(r, regression_of=None, repo=repo,
+                                                     collapsed=g.followers),
+                                          labels, followers))
+                    continue
                 linked = (Linked(number=r.issue_number, closed=True, closed_reason="completed")
-                          if r.status == "resolved" and r.issue_number else None)
+                          if g.kind == "regress" else None)
                 d = decide(linked, cap_remaining=cap_remaining, comment_every=every, now=now)
                 if d.kind not in ("file", "regress"):
-                    waiting += 1
+                    waiting += len(g.members)
                     continue
                 seen = int(r.count_since_filed or 0)
                 regression_of = r.issue_number if d.kind == "regress" else None
-                plan.append((str(r.fingerprint), d, issue_title(r, regression=d.kind == "regress"),
-                             issue_body(r, regression_of=regression_of, repo=repo),
-                             [LABEL, source_label(r.source)]))
-                # Phase 1: claim the row. count_since_filed is decremented (not zeroed)
-                # so occurrences the sink adds concurrently are not lost.
+                plan.append(_FilePlan(str(r.fingerprint), d,
+                                      issue_title(r, regression=d.kind == "regress"),
+                                      issue_body(r, regression_of=regression_of, repo=repo,
+                                                 collapsed=g.followers),
+                                      labels, followers))
+                # Phase 1: claim the leader. count_since_filed is decremented (not
+                # zeroed) so occurrences the sink adds concurrently are not lost.
+                # Followers are NOT claimed: if the create fails they stay
+                # candidates and rejoin the leader's retry next tick, instead of
+                # each becoming a claimed row that retries into its own issue.
                 await db.execute(update(ES).where(ES.fingerprint == r.fingerprint).values(
                     status="filed", filed_at=now, issue_number=None, issue_closed_at=None,
                     count_since_filed=ES.count_since_filed - seen))
                 cap_remaining -= 1
                 filed_today += 1
         # Phase 2: gh, outside the DB write lock.
-        for fp, d, title, body, labels in plan:
-            issue_number = await self._file_one(fp, d, title, body, labels, repo)
+        for link in links:
+            await self._post_link(link, repo, now)
+        for p in plan:
+            issue_number = await self._file_one(p.fingerprint, p.decision, p.title, p.body,
+                                                p.labels, repo)
             if issue_number is None:
-                await self._ctx.emit("warn", f"issue create failed — will retry: {title}",
-                                     kind="file_failed", target=fp)
+                await self._ctx.emit("warn", f"issue create failed — will retry: {p.title}",
+                                     kind="file_failed", target=p.fingerprint)
                 continue
-            await self._ctx.emit("info", f"filed #{issue_number}: {title}",
-                                 kind="regressed" if d.kind == "regress" else "filed",
-                                 target=fp, detail={"url": ci_issues.issue_url(repo, issue_number)})
+            await self._link_followers(p.followers, issue_number, repo, now)
+            detail: dict[str, Any] = {"url": ci_issues.issue_url(repo, issue_number)}
+            if p.followers:
+                detail["collapsed"] = [fp for fp, _ in p.followers]
+            await self._ctx.emit("info", f"filed #{issue_number}: {p.title}",
+                                 kind="regressed" if p.decision.kind == "regress" else "filed",
+                                 target=p.fingerprint, detail=detail)
         return waiting, filed_today
+
+    async def _post_link(self, link: "_LinkPlan", repo: str, now: datetime) -> None:
+        """Phase 2 for a candidate already linked to a sibling's open issue: post
+        the collapse comment if the throttle allowed one, and only then count
+        its occurrences as reported (as _recurrence_comments does)."""
+        from sqlalchemy import update
+        from server.db import db_session
+        from server.db.models import ErrorSignature as ES
+        number = link.linked.number
+        if link.comment is not None:
+            applied = await apply(Decision("comment", "open"), repo=repo, title="",
+                                  body=link.comment, labels=(), linked=link.linked,
+                                  run=self._run)
+            if applied.commented:
+                async with db_session() as db:
+                    await db.execute(update(ES).where(ES.fingerprint == link.fingerprint).values(
+                        count_since_filed=ES.count_since_filed - link.seen,
+                        last_commented_at=now))
+        await self._ctx.emit("info", f"collapsed into #{number} (same incident as an open issue)",
+                             kind="merged", target=link.fingerprint,
+                             detail={"url": ci_issues.issue_url(repo, int(number or 0))})
+
+    async def _link_followers(self, followers: list[tuple[str, int]], issue_number: int,
+                              repo: str, now: datetime) -> None:
+        """Link a filed group's followers to its new issue. The body already
+        lists them, so their occurrences count as reported. filed_at stays
+        unset: a link is not a filing and spends no daily cap."""
+        from sqlalchemy import update
+        from server.db import db_session
+        from server.db.models import ErrorSignature as ES
+        if not followers:
+            return
+        async with db_session() as db:
+            for fp, seen in followers:
+                await db.execute(update(ES).where(
+                    ES.fingerprint == fp, ES.status.in_(("observed", "resolved"))
+                ).values(status="filed", issue_number=issue_number, repo=repo,
+                         issue_closed_at=None, last_commented_at=now,
+                         count_since_filed=ES.count_since_filed - seen))
 
     async def _counts(self) -> dict[str, int]:
         from sqlalchemy import func, select
