@@ -537,6 +537,15 @@ class RemoteOrchestrator:
                                        item_id=item_id, kind=kind, identity=identity,
                                        timeout=SPAWN_RPC_TIMEOUT)
 
+    async def automation_inbox(self, automation_id: str, op: str, params: dict | None = None,
+                               identity: str | None = None) -> dict:
+        """One clustered-inbox op (#2936), via the daemon. Filing or commenting runs
+        gh inline (seconds, more on a slow API), so it gets the long budget: an edge
+        timeout on a create the daemon completes invites a retry that files twice."""
+        return await self._client.call("automation_inbox", automation_id=automation_id, op=op,
+                                       params=params or {}, identity=identity,
+                                       timeout=SPAWN_RPC_TIMEOUT)
+
     async def pr_doctor_job(self, job_id: str) -> dict | None:
         """Current state of an async pr-doctor trigger job, via the daemon (issue
         #668). A quick read — the default RPC timeout is fine (unlike the trigger,

@@ -5,18 +5,12 @@
  * primitives on tokens.
  */
 import { useEffect, useRef, useState } from 'react'
-import { toast } from 'sonner'
 import { useAutomationActionable, useAutomationTrigger } from '@/api/hooks'
 import { fetchPrDoctorJob, splitActionable, type ActionableItem, type ActionSpec } from '@/api/automations'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { SectionHeading } from '@/ui/SectionHeading'
-
-function outcomeToast(r: { level: string; message: string }) {
-  if (r.level === 'ok') toast.success(r.message)
-  else if (r.level === 'warn') toast.warning(r.message)
-  else toast.error(r.message)
-}
+import { outcomeToast } from './outcomeToast'
 
 // Async job phases → button label (issue #668). Shown while the background
 // clone→assess→spawn pipeline runs so the user sees which phase is slow.
@@ -169,14 +163,7 @@ export function AutomationActions({ automationId, enabled, variant, paused = fal
   }
   return (
     <div className="space-y-3">
-      {parkedHeading && (
-        <div className="space-y-1">
-          <SectionHeading>{parkedHeading}</SectionHeading>
-          <p className="max-w-prose text-sm text-ink-muted">
-            Not counted in the Delivery badge while this automation is paused. You can still act on them here.
-          </p>
-        </div>
-      )}
+      {parkedHeading && <ParkedNotice heading={parkedHeading} />}
       {decisions.length === 0
         ? <p className="text-sm text-ink-muted">Nothing needs you.</p>
         : <ActionableRows items={decisions} automationId={automationId} />}
@@ -190,6 +177,19 @@ export function AutomationActions({ automationId, enabled, variant, paused = fal
           </div>
         </details>
       )}
+    </div>
+  )
+}
+
+/** The paused automation's "these are parked, not waiting on you" notice — one
+ *  copy for the flat list and the clustered inbox (`FeedbackInbox`). */
+export function ParkedNotice({ heading }: { heading: string }) {
+  return (
+    <div className="space-y-1">
+      <SectionHeading>{heading}</SectionHeading>
+      <p className="max-w-prose text-sm text-ink-muted">
+        Not counted in the Delivery badge while this automation is paused. You can still act on them here.
+      </p>
     </div>
   )
 }

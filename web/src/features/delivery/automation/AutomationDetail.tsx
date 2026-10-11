@@ -9,7 +9,7 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { splitActionable, type Automation, type AutomationStatusProduct } from '@/api/automations'
+import { INBOX_AUTOMATIONS, splitActionable, type Automation, type AutomationStatusProduct } from '@/api/automations'
 import { useAutomationActionable, useAutomationSessions } from '@/api/hooks'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
 import { CheckTable, type Column } from '@/features/delivery/ci/CheckTable'
@@ -26,6 +26,7 @@ import { ConfigPanel } from './ConfigPanel'
 import { ConsolidatePanel } from './ConsolidatePanel'
 import { countTiles } from './countTiles'
 import { EventsList } from './EventsList'
+import { FeedbackInbox } from './FeedbackInbox'
 import { ManualDispatchDialog } from './ManualDispatchDialog'
 import { SchedulePanel } from './SchedulePanel'
 import { SessionsList } from './SessionsList'
@@ -163,7 +164,9 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
             <AutomationActions automationId={a.id} enabled variant="preview" paused={paused} onSeeAll={() => setTab('needs-you')} />
           </>
         )}
-        {tab === 'needs-you' && <AutomationActions automationId={a.id} enabled variant="full" paused={paused} />}
+        {tab === 'needs-you' && (INBOX_AUTOMATIONS.has(a.id)
+          ? <FeedbackInbox automationId={a.id} paused={paused} />
+          : <AutomationActions automationId={a.id} enabled variant="full" paused={paused} />)}
         {tab === 'queue' && (
           <>
             {a.status.products && a.status.products.length > 0 && (

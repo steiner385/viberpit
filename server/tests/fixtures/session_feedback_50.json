@@ -1,0 +1,402 @@
+[
+ {
+  "id": "sf-00",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Backlog Runner re-dispatched red-watchdog #17388 ~35 times despite owner no-PR comments",
+  "reported_at": "2026-10-01 02:18:06",
+  "fingerprint": "5390792e9ed4c9ab"
+ },
+ {
+  "id": "sf-01",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Backlog runner redispatched #17390 ~45 times after a mark_no_pr verdict",
+  "reported_at": "2026-10-01 03:01:38",
+  "fingerprint": "b43ed9bf5a34fff0"
+ },
+ {
+  "id": "sf-02",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "#17391 re-dispatched ~10 times after repeated mark_no_pr triage",
+  "reported_at": "2026-10-01 11:19:21",
+  "fingerprint": "18db0ddc507c7747"
+ },
+ {
+  "id": "sf-03",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Auto-error #2572 cycles through triage\u2192implement claims with no PR produced (6 claims)",
+  "reported_at": "2026-10-01 11:36:39",
+  "fingerprint": "45d85a9a4bfeff1f"
+ },
+ {
+  "id": "sf-04",
+  "category": "prompt",
+  "impact": "degraded",
+  "title": "Completion check demands a PR from an investigate-only auto-error triage session",
+  "reported_at": "2026-10-01 11:37:08",
+  "fingerprint": "5ceaccea80b7b975"
+ },
+ {
+  "id": "sf-05",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Backlog Runner keeps re-dispatching auto-closing watchdog #17388 with a Fixes-PR prompt",
+  "reported_at": "2026-10-01 11:54:32",
+  "fingerprint": "cfaa7dde957c88d1"
+ },
+ {
+  "id": "sf-06",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Backlog Runner re-dispatches red-watchdog #17388 ~70 times despite verified-fixed comments",
+  "reported_at": "2026-10-01 13:36:30",
+  "fingerprint": "83e562a745f0b863"
+ },
+ {
+  "id": "sf-07",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Backlog Runner re-dispatches red-watchdog #17030 every 2-3 minutes",
+  "reported_at": "2026-10-01 14:34:09",
+  "fingerprint": "1d3a6f6438607eaa"
+ },
+ {
+  "id": "sf-08",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Backlog Runner keeps re-dispatching bot digest #17427 despite repeated no-PR verdicts",
+  "reported_at": "2026-10-01 15:42:28",
+  "fingerprint": "d0a13086b4897211"
+ },
+ {
+  "id": "sf-09",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Completion gate demands a PR from a read-only auto-error investigation session",
+  "reported_at": "2026-10-02 09:14:49",
+  "fingerprint": "b7272d15938d51dc"
+ },
+ {
+  "id": "sf-10",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Backlog Runner loops #2595 between triage and implement claims with no PR produced",
+  "reported_at": "2026-10-02 09:56:17",
+  "fingerprint": "5d748047244bf7f5"
+ },
+ {
+  "id": "sf-11",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Completion gate demands a PR from a read-only auto-error triage session",
+  "reported_at": "2026-10-02 09:57:33",
+  "fingerprint": "6acbccf66b6a56a5"
+ },
+ {
+  "id": "sf-12",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Completion gate rejects mark_no_pr on an auto-error triage session that forbids PRs",
+  "reported_at": "2026-10-02 10:43:15",
+  "fingerprint": "451b0a7fab5bbb12"
+ },
+ {
+  "id": "sf-13",
+  "category": "dispatch",
+  "impact": "blocked",
+  "title": "Backlog Runner 'implementation' claims dispatch read-only error-investigation sessions (#2595 loop x7)",
+  "reported_at": "2026-10-02 10:45:13",
+  "fingerprint": "de9660439795417c"
+ },
+ {
+  "id": "sf-14",
+  "category": "prompt",
+  "impact": "degraded",
+  "title": "Completion check demands a PR from an investigate-only auto-error triage session",
+  "reported_at": "2026-10-02 10:48:03",
+  "fingerprint": "5ceaccea80b7b975"
+ },
+ {
+  "id": "sf-15",
+  "category": "dispatch",
+  "impact": "blocked",
+  "title": "Backlog Runner's \"implementation\" claim on an auto-error issue sends the read-only investigate prompt, so it loops",
+  "reported_at": "2026-10-02 10:49:59",
+  "fingerprint": "178b8d323959d959"
+ },
+ {
+  "id": "sf-16",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "#2613 loops between triage and implement: 4 implement claims produced no PR",
+  "reported_at": "2026-10-02 10:54:11",
+  "fingerprint": "e3f693741c89ea10"
+ },
+ {
+  "id": "sf-17",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Converted auto-error issue loops back into investigate-only triage instead of implementation",
+  "reported_at": "2026-10-02 10:59:08",
+  "fingerprint": "590c4ee768035051"
+ },
+ {
+  "id": "sf-18",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Backlog Runner loops implement claims on #2626 with no PR, re-triaging a converted issue",
+  "reported_at": "2026-10-02 12:27:45",
+  "fingerprint": "b09c2d09a0fd595a"
+ },
+ {
+  "id": "sf-19",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "#2633 re-dispatched for triage four times after converting to a fix",
+  "reported_at": "2026-10-02 17:10:20",
+  "fingerprint": "25c97da6b8cfe49f"
+ },
+ {
+  "id": "sf-20",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Auto-error issue #2633 re-dispatched to triage repeatedly after 'convert to a fix'",
+  "reported_at": "2026-10-02 17:14:25",
+  "fingerprint": "3bd1500ec1425040"
+ },
+ {
+  "id": "sf-21",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Backlog Runner loops #2642 between convert-to-fix and failed implementation claims",
+  "reported_at": "2026-10-02 17:15:03",
+  "fingerprint": "a95ac80b9541d434"
+ },
+ {
+  "id": "sf-22",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Converted auto-error #2633 keeps getting re-dispatched as an investigation, never an implement",
+  "reported_at": "2026-10-02 17:25:43",
+  "fingerprint": "1f550df3d7256b2e"
+ },
+ {
+  "id": "sf-23",
+  "category": "tooling",
+  "impact": "minor",
+  "title": "Autopilot requests unavailable mark_complete tool",
+  "reported_at": "2026-10-05 18:59:38",
+  "fingerprint": "b6f67dab3e4b24c2"
+ },
+ {
+  "id": "sf-24",
+  "category": "environment",
+  "impact": "degraded",
+  "title": "Shared clone hooksPath changed during active worktree commits",
+  "reported_at": "2026-10-05 19:54:53",
+  "fingerprint": "71341ec2596ab529"
+ },
+ {
+  "id": "sf-25",
+  "category": "dispatch",
+  "impact": "degraded",
+  "title": "Backlog Runner re-dispatched parked #1432 with a \"no PR now\" decision attached",
+  "reported_at": "2026-10-06 14:55:50",
+  "fingerprint": "a1d14c417de98bf5"
+ },
+ {
+  "id": "sf-26",
+  "category": "environment",
+  "impact": "degraded",
+  "title": "Hidden worktree path breaks Express SPA deep-link serving",
+  "reported_at": "2026-10-06 16:15:37",
+  "fingerprint": "ab164b228a0491b5"
+ },
+ {
+  "id": "sf-27",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Completion nudge \"open a PR and arm auto-merge\" loops on a pr-doctor session whose PR already exists",
+  "reported_at": "2026-10-06 17:58:55",
+  "fingerprint": "7929f9320b9a07c8"
+ },
+ {
+  "id": "sf-28",
+  "category": "tooling",
+  "impact": "degraded",
+  "title": "Session reload drops six post-restart Codex turns; live daemon buffer still contains them",
+  "reported_at": "2026-10-06 18:46:57",
+  "fingerprint": "e6a34cebc417db13"
+ },
+ {
+  "id": "sf-29",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Dispatched CI repair child sessions remain queued without starting",
+  "reported_at": "2026-10-07 09:54:36",
+  "fingerprint": "a34441800685dbd6"
+ },
+ {
+  "id": "sf-30",
+  "category": "orchestration",
+  "impact": "minor",
+  "title": "Completion prompt repeats despite open PR with auto-merge enabled",
+  "reported_at": "2026-10-07 10:24:34",
+  "fingerprint": "6512c8e49aad3b09"
+ },
+ {
+  "id": "sf-31",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Autopilot counts human-deference skips as failed progress and bypasses stale-PR refresh on escalation",
+  "reported_at": "2026-10-07 11:22:22",
+  "fingerprint": "98f1ba471a8eea18"
+ },
+ {
+  "id": "sf-32",
+  "category": "tooling",
+  "impact": "minor",
+  "title": "Fresh review agent refused despite completed explorer task",
+  "reported_at": "2026-10-07 11:41:39",
+  "fingerprint": "bdf8d172df700f20"
+ },
+ {
+  "id": "sf-33",
+  "category": "environment",
+  "impact": "degraded",
+  "title": "Full test process disappeared during host memory pressure",
+  "reported_at": "2026-10-07 11:43:12",
+  "fingerprint": "7faae535f9efac0a"
+ },
+ {
+  "id": "sf-34",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Autopilot continuation interrupted parallel workers without preserving live registry",
+  "reported_at": "2026-10-07 11:48:12",
+  "fingerprint": "b7c0757ad601f1c1"
+ },
+ {
+  "id": "sf-35",
+  "category": "tooling",
+  "impact": "degraded",
+  "title": "Long-running verification command ended with signal 15 without a reported reason",
+  "reported_at": "2026-10-07 12:47:03",
+  "fingerprint": "3a8c23b88c22dcf1"
+ },
+ {
+  "id": "sf-36",
+  "category": "tooling",
+  "impact": "degraded",
+  "title": "Session chat fails to display assistant screenshot images",
+  "reported_at": "2026-10-07 18:46:03",
+  "fingerprint": "c50e26515ab80f73"
+ },
+ {
+  "id": "sf-37",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Daemon restart interrupted repair verification and lost temporary logs",
+  "reported_at": "2026-10-07 22:42:08",
+  "fingerprint": "e16dc6dccedec2a2"
+ },
+ {
+  "id": "sf-38",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Duplicate plan dispatched while originating implementation session was interrupted",
+  "reported_at": "2026-10-07 22:42:09",
+  "fingerprint": "278822e086f87eb3"
+ },
+ {
+  "id": "sf-39",
+  "category": "tooling",
+  "impact": "degraded",
+  "title": "Parent cannot answer child session ownership hand-back",
+  "reported_at": "2026-10-08 12:53:45",
+  "fingerprint": "c0f10dd4a55a8138"
+ },
+ {
+  "id": "sf-40",
+  "category": "tooling",
+  "impact": "blocked",
+  "title": "dispatch_session remains pending without a child session",
+  "reported_at": "2026-10-08 12:58:01",
+  "fingerprint": "b2edfb1926528ed2"
+ },
+ {
+  "id": "sf-41",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Daemon restart killed an in-progress full verification run",
+  "reported_at": "2026-10-08 13:00:48",
+  "fingerprint": "453effe7b51a6676"
+ },
+ {
+  "id": "sf-42",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Repeated daemon restarts interrupt verification processes",
+  "reported_at": "2026-10-08 13:10:05",
+  "fingerprint": "bc04a7f01d7f9eca"
+ },
+ {
+  "id": "sf-43",
+  "category": "environment",
+  "impact": "minor",
+  "title": "Daemon restart left a stale worktree index lock",
+  "reported_at": "2026-10-08 13:12:22",
+  "fingerprint": "950608cdd9b20f12"
+ },
+ {
+  "id": "sf-44",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Restart stranded native child without a resume tool or notification",
+  "reported_at": "2026-10-08 13:26:45",
+  "fingerprint": "4b40f3f8f4d3b43d"
+ },
+ {
+  "id": "sf-45",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Autopilot repeats stale restart instructions during active implementation",
+  "reported_at": "2026-10-08 13:29:57",
+  "fingerprint": "acaaf9e9df640292"
+ },
+ {
+  "id": "sf-46",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "PR linkage misses PR whose head branch differs from the worktree's local branch name",
+  "reported_at": "2026-10-08 15:11:32",
+  "fingerprint": "a59d578dcbf98f48"
+ },
+ {
+  "id": "sf-47",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Completion nudge repeats for a PR already in the merge queue (autoMergeRequest is null once queued)",
+  "reported_at": "2026-10-09 13:39:53",
+  "fingerprint": "86c72071949d081c"
+ },
+ {
+  "id": "sf-48",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Completion check misses existing PR when worktree branch differs from PR head (conflict dispatch)",
+  "reported_at": "2026-10-09 19:19:40",
+  "fingerprint": "b5c1847884bdef63"
+ },
+ {
+  "id": "sf-49",
+  "category": "orchestration",
+  "impact": "degraded",
+  "title": "Completion gate re-fires \"open a PR and arm auto-merge\" when the PR head branch differs from the worktree branch",
+  "reported_at": "2026-10-09 21:07:46",
+  "fingerprint": "7e76bd60f60e6f87"
+ }
+]

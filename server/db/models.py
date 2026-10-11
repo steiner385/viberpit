@@ -1084,6 +1084,11 @@ class SessionFeedback(Base):
     reported_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    # How an operator inbox action settled the row (#2936), e.g.
+    # {"kind": "filed_cluster", "issue": 2909} | {"kind": "attached_issue", "issue": N}
+    # | {"kind": "attached_session", "sessionId": ...} | {"kind": "dismissed_fixed", "pr": N}.
+    # NULL for rows the filer loop settled on its own.
+    resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
     __table_args__ = (
         UniqueConstraint("session_id", "fingerprint", name="uq_session_feedback_session_fp"),

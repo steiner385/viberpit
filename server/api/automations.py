@@ -372,6 +372,104 @@ async def trigger_automation_action(automation_id: str, body: TriggerBody, reque
     return result
 
 
+# -- the clustered inbox (#2936) ------------------------------------------------
+# One generic seam (orch.automation_inbox) under five routes. Today only Session
+# Feedback offers an inbox; any other automation 404s like a missing provider.
+
+class ClusterIdsBody(BaseModel):
+    ids: list[str]
+
+
+class FileClusterBody(ClusterIdsBody):
+    title: str
+    body: str
+
+
+class DismissClusterBody(ClusterIdsBody):
+    fixedBy: int | None = None
+
+
+class AttachClusterBody(ClusterIdsBody):
+    issue: int | None = None
+    sessionId: str | None = None
+
+
+_INBOX_422 = frozenset({"invalid_ids", "invalid_op", "invalid_params"})
+
+
+async def _inbox(request: Request, automation_id: str, op: str, params: dict) -> dict:
+    _automation_or_404(automation_id)
+    from server.pm.holds import actor_for_request
+    result = await request.app.state.sessions.automation_inbox(
+        automation_id, op, params, identity=actor_for_request(request))
+    if result.get("status") == "no_provider":
+        raise HTTPException(status_code=404, detail=result.get("message", "no inbox"))
+    if result.get("status") in _INBOX_422:
+        raise HTTPException(status_code=422, detail=result.get("message", "invalid request"))
+    return result
+
+
+@router.get("/{automation_id}/clusters")
+async def list_inbox_clusters(automation_id: str, request: Request,
+                              _identity: str = Depends(current_identity)) -> dict:
+    """The automation's inbox grouped into clusters: ``{clusters, llm, total}``."""
+    return await _inbox(request, automation_id, "clusters", {})
+
+
+@router.post("/{automation_id}/clusters/draft")
+async def draft_inbox_cluster(automation_id: str, body: ClusterIdsBody, request: Request,
+                              _identity: str = Depends(current_identity)) -> dict:
+    """A generated issue ``{title, body}`` for the reports *ids* — nothing is filed."""
+    return await _inbox(request, automation_id, "draft", {"ids": body.ids})
+
+
+@router.post("/{automation_id}/clusters/file")
+async def file_inbox_cluster(automation_id: str, body: FileClusterBody, request: Request,
+                             _identity: str = Depends(current_identity)) -> dict:
+    """File ONE issue (operator-edited title/body) for the reports *ids*."""
+    return await _inbox(request, automation_id, "file",
+                        {"ids": body.ids, "title": body.title, "body": body.body})
+
+
+@router.post("/{automation_id}/clusters/dismiss")
+async def dismiss_inbox_cluster(automation_id: str, body: DismissClusterBody, request: Request,
+                                _identity: str = Depends(current_identity)) -> dict:
+    """Dismiss the reports *ids* — optionally as fixed by PR ``fixedBy``."""
+    return await _inbox(request, automation_id, "dismiss",
+                        {"ids": body.ids, "fixedBy": body.fixedBy})
+
+
+@router.post("/{automation_id}/clusters/attach")
+async def attach_inbox_cluster(automation_id: str, body: AttachClusterBody, request: Request,
+                               identity: str = Depends(current_identity)) -> dict:
+    """Attach the reports *ids* to an existing issue (one comment with their
+    evidence) or a live session (sent to it as a prompt); either way they leave the
+    inbox. Exactly one of ``issue`` / ``sessionId``.
+
+    The session leg runs HERE, on the edge, not in the daemon op: only the edge's
+    orchestrator routes to a session on any host, and it sends through the same
+    path as ``POST /api/sessions/{id}/prompt``. The rows move only once the session
+    took the prompt."""
+    if (body.issue is None) == (body.sessionId is None):
+        raise HTTPException(status_code=422, detail="give exactly one of issue or sessionId")
+    if body.issue is not None:
+        return await _inbox(request, automation_id, "attach_issue",
+                            {"ids": body.ids, "issue": body.issue})
+    session_id = str(body.sessionId)
+    orch = request.app.state.sessions
+    record = await orch.get_session(session_id)
+    if record is None or getattr(record, "status", None) in INACTIVE_SESSION_STATUSES:
+        raise HTTPException(status_code=409, detail="that session is not live — pick another")
+    evidence = await _inbox(request, automation_id, "evidence", {"ids": body.ids})
+    from server.api.sessions import resume_and_send_prompt
+    _, delivery = await resume_and_send_prompt(orch, session_id, str(evidence["text"]), identity)
+    if delivery != "sent":
+        return {"status": "failed", "level": "error",
+                "message": f"The session did not take the reports ({delivery}) — nothing changed"}
+    return await _inbox(request, automation_id, "mark_attached_session",
+                        {"ids": body.ids, "sessionId": session_id})
+
+
 @router.get("/pr-doctor/jobs/{job_id}")
 async def pr_doctor_job_status(job_id: str, request: Request,
                                _identity: str = Depends(current_identity)) -> dict:

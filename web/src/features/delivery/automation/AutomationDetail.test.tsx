@@ -23,6 +23,7 @@ vi.mock('@/api/hooks', () => ({
 vi.mock('./ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
 vi.mock('./BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
 vi.mock('./ManualDispatchDialog', () => ({ ManualDispatchDialog: () => null }))
+vi.mock('./FeedbackInbox', () => ({ FeedbackInbox: () => <div data-testid="feedback-inbox" /> }))
 
 const prDoctor = AUTOMATIONS[0]
 const mount = (a = prDoctor, path = '/delivery/automations/pr-doctor') => {
@@ -74,6 +75,15 @@ describe('AutomationDetail', () => {
     // The band's lead tile names the parked items too, not an amber "Needs you".
     expect(screen.getByRole('button', { name: 'Parked: 1' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Needs you:/ })).toBeNull()
+  })
+  it('Needs you: Session Feedback shows the clustered inbox; every other automation the flat list (#2936)', () => {
+    const r = mount({ ...prDoctor, id: 'session-feedback' }, '/delivery/automations/session-feedback?tab=needs-you')
+    expect(screen.getByTestId('feedback-inbox')).toBeInTheDocument()
+    expect(screen.queryByText('CI red on #1')).toBeNull()
+    r.unmount()
+    mount(prDoctor, '/delivery/automations/pr-doctor?tab=needs-you')
+    expect(screen.queryByTestId('feedback-inbox')).toBeNull()
+    expect(screen.getByText('CI red on #1')).toBeInTheDocument()
   })
   it('Needs you: the fetched list length wins even when actionableCount is null (F3)', () => {
     // Review focus 1, updated: `actionableCount: null` used to force a bare

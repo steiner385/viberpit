@@ -1807,20 +1807,12 @@ def _resume_failed_detail(record: object) -> dict:
     return {"code": "resume_failed", "message": "Session could not be resumed."}
 
 
-@router.post("/{session_id}/prompt")
-async def send_session_prompt(
-    session_id: str,
-    body: SendPromptRequest,
-    request: Request,
-    identity: str = Depends(current_identity),
-    db=Depends(get_db),
-) -> dict:
-    """Send a prompt to a session from the dashboard (quick-resume).
-
-    Lazily RESUMES a detached (idle/"Ready") session first — the same ensure_driver
-    path the WebSocket prompt flow uses — so one tap from the list gets a stalled
-    session moving. 404 if unknown; 409 if the session exists but can't be resumed."""
-    orch = _get_orchestrator(request)
+async def resume_and_send_prompt(orch: Any, session_id: str, text: str, identity: str, *,
+                                 interrupt: bool = False) -> tuple[Any, str]:
+    """The one HTTP-side "deliver a prompt to a session" path: look it up (404),
+    resume it if detached (409 when it can't be brought live), send. Returns the
+    record and ``send_prompt``'s delivery result. Shared by the quick-resume route
+    and any API that hands a session text on the operator's behalf (#2936)."""
     record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
@@ -1836,7 +1828,25 @@ async def send_session_prompt(
             status_code=status.HTTP_409_CONFLICT,
             detail=_resume_failed_detail(record),
         )
-    delivery = await orch.send_prompt(session_id, body.text, interrupt=body.interrupt)
+    return record, await orch.send_prompt(session_id, text, interrupt=interrupt)
+
+
+@router.post("/{session_id}/prompt")
+async def send_session_prompt(
+    session_id: str,
+    body: SendPromptRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Send a prompt to a session from the dashboard (quick-resume).
+
+    Lazily RESUMES a detached (idle/"Ready") session first — the same ensure_driver
+    path the WebSocket prompt flow uses — so one tap from the list gets a stalled
+    session moving. 404 if unknown; 409 if the session exists but can't be resumed."""
+    orch = _get_orchestrator(request)
+    record, delivery = await resume_and_send_prompt(orch, session_id, body.text, identity,
+                                                    interrupt=body.interrupt)
     if delivery not in ("sent", "draining"):
         log.warning("quick-resume prompt not delivered session=%s result=%s",
                     session_id, delivery)
