@@ -66,9 +66,8 @@ async def _drain(orch):
 
 
 def _delivered(orch, sid="s1"):
-    """Prompts the session's live driver actually handed to the SDK. The nudge is a
-    system-origin prompt, so it is deliberately NOT recorded in ``_last_prompt``
-    (#2922) — delivery is read off the wire instead."""
+    """Prompts the session's live driver actually handed to the SDK — the direct
+    proof of delivery (``_last_prompt`` is the replay record, not a delivery log)."""
     driver = orch._drivers.get(sid)
     return list(getattr(getattr(driver, "_client", None), "sent", ()))
 
@@ -365,7 +364,8 @@ def test_completion_nudge_waits_out_its_own_release_before_resuming(tmp_path, ca
         "the replacement must be built only after the old aclose() returned")
     assert orch._drivers.get("s1") is not None and orch._drivers["s1"] is not old
     assert [p for p in _delivered(orch) if p.endswith(verdict.remedy)]
-    assert "s1" not in orch._last_prompt   # a nudge is never the replayable turn (#2922)
+    # The nudge stays the replayable turn: a 429 retry / rotation re-drives it (#2922).
+    assert orch._last_prompt.get("s1") == verdict.remedy
 
 
 def test_completion_nudge_keeps_waiting_when_its_release_overruns_the_budget(tmp_path, caplog):
@@ -412,7 +412,8 @@ def test_completion_nudge_keeps_waiting_when_its_release_overruns_the_budget(tmp
     assert closed_at_resume and closed_at_resume[0] is True, (
         "the replacement must be built only after the old aclose() returned")
     assert [p for p in _delivered(orch) if p.endswith(verdict.remedy)]
-    assert "s1" not in orch._last_prompt   # a nudge is never the replayable turn (#2922)
+    # The nudge stays the replayable turn: a 429 retry / rotation re-drives it (#2922).
+    assert orch._last_prompt.get("s1") == verdict.remedy
 
 
 def test_completion_release_budget_covers_the_driver_close_budget():
@@ -597,7 +598,8 @@ def test_completion_nudge_is_delivered_after_the_driver_was_released(tmp_path):
     # A "no_driver" return never reaches the SDK, which is exactly the silent drop
     # this covers.
     assert [p for p in _delivered(orch) if p.endswith(verdict.remedy)]
-    assert "s1" not in orch._last_prompt   # a nudge is never the replayable turn (#2922)
+    # The nudge stays the replayable turn: a 429 retry / rotation re-drives it (#2922).
+    assert orch._last_prompt.get("s1") == verdict.remedy
     assert "s1" in orch._drivers, "the nudge must run on a live driver"
     assert orch.record("s1").status != "complete", "a nudged session is no longer complete"
 
@@ -648,7 +650,8 @@ def test_completion_nudge_refused_by_a_drain_is_delivered_when_the_drain_cancels
         return orch
     orch = asyncio.run(run())
     assert [p for p in _delivered(orch) if p.endswith(verdict.remedy)]
-    assert "s1" not in orch._last_prompt   # a nudge is never the replayable turn (#2922)
+    # The nudge stays the replayable turn: a 429 retry / rotation re-drives it (#2922).
+    assert orch._last_prompt.get("s1") == verdict.remedy
     assert orch._drain_deferred_nudges == {}
 
 
