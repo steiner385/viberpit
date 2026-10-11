@@ -432,11 +432,75 @@ def lock_worktree(repo_top: str, dest: Path) -> None:
 
     Best-effort: a lock failure is logged, not raised — the worktree is fully
     usable unlocked, just less protected against a concurrent prune.
+
+    Also pins the worktree's git config (:func:`pin_worktree_config`, #2935) — the
+    same every-create-and-recovery chokepoint, for the same reason: a recovered
+    worktree needs the protection a fresh one gets.
     """
     r = _run(["git", "-C", repo_top, "worktree", "lock", "--reason",
               f"{brand.NAME} live session", str(dest)])
     if r.returncode != 0:
         log.warning("worktree.lock_failed path=%s err=%s", dest, r.stderr.strip())
+    pin_worktree_config(repo_top, dest)
+
+
+#: Shared-clone config keys every session worktree pins in its own
+#: ``config.worktree`` (#2935). All worktrees of a clone read ONE ``.git/config``,
+#: so a husky/lefthook install (``git config core.hooksPath …``) in one session
+#: swapped the hooks of every sibling, mid-commit included. A per-worktree value
+#: outranks the shared one, so a pinned sibling no longer sees that write.
+_PINNED_KEYS: tuple[str, ...] = ("core.hooksPath",)
+
+
+def pin_worktree_config(repo_top: str, dest: Path) -> None:
+    """Isolate *dest* from later writes to the clone's shared git config (#2935).
+
+    Turns on ``extensions.worktreeConfig`` for the clone, then copies each
+    ``_PINNED_KEYS`` value as it stands NOW into *dest*'s ``config.worktree``.
+    An unset ``core.hooksPath`` is pinned to the clone's default hooks dir, so the
+    pin means "what git would have used anyway" until the session itself changes
+    it. A plain ``git config core.hooksPath X`` run in any worktree still writes
+    the shared file — it just no longer reaches pinned siblings; a session that
+    wants new hooks for itself uses ``git config --worktree``.
+
+    Called from :func:`lock_worktree`, so every path that creates or recovers a
+    session worktree pins it. An existing per-worktree value is left alone
+    (re-locking a recovered worktree must not clobber a session's own choice).
+    Skipped when the shared config sets ``core.worktree`` (enabling the extension
+    would then require moving it — git's documented caveat). Best-effort: a
+    failure is logged, never raised; the worktree still works, just unisolated.
+    """
+    if _run(["git", "-C", repo_top, "config", "--local", "--get",
+             "core.worktree"]).returncode == 0:
+        log.info("worktree.config_pin_skipped path=%s reason=core.worktree", dest)
+        return
+    ext = _run(["git", "-C", repo_top, "config", "--local", "--type=bool", "--get",
+                "extensions.worktreeConfig"])
+    if ext.stdout.strip() != "true":
+        r = _run(["git", "-C", repo_top, "config", "--local",
+                  "extensions.worktreeConfig", "true"])
+        if r.returncode != 0:
+            log.warning("worktree.config_pin_failed path=%s step=extension err=%s",
+                        dest, r.stderr.strip())
+            return
+    for key in _PINNED_KEYS:
+        if _run(["git", "-C", str(dest), "config", "--worktree", "--get",
+                 key]).returncode == 0:
+            continue
+        shared = _run(["git", "-C", repo_top, "config", "--local", "--get", key])
+        value = shared.stdout.strip() if shared.returncode == 0 else None
+        if value is None and key == "core.hooksPath":
+            common = _run(["git", "-C", repo_top, "rev-parse", "--path-format=absolute",
+                           "--git-common-dir"])
+            if common.returncode != 0:
+                continue
+            value = os.path.join(common.stdout.strip(), "hooks")
+        if value is None:
+            continue
+        r = _run(["git", "-C", str(dest), "config", "--worktree", key, value])
+        if r.returncode != 0:
+            log.warning("worktree.config_pin_failed path=%s key=%s err=%s",
+                        dest, key, r.stderr.strip())
 
 
 def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_root: str) -> WorktreeInfo:

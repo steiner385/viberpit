@@ -53,6 +53,16 @@ never written to `.git/config`).
   store; a per-clone lock (`_clone_lock`) serializes concurrent creates on the same clone while
   leaving different repos parallel (#656). Fresh worktrees are locked (`_lock_worktree`,
   `git worktree lock`) so a stray global prune can't reap a live one (#425).
+- **Per-worktree git config.** Every worktree of a clone reads one shared `.git/config`, so a
+  husky/lefthook install (`git config core.hooksPath …`) in one session used to swap every
+  sibling's hooks, mid-commit included (#2935). `pin_worktree_config()` (run from
+  `lock_worktree`, so on create, recreate, transfer import and clone-doctor relink) turns on
+  `extensions.worktreeConfig` and copies the current `core.hooksPath` (or the clone's default
+  hooks dir when unset) into the worktree's own `config.worktree`, which outranks the shared
+  value. A plain `git config core.hooksPath X` still writes the shared file but no longer reaches
+  pinned siblings. **For agents:** to change hooks for *your own* worktree, use
+  `git config --worktree core.hooksPath X`; a plain write does not apply to your pinned worktree.
+  Clones with `core.worktree` set in shared config are skipped (git's documented caveat).
 - **Janitor.** `sweep_orphaned_worktrees()` (`src/viberpit/worktrees_janitor.py`) runs at startup
   then periodically; it reclaims a worktree only when it is **not** in the live-cwd set, old
   enough (default 24 h), clean (`git status --porcelain` empty), and fully pushed (or its upstream
