@@ -173,7 +173,9 @@ def _assess_bash(p: Pattern) -> Assessment:
         refused = _assess_head_words(words)
         if refused is not None:
             return refused
-        if "git" in words and ("-c" in words or "config" in words):
+        if "git" in words and ("config" in words or any(
+            w.startswith(("-c", "--config-env", "--exec-path")) for w in words
+        )):
             return _refuse("git config can run arbitrary commands")
         if "git" in words and "push" in words:
             return _refuse("pushes must be granted as an exact command")

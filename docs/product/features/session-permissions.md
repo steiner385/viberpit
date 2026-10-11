@@ -88,7 +88,7 @@ exception (see Standing rules).
     `yarn exec`/`dlx`, `poetry run`, `pipx run`, `bunx`) unless followed by the command they run
     — which is then judged as a head of its own (`uv run pytest:*` ok, `uv run python:*`
     refused) — `git push` except
-    exactly, `git -c`/`git config`, and WebFetch domains that are wildcards, single-label, IP
+    exactly, `git -c` (incl. the attached `-cKEY=VAL` form), `--config-env`, `--exec-path` and `git config`, and WebFetch domains that are wildcards, single-label, IP
     literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
     `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means
     no rule can ever match those paths. Path matching resolves symlinks and never matches

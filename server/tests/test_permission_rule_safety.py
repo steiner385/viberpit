@@ -338,3 +338,18 @@ def test_app_server_refusal_names_the_reason():
 
 def test_ordinary_app_tool_rule_still_ok():
     assert assess("mcp__viberpit__rename_session", "session").level == "ok"
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "Bash(git -ccore.pager=sh status:*)",
+        "Bash(git -calias.x=!sh x:*)",
+        "Bash(git --config-env=core.pager=X status:*)",
+        "Bash(git --config-env core.pager=X status:*)",
+        "Bash(git --exec-path=/tmp/x status:*)",
+        "Bash(git --exec-path /tmp/x status:*)",
+    ],
+)
+def test_git_config_injection_forms_refused(pat):
+    assert assess(pat, "session").level == "refuse"
