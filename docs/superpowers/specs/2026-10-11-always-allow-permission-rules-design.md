@@ -247,7 +247,9 @@ reattach re-emit in `ws.py` builds it from `pending()`, which now also returns `
 
 ## 6. Web
 
-- **Card** (`PermissionCard.tsx`): the actions are **Allow once (1) · Always allow… (2) · Deny (3)**.
+- **Card** (`PermissionCard.tsx`): the actions are **Allow once (1) · Deny (2) · Always allow… (3)**.
+  Engine-managed cards (no rule suggestions) and cards without chooser wiring (sub-agent page,
+  assistant drawer) keep the direct **Always allow (this session)** button in the same slot.
   - "Always allow…" opens the chooser (`ui/Dialog`, a bottom sheet on phones). It has:
     - the suggestion radios, plus an editable pattern field pre-filled with the first suggestion;
     - the scope picker: **This session** (default), **This repo** (disabled for scratch sessions)
