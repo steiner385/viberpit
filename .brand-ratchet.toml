@@ -95,7 +95,7 @@ pattern = '\.ccswitch(?![A-Za-z_])|\.ccswitch-codex-attachments'
 permanent = "The per-repo namespace resolver accepts the pre-rebrand `.ccswitch/` dot-dir forever: old repos exist on disk indefinitely (design Phase 7 'keep forever', #1378)."
 # 34 -> 54 on 2026-09-27 is re-attribution, not growth: the retired `branch-prefix`
 # catch-all (`\bccswitch/`) used to claim these `.ccswitch/…` paths first.
-ceiling = 54
+ceiling = 53
 
 [[allow]]
 # #1591 renamed every CCSWITCH_* read/write to VIBERPIT_* except the Phase 0b

@@ -6,8 +6,8 @@ activity it performs — clones AND worktrees — lives under
 or the legacy one on a root that only has that, #1373):
 
   * clones:    ``<repo_root>/<namespace>/clones/<owner>/<name>``
-  * worktrees: ``<repo_root>/<namespace>/worktrees/<name>/<session>`` (see
-    :mod:`worktrees`)
+  * worktrees: ``<repo_root>/viberpit-sessions/worktrees/<name>/<session>`` — a
+    non-hidden sibling for new ones (#2934); see :mod:`worktrees`
 
 The "New session" repo picker lists the GitHub repos the user's ``gh``
 credentials can access (via the GraphQL API), and clones-on-select into the
@@ -735,7 +735,7 @@ def find_local_reference(repo_root: str, clone_url: str) -> str | None:
     """Return a local repo dir whose origin matches ``clone_url``, else None.
 
     Scans direct, non-hidden child directories of ``repo_root`` (the user's real
-    checkouts), reads each ``origin`` remote URL, and returns the first whose
+    checkouts — not a ViberPit namespace dir, hidden or not), reads each ``origin`` remote URL, and returns the first whose
     normalized URL equals the normalized ``clone_url``.  Used to speed up clones
     via ``git clone --reference-if-able``.
     """
@@ -746,7 +746,8 @@ def find_local_reference(repo_root: str, clone_url: str) -> str | None:
     if not root.is_dir():
         return None
     for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-        if not child.is_dir() or child.name.startswith("."):
+        if (not child.is_dir() or child.name.startswith(".")
+                or child.name in brand.REPO_NAMESPACES):
             continue
         r = _run_git(["-C", str(child), "remote", "get-url", "origin"])
         if r.returncode != 0:

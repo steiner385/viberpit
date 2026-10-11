@@ -42,8 +42,9 @@ export function mcpToolStem(fullToolName: string): string | undefined {
 }
 
 /**
- * Per-repo namespace dot-dirs a session cwd can sit under (clones, worktrees,
- * scratch). Emitted spelling first; the legacy one is matched permanently, since
- * a repo root that already had it keeps using it. Mirrors `brand.REPO_NAMESPACES`.
+ * Per-repo namespace dirs a session cwd can sit under (clones, worktrees,
+ * scratch). Emitted dot-dir first; the legacy one is matched permanently, since
+ * a repo root that already had it keeps using it. New worktrees and scratch dirs
+ * go under the non-hidden `viberpit-sessions` (#2934). Mirrors `brand.REPO_NAMESPACES`.
  */
-export const REPO_NAMESPACES = ['.viberpit', '.ccswitch'] as const
+export const REPO_NAMESPACES = ['.viberpit', '.ccswitch', 'viberpit-sessions'] as const

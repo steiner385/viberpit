@@ -105,8 +105,16 @@ def is_session_branch(branch: str) -> bool:
 #: the session. So both spellings are matched permanently, not Phase-7 scaffolding.
 REPO_NAMESPACE = f".{SLUG}"
 LEGACY_REPO_NAMESPACE = f".{LEGACY_SLUG}"
-#: Emitted spelling first, so a caller that wants "the" name reads ``[0]``.
-REPO_NAMESPACES = (REPO_NAMESPACE, LEGACY_REPO_NAMESPACE)
+#: Non-hidden sibling NEW session worktrees and scratch dirs are created under
+#: (#2934). A session cwd under a dot-dir breaks tools that skip hidden path
+#: segments — Express/``send`` (``dotfiles: 'ignore'``) 404s every SPA deep link
+#: served from it — so session working dirs stay out of the dot-dir; clones, which
+#: no session runs in, stay in it. Hyphenated so it never equals a repo dir name
+#: (a bare ``viberpit`` is the repo's own checkout under ``~/GitHub``).
+SESSION_NAMESPACE = f"{SLUG}-sessions"
+#: Emitted dot-dir spelling first, so a caller that wants "the" name reads ``[0]``.
+#: Every spelling a reader/guard must match, including the session namespace.
+REPO_NAMESPACES = (REPO_NAMESPACE, LEGACY_REPO_NAMESPACE, SESSION_NAMESPACE)
 #: Workspace-local Codex attachment staging dir — same new-dirs-only rule, resolved
 #: per workspace by ``paths.codex_attachment_staging_dirname``.
 CODEX_ATTACHMENTS_DIRNAME = f".{SLUG}-codex-attachments"

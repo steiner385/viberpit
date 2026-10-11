@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from viberpit import gitrepos
+from viberpit import brand, gitrepos
 
 
 def _git(*args: str, cwd: str) -> None:
@@ -153,6 +153,12 @@ class CloneTests(unittest.TestCase):
         subprocess.run(["git", "clone", str(other_remote), str(other)], check=True, capture_output=True)
         ref = gitrepos.find_local_reference(str(self.root), self.url)
         self.assertIsNone(ref)
+
+    def test_find_local_reference_skips_the_non_hidden_session_namespace(self) -> None:
+        # #2934: the session dir is visible but is ViberPit's, not a user checkout.
+        managed = self.root / brand.SESSION_NAMESPACE
+        subprocess.run(["git", "clone", self.url, str(managed)], check=True, capture_output=True)
+        self.assertIsNone(gitrepos.find_local_reference(str(self.root), self.url))
 
     def test_find_local_reference_uses_reference_when_cloning(self) -> None:
         local = self.root / "widget"

@@ -10,6 +10,7 @@ from pathlib import Path
 from viberpit import brand, gitrepos, paths, worktrees
 
 NEW, OLD = brand.REPO_NAMESPACE, brand.LEGACY_REPO_NAMESPACE
+SESSIONS = brand.SESSION_NAMESPACE
 
 
 class ResolverTests(unittest.TestCase):
@@ -21,7 +22,7 @@ class ResolverTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_spellings(self) -> None:
-        self.assertEqual(brand.REPO_NAMESPACES, (".viberpit", ".ccswitch"))
+        self.assertEqual(brand.REPO_NAMESPACES, (".viberpit", ".ccswitch", "viberpit-sessions"))
         self.assertEqual(brand.CODEX_ATTACHMENTS_DIRNAMES,
                          (".viberpit-codex-attachments", ".ccswitch-codex-attachments"))
 
@@ -29,16 +30,17 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(paths.repo_namespace(self.root), NEW)
         self.assertEqual(paths.repo_namespace(self.root / "not-yet-created"), NEW)
         self.assertEqual(gitrepos.clones_base(str(self.root)), self.root / NEW / "clones")
-        self.assertEqual(worktrees.worktrees_base(str(self.root)), self.root / NEW / "worktrees")
-        self.assertEqual(worktrees.scratch_base(str(self.root)), self.root / NEW / "scratch")
+        self.assertEqual(worktrees.worktrees_base(str(self.root)), self.root / SESSIONS / "worktrees")
+        self.assertEqual(worktrees.scratch_base(str(self.root)), self.root / SESSIONS / "scratch")
 
     def test_legacy_only_root_keeps_legacy_and_nothing_moves(self) -> None:
         wt = self.root / OLD / "worktrees" / "KinDash" / "9be6e554"
         wt.mkdir(parents=True)
         self.assertEqual(paths.repo_namespace(self.root), OLD)
-        self.assertEqual(worktrees.worktrees_base(str(self.root)), self.root / OLD / "worktrees")
         self.assertEqual(gitrepos.clones_base(str(self.root)), self.root / OLD / "clones")
+        # The live worktree stays put and stays managed; only NEW ones go elsewhere.
         self.assertTrue(wt.is_dir())
+        self.assertTrue(worktrees.is_managed_path(str(wt), str(self.root)))
         self.assertFalse((self.root / NEW).exists())
 
     def test_both_present_resolves_to_brand_deterministically(self) -> None:
@@ -47,12 +49,24 @@ class ResolverTests(unittest.TestCase):
         for _ in range(3):
             self.assertEqual(paths.repo_namespace(self.root), NEW)
         self.assertEqual(paths.repo_namespace_dirs(self.root),
-                         (self.root / NEW, self.root / OLD))
+                         (self.root / NEW, self.root / OLD, self.root / SESSIONS))
 
     def test_readers_list_the_resolved_namespace_first(self) -> None:
         (self.root / OLD).mkdir()
         self.assertEqual(paths.repo_namespace_dirs(self.root),
-                         (self.root / OLD, self.root / NEW))
+                         (self.root / OLD, self.root / NEW, self.root / SESSIONS))
+
+    def test_session_dirs_have_no_hidden_segment_below_the_root(self) -> None:
+        # #2934: Express/`send` (dotfiles: 'ignore') 404s any absolute path with a
+        # dot segment, so a dev server run from a worktree broke SPA deep links.
+        # Holds even for a root whose clones keep living in a legacy dot-dir.
+        for existing in ((), (OLD,), (NEW,)):
+            for ns in existing:
+                (self.root / ns).mkdir(exist_ok=True)
+            for base in (worktrees.worktrees_base(str(self.root)),
+                         worktrees.scratch_base(str(self.root))):
+                rel = base.relative_to(self.root)
+                self.assertFalse(any(p.startswith(".") for p in rel.parts), (existing, rel))
 
     def test_legacy_file_is_not_a_namespace(self) -> None:
         (self.root / OLD).write_text("not a dir")

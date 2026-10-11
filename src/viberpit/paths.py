@@ -165,8 +165,19 @@ def repo_namespace(repo_root: str | os.PathLike[str]) -> str:
 
 
 def repo_namespace_dir(repo_root: str | os.PathLike[str]) -> Path:
-    """Where NEW clones, worktrees and scratch dirs for *repo_root* are created."""
+    """Where NEW clones for *repo_root* are created (worktrees and scratch dirs:
+    :func:`session_namespace_dir`)."""
     return Path(repo_root).expanduser() / repo_namespace(repo_root)
+
+
+def session_namespace_dir(repo_root: str | os.PathLike[str]) -> Path:
+    """Where NEW session worktrees and scratch dirs for *repo_root* are created.
+
+    Not hidden (#2934), unlike :func:`repo_namespace_dir`. Existing worktrees under
+    either dot-dir are never moved (live ``gitdir:`` pointers and ``Session.cwd``
+    rows point into them); :func:`repo_namespace_dirs` keeps them visible.
+    """
+    return Path(repo_root).expanduser() / brand.SESSION_NAMESPACE
 
 
 def repo_namespace_dirs(repo_root: str | os.PathLike[str]) -> tuple[Path, ...]:
