@@ -16,6 +16,9 @@ export interface BulkSelection {
   toggleOne: (id: string, shift?: boolean) => void
   /** Select every visible id, or clear when they are all selected already. */
   toggleAll: () => void
+  /** Select (`on`) or deselect a group of ids at once — e.g. every row under a
+   *  group header. Ids outside `visibleIds` are ignored. */
+  setMany: (ids: readonly string[], on: boolean) => void
   clear: () => void
   allSelected: boolean
   someSelected: boolean
@@ -86,6 +89,19 @@ export function useBulkSelection(
     })
   }
 
+  function setMany(ids: readonly string[], on: boolean) {
+    const visible = new Set(visibleIds)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) {
+        if (!visible.has(id)) continue
+        if (on) next.add(id)
+        else next.delete(id)
+      }
+      return next
+    })
+  }
+
   function clear() {
     setSelected(new Set())
     setAnchorId(null)
@@ -100,6 +116,7 @@ export function useBulkSelection(
     isSelected: (id) => selected.has(id),
     toggleOne,
     toggleAll,
+    setMany,
     clear,
     allSelected,
     someSelected,

@@ -15,6 +15,15 @@ describe('useBulkSelection', () => {
     expect(result.current.count).toBe(0)
   })
 
+  it('setMany selects or deselects a group, ignoring ids that are not visible', () => {
+    const { result } = renderHook(() => useBulkSelection(IDS))
+    act(() => result.current.toggleOne('d'))
+    act(() => result.current.setMany(['a', 'b', 'zz'], true))
+    expect([...result.current.selected].sort()).toEqual(['a', 'b', 'd'])
+    act(() => result.current.setMany(['a', 'b'], false))
+    expect([...result.current.selected]).toEqual(['d'])
+  })
+
   it('shift-click selects the inclusive range from the anchor, in visible order', () => {
     const { result } = renderHook(() => useBulkSelection(IDS))
     act(() => result.current.toggleOne('b'))            // anchor

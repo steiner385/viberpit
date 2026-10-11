@@ -19,13 +19,21 @@ def iso_utc(dt: datetime | None) -> str | None:
     A naive datetime is assumed to be UTC (everything we persist is). An aware
     datetime is converted to UTC. ``None`` passes through so callers stay terse.
     """
+    dt = aware_utc(dt)
+    return dt.isoformat() if dt is not None else None
+
+
+def aware_utc(dt: datetime | None) -> datetime | None:
+    """*dt* as an aware UTC datetime, or ``None``. A naive datetime is UTC (every
+    ``DateTime`` column this app writes is naive UTC); an aware one is converted.
+
+    The comparison boundary between the two column kinds: a ``DateTime`` column
+    reads back naive on both dialects, while a ``DateTime(timezone=True)`` column
+    reads back aware on Postgres and naive on SQLite — comparing them raw passes
+    every SQLite test and raises ``TypeError`` on Postgres."""
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.isoformat()
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 def parse_iso_utc(value: str | None) -> datetime | None:

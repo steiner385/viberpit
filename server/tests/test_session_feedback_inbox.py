@@ -293,7 +293,7 @@ def test_provider_inbox_dispatches_every_op(tmp_path):
         orch._session_feedback_loop = _loop(_ctx(), FakeGh(), merge_fn=FakeMerges())
         p = SessionFeedbackActionProvider(orch)
         assert p.valid_inbox_ops == {"clusters", "draft", "file", "dismiss", "attach_issue",
-                                     "evidence", "mark_attached_session"}
+                                     "evidence", "mark_attached_session", "restore"}
         assert p.inbox_write_ops <= p.valid_inbox_ops and "clusters" not in p.inbox_write_ops
         assert "clusters" in await p.inbox("clusters", {})
         assert (await p.inbox("draft", {"ids": ["a1"]}))["status"] == "ok"

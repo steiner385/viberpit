@@ -132,6 +132,20 @@ footer; the oldest report becomes `filed`, the rest `merged`), **Dismiss** (opti
 the same path as `POST /api/sessions/{id}/prompt`). Every op works while the automation is off and
 records how the row was settled in `session_feedback.resolution`.
 
+The ops take arbitrary report ids, so the tab also has **bulk select**: checkboxes on clusters and on
+member rows, and a bar ("N selected — File as one issue · Dismiss") that settles the whole selection
+with ONE confirmation and ONE request. A cluster can carry **possibly fixed by #N**: up to two merged
+PRs from the mirrored `WorkItem` rows (`kind=pr`, `state=merged`, the target repo, merged at or after
+the cluster's first report) whose title (or title + body head) shares ≥ 2 words and scores ≥ 0.6 on
+`feedback_clusters.similarity` against the cluster's pooled titles — one bounded query per view, and
+"Dismiss as fixed by #N" records the PR. **Age-out** (`age_out_days`, default 14, 0 = off) runs each
+tick before the mode check: an inbox report older than that whose fingerprint was not reported again
+(in any status) and whose cluster has no report newer than the cutoff becomes `archived` (resolution
+`aged_out`) — never badged, listed in a collapsed "Aged out (N)" digest, and **Restore**
+(`POST …/clusters/restore`) puts it back for good (resolution `restored`, never aged out again).
+`session_link_base` (default empty) is this install's https address: when set, every filed issue,
+comment and session prompt links each report's session as `<base>/sessions/<id>`.
+
 Two safety properties are worth knowing when reading the code, because the two halves are
 deliberately *not* symmetric. A **create** claims its row before calling `gh`, so a failed create
 leaves it claimed-but-unlinked and is retried next tick outside the cap — a duplicate issue in a
