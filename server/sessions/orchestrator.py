@@ -15432,6 +15432,10 @@ class SessionOrchestrator:
         rearmed = engine.apply_rearm(st, info)
         action = engine.plan_recovery(engine.classify(info), mode, config, rearmed)
         if engine.acted_at_head(rearmed, action, info.head_sha):
+            if isinstance(action, (engine.Mechanical, engine.SessionFix)):
+                await self._pr_doctor_report_skip(
+                    target, action.kind, info.head_sha, "already_dispatched",
+                    f"skipped {action.kind} fix for {target}: already dispatched at this head")
             return False
         if isinstance(action, (engine.Mechanical, engine.SessionFix)):
             if not await self._backlog_pr_doctor_active(repo):
@@ -15439,10 +15443,8 @@ class SessionOrchestrator:
         if isinstance(action, engine.Mechanical):
             return await self._pr_doctor_mechanical(repo, info, action.kind, expected_state=st)
         if isinstance(action, engine.SessionFix):
-            if await self._pr_doctor_dispatch_is_stale(repo, action.kind, info):
-                return False
             status, _, _ = await self._pr_doctor_session_fix(
-                repo, branch, info, action.kind, rec, expected_state=st)
+                repo, branch, info, action.kind, rec, expected_state=st, recheck_live=True)
             return status in ("sent", "spawned")
         if isinstance(action, engine.Propose):
             await self._pr_doctor_ctx.emit("info", f"proposed {action.kind} fix for {target}",
@@ -15467,29 +15469,50 @@ class SessionOrchestrator:
         handed a repair session. Before any durable claim, one GraphQL read judges
         the live PR with the same ``classify``
         (``pr_doctor_engine.stale_dispatch_reason``); a stale decision is skipped
-        with an info event, reported once per (target, kind, head, reason)."""
+        with an info event, reported once per (target, kind, head, reason).
+
+        Called from ``_pr_doctor_session_fix_owned`` AFTER every cheap refusal
+        (untrusted author, ownership claim, live or usage-stalled predecessor,
+        launch policy), so a PR those block every sweep spends no GitHub call."""
         from server.automations import pr_doctor_engine as engine
         target = f"{repo}#{info.number}"
         reason = engine.stale_dispatch_reason(
             kind, info, await self._pr_doctor_live_pr(repo, info.number))
         if reason is None:
             return False
-        seen: set = self.__dict__.setdefault("_pr_doctor_stale_seen", set())
-        key = (target, kind, info.head_sha, reason)
-        if key not in seen:
-            seen.add(key)
-            await self._pr_doctor_ctx.emit(
-                "info", f"skipped {kind} fix for {target}: live PR state is {reason}",
-                kind="skipped", target=target,
-                detail={"reason": reason, "failure": kind, "head_sha": info.head_sha})
+        await self._pr_doctor_report_skip(
+            target, kind, info.head_sha, reason,
+            f"skipped {kind} fix for {target}: live PR state is {reason}")
         return True
+
+    async def _pr_doctor_report_skip(self, target: str, kind: str, head_sha: str,
+                                     reason: str, summary: str) -> None:
+        """One info ``skipped`` event per (target, kind, head, reason) — a sweep
+        re-judges every cycle, and a skip must be visible without flooding the
+        feed. In-memory: a restart reports a still-standing skip once more."""
+        seen: set = self.__dict__.setdefault("_pr_doctor_skip_seen", set())
+        key = (target, kind, head_sha, reason)
+        if key in seen:
+            return
+        seen.add(key)
+        await self._pr_doctor_ctx.emit(
+            "info", summary, kind="skipped", target=target,
+            detail={"reason": reason, "failure": kind, "head_sha": head_sha})
+
+    # Bounded, like the ETA fetch: the live read yields to an in-flight PR-status
+    # refresh on the shared GitHub-App budget, but never waits on a wedged one.
+    _PR_DOCTOR_LIVE_GATE_TIMEOUT_S = 30.0
 
     async def _pr_doctor_live_pr(self, repo: str, number: int) -> "PullRequestInfo | None":
         """One live ``gh api graphql`` read of PR *number*, or None on any failure
-        (the caller fails open to its snapshot). Mirrors ``_fetch_pr_detail``."""
+        (the caller fails open to its snapshot). Mirrors ``_fetch_pr_detail``, and
+        spends the shared GitHub-App budget as a low-priority caller of
+        ``_api_gate`` (the pollers' ``PriorityGate``)."""
         import json as _json
 
         from server.github.pr_status import build_live_pr_query, parse_live_pr_response
+
+        await self._api_gate.wait_until_idle(self._PR_DOCTOR_LIVE_GATE_TIMEOUT_S)
 
         def _do() -> "PullRequestInfo | None":
             try:
@@ -15533,7 +15556,7 @@ class SessionOrchestrator:
         return bad
 
     async def _pr_doctor_session_fix(self, repo, branch, info, kind, rec, on_phase=None,
-                                     *, expected_state=None):
+                                     *, expected_state=None, recheck_live=False):
         from server.automations import pr_doctor_engine as engine
         from server.automations.ownership import OwnershipConflict, StaleOwnership
         from server.automations.target_identity import TargetIdentityError
@@ -15557,7 +15580,8 @@ class SessionOrchestrator:
         await self._pr_doctor_prepare_attempt(target, expected, admitted, "native")
         try:
             status, sid, reason = await self._pr_doctor_session_fix_owned(
-                repo, branch, info, kind, rec, on_phase, ownership_token=expected["ownership_token"])
+                repo, branch, info, kind, rec, on_phase, ownership_token=expected["ownership_token"],
+                recheck_live=recheck_live)
         except BaseException:
             await self._pr_doctor_finish(target, expected, expected, uncertain=True)
             raise
@@ -15566,14 +15590,16 @@ class SessionOrchestrator:
             state = engine.record_attempt(engine.apply_rearm(expected, info),
                                           engine.SessionFix(kind), info.head_sha)
             state.update(attempted=True, session_id=sid)
-        await self._pr_doctor_finish(target, expected, state,
-                                     uncertain=status not in ("sent", "spawned", "refused"))
+        # "refused" / "stale" never reached the launch: a clean not-started release.
+        await self._pr_doctor_finish(
+            target, expected, state,
+            uncertain=status not in ("sent", "spawned", "refused", "stale"))
         return status, sid, reason
 
     async def _pr_doctor_session_fix_owned(
         self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec,
         on_phase: "Callable[[str], None] | None" = None,
-        *, ownership_token: str,
+        *, ownership_token: str, recheck_live: bool = False,
     ) -> tuple[str, str | None, str | None]:
         """Spawn a fenced successor after policy assessment. A live predecessor requires explicit stopped-work handoff; clone work belongs to create_session.
 
@@ -15611,6 +15637,11 @@ class SessionOrchestrator:
         plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
         if plan is None:                       # out of policy — the ctx recorded why
             return "refused", None, None
+        # Last gate before any model assessment or spawn work, after every cheap
+        # refusal above, so a blocked PR never spends a GitHub read (#2912).
+        # Autonomous dispatch only: a human's manual trigger is its own judgement.
+        if recheck_live and await self._pr_doctor_dispatch_is_stale(repo, kind, info):
+            return "stale", None, "the live PR no longer needs this fix"
         eng, _launch_config = plan
         if kind == "merge_conflict":
             prompt = build_conflict_fix_prompt(repo, info, engine=eng)
