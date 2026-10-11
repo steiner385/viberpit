@@ -8,8 +8,8 @@ builds the table, so this revision is the reviewable record.
 import sqlalchemy as sa
 from alembic import op
 
-revision = '0083_permission_rule_scopes'
-down_revision = '0082_work_item_app_authors'
+revision = '0085_permission_rule_scopes'
+down_revision = '0084_session_feedback_resolution'
 branch_labels = None
 depends_on = None
 

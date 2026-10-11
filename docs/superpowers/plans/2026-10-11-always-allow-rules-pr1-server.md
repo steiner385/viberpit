@@ -55,7 +55,7 @@
 | `server/permission_rules/gate.py` | `StandingRuleGate` — the registry hook |
 | `server/api/permission_rules.py` | edge routes (§5) |
 | `server/db/models.py` | `PermissionProfile.scope/scope_key`, `PermissionRuleStats` |
-| `server/db/migrations/versions/0083_permission_rule_scopes.py` | reviewable record |
+| `server/db/migrations/versions/0085_permission_rule_scopes.py` | reviewable record |
 | `server/sessions/permissions.py` | gate hook, grant cache removed, `pending()` richer |
 | `server/sessions/events.py` | `PermissionRequest.rule_suggestions` |
 | `server/sessions/claude_driver.py` | pass suggestions into the event |
@@ -314,7 +314,7 @@ def test_offered_suggestions_drop_refusals():
 
 **Files:**
 - Modify: `server/db/models.py`. Add to `PermissionProfile` (around line 1277): `scope` and `scope_key`, both `Mapped[str | None]` and nullable. Add a new model `PermissionRuleStats` right after it.
-- Create: `server/db/migrations/versions/0083_permission_rule_scopes.py` (`down_revision = '0082_work_item_app_authors'`).
+- Create: `server/db/migrations/versions/0085_permission_rule_scopes.py` (`down_revision = '0084_session_feedback_resolution'`).
 - Modify: `server/tests/test_postgres_compat.py` (`_REQUIRED_EXTRAS`) and `server/tests/test_schema_reconcile_coverage.py` (`RECONCILE_EXEMPT`).
 - Create: `server/permission_rules/store.py`
 - Modify: `server/api/permission_profiles.py`. Hide scoped profiles from the list, and make create/patch/delete/get refuse them.

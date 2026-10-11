@@ -118,7 +118,7 @@ Only suggestions that pass §4 without a refusal are offered. The first one is p
   only: `created_by`, `created_via`, `created_at` (NOT NULL), `hit_count` (NOT NULL, default 0) and
   `last_hit_at`. Its `id` is the rule's public id. A hit is one atomic
   `UPDATE … SET hit_count = hit_count + 1`.
-- Migration `0083_permission_rule_scopes`. The columns are nullable, so reconcile picks them up.
+- Migration `0085_permission_rule_scopes`. The columns are nullable, so reconcile picks them up.
   The new table goes through `create_all`, and the hand-maintained Postgres lists gain entries
   (`_REQUIRED_EXTRAS`).
 - Auto-profiles are hidden from `GET /api/permission-profiles` and from the launch-profile pickers.
