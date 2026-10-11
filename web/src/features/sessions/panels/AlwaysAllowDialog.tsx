@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Dialog } from '@/ui/Dialog'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Input } from '@/ui/Input'
@@ -33,7 +33,14 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
   const suggestions = block.ruleSuggestions ?? []
   const [pattern, setPattern] = useState(suggestions[0]?.pattern ?? '')
   const [scope, setScope] = useState<RuleScope>('session')
-  const [rawPreview, setPreview] = useState<RulePreview | null>(null)
+  // Keyed by the inputs it answers: a preview for a previous pattern/scope must never drive
+  // the confirm/refusal state of the current one.
+  const [settled, setSettled] = useState<{ key: string; preview: RulePreview | null } | null>(null)
+  // Latest callbacks, so a parent re-render with new function identities cannot cancel the
+  // debounced preview.
+  const onPreviewRef = useRef(onPreview)
+  useEffect(() => { onPreviewRef.current = onPreview }, [onPreview])
+  const key = JSON.stringify([pattern, scope])
   // Set by a 409: the next explicit click is the one that sends confirm=true.
   const [confirmStep, setConfirmStep] = useState<string[] | null>(null)
   const [error, setError] = useState<{ code: string | null; message: string } | null>(null)
@@ -43,22 +50,24 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
     if (!pattern.trim()) return
     let cancelled = false
     const t = setTimeout(() => {
-      onPreview(pattern, scope).then(
-        (p) => { if (!cancelled) setPreview(p) },
-        () => { if (!cancelled) setPreview(null) },
+      onPreviewRef.current(pattern, scope).then(
+        (p) => { if (!cancelled) setSettled({ key, preview: p }) },
+        // The preview is advisory; the server re-validates on grant.
+        () => { if (!cancelled) setSettled({ key, preview: null }) },
       )
     }, PREVIEW_DEBOUNCE_MS)
     return () => { cancelled = true; clearTimeout(t) }
-  }, [pattern, scope, onPreview])
+  }, [pattern, scope, key])
 
   const edit = (next: () => void) => { next(); setConfirmStep(null); setError(null) }
 
-  const preview = pattern.trim() ? rawPreview : null
+  const current = settled?.key === key
+  const preview = current ? settled.preview : null
   const refused = preview !== null && (!preview.valid || preview.level === 'refuse')
   const notCovered = preview?.coversRequest === false
   const needsConfirm = confirmStep !== null || preview?.needsConfirmation === true
   const stale = error?.code === 'PERMISSION_NOT_PENDING'
-  const canGrant = pattern.trim() !== '' && !refused && !notCovered && !busy && !stale
+  const canGrant = pattern.trim() !== '' && current && !refused && !notCovered && !busy && !stale
 
   const grant = async () => {
     if (!canGrant) return
@@ -98,7 +107,7 @@ function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'o
           className="font-mono"
           value={pattern}
           onChange={(e) => edit(() => setPattern(e.target.value))}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void grant() } }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.repeat) { e.preventDefault(); void grant() } }}
           invalid={refused}
         />
       </label>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AlwaysAllowDialog } from './AlwaysAllowDialog'
 import { ApiRequestError } from '@/api/client'
@@ -80,6 +80,7 @@ describe('AlwaysAllowDialog', () => {
   it('grants with confirm=false and closes', async () => {
     const user = userEvent.setup()
     const { onGrant, onClose } = setup()
+    await screen.findByText('Runs npm test')
     await user.click(screen.getByRole('button', { name: 'Grant' }))
     expect(onGrant).toHaveBeenCalledWith('Bash(npm test)', 'session', false)
     await waitFor(() => expect(onClose).toHaveBeenCalled())
@@ -88,6 +89,7 @@ describe('AlwaysAllowDialog', () => {
   it('Enter in the pattern field grants', async () => {
     const user = userEvent.setup()
     const { onGrant } = setup()
+    await screen.findByText('Runs npm test')
     await user.type(patternInput(), '{Enter}')
     expect(onGrant).toHaveBeenCalledWith('Bash(npm test)', 'session', false)
   })
@@ -98,6 +100,7 @@ describe('AlwaysAllowDialog', () => {
       .mockRejectedValueOnce(new ApiRequestError(409, { detail: { code: 'RULE_NEEDS_CONFIRMATION', message: 'm', level: 'warn', reasons: ['Matches many commands'] } }))
       .mockResolvedValueOnce(undefined)
     const { onClose } = setup({ onGrant })
+    await screen.findByText('Runs npm test')
     await user.click(screen.getByRole('button', { name: 'Grant' }))
     expect(await screen.findByText('Matches many commands')).toBeInTheDocument()
     expect(onGrant).toHaveBeenCalledTimes(1)
@@ -118,6 +121,7 @@ describe('AlwaysAllowDialog', () => {
     const user = userEvent.setup()
     const onGrant = vi.fn().mockRejectedValue(new ApiRequestError(404, { detail: { code: 'PERMISSION_NOT_PENDING', message: 'gone' } }))
     const { onClose } = setup({ onGrant })
+    await screen.findByText('Runs npm test')
     await user.click(screen.getByRole('button', { name: 'Grant' }))
     expect(await screen.findByText('This request is no longer pending')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Close' }))
@@ -128,7 +132,41 @@ describe('AlwaysAllowDialog', () => {
     const user = userEvent.setup()
     const onGrant = vi.fn().mockRejectedValue(new ApiRequestError(400, { detail: { code: 'NO_REPO', message: 'Session has no repo' } }))
     setup({ onGrant })
+    await screen.findByText('Runs npm test')
     await user.click(screen.getByRole('button', { name: 'Grant' }))
     expect(await screen.findByText('Session has no repo')).toBeInTheDocument()
+  })
+
+  it('never sends confirm=true for an edited pattern whose preview has not landed', async () => {
+    const user = userEvent.setup()
+    const onPreview = vi.fn()
+      .mockResolvedValueOnce({ ...okPreview, level: 'warn', needsConfirmation: true, reasons: ['broad'] })
+      .mockResolvedValue(okPreview)
+    const { onGrant } = setup({ onPreview })
+    await screen.findByText('broad')
+    await user.type(patternInput(), 'x{Enter}')
+    expect(onGrant).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /Confirm|Grant/ })).toBeDisabled()
+  })
+
+  it('ignores key-repeat Enter', async () => {
+    const { onGrant } = setup()
+    await screen.findByText('Runs npm test')
+    fireEvent.keyDown(patternInput(), { key: 'Enter', repeat: true })
+    expect(onGrant).not.toHaveBeenCalled()
+  })
+
+  it('a parent re-render with new callback identities does not restart the debounce', async () => {
+    const onPreview = vi.fn().mockResolvedValue(okPreview)
+    const props = { open: true, block, hasRepo: true, onClose: vi.fn() }
+    const { rerender } = render(
+      <AlwaysAllowDialog {...props} onPreview={(p, s) => onPreview(p, s)} onGrant={vi.fn()} />,
+    )
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      rerender(<AlwaysAllowDialog {...props} onPreview={(p, s) => onPreview(p, s)} onGrant={vi.fn()} />)
+    }
+    await screen.findByText('Runs npm test')
+    expect(onPreview).toHaveBeenCalledTimes(1)
   })
 })
