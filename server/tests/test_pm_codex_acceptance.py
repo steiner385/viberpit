@@ -123,7 +123,8 @@ def test_the_critic_prompt_keeps_its_propose_only_gates_on_either_engine():
             slug="p", repo="o/r", default_branch="main", branch="pm/feature-map-p",
             open_count=0, closed_count=0, engine=engine)
         assert "DO NOT open a new pull request" in prompt
-        assert "DO NOT arm auto-merge" in prompt
+        assert "Do NOT arm auto-merge" in prompt
+        assert "do NOT mark the PR ready" in prompt
 
 
 def test_the_map_synthesis_prompt_keeps_its_propose_only_gates_on_either_engine():
@@ -131,7 +132,7 @@ def test_the_map_synthesis_prompt_keeps_its_propose_only_gates_on_either_engine(
         prompt = build_map_synthesis_prompt(
             slug="p", repo="o/r", default_branch="main", open_count=1,
             closed_count=0, engine=engine)
-        assert "non-draft PR" in prompt
+        assert "gh pr create --draft" in prompt
         assert "Do NOT arm auto-merge" in prompt
 
 

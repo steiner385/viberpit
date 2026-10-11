@@ -56,7 +56,8 @@ def has_no_pr_dispatch(text: str) -> bool:
 # prompts (``server/pm/classification.py``: the map-changes branch, the coverage
 # critic, the governance doc) and the SDLC stage prompt (``server/sdlc/prompts.py``)
 # keep a human — or the synthesizer loop — as the merge gate. Their finished state is
-# an open, ready PR, and the bar's generic "arm auto-merge" nudge contradicted them.
+# an open, unarmed PR (ready, or a draft — see ``_KEEP_DRAFT_RE``), and the bar's
+# generic "arm auto-merge" nudge contradicted them.
 _NO_ARM_RE = re.compile(r"\bdo\s+not\s+arm\s+auto[\s-]?merge\b", re.IGNORECASE)
 
 
@@ -64,6 +65,21 @@ def has_no_arm_instruction(text: str | None) -> bool:
     """True when *text* (the session's initial dispatch prompt) forbids arming
     auto-merge — "Do NOT arm auto-merge"."""
     return bool(_NO_ARM_RE.search(text or ""))
+
+
+# A no-arm dispatch whose human gate is the DRAFT state itself (#2925): a repo whose
+# own automation arms every open non-draft PR (cairnea/KinDash's ops-auto-merge.yml)
+# defeats "ready + unarmed", so the onboarding prompts in
+# ``server/pm/classification.py`` open a draft and forbid readying it. Its finished
+# state is an open draft — the "mark it ready" nudge would hand the PR to that sweep.
+_KEEP_DRAFT_RE = re.compile(
+    r"\bdo\s+not\s+mark\s+(?:it|the\s+(?:pr|pull\s+request))\s+ready\b", re.IGNORECASE)
+
+
+def has_keep_draft_instruction(text: str | None) -> bool:
+    """True when *text* (the session's initial dispatch prompt) forbids marking its
+    PR ready for review — "do NOT mark the PR ready for review"."""
+    return bool(_KEEP_DRAFT_RE.search(text or ""))
 
 
 # A dispatch that forbids opening a PR without forbidding the work itself — "DO NOT
@@ -262,7 +278,9 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
 
     When ``instructions`` forbid arming auto-merge (``has_no_arm_instruction``), an
     open, ready, non-red PR is met: the dispatch owns a human merge gate, so the
-    open-unarmed nudge to arm would contradict it (#2927, #2932)."""
+    open-unarmed nudge to arm would contradict it (#2927, #2932). When they also
+    forbid readying it (``has_keep_draft_instruction``), an open, non-red DRAFT is
+    met instead (#2925)."""
     merged = facts.merged_pr
     if merged is not None and not (merged.is_docs_only and _is_code_goal(goal)):
         return BarVerdict(True, f"code landed (PR #{merged.number} merged)", None, "high")
@@ -280,8 +298,11 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
         return BarVerdict(True, f"PR #{armed.number} open with auto-merge armed", None, "high")
     unarmed = facts.open_unarmed_pr
     if unarmed is not None and has_no_arm_instruction(instructions):
-        # The dispatch keeps the merge for a human: ready and green is finished.
-        if unarmed.is_draft or unarmed.state == "draft":
+        # The dispatch keeps the merge for a human: ready and green is finished —
+        # or draft and green, when the draft state is the gate (#2925).
+        is_draft = unarmed.is_draft or unarmed.state == "draft"
+        keep_draft = is_draft and has_keep_draft_instruction(instructions)
+        if is_draft and not keep_draft:
             return BarVerdict(
                 False, f"PR #{unarmed.number} is still a draft",
                 f"mark it ready for review: `gh pr ready {unarmed.number}` "
@@ -291,6 +312,10 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
                 False, f"PR #{unarmed.number} is open but a required check is failing",
                 f"fix the failing CI on PR #{unarmed.number} (do not arm auto-merge — "
                 "the dispatch forbids it)", "high")
+        if keep_draft:
+            return BarVerdict(
+                True, f"PR #{unarmed.number} open as a draft; the dispatch keeps it one "
+                "(human merge gate)", None, "high")
         return BarVerdict(
             True, f"PR #{unarmed.number} open and ready; the dispatch forbids arming "
             "auto-merge (human merge gate)", None, "high")

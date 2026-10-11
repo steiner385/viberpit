@@ -30,7 +30,7 @@ feature doc (`docs/product/features/<slug>.md`: Problem / Target users / Desired
 metrics / Non-goals / Notes / Evidence) under YAML frontmatter that indexes into `Feature` rows.
 An onboarding wizard walks a newly-registered project through a fixed state machine
 (`registered → syncing → map_proposed → map_merged → classifying → live`), backfilling the backlog
-mirror, proposing the map via a single non-draft PR, then classifying open items into capabilities
+mirror, proposing the map via a single draft PR, then classifying open items into capabilities
 with RICE-lite scores and a `no_fit` escape hatch. Every proposal is human-gated: the map PR merge
 and the triage inbox are the curation gates; the engine never advances state itself.
 
@@ -39,9 +39,10 @@ track: share of open backlog items classified vs. `no_fit`/`needs_human`; triage
 acceptance rate vs. rejection rate; number of curated feature docs indexed per project; time from
 project registration to `live` state.
 
-**Non-goals** — Not an auto-merging step: the map-synthesis session opens exactly one non-draft PR
-and deliberately does NOT arm auto-merge — the human merge is the curation gate
-(`server/pm/classification.py`). Not a blind-retry classifier — a rejected proposal parks the work
+**Non-goals** — Not an auto-merging step: the archaeology map-synthesis session opens exactly one
+DRAFT PR and deliberately does NOT arm auto-merge or ready it — a human readies and merges it, the
+curation gate (`server/pm/classification.py`). A draft because many repos arm auto-merge on every
+ready PR themselves, which made the old "non-draft, unarmed" gate unenforceable (#2925). Not a blind-retry classifier — a rejected proposal parks the work
 item under an **owner-action hold** (`server/api/pm.py` `reject_triage` → `server/pm/holds.py`
 `set_reject_hold`), and it is that hold, not the item's triage state, that keeps it out of the
 classify loop's candidate set — never a silent re-classify. Not an

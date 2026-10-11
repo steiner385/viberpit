@@ -11773,8 +11773,8 @@ class SessionOrchestrator:
         overrides the resolved primary repo when supplied.
 
         Returns the SessionRecord, or None when no repo / no healthy account.
-        Propose-only: the spawned session opens ONE non-draft PR and NEVER arms
-        auto-merge — the merge is the human curation gate."""
+        ``scope="initial"`` opens ONE draft PR a human readies and merges;
+        ``scope="diff"`` arms auto-merge (see ``build_map_synthesis_prompt``)."""
         from sqlalchemy import func, select
         from server.db.models import Project, ProjectRepo, WorkItem
         from server.pm.classification import build_map_synthesis_prompt
@@ -11883,8 +11883,8 @@ class SessionOrchestrator:
         ``Project.constitution_status`` instead.
 
         Returns the SessionRecord, or None when no repo / no healthy account.
-        Propose-only: the spawned session opens ONE non-draft PR and NEVER
-        arms auto-merge — the merge is the human governance-review gate."""
+        Propose-only: the spawned session opens ONE draft PR and NEVER arms
+        auto-merge — a human readies and merges it (governance review)."""
         from sqlalchemy import select
         from server.db.models import Project, ProjectRepo
         from server.pm.classification import build_constitution_proposal_prompt

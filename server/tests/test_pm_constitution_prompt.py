@@ -1,7 +1,7 @@
 """Pure constitution-proposal prompt builder (issue #2259, item 2 of #2165).
 
 Mirrors ``test_pm_classification.py``'s map-synthesis prompt tests: the same
-propose-only guarantees (one non-draft PR, auto-merge never armed, a commit
+propose-only guarantees (one draft PR, auto-merge never armed, a commit
 trailer from the single source of truth) apply here, plus the sources this
 prompt must point the agent at (ADRs, AGENTS.md, spec-kit templates) and the
 governance-document path it must write."""
@@ -26,8 +26,8 @@ def test_branch_name_is_deterministic_per_project():
 def test_prompt_is_propose_only_one_pr_never_auto_merged():
     p = build_constitution_proposal_prompt(
         slug="viberpit", repo="steiner385/viberpit", default_branch="master")
-    assert "ONE" in p and "non-draft" in p.lower()
-    assert "do not arm auto-merge" in p.lower() or "do not arm  auto-merge".replace("  ", " ") in p.lower()
+    assert "ONE" in p and "draft" in p.lower() and "non-draft" not in p.lower()
+    assert "do not arm auto-merge" in p.lower()
     assert commit_trailer(AgentEngine.CLAUDE_CODE) in p
     assert "origin/master" in p
     assert "pm/constitution-viberpit" in p

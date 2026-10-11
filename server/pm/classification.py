@@ -62,6 +62,18 @@ _CENSUS_SURFACES = (
     "that callers depend on"
 )
 
+# Why every HUMAN-gated onboarding PR is a draft (#2925). "Open a non-draft PR,
+# do not arm auto-merge" is unenforceable in a repo whose own automation arms
+# every open non-draft PR (cairnea/KinDash's ops-auto-merge.yml re-armed a manual
+# disarm within 35 s and merged the map PRs unreviewed). A draft is the one state
+# neither such a sweep nor GitHub auto-merge can arm. The "do NOT mark the PR
+# ready" phrasing is what ``completion_bar.has_keep_draft_instruction`` reads.
+_DRAFT_GATE = (
+    "Do NOT arm auto-merge and do NOT mark the PR ready for review: leave it a "
+    "draft. The draft state IS the human gate — a human marks it ready and merges "
+    "it. Many repos run an automation that arms auto-merge on every open PR "
+    "that is not a draft, so a ready PR here would merge unreviewed.")
+
 
 def feature_doc_path(slug: str) -> str:
     return f"{FEATURE_DOCS_DIR}/{slug}.md"
@@ -135,9 +147,9 @@ def build_map_synthesis_prompt(
     """Seed prompt for the map-synthesis session (spec §5 Step 1 / §6 drift).
 
     Reads the codebase + mirrored backlog (open+closed) + PR history as
-    evidence, writes outcome-driven feature docs, and opens ONE non-draft PR.
+    evidence, writes outcome-driven feature docs, and opens ONE PR.
 
-    Auto-merge differs by scope, deliberately:
+    Auto-merge (and draft state) differs by scope, deliberately:
 
     * ``scope="diff"`` ARMS auto-merge. Full automation is the default; human
       takeover is the exception, signalled by the agent adding a ``hold:human``
@@ -151,6 +163,9 @@ def build_map_synthesis_prompt(
       here would let the map merge before that anti-omission pass runs — and
       the critic can legitimately never spawn. Changing that is a coupled
       decision with ``build_coverage_critic_prompt``, not a wording change.
+      Not arming is not enough on its own in a repo that arms every ready PR
+      itself, so the PR is opened as a DRAFT and both sessions leave it one
+      (``_DRAFT_GATE``, #2925).
 
     ``scope="initial"`` (default) is the whole-repo archaeology prompt.
     ``scope="diff"`` is the diff-scoped drift prompt (phase 3 reuses this one
@@ -348,12 +363,11 @@ def build_map_synthesis_prompt(
         "Requirements — this is a propose-only onboarding step, follow exactly:\n"
         f"1. Branch off `origin/{default_branch}` (never local `{default_branch}`) "
         f"into a branch named exactly `{map_branch_name(slug)}`, and open ONE "
-        f"non-draft PR from it.\n"
+        f"PR from it.\n"
         f"2. Commit the new docs under `{FEATURE_DOCS_DIR}/` only.\n"
-        "3. Open exactly ONE pull request with the whole feature map — a "
-        "NON-draft PR, marked ready for review.\n"
-        "4. Do NOT arm auto-merge: the merge is the human curation gate; PR "
-        "review comments are where the map is argued with.\n"
+        "3. Open exactly ONE pull request with the whole feature map, as a "
+        "DRAFT (`gh pr create --draft`). A coverage critic will add to it next.\n"
+        f"4. {_DRAFT_GATE} PR review comments are where the map is argued with.\n"
         "5. End every commit message with:\n"
         f"   `{commit_trailer(engine)}`\n"
     )
@@ -394,8 +408,7 @@ def build_coverage_critic_prompt(
         f"is frequently the MOST fundamental — a near-zero-churn surface with no "
         f"doc is a reason to ADD one, not to skip it.\n"
         f"5. Commit your additions and PUSH to `{branch}` to update the SAME PR. "
-        f"DO NOT open a new pull request. DO NOT arm auto-merge. Leave the PR for "
-        f"human review.\n"
+        f"DO NOT open a new pull request. {_DRAFT_GATE}\n"
         f"6. End every commit message with:\n"
         f"   `{commit_trailer(engine)}`\n"
     )
@@ -428,9 +441,9 @@ def build_constitution_proposal_prompt(
 
     Drafts ``.specify/memory/constitution.md`` from the repo's own ADRs,
     AGENTS.md (or equivalent AI-context files), and any spec-kit templates
-    already in the repo, and opens ONE non-draft PR. Propose-only, the same
+    already in the repo, and opens ONE draft PR. Propose-only, the same
     shape as ``build_map_synthesis_prompt``'s ``scope="initial"``: a human
-    reviews and merges — auto-merge is never armed, because ratifying a repo's
+    readies and merges it (``_DRAFT_GATE``) — auto-merge is never armed, because ratifying a repo's
     own governance document is exactly the kind of change
     ``constitution_gate.check_amendment`` escalates to the owner."""
     repo_clause = f" in repository `{repo}`" if repo else ""
@@ -464,9 +477,9 @@ def build_constitution_proposal_prompt(
         f"`{default_branch}`) into a branch named exactly `{branch}`.\n"
         "2. Commit only `.specify/memory/constitution.md` (and, if you "
         "formalize one into a principle, an ADR you create to record it).\n"
-        "3. Open exactly ONE non-draft PR, marked ready for review.\n"
-        "4. Do NOT arm auto-merge: a project's own governance document is a "
-        "human decision, and the PR review is where it is argued with.\n"
+        "3. Open exactly ONE PR, as a DRAFT (`gh pr create --draft`).\n"
+        f"4. {_DRAFT_GATE} A project's own governance document is a human "
+        "decision, and the PR review is where it is argued with.\n"
         "5. End every commit message with:\n"
         f"   `{commit_trailer(engine)}`\n"
     )

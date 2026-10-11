@@ -4,6 +4,7 @@ from server.automations.completion_bar import (
     PrFacts,
     _has_explicit_arm_step,
     forbids_opening_pr,
+    has_keep_draft_instruction,
     has_no_pr_dispatch,
     has_no_arm_instruction,
     is_unverified_self_resolution,
@@ -532,6 +533,34 @@ def test_draft_pr_under_a_no_arm_dispatch_is_told_to_ready_it_not_to_arm_it():
                 _facts([_pr(state="draft", is_draft=True)]), instructions=_NO_ARM)
     assert not v.met and v.confidence == "high"
     assert "gh pr ready 1" in v.remedy and "--auto" not in v.remedy
+
+
+# A dispatch whose human gate is the DRAFT state itself (#2925): in a repo whose
+# own automation arms every open non-draft PR, "ready + unarmed" cannot hold, so
+# the onboarding prompts open a draft and tell the session to leave it one.
+_KEEP_DRAFT = ("4. Do NOT arm auto-merge and do NOT mark the PR ready for review: "
+               "leave it a draft.")
+
+
+def test_keep_draft_instruction_is_recognised():
+    for text in (_KEEP_DRAFT, "do not mark it ready for review",
+                 "Do NOT mark the pull request ready"):
+        assert has_keep_draft_instruction(text), text
+    for text in ("", None, _NO_ARM, "mark it ready for review: `gh pr ready 1`"):
+        assert not has_keep_draft_instruction(text), text
+
+
+def test_draft_pr_meets_a_dispatch_that_keeps_it_a_draft():
+    v = met_bar("feature map", "explicit",
+                _facts([_pr(state="draft", is_draft=True)]), instructions=_KEEP_DRAFT)
+    assert v.met and v.confidence == "high" and v.remedy is None
+
+
+def test_red_draft_under_a_keep_draft_dispatch_is_told_to_fix_ci_not_ready_it():
+    v = met_bar("feature map", "explicit",
+                _facts([_pr(state="draft", is_draft=True, checks="failing")]),
+                instructions=_KEEP_DRAFT)
+    assert not v.met and "gh pr ready" not in v.remedy and "--auto" not in v.remedy
 
 
 def test_failing_ci_under_a_no_arm_dispatch_is_not_met():
