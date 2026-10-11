@@ -1723,6 +1723,8 @@ export function useUpdatePermissionRule() {
   return useMutation({
     mutationFn: ({ id, ...body }: { id: string; pattern: string; confirm?: boolean }) =>
       api.patch<RuleWire>(`/permission-rules/${id}`, body),
+    // Callers render the failure inline (see queryClient.ts).
+    meta: { suppressErrorToast: true },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-rules'] }),
   })
 }
@@ -1731,6 +1733,7 @@ export function useRevokePermissionRule() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => api.del(`/permission-rules/${id}`),
+    meta: { suppressErrorToast: true },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-rules'] }),
   })
 }
