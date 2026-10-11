@@ -1126,32 +1126,63 @@ async def test_auto_dismiss_seam_dismisses_with_its_reason_and_no_hold(db_env):
 
 
 @pytest.mark.asyncio
-async def test_mark_ignored_takes_a_bot_artifact_out_of_the_classify_queue(db_env):
+async def test_a_closed_item_dismissal_is_retriaged_when_the_item_reopens(db_env):
+    """The item_closed dismissal parks nothing: the item goes back to
+    ``unclassified``, kept out of classification only by its closed state — so
+    a reopened item is a classify candidate again instead of stranded."""
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    async with db_session() as db:
+        (await db.get(WorkItem, ids["w1"])).state = "closed"
+    orch = _triage_orch()
+    assert await orch._pm_triage_auto_dismiss(ids["p1"], "item_closed") is True
+    assert 1 not in {i.number for i in await orch._pm_triage_list_pending()}
+    async with db_session() as db:
+        wi = await db.get(WorkItem, ids["w1"])
+        assert wi.triage_state == "unclassified"
+        wi.state = "open"
+    reopened = {i.number: i for i in await orch._pm_triage_list_pending()}
+    assert 1 in reopened and reopened[1].dismissed_before is True
+
+
+@pytest.mark.asyncio
+async def test_mark_ignored_records_an_undoable_dismissed_proposal(db_env):
+    """The pre-classify set-aside is VISIBLE and REVERSIBLE: one proposal born
+    ``dismissed`` (decidedBy auto, reason bot_artifact, with an undo snapshot)
+    through the dismiss write path. The item itself stays ``unclassified`` —
+    the loop keeps it out of classification only while the product's setting is
+    on, so turning the setting off lets it flow back."""
     from sqlalchemy import select
     from server.db.models import AuditEvent
     await _seed(db_env)
     async with db_session() as db:
-        db.add(WorkItem(author="app/github-actions", repo=REPO, number=7, kind="pr",
+        db.add(WorkItem(author="dependabot[bot]", repo=REPO, number=7, kind="pr",
                         title="docs(fix-patterns): regenerate index", state="open",
                         triage_state="unclassified"))
     async with db_session() as db:
         p = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
         p.automation_policy = {**p.automation_policy,
-                               "trusted_authors": ["tony", "app/github-actions"]}
+                               "trusted_authors": ["tony", "app/dependabot"]}
     orch = _triage_orch()
     [item] = await orch._pm_triage_list_pending()
-    assert item.author == "app/github-actions" and item.product_slug == "viberpit"
+    assert item.author == "dependabot[bot]" and item.product_slug == "viberpit"
+    assert item.dismissed_before is False
     assert await orch._pm_triage_mark_ignored(item) is True
-    assert await orch._pm_triage_list_pending() == []
-    state, _ = await _clusters(orch)
-    assert state.unclassified_count == 0
-    assert await orch._pm_triage_mark_ignored(item) is False      # already out
+    [again] = await orch._pm_triage_list_pending()       # still a candidate; the loop decides
+    assert again.dismissed_before is True
+    assert await orch._pm_triage_mark_ignored(again) is False     # one record, not one per tick
     async with db_session() as db:
         wi = (await db.execute(select(WorkItem).where(WorkItem.number == 7))).scalar_one()
-        assert wi.hold_kind is None and wi.classified_by == "bot-artifact"
+        assert wi.hold_kind is None and wi.triage_state == "unclassified"
+        props = (await db.execute(select(TriageProposal).where(
+            TriageProposal.work_item_id == wi.id))).scalars().all()
+        assert len(props) == 1 and props[0].status == "dismissed"
+        assert props[0].proposed_feature_id is None and props[0].resolved_at is not None
+        assert props[0].undo_snapshot["decidedBy"] == "auto"
+        assert props[0].undo_snapshot["triageState"] == "unclassified"
         audits = (await db.execute(select(AuditEvent).where(
-            AuditEvent.type == "pm.triage.bot_artifact_ignored"))).scalars().all()
-        assert len(audits) == 1
+            AuditEvent.type == "pm.triage.auto_dismiss"))).scalars().all()
+        assert [a.detail["reason"] for a in audits] == ["bot_artifact"]
 
 
 @pytest.mark.asyncio

@@ -157,13 +157,16 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 default="off", choices=["off", "high", "medium"],
                 help="Accept this product's classification proposals at or above this "
                      "confidence without a human; medium includes high. Never a no-fit "
-                     "proposal, never one whose capability doc is still proposed."),
+                     "proposal; onto a capability whose doc is still proposed only by the "
+                     "repeat rule below."),
     # #2683: the two rules that keep the triage inbox for proposals that matter.
     ConfigField(key="triage_auto_accept_dispatch_off", label="Auto-accept while Dispatch is off",
                 type="bool", default=False,
                 help="Accept this product's classification proposals whatever their confidence "
                      "while Dispatch is off: nothing is dispatched, so a wrong accept costs "
-                     "nothing. Still never a no-fit or a proposed capability. Undoable."),
+                     "nothing. Never a no-fit; onto a still-proposed capability only by the "
+                     "repeat rule below, which this setting arms only while Dispatch is off. "
+                     "Undoable."),
     # #2683 follow-up: N human accepts onto one capability ARE the endorsement. Read
     # through ``server.pm.triage_accept.repeat_threshold_for`` — the ONE place the
     # opt-in governance below is applied.
@@ -173,16 +176,18 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                      "this many earlier proposals onto the same capability as proposed, even "
                      "while that capability is still proposed. Machine accepts never count. "
                      "Applies only to a product that has opted in to auto-accept (Triage "
-                     "auto-accept above off, or Auto-accept while Dispatch is off); a product "
-                     "that never opted in never sees a machine accept. Never a no-fit. 0 "
-                     "turns it off. Undoable."),
+                     "auto-accept above off, or Auto-accept while Dispatch is off, which "
+                     "counts only while Dispatch is off); a product that never opted in "
+                     "never sees a machine accept. Never a no-fit or a sunset capability. "
+                     "0 turns it off. Undoable."),
     ConfigField(key="triage_dismiss_bot_artifacts", label="Dismiss bot artifacts", type="bool",
                 default=True,
-                help="Keep bot output out of triage: items authored by a bot, or titled like "
-                     "recognised bot output (recurring digests, regenerated-index PRs, and "
-                     "the patterns below), are never sent to classification, and a pending "
-                     "proposal for one is dismissed. A dismissal parks nothing under an "
-                     "owner hold and is undoable."),
+                help="Keep bot output out of triage: items authored by a [bot] account, or "
+                     "titled like recognised bot output (recurring digests, regenerated-index "
+                     "PRs, and the patterns below), are not sent to classification, and a "
+                     "pending proposal for one is dismissed. Each is recorded as a dismissed "
+                     "proposal you can undo from the inbox; nothing is parked under an owner "
+                     "hold. Turning this off sends those items back to classification."),
     ConfigField(key="triage_bot_artifact_patterns", label="Bot artifact title patterns",
                 type="string-list", default=[],
                 help="Extra title patterns (case-insensitive regular expressions) treated as "

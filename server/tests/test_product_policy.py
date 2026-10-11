@@ -42,6 +42,20 @@ def test_triage_auto_accept_repeat_is_a_non_negative_int():
         merge_policy_patch(None, {"triage_auto_accept_repeat": -1})
 
 
+def test_triage_help_texts_do_not_contradict_the_repeat_rule():
+    fields = {f.key: f for f in PRODUCT_POLICY_SCHEMA}
+    # The repeat rule CAN accept onto a proposed capability; no sibling may promise never.
+    assert "never one whose capability doc is still proposed" not in fields["triage_auto_accept"].help
+    assert "never a no-fit or a proposed capability" not in (
+        fields["triage_auto_accept_dispatch_off"].help)
+    assert "repeat" in fields["triage_auto_accept_dispatch_off"].help.lower()
+    # The repeat key states the Dispatch-off opt-in only counts while Dispatch is off.
+    assert "while dispatch is off" in fields["triage_auto_accept_repeat"].help.lower()
+    # Bot dismissal: undoable, and switching it off sends items back to classification.
+    bot = fields["triage_dismiss_bot_artifacts"].help.lower()
+    assert "undo" in bot and "off" in bot
+
+
 def test_bot_artifact_patterns_must_compile_on_write():
     from server.automations.product_policy import merge_policy_patch
     field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["triage_bot_artifact_patterns"]

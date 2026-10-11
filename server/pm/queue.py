@@ -138,6 +138,15 @@ class QueueEntry:
     hold_kind: str | None = None
 
 
+def is_bot_login(author: str | None) -> bool:
+    """THE author half of the ``bot`` verdict: a ``[bot]`` login. Shared with the
+    triage loop's bot-artifact recognition (``triage_accept.is_bot_artifact``) so
+    the queue and triage can never disagree about who is a bot. Deliberately NOT
+    ``github-actions`` (bare or ``app/``): it files the recurring CI alert issues
+    (#2680) the runner is meant to work."""
+    return (author or "").endswith("[bot]")
+
+
 def is_bot_noise(*, author: str, labels: Iterable[str], title: str,
                  extra_skip_labels: frozenset[str] = frozenset()) -> bool:
     """THE ``bot`` verdict: the built-in bot-noise filter plus a product's own
@@ -145,7 +154,7 @@ def is_bot_noise(*, author: str, labels: Iterable[str], title: str,
     Exported because ``skip_reason`` is not its only consumer: the hold-hygiene
     pass and the approve-escalation tap (``server/pm/policy_skip.py``) must judge
     an issue by exactly this rule, not a copy that can drift (KinDash#16652)."""
-    if (author or "").endswith("[bot]"):
+    if is_bot_login(author):
         return True
     if {str(lbl).strip().lower() for lbl in labels} & (SKIP_ISSUE_LABELS | extra_skip_labels):
         return True

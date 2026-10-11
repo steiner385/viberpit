@@ -1085,6 +1085,62 @@ def test_triage_dismiss_resolves_without_a_hold_and_is_undoable():
                                       "reason": "noise", "decidedBy": "human"})]
 
 
+def test_triage_undo_refuses_while_the_item_is_closed():
+    """Undo would put back a pending proposal no list shows (closed items are
+    filtered out) — an unreachable row. Refused with 409 ``item_closed`` until
+    the item reopens."""
+    with _client() as c:
+        _register(c, "viberpit", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        _set_item_state(c, wid, "closed")
+
+        async def _auto_dismiss():
+            from server.sessions.orchestrator import SessionOrchestrator
+            bare = SessionOrchestrator.__new__(SessionOrchestrator)   # seams use db_session only
+            return await bare._pm_triage_auto_dismiss(pid, "item_closed")
+        assert c.portal.call(_auto_dismiss) is True
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "item_closed"
+        _set_item_state(c, wid, "open")
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert any(p["id"] == pid for p in c.get("/api/pm/triage",
+                                                 headers=IDENTITY_HEADERS).json())
+
+
+def test_a_bot_artifact_set_aside_is_undoable_through_the_inbox_undo():
+    from server.automations.pm_triage import PendingItemView
+
+    with _client() as c:
+        _register(c, "viberpit", repo="o/r")
+        _, wid = _seed_one_pending(c, number=5)
+
+        async def _drop_proposal_and_set_aside():
+            from sqlalchemy import delete
+
+            from server.db import db_session
+            from server.db.models import TriageProposal
+            async with db_session() as db:
+                await db.execute(delete(TriageProposal).where(
+                    TriageProposal.work_item_id == wid))
+            item = PendingItemView(repo="o/r", number=5, kind="issue", title="Fix", body="",
+                                   labels=(), linked_issue_numbers=(), author="dependabot[bot]",
+                                   product_slug="viberpit")
+            from server.sessions.orchestrator import SessionOrchestrator
+            bare = SessionOrchestrator.__new__(SessionOrchestrator)   # seams use db_session only
+            assert await bare._pm_triage_mark_ignored(item) is True
+            async with db_session() as db:
+                from sqlalchemy import select
+                return (await db.execute(select(TriageProposal.id).where(
+                    TriageProposal.work_item_id == wid))).scalar_one()
+        pid = c.portal.call(_drop_proposal_and_set_aside)
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        rows = {p["id"]: p for p in c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json()}
+        assert rows[pid]["status"] == "pending"
+
+
 def test_triage_dismiss_bulk_reports_per_id():
     with _client() as c:
         _register(c, "viberpit", repo="o/r")
