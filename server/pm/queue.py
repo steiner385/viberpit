@@ -92,7 +92,7 @@ _DIGEST_TITLE = re.compile(r"\bDigest\s*$")
 URGENT_LABELS = frozenset({"deploy-monitor"})
 
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
-                 "tracker", "untrusted", "held", "needs_spec")
+                 "tracker", "untrusted", "held", "not_needed", "needs_spec")
 
 # Logins that file issues which ARE work (deploy-monitor, forced-deploy-audit) — always
 # trusted. Mirrors alert_series.AUTOMATION_LOGINS; pinned by a test rather than imported
@@ -154,6 +154,12 @@ class QueueRow:
     # ACTED on (Retry / approve-escalation are per-work-item routes) without the
     # client resolving ``ref`` → id itself. Defaulted for positional constructors.
     work_item_id: str | None = None
+    # #2683 not-needed suppression (``outcomes.not_needed_suppression``, computed by
+    # the loader): until when the queue skips the issue as ``not_needed``, and
+    # whether a not-needed verdict still stands on its current material at all (the
+    # hold-hygiene pass reads that, whatever the window).
+    not_needed_until: datetime | None = None
+    not_needed_standing: bool = False
 
 
 @dataclass(frozen=True)
@@ -293,6 +299,11 @@ def skip_reason(
     # plain "status" skips and the card would lose its held gauge.
     if row.hold_kind in HELD_KINDS or is_parked(row.labels):
         return "held"
+    # #2683: a session found this issue needed no PR and nothing material has
+    # changed since — checked before the status gate for the same reason as
+    # ``held``: the reason is the useful answer, not "status".
+    if row.not_needed_until is not None and now < row.not_needed_until:
+        return "not_needed"
     # D8: this body has already bounced enough — a spec edit (which changes the
     # fingerprint the count is keyed on) is what re-arms it, not time.
     if bounced_out(row.bounces, give_up_after_bounces):

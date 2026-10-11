@@ -9518,8 +9518,9 @@ class SessionOrchestrator:
                     continue
                 await self._backlog_ctx.emit(
                     "info",
-                    f"{row.ref}: released the runner's hold — the product's policy "
-                    f"skips this issue, so there is nothing to approve",
+                    f"{row.ref}: released the runner's hold — the queue skips this issue "
+                    f"(the product's policy, or a standing not-needed verdict), so there "
+                    f"is nothing to approve",
                     kind="policy_skip_released", target=row.ref,
                     detail={"product": row.product, "labels": list(row.labels),
                             "hold_reason": row.hold_reason})
@@ -10234,6 +10235,7 @@ class SessionOrchestrator:
                 existing.gh_created_at = item.gh_created_at
                 existing.gh_updated_at = item.gh_updated_at
                 existing.gh_closed_at = item.gh_closed_at
+                existing.last_human_comment_at = item.last_human_comment_at
                 existing.last_synced_at = now
                 if (is_new and item.kind == "issue" and item.state == "open"
                         and AUTO_ERROR_LABEL in (item.labels or ())):

@@ -2821,17 +2821,18 @@ class BacklogRunnerLoop:
         investigation settle reads):
 
         - issue **closed** → done: finalise the outcome row ``no_pr`` and release;
-        - issue **open** but NOT WORK under its product's policy (#2683 — a
-          self-closing tracker, ``viberpit-ignore``, a ``skip_labels`` label:
-          ``policy_skip.not_work_by_policy``, the queue's own ``bot``/``tracker``
-          verdicts) → finalise and release like a closed issue. The queue skips it
-          from now on, so no hold is needed to stop a re-dispatch, and an owner hold
-          would only ask a person about an issue its own workflow closes. A product
-          that opted back in to trackers gets the next branch instead: the queue
-          would re-dispatch it, so the hold is what stops the loop;
-        - issue **open** → park it for the owner through the existing ``_give_up``
-          (owner_action hold + comment) with the session's own note, so the item does
-          not re-enter the queue and re-dispatch;
+        - issue **open** → finalise and release exactly the same way, with the
+          session's note on the activity feed and NO owner hold (#2683). The
+          finalised row records the issue's material identity
+          (``outcomes.material_fingerprint``), and the queue skips the issue as
+          ``not_needed`` until a body/title edit, a label change or a person's
+          comment — or, unchanged, for a window that backs off with every verdict
+          (``outcomes.NOT_NEEDED_BACKOFF``: a day, then 4, 16, 30). An issue the
+          product's policy does not treat as work at all (a self-closing tracker,
+          ``viberpit-ignore``, ``parked``: ``policy_skip.not_work_by_policy``) is
+          skipped for good, and the feed says so. A hold used to stop the
+          re-dispatch here; it asked a person about issues that close themselves
+          (15 such holds on KinDash) and is cleared by the hold-hygiene pass;
         - state **unknown** → ``False``: the ordinary path, which terminates, rather
           than a release that could loop.
         """
@@ -2848,30 +2849,24 @@ class BacklogRunnerLoop:
                         target, sid, exc_info=True)
             return False
         issue_state = info.get("issue_state")
-        fallback = self._outcome_fallback(st)
         if issue_state == "closed":
-            if await self._write_state(target, st, None, outcome={
-                    "outcome": "no_pr", "cause": NOT_NEEDED_CAUSE, "fallback": fallback}):
-                await self._ctx.emit("info", f"{target}: no PR needed — issue closed",
-                                     kind=NOT_NEEDED_CAUSE, target=target)
-            return True
-        if issue_state != "open":
+            why = "issue closed"
+        elif issue_state != "open":
             return False
-        if not_work_by_policy(author=str(info.get("author") or ""),
-                              labels=info.get("labels") or (),
-                              title=str(info.get("title") or ""),
-                              policy=self._policy_for(st.get("product"))):
-            if await self._write_state(target, st, None, outcome={
-                    "outcome": "no_pr", "cause": NOT_NEEDED_CAUSE, "fallback": fallback}):
-                await self._ctx.emit(
-                    "info", f"{target}: no PR needed — the queue skips this issue "
-                    "(self-closing tracker or ignored), so no owner hold",
-                    kind=NOT_NEEDED_CAUSE, target=target)
-            return True
-        safe = _reason_from_note(info.get("no_pr_note") or None)
-        reason = "session found no PR is needed (not-needed)" + (f": {safe}" if safe else "")
-        await self._give_up(target, st, reason, outcome={
-            "outcome": "no_pr", "cause": NOT_NEEDED_CAUSE, "fallback": fallback})
+        elif not_work_by_policy(author=str(info.get("author") or ""),
+                                labels=info.get("labels") or (),
+                                title=str(info.get("title") or ""),
+                                policy=self._policy_for(st.get("product"))):
+            why = "the queue skips this issue (self-closing tracker, ignored or parked)"
+        else:
+            safe = _reason_from_note(info.get("no_pr_note") or None)
+            why = ("not re-dispatched until the issue materially changes"
+                   + (f": {safe}" if safe else ""))
+        if await self._write_state(target, st, None, outcome={
+                "outcome": "no_pr", "cause": NOT_NEEDED_CAUSE,
+                "fallback": self._outcome_fallback(st)}):
+            await self._ctx.emit("info", f"{target}: no PR needed — {why}",
+                                 kind=NOT_NEEDED_CAUSE, target=target)
         return True
 
     async def _decision_hold_is_real(self, target: str, st: dict) -> bool:

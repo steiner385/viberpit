@@ -926,12 +926,14 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("get_priority_queue",
                "The global priority queue — what agents will pick up next, ranked across "
                "every onboarded product. `skipped` counts why items did NOT make the "
-               "queue, keyed by reason: 'held' (an owner_action or decision hold), "
+               "queue, keyed by reason: 'held' (an owner_action or decision hold, or a "
+               "'parked' label), "
                "'blocked' (an open dependency), 'status' "
                "(below the product's minimum board status), 'epic_open', 'assigned', "
                "'claimed', 'live_session', 'bot', 'tracker' (an issue its own CI workflow "
                "closes, e.g. a [flaky] tracker), 'untrusted' (author not in the product's "
-               "trusted authors), 'needs_spec'. `skippedByProduct` and "
+               "trusted authors), 'not_needed' (a session found no PR is needed and the "
+               "issue has not materially changed since), 'needs_spec'. `skippedByProduct` and "
                "`dispatchableByProduct` give the same per product slug. `product` narrows "
                "everything to one slug. min_status limits to items at or above a status "
                "('backlog' or 'ready'; default 'ready').",

@@ -8,6 +8,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, tuple_
@@ -151,6 +152,101 @@ def never_ran_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
                    tuple_(DispatchOutcome.target_ref,
                           DispatchOutcome.body_fingerprint).in_(wanted))
             .group_by(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint))
+
+
+# --------------------------------------------------------------------------- #
+# Not-needed suppression (#2683)                                               #
+# --------------------------------------------------------------------------- #
+# A session that ends ``mark_no_pr("not-needed")`` found the objective already
+# satisfied. Re-dispatching the SAME issue is pointless until something about it
+# materially changes — and the runner used to do exactly that: cairnea/KinDash#17390
+# ~45 times, #17391 ~10, viberpit#2924 within the hour. The verdict row (``no_pr`` /
+# ``NOT_NEEDED_CAUSE``) records the issue's material identity, and the queue skips
+# the issue as ``not_needed`` while it is unchanged, for a window that backs off
+# with every verdict on the same material — so even an issue that never changes is
+# looked at again only after a day, then 4, 16 and 30. A body/title edit, a label
+# change, or a comment by a person after the verdict lifts it at once.
+#
+# Board Status is deliberately NOT part of the identity: the reconciler rewrites it
+# from claims and holds (In progress while claimed, Held while held), so the mirror
+# cannot tell a person's card move from its own stamp — every release would read as
+# a change.
+
+#: The suppression window after the 1st, 2nd, 3rd and every later not-needed
+#: verdict on the same unchanged material. Never minutes (#2683).
+NOT_NEEDED_BACKOFF: tuple[timedelta, ...] = (
+    timedelta(days=1), timedelta(days=4), timedelta(days=16), timedelta(days=30))
+
+
+def material_fingerprint(title: str | None, body: str | None,
+                         labels: Iterable[str] | None) -> str:
+    """THE "same issue, materially" identity for not-needed suppression: title, body
+    and the (case-folded, sorted) label set. Written on the verdict row at finalise
+    and computed from the mirror at rank time through this one function."""
+    norm = sorted({str(lbl).strip().lower() for lbl in (labels or ()) if str(lbl).strip()})
+    return hashlib.sha256(
+        f"{title or ''}\n\n{body or ''}\n\nlabels:{','.join(norm)}".encode()).hexdigest()
+
+
+def not_needed_backoff(verdicts: int) -> timedelta:
+    """The window after the *verdicts*-th verdict on unchanged material (>= 1)."""
+    return NOT_NEEDED_BACKOFF[min(max(verdicts, 1), len(NOT_NEEDED_BACKOFF)) - 1]
+
+
+@dataclass(frozen=True)
+class NotNeededVerdict:
+    """One finalised ``no_pr`` / ``NOT_NEEDED_CAUSE`` row, as suppression reads it."""
+
+    ended_at: datetime | None
+    material_fingerprint: str | None
+    body_fingerprint: str | None
+
+
+def not_needed_stmt(refs: Iterable[str]) -> Select:
+    """Every not-needed verdict for *refs*: ``(target_ref, ended_at,
+    material_fingerprint, body_fingerprint)``. Implement dispatches only, like every
+    other attempt read."""
+    return (select(DispatchOutcome.target_ref, DispatchOutcome.ended_at,
+                   DispatchOutcome.material_fingerprint, DispatchOutcome.body_fingerprint)
+            .where(DispatchOutcome.outcome == "no_pr",
+                   DispatchOutcome.cause == NOT_NEEDED_CAUSE,
+                   _implement_only(),
+                   DispatchOutcome.target_ref.in_(list(refs))))
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    # SQLite hands back naive datetimes for timezone=True columns; every column is UTC.
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
+
+
+def not_needed_suppression(verdicts: Iterable[NotNeededVerdict], *, title: str | None,
+                           body: str | None, labels: Iterable[str] | None,
+                           last_human_comment_at: datetime | None,
+                           ) -> tuple[datetime | None, bool]:
+    """``(suppressed_until, standing)`` for an issue as it is NOW.
+
+    *standing* — some not-needed verdict still matches the issue's current material
+    (``material_fingerprint``; a row from before that column falls back to its
+    ``body_fingerprint``) and no person has commented since the newest such verdict.
+    *suppressed_until* — when a standing verdict's window ends: the newest matching
+    verdict plus ``not_needed_backoff(<matching verdicts>)``; ``None`` when nothing
+    stands. The window may already be in the past — the queue compares it with
+    ``now``; the hold-hygiene pass reads *standing* alone."""
+    material = material_fingerprint(title, body, labels)
+    body_fp = body_fingerprint(title, body)
+    ended = [at for v in verdicts
+             if (at := _utc(v.ended_at)) is not None
+             and (v.material_fingerprint == material if v.material_fingerprint
+                  else v.body_fingerprint == body_fp)]
+    if not ended:
+        return None, False
+    newest = max(ended)
+    commented = _utc(last_human_comment_at)
+    if commented is not None and commented > newest:
+        return None, False
+    return newest + not_needed_backoff(len(ended)), True
 
 
 def list_outcomes_stmt(target_ref: str) -> Select:

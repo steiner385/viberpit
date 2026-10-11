@@ -88,6 +88,32 @@ def test_parse_pr_page_normalizes_state_and_links():
     assert items[0].linked_issue_numbers == (7,)
 
 
+# --- newest human comment (#2683 not-needed suppression) ---------------------
+
+def test_issue_query_reads_comments_and_the_pr_query_does_not():
+    assert "comments(last:" in build_issues_query("o/r", None, None)
+    assert "comments(last:" not in build_prs_query("o/r", None)
+
+
+def test_last_human_comment_at_counts_users_only():
+    payload = _issue_payload()
+    node = payload["data"]["repository"]["issues"]["nodes"][0]
+    node["comments"] = {"nodes": [
+        {"createdAt": "2026-01-04T00:00:00Z", "author": {"__typename": "User", "login": "tony"}},
+        {"createdAt": "2026-01-06T00:00:00Z",
+         "author": {"__typename": "Bot", "login": "viberpit"}},
+        {"createdAt": "2026-01-07T00:00:00Z", "author": None},   # deleted account
+        {"createdAt": "2026-01-05T00:00:00Z", "author": {"__typename": "User", "login": "x"}},
+    ]}
+    (item,), _, _ = parse_page(payload, "o/r", "issue")
+    assert item.last_human_comment_at == datetime(2026, 1, 5, tzinfo=timezone.utc)
+    node["comments"] = {"nodes": [
+        {"createdAt": "2026-01-06T00:00:00Z",
+         "author": {"__typename": "Bot", "login": "github-actions"}}]}
+    (item,), _, _ = parse_page(payload, "o/r", "issue")
+    assert item.last_human_comment_at is None
+
+
 def test_parse_garbage_is_empty():
     assert parse_page({}, "o/r", "issue") == ([], None, False)
     assert parse_page({"data": None}, "o/r", "pr") == ([], None, False)
