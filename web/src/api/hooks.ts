@@ -6,6 +6,8 @@ import {
   fetchAutomationActionable, postAutomationTrigger,
   fetchConsolidation, postConsolidate, fetchBacklogGroups,
   fetchBacklogCandidates, postDispatchGroup,
+  fetchInboxClusters, postClusterDraft, postClusterFile, postClusterDismiss, postClusterAttach,
+  type InboxClusters, type ClusterDraft, type ClusterAttachTarget,
   type Automation, type AutomationEvent, type AutomationPatch,
   type ActionableItem, type TriggerResult, type ConsolidationView,
   type BacklogGroupsView, type BacklogCandidatesView, type DispatchGroupResponse,
@@ -99,6 +101,8 @@ export const QK = {
   pipelineInsights: (repo?: string, window?: string) =>
     ['pipeline-insights', repo, window] as const,
   automationActionable: (id: string) => ['automation-actionable', id] as const,
+  inboxClusters: (id: string) => ['automation-inbox-clusters', id] as const,
+  inboxDraft: (id: string, ids: string[]) => ['automation-inbox-draft', id, ids] as const,
   consolidation: ['automation-consolidation'] as const,
   backlogGroups: ['backlog-groups'] as const,
   backlogCandidates: ['backlog-candidates'] as const,
@@ -1352,6 +1356,52 @@ export function useAutomationTrigger(id: string) {
       qc.invalidateQueries({ queryKey: QK.automations })
     },
   })
+}
+
+/** The clustered inbox (#2936). Polls slowly: the model pass that names themes
+ *  lands on the daemon's next tick after the inbox changes. */
+export function useFeedbackClusters(id: string, enabled = true) {
+  return useQuery<InboxClusters>({
+    queryKey: QK.inboxClusters(id),
+    queryFn: () => fetchInboxClusters(id),
+    enabled, staleTime: 10_000, refetchInterval: 60_000 })
+}
+
+/** A generated issue for the reports `ids`. A POST, but a read: nothing is
+ *  filed, so it is a query — fetched when the editor opens, never cached past it. */
+export function useFeedbackClusterDraft(id: string, ids: string[], enabled = true) {
+  return useQuery<ClusterDraft>({
+    // Its own key, NOT under inboxClusters: an inbox write invalidates that
+    // prefix, and re-drafting reports that just left the inbox would 422.
+    queryKey: QK.inboxDraft(id, ids),
+    queryFn: () => postClusterDraft(id, ids),
+    enabled, staleTime: 0, gcTime: 0, retry: false })
+}
+
+/** Every inbox write moves rows out of the inbox: refresh the clusters, the flat
+ *  actionable list (the tab badge) and the automations list (the nav badge). */
+function useInboxWrite<V>(id: string, fn: (vars: V) => Promise<TriggerResult>) {
+  const qc = useQueryClient()
+  return useMutation<TriggerResult, ApiRequestError, V>({
+    mutationFn: fn,
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: QK.inboxClusters(id) })
+      qc.invalidateQueries({ queryKey: QK.automationActionable(id) })
+      qc.invalidateQueries({ queryKey: QK.automations })
+    },
+  })
+}
+
+export function useFileFeedbackCluster(id: string) {
+  return useInboxWrite<{ ids: string[]; title: string; body: string }>(id, (b) => postClusterFile(id, b))
+}
+
+export function useDismissFeedbackCluster(id: string) {
+  return useInboxWrite<{ ids: string[]; fixedBy?: number }>(id, (b) => postClusterDismiss(id, b))
+}
+
+export function useAttachFeedbackCluster(id: string) {
+  return useInboxWrite<{ ids: string[] } & ClusterAttachTarget>(id, (b) => postClusterAttach(id, b))
 }
 
 export function useConsolidation(enabled = true) {

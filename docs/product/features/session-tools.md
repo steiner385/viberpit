@@ -113,6 +113,25 @@ Config: `target_repo`, `label` (`session-feedback`, self-provisioned), `daily_ca
 per UTC day — comments do not count), `min_impact`. The card lists the pending/throttled/capped
 inbox with **File now** (bypasses both caps for one row) and **Dismiss**.
 
+### The clustered inbox (#2936)
+
+The Needs you tab shows the inbox as **clusters** — one row per problem, not per report.
+`server/automations/feedback_clusters.py` (pure) groups reports: same fingerprint always together,
+then average-linkage agglomeration on title tokens (overlap coefficient ≥ 0.4 — single linkage
+chained unrelated reports through words like "backlog runner"). Each tick — also while the
+automation is off — the loop asks Sonnet once to merge pre-clusters describing the same problem and
+name the theme, but only when the pre-cluster partition changed (`llm_clustering`, default on); a
+failed or unparseable pass keeps the deterministic clusters. On the real 50-report fixture: 26
+pre-clusters, 18 after the recorded model reply (five themes holding 37 reports, 13 one-offs).
+
+Per cluster, all through `SessionOrchestrator.automation_inbox` → `GET|POST
+/api/automations/{id}/clusters[/draft|/file|/dismiss|/attach]`: **File as one issue** (a generated,
+editable title/body with every report's session, working-on, quoted body and evidence, fingerprints
+footer; the oldest report becomes `filed`, the rest `merged`), **Dismiss** (optionally "fixed by
+#PR"), and **Attach** to an existing issue (one comment) or a live session (sent as a prompt through
+the same path as `POST /api/sessions/{id}/prompt`). Every op works while the automation is off and
+records how the row was settled in `session_feedback.resolution`.
+
 Two safety properties are worth knowing when reading the code, because the two halves are
 deliberately *not* symmetric. A **create** claims its row before calling `gh`, so a failed create
 leaves it claimed-but-unlinked and is retried next tick outside the cap — a duplicate issue in a

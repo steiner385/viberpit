@@ -1,0 +1,5 @@
+{
+ "_note": "Real reply captured 2026-10-11 from a one-shot Sonnet call (claude-agent-sdk query, model=sonnet, stateless helper options) given feedback_clusters.merge_prompt() over the 26 pre-clusters of session_feedback_50.json. Re-capture it if merge_prompt or pre_cluster changes the ids.",
+ "model": "sonnet",
+ "reply": "{\"groups\":[{\"ids\":[\"263381befaad\",\"956261684442\",\"448a52f745ab\",\"7d4695a27bab\",\"5afc2caf102d\"],\"title\":\"Backlog Runner re-dispatches auto-error issues repeatedly despite no-PR/convert verdicts\"},{\"ids\":[\"33305a279a6e\"],\"title\":\"Completion gate demands PR from read-only investigate-only triage sessions\"},{\"ids\":[\"5ae8b0845171\",\"2e9b5c6e862d\",\"8bdbb7ebe06b\"],\"title\":\"Completion nudge 'open a PR and arm auto-merge' repeats though PR already exists\"},{\"ids\":[\"6513b3036372\",\"06b2b5057660\",\"ea8124c1b5f3\"],\"title\":\"Daemon restart kills in-flight work and leaves stale state\"},{\"ids\":[\"3739f29de35e\"],\"title\":\"Dispatched child sessions remain queued without starting\"}]}"
+}

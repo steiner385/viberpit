@@ -231,6 +231,83 @@ export function fetchPrDoctorJob(jobId: string): Promise<PrDoctorJob> {
   return api.get<PrDoctorJob>(`/automations/pr-doctor/jobs/${jobId}`)
 }
 
+// --- The clustered inbox (#2936) ---------------------------------------------
+
+/** Automations whose Needs you tab is the clustered inbox rather than the flat
+ *  actionable list (the server answers `/clusters` for these only). */
+export const INBOX_AUTOMATIONS: ReadonlySet<string> = new Set(['session-feedback'])
+
+export interface InboxReport {
+  id: string
+  title: string
+  category: string | null
+  impact: string | null
+  fingerprint: string | null
+  reportedAt: string | null
+  status: string | null
+  /** The reporting session's name (or id). */
+  session: string | null
+}
+
+export interface ReportCluster {
+  /** Stable for a given member set. */
+  id: string
+  /** The model's theme when `themed`, else the most common member title. */
+  title: string
+  count: number
+  category: string | null
+  /** The most severe member impact. */
+  impact: string | null
+  firstReported: string | null
+  lastReported: string | null
+  themed: boolean
+  fingerprints: string[]
+  /** Newest first. */
+  members: InboxReport[]
+}
+
+export interface InboxClusters {
+  clusters: ReportCluster[]
+  /** The model merge pass: answered for this inbox, catching up with it, failed
+   *  (similarity groups only), or turned off in the config. */
+  llm: 'applied' | 'pending' | 'failed' | 'off'
+  total: number
+}
+
+export interface ClusterDraft extends TriggerResult {
+  title: string
+  body: string
+}
+
+/** Exactly one target: an existing issue, or a live session. */
+export type ClusterAttachTarget = { issue: number } | { sessionId: string }
+
+export function fetchInboxClusters(id: string): Promise<InboxClusters> {
+  return api.get<InboxClusters>(`/automations/${id}/clusters`)
+}
+
+export function postClusterDraft(id: string, ids: string[]): Promise<ClusterDraft> {
+  return api.post<ClusterDraft>(`/automations/${id}/clusters/draft`, { ids })
+}
+
+export function postClusterFile(
+  id: string, body: { ids: string[]; title: string; body: string },
+): Promise<TriggerResult> {
+  return api.post<TriggerResult>(`/automations/${id}/clusters/file`, body)
+}
+
+export function postClusterDismiss(
+  id: string, body: { ids: string[]; fixedBy?: number },
+): Promise<TriggerResult> {
+  return api.post<TriggerResult>(`/automations/${id}/clusters/dismiss`, body)
+}
+
+export function postClusterAttach(
+  id: string, body: { ids: string[] } & ClusterAttachTarget,
+): Promise<TriggerResult> {
+  return api.post<TriggerResult>(`/automations/${id}/clusters/attach`, body)
+}
+
 // --- PR-doctor consolidation -------------------------------------------------
 
 export interface ConsolidationCandidate {

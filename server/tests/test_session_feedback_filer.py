@@ -73,10 +73,16 @@ class FakeGh:
         return self._bodies("/comments")
 
 
-def _loop(ctx, gh, *, mode="file", config=None, now=NOW):
+async def _no_merges(preclusters):
+    from server.automations.feedback_clusters import ParsedMerges
+    return ParsedMerges()
+
+
+def _loop(ctx, gh, *, mode="file", config=None, now=NOW, merge_fn=_no_merges):
     async def read_config():
         return mode, {**CFG, **(config or {})}
-    return SessionFeedbackLoop(ctx, read_config=read_config, run=gh, clock=lambda: now)
+    return SessionFeedbackLoop(ctx, read_config=read_config, run=gh, clock=lambda: now,
+                               merge_fn=merge_fn)
 
 
 async def _seed(**kw) -> str:

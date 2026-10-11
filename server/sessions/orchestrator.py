@@ -18370,6 +18370,24 @@ class SessionOrchestrator:
             # if an external write succeeded before its response failed.
             self._automation_actionable_expires = 0.0
 
+    async def automation_inbox(self, automation_id: str, op: str, params: dict | None = None,
+                               identity: str | None = None) -> dict:
+        """One clustered-inbox op (#2936) on a provider that offers one
+        (``valid_inbox_ops``); a structured status otherwise, like
+        :meth:`automation_trigger` — no exceptions across the RPC seam."""
+        provider = self._action_providers.get(automation_id)
+        ops = getattr(provider, "valid_inbox_ops", None)
+        if provider is None or not ops:
+            return {"status": "no_provider", "level": "error",
+                    "message": "automation has no inbox"}
+        if op not in ops:
+            return {"status": "invalid_op", "level": "error", "message": f"invalid op {op!r}"}
+        try:
+            return await provider.inbox(op, dict(params or {}), identity=identity)  # type: ignore[attr-defined]
+        finally:
+            if op in getattr(provider, "inbox_write_ops", ops):
+                self._automation_actionable_expires = 0.0
+
     async def automation_consolidate(self, repo: str, numbers: list[int]) -> dict:
         """Public seam for the consolidate API route — delegates to the
         pr-doctor provider so the outcome mapping stays in one place."""
