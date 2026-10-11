@@ -57,6 +57,13 @@ def _dirty(path: Path) -> None:
     (path / "untracked.txt").write_text("untracked\n")          # untracked
 
 
+# Session ids are UUID-shaped like real ones: refs are keyed on the short id
+# (first segment), the same name the worktree directory carries.
+S1 = "aaaa0001-1111-2222-3333-444455556666"
+S2 = "aaaa0002-1111-2222-3333-444455556666"
+S3 = "aaaa0003-1111-2222-3333-444455556666"
+S4 = "aaaa0004-1111-2222-3333-444455556666"
+
 # ---------------------------------------------------------------------------
 # snapshot_recovery_ref
 # ---------------------------------------------------------------------------
@@ -64,16 +71,17 @@ def _dirty(path: Path) -> None:
 def test_snapshot_captures_staged_unstaged_and_untracked(wt, repo):
     path = Path(wt.path)
     _dirty(path)
-    ref = worktrees.snapshot_recovery_ref(wt.path, "sess-1", reason="test")
+    ref = worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain")
     assert ref is not None
-    assert ref.startswith(f"{worktrees.RECOVERY_REF_NS}/sess-1/")
+    assert ref.startswith(f"{worktrees.RECOVERY_REF_NS}/aaaa0001/")
+    assert ref.endswith("-drain"), "the reason is encoded in the ref name"
     files = _ls_tree(repo, ref)
     assert files["tracked.txt"] == "unstaged edit"
     assert files["staged.txt"] == "staged"
     assert files["untracked.txt"] == "untracked"
     # Parent is HEAD, so the branch tip is preserved too.
     assert _git("rev-parse", f"{ref}^", cwd=repo) == _git("rev-parse", "HEAD", cwd=path)
-    assert "viberpit recovery: test" in _git("log", "-1", "--format=%B", ref, cwd=repo)
+    assert "viberpit recovery: drain" in _git("log", "-1", "--format=%B", ref, cwd=repo)
 
 
 def test_snapshot_leaves_index_and_worktree_byte_identical(wt):
@@ -84,7 +92,7 @@ def test_snapshot_leaves_index_and_worktree_byte_identical(wt):
     before_status = _git("status", "--porcelain", cwd=path)
     before_files = {p.name: p.read_bytes() for p in path.iterdir() if p.is_file()}
 
-    assert worktrees.snapshot_recovery_ref(wt.path, "sess-1", reason="test") is not None
+    assert worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain") is not None
 
     assert index.read_bytes() == before_index
     assert _git("status", "--porcelain", cwd=path) == before_status
@@ -92,25 +100,55 @@ def test_snapshot_leaves_index_and_worktree_byte_identical(wt):
 
 
 def test_snapshot_of_clean_tree_returns_none(wt, repo):
-    assert worktrees.snapshot_recovery_ref(wt.path, "sess-1", reason="test") is None
-    assert worktrees.recovery_refs(str(repo), "sess-1") == []
+    assert worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain") is None
+    assert worktrees.recovery_refs(str(repo), S1) == []
 
 
-def test_snapshot_keeps_newest_five(wt, repo):
+def test_unchanged_tree_is_not_snapshotted_twice(wt, repo):
+    _dirty(Path(wt.path))
+    first = worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain")
+    assert first is not None
+    # Same tree again (any reason): nothing new to keep, so nothing is written —
+    # repeated drains must not rotate the one copy out of the window.
+    assert worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain") == first
+    assert worktrees.snapshot_recovery_ref(wt.path, S1, reason="delete") == first
+    assert worktrees.recovery_refs(str(repo), S1) == [first]
+
+
+def test_only_drain_refs_are_pruned_to_five(wt, repo):
     path = Path(wt.path)
-    made = []
+    (path / "tracked.txt").write_text("the forced one\n")
+    forced = worktrees.snapshot_recovery_ref(wt.path, S1, reason="forced")
+    (path / "tracked.txt").write_text("the deleted one\n")
+    deleted = worktrees.snapshot_recovery_ref(wt.path, S1, reason="delete")
+    drains = []
     for i in range(7):
         (path / "tracked.txt").write_text(f"edit {i}\n")
-        ref = worktrees.snapshot_recovery_ref(wt.path, "sess-1", reason=f"r{i}")
+        ref = worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain")
         assert ref is not None
-        made.append(ref)
-    kept = worktrees.recovery_refs(str(repo), "sess-1")
-    assert kept == list(reversed(made))[:worktrees.RECOVERY_KEEP]
-    assert len(kept) == 5
+        drains.append(ref)
+    kept = worktrees.recovery_refs(str(repo), S1)
+    assert [r for r in kept if r.endswith("-drain")] == \
+        list(reversed(drains))[:worktrees.RECOVERY_KEEP]
+    assert forced in kept and deleted in kept, "non-drain refs are never pruned"
+
+
+def test_snapshot_rejects_an_unknown_reason(wt):
+    _dirty(Path(wt.path))
+    assert worktrees.snapshot_recovery_ref(wt.path, S1, reason="free text") is None
 
 
 def test_snapshot_never_raises(tmp_path):
-    assert worktrees.snapshot_recovery_ref(str(tmp_path / "nope"), "s", reason="x") is None
+    assert worktrees.snapshot_recovery_ref(str(tmp_path / "nope"), S1, reason="drain") is None
+
+
+def test_refs_are_keyed_on_the_short_session_id(wt, repo):
+    """Janitor/default callers only know the worktree dir name (the short id);
+    every writer and reader must land in the same namespace."""
+    _dirty(Path(wt.path))
+    ref = worktrees.snapshot_recovery_ref(wt.path, "abcd1234-0000", reason="drain")
+    assert worktrees.recovery_refs(str(repo), "abcd1234") == [ref]
+    assert worktrees.recovery_refs(str(repo), "abcd1234-0000-ffff") == [ref]
 
 
 # ---------------------------------------------------------------------------
@@ -119,17 +157,25 @@ def test_snapshot_never_raises(tmp_path):
 
 def test_force_remove_leaves_recovery_ref(wt, repo):
     _dirty(Path(wt.path))
-    assert worktrees.remove_worktree(wt.path, force=True, session_id="sess-2")
-    refs = worktrees.recovery_refs(str(repo), "sess-2")
-    assert refs, "a forced removal must snapshot the dirty tree first"
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S2)
+    refs = worktrees.recovery_refs(str(repo), S2)
+    assert refs and refs[-1].endswith("-forced"), \
+        "a forced removal must snapshot the dirty tree first"
     assert _ls_tree(repo, refs[-1])["untracked.txt"] == "untracked"
+
+
+def test_janitor_force_remove_without_session_id_uses_the_dir_name(wt, repo):
+    _dirty(Path(wt.path))
+    assert worktrees.remove_worktree(wt.path, force=True)
+    # The fixture's session id is "abcd1234-0000": the dir is "abcd1234".
+    assert worktrees.recovery_refs(str(repo), "abcd1234-0000")
 
 
 def test_clean_close_with_unpushed_commits_keeps_branch_tip(repo, tmp_path):
     # A child session branch (only those are branch -D'd on removal).
     _git("branch", "feature", cwd=repo)
     _git("checkout", "feature", cwd=repo)       # busy → create_worktree makes a child
-    info = worktrees.create_worktree(str(repo), "feature", "beef0001-0000", str(tmp_path))
+    info = worktrees.create_worktree(str(repo), "feature", S3, str(tmp_path))
     assert info.is_child
     path = Path(info.path)
     (path / "work.txt").write_text("committed but never pushed\n")
@@ -137,11 +183,11 @@ def test_clean_close_with_unpushed_commits_keeps_branch_tip(repo, tmp_path):
     _git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-m", "work", cwd=path)
     tip = _git("rev-parse", "HEAD", cwd=path)
 
-    assert worktrees.remove_worktree(info.path, session_id="sess-3")
+    assert worktrees.remove_worktree(info.path, session_id=S3)
     gone = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
                            f"refs/heads/{info.branch}"], capture_output=True)
     assert gone.returncode != 0, "the clean close still deletes the session branch"
-    refs = worktrees.recovery_refs(str(repo), "sess-3")
+    refs = worktrees.recovery_refs(str(repo), S3)
     assert len(refs) == 1 and refs[0].endswith("-branch")
     assert _git("rev-parse", refs[0], cwd=repo) == tip
 
@@ -149,9 +195,9 @@ def test_clean_close_with_unpushed_commits_keeps_branch_tip(repo, tmp_path):
 def test_clean_close_without_new_commits_writes_no_ref(repo, tmp_path):
     _git("branch", "feature", cwd=repo)
     _git("checkout", "feature", cwd=repo)
-    info = worktrees.create_worktree(str(repo), "feature", "beef0002-0000", str(tmp_path))
-    assert worktrees.remove_worktree(info.path, session_id="sess-4")
-    assert worktrees.recovery_refs(str(repo), "sess-4") == []
+    info = worktrees.create_worktree(str(repo), "feature", S4, str(tmp_path))
+    assert worktrees.remove_worktree(info.path, session_id=S4)
+    assert worktrees.recovery_refs(str(repo), S4) == []
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +213,23 @@ def test_recreate_missing_worktree_from_its_branch(wt, repo):
     assert (Path(path) / "README.md").read_text() == "hello\n"
 
 
+def test_recreate_in_place_over_an_empty_directory(wt, repo):
+    """The literal #2913 state: the old mkdir left an empty dir at the path."""
+    import shutil
+    path = wt.path
+    shutil.rmtree(path)
+    Path(path).mkdir()
+    assert worktrees.recreate_worktree(str(repo), path, "feature")
+    assert worktrees.current_branch(path) == "feature"
+
+
 def test_recreate_refuses_when_branch_absent(repo, tmp_path):
     dest = tmp_path / "wts" / "x"
     assert not worktrees.recreate_worktree(str(repo), str(dest), "no-such-branch")
     assert not dest.exists()
 
 
-def test_recreate_never_touches_an_existing_path(wt, repo):
+def test_recreate_never_touches_a_non_empty_path(wt, repo):
     marker = Path(wt.path) / "keep.txt"
     marker.write_text("mine\n")
     assert not worktrees.recreate_worktree(str(repo), wt.path, "feature")

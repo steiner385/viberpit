@@ -479,6 +479,15 @@ class SessionLeaseHeld(RuntimeError):
             f"second CLI for it (see #1379)")
 
 
+def _stamp_is_this_host(host: str | None) -> bool:
+    """Is a row's fleet stamp THIS host by definition — unstamped, our own name, or
+    ``DEFAULT_HOST_NAME`` (a UDS registry entry is this host, #844)? The strict half
+    of ``_owns_record_by_stamp``'s primary rule, without its orphan adoption: an
+    orphaned row may be RUN here, but its files live on the host it names (#2913)."""
+    from server.sessions.fleet_router import DEFAULT_HOST_NAME
+    return host is None or host == self_host_name() or host == DEFAULT_HOST_NAME
+
+
 class SessionWorktreeMissing(RuntimeError):
     """A session's managed worktree is gone and cannot be recreated from its branch
     (#2913). Raised by ``_reassign``; ``ensure_driver`` returns None instead. The
@@ -527,12 +536,17 @@ _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 #   automation_ownership_stale   — the automation operation's targets were taken from
 #       it (e.g. the PR Doctor's PR merged under it), so the execution fence refuses
 #       every rebuild with StaleOwnership and nothing gives them back (#1767, #1776).
+#   worktree_missing             — the session's managed worktree is gone (or holds
+#       something that is not its worktree) and its branch is not in the local clone,
+#       so every relaunch is refused identically until a human restores it (#2913).
 #
 # Keep this the ONE list; both the sweep and _reassign_locked's failure classification
 # read it, so a new terminal reason cannot be honoured in one and retried in the other.
+_WORKTREE_MISSING_PAUSE_REASON: str = "worktree_missing"
 _TERMINAL_PAUSE_REASONS: frozenset[str] = frozenset({
     "engine_rotation_unsupported",
     "automation_ownership_stale",
+    _WORKTREE_MISSING_PAUSE_REASON,
 })
 
 # Pause reason for a rebuild the session lease refused: another host holds this
@@ -573,6 +587,7 @@ PAUSE_REASONS: frozenset[str] = frozenset({
     "automation_ownership_stale",
     _LEASE_HELD_PAUSE_REASON,
     _REASSIGN_FAILED_PAUSE_REASON,
+    _WORKTREE_MISSING_PAUSE_REASON,
 })
 
 # Pause reasons that are an expected, self-healing capacity wait rather than an anomaly:
@@ -592,6 +607,7 @@ _EXPECTED_PAUSE_REASONS: frozenset[str] = frozenset({"all_accounts_busy", "rotat
 _ECHOED_PAUSE_REASONS: frozenset[str] = frozenset({
     _REASSIGN_FAILED_PAUSE_REASON,
     "automation_ownership_stale",
+    _WORKTREE_MISSING_PAUSE_REASON,   # follows `worktree.missing` (#2913)
 })
 
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
@@ -1021,6 +1037,9 @@ class SessionOrchestrator:
         # was not running (a recreated worktree today, #2913). In-memory: a note is
         # only meaningful to the process that observed the event. See send_prompt.
         self._pending_prompt_preambles: dict[str, list[str]] = {}
+        # (session_id, path) pairs already reported missing at WARNING (#2913); a
+        # repeat of the same condition logs INFO. See _note_worktree_missing.
+        self._worktree_missing_warned: set[tuple[str, str]] = set()
         # session_id -> consecutive mirror-reconcile passes its DB row was MISSING.
         # Drives _reconcile_mirror_once's two-strike eviction of ghosts left behind
         # when a session is deleted on another fleet host (#895-adjacent). Only the
@@ -5932,34 +5951,70 @@ class SessionOrchestrator:
         ok = await self._x11.launch_browser(session_id, url)
         return {"ok": bool(ok), "reason": None if ok else "cap"}
 
+    async def _managed_roots(self) -> set[str]:
+        """Every repo root a managed worktree path may sit under: the effective
+        (settings) root new worktrees are created in, and the constructor root the
+        cleanup paths judge against. THE one answer for "is this cwd a managed
+        worktree?" on the restart-safety paths (#2913)."""
+        effective_root = await self._effective_repo_root()
+        return {effective_root, getattr(self, "_repo_root", effective_root)}
+
+    def _note_worktree_missing(self, session_id: str, cwd: str, **fields) -> None:
+        """WARNING the first time this process sees (session, path) missing, INFO
+        after: every retry and attach re-detects it, and each WARNING files an issue."""
+        # getattr: some harnesses build the orchestrator via __new__.
+        warned: set[tuple[str, str]] | None = getattr(self, "_worktree_missing_warned", None)
+        if warned is None:
+            warned = set()
+            self._worktree_missing_warned = warned
+        key = (session_id, cwd)
+        level = logging.INFO if key in warned else logging.WARNING
+        warned.add(key)
+        log_event(log, level, "worktree.missing", session_id=session_id, path=cwd,
+                  **fields)
+
     async def _ensure_session_cwd(self, session_id: str, cwd: str, *,
-                                  repo: str | None, branch: str | None) -> bool:
+                                  repo: str | None, branch: str | None,
+                                  host: str | None = None) -> bool:
         """Make *cwd* usable for a driver build WITHOUT ever fabricating lost work.
 
         THE single gate every driver-build site routes its working directory
         through (#2913). Returns False when the build must be refused.
 
-        * An existing path is never touched — not removed, not recreated.
+        * An existing worktree is never touched — not removed, not recreated.
         * A missing scratch dir or unmanaged cwd is created, as before: a closed
           session's scratch dir is expected to be gone, and an empty one is all it
           ever was.
-        * A missing MANAGED worktree is never turned into an empty directory — on
-          2026-09-07 that is exactly what made two sessions resumed on the wrong
-          host believe their work was deleted. It is recreated from the session's
+        * A MANAGED path that is missing, or present but EMPTY with no ``.git`` (what
+          the old unconditional mkdir left behind), is recreated from the session's
           branch in the local clone, loudly (WARNING, audit, a note on the next
-          prompt naming the branch and any recovery ref); when the branch is not
-          there the build is refused and the session stays behind the resume-failure
-          surface.
+          prompt naming the branch and any recovery ref). On 2026-09-07 an empty
+          directory here is what made two sessions resumed on the wrong host
+          believe their work was deleted.
+        * Refused (``worktree.missing``, nothing created or touched): the branch is
+          not in the local clone; the path holds something that is not a worktree;
+          or the row is stamped for ANOTHER host — that host's disk has the tree, and
+          rebuilding a copy here is the 2026-09-07 incident itself.
         """
-        if os.path.exists(cwd):
+        p = Path(cwd)
+        if (p / ".git").exists():
+            return True   # a present worktree (or any git checkout): never touched
+        roots = await self._managed_roots()
+        managed = any(worktrees.is_managed_path(cwd, r) for r in roots)
+        if p.exists() and (not managed or (p / ".git").exists()):
             return True
-        # Worktrees are created under the effective (settings) root; the cleanup
-        # paths judge "managed" against the constructor root. Either counts.
+        if not managed:
+            p.mkdir(parents=True, exist_ok=True)
+            return True
+        if p.exists() and (not p.is_dir() or any(p.iterdir())):
+            self._note_worktree_missing(session_id, cwd, branch=branch, repo=repo,
+                                        host=host, reason="not_a_worktree")
+            return False
+        if not _stamp_is_this_host(host):
+            self._note_worktree_missing(session_id, cwd, branch=branch, repo=repo,
+                                        host=host, reason="foreign_host")
+            return False
         effective_root = await self._effective_repo_root()
-        roots = {effective_root, getattr(self, "_repo_root", effective_root)}
-        if not any(worktrees.is_managed_path(cwd, r) for r in roots):
-            Path(cwd).mkdir(parents=True, exist_ok=True)
-            return True
         clone: Path | None = None
         if repo:
             try:
@@ -5968,9 +6023,10 @@ class SessionOrchestrator:
                 clone = None
         if clone is None or not branch or not clone.is_dir() or not await asyncio.to_thread(
                 worktrees.recreate_worktree, str(clone), cwd, branch):
-            log_event(log, logging.WARNING, "worktree.missing", session_id=session_id,
-                      path=cwd, branch=branch, repo=repo,
-                      clone=str(clone) if clone is not None else None)
+            self._note_worktree_missing(
+                session_id, cwd, branch=branch, repo=repo, host=host,
+                reason="branch_unavailable",
+                clone=str(clone) if clone is not None else None)
             return False
         refs = await asyncio.to_thread(worktrees.recovery_refs, str(clone), session_id)
         log_event(log, logging.WARNING, "worktree.recreated", session_id=session_id,
@@ -18242,37 +18298,50 @@ class SessionOrchestrator:
 
         One worker thread walks them in turn, bounded in TOTAL by
         DRAIN_RECOVERY_SNAPSHOT_S: begin_drain is an RPC the deploy controller waits
-        on, so an overrun skips the remaining sessions (logged) rather than stalling
-        the drain. Never raises — a failed safety net must not fail the drain.
+        on. The thread itself checks the same deadline before each worktree, so an
+        overrun skips the rest instead of running on after the await gave up (only
+        the snapshot already in progress finishes). Never raises — a failed safety
+        net must not fail the drain.
         """
+        roots = await self._managed_roots()
         targets: list[tuple[str, str]] = []
         for sid in list(self._drivers):
             rec = self._records.get(sid)
             cwd = getattr(rec, "cwd", None) if rec is not None else None
-            if cwd and worktrees.is_managed_path(cwd, self._repo_root):
+            if cwd and any(worktrees.is_managed_path(cwd, r) for r in roots):
                 targets.append((sid, cwd))
         if not targets:
             return
+        budget = DRAIN_RECOVERY_SNAPSHOT_S
+        deadline = time.monotonic() + budget
         done: list[str] = []
+        skipped: list[str] = []
 
         def _walk() -> None:
             for sid, cwd in targets:
-                ref = worktrees.snapshot_recovery_ref(cwd, sid, reason="drain")
+                if time.monotonic() >= deadline:
+                    skipped.append(sid)
+                    continue
+                ref = worktrees.snapshot_recovery_ref(
+                    cwd, sid, reason=worktrees.RECOVERY_DRAIN)
                 if ref is not None:
                     done.append(ref)
 
         try:
-            await asyncio.wait_for(asyncio.to_thread(_walk), DRAIN_RECOVERY_SNAPSHOT_S)
+            await asyncio.wait_for(asyncio.to_thread(_walk), budget)
         except asyncio.TimeoutError:
             log.warning("drain.recovery_snapshot_timeout after %.0fs: %d ref(s) written "
-                        "across %d live worktree(s); the rest were skipped",
-                        DRAIN_RECOVERY_SNAPSHOT_S, len(done), len(targets))
+                        "across %d live worktree(s); the rest are skipped",
+                        budget, len(done), len(targets))
             return
         except Exception:
             log.warning("drain.recovery_snapshot_failed", exc_info=True)
             return
+        if skipped:
+            log.warning("drain.recovery_snapshot_timeout after %.0fs: %d ref(s) written, "
+                        "%d live worktree(s) skipped", budget, len(done), len(skipped))
         log_event(log, logging.INFO, "drain.recovery_snapshot",
-                  worktrees=len(targets), refs=len(done))
+                  worktrees=len(targets), refs=len(done), skipped=len(skipped))
 
     async def _clear_rearm_snapshots(self) -> None:
         from sqlalchemy import update as sa_update
@@ -18341,10 +18410,6 @@ class SessionOrchestrator:
                 await self._snapshot_open_tasks()
             except Exception:
                 log.warning("rearm snapshot failed at drain", exc_info=True)
-            try:
-                await self._snapshot_recovery_refs_at_drain()
-            except Exception:
-                log.warning("recovery snapshot failed at drain", exc_info=True)
             self._publish_event({"type": "updatePending"})
             timeout = (
                 selfclear_sec if selfclear_sec is not None
@@ -18352,6 +18417,14 @@ class SessionOrchestrator:
             )
             self._drain_timer = asyncio.create_task(
                 self._drain_selfclear(timeout), name="drain-selfclear")
+            # LAST, after the UI hold and the self-clear timer are in place: the pass
+            # can take up to DRAIN_RECOVERY_SNAPSHOT_S, and a cancel_drain landing
+            # inside it must find a fully-entered drain to leave (#2913). The refs it
+            # writes are harmless if the drain is cancelled meanwhile.
+            try:
+                await self._snapshot_recovery_refs_at_drain()
+            except Exception:
+                log.warning("recovery snapshot failed at drain", exc_info=True)
         return self.drain_status()
 
     def cancel_drain(self) -> dict:
@@ -19259,7 +19332,7 @@ class SessionOrchestrator:
             # RESUME_RECOVERY_MAX_ATTEMPTS) instead of vanishing.
             if not await self._ensure_session_cwd(
                     session_id, rec.cwd, repo=getattr(rec, "repo", None),
-                    branch=getattr(rec, "branch", None)):
+                    branch=getattr(rec, "branch", None), host=getattr(rec, "host", None)):
                 self._resume_recovery.setdefault(session_id, 0)
                 await self._release_session_lease(session_id)
                 return None
@@ -21224,8 +21297,7 @@ class SessionOrchestrator:
         # (same rule as the health check's split-brain guard, #844). A row
         # stamped for another ENABLED host has a live daemon responsible for it;
         # a stamp that has left the registry is an orphan the primary adopts.
-        from server.sessions.fleet_router import DEFAULT_HOST_NAME
-        if host is None or host == me or host == DEFAULT_HOST_NAME:
+        if _stamp_is_this_host(host):
             return True
         if enabled_hosts is None:  # registry unknown — don't race a live worker
             return False
@@ -22678,7 +22750,8 @@ class SessionOrchestrator:
             # owner may make (#2913).
             if not await self._ensure_session_cwd(
                     record.id, cwd, repo=getattr(record, "repo", None),
-                    branch=getattr(record, "branch", None)):
+                    branch=getattr(record, "branch", None),
+                    host=getattr(record, "host", None)):
                 raise SessionWorktreeMissing(record.id, cwd)
             disabled_mcp = (None if record.engine is AgentEngine.CODEX else
                             await disabled_for_session(
@@ -22862,7 +22935,9 @@ class SessionOrchestrator:
                 # while a reason that carried it minted one throttle key and one
                 # filed issue per caller of _reassign (#1766, #1780).
                 log.exception("reassign.error session=%s trigger=%s", record.id, reason)
-            if lease_held:
+            if worktree_missing:
+                paused_reason = _WORKTREE_MISSING_PAUSE_REASON
+            elif lease_held:
                 paused_reason = _LEASE_HELD_PAUSE_REASON
             elif terminal:
                 paused_reason = "automation_ownership_stale"
@@ -23628,7 +23703,7 @@ class SessionOrchestrator:
             # Snapshot uncommitted work into the clone's common git dir before the
             # rmtree (#2913): the ref outlives the worktree. Never raises.
             await asyncio.to_thread(worktrees.snapshot_recovery_ref, str(cwd_path),
-                                    session_id, reason="permanent delete")
+                                    session_id, reason=worktrees.RECOVERY_DELETE)
         err = await asyncio.to_thread(_rmtree_best_effort, str(cwd_path))
         if err:
             # Keep the row: deleting it now would strand the worktree on disk (the
