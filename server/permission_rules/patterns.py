@@ -26,8 +26,8 @@ _TOOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _MCP_RE = re.compile(r"^mcp__[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _CALL_RE = re.compile(r"([^()]*)\((.*)\)", re.DOTALL)
 
-_SAFE_REDIRECT_RE = re.compile(r"2>&1|&>/dev/null|2>/dev/null|>/dev/null")
-_SEGMENT_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
+_SAFE_REDIRECT_RE = re.compile(r"(?:2>&1|&>/dev/null|2>/dev/null|>/dev/null)(?=\s|$|[;&|])")
+_SEGMENT_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||\|&|;|\||&|\r|\n)\s*")
 _UNSAFE_SUBSTITUTIONS = ("$(", "`", "<(")
 
 
@@ -86,18 +86,20 @@ def parse(pattern: str) -> Pattern:
 # ---------------------------------------------------------------- Bash
 
 
-def _normalise_command(command: str) -> str:
-    return _squash(_SAFE_REDIRECT_RE.sub(" ", _squash(command)))
-
-
 def _bash_segments(command: str) -> list[str] | None:
-    """Segments of a command, or None when no rule may ever match it."""
+    """Whitespace-normalised segments, or None when no rule may ever match the command.
+
+    The single place that decides matchability (also used by ``suggest``). Safe redirections are
+    stripped first, then the RAW text is split (squashing first would erase newlines), then each
+    segment is normalised.
+    """
     if any(tok in command for tok in _UNSAFE_SUBSTITUTIONS):
         return None
-    cmd = _normalise_command(command)
-    if ">" in cmd:
+    stripped = _SAFE_REDIRECT_RE.sub(" ", command)
+    segs = [_squash(seg) for seg in _SEGMENT_SPLIT_RE.split(stripped)]
+    if any(">" in seg or "&" in seg for seg in segs):
         return None
-    return [seg for seg in _SEGMENT_SPLIT_RE.split(cmd) if seg]
+    return [seg for seg in segs if seg]
 
 
 def _escape_glob(spec: str) -> str:
@@ -256,10 +258,11 @@ def suggest(tool: str, input: dict, cwd: str | None) -> list[str]:
     if tool.startswith("mcp__"):
         return [tool, "mcp__" + tool.split("__")[1]]
     if tool == "Bash":
-        cmd = _normalise_command(str(input.get("command", "")))
-        segs = [seg for seg in _SEGMENT_SPLIT_RE.split(cmd) if seg]
+        command = str(input.get("command", ""))
+        segs = _bash_segments(command)
         if not segs:
             return []
+        cmd = _squash(_SAFE_REDIRECT_RE.sub(" ", command))
         words = segs[0].split()
         out = [f"Bash({cmd if len(segs) > 1 else segs[0]})"]
         if len(words) >= 2:

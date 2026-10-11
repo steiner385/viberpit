@@ -118,3 +118,33 @@ def test_describe():
     assert describe("WebFetch(domain:example.com)") == "Web fetches from example.com and its subdomains"
     assert describe("mcp__s__t") == "The MCP tool mcp__s__t"
     assert describe("WebSearch") == "Every WebSearch call"
+
+
+@pytest.mark.parametrize("cmd", [
+    "npm test\nrm -rf ~",
+    "npm test & rm -rf ~",
+    "npm test |& tee x",
+    "npm test\r\nrm x",
+    "npm test >/dev/nullx",
+    "npm test 2>&12",
+])
+def test_bash_separator_and_redirect_bypasses_rejected(cmd):
+    assert matches_any([parse("Bash(npm test:*)")], "Bash", {"command": cmd}, CWD) is None
+
+
+def test_pipe_ampersand_covered_when_both_present():
+    pats = [parse("Bash(npm test:*)"), parse("Bash(tee:*)")]
+    assert matches_any(pats, "Bash", {"command": "npm test |& tee x"}, CWD) is not None
+    assert matches_any(pats, "Bash", {"command": "npm test\ntee x"}, CWD) is not None
+
+
+def test_redirect_then_chain_needs_both_covered():
+    cmd = {"command": "npm test 2>&1 && npm run lint"}
+    assert matches_any([parse("Bash(npm test:*)")], "Bash", cmd, CWD) is None
+    both = [parse("Bash(npm test:*)"), parse("Bash(npm run lint)")]
+    assert matches_any(both, "Bash", cmd, CWD) is not None
+
+
+@pytest.mark.parametrize("cmd", ["echo $(id)", "echo `id`", "cat <(id)", "echo hi > f", "a & b >x"])
+def test_suggest_unmatchable_bash_is_empty(cmd):
+    assert suggest("Bash", {"command": cmd}, CWD) == []
