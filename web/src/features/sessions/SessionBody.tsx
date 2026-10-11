@@ -176,6 +176,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 earliestTurn={rt.state.earliestTurn}
                 loadingOlder={rt.state.loadingOlder}
                 onLoadOlder={rt.onLoadOlder}
+                followSignal={rt.state.pendingSentSeq}
               />
             )}
 

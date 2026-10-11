@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 import { QueryClient } from '@tanstack/react-query'
@@ -184,6 +184,41 @@ describe('AssistantSheet', () => {
     fireEvent.click(within(dlg).getByRole('button', { name: 'Which one is oldest?' }))
     expect(rt.onPrompt).toHaveBeenCalledWith('Which one is oldest?', [], undefined, 'suggested')
   })
+
+  it.each(['desktop', 'phone'] as const)(
+    '%s: the transcript is the drawer\'s scroll box, so it sticks to the bottom and offers Scroll to bottom',
+    async (mode) => {
+      // The drawer used to wrap TranscriptView in its own overflow-y-auto div: the
+      // transcript grew to full height inside it, the wrapper scrolled instead, and
+      // replies landed below the fold with no auto-follow and no button.
+      vi.mocked(useAssistantStatus).mockReturnValue(
+        { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+      )
+      const rt = fakeRuntime()
+      rt.state.turns = [{ id: 't1', role: 'assistant', blocks: [{ kind: 'text', id: 'b1', text: 'Two sessions need you.' }] }] as never
+      vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+      renderApp({ path: '/sessions?drawer=assistant', mode })
+      const dlg = screen.getByRole('dialog', { name: /assistant/i })
+      const scroller = within(dlg).getByTestId('transcript-scroll')
+      // Nothing between the transcript and the Sheet's own body may scroll.
+      const sheetBody = dlg.lastElementChild
+      for (let n = scroller.parentElement; n && n !== sheetBody; n = n.parentElement) {
+        expect(n.className).not.toMatch(/overflow-(y-)?(auto|scroll)/)
+      }
+
+      // Scrolling up in the drawer's transcript raises the shared button; it re-sticks.
+      Object.defineProperty(scroller, 'scrollHeight', { value: 1000, configurable: true })
+      Object.defineProperty(scroller, 'clientHeight', { value: 400, configurable: true })
+      Object.defineProperty(scroller, 'scrollTop', { value: 600, writable: true, configurable: true })
+      await act(() => new Promise<void>((r) => requestAnimationFrame(() => r())))
+      scroller.scrollTop = 100
+      fireEvent.scroll(scroller)
+      const btn = within(dlg).getByRole('button', { name: 'Scroll to bottom' })
+      fireEvent.click(btn)
+      expect(scroller.scrollTop).toBe(1000)
+      expect(within(dlg).queryByRole('button', { name: 'Scroll to bottom' })).toBeNull()
+    },
+  )
 
   it('shows no follow-up chips while a turn is running', () => {
     vi.mocked(useAssistantStatus).mockReturnValue(

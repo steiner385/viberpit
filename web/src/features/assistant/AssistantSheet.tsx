@@ -102,7 +102,13 @@ function AssistantSheetBody() {
       {/* Session-level errors (a failed wake, an unknown thread) used to reach this
           runtime's reducer and render nowhere — SessionBody was the only surface. */}
       <SessionErrorBanner rt={rt} />
-      <div className="min-h-0 flex-1 overflow-y-auto" aria-live="polite">
+      {/* NOT a scroller itself: TranscriptView's own scroll box is the one that sticks
+          to the bottom and owns the Scroll-to-bottom button. This wrapper used to be
+          `overflow-y-auto`, which let the transcript grow to full height inside it, so
+          the outer div scrolled instead and new replies landed below the fold with no
+          auto-follow and no button. The chips sit outside the transcript's scroller:
+          starters only render on an empty thread, follow-ups under the last answer. */}
+      <div className="flex min-h-0 flex-1 flex-col" aria-live="polite">
         <StarterChips starters={startersFor(pathname, openSessionId)} />
         <TranscriptView
           variant="assistant"
@@ -120,6 +126,7 @@ function AssistantSheetBody() {
           loadingOlder={rt.state.loadingOlder}
           onLoadOlder={rt.onLoadOlder}
           onAsk={(text) => setDraftSeed({ text })}
+          followSignal={rt.state.pendingSentSeq}
         />
         <FollowUpChips />
       </div>
