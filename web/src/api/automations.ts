@@ -68,6 +68,14 @@ export interface Automation {
   /** Housekeeping the automation already settled and merely lets a human revisit
    *  (un-mute, override a throttle). Shown, never badged. Missing means unknown. */
   maintenanceCount?: number | null
+  /** The decisions of a PAUSED automation (disabled or mode off). The server
+   *  publishes them here instead of `actionableCount`, so they never badge;
+   *  they stay listed and actionable on the automation's own page (#2936).
+   *  0 when not paused; missing means unknown. */
+  parkedCount?: number | null
+  /** Disabled or mode off, and has a loop to pause. The server's rule,
+   *  published so the browser never re-derives it. */
+  paused?: boolean
   oversight?: {
     responsibility: { id: string; label: string }
     scope: string

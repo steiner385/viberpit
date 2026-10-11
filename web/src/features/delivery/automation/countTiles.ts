@@ -23,6 +23,9 @@ export function humanizeKey(key: string): string {
 export interface NeedsYouTile {
   value: number
   onClick: () => void
+  /** A paused automation's decisions (#2936): named "Parked" and untoned —
+   *  still listed, but not a call for attention. */
+  parked?: boolean
 }
 
 /** `status.counts` as stat tiles behind the Needs you tile. The server's
@@ -33,9 +36,9 @@ export interface NeedsYouTile {
  *  number is skipped, not shown. */
 export function countTiles(counts: Record<string, number> | null | undefined, needsYou?: NeedsYouTile): StatTile[] {
   if (!counts) return []
-  const lead: StatTile[] = needsYou
-    ? [{ label: TIER_LABEL['needs-you'], value: needsYou.value, tone: 'warning', onClick: needsYou.onClick }]
-    : []
+  const lead: StatTile[] = !needsYou ? []
+    : needsYou.parked ? [{ label: 'Parked', value: needsYou.value, onClick: needsYou.onClick }]
+    : [{ label: TIER_LABEL['needs-you'], value: needsYou.value, tone: 'warning', onClick: needsYou.onClick }]
   const rest = Object.entries(counts)
     .filter(([, value]) => typeof value === 'number' && Number.isFinite(value))
     .slice(0, MAX_COUNT_TILES - 1)

@@ -69,12 +69,18 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
   // fetch has not answered yet. Decisions only: maintenance rows are folded
   // under the list, not counted over it (2026-10-01 Delivery critique, P0).
   const actionable = useAutomationActionable(a.id)
-  const needsYou = actionable.data ? splitActionable(actionable.data).decisions.length : a.actionableCount ?? undefined
+  // A paused automation's decisions are parked (#2936): still listed and
+  // actionable here, counted on the tab, but not a call for attention — the
+  // server already left them out of the Delivery badge.
+  const paused = a.paused === true
+  const needsYou = actionable.data
+    ? splitActionable(actionable.data).decisions.length
+    : (paused ? a.parkedCount : a.actionableCount) ?? undefined
   const modeMeaning = a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined
   // The band leads with the same number the Needs you tab wears, and opens it
   // (2026-10-01 Delivery critique, P1: "tiles don't map to tabs").
   const tiles = countTiles(a.status.counts,
-    needsYou === undefined ? undefined : { value: needsYou, onClick: () => setTab('needs-you') })
+    needsYou === undefined ? undefined : { value: needsYou, onClick: () => setTab('needs-you'), parked: paused })
 
   return (
     <>
@@ -94,7 +100,7 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
           count: id === 'sessions' ? sessions.data?.length
             : id === 'needs-you' ? needsYou
             : undefined,
-          attention: id === 'needs-you' && (needsYou ?? 0) > 0,
+          attention: id === 'needs-you' && !paused && (needsYou ?? 0) > 0,
         }))}
         value={tab}
         onChange={(id) => setTab(id as AutomationTab)}
@@ -154,10 +160,10 @@ export function AutomationDetail({ automation: a, automations = [], onOpenSessio
             )}
             {/* The Overview's "needs you" notice (standard §5): a three-row
                 preview that renders nothing at zero and hands off to the tab. */}
-            <AutomationActions automationId={a.id} enabled variant="preview" onSeeAll={() => setTab('needs-you')} />
+            <AutomationActions automationId={a.id} enabled variant="preview" paused={paused} onSeeAll={() => setTab('needs-you')} />
           </>
         )}
-        {tab === 'needs-you' && <AutomationActions automationId={a.id} enabled variant="full" />}
+        {tab === 'needs-you' && <AutomationActions automationId={a.id} enabled variant="full" paused={paused} />}
         {tab === 'queue' && (
           <>
             {a.status.products && a.status.products.length > 0 && (

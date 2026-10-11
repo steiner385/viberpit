@@ -124,11 +124,15 @@ def test_unmute_after_not_planned_close_goes_to_resolved_not_filed(tmp_path):
     _run(body, tmp_path)
 
 
-def test_file_now_when_off(tmp_path):
+def test_file_now_files_while_off(tmp_path):
+    """#2936: "File now" is an explicit operator action, so a paused automation's
+    listed signatures stay fileable — off stops the loop filing on its own."""
     async def body():
         await _seed()
         loop = _loop(AutomationContext("error-triage"), FakeGh(), mode="off")
-        assert await loop.action("fp1", "file_now") == "off"
+        assert await loop.action_result("fp1", "file_now") == ("filed", 42)
+        row = await _row("fp1")
+        assert row.status == "filed" and row.issue_number == 42
     _run(body, tmp_path)
 
 

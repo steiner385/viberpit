@@ -115,10 +115,19 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             "Runtime telemetry unavailable", level="unknown").to_dict())
         active_sessions = int(active_counts.get(a.id, 0))
         actionable_count = actionable_counts.get(a.id)
+        switched_off = not row.enabled or row.mode == "off"
+        # An origin with no control loop has nothing to pause.
+        paused = switched_off and not operator_triggered(a)
+        # A paused automation's decisions are PARKED, not waiting on the
+        # operator: they stay listed and actionable on its own page, but do not
+        # badge Delivery (#2936 — a disabled Session Feedback was 50 of 52).
+        parked_count = None if actionable_count is None else 0
+        if paused and actionable_count is not None:
+            actionable_count, parked_count = 0, actionable_count
         # A previous scheduling/capacity wait no longer constrains a disabled
         # loop. Disabling never resolves an observed human decision, even when
         # its producer has no action provider or live session (e.g. a proposal).
-        if (not row.enabled or row.mode == "off") and status.get("waitingReason") != "human":
+        if switched_off and status.get("waitingReason") != "human":
             status.pop("waitingReason", None)
         oversight = registry.oversight_for(a.id)
         out.append({
@@ -137,6 +146,9 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             # row can say "7 actionable · 47 maintenance" without the 47
             # lighting the badge.
             "actionableCount": actionable_count,
+            "parkedCount": parked_count,
+            # Published so the browser never re-derives the enabled/off rule.
+            "paused": paused,
             "maintenanceCount": maintenance_counts.get(a.id),
             "oversight": oversight.to_dict() if oversight is not None else None,
             # The schema INCLUDING the engine fields this origin's audited

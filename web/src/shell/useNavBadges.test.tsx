@@ -288,6 +288,19 @@ describe('useNavBadges', () => {
     expect(result.current.delivery).toEqual({ count: 2, attention: true })
   })
 
+  // #2936: a disabled Session Feedback's 50 reports were 50 of a 52 badge.
+  it('a paused automation\'s parked items neither count nor light the Delivery badge', () => {
+    useAutomations.mockReturnValue({ data: [
+      automation({ id: 'session-feedback', enabled: false, paused: true, actionableCount: 0, parkedCount: 50 }),
+      automation({ id: 'pr-doctor', actionableCount: 2 }),
+    ] })
+    expect(renderHook(() => useNavBadges()).result.current.delivery).toEqual({ count: 2, attention: true })
+    useAutomations.mockReturnValue({ data: [
+      automation({ id: 'session-feedback', enabled: false, paused: true, actionableCount: 0, parkedCount: 50 }),
+    ] })
+    expect(renderHook(() => useNavBadges()).result.current.delivery).toBeUndefined()
+  })
+
   it('a blocked automation (a warn with no typed wait) lights the Delivery dot with nothing to decide', () => {
     useAutomations.mockReturnValue({ data: [automation({ actionableCount: 0, status: { text: 'Reconcile refused', level: 'warn', counts: null } })] })
     const { result } = renderHook(() => useNavBadges())

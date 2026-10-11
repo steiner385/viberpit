@@ -378,14 +378,33 @@ def test_dismiss_takes_a_row_out_of_the_queue(tmp_path):
     _run(go, tmp_path)
 
 
-def test_actions_on_a_missing_row_and_while_off(tmp_path):
+def test_actions_on_a_missing_row_and_an_unknown_kind(tmp_path):
     async def go():
         await _seed()
         loop_off = _loop(AutomationContext("session-feedback"), FakeGh(), mode="off")
         assert await loop_off.action_result("nope", "file_now") == ("not_found", None)
-        assert await loop_off.action_result("r1", "file_now") == ("off", None)
         loop = _loop(AutomationContext("session-feedback"), FakeGh())
         assert await loop.action_result("r1", "bogus") == ("failed", None)
+    _run(go, tmp_path)
+
+
+def test_file_now_files_while_the_automation_is_off(tmp_path):
+    """#2936: "File now" is an explicit operator action. A paused automation's
+    reports stay listed (parked), so its buttons must still work — off stops the
+    loop filing on its own, not the operator filing by hand."""
+    async def go():
+        await _seed()
+        gh = FakeGh()
+        loop = _loop(AutomationContext("session-feedback"), gh, mode="off")
+        assert await loop.action_result("r1", "file_now") == ("filed", 100)
+        row = await _row()
+        assert row.status == "filed" and row.issue_number == 100
+        # It still needs somewhere valid to file.
+        await _seed(id="r2", fingerprint="fp2")
+        bad = _loop(AutomationContext("session-feedback"), FakeGh(), mode="off",
+                    config={"target_repo": ""})
+        assert await bad.action_result("r2", "file_now") == ("failed", None)
+        assert (await _row("r2")).status == "pending"
     _run(go, tmp_path)
 
 

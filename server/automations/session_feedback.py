@@ -447,7 +447,10 @@ class SessionFeedbackLoop:
         from sqlalchemy import select, update
         from server.db import db_session
         from server.db.models import SessionFeedback as SF
-        mode, config = await self._read_config()
+        # No ``mode == "off"`` refusal: "File now" is an explicit operator action,
+        # and a paused automation's reports stay listed (parked) for exactly this
+        # (#2936). Off stops the loop filing on its own, not a human filing.
+        _, config = await self._read_config()
         now = self._clock()
         async with db_session() as db:
             row = (await db.execute(select(SF).where(SF.id == row_id))).scalars().one_or_none()
@@ -458,8 +461,6 @@ class SessionFeedbackLoop:
                 return "dismissed", None
             if kind != "file_now":
                 return "failed", None
-            if mode == "off":
-                return "off", None
             repo = str(config.get("target_repo") or "")
             if not ci_issues.valid_repo(repo) or row.status not in ("pending", "throttled", "capped"):
                 return "failed", None
@@ -486,7 +487,6 @@ _ACTION_STATUS = {
     "filed": ("ok", "Issue filed"),
     "dismissed": ("ok", "Dismissed — it will not be filed"),
     "not_found": ("warn", "That report no longer exists"),
-    "off": ("warn", "Session Feedback is off — enable it first"),
     "failed": ("error", "Action failed — see the feed"),
 }
 

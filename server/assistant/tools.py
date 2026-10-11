@@ -453,7 +453,7 @@ _PR_STATE_FILTERS = {"open": ("open", "draft"), "merged": ("merged",),
 # what is it doing, does it need me". `status.products` stays — it is the runner's
 # per-product breakdown.
 _AUTOMATION_KEYS = ("id", "name", "enabled", "mode", "status", "actionableCount",
-                    "lastActiveAt", "activeSessions", "workClass")
+                    "parkedCount", "lastActiveAt", "activeSessions", "workClass")
 
 # Matches the ARCHIVED-session wire shape from `SessionOrchestrator.list_archived`
 # (server/sessions/orchestrator.py) — a DIFFERENT, narrower shape than a live
@@ -761,7 +761,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("list_automations",
                "Automations (autopilot, backlog runner, PR doctor, CI/CD doctor…) with "
                "enabled flag, mode, live status text/level/counts, the runner's per-product "
-               "rows, how many items need a person (actionableCount) and last activity. "
+               "rows, how many items need a person (actionableCount; a paused automation's "
+               "items are parkedCount instead — still actionable) and last activity. "
                "verbose=true adds config and configSchema.",
                _schema(verbose=bool))
     @guarded
