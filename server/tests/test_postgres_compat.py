@@ -222,6 +222,8 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "session_presets": {"name": "dtcheck-preset"},
     "prompt_templates": {"name": "dtcheck-template"},
     "permission_profiles": {"name": "dtcheck-profile"},
+    "permission_rule_stats": {"profile_id": "dtcheck-profile-id", "pattern": "Bash(true)",
+                              "created_by": "dtcheck"},
     # hosts.last_probe_at makes this table part of the sweep; name is the PK and
     # endpoint is NOT NULL, and neither has a synthesizable default (a host row
     # without an endpoint is unreachable by definition).

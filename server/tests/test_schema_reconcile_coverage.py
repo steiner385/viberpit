@@ -44,6 +44,11 @@ RECONCILE_EXEMPT: set[str] = {
     "mcp_repo_rule.server",
     "mcp_repo_rule.enabled",
     "mcp_repo_rule.updated_at",
+    # permission_rule_stats (0083): NEW table installed whole by create_all; the profile link,
+    # pattern and author are mandatory at INSERT by permission_rules.store.add_rule.
+    "permission_rule_stats.profile_id",
+    "permission_rule_stats.pattern",
+    "permission_rule_stats.created_by",
     "sessions.name",           # required at session create; no sane default
     "sessions.account_name",   # required at session create; no sane default
     "sessions.cwd",            # required at session create; no sane default

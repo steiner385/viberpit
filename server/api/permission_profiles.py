@@ -20,6 +20,7 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import PermissionProfile, _utcnow
+from server.permission_rules.store import PROFILE_PREFIX
 from server.sessions.types import VALID_SESSION_MODES
 
 router = APIRouter(prefix="/api/permission-profiles", tags=["permission-profiles"])
@@ -39,6 +40,14 @@ def _profile_to_dict(p: PermissionProfile) -> dict:
         "createdAt": p.created_at.isoformat() if p.created_at else None,
         "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
     }
+
+
+def _managed_profile_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"error": "managed_profile",
+                "message": "Always-allow rule sets are managed from the rules API"},
+    )
 
 
 def _validate_mode(mode: str | None) -> None:
@@ -73,7 +82,8 @@ async def list_profiles(
 ) -> list[dict]:
     """Return all permission profiles ordered by name."""
     rows = (await db.execute(
-        select(PermissionProfile).order_by(PermissionProfile.name)
+        select(PermissionProfile).where(PermissionProfile.scope.is_(None))
+        .order_by(PermissionProfile.name)
     )).scalars().all()
     return [_profile_to_dict(p) for p in rows]
 
@@ -86,6 +96,8 @@ async def create_profile(
 ) -> dict:
     """Create a named permission profile. Returns 409 if name already exists."""
     _validate_mode(body.mode)
+    if body.name.startswith(PROFILE_PREFIX):
+        raise _managed_profile_error()
 
     existing = (await db.execute(
         select(PermissionProfile).where(PermissionProfile.name == body.name)
@@ -123,6 +135,8 @@ async def get_profile(
     )).scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if profile.scope is not None:
+        raise _managed_profile_error()
     return _profile_to_dict(profile)
 
 
@@ -139,6 +153,8 @@ async def update_profile(
     )).scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if profile.scope is not None:
+        raise _managed_profile_error()
 
     fields = body.model_fields_set
     if "name" in fields and body.name:
@@ -181,6 +197,8 @@ async def delete_profile(
     )).scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if profile.scope is not None:
+        raise _managed_profile_error()
     await db.delete(profile)
     await record_audit(
         db=db, type="permission_profile.delete",

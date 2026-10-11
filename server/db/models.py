@@ -1296,12 +1296,35 @@ class PermissionProfile(Base):
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     mode: Mapped[str | None] = mapped_column(String, nullable=True)
     patterns: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Set only on the auto-managed always-allow profiles (spec 2026-10-11 §2): NULL for every
+    # user-authored profile. Scoped profiles are hidden from, and read-only in, the profiles API.
+    scope: Mapped[str | None] = mapped_column(String, nullable=True)
+    scope_key: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
     __table_args__ = (
         UniqueConstraint("name", name="uq_permission_profiles_name"),
     )
+
+
+class PermissionRuleStats(Base):
+    """Metadata for one standing always-allow rule (spec 2026-10-11 §2). The RULE itself is
+    the pattern string in its scoped PermissionProfile.patterns — this row only records who
+    made it, when, and how often it fired. Its id is the rule's public id."""
+
+    __tablename__ = "permission_rule_stats"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    profile_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    pattern: Mapped[str] = mapped_column(String, nullable=False)
+    created_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_via: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("profile_id", "pattern", name="uq_permission_rule_stats_profile_pattern"),)
 
 
 class Host(Base):
