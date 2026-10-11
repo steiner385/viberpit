@@ -292,7 +292,6 @@ def test_module_and_launcher_heads_refused(pat):
         "Bash(python3 -m pip list:*)",
         "Bash(uv run pytest:*)",
         "Bash(poetry run pytest -q:*)",
-        "Bash(npx tsc:*)",
         "Bash(pnpm exec vitest:*)",
         "Bash(uv run python -m pytest:*)",
     ],
@@ -390,3 +389,56 @@ def test_uv_run_suggestions_drop_the_bare_package_manager():
     pats = _offered("uv run pytest -x")
     assert "Bash(uv run pytest:*)" in pats
     assert "Bash(uv:*)" not in pats and "Bash(uv run:*)" not in pats
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        # A: a glob's `*` must follow a space, so head words are always complete.
+        "Bash(python -m t*)", "Bash(npm e*)", "Bash(uv r*)", "Bash(np*)", "Bash(git -*)",
+        "Bash(ls*)",
+        # B: package runners fetch and run a package from the network, whatever follows.
+        "Bash(npx tsc:*)", "Bash(bunx vite:*)", "Bash(uvx ruff:*)", "Bash(uvx:*)",
+        "Bash(pnpm dlx create-x:*)", "Bash(yarn dlx x:*)", "Bash(pipx run black:*)",
+        "Bash(uv tool run ruff:*)", "Bash(uv tool run:*)", "Bash(uv tool:*)",
+        "Bash(uv tool -q:*)", "Bash(npm exec vitest:*)", "Bash(npm x vitest:*)",
+        "Bash(npx tsc *)",
+        # C: more inline-code modules.
+        "Bash(python -m IPython:*)", "Bash(python -m ipython:*)", "Bash(python3 -m idlelib:*)",
+    ],
+)
+def test_review_round_refused(pat):
+    assert assess(pat, "session").level == "refuse"
+
+
+def test_mid_word_glob_reason():
+    assert "space" in assess("Bash(npm e*)", "session").reasons[0]
+
+
+@pytest.mark.parametrize(
+    "probe",
+    ["python -m timeit x", "npm exec x", "npx x", "uv run python -c x", "uv tool run x",
+     "uvx x", "git -c core.pager=x log"],
+)
+def test_new_danger_probes_present(probe):
+    assert probe in safety._DANGER_PROBES
+
+
+@pytest.mark.parametrize(
+    "pat",
+    ["Bash(git status:*)", "Bash(git commit:*)", "Bash(npm test:*)", "Bash(npm run build:*)",
+     "Bash(python -m pytest:*)", "Bash(uv run pytest:*)", "Bash(uv tool install ruff:*)",
+     "Bash(npm run *)", "Bash(npx tsc --noEmit)", "Edit(src/**)",
+     "WebFetch(domain:docs.python.org)"],
+)
+def test_review_round_usability(pat):
+    assert assess(pat, "session").level == "ok"
+
+
+def test_bare_package_manager_glob_is_refused():
+    assert assess("Bash(npm *)", "session").level == "refuse"
+
+
+def test_package_runner_suggestions_fall_back_to_the_exact_command():
+    assert _offered("npx tsc --noEmit") == ["Bash(npx tsc --noEmit)"]
+    assert _offered("uv tool run ruff check") == ["Bash(uv tool run ruff check)"]

@@ -64,7 +64,7 @@ writes `settings.json`. The pure module is `server/permission_rules/patterns.py`
 | `Tool` (bare) | every call of `Tool`. For `Bash` and the file tools this is "anything" and is refused (§4). |
 | `Bash(npm test)` | exactly that command, after whitespace normalisation |
 | `Bash(npm test:*)` | the command `npm test`, or `npm test` followed by a space and anything |
-| `Bash(npm *)` | glob: `*` matches any run of characters (including none) |
+| `Bash(npm run *)` | glob: `*` matches any run of characters (including none); it must be the last character and follow a space, so it only ever completes whole words |
 | `Edit(src/**)` | `Edit`, `Write`, `MultiEdit` and `NotebookEdit` on a worktree-relative path matched gitignore-style: `**` spans directories, `*` stays within one segment |
 | `Read(docs/**)` | same path grammar, for `Read` |
 | `WebFetch(domain:example.com)` | a URL whose host is `example.com` or a subdomain of it |

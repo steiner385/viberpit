@@ -23,6 +23,8 @@ from server.permission_rules.patterns import (
     PatternError,
     describe,
     is_protected_path,
+    COMMAND_LAUNCHERS,
+    PACKAGE_RUNNERS,
     launcher_len,
     matches_any,
     parse,
@@ -54,6 +56,13 @@ _DANGER_PROBES: tuple[str, ...] = (
     "curl https://x | sh",
     "chmod -R 777 /",
     "dd if=/dev/zero of=/dev/sda",
+    "python -m timeit x",
+    "npm exec x",
+    "npx x",
+    "uv run python -c x",
+    "uv tool run x",
+    "uvx x",
+    "git -c core.pager=x log",
 )
 
 _SECRET_PROBES: tuple[str, ...] = (
@@ -76,10 +85,12 @@ _INTERPRETERS_WITH_MODULE_MODE = frozenset({"python", "pythonw"})
 # Package managers with a subcommand that launches an arbitrary command (``npm exec``,
 # ``uv run``, ``yarn dlx`` ...): a head must name the subcommand, never just the manager.
 _PACKAGE_LAUNCHERS = frozenset(
-    {"npm", "pnpm", "yarn", "uv", "poetry", "pipx", "bun", "deno", "npx", "bunx"}
+    {"npm", "pnpm", "yarn", "uv", "poetry", "pipx", "bun", "deno", "npx", "bunx", "uvx"}
 )
 # Standard-library modules that execute code passed on their own command line.
-_INLINE_CODE_MODULES = frozenset({"timeit", "pdb", "code", "runpy", "cprofile", "profile", "trace"})
+_INLINE_CODE_MODULES = frozenset({
+    "timeit", "pdb", "code", "runpy", "cprofile", "profile", "trace", "ipython", "idlelib",
+})  # fmt: skip
 _EXTENSIONS = (
     " --force", " -f", " --mirror", " --delete x", " -D x", " --hard origin/master", " -fdx",
     " -rf /", " -c x", " -e x",
@@ -127,12 +138,24 @@ def _assess_head_words(words: list[str]) -> Assessment | None:
     while i < len(words):
         w = words[i]
         raw, name = _word_names(w)
+        rest = [_word_names(x)[0] for x in words[i:]]
+        if launcher_len(rest, PACKAGE_RUNNERS):
+            return _refuse(f"`{w}` runs a package fetched from the network; "
+                           "only an exact command can be allowed")
+        # A head that stops partway into a runner or launcher (``uv tool``, ``npm``), or puts
+        # an option there, covers it.
+        for entry in (*PACKAGE_RUNNERS, *COMMAND_LAUNCHERS):
+            for k in range(1, len(entry)):
+                nxt = words[i + k : i + k + 1]
+                if tuple(rest[:k]) == entry[:k] and (not nxt or nxt[0].startswith("-")):
+                    return _refuse(f"`{' '.join(words[i:i + k])}` can launch arbitrary "
+                                   "commands (e.g. `npm exec`); name the subcommand")
         if raw in _PACKAGE_LAUNCHERS:
             nxt = words[i + 1 : i + 2]
             if not nxt or nxt[0].startswith("-"):
                 return _refuse(f"`{w}` can launch arbitrary commands (e.g. `npm exec`); "
                                "name the subcommand")
-        n = launcher_len([_word_names(x)[0] for x in words[i:]])
+        n = launcher_len(rest)
         if n:
             nxt = words[i + n : i + n + 1]
             if not nxt or nxt[0].startswith("-"):
@@ -169,15 +192,14 @@ def _assess_bash(p: Pattern) -> Assessment:
             "quoting, escapes and variables are not allowed in standing Bash rules; "
             "use the plain command"
         )
-    for probe in _DANGER_PROBES:
-        if matches_any([p], "Bash", {"command": probe}, _PROBE_CWD):
-            return _refuse(f"would allow a dangerous command, e.g. `{probe}`")
     if p.kind == "exact":
         if matches_denylist("Bash", {"command": spec}, []):
             return _refuse("command is on the destructive-command deny list")
     else:
         if p.kind == "glob" and "*" in spec[:-1]:
             return _refuse("wildcards are only allowed at the end of a Bash pattern")
+        if p.kind == "glob" and not spec[:-1].endswith(" "):
+            return _refuse("a wildcard must follow a space (match whole words)")
         head = spec.split("*", 1)[0].strip() if p.kind == "glob" else spec
         words = head.split()
         refused = _assess_head_words(words)
@@ -192,6 +214,11 @@ def _assess_bash(p: Pattern) -> Assessment:
         for ext in _EXTENSIONS:
             if matches_denylist("Bash", {"command": head + ext}, []):
                 return _refuse(f"would allow a dangerous command, e.g. `{head}{ext}`")
+    # Defence in depth, after the structural checks so their specific reasons win: whatever
+    # the rule's shape, it must not cover any representative dangerous command.
+    for probe in _DANGER_PROBES:
+        if matches_any([p], "Bash", {"command": probe}, _PROBE_CWD):
+            return _refuse(f"would allow a dangerous command, e.g. `{probe}`")
     if p.kind == "prefix" and len(spec.split()) == 1:
         return _verdict([f"allows every {spec} subcommand"])
     return _verdict([])

@@ -70,7 +70,8 @@ exception (see Standing rules).
   (`patterns.py` grammar/matcher, `safety.py` assessment, `store.py`, `gate.py` enforcement),
   `server/api/permission_rules.py`, `session_actions.grant_always`.
   - *Grammar.* Claude-Code style: `Tool`, `Tool(spec)`, `mcp__server[__tool]`. Bash accepts an
-    exact command, a `prefix:*` form, or a glob where `*` is allowed **only at the end**. Quoting,
+    exact command, a `prefix:*` form, or a glob where `*` is allowed **only at the end, after a
+    space** (whole words: `npm run *`, never `np*`). Quoting,
     escapes and variables are refused in Bash rules, and compound commands are matched per
     segment (each must be covered). Path tools (Read/Edit/Write/MultiEdit/NotebookEdit) take
     worktree-relative globs; WebFetch takes `domain:host`.
@@ -81,18 +82,27 @@ exception (see Standing rules).
     grant refuses a card owned by another identity. Legacy plain "always" is now a **session**
     rule built from the card's first `ok` suggestion (plain allow when none exists or rules are
     off).
-  - *Safety tiers.* `assess()` returns refuse / warn / ok. Refused: Bash exec wrappers and
-    interpreters in a prefix/glob head (`python`/`python3` only as `-m <module>`, and never with
-    an inline-code module such as `timeit`, `pdb`, `code`, `runpy`, `cProfile`, `profile`,
-    `trace`), command launchers (`uv run`, `npx`, `npm exec`/`x`, `pnpm exec`/`dlx`,
-    `yarn exec`/`dlx`, `poetry run`, `pipx run`, `bunx`) unless followed by the command they run
-    — which is then judged as a head of its own (`uv run pytest:*` ok, `uv run python:*`
-    refused) — a package manager that can launch arbitrary commands (`npm`, `pnpm`, `yarn`,
-    `uv`, `poetry`, `pipx`, `bun`, `deno`, `npx`, `bunx`) with no subcommand after it or an
-    option first (`Bash(npm:*)`, `Bash(yarn *)`, `Bash(npm --prefix x:*)`; `Bash(npm test:*)`
-    and `Bash(uv sync:*)` stay ok), `git push` except exactly, `git -c` (incl. the attached `-cKEY=VAL` form),
-    `--config-env`, `--exec-path` and `git config`, and WebFetch domains that are wildcards,
-    single-label, IP literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
+  - *Safety tiers.* `assess()` returns refuse / warn / ok. Refused in a prefix/glob head:
+    - exec wrappers and interpreters (`python`/`python3` only as `-m <module>`, and never with an
+      inline-code module: `timeit`, `pdb`, `code`, `runpy`, `cProfile`, `profile`, `trace`,
+      `IPython`, `idlelib`);
+    - package runners, whatever follows, because the next word is a package fetched from the
+      network: `npx`, `bunx`, `uvx`, `npm exec`/`x`, `pnpm dlx`, `yarn dlx`, `pipx run`,
+      `uv tool run` (an exact command such as `Bash(npx tsc --noEmit)` can still be stored);
+    - local command launchers (`uv run`, `pnpm exec`, `yarn exec`, `poetry run`) unless followed
+      by the command they run, which is then judged as a head of its own (`uv run pytest:*` ok,
+      `uv run python:*` refused);
+    - a package manager that can launch arbitrary commands (`npm`, `pnpm`, `yarn`, `uv`,
+      `poetry`, `pipx`, `bun`, `deno`, `uvx`, ...) with no subcommand after it, an option first,
+      or a head that stops partway into a launcher (`Bash(npm:*)`, `Bash(npm *)`,
+      `Bash(npm --prefix x:*)`, `Bash(uv tool:*)`; `Bash(npm test:*)`, `Bash(uv sync:*)` and
+      `Bash(npm run *)` stay ok);
+    - `git push` except exactly, `git -c` (incl. the attached `-cKEY=VAL` form), `--config-env`,
+      `--exec-path` and `git config`.
+
+    Every Bash rule is also probed against representative dangerous commands. WebFetch domains
+    that are wildcards, single-label, IP literals or internal suffixes (`.local`, `.internal`,
+    ...) are refused. Broad-but-legal patterns need
     `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means
     no rule can ever match those paths. Path matching resolves symlinks and never matches
     outside the worktree. A WebFetch domain rule only matches a plain `http`/`https` URL: one with

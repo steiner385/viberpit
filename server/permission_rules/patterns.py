@@ -54,18 +54,26 @@ NEVER_RULED_TOOLS = frozenset(
         )
     }
 )  # fmt: skip
-#: Commands whose job is to run the command named after them (``uv run pytest``). A rule must
-#: name that command: the launcher alone covers anything, and the rest of the head is judged
-#: as a head of its own (``safety``). Suggestions grow by one word past a launcher.
+#: Commands whose job is to run a project-local command named after them (``uv run pytest``).
+#: A rule must name that command: the launcher alone covers anything, and the rest of the head
+#: is judged as a head of its own (``safety``). Suggestions grow by one word past a launcher.
 COMMAND_LAUNCHERS: tuple[tuple[str, ...], ...] = (
-    ("uv", "run"), ("npm", "exec"), ("npm", "x"), ("pnpm", "exec"), ("pnpm", "dlx"),
-    ("yarn", "exec"), ("yarn", "dlx"), ("poetry", "run"), ("pipx", "run"), ("npx",), ("bunx",),
+    ("uv", "run"), ("pnpm", "exec"), ("yarn", "exec"), ("poetry", "run"),
+)  # fmt: skip
+#: Commands that fetch a package from the network and run it (``npx tsc``): a prefix or glob
+#: rule through one is always refused, whatever follows; only an exact command may be stored.
+PACKAGE_RUNNERS: tuple[tuple[str, ...], ...] = (
+    ("npx",), ("bunx",), ("uvx",), ("npm", "exec"), ("npm", "x"), ("pnpm", "dlx"),
+    ("yarn", "dlx"), ("pipx", "run"), ("uv", "tool", "run"),
 )  # fmt: skip
 
 
-def launcher_len(names: Sequence[str]) -> int:
-    """Number of leading words of ``names`` that form a command launcher (0 if none)."""
-    return next((len(lw) for lw in COMMAND_LAUNCHERS if tuple(names[: len(lw)]) == lw), 0)
+def launcher_len(
+    names: Sequence[str], table: Sequence[tuple[str, ...]] = COMMAND_LAUNCHERS
+) -> int:
+    """Number of leading words of ``names`` that form an entry of ``table`` (0 if none)."""
+    return next((len(lw) for lw in table if tuple(names[: len(lw)]) == lw), 0)
+
 
 _TOOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 # MCP server names routinely contain hyphens/dots (e.g. ``mcp__claude-ai__x``).
