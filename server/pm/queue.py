@@ -7,6 +7,7 @@ Decision C-2: a row whose board Status is unset or outside the spec vocabulary
 ``skip_reason`` for the mechanics and rationale."""
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,13 +25,55 @@ from .outcomes import bounced_out
 # that suffix. The mirror, however, is synced over GraphQL (``github_sync``),
 # whose ``author { login }`` carries NO suffix (``github-actions`` —
 # ``alert_series.AUTOMATION_LOGINS``), so for mirrored rows the author leg is
-# inert and labels and title carry the filter. Deliberately so: a workflow that
-# files CI-verdict latches (``forced-deploy-audit``) files per-test failure
-# issues from the same login, and those ARE work. A product names the noise by
-# label (``skip_labels`` in its policy); the author leg stays for REST-shaped
-# callers.
-SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate"})
+# inert and labels and title carry the filter. Deliberately so: the same login
+# files issues that ARE work (``deploy-monitor`` incidents). The auto-managed
+# artifacts it files — ``forced-deploy-audit`` latches, watchdogs, rollups,
+# digests — are ``TRACKER_LABELS`` below (#2683 reversed the earlier call that
+# ``forced-deploy-audit`` latches were work: they auto-close on a green nightly,
+# and the repo's own instructions forbid closing them with a PR; #2921/#2923/
+# #2930). A product names further noise by label (``skip_labels`` in its policy);
+# the author leg stays for REST-shaped callers. ``viberpit-ignore`` is the
+# operator's own "never dispatch this" label, honoured for EVERY product (#2683):
+# a product used to have to list it in its ``skip_labels``, and a typo there
+# silently let every tagged issue through (cairnea/KinDash#17427).
+SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate", "viberpit-ignore"})
 SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
+
+# A person's own "not now" on the issue itself (#2683, steiner385/viberpit#1432:
+# parked by label, a decision "Leave parked, no PR now" accepted — which releases
+# the decision hold — and the runner claimed it the next day). Read as ``held``:
+# the person parked it, exactly what a hold says, so no policy can opt back in.
+PARKED_LABELS = frozenset({"parked"})
+
+# Self-closing trackers (#2683): issues a CI workflow files AND closes by itself —
+# a per-test ``[flaky]`` tracker closes after N green scheduled runs, a
+# "Nightly failed — <date>" rollup on the next green run, a recurring "… Digest"
+# is rewritten in place. A dispatched session can only report "no PR needed; it
+# closes itself", which the runner used to hand the owner as an ``owner_action``
+# hold (11 of the KinDash Held inbox on 2026-10-11). Unlike ``bot`` this is a
+# per-product choice (``skip_self_closing_trackers``, default on): a flaky test IS
+# fixable, and a product may want its trackers worked. Lowercase label spellings
+# as filed on cairnea/KinDash: the ``red-watchdog`` rolling issue closes the day
+# its workflow goes green (#17030 and #17388 were re-dispatched ~70 times), the
+# ``nightly-consecutive-failure`` escalation on a green nightly, a
+# ``forced-deploy-audit`` latch once a green nightly runs on the forced SHA, and
+# the ``nightly-scoreboard`` is a permanent singleton the workflow rewrites.
+TRACKER_LABELS = frozenset({"flaky", "nightly-failure", "weekly-failure", "midday-e2e-failure",
+                            "red-watchdog", "nightly-consecutive-failure",
+                            "forced-deploy-audit", "nightly-scoreboard"})
+_TRACKER_TITLE = re.compile(
+    r"^\s*\[flaky\]"                         # the per-test flaky tracker's tag
+    r"|^\s*flaky test burndown\b"            # … and its burndown digest
+    r"|^\s*red-watchdog:"                    # "red-watchdog: workflow "Nightly" — 5+ …"
+    # "Nightly failed — 2026-10-09", "weekly full-ci failed — culprit …": a scheduled
+    # run's verdict. ``failed`` must END a clause, so "Nightly job failed to upload
+    # artifacts" (a bug report) is not a tracker.
+    r"|^\s*(?:nightly|weekly|midday|daily)\b[^—–:]{0,40}?\bfailed\b\s*(?:[—–:(-]|$)",
+    re.IGNORECASE)
+# A generated report's title-case name ("🧮 UI Maintenance Cost & Architecture ROI
+# Digest"). Case-SENSITIVE on purpose: "feat(email): blog subscriber digest" is a
+# feature request, and human titles end in a lowercase "digest" far more often.
+_DIGEST_TITLE = re.compile(r"\bDigest\s*$")
 
 # Labels that mark work the queue must serve BEFORE ordinary backlog, whatever
 # its score or age (#16150, #16151). An automation that reports a broken
@@ -49,7 +92,7 @@ SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 URGENT_LABELS = frozenset({"deploy-monitor"})
 
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
-                 "untrusted", "held", "needs_spec")
+                 "tracker", "untrusted", "held", "needs_spec")
 
 # Logins that file issues which ARE work (deploy-monitor, forced-deploy-audit) — always
 # trusted. Mirrors alert_series.AUTOMATION_LOGINS; pinned by a test rather than imported
@@ -161,6 +204,24 @@ def is_bot_noise(*, author: str, labels: Iterable[str], title: str,
     return (title or "").strip().lower() in SKIP_ISSUE_TITLES
 
 
+def is_self_closing_tracker(labels: Iterable[str], title: str) -> bool:
+    """THE ``tracker`` verdict (``TRACKER_LABELS`` and the tracker title shapes): an
+    issue its own workflow closes. One predicate for the queue's skip, the
+    hold-hygiene pass and the approve-escalation tap (``server/pm/policy_skip.py``)
+    and the runner's not-needed settle, so they cannot disagree about which issues
+    are trackers. Whether a product SKIPS them is its policy's call
+    (``product_policy.skips_self_closing_trackers``), not this predicate's."""
+    if {str(lbl).strip().lower() for lbl in labels} & TRACKER_LABELS:
+        return True
+    t = title or ""
+    return bool(_TRACKER_TITLE.search(t) or _DIGEST_TITLE.search(t))
+
+
+def is_parked(labels: Iterable[str]) -> bool:
+    """Whether a person parked the issue by label (``PARKED_LABELS``)."""
+    return bool({str(lbl).strip().lower() for lbl in labels} & PARKED_LABELS)
+
+
 def is_trusted_author(author: str, trusted: frozenset[str]) -> bool:
     """Whether *author* may have their issue dispatched to an agent. A public repo lets
     anyone open an issue; a dispatched session writes code that auto-merges and deploys,
@@ -218,6 +279,7 @@ def skip_reason(
     give_up_after_bounces: int = 0,
     extra_skip_labels: frozenset[str] = frozenset(),
     trusted_authors: frozenset[str] = frozenset(),
+    skip_trackers: bool = True,
 ) -> str | None:
     """Decision C-2: a row whose board Status is ``None`` (never stamped by the
     reconciler) or outside the spec vocabulary (e.g. GitHub's default "Todo" column)
@@ -229,7 +291,7 @@ def skip_reason(
     # Checked BEFORE the status gate: the reconciler stamps the held board Status
     # from exactly this hold, so a status-first check would report these rows as
     # plain "status" skips and the card would lose its held gauge.
-    if row.hold_kind in HELD_KINDS:
+    if row.hold_kind in HELD_KINDS or is_parked(row.labels):
         return "held"
     # D8: this body has already bounced enough — a spec edit (which changes the
     # fingerprint the count is keyed on) is what re-arms it, not time.
@@ -253,6 +315,8 @@ def skip_reason(
         return "epic_open"
     if _is_bot(row, extra_skip_labels):
         return "bot"
+    if skip_trackers and is_self_closing_tracker(row.labels, row.title):
+        return "tracker"
     if not is_trusted_author(row.author, trusted_authors):
         return "untrusted"
     return None
@@ -291,6 +355,7 @@ def rank(
     give_up_after_bounces: int = 0,
     extra_skip_labels: frozenset[str] = frozenset(),
     trusted_authors: frozenset[str] = frozenset(),
+    skip_trackers: bool = True,
 ) -> tuple[list[QueueEntry], dict[str, int]]:
     kept: list[QueueRow] = []
     skipped: dict[str, int] = {}
@@ -303,6 +368,7 @@ def rank(
             give_up_after_bounces=give_up_after_bounces,
             extra_skip_labels=extra_skip_labels,
             trusted_authors=trusted_authors,
+            skip_trackers=skip_trackers,
         )
         if why:
             skipped[why] = skipped.get(why, 0) + 1

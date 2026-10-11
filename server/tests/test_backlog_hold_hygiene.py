@@ -71,9 +71,12 @@ def test_superseded_keeps_the_newest_per_repo_and_type():
 # auto_escalation (#2679) — pure                                               #
 # --------------------------------------------------------------------------- #
 
+# A product that auto-escalates its flaky issues works its trackers (#2683): with the
+# default ``skip_self_closing_trackers`` the queue skips a ``flaky`` issue as
+# ``tracker``, and the approval tap refuses to dispatch what the queue skips.
 POLICY = {"dispatch": "auto", "trusted_authors": ["tony"],
           "auto_escalate_match": ["flaky", "Unverified prod"],
-          "auto_escalate_budget": 2}
+          "auto_escalate_budget": 2, "skip_self_closing_trackers": False}
 
 
 def _escalated(number, *, title="t", labels=(), by="runner", set_days_ago=1, **over):

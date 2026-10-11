@@ -50,9 +50,11 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
     from server.pm.outcomes import escalation_for
     from server.sessions import model_policy
     from server.sessions.model_catalog import TIER_ORDER
-    from server.automations.product_policy import policy_for_repo, skip_labels, trusted_authors
+    from server.automations.product_policy import (policy_for_repo, skip_labels,
+                                                   skips_self_closing_trackers,
+                                                   trusted_authors)
     from server.pm.policy_skip import skipped_by_policy
-    from server.pm.queue import is_trusted_author
+    from server.pm.queue import is_parked, is_self_closing_tracker, is_trusted_author
     escalation = escalation_for(wi.hold_kind, wi.hold_reason)
     if escalation is None:
         raise EscalationApprovalError(
@@ -70,8 +72,13 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
                        & skip_labels(policy))
         if named:
             why = f"it carries {', '.join(named)}"
+        elif is_parked(wi.labels or ()):
+            why = "a person parked it"
         elif not is_trusted_author(wi.author or "", trusted_authors(policy)):
             why = "its author is not a trusted author"
+        elif (skips_self_closing_trackers(policy)
+              and is_self_closing_tracker(wi.labels or (), wi.title or "")):
+            why = "it is a self-closing tracker"
         else:
             why = "it is bot noise"
         raise EscalationApprovalError(

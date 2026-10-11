@@ -236,6 +236,7 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "assigned": _row(assignees=("steiner385",)),
         "epic_open": _row(open_children=1),
         "bot": _row(author="renovate[bot]"),
+        "tracker": _row(labels=("flaky",)),
         "untrusted": _row(author="stranger"),
         "held": _row(hold_kind="owner_action"),
         "needs_spec": _row(bounces=2),
@@ -318,10 +319,160 @@ def test_is_bot_noise_is_the_predicate_behind_the_bot_skip():
     assert not is_bot_noise(author="tony", labels=("on-hold",), title="t")
     # A GraphQL-mirrored login carries no ``[bot]`` suffix (``github-actions``, not
     # ``github-actions[bot]``), so the author leg deliberately does not fire on it:
-    # a per-test failure issue the same workflow files IS work. Labels decide.
+    # the same login files issues that ARE work (deploy-monitor). Labels decide.
     assert not is_bot_noise(author="github-actions", labels=(), title="t")
     assert is_bot_noise(author="github-actions", labels=("forced-deploy-audit",), title="t",
                         extra_skip_labels=frozenset({"forced-deploy-audit"}))
+
+
+# ── self-closing trackers and the operator's ignore label (#2683) ─────────────
+# Real titles and labels, as filed on cairnea/KinDash.
+
+TRACKERS = {
+    "flaky label": dict(labels=("flaky",), title="t"),
+    "[flaky] tag": dict(labels=(), title="[flaky] tasks/kanban-board.spec.ts › Kanban Board › "
+                                         "pressing Escape clears the selection (fp:102b4b8a)"),
+    "nightly label": dict(labels=("bug", "ci-infrastructure", "nightly-failure"), title="t"),
+    "nightly title": dict(labels=(), title="Nightly failed — 2026-10-09"),
+    "weekly label": dict(labels=("Weekly-Failure",), title="t"),
+    "weekly title": dict(labels=(), title="Weekly failed — 2026-10-11"),
+    "weekly culprit": dict(labels=(), title="weekly full-ci failed — culprit identified — "
+                                            "revert-PR failed (failure)"),
+    "midday title": dict(labels=(), title="Midday e2e failed — 2026-10-06"),
+    "midday label": dict(labels=("midday-e2e-failure",), title="t"),
+    "digest": dict(labels=("technical-debt",),
+                   title="🧮 UI Maintenance Cost & Architecture ROI Digest"),
+    "observability digest": dict(labels=(), title="📊 CI / Delivery Observability Digest"),
+    "flaky burndown": dict(labels=(), title="Flaky test burndown"),
+    "red-watchdog label": dict(labels=("monitoring", "ci-failure", "red-watchdog"), title="t"),
+    "red-watchdog title": dict(labels=(), title='red-watchdog: workflow "Nightly" — 5+ '
+                                                "consecutive non-success trunk runs"),
+    "nightly-consecutive-failure": dict(labels=("nightly-consecutive-failure",),
+                                        title="🚨 10 of last 10 nightly runs failed — prod "
+                                              "promotion blocked"),
+    # Auto-closed on a green nightly; the repo forbids closing it with a PR
+    # (steiner385/viberpit#2921, #2923, #2930).
+    "forced-deploy-audit": dict(labels=("ci-infrastructure", "forced-deploy-audit"),
+                                title="⚠️ Unverified prod deploy b80aa1b03c — 2026-09-21"),
+    "nightly-scoreboard": dict(labels=("nightly-scoreboard",), title="Nightly scoreboard"),
+}
+
+NOT_TRACKERS = {
+    "ci-failure playwright": dict(labels=("ci-failure", "tool:playwright"),
+                                  title="[playwright] tasks/kanban-board.spec.ts › Escape"),
+    # Human-filed flake fixes (viberpit's own shape) carry no tag and no label.
+    "human flaky": dict(labels=("bug",), title="Flaky: test_adopt_dead_pid_skips_termination "
+                                               "depends on host PID 12345 being absent"),
+    "failed to": dict(labels=(), title="Nightly job failed to upload coverage artifacts"),
+    "feature digest": dict(labels=(), title="feat(email): blog subscriber digest / new post "
+                                            "notification emails"),
+    "feature digest at end": dict(labels=(), title="Implement notification digest"),
+    "digest mismatch": dict(labels=(), title="chore: prisma-build digest-mismatch (ARC)"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(TRACKERS))
+def test_every_self_closing_tracker_shape_is_skipped_as_tracker(shape):
+    from server.pm.queue import is_self_closing_tracker
+    over = TRACKERS[shape]
+    assert is_self_closing_tracker(over["labels"], over["title"])
+    row = _row(author="app/github-actions", **over)
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+    assert skip_reason(row, **kw) == "tracker"
+    entries, skipped = rank([row], **kw)
+    assert entries == [] and skipped == {"tracker": 1}
+
+
+@pytest.mark.parametrize("shape", sorted(NOT_TRACKERS))
+def test_work_that_merely_resembles_a_tracker_is_not_skipped(shape):
+    from server.pm.queue import is_self_closing_tracker
+    over = NOT_TRACKERS[shape]
+    assert not is_self_closing_tracker(over["labels"], over["title"])
+    assert skip_reason(_row(author="app/github-actions", **over), min_status="Ready",
+                       respect_dependencies=True, now=NOW) is None
+
+
+def test_a_product_that_works_its_trackers_opts_back_in():
+    """``skip_self_closing_trackers: false`` — a flaky test IS fixable, and a product
+    may want the runner on it."""
+    row = _row(author="app/github-actions", labels=("flaky",), title="[flaky] x (fp:1)")
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+    assert skip_reason(row, skip_trackers=False, **kw) is None
+    entries, skipped = rank([row], skip_trackers=False, **kw)
+    assert [e.ref for e in entries] == [row.ref] and skipped == {}
+
+
+def test_viberpit_ignore_is_a_built_in_skip_for_every_product():
+    """The operator's own "never dispatch this" label, honoured without a product
+    listing it — and regardless of the tracker opt-out."""
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+    for labels in (("viberpit-ignore",), ("technical-debt", "Viberpit-Ignore")):
+        assert skip_reason(_row(labels=labels), **kw) == "bot"
+        assert skip_reason(_row(labels=labels), skip_trackers=False, **kw) == "bot"
+
+
+def test_a_parked_label_is_a_persons_park():
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+    assert skip_reason(_row(labels=("bug", "Parked")), **kw) == "held"
+    assert skip_reason(_row(labels=("parked",)), skip_trackers=False, **kw) == "held"
+
+
+# Regression cases named after the issues the runner looped on (#2683). Each is the
+# real issue's labels, author and title.
+KW = dict(min_status="Backlog", respect_dependencies=True, now=NOW)
+
+
+def test_kindash_17388_red_watchdog_lane_is_not_dispatched():
+    """~70 re-dispatches, each with a "Fixes" prompt, of an issue the watchdog closes."""
+    row = _row(author="app/github-actions", labels=("monitoring", "ci-failure", "red-watchdog"),
+               title='red-watchdog: advisory lane red in "Android CI" — android: maestro e2e '
+                     "(API 36) — shard 3/3")
+    assert skip_reason(row, **KW) == "tracker"
+
+
+@pytest.mark.parametrize("title", [
+    "[flaky] accessibility/reflow-320.spec.ts › Reflow at 320px — signed out › Auth & "
+    "Onboarding (/register) keeps content within the viewport (fp:74c4b083)",
+    "[flaky] kiosk/kiosk-task-edit.spec.ts › @kiosk — Task editing on the kiosk › Ambient: "
+    "tapping Edit surfaces the PIN elevation prompt (fp:3794e651)",
+], ids=["17390", "17391"])
+def test_kindash_17390_17391_flaky_trackers_are_not_dispatched(title):
+    """~45 and ~10 re-dispatches after each session's no-PR verdict."""
+    assert skip_reason(_row(author="app/github-actions", labels=("flaky",), title=title),
+                       **KW) == "tracker"
+
+
+def test_kindash_17030_nightly_watchdog_is_not_dispatched_on_any_tick():
+    """Re-dispatched every 2–3 minutes: no tick may pick it, however often it ranks."""
+    row = _row(author="app/github-actions", labels=("monitoring", "ci-failure", "red-watchdog"),
+               title='red-watchdog: workflow "Nightly" — 5+ consecutive non-success trunk runs')
+    for minutes in range(0, 60, 3):
+        entries, skipped = rank([row], **{**KW, "now": NOW + timedelta(minutes=minutes)})
+        assert entries == [] and skipped == {"tracker": 1}
+
+
+def test_kindash_17427_ignored_digest_that_reopens_is_never_dispatched():
+    """A monthly digest the workflow reopens if closed, labelled ``viberpit-ignore`` —
+    skipped on the label even by a product that works its trackers."""
+    row = _row(author="app/github-actions", labels=("technical-debt", "viberpit-ignore"),
+               title="🧮 UI Maintenance Cost & Architecture ROI Digest")
+    assert skip_reason(row, **KW) == "bot"
+    assert skip_reason(row, skip_trackers=False, **KW) == "bot"
+
+
+def test_viberpit_1432_parked_with_an_accepted_no_pr_decision_is_not_dispatched():
+    """Accepting "Leave #1432 parked, no PR now" released the decision hold, and the
+    runner claimed it the next day. The ``parked`` label is the person's park."""
+    row = _row(labels=("bug", "parked"), hold_kind=None,
+               title="Recovery can resume a foreign-host session and strand UI routing "
+                     "despite a valid lease")
+    assert skip_reason(row, **KW) == "held"
+
+
+def test_viberpit_2921_forced_deploy_audit_is_not_dispatched_by_default():
+    row = _row(author="app/github-actions", labels=("ci-infrastructure", "forced-deploy-audit"),
+               title="⚠️ Unverified prod deploy b80aa1b03c — 2026-09-21")
+    assert skip_reason(row, **KW) == "tracker"
 
 
 TRUSTED = frozenset({"steiner385", "app/viberpit"})
