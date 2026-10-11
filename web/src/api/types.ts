@@ -951,3 +951,37 @@ export interface PermissionProfile {
   createdAt: string | null
   updatedAt: string | null
 }
+
+// ── Standing always-allow rules (server/api/permission_rules.py) ─────────────
+export type RuleScope = 'session' | 'repo' | 'global'
+
+export interface RulePreview {
+  valid: boolean
+  level: 'ok' | 'warn' | 'refuse'
+  reasons: string[]
+  description: string | null
+  needsConfirmation: boolean
+  /** null when the permId is not (or no longer) pending. */
+  coversRequest: boolean | null
+  alsoPending: number
+}
+
+export interface RuleWire {
+  id: string
+  profileId: string
+  pattern: string
+  description: string
+  scope: RuleScope
+  scopeKey: string | null
+  position: number
+  createdBy: string
+  createdVia: string
+  createdAt: string | null
+  hitCount: number
+  lastHitAt: string | null
+}
+
+export interface GrantResult {
+  rule: RuleWire
+  resolvedPermIds: string[]
+}

@@ -58,6 +58,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
 import { useSessionRuntime } from './useSessionRuntime'
 import { QK } from '@/api/hooks'
 import type { Session } from '@/api/types'
+import { api, ApiRequestError } from '@/api/client'
 import { session as makeSession } from '@/test/factories'
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -481,5 +482,54 @@ describe('useSessionRuntime.suggestions', () => {
   it('is an empty list, never undefined, with no record and no event', () => {
     const { result } = renderHook(() => useSessionRuntime('sug-3'), { wrapper })
     expect(result.current.suggestions).toEqual([])
+  })
+})
+
+describe('useSessionRuntime rule callbacks', () => {
+  const seedPermission = () => {
+    capturedSessionEventHandler?.({ type: 'replayComplete' })
+    capturedSessionEventHandler?.({ type: 'turnStart', turnId: 't1' })
+    capturedSessionEventHandler?.({ type: 'permissionRequest', permId: 'p1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { command: 'npm test' }, plan: false })
+  }
+  const permCount = (r: { current: ReturnType<typeof useSessionRuntime> }) =>
+    r.current.state.turns.flatMap((t) => t.blocks).filter((b) => b.kind === 'permission').length
+
+  beforeEach(() => {
+    mockConnectionState = 'connected'
+    capturedSessionEventHandler = undefined
+    vi.restoreAllMocks()
+  })
+
+  it('onPreviewRule posts the session, permId, pattern and scope', async () => {
+    const preview = { valid: true, level: 'ok', reasons: [], description: 'd', needsConfirmation: false, coversRequest: true, alsoPending: 0 }
+    const post = vi.spyOn(api, 'post').mockResolvedValue(preview)
+    const { result } = renderHook(() => useSessionRuntime('sess1'), { wrapper })
+    let got: unknown
+    await act(async () => { got = await result.current.onPreviewRule('p1', 'Bash(npm test:*)', 'session') })
+    expect(post).toHaveBeenCalledWith('/permission-rules/preview', { sessionId: 'sess1', permId: 'p1', pattern: 'Bash(npm test:*)', scope: 'session' })
+    expect(got).toEqual(preview)
+  })
+
+  it('onGrantRule posts, then resolves the card as "always" on success', async () => {
+    const result_ = { rule: { id: 'r1' }, resolvedPermIds: ['p1'] }
+    const post = vi.spyOn(api, 'post').mockResolvedValue(result_)
+    const { result } = renderHook(() => useSessionRuntime('sess1'), { wrapper })
+    act(() => { seedPermission() })
+    expect(permCount(result)).toBe(1)
+    await act(async () => { await result.current.onGrantRule('p1', 'Bash(npm test:*)', 'repo', true) })
+    expect(post).toHaveBeenCalledWith('/sessions/sess1/permissions/p1/always', { pattern: 'Bash(npm test:*)', scope: 'repo', confirm: true })
+    expect(permCount(result)).toBe(0)
+    const notices = result.current.state.turns.flatMap((t) => t.blocks).filter((b) => b.kind === 'notice')
+    expect(notices).toHaveLength(1)
+  })
+
+  it('onGrantRule rethrows and leaves the card pending on an error', async () => {
+    vi.spyOn(api, 'post').mockRejectedValue(new ApiRequestError(409, { detail: { code: 'RULE_NEEDS_CONFIRMATION', message: 'x' } }))
+    const { result } = renderHook(() => useSessionRuntime('sess1'), { wrapper })
+    act(() => { seedPermission() })
+    await act(async () => {
+      await expect(result.current.onGrantRule('p1', 'Bash(*)', 'global', false)).rejects.toBeInstanceOf(ApiRequestError)
+    })
+    expect(permCount(result)).toBe(1)
   })
 })

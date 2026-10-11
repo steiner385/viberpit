@@ -46,7 +46,7 @@ export function RadioGroup<V extends string>({
             <label
               htmlFor={id}
               className={cn(
-                'inline-flex items-center gap-2 min-h-target text-sm text-ink',
+                'inline-flex max-w-full items-center gap-2 min-h-target text-sm text-ink',
                 o.disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer',
               )}
             >
@@ -59,9 +59,9 @@ export function RadioGroup<V extends string>({
                 disabled={o.disabled}
                 aria-describedby={reasonId}
                 onChange={() => onChange(o.value)}
-                className="h-4 w-4 accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                className="h-4 w-4 shrink-0 accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               />
-              <span>{o.label}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{o.label}</span>
             </label>
             {o.description && <p className="pl-6 text-xs text-ink-muted">{o.description}</p>}
             {reasonId && <p id={reasonId} className="pl-6 text-xs text-ink-muted">{o.disabledReason}</p>}

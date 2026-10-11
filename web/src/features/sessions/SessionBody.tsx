@@ -215,8 +215,10 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
 
             <PendingPermissionPanel
               turns={rt.state.turns}
-              permissionMode={rt.mode}
               onDecision={rt.onDecision}
+              hasRepo={!!sessionRecord?.repo}
+              onPreviewRule={rt.onPreviewRule}
+              onGrantRule={rt.onGrantRule}
             />
 
             {/* Pinned model-approval panel for a mid-session gated model switch.

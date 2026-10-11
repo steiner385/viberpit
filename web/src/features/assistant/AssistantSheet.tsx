@@ -140,7 +140,6 @@ function AssistantSheetBody() {
           gate is unchanged; this only gives it somewhere to be answered. */}
       <PendingPermissionPanel
         turns={rt.state.turns}
-        permissionMode={rt.mode}
         onDecision={rt.onDecision}
       />
       <PendingQuestionPanel

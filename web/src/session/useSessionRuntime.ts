@@ -22,7 +22,8 @@ import { selectBackgroundWork, type BackgroundWorkView, selectSubAgents, selectV
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import { isPreSpawnStatus } from '@/api/types'
-import type { UsageWindow } from '@/api/types'
+import type { UsageWindow, RulePreview, GrantResult, RuleScope } from '@/api/types'
+import { api } from '@/api/client'
 import { usageWindows } from '@/lib/usageWindows'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
@@ -78,6 +79,11 @@ export interface SessionRuntime {
   /** True when a question is armed for chat — the composer shows a "Reply" affordance. */
   chatArmed: boolean
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
+  /** Dry-run a standing-rule pattern for a pending card. The server owns matching, risk and copy. */
+  onPreviewRule: (permId: string, pattern: string, scope: RuleScope) => Promise<RulePreview>
+  /** Grant a standing rule from a pending card. Resolves the card locally on success; rejects with
+   *  the `ApiRequestError` otherwise (branch on `apiErrorCode`) and leaves the card pending. */
+  onGrantRule: (permId: string, pattern: string, scope: RuleScope, confirm: boolean) => Promise<GrantResult>
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
@@ -289,6 +295,25 @@ export function useSessionRuntime(
       }
     },
     [sessionId, permissionResponse],
+  )
+
+  const onPreviewRule = useCallback(
+    (permId: string, pattern: string, scope: RuleScope) =>
+      api.post<RulePreview>('/permission-rules/preview', { sessionId, permId, pattern, scope }),
+    [sessionId],
+  )
+
+  // The server resolves the card and the WS `permissionResolved` echo follows; the reducer is
+  // idempotent on permId, so the local clear here only makes the card vanish without waiting.
+  const onGrantRule = useCallback(
+    async (permId: string, pattern: string, scope: RuleScope, confirm: boolean) => {
+      const res = await api.post<GrantResult>(
+        `/sessions/${sessionId}/permissions/${permId}/always`, { pattern, scope, confirm },
+      )
+      dispatch({ type: '_resolvePermission', permId, decision: 'always' })
+      return res
+    },
+    [sessionId],
   )
 
   // Answer handler for question cards. Send an answer over WS; on a confirmed
@@ -591,6 +616,8 @@ export function useSessionRuntime(
     armedQuestionId,
     chatArmed: armedQuestionId !== null,
     onDecision,
+    onPreviewRule,
+    onGrantRule,
     onAnswer,
     onChat,
     onPrompt,

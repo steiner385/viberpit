@@ -36,7 +36,10 @@ export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: bo
 // `items` is set only for a BATCH ViberPit tool (archive_sessions, delete_sessions…):
 // the titles of every session it would act on (spec v2 B4) — mirrors
 // PermissionRequest.items.
-export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; parentToolUseId?: string | null; ts?: number }
+/** A server-proposed standing-rule pattern for a permission card ("Always allow…"). */
+export type RuleSuggestion = { pattern: string; description: string; level: 'ok' | 'warn' }
+
+export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ruleSuggestions?: RuleSuggestion[]; parentToolUseId?: string | null; ts?: number }
 // A permission's future settled server-side (allowed or denied). Rides the same stream
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.

@@ -175,6 +175,26 @@ describe('transcriptReducer', () => {
     expect(noticeTexts(transcriptReducer(s, { type: 'permissionResolved', permId: 'perm-1', turnId: 't1', allowed: true }))).toEqual([])
   })
 
+  it('carries ruleSuggestions from permissionRequest onto the permission block', () => {
+    const ruleSuggestions = [{ pattern: 'Bash(npm test:*)', description: 'npm test', level: 'ok' as const }]
+    const s = reduce([
+      { type: 'turnStart',         turnId: 't1' },
+      { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { command: 'npm test' }, plan: false, ruleSuggestions },
+    ])
+    const block = s.turns[0].blocks.find((b) => b.kind === 'permission')
+    expect(block && block.kind === 'permission' && block.ruleSuggestions).toEqual(ruleSuggestions)
+  })
+
+  it('_resolvePermission then the WS permissionResolved for the same permId leaves exactly one notice', () => {
+    const s = reduce([
+      { type: 'turnStart',         turnId: 't1' },
+      { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { command: 'npm test' }, plan: false },
+    ])
+    const a = transcriptReducer(s, { type: '_resolvePermission', permId: 'perm-1', decision: 'always' })
+    const b = transcriptReducer(a, { type: 'permissionResolved', permId: 'perm-1', turnId: 't1', allowed: true })
+    expect(noticeTexts(b)).toEqual(['Always allowed Bash: npm test'])
+  })
+
   it('_resolvePermission with a decision for an unknown permId echoes nothing and keeps the state reference', () => {
     const s = reduce([
       { type: 'turnStart', turnId: 't1' },
