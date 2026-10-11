@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import type { DecisionProposal, InboxProposal, TriageProposal } from '@/api/triage'
 import {
-  INBOX_STALE_AFTER_MS, highConfidenceAcceptable, inboxAging, isItemGone, isPending, pendingProposals,
+  INBOX_STALE_AFTER_MS, highConfidenceAcceptable, inboxAging, isItemGone, isPending, isStalePending,
+  pendingProposals,
 } from './triageSelectors'
 
 function decision(over: Partial<DecisionProposal> = {}): DecisionProposal {
@@ -89,6 +90,15 @@ describe('isPending — a closed or merged work item is not pending', () => {
     expect(isItemGone(proposal({ itemState: 'open' }))).toBe(false)
     expect(isItemGone(decision())).toBe(false)
     expect(isItemGone(null)).toBe(false)
+  })
+
+  it('isStalePending is only the still-pending gone rows, never a decided one', () => {
+    expect(isStalePending(proposal({ itemState: 'closed' }))).toBe(true)
+    expect(isStalePending(proposal({ itemState: 'merged' }))).toBe(true)
+    expect(isStalePending(proposal({ itemState: 'open' }))).toBe(false)
+    // A fresh auto-accept listed for its undo window after the item closed.
+    expect(isStalePending(proposal({ status: 'accepted', classifiedBy: 'auto', itemState: 'merged' }))).toBe(false)
+    expect(isStalePending(null)).toBe(false)
   })
 
   it('the count drops the stale row', () => {

@@ -84,7 +84,7 @@ import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inbo
 import { InboxStarvationNotice } from './InboxStarvationNotice'
 import { ProposalCard } from './ProposalCard'
 import {
-  highConfidenceAcceptable, inboxAging, isItemGone, isPending, pendingProposals,
+  highConfidenceAcceptable, inboxAging, isPending, isStalePending, pendingProposals,
 } from './triageSelectors'
 
 export interface InboxScopeBodyProps {
@@ -111,9 +111,11 @@ export function InboxScopeBody({
   useTriageLive()
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
-  // A row whose work item already closed or merged has nothing left to decide;
-  // it leaves the list now rather than when the server's tick resolves it.
-  const live = useMemo(() => proposals.filter((p) => !isItemGone(p)), [proposals])
+  // A PENDING row whose work item already closed or merged has nothing left to
+  // decide; it leaves the list now rather than when the server's tick resolves
+  // it. A decided row stays even so — a fresh auto-accept is listed for its
+  // undo window, and hiding it would take its undo chip away early.
+  const live = useMemo(() => proposals.filter((p) => !isStalePending(p)), [proposals])
   const visible = useMemo(
     () => (q ? live.filter((p) => haystack(p).includes(q)) : live),
     [live, q],
