@@ -165,3 +165,46 @@ async def test_the_catalog_labels_who_owns_each_command():
     by = {c["name"]: c for c in await orch.command_catalog("s1")}
     assert by["review"]["source"] == "vendor"
     assert by["account"]["source"] == "app"
+
+
+def _raise_not_connected(*_a, **_k):
+    from claude_agent_sdk._errors import CLIConnectionError
+    raise CLIConnectionError("Not connected. Call connect() first.")
+
+
+async def _live_driver_with_cache(cached):
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.permissions import PermissionRegistry
+    from server.sessions.types import SessionRecord
+    orch, client = _orch_with_driver(server_info={"commands": [{"name": "review"}]})
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="Live", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
+        cols=80, rows=24, cwd="/tmp", command_catalog=cached,
+    )
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+                          sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
+                          identity="t")
+    await d.start()
+    orch._drivers["s1"] = d
+    return orch, client, d
+
+
+@pytest.mark.anyio
+async def test_driver_info_calls_return_empty_when_client_not_connected(monkeypatch):
+    """The SDK client is assigned before connect() completes; a not-connected client is
+    'no live info', not an error."""
+    _, client, d = await _live_driver_with_cache([])
+    monkeypatch.setattr(client, "get_server_info", _raise_not_connected)
+    monkeypatch.setattr(client, "get_context_usage", _raise_not_connected)
+    assert await d.server_info() is None
+    assert await d.context_usage() == {}
+
+
+@pytest.mark.anyio
+async def test_command_catalog_serves_cache_quietly_when_client_not_connected(monkeypatch, caplog):
+    cached = [{"name": "review", "description": "Review a PR", "argumentHint": "<pr>", "kind": "passthrough"}]
+    orch, client, _ = await _live_driver_with_cache(cached)
+    monkeypatch.setattr(client, "get_server_info", _raise_not_connected)
+    with caplog.at_level("DEBUG"):
+        assert await orch.command_catalog("s1") == cached
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]

@@ -2107,12 +2107,20 @@ class ClaudeAgentDriver:
     async def server_info(self) -> dict | None:
         if self._client is None or self._stream_ended:
             return None
-        return await self._client.get_server_info()
+        try:
+            return await self._client.get_server_info()
+        except CLIConnectionError:
+            # _client is assigned before connect() completes (and survives a
+            # disconnect), so "not connected" is "no live info", not a failure.
+            return None
 
     async def context_usage(self) -> dict:
         if self._client is None or self._stream_ended:
             return {}
-        return await self._client.get_context_usage()
+        try:
+            return await self._client.get_context_usage()
+        except CLIConnectionError:
+            return {}
 
     @property
     def last_mcp_status(self) -> list:
