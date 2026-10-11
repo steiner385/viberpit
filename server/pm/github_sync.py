@@ -19,6 +19,13 @@ _ITEM_FIELDS = """
       labels(first: 20) { nodes { name } }
       assignees(first: 10) { nodes { login } }"""
 
+# Issues only (#2683): the newest comments, so the mirror knows when a PERSON last
+# commented — one of the "material changes" that re-arms an issue a session found
+# needed no PR. A comment by a Bot/App (the runner's own, a workflow's) never counts.
+# Twenty is enough: a re-arm only cares whether a human commented AFTER the verdict.
+_ISSUE_COMMENTS = """
+      comments(last: 20) { nodes { createdAt author { __typename login } } }"""
+
 
 @dataclass(frozen=True)
 class WorkItemView:
@@ -41,6 +48,9 @@ class WorkItemView:
     node_id: str | None = None
     # GitHub assignee logins; an assigned item is never queue-eligible (spec 003 §7a, C-5).
     assignees: tuple[str, ...] = ()
+    # Newest comment by a User among the issue's recent comments (#2683); None for a
+    # PR, or an issue with none.
+    last_human_comment_at: datetime | None = None
 
 
 def _owner_name(repo: str) -> tuple[str, str]:
@@ -77,7 +87,7 @@ def build_issues_query(repo: str, cursor: str | None, since_iso: str | None) -> 
     issues(first: {_PAGE_ISSUES}{after}, states: [OPEN, CLOSED],
            orderBy: {{field: UPDATED_AT, direction: ASC}}{filter_by}) {{
       pageInfo {{ endCursor hasNextPage }}
-      nodes {{ id {_ITEM_FIELDS}
+      nodes {{ id {_ITEM_FIELDS}{_ISSUE_COMMENTS}
       }}
     }}
   }}
@@ -121,6 +131,22 @@ def _author(author) -> str:
     if login and author.get("__typename") == "Bot":
         return f"app/{login}"
     return login
+
+
+def _last_human_comment_at(node: dict) -> datetime | None:
+    """The newest ``createdAt`` among *node*'s comments whose author is a User — a
+    Bot author (``__typename == "Bot"``) or a deleted one (no author) never counts."""
+    newest: datetime | None = None
+    for c in ((node.get("comments") or {}).get("nodes") or []):
+        if not isinstance(c, dict):
+            continue
+        author = c.get("author")
+        if not isinstance(author, dict) or author.get("__typename") != "User":
+            continue
+        at = _parse_dt(c.get("createdAt"))
+        if at is not None and (newest is None or at > newest):
+            newest = at
+    return newest
 
 
 def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView], str | None, bool]:
@@ -170,5 +196,6 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
             assignees=tuple(
                 a["login"] for a in ((node.get("assignees") or {}).get("nodes") or [])
                 if isinstance(a, dict) and a.get("login")),
+            last_human_comment_at=_last_human_comment_at(node) if kind == "issue" else None,
         ))
     return items, info.get("endCursor"), bool(info.get("hasNextPage"))

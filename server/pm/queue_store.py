@@ -20,7 +20,8 @@ from server.db.models import (AutomationTargetState, GhProjectItem, Session as D
                               WorkItem, WorkItemDep)
 from .desired_state import LIVE_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
-from .outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
+from .outcomes import (NotNeededVerdict, body_fingerprint, bounces_stmt, not_needed_stmt,
+                       not_needed_suppression, rows_to_bounces)
 from .queue import QueueRow
 from .reconcile_inputs import _aware
 from .refs import split_ref
@@ -107,6 +108,14 @@ def load_queue_rows(db: Session, *, now: datetime,
         # structurally a ``tuple[str, str, int]`` (mypy), though it unpacks as one.
         bounce_rows = [(ref, fp, n) for ref, fp, n in db.execute(bounces_stmt(pairs)).all()]
         bounces = rows_to_bounces(bounce_rows, pairs) if pairs else {}
+        # #2683: every not-needed verdict on these issues, judged against each
+        # issue's CURRENT material below (``outcomes.not_needed_suppression``).
+        verdicts: dict[str, list[NotNeededVerdict]] = {}
+        for ref, ended_at, material_fp, body_fp in db.execute(
+                not_needed_stmt([ref for ref, _ in pairs])).all():
+            verdicts.setdefault(ref, []).append(
+                NotNeededVerdict(ended_at=ended_at, material_fingerprint=material_fp,
+                                 body_fingerprint=body_fp))
 
         open_children: dict[str | None, int] = {
             parent_id: count for parent_id, count in db.execute(
@@ -141,6 +150,9 @@ def load_queue_rows(db: Session, *, now: datetime,
         product_slug = product.slug or product.project_id
         for it, w in items:
             ref = f"{w.repo}#{w.number}"
+            not_needed_until, not_needed_standing = not_needed_suppression(
+                verdicts.get(ref, ()), title=w.title, body=w.body, labels=w.labels,
+                last_human_comment_at=w.last_human_comment_at)
             rows.append(QueueRow(
                 ref=ref, repo=w.repo or "", number=int(w.number or 0), product=product_slug,
                 title=w.title or "", body=w.body or "", url=w.url or "",
@@ -156,5 +168,7 @@ def load_queue_rows(db: Session, *, now: datetime,
                 hold_reason=w.hold_reason, hold_by=w.hold_by,
                 hold_set_at=_aware(w.hold_set_at),
                 work_item_id=w.id,
+                not_needed_until=not_needed_until,
+                not_needed_standing=not_needed_standing,
             ))
     return rows

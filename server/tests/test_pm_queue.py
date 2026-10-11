@@ -239,6 +239,8 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "tracker": _row(labels=("flaky",)),
         "untrusted": _row(author="stranger"),
         "held": _row(hold_kind="owner_action"),
+        "not_needed": _row(not_needed_until=NOW + timedelta(days=1),
+                           not_needed_standing=True),
         "needs_spec": _row(bounces=2),
     }
     seen = set()

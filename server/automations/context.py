@@ -16,6 +16,7 @@ from server.db import db_session, dialect_insert
 from server.db.models import (
     DISPATCH_KINDS,
     DISPATCH_OUTCOMES,
+    NOT_NEEDED_CAUSE,
     AutomationEvent,
     AutomationTargetState,
     DispatchOutcome,
@@ -24,6 +25,7 @@ from server.db.models import (
 from server.pm.outcomes import (
     body_fingerprint,
     bounces_stmt,
+    material_fingerprint,
     never_ran_stmt,
     prior_attempts as _prior_attempts,
     project_id_for_slug,
@@ -125,6 +127,23 @@ async def _fingerprint_for(db, target: str) -> str | None:
         WorkItem.repo == repo, WorkItem.number == number,
         WorkItem.kind == "issue"))).scalars().first()
     return body_fingerprint(wi.title, wi.body) if wi is not None else None
+
+
+async def _material_fingerprint_for(db, target: str, cause: str | None) -> str | None:
+    """The issue's material identity (``outcomes.material_fingerprint``) off its mirror
+    row, for a ``NOT_NEEDED_CAUSE`` verdict only — the one row not-needed suppression
+    reads (#2683). ``None`` for any other cause, an unparseable ref or an unmirrored
+    issue (suppression then falls back to the row's ``body_fingerprint``)."""
+    if cause != NOT_NEEDED_CAUSE:
+        return None
+    parts = split_ref(target)
+    if parts is None:
+        return None
+    repo, number = parts
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.repo == repo, WorkItem.number == number,
+        WorkItem.kind == "issue"))).scalars().first()
+    return material_fingerprint(wi.title, wi.body, wi.labels) if wi is not None else None
 
 
 def _account_defaults_for(account: str) -> dict:
@@ -714,7 +733,9 @@ class AutomationContext:
                         started_at=None, ended_at=now, updated_at=now,
                         outcome=outcome, cause=cause,
                         pr_number=pr_number, pr_url=pr_url,
-                        first_pass_merge=first_pass_merge))
+                        first_pass_merge=first_pass_merge,
+                        material_fingerprint=await _material_fingerprint_for(
+                            db, target, cause)))
                     log.info("automation_context.finalize_outcome_recovered_row target=%s",
                              target)
                     return
@@ -723,6 +744,7 @@ class AutomationContext:
                              target)
                     return
                 row.outcome, row.cause = outcome, cause
+                row.material_fingerprint = await _material_fingerprint_for(db, target, cause)
                 if pr_number is not None:
                     row.pr_number = pr_number
                 if pr_url is not None:

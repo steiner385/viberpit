@@ -4336,16 +4336,26 @@ def test_a_not_needed_ending_on_a_closed_issue_settles_without_a_bounce(tmp_path
     asyncio.run(run())
 
 
-def test_a_not_needed_ending_on_an_open_issue_parks_for_the_owner_not_the_ladder(tmp_path):
+def test_a_not_needed_ending_on_an_open_issue_is_suppressed_not_held(tmp_path):
+    """#2683: an open issue the session found needed no PR is released with NO owner
+    hold. The verdict row carries the issue's material identity, so the queue skips
+    the issue as ``not_needed`` until it materially changes (``outcomes``)."""
     async def run():
         from server.db.models import NOT_NEEDED_CAUSE
-        _loop, rec, _ctx = await _sweep_after_ending(
+        from server.pm.outcomes import material_fingerprint
+        _loop, rec, ctx = await _sweep_after_ending(
             tmp_path, "not_needed_open.db", "not-needed", held=(),
             investigation_state={"issue_state": "open", "no_pr_note": "fixed by #9"})
-        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
-            ("no_pr", NOT_NEEDED_CAUSE)]
-        assert rec.escalations == []
-        assert len(rec.needs_humans) == 1 and "fixed by #9" in rec.needs_humans[0][1]
+        rows = await _outcomes("o/r#1")
+        assert [(r.outcome, r.cause) for r in rows] == [("no_pr", NOT_NEEDED_CAUSE)]
+        # ``_seed_product``'s mirror row: title "T", body "B", no labels.
+        assert rows[0].material_fingerprint == material_fingerprint("T", "B", [])
+        assert not await ctx.get_target_state("o/r#1")   # claim released, no gave_up row
+        assert rec.escalations == [] and rec.needs_humans == []
+        events = await ctx.list_events(kind=NOT_NEEDED_CAUSE)
+        assert [e["target"] for e in events] == ["o/r#1"]
+        assert "materially changes" in events[0]["summary"]
+        assert "fixed by #9" in events[0]["summary"]
 
     asyncio.run(run())
 
@@ -4384,19 +4394,18 @@ def test_a_not_needed_open_issue_the_queue_skips_settles_without_an_owner_hold(t
     asyncio.run(run())
 
 
-def test_a_not_needed_tracker_keeps_the_owner_hold_when_the_product_works_trackers(tmp_path):
-    """A product that opted back in (``skip_self_closing_trackers: false``) would have
-    the queue re-dispatch the tracker the moment the claim is released — the owner
-    hold is what stops that loop, so the ordinary hand-off stands."""
+def test_a_not_needed_tracker_on_a_product_that_works_trackers_is_suppressed_not_held(
+        tmp_path):
+    """A product that opted back in (``skip_self_closing_trackers: false``) gets the
+    same treatment as any open issue: no owner hold; not-needed suppression keeps it
+    from re-dispatching until it materially changes."""
     async def run():
         _loop, rec, ctx = await _sweep_after_ending(
             tmp_path, "not_needed_tracker_opt_out.db", "not-needed", held=(),
             investigation_state=FLAKY_TRACKER,
             policy_over={"skip_self_closing_trackers": False})
-        assert len(rec.needs_humans) == 1
-        assert "auto-closes after 10 passes" in rec.needs_humans[0][1]
-        st = await ctx.get_target_state("o/r#1")
-        assert st.get("gave_up") is True
+        assert rec.needs_humans == []
+        assert not await ctx.get_target_state("o/r#1")
 
     asyncio.run(run())
 

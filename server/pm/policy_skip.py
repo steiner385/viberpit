@@ -58,16 +58,31 @@ def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
     return not_work_by_policy(author=author, labels=labels, title=title, policy=policy)
 
 
+#: The reason the runner wrote, before #2683, when a session found an OPEN issue
+#: needed no PR ("session found no PR is needed (not-needed): <note>"). It no
+#: longer writes such a hold — not-needed suppression keeps the issue out of the
+#: queue instead — so this is read only to clear the ones already written.
+NOT_NEEDED_HOLD_PREFIX = "session found no PR is needed"
+
+
+def _not_needed_hold_still_stands(row: QueueRow) -> bool:
+    return (row.not_needed_standing
+            and (row.hold_reason or "").startswith(NOT_NEEDED_HOLD_PREFIX))
+
+
 def stale_runner_holds(rows: Iterable[QueueRow],
                        policies: Mapping[str, Mapping]) -> list[QueueRow]:
     """The rows whose ``owner_action`` hold the RUNNER wrote and whose issue the
     owning product's policy now skips as ``bot`` or ``tracker``
-    (``not_work_by_policy``), in the order given. A person's hold,
+    (``not_work_by_policy``), or whose "session found no PR is needed" hold is
+    covered by a not-needed verdict that still stands (#2683: the queue suppresses
+    the issue on its own until it materially changes), in the order given. A person's hold,
     a hold of another kind, and an issue the policy still treats as work are not stale.
     Author TRUST is deliberately not part of this: an untrusted author's issue is not
     dispatched, but the owner's inbox must not be emptied because a product has not
     (yet) listed its trusted authors."""
     return [row for row in rows
             if row.hold_kind == "owner_action" and row.hold_by == RUNNER_ACTOR
-            and not_work_by_policy(author=row.author, labels=row.labels, title=row.title,
-                                   policy=policies.get(row.product))]
+            and (_not_needed_hold_still_stands(row)
+                 or not_work_by_policy(author=row.author, labels=row.labels,
+                                       title=row.title, policy=policies.get(row.product)))]
