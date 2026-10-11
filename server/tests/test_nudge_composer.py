@@ -136,3 +136,21 @@ async def test_org_denial_is_decoded_and_the_account_barred(caplog):
     assert "kind=auth_forbidden" in failed[0]
     assert "organization has disabled" in failed[0]
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_helper_account_during_lease_renewal_defers(monkeypatch, caplog):
+    """#2953 sibling: in the post-restart creds window the composer must not decline
+    (None → the loop escalates) — it signals a deferral the loop waits out."""
+    import logging
+
+    import server.automations.nudge_composer as mod
+    from server.sessions.helper_call import HelperCredentialsPending
+
+    monkeypatch.setattr(mod, "helper_credentials_pending", lambda: True)
+    with caplog.at_level(logging.INFO, logger="server.automations.nudge_composer"):
+        with pytest.raises(HelperCredentialsPending):
+            await compose_nudge(
+                _ctx(), intent_hint="fix CI", verdict_reason=None, verdict_remedy=None,
+                recent_nudges=[], rich_tail=[], facts_verified=False, _config_dir="")
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
