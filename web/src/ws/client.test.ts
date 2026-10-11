@@ -426,6 +426,101 @@ describe('SessionSocket update-pending queue', () => {
     expect(JSON.parse(ws.sent.at(-1)!)).toMatchObject({ type: 'prompt', replySource: 'suggested' })
   })
 
+  // A rejection that is NOT a deploy drain (2026-10-10: a rocky session answered
+  // `no_driver`) must not raise "Update in progress": nothing will ever send the
+  // `updateCancelled` that clears it, so the banner and its held messages stuck forever.
+  it('holds a non-drain rejection without entering drain mode, then retries it', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    const handler = vi.fn()
+    sock.on('updatePendingChange', handler)
+
+    sock.prompt('s1', 'please', [])
+    ws.sent.length = 0
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'please', reason: 'no_driver' })
+    expect(handler).toHaveBeenLastCalledWith({ active: false, count: 1 })
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"'))).toBe(false)
+
+    vi.advanceTimersByTime(SessionSocket.HELD_RETRY_BASE_MS)
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('please'))).toBe(true)
+    expect(handler).toHaveBeenLastCalledWith({ active: false, count: 0 })
+  })
+
+  it('a prompt sent while a non-drain rejection is held goes straight out', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'held', reason: 'recovering' })
+    expect(sock.prompt('s2', 'other session', [])).toBe('sent')
+  })
+
+  it('backs off between retries of a prompt the server keeps refusing', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'x', reason: 'no_driver' })
+    vi.advanceTimersByTime(SessionSocket.HELD_RETRY_BASE_MS)
+    ws.sent.length = 0
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'x', reason: 'no_driver' })
+    vi.advanceTimersByTime(SessionSocket.HELD_RETRY_BASE_MS)
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"'))).toBe(false)
+    vi.advanceTimersByTime(SessionSocket.HELD_RETRY_BASE_MS)
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"'))).toBe(true)
+  })
+
+  it('treats an explicit draining rejection as a drain', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+    const handler = vi.fn()
+    sock.on('updatePendingChange', handler)
+    lastSock().simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'a', reason: 'draining' })
+    expect(handler).toHaveBeenLastCalledWith({ active: true, count: 1 })
+  })
+
+  it('a reconnect clears a drain flag even with nothing held', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'updatePending' })
+    expect(sock.updatePendingState.active).toBe(true)
+    ws.simulateClose()
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+    expect(sock.updatePendingState).toEqual({ active: false, count: 0 })
+  })
+
+  it('sendHeldNow flushes held prompts and leaves drain mode', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'now please', [])
+    sock.sendHeldNow()
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('now please'))).toBe(true)
+    expect(sock.updatePendingState).toEqual({ active: false, count: 0 })
+  })
+
+  it('discardHeld drops held prompts and leaves drain mode', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'gone', reason: 'no_driver' })
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.discardHeld()
+    expect(sock.updatePendingState).toEqual({ active: false, count: 0 })
+    vi.advanceTimersByTime(SessionSocket.HELD_RETRY_MAX_MS * 2)
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"'))).toBe(false)
+  })
+
   it('emits updatePendingChange with active flag and count', () => {
     const sock = new SessionSocket('/ws')
     sock.connect()

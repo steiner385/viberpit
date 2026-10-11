@@ -12,7 +12,7 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent, PromptContext } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import type { PromptStage } from '@/session/promptStage'
-import { noteSent, noteStage, noteHeld, reconcileFlightRow } from '@/lib/promptFlight'
+import { noteSent, noteStage, noteHeld, clearFlight, reconcileFlightRow } from '@/lib/promptFlight'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
 import { revIsNewer, shouldApplyRev } from '@/session/reconcile'
@@ -108,6 +108,15 @@ export class SessionSocket {
   private _updatePending = false
   private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext; replySource?: 'suggested' }[] = []
   private static readonly MAX_PENDING = 50
+  // A prompt the server refused for any reason OTHER than a deploy drain (no_driver,
+  // recovering, unavailable, busy, rate limited) is held and retried on this backoff.
+  // Only a drain ends with an `updateCancelled` frame; nothing announces the end of
+  // these, so without a retry of our own the prompt was held forever behind an
+  // "Update in progress" banner no deploy would ever clear (2026-10-10).
+  private _heldRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private _heldRetryAttempt = 0
+  static readonly HELD_RETRY_BASE_MS = 5_000
+  static readonly HELD_RETRY_MAX_MS = 60_000
   private _gap: GapState = createGapState()
   // revAt the transcript stream was last demonstrably synced to: whenever session
   // frames arrive we adopt the cached row's revAt as "seen". Compared against the
@@ -201,7 +210,9 @@ export class SessionSocket {
         this._lastSessionFrameAt = Date.now()
         this._send(this._attachFrame(this._activeSessionId))
       }
-      if (this._pendingPrompts.length) this._flushPending()
+      // Always, not only when prompts are held: a drain flag that outlived the restart
+      // it announced is stale — a still-draining server simply rejects the next send.
+      if (this._pendingPrompts.length || this._updatePending) this._flushPending()
     }
 
     ws.onmessage = (event) => this._onRawMessage(event.data as string)
@@ -264,8 +275,55 @@ export class SessionSocket {
       this._livenessTimer = null
     }
     this._clearStableTimer()
+    this._clearHeldRetry()
     this.ws?.close()
     this.ws = null
+  }
+
+  /** The hold banner's "Send now": stop waiting for the drain / retry and send what is
+   *  held. On a closed socket the prompts stay queued for the reconnect flush. */
+  sendHeldNow() {
+    this._heldRetryAttempt = 0
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this._flushPending()
+      return
+    }
+    this._updatePending = false
+    this._emitUpdatePending()
+  }
+
+  /** The hold banner's "Discard": drop every held prompt and leave drain mode. */
+  discardHeld() {
+    const dropped = this._pendingPrompts
+    this._pendingPrompts = []
+    this._updatePending = false
+    this._heldRetryAttempt = 0
+    this._clearHeldRetry()
+    for (const sessionId of new Set(dropped.map((p) => p.sessionId))) clearFlight(sessionId)
+    this._emitUpdatePending()
+  }
+
+  private _clearHeldRetry() {
+    if (this._heldRetryTimer !== null) {
+      clearTimeout(this._heldRetryTimer)
+      this._heldRetryTimer = null
+    }
+  }
+
+  private _scheduleHeldRetry() {
+    if (this._heldRetryTimer !== null) return
+    const delay = Math.min(
+      SessionSocket.HELD_RETRY_BASE_MS * 2 ** this._heldRetryAttempt,
+      SessionSocket.HELD_RETRY_MAX_MS,
+    )
+    this._heldRetryAttempt += 1
+    this._heldRetryTimer = setTimeout(() => {
+      this._heldRetryTimer = null
+      // A drain began meanwhile: its updateCancelled / the reconnect flushes instead.
+      // A closed socket: the reconnect's onopen flushes.
+      if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) return
+      this._flushPending()
+    }, delay)
   }
 
   private _clearStableTimer() {
@@ -320,7 +378,10 @@ export class SessionSocket {
     // `undefined` (no cached row) means "unknown", distinct from `null` (never ran).
     const row = this._cachedRow(sessionId)
     const baseline = row ? (row.updatedAt ?? null) : undefined
-    if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
+    // A prompt held for THIS session (a non-drain refusal awaiting retry) also holds
+    // this one, so the two still reach the session in the order they were written.
+    if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN
+        || this._pendingPrompts.some((p) => p.sessionId === sessionId)) {
       this._enqueuePrompt({ sessionId, text, attachmentIds, context, replySource })
       noteSent(sessionId, 'buffered', baseline)
       return 'buffered'
@@ -418,6 +479,7 @@ export class SessionSocket {
     const pending = this._pendingPrompts
     this._pendingPrompts = []
     this._updatePending = false
+    this._clearHeldRetry()
     for (const p of pending) {
       this._send({ type: 'prompt', sessionId: p.sessionId, text: p.text,
         ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}),
@@ -806,21 +868,28 @@ export class SessionSocket {
         this._flushPending()
         break
       case 'promptAck':
+        // Accepted: a later refusal starts its retry backoff from the bottom again.
+        this._heldRetryAttempt = 0
         // Both surfaces: the store (session list, mounted or not) and the channel
         // (the open transcript's reducer).
         noteStage(msg.sessionId, msg.stage)
         this._emit('promptAck', msg)
         break
-      case 'promptRejected':
-        // Server refused this prompt (deploy drain). Re-queue it so it flushes on
-        // the next reconnect/cancel instead of being lost, and enter holding.
-        this._updatePending = true
+      case 'promptRejected': {
+        // Server refused this prompt. Re-queue it so it is never lost. Only a deploy
+        // drain enters drain mode ("Update in progress"), which its updateCancelled or
+        // the restart's reconnect ends; every other refusal retries on a backoff. An
+        // absent reason is an older edge, which only ever refused during a drain.
+        const draining = msg.reason === undefined || msg.reason === 'draining'
+        if (draining) this._updatePending = true
         this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds, replySource: msg.replySource })
+        if (!draining) this._scheduleHeldRetry()
         // Tell the transcript too: its bubble has been showing "Sending…" for a frame
         // that came back. Without this the re-queue is correct but invisible.
         noteHeld(msg.sessionId)
         this._emit('promptHeld', msg)
         break
+      }
       default:
         // Fan out individual session events sent directly (not wrapped in batch)
         if (SESSION_EVENT_TYPES.has((msg as { type: string }).type)) {

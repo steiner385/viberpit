@@ -96,4 +96,14 @@ describe('useInputHold', () => {
     act(() => { vi.advanceTimersByTime(RECONNECT_BANNER_GRACE_MS) })
     expect(result.current.holding).toBe(true)
   })
+
+  // A session refused a prompt on a live socket (no_driver, recovering): "Connection
+  // lost" would be false — the banner says it is retrying instead.
+  it('reports held messages on a connected socket as retrying, not reconnecting', () => {
+    fakeSocket = makeSocket('connected')
+    fakeSocket.updatePendingState = { active: false, count: 1 }
+    const { result } = renderHook(() => useInputHold())
+    expect(result.current.holding).toBe(true)
+    expect(result.current.mode).toBe('retrying')
+  })
 })
