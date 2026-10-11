@@ -45,6 +45,16 @@ class TestStore(unittest.TestCase):
             self.assertIsNone(s.launch_token("a", now=131))
             self.assertTrue(s.holds("a"))  # never falls back to the mount
 
+    def test_awaiting_renewal_only_once_something_was_vended(self):
+        with temp_env() as d:
+            s = EnvelopeStore(d / "c")
+            self.assertFalse(s.awaiting_renewal(now=100))  # never brokered here
+            s.sync([_env()], 60, now=100)
+            self.assertFalse(s.awaiting_renewal(now=159))  # lease live
+            self.assertTrue(s.awaiting_renewal(now=161))   # restart outlived the lease
+            s.sync([], 60, now=200)                        # authority vends nothing
+            self.assertFalse(s.awaiting_renewal(now=300))
+
     def test_account_missing_from_push_is_dropped(self):
         with temp_env() as d:
             s = EnvelopeStore(d / "c")

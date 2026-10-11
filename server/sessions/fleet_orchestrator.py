@@ -9,6 +9,7 @@ import logging
 import math
 import time
 
+from viberpit import credential_envelope
 from viberpit.quota import QuotaSnapshot
 from server.ipc.client import DaemonUnavailable
 from server.obs.logdedupe import LogThrottle, log_event_throttled
@@ -24,9 +25,9 @@ from server.sessions.types import is_assistant, is_assistant_kind
 
 log = logging.getLogger(__name__)
 
-# Credential broker cadence (#2629): the probe interval, and a lease of four missed pushes.
-CREDS_PUSH_INTERVAL_S = 30.0
-CREDS_LEASE_S = 120.0
+# Credential broker cadence (#2629) lives beside the runner store that honours it.
+CREDS_PUSH_INTERVAL_S = credential_envelope.CREDS_PUSH_INTERVAL_S
+CREDS_LEASE_S = credential_envelope.CREDS_LEASE_S
 # One missed push costs nothing: the runner still holds a lease and the next tick refreshes it.
 # A daemon restart window (~10-20 s, nothing listening) is one such miss (#2757). The lease is
 # only at risk one tick before it lapses, so a run of refused/timed-out pushes is INFO until
