@@ -91,10 +91,10 @@ async def test_ordinary_always_allows_once_and_persists_nothing():
     registry = PermissionRegistry()
     perm_id, future, _ = await registry.request(
         "s1", "t1", "Bash", {"command": "ls"}, mode="interactive",
-        denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="alice")
+        denylist=PermissionRegistry.DANGEROUS, identity="alice")
     assert registry.resolve(perm_id, "always", "alice") is True
     assert await future is True
     pid2, _, _ = await registry.request(
         "s1", "t2", "Bash", {"command": "ls"}, mode="interactive",
-        denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="alice")
+        denylist=PermissionRegistry.DANGEROUS, identity="alice")
     assert pid2 is not None

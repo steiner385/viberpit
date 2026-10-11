@@ -76,7 +76,7 @@ def test_registry_logs_every_card_it_raises(caplog):
             perm_id, fut, _ = await reg.request(
                 "sess-1", "turn-1", "Bash", {"command": "sed -i s/a/b/ x.md"},
                 mode="interactive", denylist=PermissionRegistry.DANGEROUS,
-                allowlist=True, identity="tony")
+                identity="tony")
         assert perm_id is not None
         reg.deny_all("sess-1")
         await fut
@@ -96,7 +96,7 @@ def test_registry_stays_silent_when_it_auto_approves(caplog, mode):
             perm_id, fut, _ = await reg.request(
                 "sess-1", "turn-1", "Bash", {"command": "echo hi"},
                 mode=mode, denylist=PermissionRegistry.DANGEROUS,
-                allowlist=True, identity="tony")
+                identity="tony")
         assert perm_id is None and await fut is True
         return [r for r in caplog.records if r.name == "server.sessions.permissions"]
 

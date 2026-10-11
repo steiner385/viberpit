@@ -28,7 +28,7 @@ async def _add(scope, key, pattern):
 
 async def _ask(reg, sid, tool, inp, mode="interactive"):
     return await reg.request(sid, "t", tool, inp, mode=mode, denylist=PermissionRegistry.DANGEROUS,
-                             allowlist=True, identity="me")
+                             identity="me")
 
 
 @pytest.mark.parametrize("mode", ["interactive", "auto", "allowlist", "acceptEdits"])

@@ -39,7 +39,7 @@ async def test_project_mcp_server_and_our_server_coexist(tmp_path):
     decisions: list[tuple[str, str | None]] = []
     async def can_use_tool(name, inp, ctx_=None):
         pid, fut, _ = await reg.request("real", "t1", name, inp, mode="default",
-                                        denylist=(), allowlist=True, identity="test")
+                                        denylist=(), identity="test")
         decisions.append((name, pid))
         if pid is not None:
             reg.resolve(pid, "allow", "test")

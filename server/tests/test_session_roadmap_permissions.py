@@ -28,7 +28,7 @@ async def test_roadmap_permission_class_is_enforced_in_every_mode(mode, name):
     registry = PermissionRegistry()
     pid, future, _ = await registry.request(
         SESSION, "turn-1", MCP_PREFIX + name, {}, mode=mode,
-        denylist=(), allowlist=True, identity="user@example.com")
+        denylist=(), identity="user@example.com")
     if name in READS:
         assert pid is None and future.result() is True
     else:

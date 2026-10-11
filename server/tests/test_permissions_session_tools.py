@@ -17,5 +17,5 @@ from server.sessions.permissions import PermissionRegistry
 async def test_session_tools_never_raise_a_card(mode, tool):
     reg = PermissionRegistry()
     pid, fut, _ = await reg.request("s1", "t1", tool, {"category": "prompt"}, mode=mode,
-                                    denylist=(), allowlist=True, identity="u")
+                                    denylist=(), identity="u")
     assert pid is None and fut.done() and fut.result() is True

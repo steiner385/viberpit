@@ -178,7 +178,7 @@ class PermissionRegistry:
         rec = self._pending.get(perm_id)
         return list(rec.get("suggestions") or []) if rec else []
 
-    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity,
+    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, identity,
                       items: list[str] | None = None, parent_tool_use_id: str | None = None):
         # Our own MCP server (`mcp__viberpit__*`, and `mcp__ccswitch__*` from
         # before the rebrand) is the app talking to

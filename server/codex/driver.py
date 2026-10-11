@@ -1596,7 +1596,6 @@ class CodexAgentDriver:
             arguments,
             mode=self.mode,
             denylist=(),
-            allowlist=True,
             identity=self.identity,
         )
         if perm_id is not None:

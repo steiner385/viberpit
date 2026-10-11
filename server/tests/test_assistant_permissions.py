@@ -59,7 +59,7 @@ def test_read_viberpit_tool_auto_allowed_no_card_in_interactive():
         return await reg.request(
             "s1", "t1", MCP_PREFIX + "list_sessions", {},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
-            allowlist=True, identity="me")
+            identity="me")
 
     pid, fut, always_allowed = _run(run())
     assert pid is None, "a READ ViberPit tool must never surface a card"
@@ -85,7 +85,7 @@ def test_mutation_viberpit_tool_always_allows_once_and_needs_a_rule_to_stick(
     async def ask(reg):
         return await reg.request(
             "s1", "t", tool, {"id": "s9"}, mode="interactive",
-            denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity="me")
+            denylist=PermissionRegistry.DANGEROUS, identity="me")
 
     async def run():
         reg = PermissionRegistry()
@@ -122,7 +122,7 @@ def test_destructive_viberpit_tool_always_prompts_even_in_full_auto(fake_specs):
         return await reg.request(
             "s1", "t1", MCP_PREFIX + "delete_session", {"id": "s9"},
             mode="full-auto", denylist=frozenset(),
-            allowlist=True, identity="me")
+            identity="me")
 
     pid, fut, always_allowed = _run(run())
     assert pid is not None, "a DESTRUCTIVE ViberPit tool must prompt even in full-auto"
@@ -136,7 +136,7 @@ def test_destructive_viberpit_tool_always_decision_does_not_grant(fake_specs):
         pid, fut, always_allowed = await reg.request(
             "s1", "t1", MCP_PREFIX + "delete_session", {"id": "s9"},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
-            allowlist=True, identity="me")
+            identity="me")
         assert always_allowed is False
         reg.resolve(pid, "always", "me")
         assert await fut is True, "the ONE call resolved 'always' must still be allowed"
@@ -144,7 +144,7 @@ def test_destructive_viberpit_tool_always_decision_does_not_grant(fake_specs):
         pid2, fut2, always_allowed2 = await reg.request(
             "s1", "t2", MCP_PREFIX + "delete_session", {"id": "s9"},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
-            allowlist=True, identity="me")
+            identity="me")
         assert pid2 is not None, "a destructive tool must ask again — 'always' never grants it"
         assert always_allowed2 is False
         reg.resolve(pid2, "deny", "me")
@@ -165,7 +165,7 @@ def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name):
     async def run():
         return await reg.request(
             "s1", "t1", f"{MCP_PREFIX}{name}", {},
-            mode="full-auto", denylist=frozenset(), allowlist=True, identity="me")
+            mode="full-auto", denylist=frozenset(), identity="me")
 
     pid, _fut, always_allowed = _run(run())
     assert pid is not None, f"{name} must prompt even in full-auto"
@@ -185,7 +185,7 @@ def test_unknown_viberpit_tool_treated_as_mutation_like():
         return await reg.request(
             "s1", "t1", MCP_PREFIX + "not_yet_registered", {},
             mode="full-auto", denylist=frozenset(),
-            allowlist=True, identity="me")
+            identity="me")
 
     pid, fut, always_allowed = _run(run())
     assert pid is not None, "an unrecognized ViberPit tool must prompt, not crash or auto-allow"
@@ -203,7 +203,7 @@ def test_third_party_mcp_tool_still_auto_allowed_everywhere():
         return await reg.request(
             "s1", "t1", "mcp__github__create_issue", {},
             mode=mode, denylist=PermissionRegistry.DANGEROUS,
-            allowlist=True, identity="me")
+            identity="me")
 
     for mode in ("interactive", "allowlist", "auto", "full-auto"):
         pid, fut, always_allowed = _run(run(mode))
