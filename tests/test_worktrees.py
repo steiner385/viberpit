@@ -709,3 +709,23 @@ def test_verified_created_worktree_requires_repository_branch_and_creation_time(
     assert worktrees.verified_created_worktree_branch(str(repo), str(extra), "fix/extra", start + 60000, end + 60000) is None
     assert worktrees.verified_created_worktree_branch(str(repo), str(extra), "fix/extra", None, end) is None
     assert worktrees.verified_created_worktree_branch(str(repo), str(tmp_path / "missing"), "fix/extra", start, end) is None
+
+
+def test_push_evidence_reports_the_upstream_branch_not_the_local_name(tmp_path):
+    """#2909: a worktree on `viberpit/fix-abc` that pushed to `fix/x` links by the
+    branch it actually pushed to, plus its HEAD sha."""
+    local = tmp_path / "local"
+    _make_repo_with_origin(local, tmp_path)
+    _git("checkout", "-b", "viberpit/fix-abc", cwd=str(local))
+    (local / "f.txt").write_text("f\n")
+    _git("add", "-A", cwd=str(local))
+    _git("commit", "-m", "f", cwd=str(local))
+    _git("push", "-u", "origin", "HEAD:fix/x", cwd=str(local))
+    assert worktrees.push_evidence(str(local)) == ("fix/x", _rev(local, "HEAD"))
+
+
+def test_push_evidence_without_upstream_still_reports_head(tmp_path):
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    assert worktrees.push_evidence(str(repo)) == (None, _rev(repo, "HEAD"))
+    assert worktrees.push_evidence(str(tmp_path)) == (None, None)

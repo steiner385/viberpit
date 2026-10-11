@@ -207,12 +207,26 @@ def test_create_time_opt_out_blocks_completion_autoarchive():
     asyncio.run(run())
 
 
+def _flapping_unarmed_pr(orch):
+    """An unarmed PR whose check rollup changes on every read, so each nudge sees a
+    different PR state and the unchanged-state dedupe (#2909) never applies — only
+    the cap can stop the loop."""
+    reads = iter(range(1000))
+
+    def _pr_for(repo, branch):
+        pr = _unarmed_pr()
+        pr.checks = "pending" if next(reads) % 2 else "passing"
+        return pr
+    orch.pr_for = _pr_for  # type: ignore[method-assign]
+
+
 def test_repeated_not_ready_completes_stop_nudging_after_cap():
     """An agent that keeps re-signalling complete without arming its PR is nudged up to
     the cap, then left alone (no infinite nudge loop)."""
     async def run():
         rec = _rec("s1", origin=None)
         orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        _flapping_unarmed_pr(orch)
         # Re-emit complete many times; each defer clears the guard so the next call runs.
         for _ in range(6):
             orch._maybe_autoarchive_completed("s1", "complete", rec)
@@ -244,6 +258,7 @@ def test_stuck_complete_session_archives_once_pr_merges_after_nudge_cap():
         rec = _rec("s1", origin=None)
         rec.status = "complete"
         orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        _flapping_unarmed_pr(orch)
         for _ in range(6):
             orch._maybe_autoarchive_completed("s1", "complete", rec)
             await _drain()
@@ -846,4 +861,230 @@ def test_mark_no_pr_then_new_commits_is_still_nudged(monkeypatch):
         await _settle(lambda: bool(nudged or archived))
         assert archived == []
         assert nudged and "open a PR" in nudged[0]
+    asyncio.run(run())
+
+
+# ------------------------------------------------- #2909: linkage + idempotent nudge
+
+
+class _Population:
+    def __init__(self, prs):
+        self._prs = prs
+
+    def cached(self, repo):
+        return tuple(p for p in self._prs if p.repo == repo)
+
+
+def _pop_pr(number, head_ref, **kw):
+    from server.github.pr_status import PullRequestInfo
+    base = dict(number=number, url=f"https://github.com/o/r/pull/{number}",
+                state="open", checks="passing", title="t", is_draft=False,
+                auto_merge_enabled=True, repo="o/r", head_ref=head_ref)
+    base.update(kw)
+    return PullRequestInfo(**base)
+
+
+def test_unchanged_unarmed_pr_is_nudged_once_not_repeatedly():
+    """PR open without auto-merge: the nudge fires once; re-signalling complete with
+    the PR state unchanged does not resend it."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        for _ in range(4):
+            orch._maybe_autoarchive_completed("s1", "complete", rec)
+            await _drain()
+        assert archived == []
+        assert len(nudged) == 1, nudged
+    asyncio.run(run())
+
+
+def test_changed_pr_state_earns_a_fresh_nudge():
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        armed_red = _armed_pr()
+        armed_red.checks = "failing"
+        orch.pr_for = lambda repo, branch: armed_red  # type: ignore[method-assign]
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert len(nudged) == 2 and "failing CI" in nudged[1]
+    asyncio.run(run())
+
+
+def test_undelivered_nudge_is_not_deduped():
+    """Only a delivered nudge counts: a failed send is retried on the next complete."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        results = iter(["error", "sent"])
+
+        async def _send(session_id, prompt, *, origin=None):
+            nudged.append(prompt)
+            return next(results)
+        orch.send_prompt = _send  # type: ignore[method-assign]
+        for _ in range(2):
+            orch._maybe_autoarchive_completed("s1", "complete", rec)
+            await _drain()
+        assert len(nudged) == 2
+    asyncio.run(run())
+
+
+def test_held_unchanged_session_archives_once_its_pr_arms():
+    """A session held on an unchanged state is re-judged by the stuck-complete sweep,
+    so it archives when the PR is armed after it went quiet."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        rec.status = "complete"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        orch._enabled_host_names = lambda: _async_none()  # type: ignore[method-assign]
+        orch._owns_record = lambda r, hosts: True  # type: ignore[method-assign]
+        for _ in range(2):
+            orch._maybe_autoarchive_completed("s1", "complete", rec)
+            await _drain()
+        assert len(nudged) == 1 and archived == []
+        orch.pr_for = lambda repo, branch: _armed_pr()  # type: ignore[method-assign]
+        await orch._recheck_stuck_complete_sessions_once()
+        await _drain()
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+async def _async_none():
+    return None
+
+
+def test_pr_doctor_session_on_a_child_branch_links_its_origin_pr():
+    """PR-doctor / conflict-fix session whose worktree sits on a child branch: the PR
+    it was dispatched for links via the origin PR number, so it archives un-nudged."""
+    async def run():
+        rec = _rec("s1", origin="pr-doctor", branch="viberpit/fix/y-abcd1234")
+        rec.origin_ref = "o/r#55"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        orch._pr_population = _Population([_pop_pr(55, "fix/y")])
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert nudged == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+def test_origin_ref_of_a_non_pr_doctor_session_is_not_a_pr_link():
+    """Backlog-runner stamps ISSUE refs (`o/r#55`) in origin_ref — never a PR link."""
+    rec = _rec("s1", origin="backlog-runner")
+    rec.origin_ref = "o/r#55"
+    orch, _archived, _nudged = _orch({"s1": rec}, pr_info=None)
+    orch._pr_population = _Population([_pop_pr(55, "fix/y")])
+    assert orch._autopilot_pr_facts(rec).prs == ()
+
+
+def test_merge_queued_pr_is_satisfied():
+    """PR in the merge queue: GitHub reports autoMergeRequest null, yet it is armed."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        queued = _unarmed_pr()
+        queued.in_merge_queue = True
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=queued)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert nudged == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+def test_merged_pr_is_satisfied():
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_merged_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert nudged == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+# ------------------- #2915 / #2917 / #2918: an answered no-PR claim is the end state
+
+
+def test_pr_doctor_session_whose_origin_pr_already_merged_archives(monkeypatch):
+    """#2915/#2918: dispatched to fix CI on a PR that had already merged green. The
+    origin PR links by number, so the bar reads "code landed" — no nudge, even for a
+    bare marker no-PR claim."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _code_goal_rec(resolution="not-needed", source="marker")
+        rec.origin, rec.origin_ref = "pr-doctor", "o/r#1421"
+        rec.branch = "viberpit/fix/parked-wakeup-ebf2c547"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        orch._pr_population = _Population([_pop_pr(1421, "fix/parked-wakeup",
+                                                   state="merged", merged=True)])
+        calls = _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived or nudged))
+        assert nudged == [] and calls == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+def test_no_pr_claim_after_the_user_answers_the_nudge_archives(monkeypatch):
+    """#2917/#2918: the nudge says "ask the user"; the session asks, the user answers
+    "stand down", the session claims no-PR again. That claim is accepted — the same
+    nudge is never sent a second time."""
+    from datetime import datetime, timedelta
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _code_goal_rec(resolution="not-needed", source="marker")
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(nudged))
+        assert archived == [] and len(nudged) == 1
+
+        rec.last_user_interaction_at = datetime.utcnow() + timedelta(seconds=1)
+        rec.status = "complete"
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived))
+        assert [a["session_id"] for a in archived] == ["s1"]
+        assert len(nudged) == 1, "the PR nudge must not be re-sent after the user answered"
+    asyncio.run(run())
+
+
+def test_reasoned_mark_no_pr_archives_without_a_nudge(monkeypatch):
+    """#2917: mark_no_pr("not-needed", note="PR #15621 already fixes #15619") on a
+    backlog dispatch whose own --squash --auto step demands a PR: accepted on its
+    reason, never answered with "open a PR"."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _no_pr_backlog_rec()
+        rec.pr_resolution_note = "PR #15621 already fixes #15619 with auto-merge armed."
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        _pin_commits_ahead(orch, 0)
+        calls = _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived or nudged))
+        assert nudged == [] and calls == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+def test_interaction_before_the_nudge_does_not_confirm_a_claim(monkeypatch):
+    """Only steering AFTER the last delivered nudge is the user's answer to it."""
+    from datetime import datetime, timedelta
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _code_goal_rec(resolution="not-needed", source="marker")
+        rec.last_user_interaction_at = datetime.utcnow() - timedelta(minutes=5)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(nudged))
+        rec.status = "complete"
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == [] and len(nudged) == 1
     asyncio.run(run())

@@ -3,6 +3,7 @@ from server.automations.completion_bar import (
     PrFact,
     PrFacts,
     _has_explicit_arm_step,
+    forbids_opening_pr,
     has_no_pr_dispatch,
     has_no_arm_instruction,
     is_unverified_self_resolution,
@@ -543,3 +544,71 @@ def test_open_unarmed_pr_without_a_no_arm_dispatch_still_nudges_to_arm():
     v = met_bar("fix ci", "explicit", _facts([_pr(state="open")]),
                 instructions="Arm auto-merge on the PR (`gh pr merge --auto`).")
     assert not v.met and "--squash --auto" in v.remedy
+
+
+# ---------------------------------------------------------------------------
+# #2909: a mark_no_pr the dispatch itself asked for ("DO NOT open a new pull
+# request") is the dispatch's answer, not an unverified claim to nudge against.
+# ---------------------------------------------------------------------------
+
+def test_forbids_opening_pr_phrasings():
+    assert forbids_opening_pr("DO NOT open a new pull request. DO NOT arm auto-merge.")
+    assert forbids_opening_pr("do NOT open another pull request.")
+    assert forbids_opening_pr("do not commit, and do not open a pull request")
+    assert forbids_opening_pr("Do not create a PR for this.")
+    assert not forbids_opening_pr("Open a PR and arm auto-merge.")
+    assert not forbids_opening_pr("")
+
+
+def test_mark_no_pr_under_a_forbidding_prompt_is_met():
+    v = met_bar(_CODE_GOAL, "user", _facts([], has_repo=True), "not-needed",
+                pr_resolution_source="tool",
+                instructions="Push to the existing branch. DO NOT open a new pull request.")
+    assert v.met and v.confidence == "high"
+
+
+def test_forbidding_prompt_alone_does_not_satisfy_the_bar():
+    """Without the session's own mark_no_pr the prompt is not a no-PR dispatch."""
+    v = met_bar(_CODE_GOAL, "user", _facts([], has_repo=True), None,
+                instructions="Push to the existing branch. DO NOT open a new pull request.")
+    assert not v.met
+
+
+def test_forbidding_prompt_never_masks_an_unarmed_pr():
+    v = met_bar(_CODE_GOAL, "user", _facts([_pr(state="open")]), "not-needed",
+                pr_resolution_source="tool",
+                instructions="DO NOT open a new pull request.")
+    assert not v.met and v.confidence == "high"
+
+
+# ---------------------------------------------------------------------------
+# #2915 / #2917 / #2918: a reasoned or user-confirmed mark_no_pr satisfies the
+# bar; the byte-identical "open a PR" demand must never answer it again.
+# ---------------------------------------------------------------------------
+
+def test_reasoned_tool_no_pr_is_met_at_low_confidence():
+    v = met_bar(_CODE_GOAL, "user", _facts([], has_repo=True), "not-needed",
+                pr_resolution_source="tool",
+                pr_resolution_note="PR #15621 already fixes #15619 and is armed.")
+    assert v.met and v.remedy is None and v.confidence == "low"
+    assert "15621" in v.reason
+
+
+def test_user_confirmed_no_pr_is_met_at_high_confidence():
+    """A bare marker claim (no reason) made after the user answered the nudge."""
+    v = met_bar(_CODE_GOAL, "user", _facts([], has_repo=True), "not-needed",
+                pr_resolution_source="marker", claim_confirmed=True)
+    assert v.met and v.confidence == "high"
+
+
+def test_a_blank_note_is_not_a_reason():
+    v = met_bar(_CODE_GOAL, "user", _facts([], has_repo=True), "not-needed",
+                pr_resolution_source="tool", pr_resolution_note="   ")
+    assert not v.met
+
+
+def test_a_reason_never_masks_an_open_unarmed_pr():
+    v = met_bar(_CODE_GOAL, "user", _facts([_pr(state="open")]), "not-needed",
+                pr_resolution_source="tool", pr_resolution_note="nothing to do",
+                claim_confirmed=True)
+    assert not v.met and v.confidence == "high"

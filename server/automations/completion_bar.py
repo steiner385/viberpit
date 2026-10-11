@@ -66,6 +66,25 @@ def has_no_arm_instruction(text: str | None) -> bool:
     return bool(_NO_ARM_RE.search(text or ""))
 
 
+# A dispatch that forbids opening a PR without forbidding the work itself — "DO NOT
+# open a new pull request", "do NOT open another pull request" (push to an existing
+# PR branch, or the deliverable is not a PR at all). Weaker than
+# ``_NO_PR_DISPATCH_RE``: it does not satisfy the bar on its own, it only makes the
+# session's own ``mark_no_pr`` the dispatch's answer rather than an unverified claim
+# (#2909) — the claim and the instructions agree, so the "open a PR" nudge cannot be
+# right.
+_FORBIDS_OPENING_PR_RE = re.compile(
+    r"\bdo\s+not\s+(?:open|create)\s+(?:a\s+|an\s+|another\s+|any\s+)?(?:new\s+)?"
+    r"(?:pull\s+requests?|prs?)\b",
+    re.IGNORECASE,
+)
+
+
+def forbids_opening_pr(text: str) -> bool:
+    """True when *text* (the dispatch prompt) tells the session not to open a PR."""
+    return bool(_FORBIDS_OPENING_PR_RE.search(text or ""))
+
+
 @dataclass(frozen=True)
 class PrFact:
     number: int
@@ -197,7 +216,9 @@ def is_unverified_self_resolution(goal: str, facts: PrFacts,
 def met_bar(goal: str, goal_source: str, facts: PrFacts,
             pr_resolution: str | None = None, *,
             pr_resolution_source: str | None = None,
-            instructions: str | None = None) -> BarVerdict:
+            instructions: str | None = None,
+            pr_resolution_note: str | None = None,
+            claim_confirmed: bool = False) -> BarVerdict:
     """Is the session's goal genuinely met? Precedence: merged > armed >
     open-unarmed > no-PR-dispatch(instructions) > pr_resolution(no-PR, verified) >
     pr_resolution(no-PR, self-claimed) > instructions-arm-required > no-PR-nudge.
@@ -213,8 +234,20 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     When ``facts.commits_ahead`` is 0 that verdict carries NO remedy: a not-met
     verdict with ``remedy=None`` means there is nothing to nudge toward, and callers
     must not nudge. New commits after the claim restore the remedy.
-    ``None`` (callers without provenance) keeps the resolution trusted.
+    ``None`` (callers without provenance) keeps the resolution trusted, and so does
+    a self-certified one whose ``instructions`` themselves forbid opening a PR
+    (``forbids_opening_pr``, #2909).
 
+    A self-certified no-PR claim is ACCEPTED rather than nudged when it is reasoned
+    or confirmed (#2915/#2917/#2918): ``claim_confirmed`` (a human steered the
+    session after its last completion nudge — the user answered the very question
+    the nudge told it to ask) makes it a high-confidence verdict; a
+    ``pr_resolution_note`` (``mark_no_pr``'s stated reason) makes it a met verdict at
+    LOW confidence, which archives without another nudge while the retro audit still
+    reports it for review. A bare claim (the marker path carries no reason) keeps the
+    unverified branch below. Re-sending the same "open a PR" demand to a session that
+    has answered it with a reason or with the user's word cannot be right; at worst
+    the claim is wrong and the audit says so.
     ``instructions`` is the session's initial prompt (or equivalent task text).
     When it contains an explicit ``--squash --auto`` arming step, the bar
     requires an armed or merged PR regardless of how the goal text is worded —
@@ -270,11 +303,21 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
         return BarVerdict(
             True, "dispatch instructions explicitly forbid opening a PR "
             "(investigate-only/read-only)", None, "high")
-    self_claim = is_unverified_self_resolution(goal, facts, pr_resolution,
-                                               pr_resolution_source)
+    # A mark_no_pr the dispatch itself asked for is the dispatch's answer, not an
+    # unverified claim to nudge against (#2909).
+    self_claim = (is_unverified_self_resolution(goal, facts, pr_resolution,
+                                                pr_resolution_source)
+                  and not (instructions and forbids_opening_pr(instructions)))
     if pr_resolution and not self_claim:
         return BarVerdict(True, f"session resolved no PR needed ({pr_resolution})",
                           None, "high")
+    if self_claim and claim_confirmed:
+        return BarVerdict(True, f"session resolved no PR needed ({pr_resolution}), "
+                          "confirmed by the user after the completion nudge", None, "high")
+    note = (pr_resolution_note or "").strip()
+    if self_claim and note:
+        return BarVerdict(True, f"session resolved no PR needed ({pr_resolution}): {note}",
+                          None, "low")
     # A self-declared no-PR is judged BEFORE the arm step below, and always at low
     # confidence: low is what lets the caller's salvage classifier verify the claim.
     # Prod 2026-10-02 (session a782f302, cairnea/KinDash#17544): the backlog prompt's

@@ -290,7 +290,8 @@ def build_pr_facts(
 def classify(goal: str, goal_source: str, facts: PrFacts,
              pr_resolution: str | None = None, *,
              pr_resolution_source: str | None = None,
-             instructions: str | None = None) -> tuple[str, BarVerdict]:
+             instructions: str | None = None,
+             pr_resolution_note: str | None = None) -> tuple[str, BarVerdict]:
     """Bucket via met_bar: met→legit; not-met+open-unarmed→premature;
     not-met+closed-target+code-goal→review; not-met+low→ambiguous.
 
@@ -298,7 +299,8 @@ def classify(goal: str, goal_source: str, facts: PrFacts,
     code goal reads as ambiguous (a claim), not legit (a verdict) — see
     ``completion_bar.is_unverified_self_resolution``."""
     v = met_bar(goal, goal_source, facts, pr_resolution,
-                pr_resolution_source=pr_resolution_source, instructions=instructions)
+                pr_resolution_source=pr_resolution_source, instructions=instructions,
+                pr_resolution_note=pr_resolution_note)
     if v.met:
         return "legit", v
     if v.confidence == "high":
@@ -347,7 +349,8 @@ async def run_audit(
         bucket, verdict = classify(row.get("goal", ""), row.get("goal_source", ""), facts,
                                     row.get("pr_resolution"),
                                     pr_resolution_source=row.get("pr_resolution_source"),
-                                    instructions=row.get("initial_prompt"))
+                                    instructions=row.get("initial_prompt"),
+                                    pr_resolution_note=row.get("pr_resolution_note"))
         action = "none"
         if bucket == "premature" and not dry_run:
             try:
@@ -577,6 +580,7 @@ def _archived_row_to_dict(row) -> dict:
             "initial_prompt": row.initial_prompt,
             "pr_resolution": getattr(row, "pr_resolution", None),
             "pr_resolution_source": getattr(row, "pr_resolution_source", None),
+            "pr_resolution_note": getattr(row, "pr_resolution_note", None),
             "archive_context": getattr(row, "archive_context", None)}
 
 
