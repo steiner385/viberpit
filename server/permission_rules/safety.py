@@ -15,7 +15,9 @@ import re
 from dataclasses import dataclass
 
 from server.automations.autopilot_policy import matches_denylist
+from viberpit.brand import MCP_TOOL_PREFIXES
 from server.permission_rules.patterns import (
+    NEVER_RULED_TOOLS,
     PATH_TOOLS,
     Pattern,
     PatternError,
@@ -78,6 +80,8 @@ _EXTENSIONS = (
     " -rf /", " -c x", " -e x",
 )  # fmt: skip
 _OBFUSCATION_CHARS = frozenset("'\"\\$`{}")
+# Server-wide patterns for the app's own MCP server (``mcp__viberpit``, ``mcp__ccswitch``).
+_APP_MCP_SERVERS = frozenset(prefix.removesuffix("__") for prefix in MCP_TOOL_PREFIXES)
 _LOCAL_TLDS = (".local", ".internal", ".localhost", ".lan")
 
 _WORKFLOW_PROBE = ".github/workflows/ci.yml"
@@ -231,6 +235,10 @@ def assess(pattern: str, scope: str) -> Assessment:
         p = parse(pattern)
     except PatternError as exc:
         return _refuse(f"invalid pattern: {exc}")
+    if p.tool in NEVER_RULED_TOOLS:
+        return _refuse("this tool always asks a person")
+    if p.tool in _APP_MCP_SERVERS:
+        return _refuse("would cover the app's own permission controls")
     if p.kind == "mcp":
         if p.tool.endswith("__"):
             return _refuse("pattern can never match a tool")

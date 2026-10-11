@@ -18,6 +18,8 @@ from functools import lru_cache
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
+from viberpit.brand import MCP_TOOL_PREFIXES
+
 FILE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 PATH_TOOLS = FILE_TOOLS | {"Read"}
 # Worktree-relative globs no standing rule may ever cover (secrets, VCS internals, tool config):
@@ -31,7 +33,22 @@ PROTECTED_PATHS = frozenset(
         "**/credentials*", "**/.docker/config.json", "**/.kube/**", "**/.pgpass", "**/secrets/**",
     }
 )  # fmt: skip
-_NEVER_SUGGEST = frozenset({"ExitPlanMode", "AskUserQuestion"})
+#: Prompts no standing rule may ever answer, in any mode: plan approval and clarifying questions
+#: are conversations with the human, and the app's own tools that widen what sessions may do
+#: without asking (resolve a permission card, change a permission mode, approve a parked model,
+#: unpause autopilot, enable an automation). Under BOTH brand prefixes. The single list read by
+#: the matcher, ``suggest``, ``safety.assess`` and ``PermissionRegistry``.
+NEVER_RULED_TOOLS = frozenset(
+    {"ExitPlanMode", "AskUserQuestion"}
+    | {
+        f"{prefix}{name}"
+        for prefix in MCP_TOOL_PREFIXES
+        for name in (
+            "resolve_permission", "set_permission_mode", "resolve_model_approval",
+            "set_autopilot_paused", "set_automation_enabled",
+        )
+    }
+)  # fmt: skip
 #: Commands whose job is to run the command named after them (``uv run pytest``). A rule must
 #: name that command: the launcher alone covers anything, and the rest of the head is judged
 #: as a head of its own (``safety``). Suggestions grow by one word past a launcher.
@@ -249,6 +266,8 @@ def _covers(p: Pattern, input: dict, cwd: str | None) -> bool:
 
 def matches(p: Pattern, tool: str, input: dict, cwd: str | None) -> bool:
     """Single-rule check. For Bash every segment of the command must satisfy ``p``."""
+    if tool in NEVER_RULED_TOOLS:
+        return False
     if p.kind == "mcp":
         return tool == p.tool or tool.startswith(p.tool + "__")
     if p.kind == "domain":
@@ -331,7 +350,7 @@ def suggest(tool: str, input: dict, cwd: str | None) -> list[str]:
 
 
 def _suggest_candidates(tool: str, input: dict, cwd: str | None) -> list[str]:
-    if tool in _NEVER_SUGGEST:
+    if tool in NEVER_RULED_TOOLS:
         return []
     if tool.startswith("mcp__"):
         return [tool, "mcp__" + tool.split("__")[1]]

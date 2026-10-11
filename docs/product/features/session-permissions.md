@@ -97,7 +97,12 @@ exception (see Standing rules).
     never matched (Python's and Node's URL parsers disagree on those) and is always carded.
   - *Enforcement.* `StandingRuleGate` is consulted wherever a card would otherwise be created,
     in **every** mode including `interactive`; it fails closed (any error = ask the human).
-    Hits are counted and audited. Engine-managed (Codex) cards are swept by new rules but a
+    Hits are counted and audited. `patterns.NEVER_RULED_TOOLS` is never matched, suggested or
+    storable, in any mode: `ExitPlanMode`, `AskUserQuestion`, and the app's own tools that widen
+    what sessions may do unasked (`resolve_permission`, `set_permission_mode`,
+    `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`, under both
+    brand prefixes). A server-wide `mcp__viberpit` / `mcp__ccswitch` rule is refused at every
+    scope. Engine-managed (Codex) cards are swept by new rules but a
     rule cannot be created from one.
   - *Kill switch.* `VIBERPIT_PERMISSION_RULES_ENABLED=false`: nothing is consulted or
     suggested, the rules routes 404, and every prompt cards as before.

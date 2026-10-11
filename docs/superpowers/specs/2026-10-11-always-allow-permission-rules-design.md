@@ -45,8 +45,11 @@ The guard against non-human grants has a hole. `session_actions.resolve_permissi
   `acceptForSession`. A grant made on a Claude card *does* resolve matching pending Codex cards
   once, under §3.3. This is a follow-up.
 - **Deny rules.** This feature only allows. Denylist behaviour is unchanged.
-- **Destructive ViberPit tools** (`ToolClass.DESTRUCTIVE`), plan approvals (`ExitPlanMode`) and
-  `AskUserQuestion` are never rule-resolvable.
+- **Destructive ViberPit tools** (`ToolClass.DESTRUCTIVE`), plan approvals (`ExitPlanMode`),
+  `AskUserQuestion`, and the app tools that widen what sessions may do unasked
+  (`resolve_permission`, `set_permission_mode`, `resolve_model_approval`, `set_autopilot_paused`,
+  `set_automation_enabled`; one list, `patterns.NEVER_RULED_TOOLS`) are never rule-resolvable.
+  A server-wide rule for the app's own MCP server is refused at every scope.
 
 ## 1. Pattern grammar
 

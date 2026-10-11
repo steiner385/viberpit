@@ -5,15 +5,12 @@ from typing import TYPE_CHECKING
 
 from viberpit import paths as _paths
 from server.mcp_spec import is_mcp_tool
+from server.permission_rules.patterns import NEVER_RULED_TOOLS
 
 if TYPE_CHECKING:
     from server.permission_rules.gate import StandingRuleGate
 
 log = logging.getLogger(__name__)
-
-# Prompts a standing rule must never answer: plan approval and clarifying questions are
-# conversations with the human, not tool permissions.
-_NEVER_RULED = frozenset({"ExitPlanMode", "AskUserQuestion"})
 
 # File-writing tools whose target is a single path argument.
 _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
@@ -152,7 +149,7 @@ class PermissionRegistry:
         "a full-auto driver was rebuilt as interactive" (2026-09-07), which no other
         signal exposes: the card itself looks identical either way."""
         suggestions = (self.rule_gate.suggestions(session_id, tool, input)
-                       if self.rule_gate and always_allowed and tool not in _NEVER_RULED else [])
+                       if self.rule_gate and always_allowed and tool not in NEVER_RULED_TOOLS else [])
         pid = _uuid.uuid4().hex
         fut = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
@@ -227,7 +224,9 @@ class PermissionRegistry:
             # annotation — forward-compatible with tools Task 3.3 adds later).
             # Standing rules are honoured in EVERY mode, INCLUDING "interactive": a rule
             # is an explicit human decision (spec 2026-10-11 §3.1).
-            allowed = await self._rule_allows(session_id, tool, input)
+            # Tools that widen what sessions may do unasked (NEVER_RULED_TOOLS) skip it.
+            allowed = (await self._rule_allows(session_id, tool, input)
+                       if tool not in NEVER_RULED_TOOLS else False)
             if allowed is not False:  # True: a rule covers it; None: denied meanwhile
                 return None, _resolved(allowed is True), True
             pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
@@ -278,7 +277,7 @@ class PermissionRegistry:
         # it is an explicit human decision (spec 2026-10-11 §3.1), unlike the old
         # per-session grant cache that "ask each time" overrode. Only reached where a
         # card would otherwise be created.
-        if tool not in _NEVER_RULED:
+        if tool not in NEVER_RULED_TOOLS:
             allowed = await self._rule_allows(session_id, tool, input)
             if allowed is not False:  # True: a rule covers it; None: denied meanwhile
                 return None, _resolved(allowed is True), True

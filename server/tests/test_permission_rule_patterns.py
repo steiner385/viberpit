@@ -265,3 +265,30 @@ def test_webfetch_ambiguous_urls_never_match_or_suggest(url):
 def test_webfetch_plain_urls_still_match(url):
     p = parse("WebFetch(domain:docs.python.org)")
     assert matches_any([p], "WebFetch", {"url": url}, CWD) is p
+
+
+_CONTROL_TOOLS = [
+    "ExitPlanMode", "AskUserQuestion",
+    "mcp__viberpit__resolve_permission", "mcp__ccswitch__resolve_permission",
+    "mcp__viberpit__set_permission_mode", "mcp__ccswitch__set_permission_mode",
+    "mcp__viberpit__resolve_model_approval", "mcp__ccswitch__resolve_model_approval",
+    "mcp__viberpit__set_autopilot_paused", "mcp__viberpit__set_automation_enabled",
+]
+
+
+def test_never_ruled_tools_is_the_single_list():
+    from server.permission_rules.patterns import NEVER_RULED_TOOLS
+    assert set(_CONTROL_TOOLS) <= NEVER_RULED_TOOLS
+    assert "mcp__viberpit__rename_session" not in NEVER_RULED_TOOLS
+
+
+@pytest.mark.parametrize("tool", _CONTROL_TOOLS)
+def test_never_ruled_tools_never_match_or_suggest(tool):
+    server = "mcp__" + tool.split("__")[1] if tool.startswith("mcp__") else tool
+    for pat in {tool, server}:
+        assert matches_any([parse(pat)], tool, {}, CWD) is None
+    assert suggest(tool, {}, CWD) == []
+
+
+def test_app_server_rule_still_matches_ordinary_app_tools():
+    assert matches_any([parse("mcp__viberpit")], "mcp__viberpit__rename_session", {}, CWD)

@@ -167,3 +167,22 @@ def test_deny_all_of_another_session_does_not_cancel_request(monkeypatch):
         pid, _, _ = await task
         assert pid is not None and len(reg.pending("s1")) == 1
     asyncio.run(go())
+
+
+@pytest.mark.parametrize("tool", [
+    "mcp__viberpit__resolve_permission", "mcp__ccswitch__set_permission_mode",
+    "mcp__viberpit__resolve_model_approval",
+])
+def test_app_server_rule_never_auto_allows_permission_controls(tool):
+    async def go():
+        await _add("global", None, "mcp__viberpit")
+        await _add("global", None, "mcp__ccswitch")
+        await _add("global", None, tool)
+        reg = _reg()
+        pid, _, _ = await _ask(reg, "s1", tool, {"session_id": "x"})
+        assert pid is not None
+        assert reg.suggestions_for(pid) == []
+        # ... while an ordinary MUTATION tool on the same server is still rule-allowed.
+        pid2, fut2, _ = await _ask(reg, "s1", "mcp__viberpit__rename_session", {"id": "x"})
+        assert pid2 is None and fut2.result() is True
+    asyncio.run(go())

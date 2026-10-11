@@ -312,3 +312,29 @@ def test_launcher_suggestion_names_the_command():
     pats = _offered("uv run pytest -x")
     assert "Bash(uv run pytest:*)" in pats
     assert "Bash(uv run:*)" not in pats
+
+
+@pytest.mark.parametrize("scope", ["session", "repo", "global"])
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "mcp__viberpit",
+        "mcp__ccswitch",
+        "mcp__viberpit__resolve_permission",
+        "mcp__ccswitch__set_permission_mode",
+        "mcp__viberpit__resolve_model_approval",
+        "mcp__viberpit__set_autopilot_paused",
+        "ExitPlanMode",
+        "AskUserQuestion",
+    ],
+)
+def test_app_controls_never_ruled(pat, scope):
+    assert assess(pat, scope).level == "refuse"
+
+
+def test_app_server_refusal_names_the_reason():
+    assert "permission controls" in assess("mcp__viberpit", "session").reasons[0]
+
+
+def test_ordinary_app_tool_rule_still_ok():
+    assert assess("mcp__viberpit__rename_session", "session").level == "ok"
