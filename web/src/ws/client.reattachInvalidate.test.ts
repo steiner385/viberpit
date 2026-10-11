@@ -107,7 +107,11 @@ describe('mid-view reconnect regression — cursor preserved without a public at
 describe('attach() clears the cursor for that session only', () => {
   it('leaves other sessions’ cursors intact', () => {
     const { socket, s } = connectFake()
+    // Each cursor is built while its session is the active view — tagged frames for
+    // a session nobody views are dropped untracked (#2959).
+    s._activeSessionId = 's1'
     establishCursor(s, 's1', 11)
+    s._activeSessionId = 's2'
     establishCursor(s, 's2', 22)
 
     socket.attach('s1')

@@ -235,3 +235,50 @@ def test_undeliverable_prompt_is_rejected_to_the_client(tmp_path):
                 assert rejected[0]["text"] == "lost message"
 
             client.portal.call(orch.close_session, sid)
+
+
+def test_prompt_after_detach_delivers_without_streaming(tmp_path):
+    """#2959: a prompt for a session this socket has DETACHED from (the client's
+    held retry of a promptRejected prompt, flushed after the user navigated away)
+    must still be delivered — but must not open a live forwarder. Nothing would
+    ever tear that forwarder down, and its frames reached a browser not viewing
+    the session, where they registered as transcript.srcseq.gap warnings."""
+    with _Harness(tmp_path) as h:
+        orch = h.orch
+        with TestClient(h.app, raise_server_exceptions=False) as client:
+            session = client.portal.call(orch.create_session, "prompt-after-detach")
+            sid = session.id
+            other = client.portal.call(orch.create_session, "the-other-view").id
+
+            with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+                ws.send_text(json.dumps({"type": "attach", "sessionId": sid}))
+                assert any(e.get("type") == "replayComplete"
+                           for e in _drain_until(ws, until_type="replayComplete"))
+                # Navigate away, then the held retry lands for the session left behind.
+                ws.send_text(json.dumps({"type": "detach", "sessionId": sid}))
+                ws.send_text(json.dumps({"type": "prompt", "sessionId": sid,
+                                         "text": "held retry"}))
+                assert _wait_until(lambda: orch._last_prompt.get(sid) == "held retry"), (
+                    "a prompt for a detached session must still be delivered")
+                # Attach a different session: its replayComplete terminates the drain.
+                ws.send_text(json.dumps({"type": "attach", "sessionId": other}))
+                events = _drain_until(ws, until_type="replayComplete")
+                # Emit on the detached session's driver: a leaked forwarder would put it
+                # on this socket. Then a detach/attach of the viewed session gives the
+                # drain a terminator that follows anything the leak forwarded.
+                driver = orch._drivers[sid]
+                from server.sessions import events as ev
+                client.portal.call(driver._emit, ev.QueueUpdate([]))
+                time.sleep(0.3)
+                ws.send_text(json.dumps({"type": "detach", "sessionId": other}))
+                ws.send_text(json.dumps({"type": "attach", "sessionId": other}))
+                events += _drain_until(ws, until_type="replayComplete")
+                # Forwarder frames carry the per-attach `seq`; lifecycle `status`
+                # broadcasts (every session, attached or not) and acks do not.
+                leaked = [e for e in events if e.get("sessionId") == sid and "seq" in e]
+                assert not leaked, (
+                    f"no live-stream frames may flow for a detached session; got "
+                    f"{[e.get('type') for e in leaked]}")
+
+            client.portal.call(orch.close_session, sid)
+            client.portal.call(orch.close_session, other)

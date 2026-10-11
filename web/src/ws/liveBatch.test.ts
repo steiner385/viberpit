@@ -35,6 +35,27 @@ describe('handleLiveBatch', () => {
     expect(r.needsHeal).toBe(false)   // another session's gap must not heal ours
   })
 
+  it('drops and does not track a tagged frame while no session is active (#2959)', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 3, srcSeq: 18, sessionId: 's1' })], { activeSessionId: 's1', state })
+    // Navigated to a non-session page: a leaked/stray frame for s1 arrives.
+    const r = handleLiveBatch(
+      [ev({ seq: 0, srcSeq: 145, sessionId: 's1' })],
+      { activeSessionId: null, state },
+    )
+    expect(r.dispatch).toHaveLength(0)
+    expect(r.srcSeqGaps).toEqual([])
+    expect(r.needsHeal).toBe(false)
+    expect(state.lastSeq.get('s1')).toBe(3)
+    expect(state.lastSrcSeq.get('s1')).toBe(18)
+  })
+
+  it('still dispatches an untagged frame while no session is active', () => {
+    const state = createGapState()
+    const r = handleLiveBatch([ev({})], { activeSessionId: null, state })
+    expect(r.dispatch).toHaveLength(1)
+  })
+
   it('re-baselines after resetSeq (reconnect replay) without a false gap', () => {
     const state = createGapState()
     handleLiveBatch([ev({ seq: 5, sessionId: 's1' })], { activeSessionId: 's1', state })
