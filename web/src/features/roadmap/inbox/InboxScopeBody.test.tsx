@@ -325,6 +325,21 @@ describe('InboxScopeBody', () => {
     expect(screen.getByText('Select all (2)')).toBeInTheDocument()
   })
 
+  it('keeps a fresh auto-accept whose item closed — its undo chip must survive the window', () => {
+    // The server lists a fresh auto-accept for its 60 s undo window even after
+    // the item closes; only a still-PENDING closed row is hidden early.
+    mount({
+      proposals: [
+        p({ id: 'First' }),
+        p({ id: 'AutoClosed', status: 'accepted', classifiedBy: 'auto', itemState: 'merged' }),
+      ],
+    })
+    expect(screen.getByTestId('row-proposal:AutoClosed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Undo auto-accept of AutoClosed' })).toBeInTheDocument()
+    // Still not pending: it counts for nothing.
+    expect(screen.getByTestId('inbox-aging')).toHaveTextContent(/^1 pending/)
+  })
+
   describe('Accept all high-confidence', () => {
     const ELIGIBLE = [
       p({ id: 'First', confidenceLevel: 'high', proposedFeatureId: 'f1' }),

@@ -33,6 +33,9 @@ import { isValidTimestamp } from '@/lib/relativeTime'
  *  none, which reads as "still open"). */
 interface HasStatus { status: string; itemState?: string | null }
 
+/** The ONE `'pending'` literal (`isPending`, `isStalePending`). */
+const PENDING = 'pending'
+
 /** Work-item states that leave nothing to triage. */
 const GONE_ITEM_STATES: ReadonlySet<string> = new Set(['closed', 'merged'])
 
@@ -49,7 +52,19 @@ export function isItemGone<T extends HasStatus>(p: T | null | undefined): boolea
  *  Takes null/undefined because a detail pane renders before its row arrives.
  *  A row whose work item is closed/merged is NOT pending (`isItemGone`). */
 export function isPending<T extends HasStatus>(p: T | null | undefined): p is T {
-  return p?.status === 'pending' && !isItemGone(p)
+  return p?.status === PENDING && !isItemGone(p)
+}
+
+/**
+ * A row still `pending` on the wire whose work item already closed/merged — the
+ * one kind of row the inbox hides before the server's tick resolves it.
+ *
+ * NOT every gone-item row: a fresh auto-accept is listed deliberately for its
+ * undo window even after its item closes, and hiding it would take its undo
+ * chip away early.
+ */
+export function isStalePending<T extends HasStatus>(p: T | null | undefined): boolean {
+  return p?.status === PENDING && isItemGone(p)
 }
 
 /**
