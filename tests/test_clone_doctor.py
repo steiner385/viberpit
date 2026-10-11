@@ -312,8 +312,8 @@ class CloneDoctorTests(unittest.TestCase):
 
 
 class LegacyNamespaceTests(unittest.TestCase):
-    """#1373: a repo root that already had the legacy dot-dir keeps its tree there,
-    and the doctor must still see it after the brand dot-dir appears beside it."""
+    """#1373: a repo root that already had the legacy dot-dir keeps its clones there,
+    and the doctor must still see the tree after the brand dot-dir appears beside it."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -331,7 +331,9 @@ class LegacyNamespaceTests(unittest.TestCase):
 
     def test_legacy_tree_is_created_and_scanned_in_place(self) -> None:
         self.assertEqual(self.clone, self.root / ".ccswitch" / "clones" / "cairnea" / "KinDash")
-        self.assertTrue(str(self.wt).startswith(str(self.root / ".ccswitch" / "worktrees")))
+        # The clone stays in the legacy dot-dir; the new worktree goes to the
+        # non-hidden session dir (#2934) and is still linked to that clone.
+        self.assertTrue(str(self.wt).startswith(str(self.root / "viberpit-sessions" / "worktrees")))
         (self.root / ".viberpit").mkdir()  # the brand dot-dir appears out-of-band
         links = clone_doctor.scan_worktree_links(str(self.root))
         self.assertEqual([link.path for link in links], [str(self.wt)])

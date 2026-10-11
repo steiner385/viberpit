@@ -9,10 +9,10 @@ checked out to that branch, instead of mutating the user's real checkout with a
   * Two sessions on the same repo can be on different branches at once — each has
     a separate working tree, so there is no collision.
 
-Worktrees live under ``<repo_root>/<namespace>/worktrees/<repo>/<short-session>``
-(a ViberPit-owned namespace next to the user's repos — ``paths.repo_namespace``:
-the brand dot-dir, or the legacy one on a root that only has that), and share the original
-repo's object store (cheap — no full clone).
+New worktrees live under ``<repo_root>/viberpit-sessions/worktrees/<repo>/<short-session>``
+(a ViberPit-owned, deliberately NOT hidden dir next to the user's repos —
+``paths.session_namespace_dir``, #2934; older ones stay under the dot-dir namespace
+they were created in), and share the original repo's object store (cheap — no full clone).
 
 If the selected branch is already checked out somewhere (commonly the user's real
 checkout sitting on `main`), git refuses to check it out twice, so we fall back to
@@ -396,13 +396,13 @@ def commits_ahead_of_default(cwd: str) -> int | None:
 
 
 def worktrees_base(repo_root: str) -> Path:
-    """ViberPit-owned root NEW session worktrees are created under (see
-    ``paths.repo_namespace`` for which dot-dir that is)."""
-    return paths.repo_namespace_dir(repo_root) / "worktrees"
+    """ViberPit-owned root NEW session worktrees are created under — the
+    non-hidden ``paths.session_namespace_dir`` (#2934)."""
+    return paths.session_namespace_dir(repo_root) / "worktrees"
 
 
 def worktrees_bases(repo_root: str) -> tuple[Path, ...]:
-    """Every worktrees root a reader must scan — both namespace spellings (#1373)."""
+    """Every worktrees root a reader must scan — every namespace spelling (#1373, #2934)."""
     return tuple(ns / "worktrees" for ns in paths.repo_namespace_dirs(repo_root))
 
 

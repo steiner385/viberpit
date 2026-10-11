@@ -15,6 +15,10 @@ describe('repoFromCwd', () => {
     expect(repoFromCwd('/home/tony/GitHub/.viberpit/worktrees/KinDash/9be6e554')).toBe('KinDash')
     expect(repoFromCwd('/home/tony/GitHub/.viberpit/clones/cairnea/KinDash')).toBe('KinDash')
   })
+  it('reads a worktree under the non-hidden viberpit-sessions dir (#2934)', () => {
+    expect(repoFromCwd('/home/tony/GitHub/viberpit-sessions/worktrees/KinDash/9be6e554'))
+      .toBe('KinDash')
+  })
   it('uses the basename for a ViberPit clone path', () => {
     // Clones live at .ccswitch/clones/<owner>/<repo>; the repo is the basename.
     expect(repoFromCwd('/home/tony/GitHub/.ccswitch/clones/cairnea/KinDash')).toBe('KinDash')

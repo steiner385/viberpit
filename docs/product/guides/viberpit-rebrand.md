@@ -57,6 +57,7 @@ is still read correctly. Concretely:
 | Branch prefix, PM `dedupe_key` | `viberpit/<base>-<id>`, `viberpit:*` | branch match `^(ccswitch\|viberpit)/` is **permanent**; dedupe keys get one `UPDATE`, no alias (#1369) |
 | systemd units, host paths | `viberpit-*.service`, `/run/viberpit`, `/var/lib/viberpit` | runtime resolver lands first (#1370), then the rename with `Alias=ccswitch-*` for one release (#1371) |
 | Per-repo namespace | `<repo>/.viberpit/` | new clones only; a repo with only `.ccswitch/` keeps it forever, nothing is moved (#1373) |
+| Session worktrees / scratch | `<repo>/viberpit-sessions/` | new worktrees and scratch dirs only — deliberately not hidden so dev servers that skip dot-paths work (#2934); existing ones stay in their dot-dir |
 | Python package, console script | `viberpit`, `viberpit` | meta-path import shim `ccswitch.*` → `viberpit.*` and a `ccswitch` alias script for one release (#1374) |
 | Web internals, eslint rule namespace, agent role names | `viberpit/no-raw-palette`, `viberpit-{implementer,reviewer}` | none needed — rename atomically per PR (#1375, #1376) |
 | Living docs | README, `core.md` → `AGENTS.md`, `CLAUDE.md`, feature docs | historical docs under `docs/superpowers/**` and `specs/**` are never back-edited (#1377) |
