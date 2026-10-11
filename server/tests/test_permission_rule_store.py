@@ -127,7 +127,7 @@ class TestStore:
             async with db_session() as db:
                 r = await _add(db, "global", None, "WebSearch")
             w = r.to_wire()
-            assert set(w) == {"id", "profileId", "pattern", "scope", "scopeKey", "position", "createdBy",
+            assert set(w) == {"id", "profileId", "pattern", "description", "scope", "scopeKey", "position", "createdBy",
                               "createdVia", "createdAt", "hitCount", "lastHitAt"}
             assert w["lastHitAt"] is None and isinstance(w["createdAt"], str)
         _run(go())
@@ -198,3 +198,17 @@ def test_profile_rename_into_managed_namespace_is_refused():
         pid = client.post("/api/permission-profiles", json={"name": "mine"}, headers=_H).json()["id"]
         r = client.patch(f"/api/permission-profiles/{pid}", json={"name": "always-allow:global"}, headers=_H)
         assert r.status_code == 409 and r.json()["detail"]["error"] == "managed_profile"
+
+
+@pytest.mark.usefixtures("isolated_db")
+class TestWireDescription:
+    def test_wire_carries_description_and_falls_back_to_pattern(self):
+        async def go():
+            async with db_session() as db:
+                r = await _add(db, "global", None, "WebSearch")
+            async with db_session() as db:
+                got = await store.get_rule(db, r.id)
+                assert got.to_wire()["description"] == store.describe("WebSearch")
+                with patch.object(store, "describe", side_effect=ValueError("bad")):
+                    assert got.to_wire()["description"] == "WebSearch"
+        _run(go())

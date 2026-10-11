@@ -10,6 +10,8 @@ links:
     - server/sessions/model_policy.py
     - server/sessions/model_catalog.py
     - server/api/permission_profiles.py
+    - server/permission_rules/
+    - server/api/permission_rules.py
     - server/api/dispatch.py
     - server/api/settings.py
     - server/sessions/driver.py
@@ -50,8 +52,9 @@ modes with a unified SDK mapping (#758); gated models (e.g. `fable`) held pendin
 **Non-goals** — Not a sandbox or a hard security boundary against a malicious agent — permission
 modes govern which tool calls auto-approve vs. prompt within the Claude Agent SDK, not OS-level
 isolation (that is the config-dir/process isolation of constitution Principle II and the worktree
-isolation feature). Tool-pattern strings in profiles are stored as-is and applied client-side, not
-server-validated.
+isolation feature). Tool-pattern strings in *named* profiles are stored as-is and applied client-side, not
+server-validated (and not yet enforced); standing always-allow rules are the validated, enforced
+exception (see Standing rules).
 
 **Notes**
 - **Permission modes.** `VALID_SESSION_MODES` (`server/sessions/types.py`) is the single source of
@@ -61,6 +64,38 @@ server-validated.
   `acceptEdits` (auto-approve file writes, prompt shell/network), and `bypassPermissions`.
   `permissions.py::PermissionRegistry` enforces these; `to_sdk_permission_mode()` maps them onto the
   SDK's own `default`/`plan`/`acceptEdits`/`bypassPermissions` (#758, #232, #200/#84 auto-memory).
+- **Standing rules ("always allow").** A rule is one pattern string stored in an auto-managed,
+  scoped `PermissionProfile` (`always-allow:*`, hidden from the named-profile API) with a
+  `PermissionRuleStats` row for id, author and hit counters. Code: `server/permission_rules/`
+  (`patterns.py` grammar/matcher, `safety.py` assessment, `store.py`, `gate.py` enforcement),
+  `server/api/permission_rules.py`, `session_actions.grant_always`.
+  - *Grammar.* Claude-Code style: `Tool`, `Tool(spec)`, `mcp__server[__tool]`. Bash accepts an
+    exact command, a `prefix:*` form, or a glob where `*` is allowed **only at the end**. Quoting,
+    escapes and variables are refused in Bash rules, and compound commands are matched per
+    segment (each must be covered). Path tools (Read/Edit/Write/MultiEdit/NotebookEdit) take
+    worktree-relative globs; WebFetch takes `domain:host`.
+  - *Scopes.* `session`, `repo`, `global`. A repo or global rule reaches **every** session on
+    that repo or the whole fleet (all accounts and hosts), including sessions already running.
+  - *Human-only.* Creating, editing or revoking a rule needs a person in the UI. The assistant
+    and other token-borne callers are refused (`resolve_permission` is allow/deny only), and a
+    grant refuses a card owned by another identity. Legacy plain "always" is now a **session**
+    rule built from the card's first `ok` suggestion (plain allow when none exists or rules are
+    off).
+  - *Safety tiers.* `assess()` returns refuse / warn / ok. Refused: Bash exec wrappers and
+    interpreters in a prefix/glob head (`python`/`python3` only with `-m`), `git push` except
+    exactly, `git -c`/`git config`, and WebFetch domains that are wildcards, single-label, IP
+    literals or internal suffixes (`.local`, `.internal`, ...). Broad-but-legal patterns need
+    `confirm`. A hard `PROTECTED_PATHS` exclusion (`.git`, `.claude`, `.env*`, keys, ...) means
+    no rule can ever match those paths. Path matching resolves symlinks and never matches
+    outside the worktree.
+  - *Enforcement.* `StandingRuleGate` is consulted wherever a card would otherwise be created,
+    in **every** mode including `interactive`; it fails closed (any error = ask the human).
+    Hits are counted and audited. Engine-managed (Codex) cards are swept by new rules but a
+    rule cannot be created from one.
+  - *Kill switch.* `VIBERPIT_PERMISSION_RULES_ENABLED=false`: nothing is consulted or
+    suggested, the rules routes 404, and every prompt cards as before.
+  - *Grant cache removed.* The old in-memory 1-hour "always" grant cache is gone; the stored
+    session rule replaces it and survives restarts.
 - **Plan mode.** `plan` is a temporary overlay, not persisted. `SessionDriver.set_permission_mode`
   saves the current mode in `_pre_plan_mode` on entering `plan`, and on exit (`default` sentinel)
   restores that prior mode — so a full-auto session returns to full-auto, not to prompt-everything

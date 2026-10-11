@@ -1215,8 +1215,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                               {"selected": list(args["selected"]), "mode": "option"})
 
     @spec_tool("resolve_permission",
-               "Allow or deny one pending permission card on a session. decision is 'allow' or "
-               "'deny' — a standing 'always' grant is the human's to give, never yours.",
+               "Allow or deny one pending permission card on a session, for that one call only. "
+               "decision is 'allow' or 'deny' (nothing else). Standing always-allow rules are "
+               "human-only: you cannot create, change or revoke them.",
                {"id": str, "perm_id": str, "decision": str})
     @guarded
     async def resolve_permission(args: dict[str, Any]) -> Any:

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.clock import db_utc_now
 from server.db.models import PermissionProfile, PermissionRuleStats, _utcnow
+from server.permission_rules.patterns import describe
 from server.permission_rules.safety import SCOPES
 
 PROFILE_PREFIX = "always-allow:"
@@ -53,10 +54,15 @@ class RuleView:
     last_hit_at: datetime | None
 
     def to_wire(self) -> dict:
+        try:
+            description = describe(self.pattern)
+        except Exception:  # a stored pattern the grammar no longer parses still lists
+            description = self.pattern
         return {
             "id": self.id,
             "profileId": self.profile_id,
             "pattern": self.pattern,
+            "description": description,
             "scope": self.scope,
             "scopeKey": self.scope_key,
             "position": self.position,
