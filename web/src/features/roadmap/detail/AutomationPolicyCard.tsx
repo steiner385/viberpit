@@ -41,9 +41,14 @@ const MODELS_FIELD_KEYS = new Set([
   'default_model', 'ladder_top', 'unattended_model_floor', 'auto_escalate_match',
   'auto_escalate_budget',
 ])
+// The triage dials sit together: auto-accept, its repeat threshold (an int,
+// 0 = off, only meaningful while auto-accept is on), and the bot-artifact
+// dismissal with its regex list (on by default since #2908). Type, default and
+// help come from the server schema; this set only places them.
 const GATES_FIELD_KEYS = new Set([
   'risk_tolerance', 'triage_auto_accept', 'triage_auto_accept_dispatch_off',
-  'triage_dismiss_bot_artifacts', 'give_up_after_bounces', 'max_initiatives_in_flight',
+  'triage_auto_accept_repeat', 'triage_dismiss_bot_artifacts', 'triage_bot_artifact_patterns',
+  'give_up_after_bounces', 'max_initiatives_in_flight',
 ])
 // What may act on this product's sessions once they run (#1611): Autopilot's
 // answering, approving and nudging, restrictable per product.

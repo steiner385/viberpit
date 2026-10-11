@@ -10,6 +10,13 @@ import type { Consequence } from './sdlc'
 // one import source for the whole triage surface.
 export { proposeMap, runClassify as classify } from './pm'
 
+/**
+ * Where a classification proposal stands. `dismissed` is "not roadmap work —
+ * resolved with no hold", distinct from `rejected` ("park it for its owner").
+ * Every non-`pending` status is undoable through the one `/undo` route.
+ */
+export type TriageProposalStatus = 'pending' | 'accepted' | 'rejected' | 'dismissed'
+
 export interface TriageProposal {
   /** Which KIND of inbox card this is. The server sends no discriminator — the
    *  inbox lists two endpoints' rows side by side (spec 2026-09-18 §6, "same
@@ -37,8 +44,13 @@ export interface TriageProposal {
   confidence: number | null
   rationale: string | null
   confidenceLevel: string | null
-  status: string
+  status: TriageProposalStatus
   createdAt: string | null
+  /** The GitHub state of the proposal's work item, when the server sends it.
+   *  A `closed`/`merged` item has nothing left to triage, so the inbox treats
+   *  its proposal as no longer pending (`triageSelectors.isPending`) even
+   *  before the server's own tick resolves it. Absent from older servers. */
+  itemState?: 'open' | 'closed' | 'merged' | null
   /** The work item's `classified_by` once the proposal is resolved: `"human"`,
    *  `"auto"` (the PM Triage loop's auto-accept — spec §8), else null. */
   classifiedBy: string | null
@@ -162,6 +174,11 @@ export interface RejectBulkResult {
   results: BulkSweepRow[]
 }
 
+export interface DismissBulkResult {
+  dismissed: number
+  results: BulkSweepRow[]
+}
+
 export function fetchTriage(projectSlug?: string): Promise<TriageProposal[]> {
   const qs = projectSlug
     ? `?projectSlug=${encodeURIComponent(projectSlug)}`
@@ -223,9 +240,18 @@ export function rejectProposal(id: string): Promise<{ id: string; status: string
   return api.post(`/pm/triage/${encodeURIComponent(id)}/reject`)
 }
 
+/** Resolve a proposal as NOT roadmap work: no capability, and — unlike a reject —
+ *  no owner-action hold. Undoable through `undoProposal` like the others. */
+export function dismissProposal(
+  id: string, reason?: string,
+): Promise<{ id: string; status: string; workItemId: string | null }> {
+  return api.post(`/pm/triage/${encodeURIComponent(id)}/dismiss`,
+    reason ? { reason } : undefined)
+}
+
 export interface UndoResult { id: string; status: 'pending'; workItemId: string | null; triageState: string | null }
 
-/** Put an accepted/rejected proposal back to pending (server window ≈ 60 s). */
+/** Put an accepted/rejected/dismissed proposal back to pending (server window ≈ 60 s). */
 export function undoProposal(id: string): Promise<UndoResult> {
   return api.post<UndoResult>(`/pm/triage/${encodeURIComponent(id)}/undo`)
 }
@@ -238,6 +264,11 @@ export function acceptBulk(ids: string[]): Promise<AcceptBulkResult> {
 /** Reject many proposals in one round trip (the inbox's `R` / reject-selected). */
 export function rejectBulk(ids: string[]): Promise<RejectBulkResult> {
   return api.post<RejectBulkResult>('/pm/triage/reject-bulk', { ids })
+}
+
+/** Dismiss many proposals in one round trip (the inbox's `D` / dismiss-selected). */
+export function dismissBulk(ids: string[]): Promise<DismissBulkResult> {
+  return api.post<DismissBulkResult>('/pm/triage/dismiss-bulk', { ids })
 }
 
 /** Edit a work item's overlay directly (inline score edits, triage-state moves). */

@@ -59,8 +59,9 @@ import { fetchCapacity, fetchCapacityBinding, type CapacityReadout } from './cap
 import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, rejectBulk, updateOverlay, undoProposal,
+  dismissProposal, dismissBulk,
   fetchDecisions, acceptDecision, rejectDecision,
-  type TriageProposal, type OverlayEdits, type AcceptBulkResult, type RejectBulkResult,
+  type TriageProposal, type OverlayEdits, type AcceptBulkResult, type BulkSweepRow,
   type WorkItemOverlay, type UndoResult,
   type DecisionProposal, type DecisionResult,
 } from './triage'
@@ -2557,8 +2558,18 @@ export function useAcceptProposal(projectSlug?: string) {
   })
 }
 
-/** Optimistic single-reject — same shape, same rollback. */
-export function useRejectProposal(projectSlug?: string) {
+/**
+ * The optimistic single "resolve it away" mutation shared by reject and dismiss:
+ * the row leaves the list now, comes back (with a toast) on failure, and a
+ * landed one offers the undo toast. Both move the map's awaiting-triage /
+ * needs-home counts. One body so the two cannot drift; accept keeps its own
+ * because it also moves the onboarding wizard's count and carries edits.
+ */
+function useResolveProposal(
+  projectSlug: string | undefined,
+  run: (id: string) => Promise<{ id: string; status: string }>,
+  { failure, success }: { failure: string; success: string },
+) {
   const qc = useQueryClient()
   const key = [...QK.triage, projectSlug ?? null]
   return useMutation<
@@ -2567,7 +2578,7 @@ export function useRejectProposal(projectSlug?: string) {
     { id: string },
     { prev?: TriageProposal[] }
   >({
-    mutationFn: ({ id }) => rejectProposal(id),
+    mutationFn: ({ id }) => run(id),
     onMutate: async ({ id }) => {
       await qc.cancelQueries({ queryKey: key })
       const prev = qc.getQueryData<TriageProposal[]>(key)
@@ -2576,16 +2587,29 @@ export function useRejectProposal(projectSlug?: string) {
     },
     onError: (e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(key, ctx.prev)
-      toast.error(extractMutationErrorMessage(e, 'Could not reject proposal'))
+      toast.error(extractMutationErrorMessage(e, failure))
     },
-    // A reject moves the map's awaiting-triage / needs-home counts too.
     onSuccess: (_res, vars) => {
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
-      triageUndoToast(qc, 'Rejected', [vars.id], projectSlug)
+      triageUndoToast(qc, success, [vars.id], projectSlug)
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,
   })
+}
+
+/** Optimistic single-reject: parks the item under an owner-action hold. */
+export function useRejectProposal(projectSlug?: string) {
+  return useResolveProposal(projectSlug, rejectProposal,
+    { failure: 'Could not reject proposal', success: 'Rejected' })
+}
+
+/** Optimistic single-dismiss: "not roadmap work" — resolved with NO hold. A
+ *  server without the route answers 404/405, which lands as the failure toast
+ *  and the row comes back. */
+export function useDismissProposal(projectSlug?: string) {
+  return useResolveProposal(projectSlug, (id) => dismissProposal(id),
+    { failure: 'Could not dismiss proposal', success: 'Dismissed' })
 }
 
 /** Accept-selected (the inbox's `A` key). Optimistically drops all selected rows. */
@@ -2622,18 +2646,22 @@ export function useAcceptBulk(projectSlug?: string) {
   })
 }
 
-/** Reject-selected (the inbox's `R` key) — the reject twin of `useAcceptBulk`:
- *  optimistically drops all selected rows, restores them all on failure. */
-export function useRejectBulk(projectSlug?: string) {
+/**
+ * The bulk twin of `useResolveProposal`, shared by reject- and dismiss-selected:
+ * optimistically drops every selected row, restores them all on failure, and
+ * offers one undo toast over the ids that landed.
+ */
+function useResolveBulk<R extends { results: BulkSweepRow[] }>(
+  projectSlug: string | undefined,
+  run: (ids: string[]) => Promise<R>,
+  landed: (res: R) => number,
+  { failure, success }: { failure: string; success: (n: number) => string },
+) {
   const qc = useQueryClient()
   const key = [...QK.triage, projectSlug ?? null]
-  return useMutation<
-    RejectBulkResult,
-    ApiRequestError,
-    string[],
-    { prev?: TriageProposal[] }
-  >({
-    mutationFn: (ids) => rejectBulk(ids),
+  return useMutation<R, ApiRequestError, string[], { prev?: TriageProposal[] }>({
+    // Wrapped: react-query passes a second (context) argument the fetcher must not see.
+    mutationFn: (ids) => run(ids),
     onMutate: async (ids) => {
       await qc.cancelQueries({ queryKey: key })
       const prev = qc.getQueryData<TriageProposal[]>(key)
@@ -2643,19 +2671,29 @@ export function useRejectBulk(projectSlug?: string) {
     },
     onError: (e, _ids, ctx) => {
       if (ctx?.prev) qc.setQueryData(key, ctx.prev)
-      toast.error(extractMutationErrorMessage(e, 'Could not reject selection'))
+      toast.error(extractMutationErrorMessage(e, failure))
     },
-    // A reject parks each item under an owner-action hold, which moves the
-    // map's awaiting-triage / needs-home counts — same as a single reject.
     onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
-      if (res.rejected) {
-        triageUndoToast(qc, `Rejected ${res.rejected}`, res.results.filter((r) => r.ok).map((r) => r.id), projectSlug)
-      }
+      const n = landed(res)
+      if (n) triageUndoToast(qc, success(n), res.results.filter((r) => r.ok).map((r) => r.id), projectSlug)
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,
   })
+}
+
+/** Reject-selected (the inbox's `R` key) — the reject twin of `useAcceptBulk`:
+ *  parks each item under an owner-action hold. */
+export function useRejectBulk(projectSlug?: string) {
+  return useResolveBulk(projectSlug, rejectBulk, (r) => r.rejected,
+    { failure: 'Could not reject selection', success: (n) => `Rejected ${n}` })
+}
+
+/** Dismiss-selected (the inbox's `D` key): "not roadmap work", no holds. */
+export function useDismissBulk(projectSlug?: string) {
+  return useResolveBulk(projectSlug, dismissBulk, (r) => r.dismissed,
+    { failure: 'Could not dismiss selection', success: (n) => `Dismissed ${n}` })
 }
 
 /** Inline overlay edit (edit-then-accept `e`, and manual score edits). */

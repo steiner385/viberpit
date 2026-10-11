@@ -16,12 +16,15 @@ const reject = vi.fn()
 // removal will patch.
 const acceptScope = vi.fn()
 const rejectScope = vi.fn()
+const dismiss = vi.fn()
+const dismissScope = vi.fn()
 const acceptDecision = vi.fn()
 const rejectDecision = vi.fn()
 let acceptDecisionPending = false
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: (slug?: string) => { acceptScope(slug); return { mutate: accept, isPending: false } },
   useRejectProposal: (slug?: string) => { rejectScope(slug); return { mutate: reject, isPending: false } },
+  useDismissProposal: (slug?: string) => { dismissScope(slug); return { mutate: dismiss, isPending: false } },
   useAcceptDecision: () => ({ mutate: acceptDecision, isPending: acceptDecisionPending }),
   useRejectDecision: () => ({ mutate: rejectDecision, isPending: false }),
 }))
@@ -57,7 +60,7 @@ function mount(over: Partial<ComponentProps<typeof ProposalDetail>> = {}) {
 
 describe('ProposalDetail', () => {
   beforeEach(() => {
-    accept.mockReset()
+    accept.mockReset(); dismiss.mockReset(); dismissScope.mockReset()
     reject.mockReset()
     acceptScope.mockClear()
     rejectScope.mockClear()
@@ -200,6 +203,25 @@ describe('ProposalDetail', () => {
     expect(onDone).toHaveBeenCalled()
   })
 
+  it('Dismiss dismisses (not rejects), keyed to the list scope, and calls onDone', () => {
+    const { onDone } = mount({ scopeProduct: 'kindash' })
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(dismiss).toHaveBeenCalledWith({ id: 'p1' })
+    expect(reject).not.toHaveBeenCalled()
+    expect(dismissScope).toHaveBeenLastCalledWith('kindash')
+    expect(onDone).toHaveBeenCalled()
+  })
+
+  it('says how Dismiss differs from Reject — hold vs no hold', () => {
+    mount()
+    const dismissBtn = screen.getByRole('button', { name: 'Dismiss' })
+    const rejectBtn = screen.getByRole('button', { name: 'Reject' })
+    expect(dismissBtn).toHaveAttribute('title', 'Not roadmap work — resolve without a hold')
+    expect(rejectBtn).toHaveAttribute('title', 'Park it for its owner — an owner-action hold')
+    expect(dismissBtn).toHaveAccessibleDescription(/Dismiss: Not roadmap work — resolve without a hold/)
+    expect(rejectBtn).toHaveAccessibleDescription(/Reject: Park it for its owner/)
+  })
+
   it('autoFocusScores focuses the first score field', () => {
     mount({ autoFocusScores: true })
     expect(screen.getByLabelText('reach')).toHaveFocus()
@@ -273,6 +295,9 @@ describe('ProposalDetail', () => {
       // one on screen, accepted irreversibly.
       fireEvent.keyDown(button, { key: 'a' })
       fireEvent.keyDown(button, { key: 'r' })
+      fireEvent.keyDown(button, { key: 'd' })
+      fireEvent.keyDown(button, { key: 'D' })
+      fireEvent.keyDown(button, { key: 'R' })
       expect(seen).not.toHaveBeenCalled()
       // Everything else still belongs to the app (Escape, Tab, shortcuts).
       fireEvent.keyDown(button, { key: 'Escape' })

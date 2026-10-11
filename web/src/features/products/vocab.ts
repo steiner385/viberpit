@@ -84,6 +84,13 @@ export const ROADMAP = {
   help: 'The product roadmap: every product, its capabilities, the initiatives changing them and the issues underneath. Drill down, trace back up, and see what needs you. Its Inbox scope holds what is awaiting your decision — proposed classifications to accept, adjust or reject, and product decisions a session drafted options for rather than guessing.',
 } as const
 
+/** The Inbox's two "no" answers, which differ in whether the item is held —
+ *  one spelling for the detail pane's buttons and the bulk bar's. */
+export const TRIAGE_NO_HINT = {
+  reject: 'Park it for its owner — an owner-action hold',
+  dismiss: 'Not roadmap work — resolve without a hold',
+} as const
+
 export const INITIATIVE = { singular: 'Initiative', plural: 'Initiatives', new: 'New initiative' } as const
 export const ISSUE = { singular: 'Issue', plural: 'Issues' } as const
 export const EPIC = { singular: 'Epic' } as const

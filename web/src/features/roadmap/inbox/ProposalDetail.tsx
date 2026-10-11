@@ -34,7 +34,7 @@ import {
   type DecisionProposal, type InboxProposal, type OverlayEdits, type TriageProposal,
 } from '@/api/triage'
 import {
-  useAcceptDecision, useAcceptProposal, useRejectDecision, useRejectProposal,
+  useAcceptDecision, useAcceptProposal, useDismissProposal, useRejectDecision, useRejectProposal,
 } from '@/api/hooks'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { Badge, type Tone } from '@/ui/Badge'
@@ -42,7 +42,7 @@ import { Button } from '@/ui/Button'
 import { Field } from '@/ui/Field'
 import { Input } from '@/ui/Input'
 import { Select } from '@/ui/Select'
-import { CAPABILITY } from '@/features/products/vocab'
+import { CAPABILITY, TRIAGE_NO_HINT } from '@/features/products/vocab'
 import { slugify } from '../slug'
 import { ConsequenceList } from '../guidance/ConsequenceList'
 import { ScoreFields, SCORE_FIELDS, type ScoreField } from './ScoreFields'
@@ -93,7 +93,7 @@ export interface ProposalDetailProps {
 
 /** The list column's key map, which lives on `window` and must not reach past
  *  this pane. `A` is Shift+a, and just as destructive. */
-const INBOX_KEYS = new Set(['j', 'k', 'a', 'A', 'r', 'e', 'x'])
+const INBOX_KEYS = new Set(['j', 'k', 'a', 'A', 'r', 'R', 'd', 'D', 'e', 'x'])
 
 const CONFIDENCE_TONE: Record<string, Tone> = { high: 'success', medium: 'info', low: 'neutral' }
 
@@ -127,6 +127,7 @@ function TriageDetail({
   // the cache entry the rows actually came from.
   const accept = useAcceptProposal(scopeProduct ?? undefined)
   const reject = useRejectProposal(scopeProduct ?? undefined)
+  const dismiss = useDismissProposal(scopeProduct ?? undefined)
 
   const [edits, setEdits] = useState<OverlayEdits>(() => editsOf(p))
   // Inline "+ New capability" (spec 2026-09-22 §3): a triage-created capability
@@ -212,6 +213,11 @@ function TriageDetail({
 
   const rejectProposal = () => {
     reject.mutate({ id: p.id })
+    onDone()
+  }
+
+  const dismissProposal = () => {
+    dismiss.mutate({ id: p.id })
     onDone()
   }
 
@@ -310,7 +316,28 @@ function TriageDetail({
         <div className="flex flex-wrap justify-end gap-2">
           {/* `lg` throughout: these are the confirm actions of the pane, and lg
               is the only size carrying the 44px touch target. */}
-          <Button type="button" variant="ghost" size="lg" onClick={rejectProposal} disabled={reject.isPending}>
+          {/* Dismiss is the quiet "no": not roadmap work, resolved with no
+              hold. Reject is the other "no": it parks the item for its owner. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="lg"
+            onClick={dismissProposal}
+            disabled={dismiss.isPending}
+            title={TRIAGE_NO_HINT.dismiss}
+            aria-describedby="proposal-no-hint"
+          >
+            Dismiss
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="lg"
+            onClick={rejectProposal}
+            disabled={reject.isPending}
+            title={TRIAGE_NO_HINT.reject}
+            aria-describedby="proposal-no-hint"
+          >
             Reject
           </Button>
           <Button type="button" variant="secondary" size="lg" onClick={acceptAsProposed} disabled={accept.isPending}>
@@ -320,6 +347,9 @@ function TriageDetail({
             Save edits &amp; accept
           </Button>
         </div>
+        <p id="proposal-no-hint" className="text-right text-xs text-ink-muted">
+          Dismiss: {TRIAGE_NO_HINT.dismiss} · Reject: {TRIAGE_NO_HINT.reject}
+        </p>
       </form>
     </PaneShell>
   )

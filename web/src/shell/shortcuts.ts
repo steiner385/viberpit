@@ -299,8 +299,10 @@ export const SHORTCUTS: Shortcut[] = [
     group: 'roadmap-inbox', match: plain((e) => e.key === 'k') },
   { id: 'inbox.accept', keys: 'a', description: 'Accept the focused proposal (a decision opens instead)',
     group: 'roadmap-inbox', match: plain((e) => e.key === 'a') },
-  { id: 'inbox.reject', keys: 'r', description: 'Reject the focused proposal (a decision opens instead)',
+  { id: 'inbox.reject', keys: 'r', description: 'Reject the focused proposal — park it for its owner (a decision opens instead)',
     group: 'roadmap-inbox', match: plain((e) => e.key === 'r') },
+  { id: 'inbox.dismiss', keys: 'd', description: 'Dismiss the focused proposal — not roadmap work, no hold',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'd') },
   { id: 'inbox.edit', keys: 'e', description: 'Open the focused proposal with its scores focused',
     group: 'roadmap-inbox', match: plain((e) => e.key === 'e') },
   { id: 'inbox.select', keys: 'x', description: 'Tick the focused proposal for a bulk accept or reject',
@@ -310,6 +312,8 @@ export const SHORTCUTS: Shortcut[] = [
   // Same shape as `a`/`A`: Shift+r sweeps the selection, `r` decides one row.
   { id: 'inbox.rejectSelected', keys: 'Shift+R', description: 'Reject every ticked proposal',
     group: 'roadmap-inbox', match: plain((e) => e.key === 'R') },
+  { id: 'inbox.dismissSelected', keys: 'Shift+D', description: 'Dismiss every ticked proposal',
+    group: 'roadmap-inbox', match: plain((e) => e.key === 'D') },
   // ── In-session ───────────────────────────────────────────────────────
   //
   // `hasOpenAction` holds ← and Esc — an unanswered permission or question card
