@@ -52,11 +52,14 @@ def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:
     """A runner slot frees when the work item's PR has reached the point where
     something else carries it: PR Doctor keeps CI green toward auto-merge, so if
     PR Doctor covers the repo, free once the PR is open AND auto-merge is armed;
-    otherwise (no safety net) hold until the PR actually merges."""
+    otherwise (no safety net) hold until the PR actually merges. A PR already in
+    the merge queue counts as armed: GitHub nulls ``autoMergeRequest`` once it is
+    queued (#2909)."""
     if pr_info.state == "merged":
         return True
     if pr_doctor_active:
-        return pr_info.state in ("open", "draft") and pr_info.auto_merge_enabled
+        return (pr_info.state in ("open", "draft")
+                and (pr_info.auto_merge_enabled or pr_info.in_merge_queue))
     return False
 
 

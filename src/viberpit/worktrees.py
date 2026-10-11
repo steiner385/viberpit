@@ -277,6 +277,20 @@ def verified_created_worktree_branch(cwd: str, path: str, branch: str,
         return branch
     return None
 
+def push_evidence(cwd: str) -> tuple[str | None, str | None]:
+    """``(upstream_branch, head_sha)`` for the worktree at ``cwd``, each None when
+    unknown. ``upstream_branch`` is the ``origin`` branch HEAD's branch tracks, with
+    the remote prefix stripped — the branch a ``git push -u`` actually wrote, which
+    need not match the local branch name (#2909). Local refs only, no network."""
+    r = _run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+              "@{upstream}"])
+    upstream = r.stdout.strip() if r.returncode == 0 else ""
+    branch = upstream[len("origin/"):] if upstream.startswith("origin/") else None
+    r = _run(["git", "-C", cwd, "rev-parse", "HEAD"])
+    sha = r.stdout.strip() if r.returncode == 0 else ""
+    return (branch or None, sha if _SHA_RE.match(sha) else None)
+
+
 def commits_ahead_of_default(cwd: str) -> int | None:
     """Commits on ``cwd``'s HEAD that origin's default branch does not have, or None
     when that cannot be told (not a git dir, no recorded ``origin/HEAD``). Local refs

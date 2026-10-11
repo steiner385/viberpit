@@ -1294,6 +1294,12 @@ class SessionOrchestrator:
         # Per-session count of consecutive not-ready completion nudges (bounded by
         # COMPLETE_NUDGE_CAP); cleared when the session finally archives.
         self._complete_nudge_counts: dict[str, int] = {}
+        # Per-session fingerprint of the last DELIVERED completion nudge, so an
+        # unchanged PR state is never nudged twice (#2909); cleared on archive.
+        self._complete_nudge_last: dict[str, tuple] = {}
+        # ...and when it was delivered (naive UTC): a human steering the session after
+        # it makes the next no-PR claim the user's answer (#2915/#2917/#2918).
+        self._complete_nudge_sent_at: dict[str, datetime] = {}
         # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
         # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
         self._pushed_pr: set[tuple[str, str]] = set()
@@ -6427,6 +6433,7 @@ class SessionOrchestrator:
             if status == "complete" and resolution and rec.pr_resolution is None:
                 rec.pr_resolution = resolution
                 rec.pr_resolution_source = resolution_source
+                rec.pr_resolution_note = resolution_note
             # The session is doing something again → the "interrupted by daemon restart,
             # re-send to resume" hint (issue #434) is resolved. Clear it on any non-idle
             # status so the card stops nagging once the user re-sends.
@@ -6476,9 +6483,9 @@ class SessionOrchestrator:
                 values["pr_resolution"] = resolution
                 values["pr_resolution_source"] = resolution_source
                 # Under the SAME guard, so the note can never outlive or contradict
-                # the resolution it explains. DB-only (no SessionRecord field): its
-                # one reader is the Backlog Runner's investigation settle, which
-                # looks the row up by session id.
+                # the resolution it explains. Read by the Backlog Runner's
+                # investigation settle (by session id) and, via the record, by the
+                # completion bar (a reasoned no-PR claim is accepted, #2917).
                 values["pr_resolution_note"] = resolution_note
             # Fold the in-memory slash-command catalog (cached during attach by
             # command_catalog(), which must not write from the cancellable attach path)
@@ -6727,6 +6734,52 @@ class SessionOrchestrator:
         counts[session_id] = counts.get(session_id, 0) + 1
         return counts[session_id] > COMPLETE_NUDGE_CAP
 
+    @staticmethod
+    def _complete_nudge_fingerprint(verdict, facts) -> tuple:
+        """What makes two completion nudges "the same" (#2909): the remedy plus every
+        linked PR's merge-relevant fields, so any real movement — a new PR, a draft
+        readied, CI flipping — earns a fresh nudge, and nothing else does."""
+        return (verdict.reason, verdict.remedy, tuple(sorted(
+            (p.number, p.state, p.is_draft, p.auto_merge_enabled, p.in_merge_queue,
+             p.checks) for p in facts.prs)))
+
+    def _complete_nudge_repeats(self, session_id: str, fingerprint: tuple) -> bool:
+        """True when a nudge with this *fingerprint* was already delivered."""
+        return getattr(self, "_complete_nudge_last", {}).get(session_id) == fingerprint
+
+    def _complete_nudge_delivered(self, session_id: str, fingerprint: tuple) -> None:
+        """Record the latest delivered nudge. Lazily creates the map so bare/`__new__`
+        test orchs work; only a delivered nudge counts, so a failed send is retried."""
+        last = getattr(self, "_complete_nudge_last", None)
+        if last is None:
+            last = self._complete_nudge_last = {}
+        last[session_id] = fingerprint
+        from datetime import datetime
+        sent = getattr(self, "_complete_nudge_sent_at", None)
+        if sent is None:
+            sent = self._complete_nudge_sent_at = {}
+        sent[session_id] = datetime.utcnow()
+        self._complete_nudge_held.discard(session_id)
+
+    def _complete_nudge_answered(self, rec) -> bool:
+        """True when a human steered *rec* (prompt, answer, permission) AFTER its last
+        delivered completion nudge — so the no-PR claim it then made is the user's
+        answer to the question the nudge told it to ask, not a repeat of its own word
+        (#2915/#2917/#2918). Both stamps are naive-UTC ``datetime.utcnow()``."""
+        sent = getattr(self, "_complete_nudge_sent_at", {}).get(rec.id)
+        touched = getattr(rec, "last_user_interaction_at", None)
+        return sent is not None and touched is not None and touched > sent
+
+    @property
+    def _complete_nudge_held(self) -> set[str]:
+        """Sessions resting at ``complete`` because their nudge would only repeat
+        (``completion.nudge_unchanged``) — the stuck-complete sweep re-judges them,
+        exactly as it does a session past ``COMPLETE_NUDGE_CAP``."""
+        held = self.__dict__.get("_complete_nudge_held_ids")
+        if held is None:
+            held = self.__dict__["_complete_nudge_held_ids"] = set()
+        return held
+
     def _complete_nudge_exhausted(self, session_id: str) -> bool:
         """Peek whether *session_id* already exceeded ``COMPLETE_NUDGE_CAP`` — unlike
         ``_complete_nudge_over_cap`` this never increments the counter, so it is safe
@@ -6779,7 +6832,8 @@ class SessionOrchestrator:
                 continue
             if session_id in self._auto_archiving:
                 continue
-            if not self._complete_nudge_exhausted(session_id):
+            if not (self._complete_nudge_exhausted(session_id)
+                    or session_id in self._complete_nudge_held):
                 continue
             await self.recheck_stuck_complete_session(session_id)
 
@@ -6868,8 +6922,14 @@ class SessionOrchestrator:
             if is_unverified_self_resolution(goal_text, pr, resolution, source):
                 commits_ahead = await self._session_commits_ahead(rec)
                 pr = dataclass_replace(pr, commits_ahead=commits_ahead)
+            # A reasoned or user-confirmed no-PR claim is the answer to the nudge, not
+            # a reason to send it again (#2915/#2917/#2918; met_bar documents both).
+            claim_note = getattr(rec, "pr_resolution_note", None)
+            claim_confirmed = self._complete_nudge_answered(rec)
             verdict = met_bar(goal_text, goal_source, pr, resolution,
-                              pr_resolution_source=source, instructions=initial_prompt)
+                              pr_resolution_source=source, instructions=initial_prompt,
+                              pr_resolution_note=claim_note,
+                              claim_confirmed=claim_confirmed)
             if not verdict.met:
                 # Verify-before-directing: the cached PR facts may lag a just-armed PR.
                 # Refresh once (a no-op without a poller), then re-judge.
@@ -6878,7 +6938,9 @@ class SessionOrchestrator:
                     pr = dataclass_replace(refreshed, commits_ahead=commits_ahead)
                     verdict = met_bar(goal_text, goal_source, pr, resolution,
                                       pr_resolution_source=source,
-                                      instructions=initial_prompt)
+                                      instructions=initial_prompt,
+                                      pr_resolution_note=claim_note,
+                                      claim_confirmed=claim_confirmed)
                 # Salvage the low-confidence "code goal but no PR" case: a research/Q&A
                 # session that legitimately opens no PR shouldn't be nudged to open one,
                 # and a self-declared no-PR is verified (or not) against the goal here.
@@ -6892,7 +6954,9 @@ class SessionOrchestrator:
                                 goal_text, goal_source, pr, resolution,
                                 pr_resolution_source=getattr(
                                     rec, "pr_resolution_source", None),
-                                instructions=initial_prompt)
+                                instructions=initial_prompt,
+                                pr_resolution_note=claim_note,
+                                claim_confirmed=claim_confirmed)
                     except Exception:  # pragma: no cover — salvage is best-effort
                         log.debug("completion.intent_salvage_failed sid=%s",
                                   session_id, exc_info=True)
@@ -6908,6 +6972,16 @@ class SessionOrchestrator:
                     # word nor told to open a PR it declared it would not (a782f302).
                     log.info("completion.autoarchive_held sid=%s reason=%s",
                              session_id, verdict.reason)
+                    return
+                fingerprint = self._complete_nudge_fingerprint(verdict, pr)
+                if self._complete_nudge_repeats(session_id, fingerprint):
+                    # The session already got this exact nudge for this exact PR state
+                    # and signalled complete again without changing anything: saying it
+                    # twice is the loop #2909 reported, not progress. It rests at
+                    # `complete`; the stuck-complete sweep re-judges it as the PR moves.
+                    log.info("completion.nudge_unchanged sid=%s reason=%s",
+                             session_id, verdict.reason)
+                    self._complete_nudge_held.add(session_id)
                     return
                 if self._complete_nudge_over_cap(session_id):
                     log.info("completion.autoarchive_giveup sid=%s reason=%s",
@@ -6952,9 +7026,12 @@ class SessionOrchestrator:
                     if result == "draining":
                         # Expected during every deploy (#2271): park it for after the drain.
                         await self._defer_nudge_past_drain(session_id, nudge)
+                        self._complete_nudge_delivered(session_id, fingerprint)
                     elif result != "sent":
                         log.warning("completion.nudge_failed sid=%s reason=%s",
                                     session_id, result)
+                    else:
+                        self._complete_nudge_delivered(session_id, fingerprint)
                 except Exception:
                     log.warning("completion.nudge_failed sid=%s", session_id, exc_info=True)
                 return
@@ -6989,6 +7066,9 @@ class SessionOrchestrator:
         counts = getattr(self, "_complete_nudge_counts", None)
         if counts is not None:
             counts.pop(session_id, None)
+        getattr(self, "_complete_nudge_last", {}).pop(session_id, None)
+        getattr(self, "_complete_nudge_sent_at", {}).pop(session_id, None)
+        self._complete_nudge_held.discard(session_id)
         if origin == "backlog-runner":
             await self._backlog_ctx.emit(
                 "info", f"archived completed run {session_id}",
@@ -14559,6 +14639,16 @@ class SessionOrchestrator:
         the cheap per-tick path that feeds met_bar and the fleet snapshot."""
         from server.automations.completion_bar import PrFact, PrFacts
         seen: dict[tuple[str, int], PrFact] = {}
+
+        def _add(pr_repo: str, info) -> None:
+            if info is not None and (pr_repo.lower(), info.number) not in seen:
+                seen[(pr_repo.lower(), info.number)] = PrFact(
+                    number=info.number, state=info.state, is_draft=info.is_draft,
+                    auto_merge_enabled=info.auto_merge_enabled,
+                    in_merge_queue=info.in_merge_queue, url=info.url,
+                    checks=info.checks, is_docs_only=info.docs_only)
+
+        population = getattr(self, "_pr_population", None)
         pairs = [(rec.repo, br) for br in self._session_pr_branches(rec) if rec.repo]
         pairs += getattr(rec, "foreign_pr_refs", None) or []
         for pr_repo, br in pairs:
@@ -14569,15 +14659,68 @@ class SessionOrchestrator:
             # nudge once the PR mention leaves the transcript tail (compaction), since
             # facts_contradicted's transcript gate is then the ONLY other path that
             # would trigger the population-cache-aware refresh.
-            if info is None and getattr(self, "_pr_population", None) is not None:
+            if info is None and population is not None:
                 info = self._pr_population_pr(pr_repo, br)
-            if info is not None and (pr_repo.lower(), info.number) not in seen:
-                seen[(pr_repo.lower(), info.number)] = PrFact(
-                    number=info.number, state=info.state, is_draft=info.is_draft,
-                    auto_merge_enabled=info.auto_merge_enabled,
-                    in_merge_queue=info.in_merge_queue, url=info.url,
-                    checks=info.checks, is_docs_only=info.docs_only)
+            _add(pr_repo, info)
+        # The PR this session was DISPATCHED for (PR Doctor fix / conflict repair)
+        # links by number: its worktree often sits on a child branch whose name never
+        # matches the PR's head, so every branch lookup above misses it (#2909).
+        origin_pr = self._origin_pr_ref(rec)
+        if origin_pr is not None and population is not None:
+            pr_repo, number = origin_pr
+            _add(pr_repo, next((i for i in population.cached(pr_repo)
+                                if i.number == number), None))
         return PrFacts(has_repo=bool(rec.repo), prs=tuple(seen.values()))
+
+    @staticmethod
+    def _origin_pr_ref(rec) -> "tuple[str, int] | None":
+        """``(repo, number)`` of the PR a PR Doctor session was dispatched to work
+        (its ``origin_ref`` is the ``owner/repo#N`` target), else None. Gated on the
+        origin: other automations stamp ``owner/repo#N`` ISSUE refs there."""
+        if getattr(rec, "origin", None) != "pr-doctor":
+            return None
+        from server.automations.target_identity import valid_repo_name
+        from server.pm.refs import split_ref
+        parts = split_ref(getattr(rec, "origin_ref", None) or "")
+        return parts if parts is not None and valid_repo_name(parts[0]) else None
+
+    async def _link_session_pr_evidence(self, session_id: str) -> None:
+        """Persist the PR links a branch-NAME match cannot see (#2909), strongest
+        evidence first: the dispatch-origin PR number (head branch resolved through
+        ``_note_shared_pr``), then the branch the worktree's HEAD actually pushes to
+        (its ``origin`` upstream), then an open population PR whose head SHA is the
+        worktree's HEAD. Each lands in ``authored_branches`` — the one ledger every
+        PR consumer reads — so the cheap per-tick path sees it from then on.
+        Best-effort: any failure leaves the existing links as they were."""
+        rec = self._records.get(session_id)
+        if rec is None or not rec.repo:
+            return
+        origin_pr = self._origin_pr_ref(rec)
+        if origin_pr is not None:
+            try:
+                await self._note_shared_pr(session_id, *origin_pr, refresh=False)
+            except Exception:
+                log.debug("completion.origin_pr_link_failed sid=%s", session_id,
+                          exc_info=True)
+        if not rec.cwd:
+            return
+        try:
+            upstream, head_sha = await asyncio.to_thread(worktrees.push_evidence, rec.cwd)
+        except Exception:
+            log.debug("completion.push_evidence_failed sid=%s", session_id, exc_info=True)
+            return
+        branches: list[str] = []
+        if upstream and upstream not in ("master", "main"):
+            branches.append(upstream)
+        population = getattr(self, "_pr_population", None)
+        if head_sha and population is not None:
+            # Open PRs only: a just-merged PR's head can equal the default branch tip
+            # a fresh worktree also sits on, which would read as "code landed".
+            branches += [i.head_ref for i in population.cached(rec.repo)
+                         if i.head_sha == head_sha and i.head_ref
+                         and i.state in ("open", "draft")]
+        for br in branches:
+            await self._note_authored_branch(session_id, br)
 
     async def _autopilot_resolve_pr_intent(self, rec, goal_text, goal_source,
                                            pr_facts, transcript_tail) -> "str | None":
@@ -14918,6 +15061,7 @@ class SessionOrchestrator:
         if poller is None or poller.in_cooldown:
             return None
         try:
+            await self._link_session_pr_evidence(session_id)
             if not await self._recover_session_pr_links(session_id):
                 return None
             await self.refresh_authored_branches()
@@ -16854,6 +16998,7 @@ class SessionOrchestrator:
             command_catalog=getattr(row, "command_catalog", None),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
+            pr_resolution_note=getattr(row, "pr_resolution_note", None),
             # The hand-back ask and the judge's verdict on it. Both only mean
             # anything beside status == handed_back, a resting status that survives
             # a restart — so they must survive with it. Dropped here until

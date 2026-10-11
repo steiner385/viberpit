@@ -23,3 +23,9 @@ def test_no_pr_doctor_frees_only_on_merge():
 
 def test_merged_always_frees():
     assert should_free_slot(_pr(state="merged"), True) is True
+
+
+def test_merge_queued_pr_frees_like_an_armed_one():
+    """#2909: GitHub nulls autoMergeRequest once a PR enters the merge queue."""
+    pr = _pr(state="open", auto_merge_enabled=False, in_merge_queue=True)
+    assert should_free_slot(pr, True) is True

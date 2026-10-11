@@ -1008,3 +1008,64 @@ async def test_refresh_failed_poller_is_not_verified_absence(orch):
         return False
     orch._pr_poller.refresh_once = failed
     assert await orch._autopilot_refresh_pr_facts("s1") is None
+
+
+# --- #2909: PR linkage beyond the branch NAME ---------------------------------------
+
+
+def _record_authored(orch):
+    async def _note(session_id, branch):
+        rec = orch._records[session_id]
+        rec.authored_branches = sorted(set(rec.authored_branches or []) | {branch})
+    orch._note_authored_branch = _note
+
+
+@pytest.mark.asyncio
+async def test_refresh_links_the_pushed_upstream_branch(orch, monkeypatch):
+    """Session whose PR head branch ≠ worktree branch: the branch HEAD pushes to is
+    linked, so the PR on it reaches the facts."""
+    from server.github.pr_status import PullRequestInfo
+    pr = PullRequestInfo(number=77, url="u", state="open", checks="passing", title="t",
+                         auto_merge_enabled=True)
+    monkeypatch.setattr("viberpit.worktrees.push_evidence", lambda cwd: ("fix/remote", None))
+    _record_authored(orch)
+    orch.pr_for = lambda repo, branch: pr if branch == "fix/remote" else None
+    facts = await orch._autopilot_refresh_pr_facts("s1")
+    assert [p.number for p in facts.prs] == [77]
+    assert "fix/remote" in orch._records["s1"].authored_branches
+
+
+@pytest.mark.asyncio
+async def test_refresh_links_an_open_pr_by_head_sha(orch, monkeypatch):
+    from server.github.pr_status import PullRequestInfo
+    sha = "a" * 40
+    open_pr = PullRequestInfo(number=78, url="u", state="open", checks="passing",
+                              title="t", auto_merge_enabled=True, repo="o/r",
+                              head_ref="fix/other-name", head_sha=sha)
+    merged_pr = PullRequestInfo(number=5, url="u", state="merged", checks="passing",
+                                title="t", repo="o/r", head_ref="old", head_sha=sha)
+    orch._pr_population = _FakePopulation({"o/r": [open_pr, merged_pr]})
+    monkeypatch.setattr("viberpit.worktrees.push_evidence", lambda cwd: (None, sha))
+    _record_authored(orch)
+    orch.pr_for = lambda repo, branch: None
+    facts = await orch._autopilot_refresh_pr_facts("s1")
+    assert [p.number for p in facts.prs] == [78]
+    # A merged PR sharing the SHA (e.g. the default-branch tip) is never linked.
+    assert "old" not in (orch._records["s1"].authored_branches or [])
+
+
+@pytest.mark.asyncio
+async def test_refresh_links_the_pr_doctor_origin_pr(orch, monkeypatch):
+    """PR-doctor / conflict-fix session working an existing PR: linked via the origin
+    PR number, its head branch persisted as authored."""
+    rec = orch._records["s1"]
+    rec.origin, rec.origin_ref = "pr-doctor", "o/r#90"
+    noted = []
+
+    async def _note_shared(session_id, repo, number, *, refresh=True):
+        noted.append((repo, number))
+        return True
+    orch._note_shared_pr = _note_shared
+    monkeypatch.setattr("viberpit.worktrees.push_evidence", lambda cwd: (None, None))
+    await orch._autopilot_refresh_pr_facts("s1")
+    assert noted == [("o/r", 90)]

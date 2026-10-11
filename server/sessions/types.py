@@ -134,6 +134,10 @@ class SessionRecord:
     # marker from the probabilistic classifier. None until explicitly set.
     pr_resolution: str | None = None
     pr_resolution_source: str | None = None
+    # `mark_no_pr`'s one-sentence reason (DB Session.pr_resolution_note), written with
+    # the resolution and never on its own. The completion bar accepts a reasoned
+    # self-claim instead of re-nudging it (#2915/#2917/#2918).
+    pr_resolution_note: str | None = None
     # The session's own one-line `hand_back(reason)` (#2321), mirroring DB
     # Session.hand_back_reason. Only meaningful alongside status == "handed_back":
     # _persist_status writes the pair together and clears this on any other status.
