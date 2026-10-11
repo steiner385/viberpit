@@ -47,7 +47,7 @@ def _orch_with(rec):
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._records = {rec.id: rec} if rec else {}
     orch._drivers = {}
-    calls = {"ensure": [], "prompt": []}
+    calls = {"ensure": [], "prompt": [], "replayable": []}
 
     async def ensure_driver(sid, identity=SYSTEM_IDENTITY):
         calls["ensure"].append((sid, identity))
@@ -55,8 +55,9 @@ def _orch_with(rec):
         orch._drivers[sid] = d
         return d
 
-    async def send_prompt(sid, text, attachment_ids=None):
+    async def send_prompt(sid, text, attachment_ids=None, *, replayable=None):
         calls["prompt"].append((sid, text))
+        calls["replayable"].append(replayable)
         return "sent"
 
     orch.ensure_driver = ensure_driver          # type: ignore[assignment]
@@ -71,6 +72,8 @@ async def test_resume_interrupted_eligible_nudges():
     assert await orch.resume_interrupted("s1") == "resumed"
     assert calls["ensure"] == [("s1", SYSTEM_IDENTITY)]
     assert calls["prompt"] == [("s1", RESUME_NUDGE)]
+    # The nudge is ours, not the user's turn: a later restart must not replay it (#2922).
+    assert calls["replayable"] == [False]
 
 
 @pytest.mark.asyncio
@@ -113,7 +116,7 @@ async def test_resume_interrupted_draining_propagates():
     rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress")
     orch, _ = _orch_with(rec)
 
-    async def send_draining(sid, text, attachment_ids=None):
+    async def send_draining(sid, text, attachment_ids=None, *, replayable=None):
         return "draining"
 
     orch.send_prompt = send_draining             # type: ignore[assignment]
