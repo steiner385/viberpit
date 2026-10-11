@@ -21,7 +21,7 @@ import type {
   DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent,
-  SessionPreset, PromptTemplate, PermissionProfile, AssessResponse,
+  SessionPreset, PromptTemplate, PermissionProfile, AssessResponse, RuleWire,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
@@ -1705,6 +1705,33 @@ export function useDeletePermissionProfile() {
   return useMutation({
     mutationFn: (id: string) => api.del(`/permission-profiles/${id}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-profiles'] }),
+  })
+}
+
+// ─── Always-allow standing rules ──────────────────────────────────────────
+
+export function usePermissionRules(sessionId?: string) {
+  return useQuery<RuleWire[]>({
+    queryKey: ['permission-rules', sessionId ?? 'all'],
+    queryFn: () => api.get<RuleWire[]>(
+      sessionId ? `/permission-rules?sessionId=${encodeURIComponent(sessionId)}` : '/permission-rules'),
+  })
+}
+
+export function useUpdatePermissionRule() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; pattern: string; confirm?: boolean }) =>
+      api.patch<RuleWire>(`/permission-rules/${id}`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-rules'] }),
+  })
+}
+
+export function useRevokePermissionRule() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/permission-rules/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-rules'] }),
   })
 }
 
