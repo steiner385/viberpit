@@ -1,13 +1,13 @@
 """Session Feedback inbox: session_feedback.resolution (how an operator action settled a row, #2936).
 
-Revision ID: 0083_session_feedback_resolution
-Revises: 0082_work_item_app_authors
+Revision ID: 0084_session_feedback_resolution
+Revises: 0083_not_needed_material_fingerprint
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0083_session_feedback_resolution"
-down_revision = "0082_work_item_app_authors"
+revision = "0084_session_feedback_resolution"
+down_revision = "0083_not_needed_material_fingerprint"
 branch_labels = None
 depends_on = None
 
