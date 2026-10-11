@@ -21358,6 +21358,11 @@ class SessionOrchestrator:
         except Exception:
             log.warning("command_catalog: server_info failed session=%s", session_id, exc_info=True)
             return self._cached_command_catalog(session_id)
+        if info is None:
+            # Driver has no live info (still connecting, or torn down): keep the cache.
+            cached = self._cached_command_catalog(session_id)
+            if cached:
+                return cached
         catalog = [
             c.to_wire()
             for c in cmd_catalog.build_catalog(info, self._capabilities_of(session_id))
