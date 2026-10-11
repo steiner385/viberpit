@@ -9,6 +9,7 @@
  * Behavior mirrors what SessionView previously did inline.
  */
 
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useReducer, useState, useCallback, useRef } from 'react'
 import { useSessionSocket } from '@/ws/client'
 import type {
@@ -155,6 +156,7 @@ export function useSessionRuntime(
     [state, visibleTurns, visibleSubAgents],
   )
 
+  const qc = useQueryClient()
   const { data: sessions } = useSessions()
   const sessionRecord = sessions?.find((s) => s.id === sessionId)
   const waitsForModeAcknowledgement = sessionRecord?.engine !== 'claude_code'
@@ -292,9 +294,11 @@ export function useSessionRuntime(
       if (permissionResponse(sessionId, permId, decision)) {
         // Carry the decision so the reducer leaves a record where the card was.
         dispatch({ type: '_resolvePermission', permId, decision })
+        // A session-wide 'always' can mint a standing rule server-side; refresh the lists.
+        if (decision === 'always') void qc.invalidateQueries({ queryKey: ['permission-rules'] })
       }
     },
-    [sessionId, permissionResponse],
+    [sessionId, permissionResponse, qc],
   )
 
   const onPreviewRule = useCallback(
@@ -311,9 +315,14 @@ export function useSessionRuntime(
         `/sessions/${sessionId}/permissions/${permId}/always`, { pattern, scope, confirm },
       )
       dispatch({ type: '_resolvePermission', permId, decision: 'always' })
+      // Sibling cards the new rule swept: clear them now, without a decision (no duplicate notice).
+      for (const id of res.resolvedPermIds) {
+        if (id !== permId) dispatch({ type: '_resolvePermission', permId: id })
+      }
+      void qc.invalidateQueries({ queryKey: ['permission-rules'] })
       return res
     },
-    [sessionId],
+    [sessionId, qc],
   )
 
   // Answer handler for question cards. Send an answer over WS; on a confirmed
