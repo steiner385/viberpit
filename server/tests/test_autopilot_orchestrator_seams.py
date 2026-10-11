@@ -269,8 +269,11 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
             return object()
 
         orch.ensure_driver = _ensure
-        orch.resolve_permission = (
-            lambda sid, pid, decision, ident: calls.append((pid, decision)) or True)
+        async def _resolve(sid, pid, decision, ident):
+            calls.append((pid, decision))
+            return True
+
+        orch.resolve_permission = _resolve
 
         # Safe perm → approved via the SAME perm_id passed in (no re-fetch).
         assert await orch._autopilot_apply(
@@ -305,11 +308,21 @@ def test_apply_approve_settles_a_real_registry_future_as_allowed(tmp_path):
             "s1", "t1", "Bash", {"command": "pytest"}, mode="interactive",
             denylist=(), identity=SYSTEM_IDENTITY)
 
+        driver = SimpleNamespace(identity=SYSTEM_IDENTITY, resolve_permission=reg.resolve)
+
         async def _ensure(sid, ident=None):
-            return object()
+            return driver
+
+        async def _resolve(sid, p, decision, ident):
+            # The REAL orchestrator.resolve_permission, over a driver backed by the
+            # registry: it is a coroutine (#2922), and an un-awaited call is truthy
+            # without ever settling the future. The driver is installed only here so
+            # `_autopilot_may_act` does not also demand a session lease for it.
+            orch._drivers = {"s1": driver}
+            return await type(orch).resolve_permission(orch, sid, p, decision, ident)
 
         orch.ensure_driver = _ensure
-        orch.resolve_permission = lambda sid, p, decision, ident: reg.resolve(p, decision, ident)
+        orch.resolve_permission = _resolve
         assert await orch._autopilot_apply(
             "s1", Decision(action="approve"), _perm_ctx(pid, "pytest")) is True
         assert fut.result() is True
@@ -353,7 +366,11 @@ def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver(tmp_pa
             return _FakeDriver()
 
         orch.ensure_driver = _ensure
-        orch.resolve_permission = lambda sid, pid, decision, ident: calls.append("perm") or True
+        async def _resolve(sid, pid, decision, ident):
+            calls.append("perm")
+            return True
+
+        orch.resolve_permission = _resolve
 
         async def _answer(sid, qid, selected, ident, mode):
             calls.append("answer")

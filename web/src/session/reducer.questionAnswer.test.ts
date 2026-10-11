@@ -39,3 +39,20 @@ describe('transcriptReducer — questionResolved consumes the matching sent prom
     expect(s.pendingSent).toEqual([{ id: 'pending:0', text: 'something else' }])
   })
 })
+
+// #2922: a daemon restart settles a pending question with mode 'interrupted'. Nobody
+// answered it and the restarted daemon re-offers it, so the card must stay open —
+// resolving it (answered: []) blocks the re-offer's live upgrade.
+describe('transcriptReducer — an interrupted questionResolved keeps the card open', () => {
+  it('leaves the question live and unanswered', () => {
+    let s = transcriptReducer(initialTranscript, DONE)
+    s = transcriptReducer(s, question)
+    const next = transcriptReducer(s, {
+      type: 'questionResolved', questionId: 'q1', turnId: 't1', selected: null, mode: 'interrupted',
+    })
+    expect(next).toBe(s)
+    const q = next.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
+    expect(q && q.kind === 'question' ? q.live : undefined).toBe(true)
+    expect(q && q.kind === 'question' ? q.answered : 'x').toBeUndefined()
+  })
+})

@@ -16,8 +16,9 @@ records — see that field and :func:`build_rearm_prompt`."""
 from __future__ import annotations
 
 import json
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -26,6 +27,13 @@ from .transcript_entries import is_tool_result_entry
 _TUID = re.compile(r"<tool-use-id>(.*?)</tool-use-id>")
 _TASK_ID = re.compile(r"<task-id>(.*?)</task-id>")
 _STATUS = re.compile(r"<status>(.*?)</status>")
+# The CLI's ack for a backgrounded Bash ("Command running in background with ID: X.
+# Output is being written to: <path>." — and the moved-to-background / manually
+# backgrounded variants), verified against the 2.1.293 binary. The path ends at the
+# sentence's closing period.
+_OUTPUT_FILE = re.compile(r"Output is being written to:?\s+(\S+?)[.;]?(?=\s|$)")
+# A file a Monitor watches: the CLI's background output files are `<id>.output`.
+_MONITOR_TARGET = re.compile(r"""['"]?(/[^\s'"|;&]+\.output)\b""")
 # completed/failed = the task finished on its own. stopped = the CLI's own notice, written
 # on resume, that a background agent has no completion record (it died with the previous
 # CLI process) — the agent is gone AND the model has already been told, so it is terminal
@@ -90,11 +98,17 @@ class OpenBgTask:
     #: ISO-8601 ``timestamp`` of the transcript entry that launched it (the CLI stamps
     #: every entry); None for a snapshot written before #2635 or an entry without one.
     started_at: str | None = None
+    #: The file the CLI streams a backgrounded command's output to, parsed from its
+    #: launch ack ("Output is being written to: …"). After a restart that file may
+    #: already hold the complete result, so the rearm turn asks the agent to read it
+    #: before relaunching (#2922). None when the ack named none (or for Codex).
+    output_path: str | None = None
 
     def to_dict(self) -> dict:
         return {"tool_use_id": self.tool_use_id, "kind": self.kind,
                 "name": self.name, "input": self.input, "description": self.description,
-                "replayable": self.replayable, "started_at": self.started_at}
+                "replayable": self.replayable, "started_at": self.started_at,
+                "output_path": self.output_path}
 
     @classmethod
     def from_dict(cls, d: dict) -> "OpenBgTask":
@@ -102,7 +116,8 @@ class OpenBgTask:
                    name=d.get("name", ""), input=d.get("input") or {},
                    description=d.get("description", ""),
                    replayable=d.get("replayable", True) is not False,
-                   started_at=d.get("started_at"))
+                   started_at=d.get("started_at"),
+                   output_path=d.get("output_path") or None)
 
 
 def _is_background_launch(name: str, inp: dict) -> bool:
@@ -139,6 +154,26 @@ def _background_ack_task_id(entry: dict) -> str | None:
     for key in ("backgroundTaskId", "resumedAgentId"):
         if tur.get(key):
             return str(tur[key])
+    return None
+
+
+def _output_path_for(entry: dict, tid: str) -> str | None:
+    """The output file named in *tid*'s result text within *entry*, if any."""
+    content = (entry.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    for b in content:
+        if not (isinstance(b, dict) and b.get("type") == "tool_result"
+                and str(b.get("tool_use_id")) == tid):
+            continue
+        body = b.get("content")
+        if isinstance(body, list):
+            body = "".join(x.get("text") or "" for x in body
+                           if isinstance(x, dict) and x.get("type") == "text")
+        if isinstance(body, str):
+            m = _OUTPUT_FILE.search(body)
+            if m:
+                return m.group(1)
     return None
 
 
@@ -251,6 +286,8 @@ def _open_tasks_from(entries, treat_killed_as_open: bool) -> list[OpenBgTask]:
                     continue
                 if tid not in launches and call is not None:
                     launches[tid] = _launch(tid, call[0], call[1], call[2])
+                if tid in launches and launches[tid].output_path is None:
+                    launches[tid].output_path = _output_path_for(o, tid)
                 if task_id and tid in launches:
                     by_task.setdefault(task_id, set()).add(tid)
         # Terminations: any entry whose content carries a task-notification with a
@@ -507,30 +544,120 @@ def last_assistant_text(jsonl_path: str) -> str:
     return last
 
 
+def still_open(snapshot: list[OpenBgTask], fresh: list[OpenBgTask]) -> list[OpenBgTask]:
+    """The drain-time *snapshot* narrowed to what a rescan taken NOW still finds open.
+
+    The snapshot is taken when the drain starts — up to the whole drain window before
+    the restart — so a background command can finish in between; relaunching it then
+    re-runs work that already completed (#2922). Replayable (Claude) entries are kept
+    only if *fresh* — ``scan_open_background_tasks`` over the transcript at rearm time
+    — still lists them, and pick up the output file the fresh scan parsed. Entries
+    that are not replayable are reports of work that died with the engine (a Codex
+    terminal) and are kept as they are: a rescan of a restarted engine cannot see them.
+    """
+    by_id = {t.tool_use_id: t for t in fresh}
+    out: list[OpenBgTask] = []
+    for t in snapshot:
+        if not t.replayable:
+            out.append(t)
+            continue
+        cur = by_id.get(t.tool_use_id)
+        if cur is None:
+            continue
+        out.append(t if t.output_path or not cur.output_path
+                   else replace(t, output_path=cur.output_path))
+    return out
+
+
+def _output_file_state(path: str) -> str:
+    """``exists: yes, last modified <UTC>`` / ``exists: no`` for the rearm prompt."""
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return "exists: no"
+    when = datetime.fromtimestamp(mtime, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return f"exists: yes, last modified {when}"
+
+
+def _monitor_target(t: OpenBgTask) -> str | None:
+    """The background output file a Monitor watches, if its command names one."""
+    cmd = t.input.get("command") if isinstance(t.input, dict) else None
+    if not isinstance(cmd, str):
+        return None
+    m = _MONITOR_TARGET.search(cmd)
+    return m.group(1) if m else None
+
+
 def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:
     """The turn delivered after a restart that stopped this session's background work.
 
-    Two sections, because the two halves of the snapshot license different actions.
-    Replayable entries are *instructions* — relaunch this tool with these inputs.
-    Non-replayable ones are a *report*: named so the agent knows what stopped and can
-    judge whether it still matters, with no instruction to re-run anything. That split
-    is the whole point (#1284) — a Codex background terminal's ``input`` is a shell
-    command line the agent chose, and a restart that re-issues one unasked is a
+    The single home of what a restart tells a session about its background work.
+    Replayable entries are *instructions*, split three ways by what is true now:
+
+    * a backgrounded command whose output file is known — it may have finished, so
+      the agent is told to READ that file (with whether it exists and when it last
+      changed) and relaunch only if the result is incomplete (#2922);
+    * a Monitor whose target is such an output file that is no longer open — its
+      target finished before the restart, so it is reported, not re-armed;
+    * everything else — relaunch with exactly the parameters shown.
+
+    Non-replayable entries are a *report*: named so the agent knows what stopped and
+    can judge whether it still matters, with no instruction to re-run anything. That
+    split is the whole point (#1284) — a Codex background terminal's ``input`` is a
+    shell command line the agent chose, and a restart that re-issues one unasked is a
     restart that duplicates whatever it did.
+
+    Callers narrow a drain-time snapshot with :func:`still_open` first, so an entry
+    that finished during the drain never reaches here.
     """
     replayable = [t for t in tasks if t.replayable]
     reported = [t for t in tasks if not t.replayable]
+    open_outputs = {t.output_path for t in replayable if t.output_path}
+    relaunch: list[OpenBgTask] = []
+    read_first: list[OpenBgTask] = []
+    finished_monitors: list[tuple[OpenBgTask, str]] = []
+    for t in replayable:
+        if t.kind == "task" and t.output_path:
+            read_first.append(t)
+            continue
+        target = _monitor_target(t) if t.kind == "monitor" else None
+        if target is not None and target not in open_outputs:
+            finished_monitors.append((t, target))
+        else:
+            relaunch.append(t)
     lines: list[str] = []
-    if replayable:
+    if relaunch:
         lines.append("The daemon was restarted (deploy) and these background tasks "
                      "were stopped. Relaunch each one with exactly the parameters "
                      "shown.")
-        if any(t.kind != "monitor" for t in replayable):
+        if any(t.kind != "monitor" for t in relaunch):
             lines.append(RESTART_GUARD)
-        for t in replayable:
+        for t in relaunch:
             label = t.description or t.name
             lines.append(f"- [{t.kind}] {label}: relaunch the {t.name} tool with input "
                          f"{json.dumps(t.input)}")
+    if read_first:
+        if lines:
+            lines.append("")
+        lines.append("The daemon was restarted (deploy) while these background "
+                     "commands were running:")
+        for t in read_first:
+            cmd = t.input.get("command") if isinstance(t.input, dict) else None
+            what = cmd if isinstance(cmd, str) and cmd else (t.description or t.name)
+            lines.append(
+                f"- `{what}` was started in the background before the restart. Its "
+                f"output file `{t.output_path}` ({_output_file_state(str(t.output_path))})"
+                " may already hold the complete result: read it first and relaunch only "
+                f"if it is incomplete (the {t.name} tool with input "
+                f"{json.dumps(t.input)}).")
+    if finished_monitors:
+        if lines:
+            lines.append("")
+        lines.append("These monitors were NOT re-armed:")
+        for t, target in finished_monitors:
+            label = t.description or t.name
+            lines.append(f"- [monitor] {label}: target finished before restart, output "
+                         f"at `{target}` — read it instead of watching again.")
     if reported:
         if lines:
             lines.append("")

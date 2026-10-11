@@ -171,7 +171,10 @@ class AgentDriver(Protocol):
     def last_progress_at(self) -> float: ...
 
     async def start(self) -> None: ...
-    async def aclose(self) -> None: ...
+    #: ``reason`` is ``orphaned_asks.CLOSE_REASON_RESTART`` when the daemon is
+    #: shutting down, so pending asks settle as "interrupted by a restart" rather
+    #: than as a user refusal (#2922). None for every other close.
+    async def aclose(self, *, reason: str | None = None) -> None: ...
     async def automation_work_stopped(self) -> bool: ...
     async def send_prompt(
         self,
@@ -241,6 +244,11 @@ class AgentDriverConfig:
     mode: str
     identity: str
     resume: str | None = None
+    #: True when ``resume`` continues a session a daemon restart interrupted
+    #: (``SessionRecord.interrupted_by_restart``). Claude heals the transcript's
+    #: dangling tool_use with a restart-attributed marker instead of the CLI's
+    #: "interrupted by user" (#2922). Other engines ignore it.
+    resumed_after_restart: bool = False
     #: Reasoning effort requested at launch, for engines that expose the knob
     #: (`AgentCapabilities.reasoning_effort`). Already persisted on the session row
     #: and carried on `SessionRecord`; it reaches the driver here so an engine that

@@ -194,3 +194,75 @@ def test_truncate_corrupt_tail_is_idempotent(tmp_path):
     p.write_text(json.dumps({"type": "user", "uuid": "u1"}) + "\n" + '{"oops')
     assert truncate_corrupt_tail(str(p)) == 1
     assert truncate_corrupt_tail(str(p)) == 0
+
+
+# ── #2922: a restart is not the user ─────────────────────────────────────────
+
+def test_plan_repair_writes_the_given_text():
+    from server.sessions.transcript_repair import RESTART_INTERRUPT_TEXT
+    plan = plan_repair([_assistant_tool_use("a1", ["toolu_x"])], uuid_factory=_ids(),
+                       now_iso="t", text=RESTART_INTERRUPT_TEXT)
+    block = plan[0]["message"]["content"][0]
+    assert block["content"] == RESTART_INTERRUPT_TEXT
+    assert plan[0]["toolUseResult"] == f"Error: {RESTART_INTERRUPT_TEXT}"
+    assert "not by the user" in RESTART_INTERRUPT_TEXT
+
+
+def test_plan_repair_defaults_to_the_cli_interrupt_text():
+    plan = plan_repair([_assistant_tool_use("a1", ["toolu_x"])], uuid_factory=_ids(),
+                       now_iso="t")
+    assert plan[0]["message"]["content"][0]["content"] == INTERRUPT_TEXT
+
+
+def test_repair_resumed_transcript_after_a_restart_says_restart(tmp_path):
+    from server.sessions.transcript_repair import RESTART_INTERRUPT_TEXT
+    proj = os.path.join(tmp_path, "projects", "-repo")
+    os.makedirs(proj)
+    path = os.path.join(proj, "sess-1.jsonl")
+    with open(path, "w") as f:
+        f.write(json.dumps(_assistant_tool_use("a1", ["toolu_x"])) + "\n")
+
+    assert repair_resumed_transcript(str(tmp_path), "sess-1",
+                                     text=RESTART_INTERRUPT_TEXT) == 1
+    last = json.loads([ln for ln in open(path) if ln.strip()][-1])
+    assert last["message"]["content"][0]["content"] == RESTART_INTERRUPT_TEXT
+
+
+def test_the_restart_marker_is_cli_plumbing_like_the_user_one():
+    """Readers that skip the CLI's interrupt marker must skip the restart one too."""
+    from server.sessions.transcript_entries import is_cli_plumbing_text
+    from server.sessions.transcript_repair import RESTART_INTERRUPT_TEXT
+    assert is_cli_plumbing_text(INTERRUPT_TEXT)
+    assert is_cli_plumbing_text(RESTART_INTERRUPT_TEXT)
+
+
+def test_driver_start_repairs_with_the_restart_text_when_resumed_after_restart(monkeypatch):
+    import asyncio
+
+    import server.sessions.claude_driver as cd
+    from server.sessions.permissions import PermissionRegistry
+    from server.sessions.transcript_repair import RESTART_INTERRUPT_TEXT
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+
+    calls = []
+
+    def _fake_repair(config_dir, session_id, *, text=INTERRUPT_TEXT):
+        calls.append(text)
+        return 0
+
+    monkeypatch.setattr(cd, "repair_resumed_transcript", _fake_repair)
+
+    def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return FakeSDKClient([], on_can_use_tool=can_use_tool)
+
+    async def run(after_restart):
+        d = cd.ClaudeAgentDriver("s", "a", "/tmp/r", "/tmp/cfg", mode="interactive",
+                                 sdk_factory=_factory, registry=PermissionRegistry(),
+                                 identity="me", resume="cs-1",
+                                 resumed_after_restart=after_restart)
+        await d.start()
+        await d.aclose()
+
+    asyncio.run(run(True))
+    asyncio.run(run(False))
+    assert calls == [RESTART_INTERRUPT_TEXT, INTERRUPT_TEXT]

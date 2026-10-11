@@ -744,6 +744,93 @@ def last_question_events(path: str) -> list["ev.Question"]:
     return latest
 
 
+def _tool_result_text(content) -> str:
+    """The text of a tool_result block's ``content`` (a string or text blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text") or "" for b in content
+                       if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def last_orphaned_permission(path: str, *, plan: bool) -> "ev.PermissionRequest | None":
+    """The permission (``plan=False``) or plan approval (``plan=True``) card a daemon
+    restart orphaned, rebuilt from the tool_use it gated — or None.
+
+    The gated call is found two ways, most specific first:
+
+    1. the latest main-thread tool_use whose result is the restart close's
+       ``RESTART_ASK_MESSAGE`` (``ClaudeAgentDriver.aclose(reason="restart")``);
+    2. else a tool_use in the LAST main-thread assistant tool_use message whose
+       result is missing or an interrupt marker (an older daemon, or a close that
+       never reached the registry).
+
+    ``permId`` is ``ORPHAN_PERM_PREFIX + tool_use_id`` and ``always_allowed`` is
+    False: no waiter is left to hold a grant against. Synchronous and whole-file —
+    wrap it in ``asyncio.to_thread`` on the event loop, like
+    :func:`last_question_events`. Never raises.
+    """
+    from server.sessions.orphaned_asks import ORPHAN_PERM_PREFIX, RESTART_ASK_MESSAGE
+    from server.sessions.transcript_entries import is_cli_plumbing_text
+
+    def _matches(name: str) -> bool:
+        if plan:
+            return name == "ExitPlanMode"
+        return name not in ("ExitPlanMode", "AskUserQuestion")
+
+    uses: list[tuple[str, str, dict, str | None, float | None]] = []  # id,name,input,uuid,ts
+    last_batch: list[str] = []
+    results: dict[str, str | None] = {}
+    try:
+        with open(path, errors="ignore") as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(d, dict) or d.get("isSidechain"):
+                    continue
+                content = (d.get("message") or {}).get("content")
+                if not isinstance(content, list):
+                    continue
+                if d.get("type") == "assistant":
+                    batch = []
+                    for b in content:
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                            inp = b.get("input")
+                            uses.append((str(b["id"]), str(b.get("name") or ""),
+                                         inp if isinstance(inp, dict) else {},
+                                         d.get("uuid"), _ts_ms(d)))
+                            batch.append(str(b["id"]))
+                    if batch:
+                        last_batch = batch
+                elif d.get("type") == "user":
+                    for b in content:
+                        if (isinstance(b, dict) and b.get("type") == "tool_result"
+                                and b.get("tool_use_id")):
+                            results[str(b["tool_use_id"])] = _tool_result_text(b.get("content"))
+    except OSError:
+        return None
+    by_id = {u[0]: u for u in uses}
+    pick = next((u for u in reversed(uses) if _matches(u[1])
+                 and RESTART_ASK_MESSAGE in (results.get(u[0]) or "")), None)
+    if pick is None:
+        for tid in reversed(last_batch):
+            u = by_id.get(tid)
+            res = results.get(tid)
+            if u is not None and _matches(u[1]) and (
+                    res is None or is_cli_plumbing_text(res)):
+                pick = u
+                break
+    if pick is None:
+        return None
+    tid, name, inp, uuid, ts = pick
+    return ev.PermissionRequest(f"{ORPHAN_PERM_PREFIX}{tid}", uuid or tid, name,
+                                ev.tool_kind(name), inp, plan=plan,
+                                always_allowed=False, ts=ts)
+
+
 # ---------------------------------------------------------------------------
 # Engine facade
 # ---------------------------------------------------------------------------

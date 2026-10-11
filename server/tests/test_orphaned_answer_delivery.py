@@ -24,6 +24,13 @@ def _orch(rec):
     o = SessionOrchestrator.__new__(SessionOrchestrator)
     o._records = {rec.id: rec}
     o._drivers = {}
+    o._rearmed = set()
+
+    async def _no_deferred_rearm(sid):
+        return None, None
+
+    o._take_deferred_rearm = _no_deferred_rearm
+    o.transcript_path = lambda sid: None
     return o
 
 
@@ -49,7 +56,7 @@ def test_answering_an_orphaned_question_sends_a_prompt():
         async def _ensure(sid, identity=None):
             return object()
 
-        async def _send(sid, text, attachment_ids=None):
+        async def _send(sid, text, attachment_ids=None, **_kw):
             sent.append((sid, text))
             return "sent"
 
@@ -78,7 +85,7 @@ def test_a_live_driver_still_wins_and_no_prompt_is_sent():
 
         o._drivers = {"s1": _D()}
 
-        async def _send(sid, text, attachment_ids=None):
+        async def _send(sid, text, attachment_ids=None, **_kw):
             sent.append(text)
             return "sent"
 
@@ -108,7 +115,7 @@ def test_a_failed_send_reports_failure():
         async def _ensure(sid, identity=None):
             return object()
 
-        async def _send(sid, text, attachment_ids=None):
+        async def _send(sid, text, attachment_ids=None, **_kw):
             return "draining"
 
         o.ensure_driver = _ensure
@@ -139,7 +146,7 @@ def test_an_orphaned_permission_does_not_take_the_question_fallback():
         o = _orch(rec)
         sent = []
 
-        async def _send(sid, text, attachment_ids=None):
+        async def _send(sid, text, attachment_ids=None, **_kw):
             sent.append(text)
             return "sent"
 
