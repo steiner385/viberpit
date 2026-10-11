@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { useVirtualizer, elementScroll, type VirtualizerOptions } from '@tanstack/react-virtual'
 import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
@@ -8,6 +8,8 @@ import { ModelSwitchDivider } from './ModelSwitchDivider'
 import { modelName } from '@/session/modelName'
 import { buildRenderRows, type RenderRow } from './transcriptRows'
 import { prefetchMarkdown } from './markdownChunk'
+import { useStickToBottom } from './useStickToBottom'
+import { ScrollToBottomButton } from './ScrollToBottomButton'
 
 const TOP_THRESHOLD = 64
 
@@ -36,6 +38,9 @@ interface Props {
   variant?: 'session' | 'assistant'
   /** Wired to a noticeCard's "Ask about it" button (assistant variant only — see Turn). */
   onAsk?: (text: string) => void
+  /** Changes on every local send (pass the runtime's `pendingSentSeq`): jumps to the
+   *  bottom and re-enables auto-follow even if the user had scrolled up. */
+  followSignal?: unknown
 }
 
 /**
@@ -45,16 +50,17 @@ interface Props {
  * a 2000-turn session stays a handful of nodes instead of growing unbounded.
  *
  * Scroll behavior is unchanged from the render-all version it replaces:
- *  - stick-to-bottom follows content all the way down while the user is at the
- *    bottom (a ResizeObserver on the spacer catches the virtualizer's async
- *    remeasurement — late markdown/font/image layout, expanding a tool group),
+ *  - stick-to-bottom (`useStickToBottom`) follows content all the way down while
+ *    the user is at the bottom (a ResizeObserver on the spacer catches the
+ *    virtualizer's async remeasurement — late markdown/font/image layout,
+ *    expanding a tool group), and a local send re-sticks (`followSignal`),
  *  - scrolling up to read history latches auto-pin off — only a real user
  *    gesture counts; our own pins and the virtualizer's row-remeasure scroll
  *    adjustments both go through a programmatic-scroll guard,
  *  - scrolling near the top pages in older turns and the prior scroll anchor is
  *    restored so the viewport doesn't jump.
  */
-export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk }: Props) {
+export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk, followSignal }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Warm the markdown renderer the moment a transcript exists, rather than
@@ -63,17 +69,13 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
   // reader, archived review — mounts this view, so this is the one place it is
   // needed. Idempotent: the module registry dedupes repeat imports.
   useEffect(() => { void prefetchMarkdown() }, [])
-  // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
-  const isNearBottomRef = useRef(true)
-  // Drives the scroll-to-bottom button — separate from the ref so React re-renders when it flips.
-  const [showScrollButton, setShowScrollButton] = useState(false)
+  const {
+    pinnedRef, showScrollButton, handleScroll: handleStickScroll, scrollToBottom,
+    scrollProgrammatically, markProgrammaticScroll,
+  } = useStickToBottom({ scrollRef: containerRef, contentRef, followSignal })
   // Snapshot of scrollHeight taken just before onLoadOlder() is called, used to
   // restore the scroll anchor after older turns are prepended.
   const prevScrollHeightRef = useRef<number | null>(null)
-  // True while a scroll we initiated (pin-to-bottom or prepend anchor) is in
-  // flight. The browser delivers the resulting scroll event asynchronously, so
-  // we must ignore it: only a real user gesture should change isNearBottom.
-  const programmaticScrollRef = useRef(false)
 
   const lastTurnId = turns.length ? turns[turns.length - 1].id : null
 
@@ -83,20 +85,6 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     () => buildRenderRows(turns, rotations, { loadingOlder, earliestTurn }),
     [turns, rotations, loadingOlder, earliestTurn],
   )
-
-  // Flag the scroll event(s) of a scrollTop change we are about to make so they
-  // are not mistaken for a user scroll. Cleared on the next frame (not on the
-  // scroll event) so it still self-clears when the change is a no-op and fires
-  // no scroll event.
-  const markProgrammaticScroll = useCallback(() => {
-    programmaticScrollRef.current = true
-    requestAnimationFrame(() => { programmaticScrollRef.current = false })
-  }, [])
-
-  const scrollProgrammatically = useCallback((el: HTMLElement, top: number) => {
-    markProgrammaticScroll()
-    el.scrollTop = top
-  }, [markProgrammaticScroll])
 
   // The virtualizer moves scrollTop on its own: when a row *above* the viewport
   // measures for the first time (or is remeasured), virtual-core compensates
@@ -115,8 +103,8 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     markProgrammaticScroll()
     elementScroll(offset, opts, instance)
     const el = containerRef.current
-    if (isNearBottomRef.current && el) el.scrollTop = el.scrollHeight
-  }, [markProgrammaticScroll])
+    if (pinnedRef.current && el) el.scrollTop = el.scrollHeight
+  }, [markProgrammaticScroll, pinnedRef])
 
   // @tanstack/react-virtual returns uncacheable functions by design; the React
   // Compiler skips memoizing this hook's result, which is correct here (we read
@@ -135,20 +123,15 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
 
   const totalSize = virtualizer.getTotalSize()
 
-  // Update isNearBottom on scroll; trigger paging when near the top.
+  // Update stickiness on scroll; trigger paging when near the top.
   function handleScroll() {
     const el = containerRef.current
-    if (!el) return
     // Skip scrolls we caused ourselves. During entry the whole transcript
     // replays and then keeps growing as markdown/fonts/images lay out late; each
     // pin sets scrollTop to the *then* bottom, but its scroll event arrives after
     // more growth, so without this guard it reads as "user scrolled up" and the
     // auto-pin latches off above the true bottom.
-    if (programmaticScrollRef.current) return
-    const threshold = 80 // px from bottom counts as "near bottom"
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
-    if (nearBottom !== isNearBottomRef.current) setShowScrollButton(!nearBottom)
-    isNearBottomRef.current = nearBottom
+    if (!el || !handleStickScroll()) return
     if (el.scrollTop <= TOP_THRESHOLD && (earliestTurn ?? 0) > 0 && !loadingOlder && onLoadOlder) {
       prevScrollHeightRef.current = el.scrollHeight // anchor before the prepend
       onLoadOlder()
@@ -156,8 +139,8 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
   }
 
   // Preserve scroll position when older turns are prepended (turns grew at the top).
-  // Runs before the ResizeObserver pin below can fire; the observer early-returns
-  // while the user is reading history (isNearBottomRef false), so the two don't fight.
+  // Runs before useStickToBottom's ResizeObserver pin can fire; the observer
+  // early-returns while the user is reading history (unpinned), so the two don't fight.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -166,27 +149,6 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
       prevScrollHeightRef.current = null
     }
   }, [turns, scrollProgrammatically])
-
-  // Pin to the true bottom whenever the content height changes — not just when
-  // turns/rotations change. Entering an active session replays the whole
-  // transcript at once, then keeps growing as markdown, syntax highlighting,
-  // web fonts and images lay out asynchronously *after* React commits. With
-  // virtualization that late growth surfaces as the virtualizer remeasuring the
-  // last row and enlarging the spacer (its height === getTotalSize()), so a
-  // ResizeObserver on the spacer fires post-layout on every height change
-  // (including the initial observe). We follow content all the way down — but
-  // only while the user hasn't scrolled up to read history.
-  useEffect(() => {
-    const content = contentRef.current
-    if (!content) return
-    const ro = new ResizeObserver(() => {
-      if (!isNearBottomRef.current) return
-      const el = containerRef.current
-      if (el) scrollProgrammatically(el, el.scrollHeight)
-    })
-    ro.observe(content)
-    return () => ro.disconnect()
-  }, [scrollProgrammatically])
 
   const virtualRows = virtualizer.getVirtualItems()
 
@@ -220,14 +182,6 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     }
   }
 
-  function scrollToBottom() {
-    const el = containerRef.current
-    if (!el) return
-    isNearBottomRef.current = true
-    setShowScrollButton(false)
-    scrollProgrammatically(el, el.scrollHeight)
-  }
-
   return (
     <div className="relative flex-1 min-h-0 flex flex-col" data-variant={variant}>
       <div
@@ -243,8 +197,8 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
       >
         {/* The spacer reserves the full virtual height so the scrollbar reflects the
             whole transcript; only the windowed rows are mounted, absolutely
-            positioned at their measured offsets. The ResizeObserver above watches
-            this element, so its height (=== getTotalSize()) driving the pin is the
+            positioned at their measured offsets. useStickToBottom's ResizeObserver
+            watches this element, so its height (=== getTotalSize()) driving the pin is the
             same signal the render-all version got from real content growth. */}
         <div ref={contentRef} style={{ height: totalSize, position: 'relative', width: '100%' }}>
           {virtualRows.map((vi) => (
@@ -260,20 +214,7 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
         </div>
       </div>
 
-      {showScrollButton && (
-        <div className="absolute bottom-4 left-0 right-0 flex justify-center pointer-events-none">
-          <button
-            onClick={scrollToBottom}
-            aria-label="Scroll to bottom"
-            className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-edge bg-surface px-3 py-1.5 text-xs font-medium text-ink-muted shadow-md transition hover:bg-surface-raised hover:shadow-lg"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="size-3.5">
-              <path fillRule="evenodd" d="M8 1a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 0 1 1.06-1.06l2.72 2.72V1.75A.75.75 0 0 1 8 1Z" clipRule="evenodd" />
-            </svg>
-            Scroll to bottom
-          </button>
-        </div>
-      )}
+      {showScrollButton && <ScrollToBottomButton onClick={() => scrollToBottom({ smooth: true })} />}
     </div>
   )
 }

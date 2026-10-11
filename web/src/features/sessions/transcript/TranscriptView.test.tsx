@@ -94,6 +94,21 @@ describe('TranscriptView auto-pin vs virtualizer scroll adjustments', () => {
   })
 })
 
+describe('TranscriptView followSignal', () => {
+  it('a local send re-sticks a transcript the user had scrolled up in', async () => {
+    const { rerender } = render(<TranscriptView {...base} followSignal={0} />)
+    const scroller = screen.getByTestId('transcript-scroll') as HTMLDivElement
+    setGeometry(scroller, 600)
+    await act(nextFrame)
+    scroller.scrollTop = 100
+    fireEvent.scroll(scroller)
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeInTheDocument()
+    rerender(<TranscriptView {...base} followSignal={1} />)
+    expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull()
+    expect(scroller.scrollTop).toBe(1000)
+  })
+})
+
 // Note: stick-to-bottom and windowing behavior depend on real layout, which
 // jsdom does not compute and which is now shared with the @tanstack/react-virtual
 // virtualizer's own ResizeObservers. Those behaviors are covered in
