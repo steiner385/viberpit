@@ -145,6 +145,8 @@ def _build_orch(pr, *, has_driver=True):
     orch._action_providers = {"pr-doctor": PrDoctorActionProvider(orch)}
     orch._pr_doctor_jobs = JobStore()
     orch._pr_doctor_job_tasks: set[asyncio.Task] = set()
+    from server.github.api_budget import PriorityGate
+    orch._api_gate = PriorityGate()
     return orch
 
 
@@ -1227,3 +1229,113 @@ async def test_2920_failing_ci_not_redispatched_at_same_head_after_recovery_clea
     _live(orch, pr2)
     assert await orch._pr_doctor_step("o/r", "feat/x", pr2, rec=None) is True
     assert len(spawns) == 2
+
+
+@pytest.mark.asyncio
+async def test_2912_live_read_not_spent_on_a_pr_blocked_by_a_cheap_refusal(monkeypatch, tmp_path):
+    """The live GraphQL read sits AFTER the cheap refusals: a PR held by a live
+    predecessor or an untrusted author refuses every sweep, and must not spend a
+    GitHub call each time (~48/hr outside the shared API budget)."""
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    pr = _pr(checks="failing", head_sha="sha1")
+
+    # Live predecessor still attached.
+    orch = _build_orch(pr, has_driver=True)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    calls = _live(orch, pr)
+    for _ in range(3):
+        assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"]) is False
+    assert spawns == [] and calls == []
+
+    # Untrusted author.
+    async def untrusted(_db, _repo, numbers):
+        return list(numbers)
+    monkeypatch.setattr("server.pm.dispatch_trust.untrusted_prs", untrusted)
+    orch = _build_orch(pr, has_driver=False)
+    _install_spawn_recorder(orch, spawns)
+    calls = _live(orch, pr)
+    for _ in range(3):
+        assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=None) is False
+    assert spawns == [] and calls == []
+
+
+@pytest.mark.asyncio
+async def test_2912_live_read_skip_releases_the_claim_without_an_attempt(monkeypatch, tmp_path):
+    """A live-state skip after the claim is a clean not-started: no attempt, no
+    ownership left behind, so the next sweep can re-judge."""
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    pr = _pr(checks="failing", head_sha="sha1")
+    orch = _build_orch(pr, has_driver=False)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    _live(orch, _pr(checks="passing", head_sha="sha1", merge_state_status="CLEAN"))
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=None) is False
+    st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
+    assert "ownership_token" not in st
+    assert not st.get("total_attempts") and not st.get("acted_heads")
+    assert spawns == []
+
+
+@pytest.mark.asyncio
+async def test_2912_live_read_yields_to_the_shared_api_gate(monkeypatch):
+    """The live read shares the GitHub-App budget with the PR pollers: it waits
+    (bounded) for an in-flight high-priority PR-status refresh to finish."""
+    import json
+    import types
+
+    import server.sessions.orchestrator as orch_mod
+    real = orch_mod.SessionOrchestrator._pr_doctor_live_pr.__wrapped__  # conftest stubs it
+    orch = _build_orch(_pr())  # carries a real shared PriorityGate
+    monkeypatch.setattr(orch_mod.gitrepos, "app_token_for_owner", lambda owner: None)
+    calls: list[list[str]] = []
+
+    def gh_ok(args, token=None, timeout=None):
+        calls.append(list(args))
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(
+            {"data": {"repository": {"pullRequest": None}}}))
+
+    orch._gh_run = gh_ok  # type: ignore[assignment]
+    release = asyncio.Event()
+
+    async def refresh():
+        async with orch._api_gate.high_priority():
+            await release.wait()
+
+    holder = asyncio.create_task(refresh())
+    await asyncio.sleep(0)
+    reader = asyncio.create_task(real(orch, "o/r", 7))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert calls == []           # parked behind the PR-status refresh
+    release.set()
+    await holder
+    assert await reader is None  # missing PR parses to None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_2912_dedupe_skip_is_reported_once_per_pr_kind_and_head(monkeypatch, tmp_path):
+    """A (kind, head) dedupe skip is not silent: one info event per (PR, kind,
+    head), not one per sweep — and a new head reports afresh."""
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    pr = _pr(checks="failing", head_sha="sha1")
+    orch = _build_orch(pr, has_driver=False)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    _live(orch, None)
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=None) is True
+    for _ in range(3):
+        assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=None) is False
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    dup = [e for e in events if e["kind"] == "skipped"
+           and e["detail"].get("reason") == "already_dispatched"]
+    assert len(dup) == 1 and dup[0]["level"] == "info"
+    assert dup[0]["detail"]["failure"] == "failing_ci"
+    assert dup[0]["detail"]["head_sha"] == "sha1"
+    assert len(spawns) == 1
