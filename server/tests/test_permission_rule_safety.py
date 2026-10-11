@@ -2,7 +2,11 @@ import pytest
 
 from server.automations.autopilot_policy import _BASELINE_DENY, matches_denylist
 from server.permission_rules import safety
-from server.permission_rules.safety import assess, needs_confirmation, offered_suggestions
+from server.permission_rules.safety import (
+    assess,
+    needs_confirmation,
+    offered_suggestions,
+)
 
 
 @pytest.mark.parametrize(
@@ -75,3 +79,75 @@ def test_offered_suggestions_shape():
     out = offered_suggestions("Bash", {"command": "npm test"}, "/w")
     assert out and set(out[0]) == {"pattern", "description", "level"}
     assert out[0]["pattern"] == "Bash(npm test)"
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "Bash(sudo -n:*)",
+        "Bash(command sudo:*)",
+        "Bash(env bash:*)",
+        "Bash(timeout 5 bash:*)",
+        "Bash(rm -r:*)",
+        "Bash(git push origin:*)",
+        "Bash(git push origin master:*)",
+        "Bash(git -c x=y push:*)",
+        "Bash(env:*)",
+        "Bash(xargs:*)",
+        "Bash(/usr/bin/sudo:*)",
+        "Bash(/bin/rm:*)",
+        "Bash(git push --force)",
+        "Bash(rm -rf /)",
+        "mcp__x__",
+        "Edit(.git/**)",
+        "Edit(.git/hooks/*)",
+        "Edit(.aws/*)",
+        "Edit(**/*.pem)",
+        "Edit(.npmrc)",
+        "Edit(.husky/**)",
+        "Edit(.mcp.json)",
+        "Edit(secrets/**)",
+        "Edit(**/credentials*)",
+        "WebFetch(domain:*.com)",
+        "WebFetch(domain:com)",
+        "WebFetch(domain:localhost)",
+        "WebFetch(domain:127.0.0.1)",
+        "WebFetch(domain:foo.local)",
+        "WebFetch(domain:a.internal)",
+    ],
+)
+def test_bypasses_refused(pat):
+    assert assess(pat, "session").level == "refuse"
+
+
+@pytest.mark.parametrize(
+    "pat",
+    [
+        "Bash(git status:*)",
+        "Bash(npm test:*)",
+        "Bash(rm build/x.txt)",
+        "Edit(src/**)",
+        "WebFetch(domain:docs.python.org)",
+    ],
+)
+def test_still_ok(pat):
+    assert assess(pat, "session").level == "ok"
+
+
+@pytest.mark.parametrize(
+    "pat,level",
+    [
+        ("Bash(python -m pytest:*)", "ok"),
+        ("Bash(python3 -m pip list:*)", "ok"),
+        ("Bash(python:*)", "refuse"),
+        ("Bash(python -c:*)", "refuse"),
+        ("Bash(python3 -c:*)", "refuse"),
+        ("Bash(node:*)", "refuse"),
+        ("Bash(node -e:*)", "refuse"),
+        ("Bash(perl *)", "refuse"),
+        ("Edit(.git)", "refuse"),
+        ("Edit(**/.git)", "refuse"),
+    ],
+)
+def test_interpreters_and_git_file(pat, level):
+    assert assess(pat, "session").level == level

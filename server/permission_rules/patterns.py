@@ -19,7 +19,18 @@ from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
 FILE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
-_PATH_TOOLS = FILE_TOOLS | {"Read"}
+PATH_TOOLS = FILE_TOOLS | {"Read"}
+# Worktree-relative globs no standing rule may ever cover (secrets, VCS internals, tool config):
+# enforced by the matcher itself so even a broad ``Edit(**)`` never auto-allows them.
+PROTECTED_PATHS = frozenset(
+    {
+        ".env", "**/.env", ".git", "**/.git", "**/.env.*", ".envrc", "**/.envrc", ".git/**", ".claude/**",
+        "**/.claude/**", ".mcp.json", ".husky/**", ".vscode/**", ".idea/**", ".ssh/**",
+        "**/.ssh/**", ".aws/**", ".gnupg/**", ".npmrc", "**/.npmrc", ".pypirc", ".netrc",
+        ".bashrc", ".zshrc", ".profile", "**/*.pem", "**/*.key", "**/id_rsa*",
+        "**/id_ed25519*", "**/credentials*", "**/secrets/**",
+    }
+)  # fmt: skip
 _NEVER_SUGGEST = frozenset({"ExitPlanMode", "AskUserQuestion"})
 
 _TOOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -75,7 +86,7 @@ def parse(pattern: str) -> Pattern:
                 raise PatternError("empty command prefix")
             return Pattern(tool, spec, "prefix")
         return Pattern(tool, spec, "glob" if "*" in spec else "exact")
-    if tool in _PATH_TOOLS:
+    if tool in PATH_TOOLS:
         return Pattern(tool, spec, "path")
     if tool == "WebFetch":
         if not spec.startswith("domain:") or not spec[7:].strip():
@@ -151,6 +162,21 @@ def _path_glob_to_regex(spec: str) -> re.Pattern[str]:
     return re.compile("".join(out))
 
 
+def path_spec_matches(spec: str, rel: str) -> bool:
+    """Does a path-rule glob ``spec`` cover the worktree-relative path ``rel``?"""
+    return _path_glob_to_regex(spec).fullmatch(rel) is not None
+
+
+@lru_cache(maxsize=None)
+def _protected_regexes() -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(_path_glob_to_regex(g).pattern, re.IGNORECASE) for g in PROTECTED_PATHS)
+
+
+def _is_protected(rel: str) -> bool:
+    # Case-insensitive: on case-insensitive filesystems ``.GIT`` is ``.git``.
+    return any(rx.fullmatch(rel) for rx in _protected_regexes())
+
+
 def _rel_path(input: dict, cwd: str | None) -> str | None:
     """Worktree-relative POSIX path, or None when absent or outside cwd."""
     raw = input.get("file_path") or input.get("notebook_path") or input.get("path")
@@ -180,6 +206,13 @@ def _hostname(input: dict) -> str | None:
     return host.lower() if host else None
 
 
+def _covers(p: Pattern, input: dict, cwd: str | None) -> bool:
+    rel = _rel_path(input, cwd)
+    if rel is None or _is_protected(rel):
+        return False
+    return p.kind == "bare" or path_spec_matches(p.spec or "", rel)
+
+
 def matches(p: Pattern, tool: str, input: dict, cwd: str | None) -> bool:
     """Single-rule check. For Bash every segment of the command must satisfy ``p``."""
     if p.kind == "mcp":
@@ -196,10 +229,9 @@ def matches(p: Pattern, tool: str, input: dict, cwd: str | None) -> bool:
     if not _tool_in_scope(p, tool):
         return False
     if p.kind == "bare":
-        return tool not in _PATH_TOOLS or _rel_path(input, cwd) is not None
+        return tool not in PATH_TOOLS or _covers(p, input, cwd)
     if p.kind == "path":
-        rel = _rel_path(input, cwd)
-        return rel is not None and _path_glob_to_regex(p.spec or "").fullmatch(rel) is not None
+        return _covers(p, input, cwd)
     return False
 
 
@@ -282,7 +314,7 @@ def _suggest_candidates(tool: str, input: dict, cwd: str | None) -> list[str]:
         if all(seg.split()[0] == words[0] for seg in segs):
             out.append(f"Bash({words[0]}:*)")
         return list(dict.fromkeys(out))
-    if tool in _PATH_TOOLS:
+    if tool in PATH_TOOLS:
         rel = _rel_path(input, cwd)
         if rel is None:
             return []

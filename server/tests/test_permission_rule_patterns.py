@@ -195,3 +195,25 @@ def test_every_suggestion_covers_its_request(tool, inp):
     assert sugg
     for c in sugg:
         assert matches_any([parse(c)], tool, inp, CWD) is not None
+
+
+@pytest.mark.parametrize(
+    "tool,pat,rel",
+    [
+        ("Edit", "Edit(**)", ".git/hooks/pre-commit"),
+        ("Edit", "Edit(**)", ".claude/settings.json"),
+        ("Edit", "Edit(**)", ".env"),
+        ("Read", "Read(**)", ".aws/credentials"),
+        ("Edit", "Edit", "a/.env.local"),
+        ("Edit", "Edit(**)", "certs/x.pem"),
+        ("Edit", "Edit(**)", ".GIT/hooks/x"),
+        ("Edit", "Edit(**)", ".Claude/settings.json"),
+        ("Edit", "Edit(**)", ".ENV"),
+        ("Edit", "Edit(**)", ".git"),
+        ("Edit", "Edit(**)", "sub/.git"),
+    ],
+)
+def test_protected_paths_never_match(tmp_path, tool, pat, rel):
+    cwd = str(tmp_path)
+    assert matches_any([parse(pat)], tool, {"file_path": f"{cwd}/{rel}"}, cwd) is None
+    assert matches_any([parse(pat)], tool, {"file_path": f"{cwd}/src/ok.py"}, cwd) is not None

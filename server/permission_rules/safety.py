@@ -9,15 +9,19 @@ a test, so the two cannot drift apart. Spec section 4 of
 
 from __future__ import annotations
 
+import ipaddress
+import os
 from dataclasses import dataclass
 
+from server.automations.autopilot_policy import matches_denylist
 from server.permission_rules.patterns import (
-    _PATH_TOOLS,
+    PATH_TOOLS,
     Pattern,
     PatternError,
     describe,
     matches_any,
     parse,
+    path_spec_matches,
     suggest,
 )
 
@@ -48,15 +52,27 @@ _DANGER_PROBES: tuple[str, ...] = (
 )
 
 _SECRET_PROBES: tuple[str, ...] = (
-    ".env",
-    "app/.env.local",
-    ".git/config",
-    ".claude/settings.json",
-    ".ssh/id_rsa",
-    "certs/server.pem",
-    "certs/server.key",
-    "credentials.json",
-)
+    ".env", ".git", "a/.env.local", ".envrc", ".git/hooks/pre-commit", ".git/config",
+    ".claude/hooks/x.py", ".claude/settings.json", "a/.claude/x", ".mcp.json",
+    ".husky/pre-commit", ".vscode/settings.json", ".idea/x", ".ssh/authorized_keys",
+    ".ssh/id_rsa", "a/.ssh/x", ".aws/credentials", ".gnupg/x", ".npmrc", "a/.npmrc",
+    ".pypirc", ".netrc", ".bashrc", ".zshrc", ".profile", "x.pem", "certs/server.key",
+    "id_rsa", "id_ed25519", "credentials.json", "secrets/key",
+)  # fmt: skip
+
+_EXEC_WRAPPERS = frozenset({
+    "sudo", "doas", "su", "env", "timeout", "nohup", "command", "exec", "xargs", "time", "nice",
+    "ionice", "stdbuf", "setsid", "bash", "sh", "zsh", "dash", "fish", "ksh", "eval", "source",
+    ".", "python", "python3", "node", "perl", "ruby", "php", "ssh", "rm", "dd", "mkfs", "shred",
+    "chmod", "chown", "curl", "wget", "find",
+})  # fmt: skip
+# ``python -m pytest`` runs a named module, not arbitrary code; every other interpreter use is refused.
+_INTERPRETERS_WITH_MODULE_MODE = frozenset({"python", "python3"})
+_EXTENSIONS = (
+    " --force", " -f", " --mirror", " --delete x", " -D x", " --hard origin/master", " -fdx",
+    " -rf /", " -c x", " -e x",
+)  # fmt: skip
+_LOCAL_TLDS = (".local", ".internal", ".localhost", ".lan")
 
 _WORKFLOW_PROBE = ".github/workflows/ci.yml"
 _ALL_FILES_SPECS = frozenset({"**", "**/*", "*"})
@@ -81,13 +97,36 @@ def _verdict(warnings: list[str]) -> Assessment:
 
 def _assess_bash(p: Pattern) -> Assessment:
     spec = p.spec or ""
-    if p.kind == "bare" or (p.kind == "prefix" and not spec) or (p.kind == "glob" and spec == "*"):
+    if (
+        p.kind == "bare"
+        or (p.kind == "prefix" and not spec)
+        or (p.kind == "glob" and spec == "*")
+    ):
         return _refuse("allows every shell command")
     if any(tok in spec for tok in _UNMATCHABLE_BASH):
         return _refuse("pattern can never match a command")
     for probe in _DANGER_PROBES:
         if matches_any([p], "Bash", {"command": probe}, _PROBE_CWD):
             return _refuse(f"would allow a dangerous command, e.g. `{probe}`")
+    if p.kind == "exact":
+        if matches_denylist("Bash", {"command": spec}, []):
+            return _refuse("command is on the destructive-command deny list")
+    else:
+        head = spec.split("*", 1)[0].strip() if p.kind == "glob" else spec
+        words = head.split()
+        for i, w in enumerate(words):
+            name = os.path.basename(w)
+            if name in _INTERPRETERS_WITH_MODULE_MODE and words[i + 1 : i + 2] == [
+                "-m"
+            ]:
+                continue
+            if name in _EXEC_WRAPPERS:
+                return _refuse(f"can run arbitrary or destructive commands via `{w}`")
+        if "git" in words and "push" in words:
+            return _refuse("pushes must be granted as an exact command")
+        for ext in _EXTENSIONS:
+            if matches_denylist("Bash", {"command": head + ext}, []):
+                return _refuse(f"would allow a dangerous command, e.g. `{head}{ext}`")
     if p.kind == "prefix" and len(spec.split()) == 1:
         return _verdict([f"allows every {spec} subcommand"])
     return _verdict([])
@@ -110,10 +149,26 @@ def _assess_path(p: Pattern, scope: str) -> Assessment:
             return _refuse("every file in the worktree, across all repos")
         return _verdict(["every file in the worktree"])
     for path in _SECRET_PROBES:
-        if matches_any([p], p.tool, {"file_path": path}, _PROBE_CWD):
+        if path_spec_matches(spec, path):
             return _refuse(f"would allow writing secrets or tool config, e.g. {path}")
-    if matches_any([p], p.tool, {"file_path": _WORKFLOW_PROBE}, _PROBE_CWD):
+    if path_spec_matches(spec, _WORKFLOW_PROBE):
         return _verdict(["can change CI workflows"])
+    return _verdict([])
+
+
+def _assess_domain(dom: str) -> Assessment:
+    if "*" in dom:
+        return _refuse("wildcard domains allow every host")
+    try:
+        ipaddress.ip_address(dom.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        return _refuse("IP addresses are not allowed")
+    if "." not in dom:
+        return _refuse("single-label domains (e.g. localhost) are not allowed")
+    if dom.endswith(_LOCAL_TLDS):
+        return _refuse("local/internal domains are not allowed")
     return _verdict([])
 
 
@@ -125,17 +180,17 @@ def assess(pattern: str, scope: str) -> Assessment:
     except PatternError as exc:
         return _refuse(f"invalid pattern: {exc}")
     if p.kind == "mcp":
+        if p.tool.endswith("__"):
+            return _refuse("pattern can never match a tool")
         if p.tool.count("__") == 1:
             return _verdict(["every tool on the server"])
         return _verdict([])
     if p.tool == "Bash":
         return _assess_bash(p)
-    if p.tool in _PATH_TOOLS:
+    if p.tool in PATH_TOOLS:
         return _assess_path(p, scope)
     if p.kind == "domain":
-        if p.spec in ("", "*"):
-            return _refuse("domain:* allows every host")
-        return _verdict([])
+        return _assess_domain(p.spec or "")
     if p.kind == "bare" and p.tool == "WebFetch":
         return _verdict(["any URL"])
     if p.kind == "bare" and p.tool == "WebSearch":
@@ -153,6 +208,10 @@ def offered_suggestions(tool: str, input: dict, cwd: str | None) -> list[dict]:
         a = assess(candidate, "session")
         if a.level != "refuse":
             out.append(
-                {"pattern": candidate, "description": describe(candidate), "level": a.level}
+                {
+                    "pattern": candidate,
+                    "description": describe(candidate),
+                    "level": a.level,
+                }
             )
     return out
