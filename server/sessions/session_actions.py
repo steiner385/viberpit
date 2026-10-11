@@ -173,10 +173,14 @@ def check_pattern_for_scope(pattern: str, scope: str, confirm: bool) -> None:
 
 def sweepable(parsed, card: dict, cwd: str | None) -> bool:
     """Would a new rule resolve this OTHER pending card? One predicate for the grant sweep and
-    the preview's ``alsoPending`` count, so the number shown is the number resolved."""
+    the preview's ``alsoPending`` count, so the number shown is the number resolved.
+
+    Engine-managed (Codex) cards are skipped: rules never apply to them at enforcement, so a
+    grant must not answer them either. A card without ``always_allowed`` comes from an older
+    daemon and fails closed."""
     from server.permission_rules.patterns import matches_any  # noqa: PLC0415
 
-    return bool(card.get("always_allowed", True)
+    return bool(card.get("always_allowed", False) and not card.get("engine_managed")
                 and matches_any([parsed], card["tool"], card["input"], cwd) is not None)
 
 
@@ -219,7 +223,7 @@ async def grant_always(
     # "allow" after the rule was already committed and enforced.
     if card.get("owner") not in (None, identity):
         raise _not_owned()
-    if not card.get("always_allowed", True) or card.get("engine_managed"):
+    if not card.get("always_allowed", False) or card.get("engine_managed"):
         raise ActionError("RULE_NOT_ALLOWED",
                           "This request cannot be turned into an always-allow rule.", 400)
     repo, cwd = await session_facts(orch, db, session_id)

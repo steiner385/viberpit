@@ -144,15 +144,21 @@ def test_grant_from_card_creates_rule_resolves_card_and_sweeps_matching_pending(
     assert all(d["trigger"] == "grant" for d in grants)
 
 
-def test_sweep_includes_engine_managed_cards_and_survives_a_failing_session():
+def test_sweep_skips_engine_managed_cards_and_survives_a_failing_session():
+    """Rules never apply to engine-managed (Codex) cards at enforcement, so the sweep and the
+    preview's alsoPending skip them too."""
     client, fake = _make_client()
-    fake.pending[S1] = [_card("p1", "npm test")]
+    fake.pending[S1] = [_card("p1", "npm test"), _card("p8", "npm test", engine_managed=True)]
     fake.pending[S2] = [_card("p9", "npm test", engine_managed=True)]
     with patch.dict(os.environ, _ENV), client:
         client.portal.call(_seed_sessions)
+        body = {"sessionId": S1, "permId": "p1", "pattern": "Bash(npm test:*)", "scope": "repo"}
+        assert client.post("/api/permission-rules/preview", json=body,
+                           headers=_H).json()["alsoPending"] == 0
         r = _always(client, S1, "p1", "Bash(npm test:*)", "repo")
-        assert r.json()["resolvedPermIds"] == ["p1", "p9"]
-        assert (S2, "p9", "allow", "testuser@example.com") in fake.resolve_calls
+        assert r.json()["resolvedPermIds"] == ["p1"]
+        assert [c[1] for c in fake.resolve_calls] == ["p1"]
+        assert [p["permId"] for p in fake.pending[S2]] == ["p9"]
     client2, fake2 = _make_client()
     fake2.pending[S1] = [_card("p1", "npm test")]
     fake2.raise_for = {S2}
@@ -443,3 +449,23 @@ def test_sweep_survives_daemon_unavailable_at_info_level(caplog):
         assert _always(client, S1, "p1", "Bash(npm test:*)", "repo").status_code == 200
     recs = [r for r in caplog.records if "sweep of session" in r.getMessage()]
     assert recs and all(r.levelno == logging.INFO for r in recs)
+
+
+def test_cards_missing_always_allowed_fail_closed():
+    """A card without ``always_allowed`` comes from an older daemon: it is neither swept nor
+    turned into a rule."""
+    client, fake = _make_client()
+    legacy = _card("p2", "npm test -w web")
+    del legacy["always_allowed"]
+    origin = _card("p3", "npm test -w api")
+    del origin["always_allowed"]
+    fake.pending[S1] = [_card("p1", "npm test"), legacy, origin]
+    with patch.dict(os.environ, _ENV), client:
+        client.portal.call(_seed_sessions)
+        body = {"sessionId": S1, "permId": "p1", "pattern": "Bash(npm test:*)", "scope": "session"}
+        assert client.post("/api/permission-rules/preview", json=body,
+                           headers=_H).json()["alsoPending"] == 0
+        r = _always(client, S1, "p3", "Bash(npm test:*)", "session")
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "RULE_NOT_ALLOWED"
+        r = _always(client, S1, "p1", "Bash(npm test:*)", "session")
+        assert r.json()["resolvedPermIds"] == ["p1"]

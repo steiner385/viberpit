@@ -1609,3 +1609,25 @@ def test_attach_daemon_unavailable_level_follows_restart_expected(
     records = [r for r in caplog.records if f"daemon unavailable for {sid}" in r.getMessage()]
     assert [r.levelno for r in records] == [level]
     assert ("(restart in progress)" in records[0].getMessage()) is restarting
+
+
+def test_reattach_reemit_defaults_always_allowed_to_false(ws_env):
+    """A pending card without ``always_allowed`` (an older daemon) re-emits with
+    alwaysAllowed=False: the UI must not offer "Always allow" it cannot honour."""
+    app, orch, client = ws_env([])
+    session = client.portal.call(
+        lambda: orch.create_session("test-reemit-legacy", identity="wstest@example.com"))
+
+    async def legacy_pending(session_id):
+        return [{"permId": "p-legacy", "tool": "Bash", "input": {"command": "ls"},
+                 "turn_id": "t", "items": None, "parent_tool_use_id": None}]
+    # The WS layer reads the sessions facade on app.state, not the bare orchestrator.
+    facade = getattr(app.state, "sessions", None) or orch
+    facade.pending_permissions = legacy_pending
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session.id}))
+        events = _drain_events(ws, until_type="permissionRequest", timeout=8.0)
+        reemit = next((e for e in events if e.get("type") == "permissionRequest"), None)
+        assert reemit is not None, [e.get("type") for e in events]
+        assert reemit.get("permId") == "p-legacy"
+        assert reemit.get("alwaysAllowed") is False

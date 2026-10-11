@@ -42,8 +42,8 @@ The guard against non-human grants has a hole. `session_actions.resolve_permissi
   §4 safety check. The column stays dormant.
 - **Codex native approvals are not auto-resolved by rules** (`request_external`). Codex Bash and
   edit-root approvals still card. Their "Always" stays Codex's own session-scoped
-  `acceptForSession`. A grant made on a Claude card *does* resolve matching pending Codex cards
-  once, under §3.3. This is a follow-up.
+  `acceptForSession`. A grant made on a Claude card does *not* resolve pending Codex cards
+  either (§3.3). Applying rules to them is a follow-up.
 - **Deny rules.** This feature only allows. Denylist behaviour is unchanged.
 - **Destructive ViberPit tools** (`ToolClass.DESTRUCTIVE`), plan approvals (`ExitPlanMode`),
   `AskUserQuestion`, and the app tools that widen what sessions may do unasked
@@ -160,7 +160,10 @@ It is never checked in the DESTRUCTIVE branch or for `ExitPlanMode`. Because the
 Creating a rule resolves the originating card with `allow`. It then walks the in-scope sessions with
 pending cards (DB status `waiting_input`, filtered by repo for repo scope). It calls
 `pending_permissions` on each and resolves every card the new rule matches with `allow`, as the
-granting human. That writes one `permission.rule_allow` audit row per card, with
+granting human. Engine-managed (Codex) cards, and cards that cannot be always-allowed (including
+a card with no `always_allowed` flag, from an older daemon), are skipped: rules never apply to
+them at enforcement, so the sweep does not answer them either. The preview's `alsoPending` count
+uses the same predicate (`session_actions.sweepable`). That writes one `permission.rule_allow` audit row per card, with
 `trigger: "grant"`.
 
 Cards owned by a different identity are skipped and stay pending. Resolution goes through the

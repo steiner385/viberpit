@@ -102,8 +102,8 @@ exception (see Standing rules).
     what sessions may do unasked (`resolve_permission`, `set_permission_mode`,
     `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`, under both
     brand prefixes). A server-wide `mcp__viberpit` / `mcp__ccswitch` rule is refused at every
-    scope. Engine-managed (Codex) cards are swept by new rules but a
-    rule cannot be created from one.
+    scope. Engine-managed (Codex) cards are never answered by rules: a new rule neither
+    sweeps them nor can be created from one.
   - *Kill switch.* `VIBERPIT_PERMISSION_RULES_ENABLED=false`: nothing is consulted or
     suggested, the rules routes 404, and every prompt cards as before.
   - *Grant cache removed.* The old in-memory 1-hour "always" grant cache is gone; the stored
