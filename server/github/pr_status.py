@@ -773,6 +773,34 @@ def _neg_iso(iso: str) -> str:
     return "".join(chr(0x10FFFF - ord(c)) if ord(c) < 0x10FFFF else c for c in iso)
 
 
+def build_live_pr_query(repo: str, number: int) -> str:
+    """One GraphQL doc for exactly one PR by number, selecting the shared
+    ``_PR_NODE_FIELDS`` so the parsed info classifies exactly like a polled
+    snapshot. PR Doctor's pre-dispatch re-check (#2912/#2920): a cached snapshot
+    can be a poll cycle (or a lagging per-branch cache) behind a PR that has
+    since merged, gone green, or been made mergeable."""
+    owner, _, name = repo.partition("/")
+    return (
+        "query {\n"
+        f"  repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    pullRequest(number: {int(number)}) {{ {_PR_NODE_FIELDS} }}\n"
+        "  }\n"
+        "}"
+    )
+
+
+def parse_live_pr_response(response: dict, repo: str) -> PullRequestInfo | None:
+    """``build_live_pr_query``'s response as a ``PullRequestInfo`` (``repo`` set),
+    or None when the PR is missing or the payload is malformed. Never raises."""
+    pr = (((response or {}).get("data") or {}).get("repository") or {}).get("pullRequest")
+    if not pr:
+        return None
+    try:
+        return replace(_to_info(pr, {}), repo=repo)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def build_pr_detail_query(repo: str, number: int) -> str:
     """One GraphQL doc for exactly one PR: live ``mergeable``, reviews, and
     check-run detail WITH a url — the fresh half of ``GET /api/prs/{owner}/

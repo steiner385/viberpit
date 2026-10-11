@@ -7579,10 +7579,16 @@ class SessionOrchestrator:
             except (TypeError, ValueError):
                 return 0  # a garbage value must never raise inside the poller
 
-        carry = {"lifetime_attempts": _n("lifetime_attempts") + _n("total_attempts"),
-                 "lifetime_mechanical": _n("lifetime_mechanical") + _n("total_mechanical")}
+        from server.automations.pr_doctor_engine import ACTED_HEADS
+        carry: dict = {"lifetime_attempts": _n("lifetime_attempts") + _n("total_attempts"),
+                       "lifetime_mechanical": _n("lifetime_mechanical") + _n("total_mechanical")}
         if not (carry["lifetime_attempts"] or carry["lifetime_mechanical"]):
-            return {}
+            carry = {}
+        # The (kind, head) dispatch dedupe survives the clear too (#2920): a
+        # flaky-shard rerun goes green WITHOUT a push, so a later stale red at
+        # that same head is a repeat, not a fresh break. A new head re-arms it.
+        if isinstance(state.get(ACTED_HEADS), dict) and state[ACTED_HEADS]:
+            carry[ACTED_HEADS] = dict(state[ACTED_HEADS])
         return carry
 
     async def _backlog_pr_doctor_attempts_for(self, pr_ref: str) -> int | None:
@@ -15415,6 +15421,8 @@ class SessionOrchestrator:
         if isinstance(action, engine.Mechanical):
             return await self._pr_doctor_mechanical(repo, info, action.kind, expected_state=st)
         if isinstance(action, engine.SessionFix):
+            if await self._pr_doctor_dispatch_is_stale(repo, action.kind, info):
+                return False
             status, _, _ = await self._pr_doctor_session_fix(
                 repo, branch, info, action.kind, rec, expected_state=st)
             return status in ("sent", "spawned")
@@ -15430,6 +15438,55 @@ class SessionOrchestrator:
             await self._pr_doctor_ctx.emit("warn", f"gave up auto-fixing {target}",
                                           kind="gave_up", target=target)
         return False
+
+    async def _pr_doctor_dispatch_is_stale(self, repo: str, kind: str,
+                                           info: PullRequestInfo) -> bool:
+        """Re-check the PR LIVE immediately before a session-fix dispatch (#2912/#2920).
+
+        Every recovery decision is made on a cached snapshot — the per-branch cache
+        lags a merge, and GitHub's mergeability lags a push — so a PR that merged
+        green, went green on a rerun, or was already made mergeable could still be
+        handed a repair session. Before any durable claim, one GraphQL read judges
+        the live PR with the same ``classify``
+        (``pr_doctor_engine.stale_dispatch_reason``); a stale decision is skipped
+        with an info event, reported once per (target, kind, head, reason)."""
+        from server.automations import pr_doctor_engine as engine
+        target = f"{repo}#{info.number}"
+        reason = engine.stale_dispatch_reason(
+            kind, info, await self._pr_doctor_live_pr(repo, info.number))
+        if reason is None:
+            return False
+        seen: set = self.__dict__.setdefault("_pr_doctor_stale_seen", set())
+        key = (target, kind, info.head_sha, reason)
+        if key not in seen:
+            seen.add(key)
+            await self._pr_doctor_ctx.emit(
+                "info", f"skipped {kind} fix for {target}: live PR state is {reason}",
+                kind="skipped", target=target,
+                detail={"reason": reason, "failure": kind, "head_sha": info.head_sha})
+        return True
+
+    async def _pr_doctor_live_pr(self, repo: str, number: int) -> "PullRequestInfo | None":
+        """One live ``gh api graphql`` read of PR *number*, or None on any failure
+        (the caller fails open to its snapshot). Mirrors ``_fetch_pr_detail``."""
+        import json as _json
+
+        from server.github.pr_status import build_live_pr_query, parse_live_pr_response
+
+        def _do() -> "PullRequestInfo | None":
+            try:
+                proc = self._gh_run(
+                    ["api", "graphql", "-f", f"query={build_live_pr_query(repo, number)}"],
+                    gitrepos.app_token_for_owner(repo.partition("/")[0]), timeout=15,
+                )
+                if proc.returncode != 0:
+                    return None
+                return parse_live_pr_response(_json.loads(proc.stdout or "{}"), repo)
+            except Exception:  # noqa: BLE001 — a live-read hiccup must not break the sweep
+                log.debug("pr_doctor.live_read_failed repo=%s pr=%s", repo, number, exc_info=True)
+                return None
+
+        return await asyncio.to_thread(_do)
 
     async def _pr_doctor_untrusted_prs(self, repo: str, numbers: list[int], *,
                                        target: str, head: str | None = None) -> list[int]:

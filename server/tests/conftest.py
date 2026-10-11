@@ -393,6 +393,20 @@ def _reset_github_app_auth_singletons():
     app_auth.reset()
 
 
+@pytest.fixture(autouse=True)
+def _no_live_pr_doctor_reads(monkeypatch):
+    # PR Doctor re-reads a PR live from GitHub right before a session-fix dispatch
+    # (#2912/#2920). No test may reach the network for it: answer "live read
+    # unavailable", which fails open to the snapshot decision every PR Doctor test
+    # was written against. The gate's own tests stub the seam per instance.
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    async def _unavailable(self, repo, number):
+        return None
+    _unavailable.__wrapped__ = SessionOrchestrator._pr_doctor_live_pr  # type: ignore[attr-defined]
+    monkeypatch.setattr(SessionOrchestrator, "_pr_doctor_live_pr", _unavailable)
+
+
 @pytest.fixture
 def pr_authors_trusted(monkeypatch):
     """Treat every PR's mirrored author as trusted (``dispatch_trust.untrusted_prs``).

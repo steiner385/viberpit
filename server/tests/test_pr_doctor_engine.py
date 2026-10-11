@@ -428,3 +428,74 @@ def test_plan_recovery_comment_command_propose_mode():
 def test_plan_recovery_comment_command_off_mode_is_notify():
     a = plan_recovery("comment_command", "off", _CFG, {})
     assert isinstance(a, Notify)
+
+
+# ---------------------------------------------------------------------------
+# #2912 / #2920: dispatch dedupe on (PR, kind, head SHA), and the live-state gate
+# ---------------------------------------------------------------------------
+
+def test_2912_conflict_dedupe_survives_a_failure_class_flip_at_the_same_head():
+    """#2912: a conflict fix dispatched at head H must not re-fire at H.
+
+    The resolved PR flickered between classes on successive snapshots
+    (merge_conflict -> failing_ci -> merge_conflict, same head). ``apply_rearm``
+    zeroes ``attempts`` on every class change, which used to re-open the
+    per-head one-shot guard and dispatch the identical conflict prompt again."""
+    from server.automations.pr_doctor_engine import SessionFix, acted_at_head
+
+    conflict = _pr(head_sha="H", mergeable="CONFLICTING", merge_state_status="DIRTY")
+    red = _pr(head_sha="H", checks="failing", merge_state_status="CLEAN")
+    st = record_attempt(apply_rearm({}, conflict), SessionFix("merge_conflict"), "H")
+    st = apply_rearm(st, red)          # class flip at the same head re-arms `attempts`
+    st = apply_rearm(st, conflict)
+    assert acted_at_head(st, SessionFix("merge_conflict"), "H") is True
+
+
+def test_2912_a_new_head_re_arms_the_kind_dedupe():
+    from server.automations.pr_doctor_engine import SessionFix, acted_at_head
+
+    st = record_attempt({}, SessionFix("merge_conflict"), "H")
+    st = apply_rearm(st, _pr(head_sha="H2", mergeable="CONFLICTING", merge_state_status="DIRTY"))
+    assert acted_at_head(st, SessionFix("merge_conflict"), "H2") is False
+
+
+def test_2912_dedupe_is_per_kind_at_one_head():
+    """A conflict that appears at H after a CI fix at H (the base moved) is a new
+    problem, not a repeat — the dedupe key carries the kind."""
+    from server.automations.pr_doctor_engine import SessionFix, acted_at_head
+
+    st = record_attempt({}, SessionFix("failing_ci"), "H")
+    # The CI fix was a rerun (no push); a class change re-armed the counters.
+    st = {**st, "attempts": 0}
+    assert acted_at_head(st, SessionFix("merge_conflict"), "H") is False
+    assert acted_at_head(st, SessionFix("failing_ci"), "H") is True
+
+
+def test_2920_live_state_gate_skips_merged_closed_green_and_moved_prs():
+    from server.automations.pr_doctor_engine import stale_dispatch_reason
+
+    snap = _pr(head_sha="H", checks="failing", merge_state_status="CLEAN")
+    assert stale_dispatch_reason("failing_ci", snap, snap) is None
+    assert stale_dispatch_reason("failing_ci", snap, None) is None  # live read failed: fail open
+    assert stale_dispatch_reason(
+        "failing_ci", snap, _pr(head_sha="H", state="merged", checks="passing")) == "merged"
+    assert stale_dispatch_reason(
+        "failing_ci", snap, _pr(head_sha="H", state="closed", checks="failing")) == "closed"
+    assert stale_dispatch_reason(
+        "failing_ci", snap, _pr(head_sha="H", checks="passing")) == "resolved"
+    pending = _pr(head_sha="H", checks="pending", merge_state_status="BLOCKED",
+                  checks_detail=_detail(("server-tests (2)", "pending"), ("lint", "success")))
+    assert stale_dispatch_reason("failing_ci", snap, pending) == "resolved"
+    assert stale_dispatch_reason(
+        "failing_ci", snap, _pr(head_sha="H2", checks="failing")) == "head_moved"
+
+
+def test_2912_live_state_gate_skips_a_conflict_that_is_now_mergeable():
+    from server.automations.pr_doctor_engine import stale_dispatch_reason
+
+    snap = _pr(head_sha="H", mergeable="CONFLICTING", merge_state_status="DIRTY")
+    assert stale_dispatch_reason("merge_conflict", snap, snap) is None
+    # The literal live read from #2912's second and third dispatch.
+    live = _pr(head_sha="H", mergeable="MERGEABLE", merge_state_status="BLOCKED",
+               checks="pending")
+    assert stale_dispatch_reason("merge_conflict", snap, live) == "resolved"
