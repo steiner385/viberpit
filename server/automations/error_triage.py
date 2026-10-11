@@ -229,9 +229,17 @@ def issue_body(row: Any, *, regression_of: int | None, repo: str,
     return body
 
 
-def recurrence_comment(row: Any, *, since: datetime | None) -> str:
-    return (f"Still recurring: {int(row.count_since_filed or 0)} more occurrence(s) since "
-            f"{_fmt(since)}, last at {_fmt(row.last_seen_at)}. Fingerprint `{row.fingerprint}`.")
+def recurrence_comment(rows: Sequence[Any], *, since: datetime | None) -> str:
+    """One comment for every row linked to an issue (#2683 collapses siblings)."""
+    total = sum(int(r.count_since_filed or 0) for r in rows)
+    last = max((r.last_seen_at for r in rows if r.last_seen_at), default=None)
+    if len(rows) == 1:
+        fps = f"Fingerprint `{rows[0].fingerprint}`."
+    else:
+        fps = "Fingerprints " + ", ".join(
+            f"`{r.fingerprint}` ({int(r.count_since_filed or 0)})" for r in rows) + "."
+    return (f"Still recurring: {total} more occurrence(s) since "
+            f"{_fmt(since)}, last at {_fmt(last)}. {fps}")
 
 
 def collapse_comment(row: Any) -> str:
@@ -354,12 +362,17 @@ class ErrorTriageLoop:
                     # point can prove the fix did not take; deploy_monitor
                     # spells the same gate `d.sha != closed_sha`. Decremented
                     # rather than zeroed so a concurrent sink increment
-                    # survives, as in _file_candidates' Phase-1 claim.
-                    seen = int((await db.execute(select(ES.count_since_filed).where(
-                        ES.issue_number == number, ES.status == "filed"))).scalar() or 0)
-                    await db.execute(update(ES).where(ES.issue_number == number, ES.status == "filed")
-                                     .values(status="resolved", issue_closed_at=now,
-                                             count_since_filed=ES.count_since_filed - seen))
+                    # survives, as in _file_candidates' Phase-1 claim. Per row:
+                    # collapsed siblings (#2683) share the issue with their own
+                    # counts, and one row's count subtracted from all would leave
+                    # a stale positive (a spurious regression) or a negative (a
+                    # real one hidden forever).
+                    linked_rows = (await db.execute(select(ES.fingerprint, ES.count_since_filed).where(
+                        ES.issue_number == number, ES.status == "filed"))).all()
+                    for fp, seen in linked_rows:
+                        await db.execute(update(ES).where(ES.fingerprint == fp, ES.status == "filed")
+                                         .values(status="resolved", issue_closed_at=now,
+                                                 count_since_filed=ES.count_since_filed - int(seen or 0)))
 
     async def _retention(self, config: dict, now: datetime) -> None:
         from sqlalchemy import delete
@@ -395,27 +408,39 @@ class ErrorTriageLoop:
         every = timedelta(hours=int(config.get("comment_every_h", 24)))
         async with db_session() as db:
             rows = (await db.execute(select(ES).where(
-                ES.status == "filed", ES.issue_number.is_not(None),
-                ES.count_since_filed > 0))).scalars().all()
-            plan = []
+                ES.status == "filed", ES.issue_number.is_not(None)))).scalars().all()
+            # One comment per ISSUE per window: collapsed siblings (#2683) share
+            # an issue, and a per-row throttle would post one comment each. The
+            # issue's clock is the latest comment through any of its rows.
+            by_issue: dict[int, list[Any]] = {}
             for r in rows:
-                linked = Linked(number=r.issue_number, closed=False,
-                                last_commented_at=r.last_commented_at)
+                by_issue.setdefault(int(r.issue_number or 0), []).append(r)
+            plan = []
+            for number, linked_rows in by_issue.items():
+                due = [r for r in linked_rows if int(r.count_since_filed or 0) > 0]
+                if not due:
+                    continue
+                last = max((r.last_commented_at for r in linked_rows if r.last_commented_at),
+                           default=None)
+                linked = Linked(number=number, closed=False, last_commented_at=last)
                 d = decide(linked, cap_remaining=1, comment_every=every, now=now)
                 if d.kind == "comment":
-                    since = r.last_commented_at or r.filed_at
-                    plan.append((r.fingerprint, linked, int(r.count_since_filed or 0),
-                                 recurrence_comment(r, since=since)))
-        for fp, linked, n, body in plan:
+                    since = last or min((r.filed_at for r in due if r.filed_at), default=None)
+                    plan.append((linked, [(str(r.fingerprint), int(r.count_since_filed or 0))
+                                          for r in due],
+                                 recurrence_comment(due, since=since)))
+        for linked, seen, body in plan:
             applied = await apply(Decision("comment", "open"), repo=repo, title="", body=body,
                                   labels=(), linked=linked, run=self._run)
             if not applied.commented:
                 continue  # retried next tick; last_commented_at only moves on success
             async with db_session() as db:
-                await db.execute(update(ES).where(ES.fingerprint == fp).values(
-                    count_since_filed=ES.count_since_filed - n, last_commented_at=now))
-            await self._ctx.emit("info", f"commented on #{linked.number}: {n} more occurrence(s)",
-                                 kind="commented", target=fp)
+                for fp, n in seen:
+                    await db.execute(update(ES).where(ES.fingerprint == fp).values(
+                        count_since_filed=ES.count_since_filed - n, last_commented_at=now))
+            total = sum(n for _, n in seen)
+            await self._ctx.emit("info", f"commented on #{linked.number}: {total} more occurrence(s)",
+                                 kind="commented", target=seen[0][0])
 
     async def _file_candidates(self, repo: str, config: dict, now: datetime) -> tuple[int, int]:
         """Returns (candidates still waiting after this tick, filed today).
@@ -459,18 +484,27 @@ class ErrorTriageLoop:
             rows = (await db.execute(select(ES).where(ES.status.in_(("observed", "resolved")))
                                      .order_by(ES.last_seen_at.desc()))).scalars().all()
             groups = [_Group(r, "retry") for r in retry]
-            fresh = []
+            fresh, regressed = [], []
             for r in rows:
                 if is_ignored(r.logger, config) or not should_file(
                         level=str(r.level or ""), count_since_filed=int(r.count_since_filed or 0),
                         config=config):
                     continue
                 if r.status == "resolved" and r.issue_number:
-                    # Its own issue was closed as fixed and it recurred: a
-                    # regression, never absorbed into a sibling's open issue.
-                    groups.append(_Group(r, "regress"))
+                    regressed.append(r)
                 else:
                     fresh.append(r)
+            # Its own issue was closed as fixed and it recurred: a regression,
+            # never absorbed into a sibling's open issue. Rows that shared that
+            # closed issue under one title regress as ONE issue, earliest first.
+            regress_groups: dict[tuple[str, int], _Group] = {}
+            for r in sorted(regressed, key=lambda r: (r.first_seen_at or now, str(r.fingerprint))):
+                key = (collapse_key(r), int(r.issue_number or 0))
+                if key in regress_groups:
+                    regress_groups[key].followers.append(r)
+                else:
+                    regress_groups[key] = _Group(r, "regress")
+                    groups.append(regress_groups[key])
             for r in sorted(fresh, key=lambda r: (r.first_seen_at or now, str(r.fingerprint))):
                 target = next((o for o in open_rows if collapses_into(r, o)), None)
                 if target is not None:

@@ -506,6 +506,79 @@ def test_collapse_costs_no_cap(tmp_path):
     _run(body, tmp_path)
 
 
+def test_fixed_close_retires_each_linked_rows_own_backlog(tmp_path):
+    """Rows sharing an issue carry different counts: each drops its OWN
+    pre-close backlog. Subtracting one row's count from all either leaves a
+    stale positive (a spurious regression this very tick) or drives a row
+    negative (a real regression hidden forever)."""
+    async def body():
+        await _seed(fingerprint="a", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", count_since_filed=0)
+        await _seed(fingerprint="b", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", count_since_filed=5)
+        await _seed(fingerprint="c", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", count_since_filed=2)
+        gh = FakeGh()
+        gh.states = {50: (True, "completed")}
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        rows = [await _row(f) for f in ("a", "b", "c")]
+        assert [r.status for r in rows] == ["resolved"] * 3
+        assert [r.count_since_filed for r in rows] == [0, 0, 0]
+        assert gh.creates == []
+    _run(body, tmp_path)
+
+
+def test_rows_of_one_closed_issue_regress_as_one(tmp_path):
+    async def body():
+        await _seed(fingerprint="a", title=REFUSED, status="resolved", issue_number=50,
+                    count_since_filed=1, first_seen_at=NOW - timedelta(hours=3))
+        await _seed(fingerprint="b", title=REFUSED, status="resolved", issue_number=50,
+                    count_since_filed=2, first_seen_at=NOW - timedelta(hours=2))
+        # Same title but a different closed issue: its own regression lineage.
+        await _seed(fingerprint="z", title=REFUSED, status="resolved", issue_number=60,
+                    count_since_filed=1)
+        gh = FakeGh()
+        await _loop(AutomationContext("error-triage"), gh).tick()
+        assert len(gh.creates) == 2
+        a, b, z = (await _row("a")), (await _row("b")), (await _row("z"))
+        assert a.issue_number == b.issue_number and a.issue_number != z.issue_number
+        assert a.count_since_filed == b.count_since_filed == 0
+        reg50 = next(c for c in gh.creates if any("| Regression of | #50 |" in p for p in c))
+        assert (await _row("a")).filed_at == NOW and b.filed_at is None  # earliest leads
+        assert any("`b`" in p for p in reg50)
+    _run(body, tmp_path)
+
+
+def test_recurrence_comment_is_one_per_issue_aggregating_linked_rows(tmp_path):
+    async def body():
+        await _seed(fingerprint="a", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", filed_at=NOW - timedelta(days=2), count_since_filed=3)
+        await _seed(fingerprint="b", title=REFUSED, status="filed", issue_number=50,
+                    repo="o/r", filed_at=NOW - timedelta(days=2), count_since_filed=4)
+        # The issue was commented on recently through a THIRD row: throttled.
+        await _seed(fingerprint="c", title=REFUSED, status="filed", issue_number=60,
+                    repo="o/r", count_since_filed=0)
+        await _seed(fingerprint="d", title="ERROR other", status="filed", issue_number=60,
+                    repo="o/r", count_since_filed=5,
+                    last_commented_at=None, filed_at=NOW - timedelta(days=2))
+        await _seed(fingerprint="e", title="ERROR other2", status="filed", issue_number=60,
+                    repo="o/r", count_since_filed=0, last_commented_at=NOW - timedelta(hours=1))
+        gh = FakeGh()
+        gh.states = {50: (False, None), 60: (False, None)}
+        loop = _loop(AutomationContext("error-triage"), gh)
+        await loop.tick()
+        assert len(gh.comments) == 1
+        assert gh.comments[0][1].endswith("/issues/50/comments")
+        text = " ".join(gh.comments[0])
+        assert "7 more occurrence(s)" in text and "`a`" in text and "`b`" in text
+        assert (await _row("a")).count_since_filed == 0
+        assert (await _row("b")).count_since_filed == 0
+        assert (await _row("d")).count_since_filed == 5     # held by #60's throttle
+        await loop.tick()
+        assert len(gh.comments) == 1
+    _run(body, tmp_path)
+
+
 def test_failed_leader_keeps_followers_waiting_then_links_them(tmp_path):
     async def body():
         await _seed(fingerprint="a", title=REFUSED, first_seen_at=NOW - timedelta(hours=2))

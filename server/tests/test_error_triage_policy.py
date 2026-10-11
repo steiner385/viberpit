@@ -129,10 +129,17 @@ def test_issue_body_contents_and_safety():
 
 def test_recurrence_comment():
     from server.automations.error_triage import recurrence_comment
-    text = recurrence_comment(_row(count_since_filed=5), since=datetime(2026, 9, 6, 8, 0))
+    text = recurrence_comment([_row(count_since_filed=5)], since=datetime(2026, 9, 6, 8, 0))
     assert "5 more occurrence(s) since 2026-09-06 08:00 UTC" in text
     assert "last at 2026-09-07 13:40 UTC" in text
-    assert "`a1b2c3d4e5f60718`" in text
+    assert "Fingerprint `a1b2c3d4e5f60718`." in text
+    # Collapsed siblings on one issue: one comment, summed, each named (#2683).
+    both = recurrence_comment([_row(count_since_filed=5),
+                               _row(fingerprint="b2", count_since_filed=2,
+                                    last_seen_at=datetime(2026, 9, 7, 14, 0))],
+                              since=datetime(2026, 9, 6, 8, 0))
+    assert "7 more occurrence(s)" in both and "last at 2026-09-07 14:00 UTC" in both
+    assert "`a1b2c3d4e5f60718` (5)" in both and "`b2` (2)" in both
 
 
 def test_issue_body_worst_case_sample_stays_under_cap():
