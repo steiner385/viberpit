@@ -241,6 +241,11 @@ def plan_recovery(failure_mode: str | None, mode: str, config: dict,
 # Per-target state machine helpers
 # ---------------------------------------------------------------------------
 
+# The durable (kind -> head SHA) dispatch dedupe, inside the per-target state row
+# (#2912/#2920). Neither ``apply_rearm`` nor the recovery clear drops it — a new
+# head is what re-arms it, by no longer matching.
+ACTED_HEADS = "acted_heads"
+
 def apply_rearm(state: dict, info: PullRequestInfo) -> dict:
     """Reset attempt counters when the PR changed in a way that deserves fresh
     tries: an EXTERNAL push (head_sha not one PR Doctor itself produced) or a
@@ -279,6 +284,8 @@ def record_attempt(state: dict, action, head_sha: str) -> dict:
         # Monotonic, re-arm-immune ceiling — total distinct session injections.
         out["total_attempts"] = out.get("total_attempts", 0) + 1
     out["last_action_sha"] = head_sha
+    if head_sha:
+        out[ACTED_HEADS] = {**(out.get(ACTED_HEADS) or {}), action.kind: head_sha}
     return out
 
 
@@ -293,12 +300,52 @@ def acted_at_head(rearmed: dict, action: RecoveryAction, head_sha: str | None) -
     Backlog Runner admission gate (``_pr_doctor_pending_products``): a product was
     held "reserved" for a PR PR Doctor had ALREADY updated at that head
     (2026-09-30 audit, D6) because the gate re-derived "will fix" from
-    ``plan_recovery`` alone and never asked this question."""
-    if not head_sha or rearmed.get("last_action_sha") != head_sha:
+    ``plan_recovery`` alone and never asked this question.
+
+    Keyed on (kind, head) through ``ACTED_HEADS`` as well (#2912/#2920): the
+    re-armable ``attempts`` alone was not a dedupe — ``apply_rearm`` zeroes it on
+    any failure-class change at the SAME head, and the recovery clear wipes
+    ``last_action_sha`` when CI goes green without a push (a flaky-shard rerun),
+    so a stale red or DIRTY snapshot at an already-handled head re-dispatched
+    the identical prompt."""
+    if not head_sha:
+        return False
+    kind = getattr(action, "kind", None)
+    if kind and (rearmed.get(ACTED_HEADS) or {}).get(kind) == head_sha:
+        return True
+    if rearmed.get("last_action_sha") != head_sha:
         return False
     attempts = (rearmed.get("mechanical_attempts", 0) if isinstance(action, Mechanical)
                 else rearmed.get("attempts", 0))
     return attempts > 0
+
+
+def stale_dispatch_reason(kind: str, snapshot: PullRequestInfo,
+                          live: PullRequestInfo | None) -> str | None:
+    """Why a session fix decided on a cached *snapshot* must not dispatch, judged
+    on a *live* read taken immediately before (#2912/#2920) — or None to go ahead.
+
+    * ``"merged"`` / ``"closed"`` — the PR is terminal (#2920 merged green
+      between the red snapshot and the dispatch).
+    * ``"head_moved"`` — the head is no longer the one the decision was made
+      at; the next sweep re-judges the new head on fresh data.
+    * ``"resolved"`` — the live PR no longer classifies as *kind*: CI green or
+      still pending with nothing proven red, or a conflict that is now
+      mergeable (#2912). ``classify`` is the single judge, so the live read is
+      held to the exact standard that produced the decision.
+
+    ``live is None`` (the read failed) fails OPEN to the snapshot decision, so a
+    GitHub hiccup degrades to the old behaviour — still bounded by the durable
+    (kind, head) dedupe in ``acted_at_head``. Pure."""
+    if live is None:
+        return None
+    if target_terminal(live):
+        return live.state
+    if snapshot.head_sha and live.head_sha and live.head_sha != snapshot.head_sha:
+        return "head_moved"
+    if kind in ("failing_ci", "merge_conflict") and classify(live) != kind:
+        return "resolved"
+    return None
 
 
 def target_terminal(info: PullRequestInfo) -> bool:

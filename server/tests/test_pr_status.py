@@ -631,3 +631,30 @@ def test_build_population_open_query_isolates_deploy_fields():
     assert "pullRequests" in repo_block
     assert "deployments" not in repo_block
     assert "environments" not in repo_block
+
+
+def test_live_pr_query_reads_one_pr_with_the_shared_node_fields():
+    """PR Doctor's pre-dispatch re-check (#2912/#2920): one PR by number,
+    selecting the SAME node fields the pollers use so the parsed info classifies
+    exactly like a cached snapshot."""
+    from server.github.pr_status import _PR_NODE_FIELDS, build_live_pr_query
+    q = build_live_pr_query('o/"r', 42)
+    assert 'repository(owner: "o", name: "\\"r")' in q
+    assert "pullRequest(number: 42)" in q
+    assert _PR_NODE_FIELDS in q
+
+
+def test_parse_live_pr_response_builds_info_or_none():
+    from server.github.pr_status import parse_live_pr_response
+    node = {"number": 42, "url": "u", "title": "t", "state": "MERGED", "isDraft": False,
+            "headRefOid": "abc", "headRefName": "feat/x", "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN", "mergedAt": "2026-09-07T16:31:54Z",
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {
+                "state": "SUCCESS", "contexts": {"nodes": [
+                    {"__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS"}]}}}}]}}
+    info = parse_live_pr_response({"data": {"repository": {"pullRequest": node}}}, "o/r")
+    assert info is not None
+    assert (info.number, info.state, info.checks, info.head_sha, info.repo) == (
+        42, "merged", "passing", "abc", "o/r")
+    assert parse_live_pr_response({"data": {"repository": {"pullRequest": None}}}, "o/r") is None
+    assert parse_live_pr_response({}, "o/r") is None

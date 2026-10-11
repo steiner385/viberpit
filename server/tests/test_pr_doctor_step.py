@@ -1028,3 +1028,202 @@ async def test_update_branch_no_new_commits_consumes_attempt(monkeypatch, tmp_pa
     events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
     assert any(e["kind"] == "updated_branch" for e in events)
     assert not any(e["kind"] == "mechanical_failed" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# #2912 / #2920: re-check LIVE PR state before a session fix; dedupe durably
+# ---------------------------------------------------------------------------
+
+def _live(orch, live: PullRequestInfo | None) -> list[tuple[str, int]]:
+    """Answer ``_pr_doctor_live_pr`` with *live*; returns the call log."""
+    calls: list[tuple[str, int]] = []
+
+    async def fake_live(repo, number):
+        calls.append((repo, number))
+        return live
+
+    orch._pr_doctor_live_pr = fake_live  # type: ignore[method-assign]
+    return calls
+
+
+async def _stop_repair(orch, target="o/r#7") -> None:
+    """The target's repair session ran and stopped its managed work (a durable
+    stopped-work attestation), so a later claim may take the target over — the
+    predecessor is not what blocks a re-dispatch."""
+    from server.automations.ownership import (
+        attest_session_stopped, begin_session_execution, execution_snapshot)
+    sid = (await orch._pr_doctor_ctx.get_target_state(target))["session_id"]
+    await begin_session_execution(sid)
+    snapshot = await execution_snapshot(sid)
+    assert snapshot is not None and snapshot.generation is not None
+    assert await attest_session_stopped(snapshot.token, snapshot.generation, session_id=sid)
+
+
+async def _enable_conflict_fixes() -> None:
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        await db.execute(sa_update(Automation).where(Automation.id == "pr-doctor")
+                         .values(config={"auto_resolve_conflicts": True}))
+
+
+@pytest.mark.asyncio
+async def test_2920_failing_ci_not_dispatched_for_a_pr_that_already_merged(monkeypatch, tmp_path):
+    """#2920: the cached snapshot still read open + failing, but the PR had merged
+    green. The live re-check skips the dispatch with an info event and consumes
+    no attempt."""
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    pr = _pr(checks="failing", head_sha="sha1")
+    orch = _build_orch(pr, has_driver=False)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    calls = _live(orch, _pr(state="merged", checks="passing", head_sha="sha1"))
+
+    took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
+    assert took is False
+    assert spawns == []
+    assert calls == [("o/r", 7)]
+    st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
+    assert st.get("total_attempts", 0) == 0
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    skipped = [e for e in events if e["kind"] == "skipped"]
+    assert len(skipped) == 1 and skipped[0]["level"] == "info"
+    assert skipped[0]["detail"]["reason"] == "merged"
+
+    # Repeated sweeps over the same stale snapshot report it once.
+    await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert len([e for e in events if e["kind"] == "skipped"]) == 1
+    assert spawns == []
+
+
+@pytest.mark.asyncio
+async def test_2920_live_read_is_one_graphql_call_and_fails_open(monkeypatch):
+    """The real seam: one ``gh api graphql`` for the PR, parsed through the shared
+    node fields; any gh failure answers None (fail open)."""
+    import json
+    import types
+
+    import server.sessions.orchestrator as orch_mod
+    real = orch_mod.SessionOrchestrator._pr_doctor_live_pr.__wrapped__  # conftest stubs it
+    orch = _build_orch(_pr())
+    monkeypatch.setattr(orch_mod.gitrepos, "app_token_for_owner", lambda owner: None)
+    node = {"number": 7, "url": "u", "title": "t", "state": "MERGED", "isDraft": False,
+            "headRefOid": "sha1", "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}
+    calls: list[list[str]] = []
+
+    def gh_ok(args, token=None, timeout=None):
+        calls.append(list(args))
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(
+            {"data": {"repository": {"pullRequest": node}}}))
+
+    orch._gh_run = gh_ok  # type: ignore[assignment]
+    live = await real(orch, "o/r", 7)
+    assert live is not None and (live.state, live.head_sha) == ("merged", "sha1")
+    assert len(calls) == 1 and calls[0][:2] == ["api", "graphql"]
+    assert "pullRequest(number: 7)" in calls[0][-1]
+
+    orch._gh_run = lambda *a, **k: types.SimpleNamespace(returncode=1, stdout="")  # type: ignore[assignment]
+    assert await real(orch, "o/r", 7) is None
+
+    def gh_boom(*a, **k):
+        raise OSError("gh missing")
+
+    orch._gh_run = gh_boom  # type: ignore[assignment]
+    assert await real(orch, "o/r", 7) is None
+
+
+@pytest.mark.asyncio
+async def test_2920_failing_ci_not_dispatched_when_live_checks_went_green(monkeypatch, tmp_path):
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    pr = _pr(checks="failing", head_sha="sha1")
+    orch = _build_orch(pr, has_driver=False)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    _live(orch, _pr(checks="passing", head_sha="sha1", merge_state_status="CLEAN"))
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"]) is False
+    assert spawns == []
+
+
+@pytest.mark.asyncio
+async def test_2912_merge_conflict_not_dispatched_once_live_pr_is_mergeable(monkeypatch, tmp_path):
+    """#2912: the conflict was already resolved (live MERGEABLE at the same head)."""
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    await _enable_conflict_fixes()
+    pr = _pr(checks="pending", mergeable="CONFLICTING", merge_state_status="DIRTY",
+             head_sha="sha1")
+    orch = _build_orch(pr, has_driver=False)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    _live(orch, _pr(checks="pending", mergeable="MERGEABLE", merge_state_status="BLOCKED",
+                    head_sha="sha1"))
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"]) is False
+    assert spawns == []
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert [e["detail"]["reason"] for e in events if e["kind"] == "skipped"] == ["resolved"]
+
+
+@pytest.mark.asyncio
+async def test_2912_merge_conflict_dispatch_survives_a_class_flip_at_the_same_head(
+        monkeypatch, tmp_path):
+    """#2912: merge_conflict -> failing_ci -> merge_conflict snapshots at ONE head
+    re-armed the per-head guard and re-sent the identical conflict prompt."""
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    await _enable_conflict_fixes()
+    conflict = _pr(checks="pending", mergeable="CONFLICTING", merge_state_status="DIRTY",
+                   head_sha="sha1")
+    red = _pr(checks="failing", mergeable="MERGEABLE", merge_state_status="CLEAN",
+              head_sha="sha1")
+    orch = _build_orch(conflict, has_driver=False)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    _live(orch, None)  # live read unavailable: only the durable dedupe stands
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", conflict, rec=None) is True
+    await _stop_repair(orch)
+    # A real CI red at the same head is a different problem: one legitimate
+    # failing_ci repair, whose class change re-arms the re-armable `attempts`.
+    assert await orch._pr_doctor_step("o/r", "feat/x", red, rec=None) is True
+    await _stop_repair(orch)
+    # The stale DIRTY snapshot again: the conflict was already handled at sha1.
+    assert await orch._pr_doctor_step("o/r", "feat/x", conflict, rec=None) is False
+    assert [s["initial_prompt"].split(" has ")[1][:5] for s in spawns] == ["a MER", "faili"]
+
+
+@pytest.mark.asyncio
+async def test_2920_failing_ci_not_redispatched_at_same_head_after_recovery_clear(
+        monkeypatch, tmp_path):
+    """#2920: the first fix was a rerun of a flaky shard — CI went green at the
+    SAME head and the recovery clear wiped ``last_action_sha``, so a later stale
+    red at that head dispatched again. The (kind, head) dedupe must survive the
+    clear; a new head legitimately re-arms it."""
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    pr = _pr(checks="failing", head_sha="sha1")
+    orch = _build_orch(pr, has_driver=False)
+    spawns: list[dict] = []
+    _install_spawn_recorder(orch, spawns)
+    _live(orch, None)
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=None) is True
+    await _stop_repair(orch)
+    # The rerun went green at the same head: the poller's recovery transition
+    # clears the target (the real clear, not a hand-written state).
+    await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
+    st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
+    assert "ownership_token" not in st and not st.get("attempts")
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr, rec=None) is False
+    assert len(spawns) == 1
+
+    pr2 = _pr(checks="failing", head_sha="sha2")
+    _live(orch, pr2)
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr2, rec=None) is True
+    assert len(spawns) == 2
