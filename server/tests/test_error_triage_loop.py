@@ -579,6 +579,29 @@ def test_recurrence_comment_is_one_per_issue_aggregating_linked_rows(tmp_path):
     _run(body, tmp_path)
 
 
+def test_failed_regression_leader_retries_as_one_regression(tmp_path):
+    async def body():
+        await _seed(fingerprint="a", title=REFUSED, status="resolved", issue_number=50,
+                    count_since_filed=1, first_seen_at=NOW - timedelta(hours=2))
+        await _seed(fingerprint="b", title=REFUSED, status="resolved", issue_number=50,
+                    count_since_filed=1, first_seen_at=NOW - timedelta(hours=1))
+        gh = FakeGh()
+        gh.fail_create = True
+        loop = _loop(AutomationContext("error-triage"), gh)
+        await loop.tick()
+        assert len(gh.creates) == 1
+        assert (await _row("b")).status == "resolved"   # not claimed: no orphan retry
+        gh.fail_create = False
+        await loop.tick()
+        assert len(gh.creates) == 2                      # the leader's retry, nothing else
+        retry = gh.creates[1]
+        assert any(c.startswith("title=[auto-error][regression] ") for c in retry)
+        assert any("| Regression of | #50 |" in c for c in retry)
+        assert any("`b`" in c for c in retry)
+        assert {(await _row(f)).issue_number for f in ("a", "b")} == {42}
+    _run(body, tmp_path)
+
+
 def test_failed_leader_keeps_followers_waiting_then_links_them(tmp_path):
     async def body():
         await _seed(fingerprint="a", title=REFUSED, first_seen_at=NOW - timedelta(hours=2))

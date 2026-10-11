@@ -259,6 +259,23 @@ def _utcnow() -> datetime:
     return naive_utc_now()
 
 
+# A claim nulls issue_number, so a regression's lineage (the closed issue it
+# regresses) would be lost if its create fails. The claim records it here so the
+# retry still files as that regression and its siblings can still join it.
+_REGRESSION_OF = "regression_of"
+
+
+def _claimed_context(row: Any, regression_of: int | None) -> dict:
+    """``sample_context`` for a Phase-1 claim; every claim rewrites the marker,
+    so a stale one never survives into a later plain filing."""
+    return {**dict(row.sample_context or {}), _REGRESSION_OF: regression_of}
+
+
+def _retry_regression_of(row: Any) -> int | None:
+    reg = (row.sample_context or {}).get(_REGRESSION_OF)
+    return int(reg) if reg else None
+
+
 @dataclass
 class _Group:
     """Candidates that file as ONE issue: the leader's (retry | regress | file)."""
@@ -497,7 +514,11 @@ class ErrorTriageLoop:
             # Its own issue was closed as fixed and it recurred: a regression,
             # never absorbed into a sibling's open issue. Rows that shared that
             # closed issue under one title regress as ONE issue, earliest first.
-            regress_groups: dict[tuple[str, int], _Group] = {}
+            # A regression leader whose create failed is a retry now, and still
+            # owns that lineage: its siblings join it rather than regress apart.
+            regress_groups: dict[tuple[str, int], _Group] = {
+                (collapse_key(g.leader), reg): g for g in groups
+                if (reg := _retry_regression_of(g.leader)) is not None}
             for r in sorted(regressed, key=lambda r: (r.first_seen_at or now, str(r.fingerprint))):
                 key = (collapse_key(r), int(r.issue_number or 0))
                 if key in regress_groups:
@@ -541,9 +562,11 @@ class ErrorTriageLoop:
                              for f in g.followers]
                 labels = [LABEL, source_label(r.source)]
                 if g.kind == "retry":
-                    plan.append(_FilePlan(str(r.fingerprint), Decision("file", "retry"),
-                                          issue_title(r, regression=False),
-                                          issue_body(r, regression_of=None, repo=repo,
+                    reg = _retry_regression_of(r)
+                    plan.append(_FilePlan(str(r.fingerprint),
+                                          Decision("regress" if reg else "file", "retry"),
+                                          issue_title(r, regression=reg is not None),
+                                          issue_body(r, regression_of=reg, repo=repo,
                                                      collapsed=g.followers),
                                           labels, followers))
                     continue
@@ -567,6 +590,7 @@ class ErrorTriageLoop:
                 # each becoming a claimed row that retries into its own issue.
                 await db.execute(update(ES).where(ES.fingerprint == r.fingerprint).values(
                     status="filed", filed_at=now, issue_number=None, issue_closed_at=None,
+                    sample_context=_claimed_context(r, regression_of),
                     count_since_filed=ES.count_since_filed - seen))
                 cap_remaining -= 1
                 filed_today += 1
@@ -748,6 +772,7 @@ class ErrorTriageLoop:
             seen = int(row.count_since_filed or 0)
             await db.execute(update(ES).where(ES.fingerprint == fingerprint).values(
                 status="filed", filed_at=now, issue_number=None, issue_closed_at=None,
+                sample_context=_claimed_context(row, regression_of),
                 count_since_filed=ES.count_since_filed - seen))
         decision = Decision("regress" if regression_of else "file", "no_issue")
         issue_number = await self._file_one(fingerprint, decision, title, body, labels, repo)
