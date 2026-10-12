@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
+from server.auth.identity import human_gate_via
 from server.auth.middleware import current_client_node, current_identity
 from server.library.names import valid_mcp_name
 from server.mcp_scope.servers import configured_server_keys
@@ -1993,7 +1994,10 @@ async def resolve_session_permission(
     frame). 400 if the assistant token tries to grant `"always"`; 404 if the
     permission is no longer pending."""
     orch = _get_orchestrator(request)
-    via = getattr(request.state, "via", None)
+    # "always" writes a standing rule, so its human-only gate must see a local process
+    # as one (#2980); allow/deny keep the plain attribution and skip the /proc read.
+    via = (human_gate_via(request) if body.decision == "always"
+           else getattr(request.state, "via", None))
     try:
         return await session_actions.resolve_permission(
             orch, db, session_id=session_id, perm_id=perm_id,

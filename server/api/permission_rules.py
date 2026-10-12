@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from server.api.sessions import _action_error_response, _get_orchestrator
 from server.audit import record_audit
+from server.auth.identity import human_gate_via
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.permission_rules import store
@@ -42,7 +43,10 @@ class RulePatch(BaseModel):
 
 
 def _via(request: Request) -> str | None:
-    return getattr(request.state, "via", None)
+    """Every route here that calls ``require_human`` takes its ``via`` from this, so a
+    process on this host asserting the operator's identity is a local caller, not the UI
+    (#2980)."""
+    return human_gate_via(request)
 
 
 @router.post("/api/sessions/{session_id}/permissions/{perm_id}/always")

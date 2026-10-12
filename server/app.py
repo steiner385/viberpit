@@ -16,6 +16,7 @@ from server.spa import mount_spa
 
 from server.obs.jsonlog import configure_logging
 from server.obs.middleware import RequestContextMiddleware
+from server.auth.identity import TransportPeerMiddleware
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.stt.engine import WhisperEngine, is_available as stt_available
@@ -801,10 +802,14 @@ def create_app(
     app.state.mcp_auth = _build_mcp_auth(
         on_success=lambda server, accts: _mcp_after_login(app.state.sessions, server, accts))
 
-    # Middleware stack (Starlette runs last-added outermost): RequestContextMiddleware
-    # wraps IdentityMiddleware wraps the routes, so request_id is set before identity.
+    # Middleware stack (Starlette runs last-added outermost): TransportPeerMiddleware
+    # wraps RequestContextMiddleware wraps IdentityMiddleware wraps the routes, so
+    # request_id is set before identity. TransportPeerMiddleware records the socket peer
+    # before it applies X-Forwarded-For (the unit runs uvicorn --no-proxy-headers), so a
+    # human-only gate can attest the real one (#2980).
     app.add_middleware(IdentityMiddleware)
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TransportPeerMiddleware)
 
     # In remote mode an unreachable daemon surfaces as DaemonUnavailable from any
     # facade RPC; map it to 503 so clients see "try again", not a 500. Harmless

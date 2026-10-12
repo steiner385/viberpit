@@ -355,6 +355,17 @@ def _reset_self_tailscale_ips_cache():
 
 
 @pytest.fixture(autouse=True)
+def _testclient_peer_is_the_serve_hop(monkeypatch):
+    # Same topology as the TestClient patch above: the 127.0.0.1:50000 peer stands for
+    # `tailscale serve` relaying a person on another tailnet device. No such socket or
+    # device exists in a test, so without this every human-only gate would see a local
+    # process (#2980) and fail closed. test_local_identity_assertion.py restores the real
+    # attestation and drives it through /proc and header fakes.
+    from server.auth import identity
+    monkeypatch.setattr(identity, "attested_front_end_hop", lambda _conn: True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_untrusted_identity_header_throttle():
     # Fourth instance of the same hazard: server.auth.identity throttles the
     # untrusted-identity-header WARNING per peer IP (#1483) so one misconfigured

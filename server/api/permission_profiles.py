@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from server.audit import record_audit
+from server.auth.identity import human_gate_via
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import PermissionProfile, _utcnow
@@ -73,7 +74,8 @@ def _validate_patterns(patterns: list[str] | None, identity: str, request: Reque
     if not patterns:
         return
     try:
-        require_human(identity, getattr(request.state, "via", None))
+        # A local process asserting the operator's identity is not the UI (#2980).
+        require_human(identity, human_gate_via(request))
     except ActionError as exc:
         raise HTTPException(status_code=exc.http,
                             detail={"error": exc.code, "message": exc.message}) from None

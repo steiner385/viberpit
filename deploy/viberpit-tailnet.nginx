@@ -18,6 +18,10 @@ server {
     # Pass the real Tailscale peer IP so the whois identity fallback works
     # when Tailscale-User-Login is not present.
     proxy_set_header X-Real-IP $remote_addr;
+    # Overwrite, never pass through, X-Forwarded-For: the edge rewrites request.client
+    # from it for a 127.0.0.1 peer, and whois then identifies that address. A client
+    # value here let any tailnet device pick the identity (#3010).
+    proxy_set_header X-Forwarded-For $remote_addr;
 
     # WebSocket upgrade — required for xterm.js terminal and VNC bridge.
     # Timeout set to 24 h; sessions stay open indefinitely.

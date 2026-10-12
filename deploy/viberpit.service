@@ -30,7 +30,12 @@ EnvironmentFile=/etc/viberpit/viberpit.env
 # without sending a response" from this healthy process (#1614/#1632 keepalive
 # audit). Set to server/http_keepalive.py's SERVER_KEEPALIVE_TIMEOUT_S so it stays
 # well above every client pool's CLIENT_KEEPALIVE_EXPIRY_S.
-ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8787 --timeout-graceful-shutdown 10 --timeout-keep-alive 30
+# --no-proxy-headers: the app applies X-Forwarded-For itself (server/auth/identity.py
+# TransportPeerMiddleware) after recording the real socket peer, so human-only writes
+# can tell tailscaled's serve hop from a local process (#2980). request.client is
+# rewritten exactly as before. Without the flag uvicorn rewrites first and those writes
+# fail closed.
+ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8787 --timeout-graceful-shutdown 10 --timeout-keep-alive 30 --no-proxy-headers
 Restart=on-failure
 RestartSec=3
 # Chromium is slow to exit; cap host resources on the 19GB box
