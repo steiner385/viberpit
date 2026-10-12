@@ -394,7 +394,7 @@ def _reset_github_app_auth_singletons():
 
 
 @pytest.fixture(autouse=True)
-def _no_live_pr_doctor_reads(monkeypatch):
+def _no_live_pr_reads(monkeypatch):
     # PR Doctor re-reads a PR live from GitHub right before a session-fix dispatch
     # (#2912/#2920). No test may reach the network for it: answer "live read
     # unavailable", which fails open to the snapshot decision every PR Doctor test
@@ -403,8 +403,17 @@ def _no_live_pr_doctor_reads(monkeypatch):
 
     async def _unavailable(self, repo, number):
         return None
-    _unavailable.__wrapped__ = SessionOrchestrator._pr_doctor_live_pr  # type: ignore[attr-defined]
-    monkeypatch.setattr(SessionOrchestrator, "_pr_doctor_live_pr", _unavailable)
+    _unavailable.__wrapped__ = SessionOrchestrator._live_pr  # type: ignore[attr-defined]
+    monkeypatch.setattr(SessionOrchestrator, "_live_pr", _unavailable)
+
+    # The completion gate re-reads its linked PRs live before nudging (#2982/#2994)
+    # and HOLDS when it cannot, so "unavailable" would silence every nudge test.
+    # Answer "GitHub agrees with the cache" instead; the re-read's own tests stub
+    # `_live_pr` and call the real seam via __wrapped__.
+    async def _agrees(self, facts):
+        return facts
+    _agrees.__wrapped__ = SessionOrchestrator._completion_live_pr_facts  # type: ignore[attr-defined]
+    monkeypatch.setattr(SessionOrchestrator, "_completion_live_pr_facts", _agrees)
 
 
 @pytest.fixture

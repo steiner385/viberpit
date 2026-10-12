@@ -1037,14 +1037,14 @@ async def test_update_branch_no_new_commits_consumes_attempt(monkeypatch, tmp_pa
 # ---------------------------------------------------------------------------
 
 def _live(orch, live: PullRequestInfo | None) -> list[tuple[str, int]]:
-    """Answer ``_pr_doctor_live_pr`` with *live*; returns the call log."""
+    """Answer ``_live_pr`` with *live*; returns the call log."""
     calls: list[tuple[str, int]] = []
 
     async def fake_live(repo, number):
         calls.append((repo, number))
         return live
 
-    orch._pr_doctor_live_pr = fake_live  # type: ignore[method-assign]
+    orch._live_pr = fake_live  # type: ignore[method-assign]
     return calls
 
 
@@ -1109,7 +1109,7 @@ async def test_2920_live_read_is_one_graphql_call_and_fails_open(monkeypatch):
     import types
 
     import server.sessions.orchestrator as orch_mod
-    real = orch_mod.SessionOrchestrator._pr_doctor_live_pr.__wrapped__  # conftest stubs it
+    real = orch_mod.SessionOrchestrator._live_pr.__wrapped__  # conftest stubs it
     orch = _build_orch(_pr())
     monkeypatch.setattr(orch_mod.gitrepos, "app_token_for_owner", lambda owner: None)
     node = {"number": 7, "url": "u", "title": "t", "state": "MERGED", "isDraft": False,
@@ -1288,7 +1288,7 @@ async def test_2912_live_read_yields_to_the_shared_api_gate(monkeypatch):
     import types
 
     import server.sessions.orchestrator as orch_mod
-    real = orch_mod.SessionOrchestrator._pr_doctor_live_pr.__wrapped__  # conftest stubs it
+    real = orch_mod.SessionOrchestrator._live_pr.__wrapped__  # conftest stubs it
     orch = _build_orch(_pr())  # carries a real shared PriorityGate
     monkeypatch.setattr(orch_mod.gitrepos, "app_token_for_owner", lambda owner: None)
     calls: list[list[str]] = []

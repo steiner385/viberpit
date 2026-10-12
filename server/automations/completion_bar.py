@@ -114,6 +114,15 @@ class PrFact:
     # PR that merging does not mean the implementation landed (#1756).
     is_docs_only: bool = False
 
+    @classmethod
+    def from_info(cls, info) -> "PrFact":
+        """The bar's view of a ``PullRequestInfo`` (cached or read live) — one mapping,
+        so a polled snapshot and a live re-read are judged identically."""
+        return cls(number=info.number, state=info.state, is_draft=info.is_draft,
+                   auto_merge_enabled=info.auto_merge_enabled,
+                   in_merge_queue=info.in_merge_queue, url=info.url,
+                   checks=info.checks, is_docs_only=info.docs_only)
+
     @property
     def is_armed(self) -> bool:
         """True when this PR is queued to merge via auto-merge or the merge queue."""

@@ -1088,3 +1088,102 @@ def test_interaction_before_the_nudge_does_not_confirm_a_claim(monkeypatch):
         await _drain()
         assert archived == [] and len(nudged) == 1
     asyncio.run(run())
+
+
+# ------------------------------------- #2982/#2994: judge linked PRs on a live read
+
+
+def _live_reads(orch, live):
+    """Run the REAL `_completion_live_pr_facts` (conftest stubs it to "GitHub agrees
+    with the cache") over a stubbed `_live_pr` answering *live*; returns the reads."""
+    import server.sessions.orchestrator as orch_mod
+    reads: list[tuple[str, int]] = []
+
+    async def _live_pr(repo, number):
+        reads.append((repo, number))
+        return live
+    orch._live_pr = _live_pr  # type: ignore[method-assign]
+    real = orch_mod.SessionOrchestrator._completion_live_pr_facts.__wrapped__
+    orch._completion_live_pr_facts = types.MethodType(real, orch)  # type: ignore[method-assign]
+    return reads
+
+
+def test_cached_unarmed_pr_that_merged_live_archives_without_a_nudge():
+    """#2994: the cache still reads the PR open + unarmed, but it merged — the gate
+    re-reads it live and archives instead of sending "ready the PR and arm auto-merge"."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        reads = _live_reads(orch, _pop_pr(99, "feat/x", state="merged", merged=True,
+                                          auto_merge_enabled=False))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert reads == [("o/r", 99)]
+        assert nudged == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+def test_cached_unarmed_pr_in_the_merge_queue_live_archives_without_a_nudge():
+    """#2982: a merge-queued PR reads autoMergeRequest=null — armed all the same."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        _live_reads(orch, _pop_pr(99, "feat/x", auto_merge_enabled=False,
+                                  in_merge_queue=True))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert nudged == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+def test_live_unarmed_pr_is_still_nudged():
+    """GitHub confirms the PR is open and unarmed: the nudge is right, so it is sent."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        _live_reads(orch, _pop_pr(99, "feat/x", auto_merge_enabled=False))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == []
+        assert len(nudged) == 1 and "gh pr merge 99 --squash --auto" in nudged[0]
+    asyncio.run(run())
+
+
+def test_unreadable_pr_holds_instead_of_nudging_on_the_cache():
+    """No live read, no PR nudge: the session rests at `complete` in the held set, so
+    the stuck-complete sweep re-judges it — and archives once GitHub answers."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        rec.status = "complete"
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+        _live_reads(orch, None)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert nudged == [] and archived == []
+        assert "s1" in orch._complete_nudge_held
+        assert "s1" not in orch._auto_archiving
+
+        orch._enabled_host_names = lambda: _async_none()  # type: ignore[method-assign]
+        orch._owns_record = lambda r, hosts: True  # type: ignore[method-assign]
+        _live_reads(orch, _pop_pr(99, "feat/x", state="merged", merged=True,
+                                  auto_merge_enabled=False))
+        await orch._recheck_stuck_complete_sessions_once()
+        await _drain()
+        assert nudged == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
+def test_met_verdict_spends_no_live_read():
+    """An armed PR in the cache is already met: no GitHub call on the archive path."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_armed_pr())
+        reads = _live_reads(orch, None)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert reads == []
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
