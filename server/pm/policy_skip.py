@@ -28,7 +28,7 @@ from server.automations.product_policy import (skip_labels, skips_self_closing_t
                                                trusted_authors)
 from server.pm.holds import RUNNER_ACTOR
 from server.pm.queue import (QueueRow, is_bot_noise, is_parked, is_self_closing_tracker,
-                             is_trusted_author)
+                             is_trusted_author, needs_unavailable_environment)
 
 
 def not_work_by_policy(*, author: str, labels: Iterable[str], title: str,
@@ -51,16 +51,17 @@ def not_work_by_policy(*, author: str, labels: Iterable[str], title: str,
 
 def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
                       policy: Mapping | None) -> bool:
-    """Whether the queue would skip this issue as ``bot``, ``tracker``, ``parked`` or
-    ``untrusted`` under *policy* — ``not_work_by_policy``, a person's ``parked``
-    label, or an author outside its ``trusted_authors``: the approve-escalation tap's
+    """Whether the queue would skip this issue as ``bot``, ``tracker``, ``parked``,
+    ``untrusted`` or ``environment`` under *policy* — ``not_work_by_policy``, a
+    person's ``parked`` label, an author outside its ``trusted_authors``, or an
+    environment gate no fleet host meets (#2983): the approve-escalation tap's
     refusal. ``None`` (no policy for the product) applies the built-in filters and
     trusts only automation logins (fail-closed)."""
     if not is_trusted_author(author, trusted_authors(policy)):
         return True
     labels = tuple(labels)
-    return is_parked(labels) or not_work_by_policy(author=author, labels=labels,
-                                                   title=title, policy=policy)
+    return (is_parked(labels) or needs_unavailable_environment(labels)
+            or not_work_by_policy(author=author, labels=labels, title=title, policy=policy))
 
 
 #: The reason the runner wrote, before #2683, when a session found an OPEN issue

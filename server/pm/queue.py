@@ -114,8 +114,32 @@ def is_automation_author(author: str) -> bool:
 # MIN_STATUS_OPTIONS pins its coupling to STATUS_OPTIONS below.
 URGENT_LABELS = frozenset({"deploy-monitor"})
 
+# Environment gates (#2983): an issue that can only be worked on a host the fleet
+# does not have. steiner385/ghostdriver-mcp#28 (``env: windows`` + ``real-target``)
+# was dispatched twice in one day to a Linux host, and each session could only read
+# the banner and put it back. Every session host runs the systemd
+# ``viberpit-daemon.service``, so the fleet is Linux; a host on another OS would
+# widen ``FLEET_PLATFORMS`` alongside a daemon that runs there.
+FLEET_PLATFORMS = frozenset({"linux"})
+# ``env: <value>`` labels (any case, optional space after the colon). Only OS
+# names carry a verdict: an unrecognised value (``env: staging`` — a deploy
+# target, say) is not an environment gate and never skips. ``any`` runs anywhere.
+ENV_LABEL_PREFIX = "env:"
+_ENV_PLATFORMS: dict[str, frozenset[str] | None] = {
+    "linux": frozenset({"linux"}),
+    "windows": frozenset({"windows"}),
+    "macos": frozenset({"macos"}),
+    "mac": frozenset({"macos"}),
+    "both": frozenset({"linux", "windows"}),
+    "any": None,
+}
+# Needs a specific application in an operator's logged-on session — something no
+# host can verify it has, so a blanket do-not-auto-dispatch whatever its ``env:``.
+REAL_TARGET_LABELS = frozenset({"real-target"})
+
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
-                 "tracker", "untrusted", "held", "parked", "not_needed", "needs_spec")
+                 "tracker", "untrusted", "environment", "held", "parked", "not_needed",
+                 "needs_spec")
 
 # Logins that file issues which ARE work (deploy-monitor, forced-deploy-audit) — always
 # trusted. Mirrors alert_series.AUTOMATION_LOGINS; pinned by a test rather than imported
@@ -254,6 +278,30 @@ def is_parked(labels: Iterable[str]) -> bool:
     return bool({str(lbl).strip().lower() for lbl in labels} & PARKED_LABELS)
 
 
+def needs_unavailable_environment(labels: Iterable[str],
+                                  platforms: frozenset[str] = FLEET_PLATFORMS) -> bool:
+    """THE ``environment`` verdict: the issue is labelled ``real-target``, or its
+    ``env:`` labels name OS environments and none is in *platforms*. Several env
+    labels are a union — runnable if any one fits. Shared by the queue's skip and
+    the approve-escalation tap (``server/pm/policy_skip.py``), which dispatches
+    without re-ranking."""
+    names = {str(lbl).strip().lower() for lbl in labels}
+    if names & REAL_TARGET_LABELS:
+        return True
+    gated = False
+    for name in names:
+        if not name.startswith(ENV_LABEL_PREFIX):
+            continue
+        value = name[len(ENV_LABEL_PREFIX):].strip()
+        if value not in _ENV_PLATFORMS:
+            continue
+        allowed = _ENV_PLATFORMS[value]
+        if allowed is None or allowed & platforms:
+            return False
+        gated = True
+    return gated
+
+
 def is_trusted_author(author: str, trusted: frozenset[str]) -> bool:
     """Whether *author* may have their issue dispatched to an agent. A public repo lets
     anyone open an issue; a dispatched session writes code that auto-merges and deploys,
@@ -358,6 +406,8 @@ def skip_reason(
         return "tracker"
     if not is_trusted_author(row.author, trusted_authors):
         return "untrusted"
+    if needs_unavailable_environment(row.labels):
+        return "environment"
     return None
 
 
