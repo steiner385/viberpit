@@ -273,3 +273,112 @@ def test_ensure_driver_start_overrun_raises_without_fresh_start(tmp_path, monkey
     assert resume_calls == [csid], resume_calls
     assert orch.driver(session_id) is None
     assert session_id not in orch._swapping
+
+
+def _sdk_init_timeout() -> Exception:
+    """The claude_agent_sdk shape (#3003): its 60 s initialize deadline fires before
+    DRIVER_START_TIMEOUT_S and raises a plain Exception *from* a TimeoutError."""
+    try:
+        try:
+            raise TimeoutError
+        except TimeoutError as e:
+            raise Exception("Control request timeout: initialize") from e
+    except Exception as wrapped:
+        return wrapped
+
+
+async def _sdk_init_timeout_start():
+    raise _sdk_init_timeout()
+
+
+@pytest.mark.asyncio
+async def test_start_bounded_maps_sdk_init_timeout_and_closes_driver(monkeypatch):
+    o = _make_orch()
+    built = _install_new_driver(monkeypatch, start=_sdk_init_timeout_start)
+    drv = o._create_driver()
+
+    with pytest.raises(DriverStartTimeout) as info:
+        await o._start_driver_bounded(drv, session_id="s1", site="test")
+
+    assert drv.closed, "the half-built driver must be closed (#3003)"
+    assert built == [drv]
+    assert "Control request timeout: initialize" in str(info.value)
+
+
+@pytest.mark.asyncio
+async def test_start_bounded_leaves_ordinary_start_failure_as_is(monkeypatch):
+    o = _make_orch()
+
+    async def _boom():
+        raise RuntimeError("bad resume handle")
+
+    _install_new_driver(monkeypatch, start=_boom)
+    drv = o._create_driver()
+
+    with pytest.raises(RuntimeError, match="bad resume handle"):
+        await o._start_driver_bounded(drv, session_id="s1", site="test")
+    assert not drv.closed, "an ordinary failure is the caller's to handle"
+
+
+@pytest.mark.asyncio
+async def test_reassign_sdk_init_timeout_logs_warning_not_error(
+        monkeypatch, tmp_path, caplog):
+    o = _make_orch()
+    rec = _rec(o, tmp_path)
+    o._drivers[rec.id] = _OldDriver(str(tmp_path))
+    _stub_env(monkeypatch)
+    built = _install_new_driver(monkeypatch, start=_sdk_init_timeout_start)
+    o._publish_event = lambda e: None
+
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        result = await asyncio.wait_for(
+            o._reassign(rec, "b", reason="process_crash"), 5.0)
+
+    assert result == "failed"
+    assert built and built[0].closed
+    msgs = [(r.levelno, r.getMessage()) for r in caplog.records]
+    assert any(m.startswith("reassign.timeout") and lvl == logging.WARNING
+               for lvl, m in msgs), msgs
+    assert not any(m.startswith("reassign.error") for _, m in msgs), msgs
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records), msgs
+
+
+def test_ensure_driver_sdk_init_timeout_raises_without_fresh_start(tmp_path, monkeypatch):
+    """An SDK init timeout on resume is a slow start, not a bad resume handle: it
+    surfaces as DriverStartTimeout and never reaches the fresh-start fallback."""
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+    cwd = str(tmp_path)
+    session_id = "s-init-timeout"
+    csid = "csid-init-timeout"
+    resume_calls = []
+
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None,
+                options_overlay=None):
+        resume_calls.append(resume)
+        c = FakeSDKClient([], on_can_use_tool=can_use_tool)
+        c.__aenter__ = _sdk_init_timeout_start
+        return c
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(id=session_id, name="t", account_name="acct1",
+                             engine_session_id=csid, status="idle", cwd=cwd))
+        orch = SessionOrchestrator(sdk_factory=factory)
+        await orch.rehydrate()
+        cfg_dir = tmp_path / "cfg" / "acct1"
+        cfg_dir.mkdir(parents=True)
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            try:
+                await asyncio.wait_for(orch.ensure_driver(session_id), 10.0)
+            except DriverStartTimeout as raised:
+                return orch, raised
+        return orch, None
+
+    orch, raised = asyncio.run(_run())
+
+    assert isinstance(raised, DriverStartTimeout)
+    assert resume_calls == [csid], resume_calls
+    assert orch.driver(session_id) is None

@@ -71,7 +71,7 @@ from viberpit.quota import QuotaSnapshot
 from viberpit.selector import at_ceiling, exhausted, usage_known
 from server.aio import (
     bounded_wait, caused_by_cancellation, current_task_cancelling,
-    ended_by_wrapped_cancellation, run_to_completion,
+    ended_by_wrapped_cancellation, iter_exception_chain, run_to_completion,
 )
 from server.assistant.context import PromptContext
 from server.assistant.suggest_prompt import (
@@ -526,10 +526,14 @@ class DriverStartTimeout(TimeoutError):
     says nothing about the resume handle, so it never triggers the fresh-start
     fallback."""
 
-    def __init__(self, session_id: str, timeout: float) -> None:
+    def __init__(self, session_id: str, timeout: float, *, detail: str | None = None) -> None:
         self.session_id = session_id
-        super().__init__(
-            f"session {session_id}: driver start did not finish within {timeout:.0f}s")
+        if detail:
+            # The engine's own deadline fired first (#3003); name it, not ours.
+            super().__init__(f"session {session_id}: driver start timed out: {detail}")
+        else:
+            super().__init__(
+                f"session {session_id}: driver start did not finish within {timeout:.0f}s")
 
 
 class InsufficientStorageError(Exception):
@@ -19765,7 +19769,13 @@ class SessionOrchestrator:
         A start that overruns, or is cancelled by the caller's own swap deadline,
         leaves a half-built driver nobody registered — so nothing else would reap its
         CLI. Close it here (bounded) before raising. An ordinary start() failure is
-        left to the caller, whose fallback logic needs the exception as-is."""
+        left to the caller, whose fallback logic needs the exception as-is.
+
+        The SDK's own ``initialize`` deadline (60 s by default, shorter than ours)
+        raises a plain ``Exception("Control request timeout: initialize")`` *from* a
+        ``TimeoutError`` (#3003). That is the same hung start, so it is treated as
+        one: the driver is closed and ``DriverStartTimeout`` raised, which keeps it
+        out of the resume fallback and off the ``reassign.error`` ERROR path."""
         try:
             await asyncio.wait_for(driver.start(), timeout=DRIVER_START_TIMEOUT_S)
         except (TimeoutError, asyncio.CancelledError) as exc:
@@ -19778,6 +19788,15 @@ class SessionOrchestrator:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             raise DriverStartTimeout(session_id, DRIVER_START_TIMEOUT_S) from exc
+        except Exception as exc:
+            if not any(isinstance(e, TimeoutError) for e in iter_exception_chain(exc)):
+                raise
+            log.warning("%s: driver start for session=%s timed out inside the engine "
+                        "(%s) — closing the half-built driver", site, session_id, exc)
+            await bounded_wait(driver.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
+                               phase=f"{site}.start_abort:{session_id}")
+            raise DriverStartTimeout(session_id, DRIVER_START_TIMEOUT_S,
+                                     detail=str(exc)) from exc
 
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> AgentDriver | None:
         """Return the live AgentDriver for session_id, resuming from DB if detached.
