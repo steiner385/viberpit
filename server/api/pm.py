@@ -44,7 +44,6 @@ from server.db.models import (
     WorkItem,
     WorkItemDep,
 )
-from server.pm.desired_state import STATUS_READY
 from server.pm.explain import triage_guidance
 from server.pm.featuredoc import FeatureLinkRef
 from server.pm.health import roadmap_health
@@ -52,11 +51,11 @@ from server.pm.issue_disposition import IssueDecision
 from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind, open_pointer_row
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
-from server.pm.mirror_store import deps_in_repos
+from server.pm.mirror_store import blocker_states, blocker_states_stmt, deps_in_repos
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
     PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
-from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
+from server.pm.queue import MIN_STATUS_OPTIONS, SKIP_REASONS, rank, rank_key
 from server.pm.queue_store import queue_inputs
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
@@ -764,27 +763,14 @@ async def project_deps(
         select(WorkItemDep).where(deps_in_repos(repos)))).scalars().all())
 
     # Cross-product visibility (spec goal): a dep may target another onboarded
-    # product's mirrored issue. Resolve dst refs that are NOT in the project-scoped
-    # items map against ALL mirrored WorkItems (single query, kind "issue"), so their
-    # dstState is populated and they don't land in unresolvedTargets. Genuinely
-    # unmirrored targets stay null → unresolvedTargets.
-    cross_states: dict[str, str | None] = {}
-    cross_refs = {d.dst_ref for d in dep_rows
-                  if d.dst_ref and "#" in d.dst_ref and d.dst_ref not in items}
-    if cross_refs:
-        parsed: list[tuple[str, int]] = []
-        for ref in cross_refs:
-            r_repo, _, r_num = ref.rpartition("#")
-            if r_repo and r_num.isdigit():
-                parsed.append((r_repo, int(r_num)))
-        if parsed:
-            cross_items = (await db.execute(
-                select(WorkItem).where(
-                    WorkItem.kind == "issue",
-                    tuple_(WorkItem.repo, WorkItem.number).in_(parsed),
-                )
-            )).scalars().all()
-            cross_states = {f"{w.repo}#{w.number}": w.state for w in cross_items}
+    # product's mirrored issue, or a pull request (#2979). Resolve dst refs that are
+    # NOT in the project-scoped issue map through the queue's own blocker lookup
+    # (single query), so their dstState is populated and they don't land in
+    # unresolvedTargets. Genuinely unmirrored targets stay null → unresolvedTargets.
+    stmt = blocker_states_stmt(
+        {d.dst_ref for d in dep_rows if d.dst_ref and d.dst_ref not in items})
+    cross_states: dict[str, str] = (
+        blocker_states((await db.execute(stmt)).all()) if stmt is not None else {})
 
     def _dst_state(ref: str) -> str | None:
         if ref in items:
@@ -904,8 +890,9 @@ async def _queue_inputs(db, now: datetime) -> tuple[list, dict[str, dict]]:
 
 @router.get("/queue")
 async def queue(
-    min_status: str = STATUS_READY,
-    respect_dependencies: bool = True,
+    min_status: str | None = None,
+    respect_dependencies: bool | None = None,
+    reason: str | None = None,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -926,19 +913,31 @@ async def queue(
     ``needs_spec`` is not shown here as "up next" either, and cross-product ties
     still break by issue age rather than by product slug.
 
-    Two knobs still differ from the runner's composition:
-    - ``min_status`` and ``respect_dependencies`` come from query params here; the
-      runner reads them from its stored config (its per-product policy), so they
-      apply uniformly to every product in this view.
-    - SCOPE: the runner ranks only products whose ``dispatch`` is on; this view is a
-      view, not a dispatch decision, and ranks every onboarded product's board.
+    Reach follows each product's own policy (``queue_min_status``,
+    ``respect_dependencies``) exactly as the runner reads it, as ``GET
+    /api/pm/holds`` does; ``min_status`` / ``respect_dependencies`` are explicit
+    overrides for a what-if view, applied uniformly to every product (#2979: a
+    fleet-wide ``Ready`` default reported every Backlog item of a Backlog-policy
+    product as a ``status`` skip the runner never made).
+
+    ``reason`` (one of ``SKIP_REASONS``) adds ``skippedItems``: the rows behind that
+    count, so a person or the assistant can work the bucket instead of only seeing
+    its size (#2979).
+
+    SCOPE: the runner ranks only products whose ``dispatch`` is on; this view is a
+    view, not a dispatch decision, and ranks every onboarded product's board.
     """
-    if min_status not in MIN_STATUS_OPTIONS:
+    if min_status is not None and min_status not in MIN_STATUS_OPTIONS:
         raise HTTPException(
             status_code=422,
             detail={"error": "invalid_min_status",
                     "message": f"min_status must be one of {MIN_STATUS_OPTIONS}, "
                                f"got {min_status!r}"})
+    if reason is not None and reason not in SKIP_REASONS:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_reason",
+                    "message": f"reason must be one of {SKIP_REASONS}, got {reason!r}"})
 
     now = datetime.now(timezone.utc)
 
@@ -952,30 +951,36 @@ async def queue(
     # is the SAME ``skipped_p`` the sum is built from, so the two cannot disagree.
     skipped_by_product: dict[str, dict[str, int]] = {}
     dispatchable_by_product: dict[str, int] = {}
+    skipped_rows: list = []
     for slug in sorted(by_product):
         # A product with no row of its own (an unmirrored slug) reads as the policy
         # SCHEMA's defaults, never as a hand-written 0.
         policy = policies.get(slug) or effective_policy(None)
         entries_p, skipped_p = rank(
-            by_product[slug], min_status=min_status,
-            respect_dependencies=respect_dependencies, now=now,
+            by_product[slug],
+            min_status=(min_status if min_status is not None
+                        else str(policy["queue_min_status"])),
+            respect_dependencies=(respect_dependencies if respect_dependencies is not None
+                                  else bool(policy["respect_dependencies"])),
+            now=now,
             # D8: THE bounce threshold, from this product's own policy — the same
             # reading the runner's pool uses.
             give_up_after_bounces=int(policy["give_up_after_bounces"]),
             extra_skip_labels=skip_labels(policy),
             trusted_authors=trusted_authors(policy),
-            skip_trackers=skips_self_closing_trackers(policy))
+            skip_trackers=skips_self_closing_trackers(policy),
+            skipped_out=skipped_rows if reason is not None else None)
         entries.extend(entries_p)
         skipped_by_product[slug] = dict(skipped_p)
         dispatchable_by_product[slug] = len(entries_p)
-        for reason, n in skipped_p.items():
-            skipped[reason] = skipped.get(reason, 0) + n
+        for why, n in skipped_p.items():
+            skipped[why] = skipped.get(why, 0) + n
     # Merge with ``rank``'s OWN key rather than a hand-copied tuple: ranking per
     # product and re-sorting on score alone would break every cross-product tie by
     # product slug (the loop order) instead of by issue age.
     entries.sort(key=rank_key)
 
-    return {
+    out: dict = {
         "entries": [{
             "ref": e.ref,
             "repo": e.repo,
@@ -990,6 +995,15 @@ async def queue(
         "dispatchableByProduct": dispatchable_by_product,
         "generatedAt": now.isoformat(),
     }
+    if reason is not None:
+        out["skippedItems"] = [{
+            "ref": r.ref, "repo": r.repo, "number": r.number, "product": r.product,
+            "title": r.title, "url": r.url, "reason": why, "status": r.status,
+            "openBlockers": list(r.open_blockers), "holdKind": r.hold_kind,
+            "workItemId": r.work_item_id,
+        } for r, why in sorted(skipped_rows, key=lambda rw: rank_key(rw[0]))
+            if why == reason]
+    return out
 
 
 def _held_to_dict(item) -> dict:

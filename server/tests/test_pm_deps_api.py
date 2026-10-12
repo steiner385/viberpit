@@ -309,3 +309,38 @@ def test_deps_summary_for_a_product_without_a_board_answers_null_project():
         _seed_filter_fixture(c, board=False)
         s = c.get("/api/pm/projects/viberpit/deps?summary=true", headers=IDENTITY_HEADERS).json()
         assert s["project"] is None and s["drift"]["missingFromProject"] == 0
+
+
+def test_deps_summary_names_only_blockers_that_still_block():
+    """#2979: topBlockers listed CLOSED issues as blocking (KinDash #18028 "blocks 7",
+    state closed), and a dep on a merged PR read as an unresolved target. A
+    resolved blocker drops out of topBlockers; a PR target resolves to its state."""
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo, WorkItem, WorkItemDep
+
+    repo = "steiner385/viberpit"
+
+    async def _seed_async() -> None:
+        async with db_session() as db:
+            proj = Project(slug="viberpit", name="viberpit")
+            db.add(proj)
+            await db.flush()
+            db.add(ProjectRepo(project_id=proj.id, repo=repo, is_primary=True))
+            for n, state in ((1, "open"), (2, "open"), (3, "open"), (10, "closed"),
+                             (11, "open")):
+                db.add(WorkItem(repo=repo, number=n, kind="issue", title=f"i{n}", state=state))
+            db.add(WorkItem(repo=repo, number=12, kind="pr", title="pr12", state="merged"))
+            for src, dst, source in ((1, 10, "native"), (2, 10, "prose"), (3, 11, "native"),
+                                     (3, 12, "prose")):
+                db.add(WorkItemDep(src_ref=f"{repo}#{src}", dst_ref=f"{repo}#{dst}",
+                                   source=source, active=True))
+            await db.commit()
+
+    with _client() as c:
+        assert c.portal is not None
+        c.portal.call(_seed_async)
+        s = c.get("/api/pm/projects/viberpit/deps?summary=true", headers=IDENTITY_HEADERS).json()
+        assert s["topBlockers"] == [{"ref": f"{repo}#11", "blocks": 1, "state": "open"}]
+        assert s["drift"]["unresolvedTargets"] == 0
+        full = c.get("/api/pm/projects/viberpit/deps", headers=IDENTITY_HEADERS).json()
+        assert {e["dst"]: e["dstState"] for e in full["edges"]}[f"{repo}#12"] == "merged"

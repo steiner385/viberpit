@@ -97,6 +97,32 @@ def test_open_blocker_resolves_dst_across_products_and_closed_releases_it():
     assert rows["steiner385/viberpit#11"].open_blockers == ("cairnea/KinDash#21",)  # open dst still blocks
 
 
+def test_resolved_native_and_prose_blockers_release_their_dependants():
+    """#2979: closing a blocker unblocks its dependants on the very next queue read,
+    whatever the edge's provenance — and a ``Depends on #N`` naming a PR resolves
+    when that PR merges, where an issue-only lookup left it unmirrored (fail
+    closed) and blocking forever. An open PR still blocks."""
+    db = _db()
+    _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
+    for n in (30, 31, 32, 33):
+        _item(db, "steiner385/viberpit", n, status="Ready")
+    _item(db, "steiner385/viberpit", 40, status="Done", state="closed")
+    for n, state in ((41, "merged"), (42, "open")):
+        db.add(WorkItem(repo="steiner385/viberpit", number=n, kind="pr", state=state))
+    for src, dst, source in ((30, 40, "native"), (31, 40, "prose"),
+                             (32, 41, "prose"), (33, 42, "prose")):
+        db.add(WorkItemDep(src_ref=f"steiner385/viberpit#{src}",
+                           dst_ref=f"steiner385/viberpit#{dst}", source=source, active=True))
+    db.commit()
+
+    rows = {r.ref: r for r in load_queue_rows(db, now=NOW)}
+
+    assert rows["steiner385/viberpit#30"].open_blockers == ()  # closed issue, native edge
+    assert rows["steiner385/viberpit#31"].open_blockers == ()  # closed issue, prose edge
+    assert rows["steiner385/viberpit#32"].open_blockers == ()  # merged PR
+    assert rows["steiner385/viberpit#33"].open_blockers == ("steiner385/viberpit#42",)
+
+
 def test_queue_store_does_not_re_export_the_iso_parser():
     """``server.time_iso`` is THE ISO boundary (constitution VI). The queue loader
     re-exported ``parse_iso_utc`` for callers that read the runner's row stamps;

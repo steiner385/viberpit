@@ -13,18 +13,18 @@ from __future__ import annotations
 from collections.abc import Set as AbstractSet
 from datetime import datetime
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from server.db.models import (AutomationTargetState, GhProjectItem, Session as DbSession,
                               WorkItem, WorkItemDep)
 from .desired_state import LIVE_SESSION_STATUSES
-from .mirror_store import deps_in_repos, list_product_views
+from .drift import is_open_blocker
+from .mirror_store import blocker_states, blocker_states_stmt, deps_in_repos, list_product_views
 from .outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                        not_needed_suppression, rows_to_bounces, verdicts_by_ref)
 from .queue import QueueRow
 from .reconcile_inputs import _aware
-from .refs import split_ref
 
 # ``BacklogRunner.id``, as a literal: importing ``server.automations.backlog_runner``
 # from ``server.pm`` to read it would drag the whole automation registry into the
@@ -124,23 +124,15 @@ def load_queue_rows(db: Session, *, now: datetime,
         deps = db.scalars(
             select(WorkItemDep).where(deps_in_repos(product.repos), WorkItemDep.active.is_(True))
         ).all()
-        dst_refs = {d.dst_ref for d in deps if d.dst_ref}
-        parsed_dst = [split for split in (split_ref(r) for r in dst_refs) if split is not None]
-        dst_state: dict[str, str] = {}
-        if parsed_dst:  # guard: an empty in_() is a SQLAlchemy warning, not a no-op query
-            dst_state = {
-                f"{w.repo}#{w.number}": w.state or "open"
-                for w in db.scalars(select(WorkItem).where(
-                    WorkItem.kind == "issue",
-                    tuple_(WorkItem.repo, WorkItem.number).in_(parsed_dst)))
-            }
+        stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref})
+        dst_state = blocker_states(db.execute(stmt).all()) if stmt is not None else {}
         blockers: dict[str, list[str]] = {}
         for d in deps:
             if not d.src_ref or not d.dst_ref:
                 continue
             # Unmirrored dst is absent from dst_state ⇒ unknown state ⇒ fails closed
-            # (default "open", spec §10). A mirrored dst counts only while open.
-            if dst_state.get(d.dst_ref, "open") == "open":
+            # (spec §10). A mirrored dst — issue or PR — counts only while open.
+            if is_open_blocker(dst_state.get(d.dst_ref)):
                 blockers.setdefault(d.src_ref, []).append(d.dst_ref)
 
         product_slug = product.slug or product.project_id

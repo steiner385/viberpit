@@ -51,6 +51,17 @@ def compute_drift(edges: list[DepEdgeView], open_refs: set[str],
     return report
 
 
+def is_open_blocker(state: str | None) -> bool:
+    """THE "does this dependency still block?" predicate (#2979), over the mirrored
+    state of the blocker — an issue's ``open``/``closed`` or a pull request's
+    ``open``/``closed``/``merged`` (``mirror_store.blocker_states``). Only an open
+    blocker blocks; ``None`` (the target is not mirrored, so its state is unknown)
+    fails CLOSED and blocks too (spec 003 §10). Shared by the queue loader, the
+    map's leaf facts and the deps summary, so a closed blocker cannot read as
+    resolved on one surface and blocking on another."""
+    return state is None or state == "open"
+
+
 def reverse_blockers(edges: Iterable[DepEdgeView]) -> dict[str, set[str]]:
     """THE reverse dependency index: blocker ref -> the refs it blocks (spec
     2026-09-30 section 3). Active edges only (an inactive row is a dep that was removed
@@ -66,10 +77,12 @@ def reverse_blockers(edges: Iterable[DepEdgeView]) -> dict[str, set[str]]:
 
 def top_blockers(edges: Iterable[DepEdgeView], open_refs: Set[str], *, n: int = 10,
                  states: Mapping[str, str | None] | None = None) -> list[dict]:
-    """The `n` refs that block the most OPEN issues, for the deps summary."""
+    """The `n` refs that block the most OPEN issues, for the deps summary. A blocker
+    that is itself resolved (closed, or a merged PR) blocks nothing, however many
+    active edges still point at it (#2979)."""
     rev = reverse_blockers(edges)
     rows: list[dict] = [{"ref": ref, "blocks": len(srcs & open_refs),
                          "state": (states or {}).get(ref)} for ref, srcs in rev.items()]
-    rows = [r for r in rows if r["blocks"]]
+    rows = [r for r in rows if r["blocks"] and is_open_blocker(r["state"])]
     rows.sort(key=lambda r: (-r["blocks"], r["ref"]))
     return rows[:n]

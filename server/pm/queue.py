@@ -445,7 +445,11 @@ def rank(
     extra_skip_labels: frozenset[str] = frozenset(),
     trusted_authors: frozenset[str] = frozenset(),
     skip_trackers: bool = True,
+    skipped_out: list[tuple[QueueRow, str]] | None = None,
 ) -> tuple[list[QueueEntry], dict[str, int]]:
+    """``skipped_out``, when given, receives every skipped row with its reason —
+    the items behind each count (#2979), from the same ``skip_reason`` call that
+    produced the count, so the list and the number cannot disagree."""
     kept: list[QueueRow] = []
     skipped: dict[str, int] = {}
     for row in rows:
@@ -461,6 +465,8 @@ def rank(
         )
         if why:
             skipped[why] = skipped.get(why, 0) + 1
+            if skipped_out is not None:
+                skipped_out.append((row, why))
         else:
             kept.append(row)
     kept.sort(key=rank_key)
