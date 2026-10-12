@@ -12374,6 +12374,9 @@ class SessionOrchestrator:
         before finishing" at a session that exists to print JSON. ``mark_no_pr`` is no
         better: source ``tool`` is in ``SELF_CERTIFIED_SOURCES``, so it lands on the
         unverified-self-claim branch. Both make the model's own word the verification.
+        (Since #2916 the prompt does declare itself read-only/no-PR — scope, not a
+        completion instruction — so a session that signals on its own is met by the
+        bar's no-PR-dispatch branch rather than nudged; this latch still decides.)
 
         The harvest is not the model's word. Proposal rows written from its output are
         the harness observing the deliverable, so the resolution is latched under
