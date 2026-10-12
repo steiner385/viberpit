@@ -81,6 +81,27 @@ def merge_options_overlay(kwargs: dict, overlay: dict | None) -> dict:
     return merged
 
 
+def session_tmpdir_env() -> dict[str, str]:
+    """``CLAUDE_CODE_TMPDIR`` for a coding session, off the shared ``/tmp`` tmpfs.
+
+    The CLI keeps its per-session task dir (Bash output) under ``/tmp/claude-<uid>``; when
+    that tmpfs fills, every live session's Bash output fails at once. The directory is shared
+    per host (the CLI namespaces its own subdirs) and defaults to
+    ``~/.cache/viberpit/claude-tmp``; ``VIBERPIT_SESSION_TMPDIR`` overrides it. An operator-set
+    ``CLAUDE_CODE_TMPDIR`` in the daemon env wins. Fails open: an uncreatable directory leaves
+    the CLI's own default rather than blocking the session.
+    """
+    if os.environ.get("CLAUDE_CODE_TMPDIR"):
+        return {}
+    path = os.environ.get("VIBERPIT_SESSION_TMPDIR") or os.path.join(
+        os.path.expanduser("~"), ".cache", "viberpit", "claude-tmp")
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    except OSError:
+        return {}
+    return {"CLAUDE_CODE_TMPDIR": path}
+
+
 async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                      on_pre_compact=None, options_overlay=None):
     """Build the real ``ClaudeSDKClient`` for one session.
@@ -93,7 +114,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     the second would drop the repo's own ``.mcp.json`` servers.
     """
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir, **session_tmpdir_env())
     if extra_env:
         env.update(extra_env)
     hooks = None

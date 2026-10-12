@@ -27,3 +27,29 @@ async def test_extra_env_merged(monkeypatch):
     )
     assert captured["env"]["DISPLAY"] == ":100"
     assert captured["env"]["CLAUDE_CONFIG_DIR"] == "/cfg"
+
+
+def test_session_tmpdir_defaults_under_home_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    monkeypatch.delenv("VIBERPIT_SESSION_TMPDIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    env = claude_sdk_factory.session_tmpdir_env()
+    want = tmp_path / ".cache" / "viberpit" / "claude-tmp"
+    assert env == {"CLAUDE_CODE_TMPDIR": str(want)}
+    assert want.is_dir()
+
+
+def test_session_tmpdir_override_and_operator_precedence(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "t"))
+    assert claude_sdk_factory.session_tmpdir_env() == {"CLAUDE_CODE_TMPDIR": str(tmp_path / "t")}
+    monkeypatch.setenv("CLAUDE_CODE_TMPDIR", "/elsewhere")
+    assert claude_sdk_factory.session_tmpdir_env() == {}
+
+
+def test_session_tmpdir_fails_open(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(blocker / "sub"))
+    assert claude_sdk_factory.session_tmpdir_env() == {}
