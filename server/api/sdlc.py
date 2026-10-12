@@ -15,6 +15,8 @@ from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import (
     INITIATIVE_ARTIFACT_KINDS,
+    INITIATIVE_STAGES,
+    INITIATIVE_STATUSES,
     TRIAGE_STATUSES,
     Feature,
     GhProjectItem,
@@ -57,6 +59,10 @@ from server.sdlc.framework_observe import load_policy_snapshot
 from server.sdlc.slug import slugify
 
 router = APIRouter(prefix="/api/sdlc", tags=["sdlc"])
+
+# Where `close` lands an initiative: the last lifecycle stage and the last rest-state.
+_TERMINAL_STAGE = INITIATIVE_STAGES[-1]
+_TERMINAL_STATUS = INITIATIVE_STATUSES[-1]
 
 
 def _autoresolve_enabled() -> bool:
@@ -778,6 +784,63 @@ async def advance_initiative(
         identity=identity,
         detail={"slug": slug, "stage": ini.stage},
     )
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
+
+
+@router.post("/initiatives/{slug}/close")
+async def close_initiative(
+    slug: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Move a FINISHED initiative straight to the terminal stage and status, skipping
+    the artifact gates ``advance`` walks one stage at a time — for an epic whose work
+    is visibly over on GitHub while the initiative row still says build/deploy.
+
+    "Finished" is checked here, never taken on trust: the epic is mirrored and closed,
+    and every one of its sub-issues is closed (the same ``done`` count the epic
+    progress bar shows, ``_epic_progress_batch``). 409 otherwise, naming what is
+    still open. A program is refused like ``advance``: its stage is derived from its
+    phases, so close those."""
+    ini = await _load_initiative(db, slug)
+    if (await db.execute(select(Initiative.id).where(
+            Initiative.parent_initiative_id == ini.id))).first() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "has_children",
+            "message": "a program's stage is derived from its phases; close each phase instead"})
+    if ini.stage == _TERMINAL_STAGE and ini.status == _TERMINAL_STATUS:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "already_done", "message": "Initiative is already done"})
+    if not (ini.epic_repo and ini.epic_number):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "no_epic",
+            "message": "Initiative has no GitHub epic, so there is nothing to prove it finished"})
+    epic = (await db.execute(select(WorkItem).where(
+        WorkItem.repo == ini.epic_repo, WorkItem.number == ini.epic_number,
+        WorkItem.kind == "issue"))).scalar_one_or_none()
+    ref = f"{ini.epic_repo}#{ini.epic_number}"
+    if epic is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "epic_not_mirrored",
+            "message": f"epic {ref} is not mirrored yet; wait for the next sync"})
+    if epic.state != "closed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "epic_open", "message": f"epic {ref} is still open; close it first"})
+    progress = (await _epic_progress_batch(db, [ini], include_children=False))[ini.id] or {}
+    done, total = int(progress.get("done", 0)), int(progress.get("total", 0))
+    if done < total:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "sub_issues_open", "done": done, "total": total,
+            "message": f"{total - done} of {total} sub-issues of {ref} are still open"})
+    previous = {"stage": ini.stage, "status": ini.status}
+    ini.stage = _TERMINAL_STAGE
+    ini.status = _TERMINAL_STATUS
+    await db.flush()
+    await record_audit(db=db, type="sdlc.initiative.close", identity=identity,
+                       detail={"slug": slug, "from": previous, "stage": ini.stage,
+                               "epic": ref, "subIssues": total})
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])
     return d

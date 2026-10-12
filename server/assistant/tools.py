@@ -63,6 +63,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("test_notification", ToolClass.READ, "Preview notification routing"),
     ToolSpec("list_initiatives", ToolClass.READ, "List initiatives"),
     ToolSpec("get_initiative", ToolClass.READ, "Get initiative"),
+    ToolSpec("preview_stale_dependencies", ToolClass.READ, "Preview stale dependency edges"),
     ToolSpec("list_products", ToolClass.READ, "List products"),
     ToolSpec("get_product", ToolClass.READ, "Get product"),
     ToolSpec("get_product_deps", ToolClass.READ, "Get product dependencies"),
@@ -134,6 +135,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("delete_watch", ToolClass.MUTATION, "Delete a watch"),
     ToolSpec("set_quiet_hours", ToolClass.MUTATION, "Set quiet hours"),
     ToolSpec("advance_initiative", ToolClass.MUTATION, "Advance initiative"),
+    ToolSpec("close_initiative", ToolClass.MUTATION, "Close a finished initiative"),
+    ToolSpec("prune_stale_dependencies", ToolClass.MUTATION, "Prune stale dependency edges"),
     ToolSpec("resolve_triage", ToolClass.MUTATION, "Accept/reject/dismiss triage proposal"),
     ToolSpec("resolve_decision", ToolClass.MUTATION, "Accept/reject decision proposal"),
     ToolSpec("request_product_sync", ToolClass.MUTATION, "Request product sync"),
@@ -178,11 +181,12 @@ OPERATOR_TOOLS: frozenset[str] = frozenset({
 })
 
 
-# Matches the allowlist's initiative-, product- and automation-id character class
+# Matches the allowlist's product- and automation-id character class
 # (server/assistant/policy.py) so a bad slug fails locally, not as a 403 from the route
 # allowlist. `server/api/pm.py:_slugify` mints product slugs from the same class, and every
 # registered automation id (`autopilot`, `backlog-runner`, `cicd-doctor`, `pr-doctor`…) is
-# already in it — one class for all three rather than a near-duplicate per pack.
+# already in it — one class for both rather than a near-duplicate per pack. Initiative
+# slugs share the class but not the length cap: see `_INITIATIVE_SLUG`.
 _SLUG = re.compile(r"\A[a-z0-9][a-z0-9-]{0,63}\Z")
 
 # Opaque server-minted ids the assistant only ever echoes back: triage proposal ids
@@ -207,6 +211,22 @@ def _slug(s: str, *, field: str = "slug") -> str:
     # must not tell the model to fix a "slug" it was never given.
     if not _SLUG.match(s):
         raise ToolArgError(f"{field} must be lowercase letters, digits and dashes")
+    return s
+
+
+# Initiative slugs come from `server/sdlc/slug.py:slugify` over a whole epic title
+# (`initiatives.slug` is an unbounded String), so adopted epics routinely run past
+# `_SLUG`'s 64 characters — the gap log's "initiative-long-slug". Same character class
+# as the allowlist's `/api/sdlc/initiatives/[a-z0-9-]+` rows, bounded only to keep a
+# path segment sane.
+_INITIATIVE_SLUG_MAX = 200
+_INITIATIVE_SLUG = re.compile(r"\A[a-z0-9][a-z0-9-]{0,%d}\Z" % (_INITIATIVE_SLUG_MAX - 1))
+
+
+def _initiative_slug(s: Any) -> str:
+    if not isinstance(s, str) or not _INITIATIVE_SLUG.match(s):
+        raise ToolArgError(f"slug must be an initiative slug from list_initiatives: lowercase "
+                           f"letters, digits and dashes, at most {_INITIATIVE_SLUG_MAX}")
     return s
 
 
@@ -291,6 +311,15 @@ def _ref_title_items(tool_input: dict[str, Any]) -> list[str]:
             for i, r in enumerate(refs[:_BATCH_MAX])]
 
 
+def _edge_items(tool_input: dict[str, Any]) -> list[str]:
+    """`"src ← blocker"` per dependency edge of prune_stale_dependencies."""
+    edges = tool_input.get("edges")
+    if not isinstance(edges, list):
+        return []
+    return [(f"{e.get('src')} ← {e.get('blocker')}" if isinstance(e, dict) else str(e))
+            [:_CARD_ITEM_MAX] for e in edges[:_BATCH_MAX]]
+
+
 # The permission card's item rows, per tool: raw, NOT-yet-validated tool input → the
 # strings the card lists, so a person confirms the actual targets (or the actual change)
 # rather than a count. A renderer must never raise — the handler's own validation is
@@ -301,6 +330,7 @@ CARD_ITEMS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
 }
 CARD_ITEMS["set_board_status"] = _ref_title_items
 CARD_ITEMS["close_issue"] = _ref_title_items
+CARD_ITEMS["prune_stale_dependencies"] = _edge_items
 
 
 def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
@@ -340,6 +370,24 @@ def _ref_batch_args(args: dict[str, Any], *, source: str) -> list[str]:
         if not isinstance(r, str) or split_ref(r.strip()) is None:
             raise ToolArgError(f"each ref must look like owner/repo#123, got {r!r}")
         out.append(r.strip())
+    return out
+
+
+def _edge_args(edges: Any) -> list[dict[str, str]]:
+    """`[{src, blocker}]` dependency edges, both ends 'owner/repo#N', at most
+    `_BATCH_MAX` — the corrective messages name preview_stale_dependencies as the source."""
+    if not isinstance(edges, list) or not edges:
+        raise ToolArgError("edges must be a non-empty list of {src, blocker} from "
+                           "preview_stale_dependencies")
+    if len(edges) > _BATCH_MAX:
+        raise ToolArgError(f"at most {_BATCH_MAX} edges per call; split the request")
+    out = []
+    for e in edges:
+        src = e.get("src") if isinstance(e, dict) else None
+        blocker = e.get("blocker") if isinstance(e, dict) else None
+        if not all(isinstance(r, str) and split_ref(r.strip()) for r in (src, blocker)):
+            raise ToolArgError(f"each edge needs src and blocker like owner/repo#123, got {e!r}")
+        out.append({"src": str(src).strip(), "blocker": str(blocker).strip()})
     return out
 
 
@@ -967,7 +1015,27 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                {"slug": str})
     @guarded
     async def get_initiative(args: dict[str, Any]) -> Any:
-        return await api.get(f"/api/sdlc/initiatives/{_slug(args['slug'])}")
+        return await api.get(f"/api/sdlc/initiatives/{_initiative_slug(args.get('slug'))}")
+
+    @spec_tool("preview_stale_dependencies",
+               "List a product's stale dependency edges — active 'src ← blocker' edges "
+               "on its open issues that no longer describe a real block: kind "
+               "'native_resolved' (a GitHub blocked-by edge whose blocker is closed or a "
+               "merged PR), 'prose_vanished' (the 'Depends on' text left the issue body) "
+               "and 'derived_resolved' (resolved blocker the issue body or epic order still "
+               "names — prunable=false; only editing the issue removes it). A resolved "
+               "blocker ALREADY blocks nothing in the queue, so this is dependency-map "
+               "and count hygiene, not unblocking work. Changes nothing; pass the "
+               "prunable edges to prune_stale_dependencies.",
+               {"product": str})
+    @guarded
+    async def preview_stale_dependencies(args: dict[str, Any]) -> Any:
+        data = await api.get(
+            f"/api/pm/projects/{_slug(str(args.get('product') or ''), field='product')}"
+            "/deps/stale")
+        rows = data.get("edges") or []
+        return Trimmed({**data, "edges": rows[:_AUTOMATION_LIST_CAP]},
+                       max(0, len(rows) - _AUTOMATION_LIST_CAP))
 
     # -- PM product layer (spec v2 Pack P) ---------------------------------------------
     # "Product" is the product vocabulary for what the PM API calls a project; the tools
@@ -1654,7 +1722,40 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "already be satisfied; the API refuses otherwise.", {"slug": str})
     @guarded
     async def advance_initiative(args: dict[str, Any]) -> Any:
-        return await api.post(f"/api/sdlc/initiatives/{_slug(args['slug'])}/advance")
+        return await api.post(
+            f"/api/sdlc/initiatives/{_initiative_slug(args.get('slug'))}/advance")
+
+    @spec_tool("close_initiative",
+               "Mark a FINISHED initiative done (terminal stage and status) in one step, "
+               "skipping the stage-by-stage artifact gates advance_initiative walks. The "
+               "API refuses unless its GitHub epic is closed and every sub-issue of it is "
+               "closed — the refusal says what is still open. Use when the work is "
+               "visibly over but the initiative still shows an earlier stage.",
+               {"slug": str})
+    @guarded
+    async def close_initiative(args: dict[str, Any]) -> Any:
+        return await api.post(
+            f"/api/sdlc/initiatives/{_initiative_slug(args.get('slug'))}/close")
+
+    @spec_tool("prune_stale_dependencies",
+               "Remove up to 20 stale dependency edges of one product in one confirmed "
+               "action — edges is a list of {src, blocker} refs ('owner/repo#123') taken "
+               "from preview_stale_dependencies, prunable ones only. Each edge is "
+               "re-checked first and refused if it is no longer stale. A GitHub "
+               "blocked-by edge is removed on GitHub; a vanished prose edge is cleared "
+               "locally. Hygiene only: a resolved blocker already blocks nothing, so this "
+               "unblocks no work — say so if asked. Reports per-edge results.",
+               _schema(("product", "edges"), product=str,
+                       edges={"type": "array", "items": {
+                           "type": "object",
+                           "properties": {"src": {"type": "string"},
+                                          "blocker": {"type": "string"}},
+                           "required": ["src", "blocker"]}}))
+    @guarded
+    async def prune_stale_dependencies(args: dict[str, Any]) -> Any:
+        product = _slug(str(args.get("product") or ""), field="product")
+        return await api.post(f"/api/pm/projects/{product}/deps/prune",
+                              {"edges": _edge_args(args.get("edges"))})
 
     @spec_tool("resolve_triage",
                "Accept, reject or dismiss ONE AI triage proposal from the inbox — list_triage "
@@ -1940,7 +2041,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             list_notification_channels, list_notification_rules, get_quiet_hours,
             test_notification, list_watches,
             list_repos, list_branches, list_stage_models,
-            list_initiatives, get_initiative,
+            list_initiatives, get_initiative, preview_stale_dependencies,
             list_products, get_product, get_product_deps, get_priority_queue, list_triage,
             list_decisions, list_holds,
             get_onboarding_status,
@@ -1959,7 +2060,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             adopt_session,
             create_notification_rule, delete_notification_rule,
             watch, delete_watch,
-            set_quiet_hours, advance_initiative, resolve_triage, resolve_decision,
+            set_quiet_hours, advance_initiative, close_initiative, prune_stale_dependencies,
+            resolve_triage, resolve_decision,
             request_product_sync,
             delete_session, delete_sessions, cancel_queued_session, ready_merge_pr,
             trigger_automation_action, dispatch_backlog, consolidate_prs,

@@ -549,6 +549,48 @@ def _product_deps(slug: str) -> dict[str, Any]:
     }
 
 
+def _stale_deps(slug: str) -> dict[str, Any]:
+    """`GET /api/pm/projects/{slug}/deps/stale` (server/api/pm.py:project_stale_deps):
+    one edge of each kind, the last listed but not prunable."""
+    edges = [
+        {"src": "acme/billing#18", "blocker": "acme/billing#7", "kind": "native_resolved",
+         "blockerState": "closed", "sources": ["native"], "prunable": True},
+        {"src": "acme/billing#20", "blocker": "acme/billing#9", "kind": "prose_vanished",
+         "blockerState": "open", "sources": ["prose"], "prunable": True},
+        {"src": "acme/billing#12", "blocker": "acme/checkout#5", "kind": "derived_resolved",
+         "blockerState": "merged", "sources": ["prose"], "prunable": False},
+    ]
+    if slug != "acme-billing":
+        edges = []
+    return {"product": slug, "edges": edges,
+            "counts": {k: sum(1 for e in edges if e["kind"] == k)
+                       for k in ("native_resolved", "prose_vanished", "derived_resolved")},
+            "prunable": sum(1 for e in edges if e["prunable"])}
+
+
+def _prune_deps(slug: str, edges: list[dict[str, Any]]) -> dict[str, Any]:
+    """`POST /api/pm/projects/{slug}/deps/prune`: per-edge results against the
+    `_stale_deps` fixture, refusals spelled as the route spells them."""
+    stale = {(e["src"], e["blocker"]): e for e in _stale_deps(slug)["edges"]}
+    results = []
+    for ref in edges:
+        pair = (str(ref.get("src")), str(ref.get("blocker")))
+        edge = stale.get(pair)
+        if edge is None:
+            out = {"pruned": None, "refused": "not_stale",
+                   "message": f"{pair[0]} ← {pair[1]} is not a stale active edge of {slug} any more"}
+        elif not edge["prunable"]:
+            out = {"pruned": None, "refused": "rederived",
+                   "message": f"{pair[0]} still names {pair[1]} in its body (or epic order), so "
+                              "the next sync would re-create the edge; edit the issue instead"}
+        else:
+            out = {"pruned": "native" if edge["kind"] == "native_resolved" else "prose",
+                   "refused": None, "message": None}
+        results.append({"src": pair[0], "blocker": pair[1], **out})
+    return {"results": results, "pruned": sum(1 for r in results if r["pruned"]),
+            "refused": sum(1 for r in results if r["refused"])}
+
+
 def _onboarding(slug: str) -> dict[str, Any]:
     if slug == "acme-checkout":
         return {"state": "classifying", "action": {"type": "await_triage"},
@@ -1271,6 +1313,8 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
                          "drift": {k: len(v) for k, v in d["drift"].items()},
                          "topBlockers": []}
                 return httpx.Response(200, json=d)
+            if tail == "deps/stale":
+                return httpx.Response(200, json=_stale_deps(slug))
             if tail == "onboarding":
                 return httpx.Response(200, json=_onboarding(slug))
             if not tail:
@@ -1391,6 +1435,26 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
         stages = ("intent", "spec", "plan", "build", "done")
         next_stage = stages[min(stages.index(row["stage"]) + 1, len(stages) - 1)]
         return httpx.Response(200, json={**row, "stage": next_stage, "status": "active"})
+    if method == "POST" and path.startswith("/api/sdlc/initiatives/") and path.endswith("/close"):
+        # Canned `close_initiative` refusals/answers (server/api/sdlc.py): only the
+        # github-epic initiative is finished; the others still have open work.
+        slug = path.split("/")[4]
+        row = _initiative(slug)
+        if row is None:
+            return httpx.Response(
+                404, json={"error": {"code": "NOT_FOUND", "message": "no such initiative"}})
+        if slug != "billing-auth-refactor":
+            return httpx.Response(409, json={"detail": {
+                "error": "sub_issues_open", "done": 5, "total": 8,
+                "message": "3 of 8 sub-issues of acme/checkout#40 are still open"}})
+        return httpx.Response(200, json={**row, "stage": "done", "status": "done"})
+    if method == "POST" and path.startswith("/api/pm/projects/") and path.endswith("/deps/prune"):
+        slug = path[len("/api/pm/projects/"):].split("/")[0]
+        if _product(slug) is None:
+            return httpx.Response(
+                404, json={"error": {"code": "NOT_FOUND", "message": "no such product"}})
+        body = json.loads(request.content or b"{}")
+        return httpx.Response(200, json=_prune_deps(slug, body.get("edges") or []))
     if method == "POST" and path.startswith("/api/pm/triage/"):
         pid, _, decision = path[len("/api/pm/triage/"):].partition("/")
         status = {"accept": "accepted", "dismiss": "dismissed"}.get(decision, "rejected")

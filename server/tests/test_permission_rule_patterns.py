@@ -278,6 +278,7 @@ _CONTROL_TOOLS = [
     # Human-in-the-loop decisions (assistant drawer and coding-session tools).
     "mcp__viberpit__answer_question", "mcp__viberpit__resolve_decision",
     "mcp__viberpit__resolve_triage", "mcp__viberpit__advance_initiative",
+    "mcp__viberpit__close_initiative",
     "mcp__viberpit__roadmap_resolve", "mcp__viberpit__roadmap_advance",
     _LEGACY + "roadmap_advance",
 ]

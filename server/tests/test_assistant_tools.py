@@ -233,6 +233,127 @@ async def test_advance_initiative_rejects_bad_slug():
     assert calls == [], "a locally-rejected slug must never reach the API"
 
 
+# An adopted-epic slug (`slugify` over a whole epic title) — past the old 64-char cap.
+_LONG_INITIATIVE_SLUG = ("audit-04-make-every-roadmap-surface-explain-why-an-item-is-not-"
+                         "moving-and-what-a-person-can-do-about-it-now")
+
+
+@pytest.mark.parametrize("name, method, suffix", [
+    ("get_initiative", "GET", ""),
+    ("advance_initiative", "POST", "/advance"),
+    ("close_initiative", "POST", "/close"),
+])
+@pytest.mark.asyncio
+async def test_initiative_tools_accept_a_long_slug_and_the_allowlist_admits_it(
+        name, method, suffix):
+    """Gap log 2026-10-11 'initiative-long-slug': the shared 64-char `_SLUG` cap
+    refused real adopted-epic slugs locally, before the route was ever asked."""
+    from server.assistant.policy import route_allowed
+
+    assert len(_LONG_INITIATIVE_SLUG) > 100
+    seen = []
+
+    def handler(req):
+        seen.append((req.method, req.url.path))
+        return httpx.Response(200, json={"slug": _LONG_INITIATIVE_SLUG})
+
+    out = await _tool(build_tools(_api(handler)), name).handler({"slug": _LONG_INITIATIVE_SLUG})
+    assert "is_error" not in out, out
+    path = f"/api/sdlc/initiatives/{_LONG_INITIATIVE_SLUG}{suffix}"
+    assert seen == [(method, path)]
+    assert route_allowed(method, path)
+
+
+@pytest.mark.parametrize("slug", ["a" * 201, "-lead", "Upper", "a/b", ""])
+@pytest.mark.asyncio
+async def test_close_initiative_rejects_a_bad_slug_locally(slug):
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "close_initiative").handler({"slug": slug})
+    assert out["is_error"] is True and calls == []
+
+
+@pytest.mark.asyncio
+async def test_close_initiative_surfaces_the_api_refusal():
+    def handler(req):
+        return httpx.Response(409, json={"detail": {
+            "error": "sub_issues_open", "message": "2 of 5 sub-issues of o/r#100 are still open"}})
+
+    out = await _tool(build_tools(_api(handler)), "close_initiative").handler({"slug": "a"})
+    assert out["is_error"] is True
+    assert "still open" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_preview_stale_dependencies_reads_the_stale_route_and_caps_rows():
+    seen = []
+    rows = [{"src": f"o/r#{n}", "blocker": "o/r#1", "kind": "native_resolved",
+             "prunable": True} for n in range(2, 62)]
+
+    def handler(req):
+        seen.append((req.method, req.url.path))
+        return httpx.Response(200, json={"product": "billing", "edges": rows,
+                                         "counts": {"native_resolved": 60}, "prunable": 60})
+
+    out = await _tool(build_tools(_api(handler)), "preview_stale_dependencies").handler(
+        {"product": "billing"})
+    env = json.loads(out["content"][0]["text"])
+    assert seen == [("GET", "/api/pm/projects/billing/deps/stale")]
+    assert len(env["data"]["edges"]) == 50 and env["truncated"] == 10
+    assert env["data"]["counts"] == {"native_resolved": 60}
+
+
+@pytest.mark.asyncio
+async def test_prune_stale_dependencies_posts_the_edges():
+    seen = {}
+
+    def handler(req):
+        seen["call"] = (req.method, req.url.path)
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"results": [], "pruned": 1, "refused": 0})
+
+    edges = [{"src": " o/r#5 ", "blocker": "o/r#3"}]
+    out = await _tool(build_tools(_api(handler)), "prune_stale_dependencies").handler(
+        {"product": "billing", "edges": edges})
+    assert "is_error" not in out, out
+    assert seen == {"call": ("POST", "/api/pm/projects/billing/deps/prune"),
+                    "body": {"edges": [{"src": "o/r#5", "blocker": "o/r#3"}]}}
+
+
+@pytest.mark.parametrize("edges, needle", [
+    ([{"src": "o/r#1", "blocker": f"o/r#{n}"} for n in range(2, 23)], "at most 20"),
+    ([], "non-empty"),
+    ("o/r#1 <- o/r#2", "non-empty"),
+    ([{"src": "o/r#1"}], "owner/repo#123"),
+    ([{"src": "o/r#1", "blocker": "#2"}], "owner/repo#123"),
+])
+@pytest.mark.asyncio
+async def test_prune_stale_dependencies_refuses_bad_edges_locally(edges, needle):
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "prune_stale_dependencies").handler(
+        {"product": "billing", "edges": edges})
+    assert out["is_error"] is True and calls == []
+    assert needle in out["content"][0]["text"]
+
+
+def test_prune_stale_dependencies_card_lists_every_edge():
+    items = batch_items(MCP_PREFIX + "prune_stale_dependencies", {"edges": [
+        {"src": "o/r#5", "blocker": "o/r#3"}, {"src": "o/r#6", "blocker": "x/y#9"}]})
+    assert items == ["o/r#5 ← o/r#3", "o/r#6 ← x/y#9"]
+    # Malformed input still yields a card (the handler's validation corrects the model).
+    assert batch_items(MCP_PREFIX + "prune_stale_dependencies", {"edges": "junk"}) == []
+    assert batch_items(MCP_PREFIX + "prune_stale_dependencies", {"edges": [7]}) == ["7"]
+
+
 def test_specs_and_annotations():
     assert TOOL_SPECS["list_sessions"].tool_class is ToolClass.READ
     assert annotation_for(MCP_PREFIX + "list_sessions").tool_class is ToolClass.READ

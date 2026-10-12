@@ -146,6 +146,10 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/sdlc/initiatives"),
         ("GET", r"/api/sdlc/initiatives/[a-z0-9-]+"),
         ("POST", r"/api/sdlc/initiatives/[a-z0-9-]+/advance"),
+        # Close (gap log 2026-10-11): the endpoint itself refuses unless the epic and all
+        # its sub-issues are closed. Same unbounded slug class as the rows around it —
+        # adopted-epic slugs run past 100 characters (tools.py `_INITIATIVE_SLUG`).
+        ("POST", r"/api/sdlc/initiatives/[a-z0-9-]+/close"),
         # READ only: accepting a materialization creates issues on GitHub, so the
         # accept/reject taps stay a human's (C4-R11) and have no row here.
         ("GET", r"/api/sdlc/initiatives/[a-z0-9-]+/materialization"),
@@ -156,6 +160,10 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/pm/projects"),
         ("GET", r"/api/pm/projects/[a-z0-9-]+"),
         ("GET", r"/api/pm/projects/[a-z0-9-]+/deps"),
+        # Stale dependency edges (gap log 2026-10-11): preview (read) and prune (a
+        # card; the endpoint re-checks every edge is still stale before touching it).
+        ("GET", r"/api/pm/projects/[a-z0-9-]+/deps/stale"),
+        ("POST", r"/api/pm/projects/[a-z0-9-]+/deps/prune"),
         ("GET", r"/api/pm/projects/[a-z0-9-]+/onboarding"),
         ("GET", r"/api/pm/queue"),
         # Spec 2026-09-30 §4.2: the escalation read model, read-only.

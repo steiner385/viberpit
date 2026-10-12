@@ -138,7 +138,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 103 tools are registered in `server/assistant/tools.py`; 98 are exposed by
+- **Tool surface (v2)** — 106 tools are registered in `server/assistant/tools.py`; 101 are exposed by
   default, Pack O's operator tools registering only once the operator tier is enabled. Packs X and
   U (external access, UX/feedback) add no new `TOOL_SPECS` rows — X reaches the existing table
   through a different transport (see "Use from other agents" below) and U instruments how the
@@ -150,7 +150,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   |---|---|---|
   | Base (v1) | 28 | sessions, accounts, hosts, PRs, pipeline health, automations, deploy status |
   | F — fixes & foundations | 6 | repos/branches/stage-models listing, tool-result drill-in, session export, gap reporting |
-  | P — product & delivery | 14 | SDLC initiatives, PM products/queue/triage/onboarding, decision proposal accept/reject, held items and pending decisions listing |
+  | P — product & delivery | 17 | SDLC initiatives (incl. closing a finished one — refused unless its epic and every sub-issue are closed), PM products/queue/triage/onboarding, decision proposal accept/reject, held items and pending decisions listing, stale dependency edges: preview + prune (≤20 per card, each re-checked; hygiene only — a resolved blocker already blocks nothing) |
   | A — automations control | 17 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools; the Session Feedback inbox (#2936): clusters + issue draft (read), and four destructive-class writes — file as one issue, dismiss (optionally as fixed by a PR), attach to an issue (one public comment) or to a live session (sent as a prompt) |
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |

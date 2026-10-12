@@ -35,6 +35,8 @@ def client(fixture=None):
 # Before the issue triage writes (set_board_status / close_issue / comment_on_issue,
 # Refs #2979, 136 cases):
 # 255b8959cfae685b78e851187caaab3d34b3ff458f015f861ea6bc941564d3ee
+# Before the stale-dependency and close_initiative cases (gap log 2026-10-11, 140 cases):
+# 3969d1e904b532b62a4259106b25720c79fa7f82fe4b29a612125a21af74cc6c
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -42,8 +44,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "3969d1e904b532b62a4259106b25720c79fa7f82fe4b29a612125a21af74cc6c"
-    assert len(rows) == 140
+    assert digest == "6382923db275b5f9cb078240c2708117a3169eef8b2e4ae836e02e112e0b81d3"
+    assert len(rows) == 144
     assert sum(bool(r.get("operator")) for r in rows) == 5
 
 
@@ -724,3 +726,27 @@ def test_triage_write_fixture_routes():
             "refs": ["acme/billing#20"], "reason": "duplicate", "comment": "c"}).status_code == 422
         url = c.post("/api/github/issues/acme/checkout/3/comments", json={"body": "b"}).json()["url"]
         assert url.startswith("https://github.com/acme/checkout/issues/3#")
+
+
+def test_stale_deps_and_close_initiative_fixture_routes():
+    """Canned routes behind the preview/prune and close_initiative cases (gap log
+    2026-10-11): the preview lists one edge of each kind, prune answers per edge the
+    way the route does, and close refuses an unfinished initiative with its counts."""
+    with client() as c:
+        body = c.get("/api/pm/projects/acme-billing/deps/stale").json()
+        assert [(e["kind"], e["prunable"]) for e in body["edges"]] == [
+            ("native_resolved", True), ("prose_vanished", True), ("derived_resolved", False)]
+        assert body["prunable"] == 2
+        assert c.get("/api/pm/projects/acme-checkout/deps/stale").json()["edges"] == []
+        out = c.post("/api/pm/projects/acme-billing/deps/prune", json={"edges": [
+            {"src": e["src"], "blocker": e["blocker"]} for e in body["edges"]]
+            + [{"src": "acme/billing#1", "blocker": "acme/billing#2"}]}).json()
+        assert [(r["pruned"], r["refused"]) for r in out["results"]] == [
+            ("native", None), ("prose", None), (None, "rederived"), (None, "not_stale")]
+        assert c.post("/api/pm/projects/nope/deps/prune", json={"edges": []}).status_code == 404
+        done = c.post("/api/sdlc/initiatives/billing-auth-refactor/close").json()
+        assert (done["stage"], done["status"]) == ("done", "done")
+        refused = c.post("/api/sdlc/initiatives/checkout-redesign/close")
+        assert refused.status_code == 409
+        assert refused.json()["detail"]["error"] == "sub_issues_open"
+        assert c.post("/api/sdlc/initiatives/nope/close").status_code == 404

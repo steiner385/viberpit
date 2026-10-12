@@ -1282,6 +1282,84 @@ def _seed_initiative(db_url: str, **fields):
     asyncio.run(_go())
 
 
+_LONG_SLUG = ("audit-04-make-every-roadmap-surface-explain-why-an-item-is-not-moving-"
+              "and-what-a-person-can-do-about-it-now")
+
+
+def _seed_closable(db_url: str, *, slug: str = "dark-mode", epic_state: str = "closed",
+                   child_states: tuple[str, ...] = ("closed", "closed"),
+                   epic: bool = True) -> None:
+    """An initiative in ``build`` pointing at epic o/r#100 with sub-issues #101…"""
+    from server.db import db_session, init_db
+    from server.db.models import Initiative, WorkItem
+
+    async def _go():
+        await init_db(db_url)
+        async with db_session() as db:
+            db.add(Initiative(slug=slug, repo="o/r", title="Dark mode", stage="build",
+                              status="active", epic_repo="o/r" if epic else None,
+                              epic_number=100 if epic else None))
+            parent = WorkItem(repo="o/r", number=100, kind="issue", state=epic_state,
+                              is_epic=True)
+            db.add(parent)
+            await db.flush()
+            for i, st in enumerate(child_states, start=101):
+                db.add(WorkItem(repo="o/r", number=i, kind="issue", state=st,
+                                parent_work_item_id=parent.id))
+    asyncio.run(_go())
+
+
+def test_close_moves_a_finished_initiative_to_the_terminal_stage_and_audits():
+    from server.db.models import INITIATIVE_STAGES, INITIATIVE_STATUSES
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_closable(db_url)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/close", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert (r.json()["stage"], r.json()["status"]) == (
+                INITIATIVE_STAGES[-1], INITIATIVE_STATUSES[-1]) == ("done", "done")
+            assert _audits(c, "sdlc.initiative.close") == [{
+                "slug": "dark-mode", "from": {"stage": "build", "status": "active"},
+                "stage": "done", "epic": "o/r#100", "subIssues": 2}]
+            again = c.post("/api/sdlc/initiatives/dark-mode/close", headers=IDENTITY_HEADERS)
+            assert again.status_code == 409 and again.json()["detail"]["error"] == "already_done"
+
+
+@pytest.mark.parametrize("kwargs, error", [
+    ({"epic_state": "open"}, "epic_open"),
+    ({"child_states": ("closed", "open", "open")}, "sub_issues_open"),
+    ({"epic": False}, "no_epic"),
+])
+def test_close_refuses_an_unfinished_initiative(kwargs, error):
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_closable(db_url, **kwargs)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/close", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409, r.text
+            assert r.json()["detail"]["error"] == error
+            if error == "sub_issues_open":
+                assert (r.json()["detail"]["done"], r.json()["detail"]["total"]) == (1, 3)
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert (got["stage"], got["status"]) == ("build", "active")
+            assert _audits(c, "sdlc.initiative.close") == []
+            assert c.post("/api/sdlc/initiatives/nope/close",
+                          headers=IDENTITY_HEADERS).status_code == 404
+
+
+def test_close_works_for_a_long_adopted_epic_slug():
+    """Adopted-epic slugs run past 64 characters (the assistant's old shared cap)."""
+    assert len(_LONG_SLUG) > 100
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_closable(db_url, slug=_LONG_SLUG)
+        with _client(db_url) as c:
+            r = c.post(f"/api/sdlc/initiatives/{_LONG_SLUG}/close", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+
+
 def test_step_back_moves_the_stage_back_one_and_activates():
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
