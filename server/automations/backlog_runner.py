@@ -484,6 +484,10 @@ QueueTail = Callable[[], "list[dict]"]
 # durable target-state row this loop writes first). Best-effort by contract —
 # ``_refill`` swallows a failure rather than losing the spawn it already earned.
 Announce = Callable[["Batch"], Awaitable[None]]
+# The claim's trace taken back down (#3000): (target, issues) -> None, called once
+# a live claim is released WITHOUT a merge, so the claim comment does not keep
+# reading as work in progress. Best-effort by the same contract as ``Announce``.
+RetractClaim = Callable[[str, "list[str]"], Awaitable[None]]
 
 
 class Spawn(Protocol):
@@ -643,6 +647,17 @@ async def _stub_select_batch(_config: dict) -> Batch | None:
     return None
 
 
+def _releases_live_claim(st: dict, state: "dict | None", outcome: "dict | None") -> bool:
+    """Does writing *state* over *st* end a live claim without a merge (#3000)?
+
+    A merge is excluded: its PR closed the issue, so the claim comment is history
+    rather than a stale promise. A write that keeps the row ``claimed`` (a handoff,
+    a held flag) is not a release at all."""
+    if not st.get("claimed") or (state is not None and state.get("claimed")):
+        return False
+    return (outcome or {}).get("outcome") != "merged"
+
+
 async def _stub_needs_human(_target: str, _reason: str) -> None:
     # GIVE-UP fallback: announce nothing; the durable row still carries the handoff.
     return None
@@ -772,6 +787,7 @@ class BacklogRunnerLoop:
         admission: Callable[..., Awaitable[tuple[ImplementationDecision, dict]]] | None = None,
         seed_policies: SeedPolicies | None = None,
         announce: Announce | None = None,
+        retract_claim: RetractClaim | None = None,
         needs_human: NeedsHuman | None = None,
         escalate: Escalate | None = None,
         investigation_state: InvestigationState | None = None,
@@ -802,6 +818,7 @@ class BacklogRunnerLoop:
         self._verify_ready = verify_ready           # (batch) -> bool | None; None seam = no check
         self._queue_tail = queue_tail               # sync: () -> cached ranked pool copy; None = no picked event
         self._announce = announce                   # (batch) -> None; None seam = no announce
+        self._retract_claim = retract_claim         # (target, issues) -> None; None = no retract
         self._spawn = spawn                         # (batch, account) -> SessionRecord
         self._count_in_flight = count_in_flight     # DB: origin==id, status!=ended
         self._healthy_account = healthy_account     # -> account name | None
@@ -1374,6 +1391,18 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.claim_announce_failed target=%s", batch.primary,
                         exc_info=True)
 
+    async def _retract(self, target: str, st: dict) -> None:
+        """Take a released claim's comment back down (#3000), swallowing any
+        failure: the release already committed, and a ``gh`` edit that will not
+        land is worth a log line, never a stalled sweep."""
+        if self._retract_claim is None:
+            return
+        try:
+            await self._retract_claim(target, list(st.get("issues") or [target]))
+        except Exception:
+            log.warning("backlog_runner.claim_retract_failed target=%s", target,
+                        exc_info=True)
+
     def _stall_changed(self, reason: str) -> bool:
         """Record why this refill is making no claim attempt; True the first time
         *reason* is seen since the last attempt, so ``refill_stalled`` is emitted
@@ -1677,9 +1706,10 @@ class BacklogRunnerLoop:
                                      kind="ownership_wait", target=batch.primary,
                                      detail={"reason": str(exc)})
                 return result("uncertain")
-            await self._ctx.compare_target_state(
-                batch.primary, state, None, release_proof=ReleaseProof.NOT_STARTED,
-                reason="launch failed before session reservation")
+            if await self._ctx.compare_target_state(
+                    batch.primary, state, None, release_proof=ReleaseProof.NOT_STARTED,
+                    reason="launch failed before session reservation"):
+                await self._retract(batch.primary, state)
             fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
             delay = _spawn_backoff_delay(fails)
             self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
@@ -1695,9 +1725,10 @@ class BacklogRunnerLoop:
         if rec is None:
             fails = max(1, self._spawn_backoff.get(batch.primary, (0, 0.0))[0])
             self._spawn_backoff[batch.primary] = (fails, self._clock() + _spawn_backoff_delay(fails))
-            await self._ctx.compare_target_state(
-                batch.primary, state, None, release_proof=ReleaseProof.NOT_STARTED,
-                reason="launch refused before session reservation")
+            if await self._ctx.compare_target_state(
+                    batch.primary, state, None, release_proof=ReleaseProof.NOT_STARTED,
+                    reason="launch refused before session reservation"):
+                await self._retract(batch.primary, state)
             await self._ctx.emit("info", f"released {batch.primary} (launch refused)",
                                  kind="unclaimed", target=batch.primary)
             return result("refused")
@@ -2179,10 +2210,15 @@ class BacklogRunnerLoop:
                 return False
         if release and not action_completed and not await self._work_stopped(st):
             return False
-        return await self._ctx.compare_target_state(
+        written = await self._ctx.compare_target_state(
             target, st, state, outcome=outcome, action_completed=action_completed,
             release_proof=proof if release else None,
             reason="current actor observed stopped or not started" if release else "")
+        if written and _releases_live_claim(st, state, outcome):
+            # THE retraction point for the sweep's releases (#3000): a hand-back,
+            # give-up, not-needed settle and ladder climb all end a claim here.
+            await self._retract(target, st)
+        return written
 
     async def _give_up(self, target: str, st: dict, reason: str, *,
                        outcome: dict | None = None, action_completed: bool = False) -> bool:
@@ -2324,6 +2360,8 @@ class BacklogRunnerLoop:
                 return
         if not await self._ctx.release_legacy_target_state(target, st):
             return
+        if st.get("claimed"):
+            await self._retract(target, st)
         await self._ctx.emit(
             "warn",
             f"released pre-ownership claim {target}: its session "
@@ -2378,6 +2416,7 @@ class BacklogRunnerLoop:
                 target, st, None, release_proof=ReleaseProof.WORK_STOPPED,
                 reason="session row deleted while the claim was open"):
             return False
+        await self._retract(target, st)
         await self._ctx.emit(
             "warn",
             f"released claim {target}: its session {sid} was deleted — back in the pool",

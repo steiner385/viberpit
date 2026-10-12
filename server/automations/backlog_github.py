@@ -28,7 +28,7 @@ from typing import Callable, Iterable
 
 from viberpit import brand, gitrepos
 from server.github.host_failures import log_gh_failure
-from server.pm.github_sync import with_automation_marker
+from server.pm.github_sync import AUTOMATION_COMMENT_MARKER, with_automation_marker
 
 from . import backlog_deps
 
@@ -436,6 +436,61 @@ def _issue_comment(ref: str, body: str, *, gh_run: GhRun) -> bool:
     return getattr(proc, "returncode", 1) == 0
 
 
+#: How every claim comment opens. THE match for :func:`retract_claims`, so the
+#: wording a claim is posted with and the wording a retraction looks for cannot drift.
+CLAIM_COMMENT_PREFIX = f"Claimed by {brand.NAME} Backlog Runner"
+
+#: What a released claim's comment is edited to (#3000). It must not open with
+#: ``CLAIM_COMMENT_PREFIX``, which is what makes a second retraction a no-op.
+RELEASED_CLAIM_BODY = (f"{brand.NAME} Backlog Runner released its claim on this issue — "
+                       "no session is working on it now.")
+
+
+def claim_comment(primary: str, kind: str) -> str:
+    """The claim announcement for a batch whose primary is *primary*; *kind* names
+    the session the spawn runs (``an implementation`` / ``an investigation``)."""
+    return f"{CLAIM_COMMENT_PREFIX} ({primary}) — {kind} session is in progress."
+
+
+def _standing_claim_ids(ref: str, *, gh_run: GhRun, token: str | None) -> list[str] | None:
+    """Ids of *ref*'s claim comments still reading as live, or ``None`` when the
+    read failed. Only the runner's own (marker-carrying) claim comments match."""
+    repo, number = _split_ref(ref)
+    jq = (f".[] | select((.body // \"\") | startswith({json.dumps(CLAIM_COMMENT_PREFIX)}) "
+          f"and contains({json.dumps(AUTOMATION_COMMENT_MARKER)})) | .id")
+    proc = gh_run(["api", f"repos/{repo}/issues/{number}/comments?per_page=100",
+                   "--paginate", "--jq", jq], token=token)
+    if getattr(proc, "returncode", 1) != 0:
+        return None
+    return [line.strip() for line in (getattr(proc, "stdout", "") or "").splitlines() if line.strip()]
+
+
+def retract_claims(refs: Iterable[str], *, gh_run: GhRun = gitrepos._run_gh) -> None:
+    """Edit every standing claim comment on *refs* to say the claim was released
+    (#3000), so a hand-back, give-up or not-needed settle does not leave
+    "an implementation session is in progress" up as a live claim for the next
+    reader. Best-effort and never raises, exactly like :func:`announce_claim`:
+    the release it describes has already committed."""
+    for ref in refs:
+        try:
+            repo, _ = _split_ref(ref)
+            token = gitrepos.app_token_for_repo(repo)
+            ids = _standing_claim_ids(ref, gh_run=gh_run, token=token)
+            if ids is None:
+                log.warning("backlog_github.retract_claims_read_failed ref=%s", ref)
+                continue
+            for comment_id in ids:
+                proc = gh_run(["api", "-X", "PATCH",
+                               f"repos/{repo}/issues/comments/{comment_id}", "-f",
+                               f"body={with_automation_marker(RELEASED_CLAIM_BODY)}"],
+                              token=token)
+                if getattr(proc, "returncode", 1) != 0:
+                    log.warning("backlog_github.retract_claims_failed ref=%s comment=%s",
+                                ref, comment_id)
+        except Exception:
+            log.warning("backlog_github.retract_claims_error ref=%s", ref, exc_info=True)
+
+
 def announce_claim(batch, comment: str, *, gh_run: GhRun = gitrepos._run_gh) -> None:
     """Human-visible trace of a claim: one comment per issue. The claim itself is
     the runner's durable target-state row (records-before-anything) plus board
@@ -443,10 +498,15 @@ def announce_claim(batch, comment: str, *, gh_run: GhRun = gitrepos._run_gh) -> 
     ``in-progress`` label, so nothing here can fail a spawn: a comment that does
     not land is logged and the batch proceeds.
 
+    Any claim comment an earlier dispatch left standing is retracted first, so an
+    issue never shows two live claims (#3000) even when that earlier claim was
+    released by a path that did not retract it.
+
     The per-ref guard is what makes "never raises" true: the comment path can
     RAISE as well as return non-zero (minting the repo's App token does network
     I/O), and an escaping exception would both abort the caller and skip the
     bundle's remaining issues."""
+    retract_claims(batch.issues, gh_run=gh_run)
     for ref in batch.issues:
         try:
             posted = _issue_comment(ref, comment, gh_run=gh_run)

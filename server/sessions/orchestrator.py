@@ -1392,6 +1392,7 @@ class SessionOrchestrator:
             self._backlog_ctx,
             select_batch=self._backlog_select_batch,
             announce=self._backlog_announce,
+            retract_claim=self._backlog_retract_claim,
             spawn=lambda batch, account, **kw: self._backlog_spawn(batch, account, **kw),
             count_in_flight=self._backlog_count_in_flight,
             count_candidates=self._backlog_count_candidates,
@@ -8429,14 +8430,24 @@ class SessionOrchestrator:
         # led triage to count investigate passes as implement sessions with no PR.
         kind = ("an investigation" if dispatch_kind_for_hold(batch.primary_hold_kind)
                 == "investigate" else "an implementation")
-        comment = (f"Claimed by {brand.NAME} Backlog Runner ({batch.primary}) — "
-                   f"{kind} session is in progress.")
+        comment = backlog_github.claim_comment(batch.primary, kind)
         try:
             await asyncio.to_thread(
                 backlog_github.announce_claim, batch, comment, gh_run=self._gh_run)
         except Exception:
             log.warning("backlog.claim_announce_failed target=%s", batch.primary,
                         exc_info=True)
+
+    async def _backlog_retract_claim(self, target: str, issues: list[str]) -> None:
+        """The runner released *target*'s claim without a merge (#3000): edit the
+        claim comment on each of its issues so it no longer reads as live work.
+        Best-effort and non-raising, like :meth:`_backlog_announce`."""
+        from server.automations import backlog_github
+        try:
+            await asyncio.to_thread(
+                backlog_github.retract_claims, issues, gh_run=self._gh_run)
+        except Exception:
+            log.warning("backlog.claim_retract_failed target=%s", target, exc_info=True)
 
     async def _backlog_verify_ready(self, batch) -> "bool | None":
         """Spec 003 §7a safety net: the queue ranks from the board mirror, which

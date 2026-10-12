@@ -165,6 +165,8 @@ def build_loop(*, mode="on", config=None, clock=None,
             self.spawns: list = []
             self.announced: list = []
             self.needs_humans: list = []
+            # (target, issues) for every claim comment the loop took down (#3000).
+            self.retracted: list = []
             # The give-up seam's failure is a per-tick fact, not a per-loop one:
             # a test flips this to model a gh/DB outage that later clears.
             self.needs_human_raises = needs_human_raises
@@ -230,6 +232,9 @@ def build_loop(*, mode="on", config=None, clock=None,
         rec.needs_humans.append((target, reason))
         if rec.needs_human_raises:
             raise RuntimeError("gh comment failed (injected)")
+
+    async def retract_claim(target, issues):
+        rec.retracted.append((target, list(issues)))
 
     async def escalate(target, reason, rung):
         if rec.escalate_raises:
@@ -336,6 +341,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         ctx,
         select_batch=select_batch,
         announce=announce_fn,
+        retract_claim=retract_claim,
         spawn=spawn,
         count_in_flight=count_in_flight,
         healthy_account=healthy_account,
@@ -5477,3 +5483,121 @@ def test_group_refresh_failure_logs_at_the_failure_kinds_level(tmp_path, caplog,
     asyncio.run(run())
     records = [r for r in caplog.records if "group_refresh_failed" in r.getMessage()]
     assert [r.levelno for r in records] == [level]
+
+
+# --------------------------------------------------------------------------- #
+# #3000 — a released claim takes its claim comment back down                   #
+# --------------------------------------------------------------------------- #
+
+def test_a_give_up_retracts_the_claim_comment_before_the_hand_off(tmp_path):
+    """#3000: a give-up ends the claim, so the "session is in progress" comment is
+    taken down on every issue of the batch — the needs-human comment is what a
+    reader should see next, not a live claim."""
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'rc_gu.db'}")
+        await _seed_row()
+        closed = PullRequestInfo(number=9, url="", state="closed", checks="none", title="")
+        loop, rec, ctx = build_loop(candidates=[], pr_status={"o/r#7": closed})
+        await _set_owned_state(ctx, "o/r#7", {
+            "session_id": "s1", "repo": "o/r", "issues": ["o/r#7", "o/r#8"],
+            "claimed": True, "attempts": 1, "_ended": True})
+
+        await loop.tick()          # PR closed unmerged → give up
+
+        assert rec.retracted == [("o/r#7", ["o/r#7", "o/r#8"])]
+        assert len(rec.needs_humans) == 1
+
+    asyncio.run(run())
+
+
+def test_a_not_needed_settle_retracts_the_claim_comment(tmp_path):
+    async def run():
+        _loop, rec, _ctx = await _sweep_after_ending(
+            tmp_path, "rc_nn.db", "not-needed", held=(),
+            investigation_state={"issue_state": "open", "no_pr_note": "fixed by #9"})
+        assert rec.retracted == [("o/r#1", ["o/r#1"])]
+
+    asyncio.run(run())
+
+
+def test_a_ladder_climb_retracts_the_claim_comment(tmp_path):
+    """The bounced claim is released; the next dispatch posts its own claim."""
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'rc_climb.db'}")
+        await _seed_row()
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+        await loop.tick()
+        assert rec.retracted == []          # a live claim keeps its comment
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()                   # bounce → climb
+
+        assert rec.escalations and rec.retracted == [("r#1", ["r#1"])]
+
+    asyncio.run(run())
+
+
+def test_a_failed_spawn_retracts_the_claim_it_just_announced(tmp_path):
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'rc_spawn.db'}")
+        await _seed_row()
+
+        async def failing_spawn(_b, _account, **_kw):
+            raise RuntimeError("git worktree add --detach failed: boom")
+
+        loop, rec, _ctx = build_loop(config=make_config(max_concurrent=1),
+                                     candidates=[batch("r#1")], spawn=failing_spawn)
+        await loop.tick()
+        assert [b.primary for b in rec.announced] == ["r#1"]
+        assert rec.retracted == [("r#1", ["r#1"])]
+
+    asyncio.run(run())
+
+
+def test_a_merge_and_a_pr_doctor_handoff_leave_the_claim_comment_alone(tmp_path):
+    """A merged PR closed the issue (the comment is history, not a stale promise),
+    and a handoff keeps the row claimed — neither is a release to retract."""
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'rc_merge.db'}")
+        await _seed_row()
+        merged = PullRequestInfo(number=42, url="", state="merged",
+                                 checks="none", title="", merged=True)
+        open_pr = PullRequestInfo(number=43, url="", state="open", checks="failing", title="")
+        loop, rec, ctx = build_loop(pr_status={"r#1": merged, "r#2": open_pr})
+        await _set_owned_state(ctx, "r#1", {"session_id": "s1", "issues": ["r#1"],
+                                            "claimed": True})
+        await _set_owned_state(ctx, "r#2", {"session_id": "s2", "issues": ["r#2"],
+                                            "claimed": True, "_ended": True})
+
+        await loop.tick()
+
+        assert rec.close_outs == [("r#1", merged)]
+        assert rec.retracted == []
+
+    asyncio.run(run())
+
+
+def test_a_raising_retract_seam_never_stalls_the_release(tmp_path):
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'rc_raise.db'}")
+        await _seed_row()
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="sonnet"))
+
+        async def boom(_target, _issues):
+            raise RuntimeError("gh edit failed (injected)")
+
+        loop._retract_claim = boom
+        await loop.tick()
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()
+
+        assert not await ctx.get_target_state("r#1")   # released all the same
+
+    asyncio.run(run())
