@@ -65,7 +65,18 @@ ACTION_ISSUE_PHRASES = (
     "submit for verification", "submit for review", "submit to google",
     "publishing status", "deployed acceptance", "post-deploy verification",
 )
-#: An unchecked GitHub task-list item: ``- [ ] …`` / ``* [ ] …`` / ``1. [ ] …``.
+#: Issues a PR merge must never close, whatever the PR says (#2984): a container
+#: epic is closed by its owner, and a permanent singleton's body says so in words
+#: ("Permanent singleton — do not claim or close … reference it with `Refs #N`,
+#: never `Fixes`"). Labels compared lowercase; phrases against the body with
+#: backticks removed. The phrases name the ISSUE, never a bare "do not close" — a
+#: UI bug's "do not close the dialog on Escape" is ordinary work.
+KEEP_OPEN_LABELS = frozenset({"epic", "permanent-singleton"})
+KEEP_OPEN_PHRASES = (
+    "permanent singleton", "do not claim or close", "do not close this issue",
+    "don't close this issue", "never close this issue", "never fixes",
+)
+#: An unchecked GitHub task-list item:``- [ ] …`` / ``* [ ] …`` / ``1. [ ] …``.
 _UNCHECKED_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[ \]\s+(?P<text>\S.*)$", re.MULTILINE)
 #: How much of the first unchecked item the hold reason quotes.
 _ITEM_QUOTE_CHARS = 80
@@ -557,6 +568,41 @@ def _text_references_issue(text: str, repo: str, number: int) -> bool:
     return re.search(rf"{re.escape(repo)}/issues/{number}(?!\d)", text) is not None
 
 
+#: GitHub's closing keywords (docs: "Linking a pull request to an issue").
+_CLOSING_KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+#: The keywords a PR uses to point at an issue it deliberately does NOT close.
+_NON_CLOSING_KEYWORDS = r"(?:refs?|references|part\s+of|relates?\s+to|related\s+to)"
+#: Fenced blocks and inline code spans: a PR quoting "`Fixes #N`" while explaining
+#: why it does not close #N is not a closing keyword (#2984).
+_CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+
+
+def _keyword_references_issue(text: str, keywords: str, repo: str, number: int) -> bool:
+    """True when *text* (code spans stripped) puts one of *keywords* in front of
+    ``#N``, ``owner/repo#N`` or a same-repo ``…/issues/N`` URL."""
+    target = (rf"(?:(?:{re.escape(repo)})?#{number}"
+              rf"|https?://github\.com/{re.escape(repo)}/issues/{number})(?!\d)")
+    return re.search(rf"\b{keywords}\b:?\s+{target}", _CODE_RE.sub(" ", text),
+                     re.IGNORECASE) is not None
+
+
+def _pr_declines_to_close(ref: str, linkage: dict | None) -> bool:
+    """Whether the merged PR referenced *ref* ONLY with a non-closing keyword
+    (``Refs #N``) — a session's deliberate "this does not finish the issue" (#2984:
+    a tracker referenced with ``Refs`` per the repo's rules was closed 50 s later).
+    ``False`` when GitHub itself will close it (``closingIssuesReferences``), when
+    any body/commit text carries a closing keyword for it, or on unknown linkage."""
+    repo, number_s = _split_ref(ref)
+    if linkage is None or not number_s.isdigit():
+        return False
+    number = int(number_s)
+    if number in (linkage.get("closing") or ()):
+        return False
+    text = linkage.get("text") or ""
+    return (_keyword_references_issue(text, _NON_CLOSING_KEYWORDS, repo, number)
+            and not _keyword_references_issue(text, _CLOSING_KEYWORDS, repo, number))
+
+
 def _pr_issue_linked(ref: str, pr_number: int, linkage: dict | None, *,
                      gh_run: GhRun) -> bool | None:
     """Whether merged PR ``pr_number`` verifiably references issue *ref*.
@@ -662,6 +708,20 @@ def _action_gate(signals: dict) -> str | None:
     return None
 
 
+def _keep_open_gate(signals: dict) -> str | None:
+    """Why the issue itself forbids a PR from closing it (#2984), named — the
+    matched label or body phrase — or ``None``."""
+    labels = sorted({lbl.strip().lower() for lbl in (signals.get("labels") or ())}
+                    & KEEP_OPEN_LABELS)
+    if labels:
+        return f"it is labelled {labels[0]!r}: its owner closes it, not a merged PR"
+    body = (signals.get("body") or "").replace("`", "").lower()
+    phrase = next((p for p in KEEP_OPEN_PHRASES if p in body), None)
+    if phrase:
+        return f"its body says {phrase!r}: a merged PR must not close it"
+    return None
+
+
 def unchecked_items(body: str | None) -> list[str]:
     """The text of every unchecked task-list item in *body*, in order."""
     return [m.group("text").strip() for m in _UNCHECKED_ITEM_RE.finditer(body or "")]
@@ -673,6 +733,9 @@ def _human_gate_reason(signals: dict | None) -> str | None:
     the close, and holding on a failed lookup is a hold with nothing to say."""
     if signals is None:
         return None
+    keep_open = _keep_open_gate(signals)
+    if keep_open:
+        return keep_open
     action = _action_gate(signals)
     if action:
         return action
@@ -695,7 +758,7 @@ def _escalate_issue(ref: str, reason: str, pr_link: str, *, gh_run: GhRun) -> No
         ref,
         f"Batch PR {pr_link} merged, but this issue was **not** auto-closed: "
         f"{reason}. Handed to a human by {brand.NAME} Backlog "
-        f"Runner — please finish what is left and close manually.",
+        f"Runner — please finish what is left, and close it yourself if it is done.",
         gh_run=gh_run)
 
 
@@ -718,8 +781,10 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
 
     The implement prompt asks for ``Fixes #N`` in the PR body, but sessions
     don't reliably comply, so this close-out exists to close the issues a merged
-    PR really did implement without one. But the branch→PR association that got
-    us here can be WRONG: shared-clone branch discovery can attribute another session's
+    PR really did implement without one. A PR that references an issue ONLY with
+    ``Refs #N`` chose not to close it, and an epic / do-not-close issue is never a
+    merge's to close: both are kept open and escalated (#2984). But the
+    branch→PR association that got us here can be WRONG: shared-clone branch discovery can attribute another session's
     merged PR to this batch (#642 — a dep-bump PR closed an unrelated epic
     twice). So each issue is closed only with verified linkage to this PR
     (:func:`_pr_issue_linked`); one PR-side lookup covers the batch, plus one
@@ -772,7 +837,11 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
                      ref, pr_number, open_children)
             _release_tracking_issue(ref, open_children, pr_link, gh_run=gh_run)
             continue
-        reason = _human_gate_reason(signals)
+        # The session's own "this does not finish it" outranks the issue's gates:
+        # the close-out exists for PRs that FORGOT a closing keyword (#2984).
+        reason = ("the PR references it with a non-closing keyword (e.g. `Refs`), "
+                  "not `Fixes`: the session left it open on purpose"
+                  if _pr_declines_to_close(ref, linkage) else _human_gate_reason(signals))
         if reason:
             log.info("backlog_github.close_batch_escalate ref=%s pr=%s reason=%s",
                      ref, pr_number, reason)

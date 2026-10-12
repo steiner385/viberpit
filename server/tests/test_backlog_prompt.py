@@ -119,6 +119,14 @@ def test_each_issue_ref_mentioned():
         assert ref in result
 
 
+def test_instructs_refs_for_an_issue_that_forbids_closing():
+    """#2984: the dispatch honours a do-not-close issue instead of always
+    templating ``Fixes`` — a KinDash permanent singleton's own CI guard fails a
+    ``Fixes #<n>`` for it."""
+    result = build_implement_prompt(SINGLE_BATCH)
+    assert "`Refs #<n>` instead — never `Fixes`" in result
+
+
 @pytest.mark.parametrize("issues,expected_fixes", [
     (["a/b#1"], ["Fixes #1"]),
     (["x/y#99", "x/y#100"], ["Fixes #99", "Fixes #100"]),
@@ -149,6 +157,10 @@ UNDECIDED_PROMPT = (
     "2. Open ONE pull request that covers all of them (never a draft).\n"
     "3. In the PR body include a closing keyword for EVERY issue:\n"
     "   `Fixes #<n>` (one per issue) so GitHub auto-closes them on merge.\n"
+    "   Exception: an issue whose body or labels say a PR must not close it\n"
+    "   (a permanent singleton, a container `epic`, \"reference it with\n"
+    "   `Refs`\") gets `Refs #<n>` instead — never `Fixes`. The runner\n"
+    "   honours `Refs` and leaves that issue open.\n"
     "4. If an issue's body has a `Covers: FR-…, AC-…` line naming stable\n"
     "   requirement/acceptance-criteria IDs, cite those same IDs in the PR\n"
     "   body (e.g. `Covers: FR-003, AC-012`) so requirement coverage traces\n"
