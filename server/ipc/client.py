@@ -362,10 +362,12 @@ def _is_transient_connect_failure(exc: Exception) -> bool:
 #: the daemon is busy draining — is not an outage, yet each one filed as an
 #: auto-error (#1742: seven "timed out during opening handshake" records, every
 #: one followed by a clean reconnect; #1725: the keepalive-ping-timeout sibling).
-#: The backoff caps at 2s, so a minute is ~30 attempts: long enough to ride out a
-#: daemon restart, short enough that a daemon that is genuinely down (#1506)
-#: still reports within the minute.
-_RECONNECT_WARN_AFTER_S = 60.0
+#: A drain-capped worker restart keeps the listener down far longer than a
+#: minute: measured refused windows were 62-75s (listener closed at the drain
+#: cap, 50-70s of silent lifespan shutdown, then the new daemon binds; #3015).
+#: 150s rides that out with margin, while a daemon that is genuinely down
+#: (#1506) still reports within ~2.5 minutes.
+_RECONNECT_WARN_AFTER_S = 150.0
 
 
 def _reconnect_log_level(exc: Exception, outage_s: float) -> int:
