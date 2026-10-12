@@ -16,6 +16,8 @@ import json
 import subprocess
 from typing import Callable
 
+import pytest
+
 from viberpit import gitrepos
 from server.automations.backlog_github import (
     announce_claim,
@@ -412,7 +414,7 @@ def test_close_batch_issues_body_and_commit_references_count_as_linkage():
     """A `#N` reference in the PR body or a commit message is linkage."""
     from server.automations.backlog_github import close_batch_issues
     gh = RoutedGh(_proc(stdout=_linkage_stdout(
-        body="Fixes #8 by rewiring the sweep.", messages=["tidy up (refs #9)"])))
+        body="Fixes #8 by rewiring the sweep.", messages=["tidy up (#9)"])))
 
     outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
 
@@ -667,6 +669,80 @@ def test_close_batch_issues_names_each_gated_ref_in_a_multi_issue_batch():
     assert outcome == ("escalated: o/r#9: it is labelled 'manual': a manual/operational "
                        "step a merge cannot perform")
     assert [c[2] for c in gh.calls if c[:2] == ["issue", "close"]] == ["8"]
+
+
+def test_close_batch_issues_refs_only_reference_is_kept_open_and_escalated():
+    """#2984 (cairnea/KinDash#15941): the PR referenced the tracker with ``Refs``
+    and a "Why this is not `Fixes #N`" section, deliberately; the close-out closed
+    it anyway. A Refs-only reference is the session's "not done" — keep it open
+    and hand it to a person, never close it."""
+    from server.automations.backlog_github import close_batch_issues
+    body = ("Refs #8\n\n## Why this is not `Fixes #8`\n\nThe tracker stays open "
+            "until its sub-issues land.")
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(body=body)))
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome.startswith("escalated: ") and "`Refs`" in outcome
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    comment = next(c for c in gh.calls if c[:2] == ["issue", "comment"])
+    assert "left it open on purpose" in comment[comment.index("--body") + 1]
+
+
+@pytest.mark.parametrize("text", [
+    "Refs #8, Fixes #9",                       # each ref judged on its own keyword
+    "Part of #8; fixes #9",
+    "Related to https://github.com/o/r/issues/8\n\nCloses #9",
+])
+def test_close_batch_issues_refs_keeps_only_the_refs_issue_open(text):
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(body=text)))
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome.startswith("escalated: o/r#8: ")
+    assert [c[2] for c in gh.calls if c[:2] == ["issue", "close"]] == ["9"]
+
+
+@pytest.mark.parametrize("pr", [
+    {"closing": [8], "body": "Refs #8"},                        # GitHub closes it
+    {"body": "Refs #8", "messages": ["fix: guard (fixes #8)"]},  # a commit closes it
+    {"body": "Implements #8."},                                  # no keyword: forgot
+])
+def test_close_batch_issues_refs_does_not_hold_a_closed_or_forgotten_issue(pr):
+    """Only a Refs-ONLY reference holds: a closing keyword anywhere (GitHub's own
+    closingIssuesReferences, a commit message), or a bare mention from a session
+    that simply forgot ``Fixes``, still closes — that is what the close-out is for."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(**pr)))
+
+    assert close_batch_issues(_batch8(), _merged_info(), gh_run=gh) == "closed"
+    assert [c[2] for c in gh.calls if c[:2] == ["issue", "close"]] == ["8"]
+
+
+@pytest.mark.parametrize("signals,needle", [
+    ({"labels": ["Epic"]}, "'epic'"),
+    ({"body": "> ⚠️ **Permanent singleton — do not claim or close.**"},
+     "'permanent singleton'"),
+    ({"body": "Reference it with `Refs #16546`, never `Fixes`."}, "'never fixes'"),
+])
+def test_close_batch_issues_issue_that_forbids_closing_is_escalated(signals, needle):
+    """#2984 (cairnea/KinDash#16685, #16677): an epic or a self-declared
+    do-not-close issue is never a merged PR's to close, even with ``Fixes #N``."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(closing=[8])),
+                signals={8: _proc(stdout=_signals_stdout(title="t", **signals))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome.startswith("escalated: ") and needle in outcome
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+
+
+def test_keep_open_phrases_ignore_an_ordinary_do_not_close_ui_bug():
+    from server.automations.backlog_github import _human_gate_reason
+    assert _human_gate_reason({"title": "Dialog", "labels": [],
+                               "body": "Do not close the dialog on Escape."}) is None
 
 
 def test_escalation_outcome_round_trips():

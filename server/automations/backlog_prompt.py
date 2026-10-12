@@ -96,7 +96,9 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
 
     The prompt instructs the agent to:
     - Implement ALL issues listed in the batch inside a single PR.
-    - Close each issue with a ``Fixes #<n>`` keyword in the PR body.
+    - Close each issue with a ``Fixes #<n>`` keyword in the PR body — except an
+      issue that says a PR must not close it, which gets ``Refs #<n>`` (#2984;
+      ``backlog_github.close_batch_issues`` keeps a ``Refs``-only issue open).
     - Follow this repository's completion workflow: open the PR (non-draft),
       mark it ready for review, and arm auto-merge (``--squash --auto``).
 
@@ -127,6 +129,10 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
         "2. Open ONE pull request that covers all of them (never a draft).\n"
         "3. In the PR body include a closing keyword for EVERY issue:\n"
         "   `Fixes #<n>` (one per issue) so GitHub auto-closes them on merge.\n"
+        "   Exception: an issue whose body or labels say a PR must not close it\n"
+        "   (a permanent singleton, a container `epic`, \"reference it with\n"
+        "   `Refs`\") gets `Refs #<n>` instead — never `Fixes`. The runner\n"
+        "   honours `Refs` and leaves that issue open.\n"
         "4. If an issue's body has a `Covers: FR-…, AC-…` line naming stable\n"
         "   requirement/acceptance-criteria IDs, cite those same IDs in the PR\n"
         "   body (e.g. `Covers: FR-003, AC-012`) so requirement coverage traces\n"
