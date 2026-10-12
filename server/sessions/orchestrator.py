@@ -19815,6 +19815,16 @@ class SessionOrchestrator:
         """
         # Fast path: live driver already exists (no lock needed — read-only check)
         existing = self._drivers.get(session_id)
+        if existing is not None and self._is_stranded_dead_driver(session_id, existing):
+            # Backstop for #3007: recovery gave up and parked the session, but its
+            # dead driver is still installed. Handing it back would strand every
+            # prompt as "recovering" until the stuck-session sweep; detach it and
+            # resume below instead. No await between the check and the pop.
+            log.info("ensure_driver: releasing the dead driver of parked session=%s "
+                     "(reason=%s) to resume it", session_id,
+                     getattr(self._records.get(session_id), "paused_reason", None))
+            self._drivers.pop(session_id, None)
+            existing = None
         if existing is not None:
             _rethread_identity(existing, identity)
             return existing
@@ -20721,14 +20731,17 @@ class SessionOrchestrator:
         # `is True`, not truthiness: engines without the flag, and test doubles
         # (MagicMock auto-attributes are truthy), must read as alive.
         if getattr(d, "stream_ended", False) is True:
-            # The driver is installed but its SDK stream is dead and a recompose is
-            # in flight (_recover_session). Writing now would reach a CLI the daemon
+            # The driver is installed but its SDK stream is dead; recovery
+            # (_recover_session) rebuilds it. Writing now would reach a CLI the daemon
             # can no longer hear — the 2026-09-16 black hole. Refuse so the bridge
             # hands the prompt back for a re-send after the swap, and do NOT record it
             # as the last prompt: the crash replay must re-send the cut-off turn, not
             # this message (which the browser is about to re-send itself).
-            log.warning("send_prompt: SDK stream dead, recompose in flight — prompt "
-                        "refused session=%s", session_id)
+            # A running swap was waited on above, so none is in flight here: this is
+            # the gap before recovery starts one. INFO, like "no_driver": the bridge
+            # retries by design and every caller logs its own WARNING (#2697, #3007).
+            log.info("send_prompt: SDK stream dead, awaiting recovery — prompt "
+                     "refused for a re-send session=%s", session_id)
             return "recovering"
         ids = list(attachment_ids or [])
         if len(ids) > _attachments.MAX_PER_MESSAGE:
@@ -23370,6 +23383,19 @@ class SessionOrchestrator:
                 .values(auto_archive_opt_out_reason=reason)
             )
 
+    def _is_stranded_dead_driver(self, session_id: str, driver: AgentDriver) -> bool:
+        """True when *driver*'s SDK stream is dead, no swap of the session is running,
+        and recovery has already parked the session — so nothing will replace the
+        driver short of the stuck-session sweep (#3007). A dead driver on an UNparked
+        session is the gap before recovery starts its swap; rebuilding it here would
+        race that swap into a twin CLI (#1040), so it is left alone."""
+        if getattr(driver, "stream_ended", False) is not True:
+            return False
+        if getattr(self, "_swapping", {}).get(session_id) is not None:
+            return False
+        rec = self._records.get(session_id)
+        return rec is not None and getattr(rec, "paused_reason", None) is not None
+
     def _install_driver(self, session_id: str, driver: AgentDriver) -> None:
         """Register *driver* as the live driver for *session_id* and notify the
         driver-replaced listener. Recovery swaps the driver with no RPC (see _reassign),
@@ -23588,6 +23614,7 @@ class SessionOrchestrator:
             steps[step] = round(now - lap_at, 2)
             lap_at = now
 
+        old_closed = False
         try:
             if old_driver is not None:
                 # Best-effort, BOUNDED. interrupt() awaits a control-channel reply from
@@ -23602,6 +23629,7 @@ class SessionOrchestrator:
                 # (#846), so a failed courtesy interrupt must never block the swap.
                 await bounded_wait(old_driver.interrupt(), timeout=_DRIVER_CONTROL_TIMEOUT_S,
                                    phase=f"reassign.interrupt:{record.id}")
+                old_closed = True
                 await old_driver.aclose()
                 _lap("close")
             # Re-assert the lease across the swap (#1379). We normally already hold it
@@ -23829,6 +23857,15 @@ class SessionOrchestrator:
                 paused_reason = "automation_ownership_stale"
             else:
                 paused_reason = _REASSIGN_FAILED_PAUSE_REASON
+            # Release the closed old driver (#3007). Left installed, its
+            # `stream_ended` made send_prompt refuse every prompt as "recompose in
+            # flight" and ensure_driver's fast path hand it back, so nothing short of
+            # the 300 s stuck-session sweep rebuilt the session. Detached instead, the
+            # next attach or prompt does a normal lazy resume. Identity check: a
+            # failure after the install (replay, DB write) leaves the NEW, live
+            # driver in place.
+            if old_closed and self._drivers.get(record.id) is old_driver:
+                self._drivers.pop(record.id, None)
             try:
                 await self._pause_session(record, reason=paused_reason)
             except Exception:
