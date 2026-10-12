@@ -459,7 +459,7 @@ def test_permanent_delete_removes_folder_and_db_row(tmp_path):
 def test_permanent_delete_removes_the_session_s_always_allow_rules(tmp_path):
     """A session's own rule set binds to its id, so it goes with the row (#2952); other
     sessions' rules and repo/global rules stay."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
 
     async def run():
         from server.permission_rules import store
