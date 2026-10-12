@@ -101,7 +101,11 @@ PR linkage, never on labels alone.
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
   what the operator sees is what agents do next. The view judges each product by its own
   `queue_min_status` / `respect_dependencies` unless the caller overrides them, and
-  `?reason=<skip reason>` adds `skippedItems`, the issues behind a skip count (#2979). A
+  `?reason=<skip reason>` adds `skippedItems`, the issues behind a skip count (#2979) —
+  `reason` also takes a comma-separated list or `all`, each row carries `reasonDetail`
+  (blockers; the hold and who placed it; the parked label, whose applied time is not
+  mirrored) and `ageDays`, the list is paged by `offset`/`limit` (default 50, max 200) with
+  `skippedTotal`, and `?product=<slug>` narrows the whole view. A
   dependency blocks only while its target is open: a closed issue or a merged PR releases its
   dependants on the next read (`drift.is_open_blocker`), and an unmirrored target fails closed.
 

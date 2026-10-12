@@ -15,6 +15,7 @@ import json
 import logging
 import re
 from collections.abc import Sequence
+from urllib.parse import quote
 
 from viberpit import brand, gitrepos
 
@@ -191,6 +192,61 @@ def issue_states(repo: str, numbers: Sequence[int], *,
     except Exception:
         log.warning("github.issue_states_failed repo=%s", repo, exc_info=True)
         return {}
+
+
+def remove_label(repo: str, number: int, name: str, *, run=gitrepos._run_gh) -> bool:
+    """Remove label *name* (as spelled on the issue) from an issue; True on success.
+    The label is percent-encoded into the ``gh api`` path (a label may hold spaces or
+    a slash) and a relative-path name is refused, for the same reason ``valid_repo``
+    exists."""
+    if not valid_repo(repo) or not name.strip() or name in (".", ".."):
+        return False
+    try:
+        proc = run(["api", "-X", "DELETE",
+                    f"repos/{repo}/issues/{number}/labels/{quote(name, safe='')}"])
+        if proc.returncode != 0:
+            log_gh_failure(log, proc.stderr, "github.label_remove_failed repo=%s #%s: %s",
+                           repo, number, proc.stderr.strip())
+            return False
+        return True
+    except Exception:
+        log.warning("github.label_remove_failed repo=%s #%s", repo, number, exc_info=True)
+        return False
+
+
+def label_placer(repo: str, number: int, name: str, *, run=gitrepos._run_gh) -> str | None:
+    """The GitHub login that LAST applied label *name* to an issue (its latest
+    ``labeled`` event, compared case-insensitively), or None when unknown — no such
+    event, or the read failed. Bot logins keep their ``[bot]`` suffix (REST shape)."""
+    if not valid_repo(repo):
+        return None
+    jq = (".[] | select(.event == \"labeled\" and ((.label.name // \"\") | ascii_downcase) == "
+          f"{json.dumps(name.lower())}) | .actor.login // empty")
+    try:
+        proc = run(["api", "--paginate", f"repos/{repo}/issues/{number}/events", "--jq", jq])
+        if proc.returncode != 0:
+            log_gh_failure(log, proc.stderr, "github.label_events_failed repo=%s #%s: %s",
+                           repo, number, proc.stderr.strip())
+            return None
+        logins = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        return logins[-1] if logins else None
+    except Exception:
+        log.warning("github.label_events_failed repo=%s #%s", repo, number, exc_info=True)
+        return None
+
+
+def viewer_login(*, run=gitrepos._run_gh) -> str | None:
+    """The login of the gh account this host writes to GitHub as — the operator's own
+    account on a single-operator install — or None when it cannot be read."""
+    try:
+        proc = run(["api", "user", "--jq", ".login"])
+        if proc.returncode != 0:
+            log_gh_failure(log, proc.stderr, "github.viewer_login_failed: %s", proc.stderr.strip())
+            return None
+        return proc.stdout.strip() or None
+    except Exception:
+        log.warning("github.viewer_login_failed", exc_info=True)
+        return None
 
 
 def close_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:

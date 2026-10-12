@@ -71,6 +71,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_triage", ToolClass.READ, "List triage proposals"),
     ToolSpec("list_decisions", ToolClass.READ, "List pending decision proposals"),
     ToolSpec("list_holds", ToolClass.READ, "List held items ranked by what they block"),
+    ToolSpec("list_queue_items", ToolClass.READ, "List the issues the queue skipped, and why"),
     ToolSpec("get_onboarding_status", ToolClass.READ, "Get product onboarding status"),
     ToolSpec("get_automation_actionable", ToolClass.READ, "Get automation actionable items"),
     ToolSpec("list_automation_sessions", ToolClass.READ, "List automation sessions"),
@@ -140,6 +141,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("resolve_triage", ToolClass.MUTATION, "Accept/reject/dismiss triage proposal"),
     ToolSpec("resolve_decision", ToolClass.MUTATION, "Accept/reject decision proposal"),
     ToolSpec("request_product_sync", ToolClass.MUTATION, "Request product sync"),
+    # Bulk (≤20) like the session batch tools: the card lists every "ref — title".
+    ToolSpec("release_hold", ToolClass.MUTATION, "Release holds / parked labels on issues"),
     # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
     # EVERY mode (including full-auto) and never offers "Always allow" (spec §4.4).
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
@@ -199,6 +202,10 @@ _OPAQUE_ID = re.compile(r"\A[A-Za-z0-9-]{1,64}\Z")
 # The priority queue can rank every open issue across every onboarded product. Only the
 # head of it is decision-relevant, and the whole thing would crowd out the conversation.
 _QUEUE_ENTRY_CAP = 50
+# A skipped row as list_queue_items shows it (server/api/pm.py:_skipped_item_to_dict):
+# repo/number/workItemId/openBlockers/holdKind are folded into ref and reasonDetail.
+_QUEUE_ITEM_KEYS = ("ref", "product", "title", "url", "reason", "status", "reasonDetail",
+                    "ageDays")
 
 # Same reasoning for the automations' unbounded detection lists: CI/CD findings are served
 # 200-at-a-time and every eligible backlog issue is a candidate. `Trimmed` reports the drop,
@@ -331,6 +338,7 @@ CARD_ITEMS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
 CARD_ITEMS["set_board_status"] = _ref_title_items
 CARD_ITEMS["close_issue"] = _ref_title_items
 CARD_ITEMS["prune_stale_dependencies"] = _edge_items
+CARD_ITEMS["release_hold"] = _ref_title_items
 
 
 def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
@@ -1088,9 +1096,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "everything to one slug. Each product is judged by its own policy (its "
                "minimum board status and dependency setting), exactly as the runner "
                "does; min_status ('backlog' or 'ready') overrides that for every product. "
-               "reason (one of the skip reasons above) adds `skippedItems`: the issues "
-               "behind that count — ref, title, url, board status, openBlockers, holdKind "
-               "and workItemId — so you can say WHICH items are blocked or need a person.",
+               "reason (one of the skip reasons above) adds `skippedItems`: the first "
+               f"{_QUEUE_ENTRY_CAP} issues behind that count — ref, title, url, board status, "
+               "openBlockers, holdKind and workItemId — so you can say WHICH items are "
+               "blocked or need a person. This is the glance; list_queue_items is the "
+               "drill-in (every reason, why each item is out, paged).",
                _schema(min_status=str, product=str, reason=str))
     @guarded
     async def get_priority_queue(args: dict[str, Any]) -> Any:
@@ -1107,30 +1117,62 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             if args["reason"] not in SKIP_REASONS:
                 raise ToolArgError(f"reason must be one of {', '.join(SKIP_REASONS)}")
             params["reason"] = args["reason"]
-        data = await api.get("/api/pm/queue", params=params or None)
-        entries = data.get("entries") or []
-        by_product = dict(data.get("skippedByProduct") or {})
-        dispatchable = dict(data.get("dispatchableByProduct") or {})
-        skipped = dict(data.get("skipped") or {})
+            params["limit"] = str(_QUEUE_ENTRY_CAP)
         product = (args.get("product") or "").strip()
         if product:
-            # Presentation-only narrowing (one endpoint, like list_prs' repo filter):
-            # the fleet map is re-summed from the kept slug so the two never disagree.
-            entries = [e for e in entries if e.get("product") == product]
-            by_product = {k: v for k, v in by_product.items() if k == product}
-            dispatchable = {k: v for k, v in dispatchable.items() if k == product}
-            skipped = dict(by_product.get(product) or {})
-        items = [i for i in data.get("skippedItems") or []
-                 if not product or i.get("product") == product]
+            # The route narrows the whole view (entries, counts, maps, items), so the
+            # paged `skippedItems` is this product's head, not the fleet's.
+            params["product"] = product
+        data = await api.get("/api/pm/queue", params=params or None)
+        entries = data.get("entries") or []
         # `skipped` (reason -> count) is small and is the whole answer to "what is
         # blocked?", so only `entries` is cut. The drop count rides the envelope, so a
         # model seeing 50 rows never reports "50 items queued".
-        out = {**data, "entries": entries[:_QUEUE_ENTRY_CAP], "skipped": skipped,
-               "skippedByProduct": by_product, "dispatchableByProduct": dispatchable}
-        if "skippedItems" in data:
-            out["skippedItems"] = items[:_QUEUE_ENTRY_CAP]
-        return Trimmed(out, max(0, len(entries) - _QUEUE_ENTRY_CAP)
-                       + max(0, len(items) - _QUEUE_ENTRY_CAP))
+        out = {**data, "entries": entries[:_QUEUE_ENTRY_CAP]}
+        items = data.get("skippedItems") or []
+        dropped_items = max(0, int(data.get("skippedTotal") or len(items)) - len(items))
+        return Trimmed(out, max(0, len(entries) - _QUEUE_ENTRY_CAP) + dropped_items)
+
+    @spec_tool("list_queue_items",
+               "Drill into the issues the priority queue skipped, and why — the companion "
+               "to get_priority_queue's counts (the glance). Each item: ref, product, title, "
+               "url, reason, board status, ageDays (since opened) and reasonDetail in the "
+               "reason's own terms: blocked → the open blocker refs; held → holdKind, "
+               "holdReason, holdBy (who placed it: 'runner'/'automation:…' is the system, a "
+               "login is a person) and holdSince; parked → the label (since is null: when "
+               "a label was applied is not mirrored). reason: one skip reason (see "
+               "get_priority_queue), several comma-separated, or omit for all. product "
+               "narrows to one slug. Paged: offset (default 0) and limit (1-50, default "
+               "50); skippedTotal is the full count and nextOffset the next page (null at "
+               "the end). To return held or parked items to the queue use release_hold "
+               "with these refs and titles.",
+               _schema(product=str, reason=str, offset=int, limit=int))
+    @guarded
+    async def list_queue_items(args: dict[str, Any]) -> Any:
+        params: dict[str, str] = {}
+        if args.get("product"):
+            params["product"] = _slug(str(args["product"]), field="product")
+        reason = str(args.get("reason") or "").strip()
+        if reason and reason != "all":
+            wanted = [r.strip() for r in reason.split(",") if r.strip()]
+            bad = [r for r in wanted if r not in SKIP_REASONS]
+            if bad or not wanted:
+                raise ToolArgError(f"reason must be 'all' or one or more of "
+                                   f"{', '.join(SKIP_REASONS)}")
+            params["reason"] = ",".join(wanted)
+        else:
+            params["reason"] = "all"
+        params["offset"] = str(max(0, int(args.get("offset") or 0)))
+        params["limit"] = str(max(1, min(int(args.get("limit") or _QUEUE_ENTRY_CAP),
+                                         _QUEUE_ENTRY_CAP)))
+        data = await api.get("/api/pm/queue", params=params)
+        items = [{k: i.get(k) for k in _QUEUE_ITEM_KEYS} for i in data.get("skippedItems") or []]
+        total = int(data.get("skippedTotal") or 0)
+        offset = int(data.get("offset") or 0)
+        nxt = offset + len(items)
+        return {"items": items, "skippedTotal": total, "offset": offset,
+                "limit": data.get("limit"), "nextOffset": nxt if nxt < total else None,
+                "skipped": data.get("skipped") or {}}
 
     @spec_tool("list_triage",
                "The AI triage inbox: classification proposals awaiting a human decision, "
@@ -1807,6 +1849,28 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def request_product_sync(args: dict[str, Any]) -> Any:
         return await api.post(f"/api/pm/projects/{_slug(args['slug'])}/sync")
 
+    @spec_tool("release_hold",
+               "Return up to 20 issues to the queue in one confirmed action by releasing "
+               "what keeps each out: an owner_action, evidence or stronger_model hold, and "
+               "the 'parked' label (removed on GitHub). A decision hold is never released "
+               "here — answer it with resolve_decision. The owner rule (the same one "
+               "dispatch_backlog applies): a hold or label the runner, an automation, a "
+               "session or a bot placed, or one the user placed, is released; one another "
+               "person placed, or whose placer is unknown, is refused — only they can "
+               "release it. refs are 'owner/repo#123'; titles must list each issue's title "
+               "in the same order (read both off list_queue_items or list_holds); reason "
+               "says why, and is recorded in the audit trail. Each ref gets its own result "
+               "{ref, released: [kinds], refused}: report every refusal, never imply all "
+               "succeeded. The user confirms via the permission card this call raises — "
+               "call it directly once the user has asked, don't ask again in chat.",
+               _schema(("refs", "titles", "reason"),
+                       refs=_STR_ARRAY, titles=_STR_ARRAY, reason=str))
+    @guarded
+    async def release_hold(args: dict[str, Any]) -> Any:
+        refs = _ref_batch_args(args, source="list_queue_items")
+        return await api.post("/api/pm/holds/release", {
+            "refs": refs, "reason": _bounded_text(args.get("reason"), "reason", 500)})
+
     # -- Destructive (spec §4.2, class D) ----------------------------------------------
     # Irreversible. These always surface a permission card, in every mode, and the card
     # never offers "Always allow" (server/sessions/permissions.py).
@@ -1869,8 +1933,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "Claim the given backlog issues and start work on them NOW, without "
                "waiting for the backlog runner's next pass. refs are 'owner/repo#123' "
                "strings from list_backlog_candidates; they are bundled into one session "
-               "and one PR, with the first as the primary. It is refused for an issue "
-               "a person has held for the owner; only they can release that hold. This "
+               "and one PR, with the first as the primary. An owner_action hold on an "
+               "issue is released first by the same owner rule as release_hold: one the "
+               "runner, an automation, a session or the user placed goes; one another "
+               "person placed refuses the whole dispatch — only they can release it. This "
                "launches a coding "
                "session that will act on its own; there is no undo. The user confirms "
                "via the permission card this call raises — call it directly once the "
@@ -2043,7 +2109,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             list_repos, list_branches, list_stage_models,
             list_initiatives, get_initiative, preview_stale_dependencies,
             list_products, get_product, get_product_deps, get_priority_queue, list_triage,
-            list_decisions, list_holds,
+            list_decisions, list_holds, list_queue_items,
             get_onboarding_status,
             get_automation_actionable, list_automation_sessions, list_backlog_candidates,
             get_backlog_groups, get_cicd_findings, get_pr_doctor_consolidation,
@@ -2062,7 +2128,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             watch, delete_watch,
             set_quiet_hours, advance_initiative, close_initiative, prune_stale_dependencies,
             resolve_triage, resolve_decision,
-            request_product_sync,
+            request_product_sync, release_hold,
             delete_session, delete_sessions, cancel_queued_session, ready_merge_pr,
             trigger_automation_action, dispatch_backlog, consolidate_prs,
             get_feedback_clusters, draft_feedback_cluster_issue, file_feedback_cluster,

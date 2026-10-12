@@ -402,7 +402,7 @@ _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts
                        "list_initiatives", "list_backlog_candidates", "get_backlog_groups",
                        "get_cicd_findings", "get_pr_doctor_consolidation", "list_watches",
                        "list_adoptable_sessions", "get_priority_queue", "list_decisions",
-                       "list_holds")
+                       "list_holds", "list_queue_items")
 
 
 @pytest.mark.asyncio
@@ -1091,23 +1091,27 @@ async def test_get_priority_queue_forwards_min_status_and_caps_entries():
 
 @pytest.mark.asyncio
 async def test_get_priority_queue_lists_the_items_behind_a_reason():
-    """#2979: ``reason`` forwards to the route, whose ``skippedItems`` is narrowed by
-    ``product`` like everything else; an unknown reason or status never leaves."""
+    """#2979: ``reason`` forwards to the route with the tool's page size, and
+    ``product`` narrows at the route (so the page is that product's head, not the
+    fleet's); items beyond the page ride the envelope's drop count. An unknown reason
+    or status never leaves."""
     seen = {}
 
     def handler(req: httpx.Request):
         seen["params"] = dict(req.url.params)
         return httpx.Response(200, json={
-            "entries": [], "skipped": {"blocked": 2},
-            "skippedByProduct": {"kindash": {"blocked": 1}, "viberpit": {"blocked": 1}},
-            "skippedItems": [{"ref": "o/k#1", "product": "kindash", "reason": "blocked"},
-                             {"ref": "o/r#2", "product": "viberpit", "reason": "blocked"}]})
+            "entries": [], "skipped": {"blocked": 3},
+            "skippedByProduct": {"viberpit": {"blocked": 3}},
+            "skippedItems": [{"ref": "o/r#2", "product": "viberpit", "reason": "blocked"}],
+            "skippedTotal": 3})
 
     tool = _tool(build_tools(_api(handler)), "get_priority_queue")
     out = await tool.handler({"reason": "blocked", "product": "viberpit", "min_status": "Ready"})
-    assert seen["params"] == {"reason": "blocked", "min_status": "Ready"}
+    assert seen["params"] == {"reason": "blocked", "min_status": "Ready", "limit": "50",
+                              "product": "viberpit"}
     body = json.loads(out["content"][0]["text"])
     assert [i["ref"] for i in body["data"]["skippedItems"]] == ["o/r#2"]
+    assert body["truncated"] == 2
 
     seen.clear()
     for bad in ({"reason": "nope"}, {"min_status": "done"}):
@@ -1129,25 +1133,30 @@ async def test_get_priority_queue_omits_min_status_when_unset():
 
 @pytest.mark.asyncio
 async def test_get_priority_queue_narrows_to_one_product_and_keeps_the_breakdown():
-    """Spec 2026-09-30 §6: ``product`` narrows entries AND the per-product maps in
-    the handler (one endpoint, presentation-only filtering, like list_prs' repo)."""
+    """Spec 2026-09-30 §6: ``product`` narrows entries AND the per-product maps — at
+    the route (``GET /api/pm/queue?product=``, pinned in test_pm_queue_api), so the
+    tool forwards it and passes the narrowed view through untouched."""
+    seen = {}
+
     def handler(req: httpx.Request):
-        return httpx.Response(200, json={
-            "entries": [{"ref": "o/k#1", "product": "kindash", "score": 3},
-                        {"ref": "o/r#2", "product": "viberpit", "score": 2}],
-            "skipped": {"held": 5, "blocked": 1},
-            "skippedByProduct": {"kindash": {"held": 4}, "viberpit": {"held": 1, "blocked": 1}},
-            "dispatchableByProduct": {"kindash": 1, "viberpit": 1},
-            "generatedAt": "2026-09-05T00:00:00+00:00",
-        })
+        seen["params"] = dict(req.url.params)
+        if req.url.params.get("product") == "kindash":
+            return httpx.Response(200, json={
+                "entries": [{"ref": "o/k#1", "product": "kindash", "score": 3}],
+                "skipped": {"held": 4}, "skippedByProduct": {"kindash": {"held": 4}},
+                "dispatchableByProduct": {"kindash": 1},
+                "generatedAt": "2026-09-05T00:00:00+00:00"})
+        return httpx.Response(200, json={"entries": [], "skipped": {}, "skippedByProduct": {},
+                                         "dispatchableByProduct": {}})
 
     tools = build_tools(_api(handler))
     out = await _tool(tools, "get_priority_queue").handler({"product": "kindash"})
+    assert seen["params"] == {"product": "kindash"}
     data = json.loads(out["content"][0]["text"])["data"]
     assert [e["ref"] for e in data["entries"]] == ["o/k#1"]
     assert data["skippedByProduct"] == {"kindash": {"held": 4}}
     assert data["dispatchableByProduct"] == {"kindash": 1}
-    assert data["skipped"] == {"held": 4}, "the fleet map is re-summed for the narrowed scope"
+    assert data["skipped"] == {"held": 4}
 
     # An unknown slug is an empty answer, not an error: the model should say
     # "nothing dispatchable", not retry.
@@ -2223,6 +2232,122 @@ async def test_list_holds_rejects_an_unknown_kind_locally():
         return httpx.Response(200, json={})
     out = await _tool(build_tools(_api(handler)), "list_holds").handler({"kind": "evidence"})
     assert out["is_error"] is True and calls == []
+
+
+# --- list_queue_items / release_hold (gap log 2026-10-11) -----------------------------
+
+_SKIPPED_ROW = {"ref": "o/r#1", "repo": "o/r", "number": 1, "product": "kindash",
+                "title": "Fix it", "url": "https://x/1", "reason": "held", "status": "Ready",
+                "openBlockers": [], "holdKind": "owner_action", "workItemId": "wi-1",
+                "reasonDetail": {"holdKind": "owner_action", "holdReason": "r", "holdBy": "runner",
+                                 "holdSince": None}, "ageDays": 4}
+
+
+@pytest.mark.asyncio
+async def test_list_queue_items_pages_the_queue_endpoint_and_projects_rows():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["path"], seen["params"] = req.url.path, dict(req.url.params)
+        return httpx.Response(200, json={
+            "entries": [{"ref": "o/r#9"}], "skipped": {"held": 3},
+            "skippedItems": [_SKIPPED_ROW], "skippedTotal": 3, "offset": 2, "limit": 1})
+
+    tool = _tool(build_tools(_api(handler)), "list_queue_items")
+    out = await tool.handler({"product": "kindash", "reason": "held", "offset": 2, "limit": 1})
+    assert seen == {"path": "/api/pm/queue", "params": {
+        "product": "kindash", "reason": "held", "offset": "2", "limit": "1"}}
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["items"] == [{k: _SKIPPED_ROW[k] for k in (
+        "ref", "product", "title", "url", "reason", "status", "reasonDetail", "ageDays")}]
+    assert data["skippedTotal"] == 3 and data["nextOffset"] is None
+    assert data["skipped"] == {"held": 3} and "entries" not in data
+
+    # No reason = every reason; the default page is the tool's cap.
+    await tool.handler({})
+    assert seen["params"] == {"reason": "all", "offset": "0", "limit": "50"}
+
+
+@pytest.mark.asyncio
+async def test_list_queue_items_reports_the_next_page():
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json={"skipped": {}, "skippedItems": [_SKIPPED_ROW] * 2,
+                                         "skippedTotal": 5, "offset": 0, "limit": 2})
+    out = await _tool(build_tools(_api(handler)), "list_queue_items").handler({"limit": 2})
+    assert json.loads(out["content"][0]["text"])["data"]["nextOffset"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [{"reason": "nope"}, {"product": "Bad Slug"},
+                                  {"reason": "held,nope"}])
+async def test_list_queue_items_rejects_bad_args_locally(args):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+    out = await _tool(build_tools(_api(handler)), "list_queue_items").handler(args)
+    assert out["is_error"] is True and calls == []
+
+
+def test_queue_tools_point_at_each_other():
+    tools = build_tools(_api(lambda r: httpx.Response(200, json={})))
+    assert "list_queue_items" in _tool(tools, "get_priority_queue").description
+    assert "get_priority_queue" in _tool(tools, "list_queue_items").description
+    assert "release_hold" in _tool(tools, "list_queue_items").description
+
+
+@pytest.mark.asyncio
+async def test_release_hold_posts_refs_and_reason():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["method"], seen["path"] = req.method, req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"results": [
+            {"ref": "o/r#1", "released": ["owner_action"], "refused": None},
+            {"ref": "o/r#2", "released": [], "refused": "someone placed this hold"}],
+            "releasedCount": 1, "refusedCount": 1})
+
+    out = await _tool(build_tools(_api(handler)), "release_hold").handler(
+        {"refs": ["o/r#1", " o/r#2"], "titles": ["One", "Two"], "reason": "stale bounce"})
+    assert seen == {"method": "POST", "path": "/api/pm/holds/release",
+                    "body": {"refs": ["o/r#1", "o/r#2"], "reason": "stale bounce"}}
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["refusedCount"] == 1 and data["results"][1]["refused"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args,msg", [
+    ({"refs": ["o/r#1"], "titles": ["One"]}, "reason"),
+    ({"refs": ["o/r#1"], "titles": ["One"], "reason": "  "}, "reason"),
+    ({"refs": ["o/r#1", "o/r#2"], "titles": ["One"], "reason": "x"}, "list_queue_items"),
+    ({"refs": [f"o/r#{i}" for i in range(21)], "titles": ["t"] * 21, "reason": "x"}, "at most 20"),
+])
+async def test_release_hold_refuses_bad_args_locally(args, msg):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+    out = await _tool(build_tools(_api(handler)), "release_hold").handler(args)
+    assert out["is_error"] is True and calls == []
+    assert msg in out["content"][0]["text"]
+
+
+def test_release_hold_card_lists_every_ref_and_title():
+    assert batch_items(MCP_PREFIX + "release_hold",
+                       {"refs": ["o/r#1", "o/r#2"], "titles": ["One", "Two"]}) == [
+        "o/r#1 — One", "o/r#2 — Two"]
+    assert TOOL_SPECS["release_hold"].tool_class is ToolClass.MUTATION
+    assert TOOL_SPECS["list_queue_items"].tool_class is ToolClass.READ
+
+
+def test_release_hold_and_dispatch_backlog_describe_the_same_owner_rule():
+    tools = build_tools(_api(lambda r: httpx.Response(200, json={})))
+    for name in ("release_hold", "dispatch_backlog"):
+        desc = _tool(tools, name).description
+        assert "another person" in desc, name
 
 
 @pytest.mark.asyncio

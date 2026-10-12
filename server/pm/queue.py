@@ -44,8 +44,11 @@ SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 # parked by label, a decision "Leave parked, no PR now" accepted — which releases
 # the decision hold — and the runner claimed it the next day). Skipped as its own
 # reason, ``parked``, and no policy can opt back in. Not ``held``: the status card's
-# held count is read beside the holds list, which lists real holds only.
-PARKED_LABELS = frozenset({"parked"})
+# held count is read beside the holds list, which lists real holds only. ``PARKED`` is
+# the label as the operator writes it, the skip reason's name, and the kind the release
+# rule (``holds.release_refusal``) and ``POST /api/pm/holds/release`` call it.
+PARKED = "parked"
+PARKED_LABELS = frozenset({PARKED})
 
 # Self-closing trackers (#2683): issues a CI workflow files AND closes by itself —
 # a per-test ``[flaky]`` tracker closes after N green scheduled runs, a
@@ -409,6 +412,42 @@ def skip_reason(
     if needs_unavailable_environment(row.labels):
         return "environment"
     return None
+
+
+def skip_detail(row: QueueRow, why: str) -> dict | None:
+    """The facts behind *why* (a ``skip_reason`` verdict) for one skipped row, in the
+    reason's own terms — what a person needs to act on it rather than only count it.
+    ``None`` for a reason whose row fields already say it all (``status``, ``bot``…).
+
+    ``parked``'s ``since`` is always ``None``: the mirror keeps an issue's labels but
+    not when each was applied (``POST /api/pm/holds/release`` reads the label's
+    ``labeled`` event from GitHub when it needs the placer)."""
+    if why == "blocked":
+        return {"blockers": list(row.open_blockers), "boardBlocked": row.status == STATUS_BLOCKED}
+    if why == "held":
+        return {"holdKind": row.hold_kind, "holdReason": row.hold_reason, "holdBy": row.hold_by,
+                "holdSince": row.hold_set_at.isoformat() if row.hold_set_at else None}
+    if why == "parked":
+        label = next((str(lbl) for lbl in row.labels
+                      if str(lbl).strip().lower() in PARKED_LABELS), PARKED)
+        return {"label": label, "since": None}
+    if why == "assigned":
+        return {"assignees": list(row.assignees)}
+    if why == "epic_open":
+        return {"openChildren": row.open_children}
+    if why == "needs_spec":
+        return {"bounces": row.bounces}
+    if why == "not_needed":
+        return {"until": row.not_needed_until.isoformat() if row.not_needed_until else None}
+    return None
+
+
+def age_days(row: QueueRow, now: datetime) -> int | None:
+    """Whole days since the issue was opened on GitHub; ``None`` when unknown."""
+    created = row.gh_created_at
+    if created is None:
+        return None
+    return max(0, (now - created).days)
 
 
 def rank_key(row: "QueueRow | QueueEntry") -> tuple:

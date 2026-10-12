@@ -74,3 +74,38 @@ def test_issue_states_truncates_to_100():
     query = calls[0][3]
     assert "i100: issue(number: 100)" in query
     assert "i101:" not in query
+
+
+def test_remove_label_deletes_the_named_label():
+    from server.github.ci_issues import remove_label
+    calls: list[list[str]] = []
+    assert remove_label("o/r", 7, "Parked", run=_runner(calls)) is True
+    assert calls == [["api", "-X", "DELETE", "repos/o/r/issues/7/labels/Parked"]]
+    assert remove_label("o/r", 7, "parked", run=_runner([], rc=1)) is False
+    # A name that would retarget the path is encoded or refused before gh runs.
+    calls.clear()
+    assert remove_label("o/r", 7, "../../x", run=_runner(calls)) is True
+    assert calls == [["api", "-X", "DELETE", "repos/o/r/issues/7/labels/..%2F..%2Fx"]]
+    calls.clear()
+    assert remove_label("o/r", 7, "..", run=_runner(calls)) is False
+    assert remove_label("../x", 7, "parked", run=_runner(calls)) is False
+    assert calls == []
+
+
+def test_label_placer_is_the_actor_of_the_latest_labeled_event():
+    from server.github.ci_issues import label_placer
+    calls: list[list[str]] = []
+    out = "steiner385\nsomeone-else\n"
+    assert label_placer("o/r", 7, "parked", run=_runner(calls, stdout=out)) == "someone-else"
+    assert calls[0][:3] == ["api", "--paginate", "repos/o/r/issues/7/events"]
+    assert label_placer("o/r", 7, "parked", run=_runner([], stdout="")) is None
+    assert label_placer("o/r", 7, "parked", run=_runner([], rc=1)) is None
+
+
+def test_viewer_login_reads_the_ambient_gh_account():
+    from server.github.ci_issues import viewer_login
+    calls: list[list[str]] = []
+    assert viewer_login(run=_runner(calls, stdout="steiner385\n")) == "steiner385"
+    assert calls == [["api", "user", "--jq", ".login"]]
+    assert viewer_login(run=_runner([], rc=1)) is None
+    assert viewer_login(run=_runner([], stdout="\n")) is None

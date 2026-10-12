@@ -306,12 +306,13 @@ async def test_pending_claim_trust_refusal_is_reported_on_the_feed(dispatch_orch
     assert "o/r#8" in args[1]
 
 
-async def _seed_held_issue(hold_kind: str = "owner_action", *, number: int = 7, repo: str = "o/r"):
+async def _seed_held_issue(hold_kind: str = "owner_action", *, number: int = 7, repo: str = "o/r",
+                           hold_by: str = "migration"):
     from server.db import db_session
     from server.db.models import WorkItem
     async with db_session() as db:
         db.add(WorkItem(repo=repo, number=number, kind="issue", state="open",
-                        title=f"Fix {number}", author="tony", hold_kind=hold_kind, hold_by="migration",
+                        title=f"Fix {number}", author="tony", hold_kind=hold_kind, hold_by=hold_by,
                         hold_reason="test"))
         await db.commit()
 
@@ -444,6 +445,47 @@ def test_manual_dispatch_refused_for_an_agent_class_caller():
         hold_kind, rows = c.portal.call(_check)
         assert hold_kind == "owner_action"
         assert rows == []
+
+
+@pytest.mark.parametrize("hold_by,status", [
+    ("runner", 200),                  # the runner's own bounce: the operator's card releases it
+    ("testuser@example.com", 200),    # the operator's own hold
+    ("someone@example.com", 422),     # another person's: only they can release it
+])
+def test_assistant_dispatch_follows_the_owner_rule(hold_by, status):
+    """dispatch_backlog through the drawer releases an owner_action hold by the same
+    rule as release_hold (``holds.release_refusal``): system/agent-placed and the
+    operator's own holds go on the confirmed card; another person's is refused."""
+    from fastapi.testclient import TestClient
+    from server.assistant.token import mint_token
+    rec = SimpleNamespace(id="sess-1", name="backlog o/r#7", branch="b", model=None)
+
+    def patch_orch(orch):
+        orch._backlog_read_config = AsyncMock(return_value=("auto", {
+            "enabled_repos": ["o/r"],
+            "max_concurrent": 1, "max_spawns_per_day": 10,
+            "max_issues_per_pr": 3, "default_model": None,
+        }))
+        orch._backlog_announce = AsyncMock(return_value=None)
+        orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
+        orch._backlog_spawn = AsyncMock(return_value=rec)
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+
+    with _api_client(patch_orch) as c:
+        _seed(c)
+        c.portal.call(lambda: _seed_held_issue(hold_by=hold_by))
+        loopback = TestClient(c.app, client=("127.0.0.1", 5000))
+        loopback.portal = c.portal
+        tok = mint_token("testuser@example.com", "asst-sess-1")
+        r = loopback.post("/api/automations/backlog-runner/dispatch",
+                          json={"refs": ["o/r#7"]}, headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == status, r.text
+        if status == 422:
+            assert r.json()["detail"]["error"] == "hold_not_permitted"
+            assert "someone@example.com" in r.json()["detail"]["message"]
+            c.app.state.orchestrator._backlog_spawn.assert_not_awaited()
+        else:
+            c.app.state.orchestrator._backlog_spawn.assert_awaited_once()
 
 
 def test_manual_dispatch_leaves_an_evidence_hold_untouched():
