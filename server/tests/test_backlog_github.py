@@ -855,7 +855,7 @@ def test_announce_helpers_survive_a_raising_seam():
     batch = Batch(primary="o/r#7", issues=["o/r#7", "o/r#9"], repo="o/r")
     calls: list[list[str]] = []
     announce_claim(batch, "Claimed by X", gh_run=raising_gh)
-    assert [c[2] for c in calls] == ["7", "9"]
+    assert [c[2] for c in calls if c[:2] == ["issue", "comment"]] == ["7", "9"]
 
     calls = []
     announce_needs_human(batch, "max attempts", gh_run=raising_gh)
@@ -874,3 +874,55 @@ def test_announce_needs_human_comments_with_reason():
     assert "Board Status is Held" in text and "Needs human" not in text
     assert "Ready or Backlog" in text and "Retry" in text
     assert not any("label" in a for c in gh.calls for a in c)
+
+
+# --------------------------------------------------------------------------- #
+# retract_claims (#3000)                                                       #
+# --------------------------------------------------------------------------- #
+
+def test_retract_claims_edits_each_standing_claim_comment():
+    from server.automations.backlog_github import (
+        CLAIM_COMMENT_PREFIX, RELEASED_CLAIM_BODY, retract_claims)
+    gh = FakeGh({("api", "repos/o/r/issues/7/comments?per_page=100"): _proc("11\n12\n")})
+    with _app_tokens():
+        retract_claims(["o/r#7", "o/r#9"], gh_run=gh)
+    reads = [c for c in gh.calls if c[1].endswith("/comments?per_page=100")]
+    assert [c[1] for c in reads] == ["repos/o/r/issues/7/comments?per_page=100",
+                                     "repos/o/r/issues/9/comments?per_page=100"]
+    jq = reads[0][reads[0].index("--jq") + 1]
+    assert CLAIM_COMMENT_PREFIX in jq and "viberpit:automation" in jq
+    edits = [c for c in gh.calls if "PATCH" in c]
+    assert [c[3] for c in edits] == ["repos/o/r/issues/comments/11",
+                                     "repos/o/r/issues/comments/12"]
+    body = edits[0][edits[0].index("-f") + 1]
+    assert body.startswith(f"body={RELEASED_CLAIM_BODY}") and "viberpit:automation" in body
+    # The edited body no longer matches the claim filter, so a retry is a no-op.
+    assert not RELEASED_CLAIM_BODY.startswith(CLAIM_COMMENT_PREFIX)
+    assert all(tok == "tok-o" for tok in gh.tokens)
+
+
+def test_retract_claims_never_raises_and_skips_a_failed_read():
+    from server.automations.backlog_github import retract_claims
+
+    def gh(args, token=None):
+        calls.append(list(args))
+        if args[1].startswith("repos/o/r/issues/7/"):
+            raise RuntimeError("token mint failed")
+        if args[1].startswith("repos/o/r/issues/8/"):
+            return _proc(returncode=1, stderr="404")
+        return _proc("5\n")
+
+    calls: list[list[str]] = []
+    retract_claims(["o/r#7", "o/r#8", "o/r#9"], gh_run=gh)
+    assert [c[3] for c in calls if "PATCH" in c] == ["repos/o/r/issues/comments/5"]
+
+
+def test_announce_claim_retracts_a_standing_claim_before_posting():
+    """An issue never shows two live claims (#3000): an earlier claim released by a
+    path that did not retract it is taken down when the next one is posted."""
+    gh = FakeGh({("api", "repos/o/r/issues/7/comments?per_page=100"): _proc("11\n")})
+    announce_claim(Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r"),
+                   "Claimed by X", gh_run=gh)
+    kinds = ["patch" if "PATCH" in c else c[0] + " " + c[1].split("?")[0][-8:]
+             for c in gh.calls]
+    assert kinds == ["api comments", "patch", "issue comment"]
