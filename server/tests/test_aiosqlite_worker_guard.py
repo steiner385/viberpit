@@ -206,9 +206,19 @@ def test_install_registers_the_pre_join_shutdown_hook():
     """``atexit`` runs AFTER ``threading._shutdown()`` joins non-daemon threads,
     i.e. after the hang. ``threading._register_atexit`` runs before it."""
     install_loop_safe_worker()
-    # threading._register_atexit wraps the callback in a functools.partial.
-    registered = [getattr(h, "func", h) for h in threading._threading_atexits]
+    registered = [_registered_callback(h) for h in threading._threading_atexits]
     assert registered.count(stop_orphaned_workers) == 1, registered
+
+
+def _registered_callback(hook):
+    """The function ``threading._register_atexit`` was given. Python 3.12 wraps it
+    in a ``functools.partial`` (``.func``); 3.14 in a ``lambda: func(*arg, **kwargs)``,
+    where it is the one callable closure cell (#3033)."""
+    func = getattr(hook, "func", None)
+    if func is not None:
+        return func
+    cells = getattr(hook, "__closure__", None) or ()
+    return next((c.cell_contents for c in cells if callable(c.cell_contents)), hook)
 
 
 @pytest.mark.slow

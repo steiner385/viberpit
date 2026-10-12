@@ -90,7 +90,9 @@ def test_open_browser_no_x11():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    with patch.dict(os.environ, _ENV_PATCH):
+    # Pin "no X11" rather than inherit it: a host that runs virtual displays
+    # (rocky exports VIBERPIT_ENABLE_XVFB=true) would otherwise build a manager (#3033).
+    with patch.dict(os.environ, {**_ENV_PATCH, "VIBERPIT_ENABLE_XVFB": "false"}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
         # Neither the orchestrator nor app.state has an X11 manager.

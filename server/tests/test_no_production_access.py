@@ -11,12 +11,11 @@ These tests assert that redirection is in force: if someone deletes it (or a
 future ``conftest`` reorders imports so collection resolves paths first), the
 production default reappears and these fail loudly.
 """
-from pathlib import Path
-
 from viberpit import paths
 from server.config import get_settings
-
-_REAL_HOME = (Path.home() / ".claude-accounts").resolve()
+# The operator's REAL store, not ``Path.home()``: the suite's HOME is a temp dir
+# (#3033), so a home-derived path would make every assertion here vacuous.
+from server.tests.conftest import _REAL_HOME
 
 
 def test_viberpit_home_is_not_production():

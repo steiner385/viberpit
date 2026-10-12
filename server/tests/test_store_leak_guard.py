@@ -8,7 +8,6 @@ loud failure, while leaving legitimate temp-dir writes untouched.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -24,7 +23,10 @@ def test_guard_blocks_write_to_real_store():
     conftest now redirects VIBERPIT_HOME to a temp dir by default, so this test
     points it back at the real store explicitly to exercise the backstop guard.
     The guard raises BEFORE any bytes touch disk, so no real write occurs."""
-    real_home = str(Path.home() / ".claude-accounts")
+    # The guard's own notion of the real store: the suite's HOME is a temp dir
+    # (#3033), so ``Path.home()`` no longer names it.
+    from server.tests.conftest import _REAL_STORE
+    real_home = str(_REAL_STORE)
     with patch.dict(os.environ, {"VIBERPIT_HOME": real_home}):
         target = paths.slot_path("phantom-guard-test")
         with pytest.raises(RuntimeError, match="REAL account store"):

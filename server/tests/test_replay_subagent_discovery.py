@@ -75,13 +75,19 @@ def _scandir_visiting_first(monkeypatch, first: str):
     monkeypatch.setattr(replay.os, "scandir", ordered)
 
 
-def _counting_scandir(monkeypatch) -> dict:
-    """Patch `os.scandir` with a call counter. Returns the counter dict."""
+def _counting_scandir(monkeypatch, root: Path | None = None) -> dict:
+    """Patch `os.scandir` with a call counter. Returns the counter dict.
+
+    With *root*, only scans OF that directory count. The patch is on the global
+    `os` module, and from Python 3.14 `Path.iterdir()` is itself built on
+    `os.scandir`, so an unfiltered count also sees the fast path's own listing of
+    the preferred dir (#3033)."""
     calls = {"n": 0}
     real_scandir = os.scandir
 
-    def counting(path):
-        calls["n"] += 1
+    def counting(path="."):
+        if root is None or Path(path) == root:
+            calls["n"] += 1
         return real_scandir(path)
 
     monkeypatch.setattr(replay.os, "scandir", counting)
@@ -169,7 +175,7 @@ def test_fast_path_hit_skips_the_cross_cwd_sweep(tmp_path, monkeypatch):
     """
     replay._subagent_cache_clear()
     projects = _layout(tmp_path, "s7", cwd_dirs=["-cwd-main", "-cwd-other"], sub_in="-cwd-main")
-    calls = _counting_scandir(monkeypatch)
+    calls = _counting_scandir(monkeypatch, root=projects)  # the sweep scans the root
 
     metas, complete = _find_subagent_meta_files(projects, "s7", preferred=projects / "-cwd-main")
 

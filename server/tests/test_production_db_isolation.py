@@ -137,3 +137,52 @@ def test_guard_fences_unsafe_new_prefix_with_safe_legacy_root(tmp_path, monkeypa
     _redirect_state_off_production()
     assert os.environ["CCSWITCH_REPO_ROOT"] == str(tmp_path)
     assert os.environ["VIBERPIT_REPO_ROOT"] == str(tmp_path)
+
+
+def test_guard_unsets_an_inherited_claude_config_dir(monkeypatch):
+    """#3033: a suite run from inside a ViberPit session inherits that session's
+    live account config dir. ``compose_nudge`` (and every helper reading
+    ``CLAUDE_CONFIG_DIR``) then spawned a REAL Claude call on that account — ~100 s
+    per test on the operator's quota — where CI, with the variable unset, declines
+    deterministically. The guard pops it so no test can find a real account."""
+    from server.tests.conftest import _no_ambient_claude_account
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(_REAL_HOME / "cfg" / "someone"))
+    _no_ambient_claude_account()
+    assert "CLAUDE_CONFIG_DIR" not in os.environ
+
+
+def test_the_suite_runs_without_an_ambient_claude_config_dir():
+    """The import-time pop already ran: no test starts with a real account dir."""
+    assert "CLAUDE_CONFIG_DIR" not in os.environ
+
+
+def test_the_suite_runs_on_a_throwaway_home_not_the_operators():
+    """#3033: ``shared_base()`` falls back to ``~/.claude`` and globbed the operator's
+    live ``projects`` tree (seconds per lookup on rocky). The suite's HOME is a temp
+    dir, while the operator's real home is still known for the guards."""
+    from server.tests.conftest import _OPERATOR_HOME, _OPERATOR_HOME_ENV
+    from viberpit.paths import shared_base
+
+    assert Path.home() != _OPERATOR_HOME
+    assert Path(tempfile.gettempdir()) in Path.home().parents
+    assert os.environ[_OPERATOR_HOME_ENV] == str(_OPERATOR_HOME)
+    assert _OPERATOR_HOME not in shared_base().parents
+
+
+def test_production_guards_still_name_the_operators_real_store():
+    """The guards must keep pointing at the REAL store after HOME moves — in xdist
+    workers too, which re-import conftest with the redirected HOME inherited."""
+    from server.tests.conftest import _OPERATOR_HOME, _REAL_STORE
+
+    assert _REAL_HOME == (_OPERATOR_HOME / ".claude-accounts").resolve()
+    assert _REAL_STORE == _REAL_HOME
+
+
+def test_the_test_slot_dir_stays_host_wide():
+    """Moving HOME must not give each run a private slot dir, or the host resource
+    guard would stop queueing concurrent runs."""
+    from server.tests.conftest import _OPERATOR_HOME
+
+    assert os.environ["VIBERPIT_TEST_SLOT_DIR"] == str(
+        _OPERATOR_HOME / ".cache" / "viberpit" / "test-slots")
