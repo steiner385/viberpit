@@ -479,3 +479,93 @@ def test_release_by_signals_ignores_mirror_lag_from_an_edit_made_before_the_hold
     released = release_by_signals(db, human_edits=[], now=NOW)
     assert [(w.number, s) for w, s in released] == [(2, "body_edit")]
     assert lagged.hold_kind == "owner_action"
+
+
+# --- The owner rule (assistant triage tools, gap log 2026-10-11) ------------------------
+# ONE function decides whether an actor may release a hold — or the ``parked`` label — that
+# someone else placed. ``release_via_api`` (Retry, Implement now / dispatch_backlog, the
+# bulk release endpoint) all route through it, so "same rule as dispatch_backlog" is true.
+
+OP = "tony@example.com"
+ASSIST = f"assistant:{OP}"
+
+
+@pytest.mark.parametrize("kind,placed_by,actor,operator,refused", [
+    # A person (any person) keeps today's behaviour: they may release any non-decision hold.
+    ("owner_action", "someone@example.com", OP, OP, None),
+    ("evidence", "runner", OP, OP, None),
+    # The assistant, on its operator's confirmed card: system- and agent-placed holds go…
+    ("owner_action", "runner", ASSIST, OP, None),
+    ("owner_action", "automation:error-triage", ASSIST, OP, None),
+    ("owner_action", "session:abc", ASSIST, OP, None),
+    ("evidence", "automation:error-triage", ASSIST, OP, None),
+    ("stronger_model", "runner", ASSIST, OP, None),
+    # …so does a hold the operator placed themselves…
+    ("owner_action", OP, ASSIST, OP, None),
+    # …but another person's hold, or one whose placer is unknown, is refused.
+    ("owner_action", "someone@example.com", ASSIST, OP, "someone@example.com"),
+    ("evidence", "someone@example.com", ASSIST, OP, "someone@example.com"),
+    ("owner_action", None, ASSIST, OP, "not recorded"),
+    # Other agents keep the class gate: only the agent-settable kinds.
+    ("owner_action", "runner", "lan@local", "lan@local", "may not clear"),
+    ("evidence", "someone@example.com", "session:x", "session:x", None),
+    # The parked label: the placer is a GitHub login, the operator their gh login.
+    ("parked", "steiner385", ASSIST, "steiner385", None),
+    ("parked", "renovate[bot]", ASSIST, "steiner385", None),
+    ("parked", "someone-else", ASSIST, "steiner385", "someone-else"),
+    ("parked", None, ASSIST, "steiner385", "not recorded"),
+    ("parked", "steiner385", ASSIST, None, "GitHub login"),
+    ("parked", "someone-else", OP, None, None),
+    ("parked", "steiner385", "lan@local", "lan@local", "may not clear"),
+])
+def test_release_refusal_is_the_owner_rule(kind, placed_by, actor, operator, refused):
+    from server.pm.holds import release_refusal
+    out = release_refusal(kind, placed_by, actor=actor, operator=operator)
+    if refused is None:
+        assert out is None
+    else:
+        assert out is not None and refused in out
+
+
+def test_release_refusal_refuses_a_decision_hold_for_everyone():
+    from server.pm.holds import DECISION_HOLD_MESSAGE, release_refusal
+    for actor in (OP, ASSIST, "runner"):
+        assert release_refusal("decision", OP, actor=actor, operator=OP) == DECISION_HOLD_MESSAGE
+    assert release_refusal(None, None, actor=ASSIST, operator=OP) is None
+
+
+def test_parked_kind_is_the_queues_parked_label_and_skip_reason():
+    from server.pm.holds import PARKED
+    from server.pm.queue import PARKED_LABELS, SKIP_REASONS
+    assert PARKED in PARKED_LABELS and PARKED in SKIP_REASONS
+
+
+def test_release_via_api_applies_the_owner_rule_and_records_the_reason(tmp_path):
+    """The assistant may release a runner's hold on its operator's card (audited with
+    the operator's reason) but not another person's — the same function decides both."""
+    import asyncio
+    from sqlalchemy import select
+    from server.db import db_session, init_db
+    from server.db.models import AuditEvent
+    from server.pm.holds import release_via_api
+
+    async def _run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        async with db_session() as db:
+            runner = WorkItem(id="w1", repo="o/r", number=1, kind="issue", title="t", body="b")
+            _park(runner, "owner_action", actor="runner")
+            person = WorkItem(id="w2", repo="o/r", number=2, kind="issue", title="t", body="b")
+            _park(person, "owner_action", actor="someone@example.com")
+            db.add_all([runner, person])
+            await db.flush()
+            assert await release_via_api(db, runner, actor=ASSIST, identity=OP,
+                                         signal="retry", reason="stale bounce",
+                                         via="assistant") == "owner_action"
+            with pytest.raises(HoldPermissionError, match="someone@example.com"):
+                await release_via_api(db, person, actor=ASSIST, identity=OP, signal="retry")
+            assert person.hold_kind == "owner_action"
+            rows = (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "pm.hold.release"))).scalars().all()
+            assert [(r.detail["workItemId"], r.detail["reason"], r.detail["actorClass"], r.via)
+                    for r in rows] == [("w1", "stale bounce", "agent", "assistant")]
+    asyncio.run(_run())

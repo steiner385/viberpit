@@ -59,7 +59,8 @@ from server.pm.mirror_store import blocker_states, blocker_states_stmt, deps_in_
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
     PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
-from server.pm.queue import MIN_STATUS_OPTIONS, SKIP_REASONS, rank, rank_key
+from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, age_days, rank, rank_key,
+                             skip_detail)
 from server.pm.queue_store import queue_inputs
 from server.pm.refs import split_ref
 from server.pm.repo_project import (
@@ -1012,11 +1013,48 @@ async def _queue_inputs(db, now: datetime) -> tuple[list, dict[str, dict]]:
     return await db.run_sync(lambda s: queue_inputs(s, now=now))
 
 
+#: ``reason=all`` on ``GET /api/pm/queue``: every skipped row, whatever its reason.
+QUEUE_REASON_ALL = "all"
+_SKIPPED_LIMIT_DEFAULT = 50
+_SKIPPED_LIMIT_MAX = 200
+
+
+def _queue_reasons(reason: str | None) -> frozenset[str] | None:
+    """``reason`` → the skip reasons whose rows ``skippedItems`` lists: one reason, a
+    comma-separated list, or ``all``; ``None`` when not asked. 422 on an unknown one."""
+    if reason is None:
+        return None
+    wanted = {r.strip() for r in reason.split(",") if r.strip()}
+    if wanted == {QUEUE_REASON_ALL}:
+        return frozenset(SKIP_REASONS)
+    bad = sorted(wanted - set(SKIP_REASONS))
+    if bad or not wanted:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_reason",
+                    "message": f"reason must be '{QUEUE_REASON_ALL}' or a comma-separated list "
+                               f"of {SKIP_REASONS}, got {reason!r}"})
+    return frozenset(wanted)
+
+
+def _skipped_item_to_dict(row, why: str, now: datetime) -> dict:
+    return {
+        "ref": row.ref, "repo": row.repo, "number": row.number, "product": row.product,
+        "title": row.title, "url": row.url, "reason": why, "status": row.status,
+        "openBlockers": list(row.open_blockers), "holdKind": row.hold_kind,
+        "workItemId": row.work_item_id,
+        "reasonDetail": skip_detail(row, why), "ageDays": age_days(row, now),
+    }
+
+
 @router.get("/queue")
 async def queue(
     min_status: str | None = None,
     respect_dependencies: bool | None = None,
     reason: str | None = None,
+    product: str | None = None,
+    offset: int = 0,
+    limit: int = _SKIPPED_LIMIT_DEFAULT,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -1044,9 +1082,17 @@ async def queue(
     fleet-wide ``Ready`` default reported every Backlog item of a Backlog-policy
     product as a ``status`` skip the runner never made).
 
-    ``reason`` (one of ``SKIP_REASONS``) adds ``skippedItems``: the rows behind that
-    count, so a person or the assistant can work the bucket instead of only seeing
-    its size (#2979).
+    ``reason`` (one of ``SKIP_REASONS``, a comma-separated list of them, or ``all``)
+    adds ``skippedItems``: the rows behind those counts, so a person or the assistant
+    can work the bucket instead of only seeing its size (#2979). Each row carries
+    ``reasonDetail`` (``queue.skip_detail`` — the blockers, the hold and who placed it,
+    the parked label; a parked label's ``since`` is null because the mirror does not
+    keep when a label was applied) and ``ageDays`` (since the issue was opened).
+    ``skippedItems`` is paged by ``offset`` / ``limit`` (default 50, clamped to 200),
+    in queue order; ``skippedTotal`` is the full count.
+
+    ``product`` narrows the whole view — entries, counts, maps and items — to one
+    slug; an unknown slug is an empty view, not an error.
 
     SCOPE: the runner ranks only products whose ``dispatch`` is on; this view is a
     view, not a dispatch decision, and ranks every onboarded product's board.
@@ -1057,18 +1103,17 @@ async def queue(
             detail={"error": "invalid_min_status",
                     "message": f"min_status must be one of {MIN_STATUS_OPTIONS}, "
                                f"got {min_status!r}"})
-    if reason is not None and reason not in SKIP_REASONS:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "invalid_reason",
-                    "message": f"reason must be one of {SKIP_REASONS}, got {reason!r}"})
+    reasons = _queue_reasons(reason)
+    offset = max(0, offset)
+    limit = max(1, min(limit, _SKIPPED_LIMIT_MAX))
 
     now = datetime.now(timezone.utc)
 
     rows, policies = await _queue_inputs(db, now)
     by_product: dict[str, list] = {}
     for r in rows:
-        by_product.setdefault(r.product, []).append(r)
+        if product is None or r.product == product:
+            by_product.setdefault(r.product, []).append(r)
     entries: list = []
     skipped: dict[str, int] = {}
     # Spec 2026-09-30 §4.1: the per-product map is kept beside the fleet sum. It
@@ -1093,7 +1138,7 @@ async def queue(
             extra_skip_labels=skip_labels(policy),
             trusted_authors=trusted_authors(policy),
             skip_trackers=skips_self_closing_trackers(policy),
-            skipped_out=skipped_rows if reason is not None else None)
+            skipped_out=skipped_rows if reasons is not None else None)
         entries.extend(entries_p)
         skipped_by_product[slug] = dict(skipped_p)
         dispatchable_by_product[slug] = len(entries_p)
@@ -1119,14 +1164,14 @@ async def queue(
         "dispatchableByProduct": dispatchable_by_product,
         "generatedAt": now.isoformat(),
     }
-    if reason is not None:
-        out["skippedItems"] = [{
-            "ref": r.ref, "repo": r.repo, "number": r.number, "product": r.product,
-            "title": r.title, "url": r.url, "reason": why, "status": r.status,
-            "openBlockers": list(r.open_blockers), "holdKind": r.hold_kind,
-            "workItemId": r.work_item_id,
-        } for r, why in sorted(skipped_rows, key=lambda rw: rank_key(rw[0]))
-            if why == reason]
+    if reasons is not None:
+        matched = [(r, why) for r, why in sorted(skipped_rows, key=lambda rw: rank_key(rw[0]))
+                   if why in reasons]
+        out["skippedItems"] = [_skipped_item_to_dict(r, why, now)
+                               for r, why in matched[offset:offset + limit]]
+        out["skippedTotal"] = len(matched)
+        out["offset"] = offset
+        out["limit"] = limit
     return out
 
 
@@ -1219,6 +1264,125 @@ async def holds(
             "held": [_held_to_dict(i) for i in ranked[:limit]],
             "truncated": max(0, len(ranked) - limit),
             "generatedAt": now.isoformat()}
+
+
+#: Issues one ``POST /api/pm/holds/release`` may act on — the drawer's confirmed-card
+#: batch size, enforced here too so a direct caller cannot widen it.
+HOLD_RELEASE_MAX = 20
+
+
+class HoldReleaseBody(BaseModel):
+    refs: list[str] = Field(min_length=1, max_length=HOLD_RELEASE_MAX)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/holds/release")
+async def release_holds(
+    body: HoldReleaseBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Release what keeps each issue out of the queue: an ``owner_action``,
+    ``evidence`` or ``stronger_model`` hold (through ``holds.release_via_api``, audited
+    ``pm.hold.release`` with *reason*) and the ``parked`` label (removed on GitHub,
+    audited ``pm.label.remove``). A ``decision`` hold is refused — it ends when its
+    proposal is answered.
+
+    Who may release what is ``holds.release_refusal`` — the same rule
+    ``dispatch_backlog``'s release takes: for the assistant, a hold or label another
+    person placed is refused (the label's placer is its latest ``labeled`` event's
+    actor, compared with the host's gh login; unknown either side refuses). A ref is
+    released whole or not at all: both halves are judged before anything changes, and a
+    failed label removal leaves its hold in place.
+
+    Answers one result per ref, in order — ``{ref, released: [kinds], refused}`` —
+    so a partial success is reported, never hidden. Phases keep GitHub calls out of the
+    write transaction: judge (reads only), remove labels, then write the mirror."""
+    import asyncio
+
+    from server.github import ci_issues
+    from server.pm.holds import (DECISION_HOLD_MESSAGE, PARKED, actor_class, actor_for_request,
+                                 release_refusal, release_via_api, work_item_for_ref)
+    from server.pm.queue import PARKED_LABELS
+
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_reason", "message": "reason must be non-empty"})
+    actor = actor_for_request(request)
+    via = getattr(request.state, "via", None) or "api"
+    results: list[dict] = []
+    # (result, work item, hold kind to release, label to remove, its placer)
+    plans: list[tuple[dict, WorkItem, str | None, str | None, str | None]] = []
+    gh_login: str | None = None
+    gh_login_read = False
+
+    for ref in body.refs:
+        result: dict = {"ref": ref, "released": [], "refused": None}
+        results.append(result)
+        try:
+            wi = await work_item_for_ref(db, ref.strip())
+        except ValueError as e:
+            result["refused"] = str(e)
+            continue
+        hold = wi.hold_kind
+        label = next((str(lbl) for lbl in (wi.labels or [])
+                      if str(lbl).strip().lower() in PARKED_LABELS), None)
+        if hold is None and label is None:
+            result["refused"] = "nothing to release — the issue is not held or parked"
+            continue
+        if hold == "decision":
+            result["refused"] = (f"{DECISION_HOLD_MESSAGE}: pick one of its options "
+                                 "(resolve_decision, or the Decisions inbox)")
+            continue
+        refused = release_refusal(hold, wi.hold_by, actor=actor, operator=identity)
+        placer = None
+        if refused is None and label is not None:
+            placer = await asyncio.to_thread(ci_issues.label_placer, wi.repo or "",
+                                             int(wi.number or 0), PARKED)
+            if not gh_login_read:
+                gh_login, gh_login_read = await asyncio.to_thread(ci_issues.viewer_login), True
+            refused = release_refusal(PARKED, placer, actor=actor, operator=gh_login)
+        if refused is not None:
+            result["refused"] = refused
+            continue
+        plans.append((result, wi, hold, label, placer))
+
+    removed: set[int] = set()
+    for i, (result, wi, _hold, label, _placer) in enumerate(plans):
+        if label is None:
+            continue
+        if await asyncio.to_thread(ci_issues.remove_label, wi.repo or "", int(wi.number or 0),
+                                   label):
+            removed.add(i)
+        else:
+            result["refused"] = ("GitHub refused removing the parked label, so nothing was "
+                                 "released; check the issue and retry")
+
+    for i, (result, wi, hold, label, placer) in enumerate(plans):
+        if label is not None and i not in removed:
+            continue
+        if label is not None:
+            wi.labels = [lbl for lbl in (wi.labels or []) if str(lbl) != label]
+            result["released"].append(PARKED)
+            await record_audit(db=db, type="pm.label.remove", identity=identity, via=via,
+                               detail={"workItemId": wi.id, "ref": result["ref"],
+                                       "label": label, "placedBy": placer,
+                                       "actorClass": actor_class(actor), "reason": reason})
+        if hold is not None:
+            try:
+                released = await release_via_api(db, wi, actor=actor, identity=identity,
+                                                 signal="retry", via=via, reason=reason)
+            except ValueError as e:  # judged above; a concurrent change is the only way here
+                result["refused"] = str(e)
+                continue
+            if released:
+                result["released"].insert(0, released)
+
+    released_n = sum(1 for r in results if r["released"])
+    return {"results": results, "releasedCount": released_n,
+            "refusedCount": sum(1 for r in results if r["refused"])}
 
 
 @router.delete("/projects/{slug}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)

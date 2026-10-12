@@ -168,6 +168,9 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/pm/queue"),
         # Spec 2026-09-30 §4.2: the escalation read model, read-only.
         ("GET", r"/api/pm/holds"),
+        # release_hold (MUTATION): the bulk release; the owner rule lives in the route
+        # (`holds.release_refusal`), so this row grants no more than dispatch_backlog's.
+        ("POST", r"/api/pm/holds/release"),
         ("GET", r"/api/pm/triage"),
         ("GET", r"/api/pm/map"),
         ("GET", r"/api/pm/leaves"),

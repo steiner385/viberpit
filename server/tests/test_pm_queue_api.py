@@ -444,3 +444,109 @@ def test_queue_endpoint_invalid_reason_422():
         resp = c.get("/api/pm/queue?reason=nope", headers=IDENTITY_HEADERS)
         assert resp.status_code == 422
         assert resp.json()["detail"]["error"] == "invalid_reason"
+
+
+def _add_item(c, number: int, *, labels: tuple[str, ...] = (), created=None,
+              hold: tuple[str, str] | None = None) -> None:
+    """A Ready board item on the seeded product: optionally labelled, aged, or held
+    (``hold`` = (kind, by))."""
+    from datetime import datetime
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import GhProject, GhProjectItem, Project, WorkItem
+
+    async def _seed_async() -> None:
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+            ghp = (await db.execute(select(GhProject).where(
+                GhProject.project_id == proj.id))).scalar_one()
+            wi = WorkItem(repo="steiner385/viberpit", number=number, kind="issue",
+                          title=f"item {number}", state="open", body="b",
+                          url=f"https://example.com/{number}", author="tony",
+                          labels=list(labels), gh_created_at=created)
+            if hold is not None:
+                wi.hold_kind, wi.hold_by = hold
+                wi.hold_reason = "needs the owner"
+                wi.hold_set_at = datetime(2026, 10, 1, 9, 0)
+            db.add(wi)
+            await db.flush()
+            db.add(GhProjectItem(gh_project_id=ghp.id, work_item_id=wi.id, status="Ready"))
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_seed_async)
+
+
+def test_queue_skipped_items_carry_a_reason_detail_and_age():
+    """Each skipped row says WHY in its own terms: the open blockers, the hold and who
+    placed it, the parked label (its applied time is not mirrored, so ``since`` is
+    null), and how old the issue is."""
+    from datetime import datetime, timedelta, timezone
+
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        created = (datetime.now(timezone.utc) - timedelta(days=10, hours=1)).replace(tzinfo=None)
+        _add_item(c, 110, hold=("owner_action", "runner"), created=created)
+        _add_item(c, 111, labels=("Parked",))
+
+        body = c.get("/api/pm/queue?reason=all", headers=IDENTITY_HEADERS).json()
+        by_ref = {i["ref"]: i for i in body["skippedItems"]}
+        assert body["skippedTotal"] == 3 == len(by_ref)
+
+        blocked = by_ref["steiner385/viberpit#101"]
+        assert blocked["reason"] == "blocked"
+        assert blocked["reasonDetail"] == {"blockers": ["steiner385/viberpit#102"],
+                                           "boardBlocked": False}
+        held = by_ref["steiner385/viberpit#110"]
+        assert held["reason"] == "held"
+        assert held["reasonDetail"] == {"holdKind": "owner_action", "holdReason": "needs the owner",
+                                        "holdBy": "runner", "holdSince": "2026-10-01T09:00:00+00:00"}
+        assert held["ageDays"] == 10
+        parked = by_ref["steiner385/viberpit#111"]
+        assert parked["reason"] == "parked"
+        assert parked["reasonDetail"] == {"label": "Parked", "since": None}
+        assert parked["ageDays"] is None
+
+
+def test_queue_skipped_items_paginate_and_accept_a_reason_list():
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        for n in range(110, 115):
+            _add_item(c, n, labels=("parked",))
+        _add_item(c, 120, hold=("owner_action", "runner"))
+
+        page = c.get("/api/pm/queue?reason=parked&offset=1&limit=2",
+                     headers=IDENTITY_HEADERS).json()
+        assert page["skippedTotal"] == 5
+        assert [i["ref"] for i in page["skippedItems"]] == [
+            "steiner385/viberpit#111", "steiner385/viberpit#112"]
+        assert page["offset"] == 1 and page["limit"] == 2
+
+        both = c.get("/api/pm/queue?reason=held,blocked", headers=IDENTITY_HEADERS).json()
+        assert sorted(i["reason"] for i in both["skippedItems"]) == ["blocked", "held"]
+        assert both["skippedTotal"] == 2
+
+        # limit is clamped to the documented max, not rejected.
+        assert c.get("/api/pm/queue?reason=all&limit=5000",
+                     headers=IDENTITY_HEADERS).json()["limit"] == 200
+
+        bad = c.get("/api/pm/queue?reason=held,nope", headers=IDENTITY_HEADERS)
+        assert bad.status_code == 422 and bad.json()["detail"]["error"] == "invalid_reason"
+
+
+def test_queue_product_narrows_every_part_of_the_view():
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        _seed_second_product_with_a_held_item(c)
+
+        body = c.get("/api/pm/queue?product=kindash&reason=all", headers=IDENTITY_HEADERS).json()
+        assert body["entries"] == []
+        assert body["skipped"] == {"held": 1}
+        assert body["skippedByProduct"] == {"kindash": {"held": 1}}
+        assert body["dispatchableByProduct"] == {"kindash": 0}
+        assert [i["ref"] for i in body["skippedItems"]] == ["steiner385/KinDash#7"]
+
+        # An unknown product is an empty view, not an error.
+        none = c.get("/api/pm/queue?product=nope", headers=IDENTITY_HEADERS).json()
+        assert none["entries"] == [] and none["skipped"] == {} and none["skippedByProduct"] == {}

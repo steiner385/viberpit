@@ -178,6 +178,10 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("POST", "/api/pm/triage/dismiss-bulk", False),
     ("PATCH", "/api/pm/work-items/w1/overlay", False),
     ("POST", "/api/pm/work-items/w1/hold/release", False),
+    # release_hold's bulk route — the owner rule is enforced inside it.
+    ("POST", "/api/pm/holds/release", True),
+    ("POST", "/api/pm/holds/release/extra", False),
+    ("DELETE", "/api/pm/holds/release", False),
     # Blocked-row dispositions (finish-line row 8, #1472) are a human's calls:
     # stage step-back, clearing a block, and deleting a GitHub dependency.
     ("POST", "/api/sdlc/initiatives/dark-mode/step-back", False),

@@ -37,6 +37,8 @@ def client(fixture=None):
 # 255b8959cfae685b78e851187caaab3d34b3ff458f015f861ea6bc941564d3ee
 # Before the stale-dependency and close_initiative cases (gap log 2026-10-11, 140 cases):
 # 3969d1e904b532b62a4259106b25720c79fa7f82fe4b29a612125a21af74cc6c
+# Before list_queue_items/release_hold (gap log 2026-10-11, 144 cases):
+# 6382923db275b5f9cb078240c2708117a3169eef8b2e4ae836e02e112e0b81d3
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -44,8 +46,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "6382923db275b5f9cb078240c2708117a3169eef8b2e4ae836e02e112e0b81d3"
-    assert len(rows) == 144
+    assert digest == "925ff4e59baaf73f30970825759fd97f2594eb1154ecd2b876438fa8f4919427"
+    assert len(rows) == 149
     assert sum(bool(r.get("operator")) for r in rows) == 5
 
 
@@ -675,6 +677,53 @@ def test_holds_and_decisions_fixtures_match_the_real_wire():
         row = by_id[d["id"]]
         assert row["options"] == d["options"] and row["recommendedKey"] == d["recommendedKey"]
         assert d["recommendedKey"] in {o["key"] for o in d["options"]}
+
+
+def test_queue_fixture_matches_the_real_wire_and_pages():
+    """``GET /api/pm/queue`` in the fixture: skipped rows carry exactly the keys
+    ``server.api.pm._skipped_item_to_dict`` emits, the counts are summed from those rows,
+    and ``product`` / ``reason`` / ``offset`` / ``limit`` behave as the route does."""
+    from server.api.pm import _skipped_item_to_dict
+    from server.pm.queue import QueueRow
+
+    real = _skipped_item_to_dict(QueueRow(
+        ref="o/r#1", repo="o/r", number=1, product="p", title="t", body="", url="u",
+        status=None, score=None, gh_created_at=None, gh_updated_at=None, assignees=(),
+        author="", labels=(), open_children=0, open_blockers=(), live_session=False,
+        claimed=False), "status", datetime(2026, 10, 1, tzinfo=timezone.utc))
+    with client() as c:
+        body = c.get("/api/pm/queue", params={"reason": "all", "limit": "200"}).json()
+        assert all(set(r) == set(real) for r in body["skippedItems"])
+        assert body["skippedTotal"] == sum(body["skipped"].values()) == len(body["skippedItems"])
+        held = {r["ref"]: r for r in body["skippedItems"] if r["reason"] == "held"}
+        assert set(held) == {h["ref"] for h in ev._holds(ev.EvalFixture().now)["held"]}
+
+        kd = c.get("/api/pm/queue", params={"product": "kindash", "reason": "parked"}).json()
+        assert [r["ref"] for r in kd["skippedItems"]] == ["steiner385/kindash#250"]
+        assert set(kd["skippedByProduct"]) == {"kindash"}
+
+        page = c.get("/api/pm/queue", params={"reason": "status", "offset": "10",
+                                               "limit": "5"}).json()
+        assert page["skippedTotal"] == 11 and len(page["skippedItems"]) == 1
+        assert c.get("/api/pm/queue", params={"reason": "nope"}).status_code == 422
+        assert "skippedItems" not in c.get("/api/pm/queue").json()
+
+
+def test_release_fixture_applies_the_real_owner_rule():
+    with client() as c:
+        refs = ["steiner385/kindash#212", "steiner385/kindash#240", "acme/checkout#14",
+                "steiner385/kindash#250", "acme/billing#75", "acme/billing#60", "o/r#1"]
+        out = c.post("/api/pm/holds/release", json={"refs": refs, "reason": "eval"}).json()
+        by = {r["ref"]: r for r in out["results"]}
+        assert by["steiner385/kindash#212"]["released"] == ["owner_action"]
+        assert "alice@example.com" in by["steiner385/kindash#240"]["refused"]
+        assert "resolve_decision" in by["acme/checkout#14"]["refused"]
+        assert by["steiner385/kindash#250"]["released"] == ["parked"]
+        assert "bob" in by["acme/billing#75"]["refused"]
+        assert "nothing to release" in by["acme/billing#60"]["refused"]
+        assert "not a mirrored issue" in by["o/r#1"]["refused"]
+        assert out["releasedCount"] == 2 and out["refusedCount"] == 5
+        assert c.post("/api/pm/holds/release", json={"refs": ["o/r#1"]}).status_code == 422
 
 
 def test_feedback_inbox_fixture_routes():

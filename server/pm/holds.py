@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 
 from server.db.models import HOLD_KINDS, WorkItem
 from server.pm.outcomes import body_fingerprint
+from server.pm.queue import PARKED, is_bot_login
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -522,12 +523,7 @@ def release_policy_skipped_holds(db: "Session", refs: "Sequence[str]") -> list[s
     return released
 
 
-def clear_hold(wi: WorkItem, *, actor: str) -> None:
-    if wi.hold_kind is None:
-        return
-    if not may_set(actor, wi.hold_kind):
-        raise HoldPermissionError(
-            f"{actor_class(actor)} actors may not clear a {wi.hold_kind!r} hold")
+def _blank_hold(wi: WorkItem) -> None:
     wi.hold_kind = None
     wi.hold_reason = None
     wi.hold_by = None
@@ -535,34 +531,99 @@ def clear_hold(wi: WorkItem, *, actor: str) -> None:
     wi.hold_fingerprint = None
 
 
-async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal: str,
-                          only_kind: str | None = None, via: str = "api") -> str | None:
-    """THE release-and-audit sequence behind every API tap that ends a hold (spec §7):
-    the Retry endpoint (``signal="retry"``) and Implement now (``signal="implement"``).
+def clear_hold(wi: WorkItem, *, actor: str) -> None:
+    if wi.hold_kind is None:
+        return
+    if not may_set(actor, wi.hold_kind):
+        raise HoldPermissionError(
+            f"{actor_class(actor)} actors may not clear a {wi.hold_kind!r} hold")
+    _blank_hold(wi)
 
-    Refuses a ``decision`` hold with ``DecisionHoldError`` and lets ``HoldPermissionError``
-    out of ``clear_hold``; both routes map them to 422 ``bad_hold`` / ``hold_not_permitted``.
-    ``only_kind`` narrows the tap to one kind: dispatch passes ``"owner_action"`` so an
-    ``evidence`` / ``stronger_model`` hold — which has no release path there yet and exits
-    on its own — is left untouched and returns ``None`` instead of failing the request.
+
+def release_refusal(kind: str | None, placed_by: str | None, *, actor: str,
+                    operator: str | None) -> str | None:
+    """THE owner rule for an API tap that ends a hold or removes the ``parked`` label:
+    ``None`` when *actor* may release it, else the refusal in words.
+
+    *kind* is a hold kind or ``PARKED`` (the label). *placed_by* is who put it there —
+    ``WorkItem.hold_by`` for a hold, the GitHub login of the label's latest ``labeled``
+    event for ``PARKED`` (``None`` when unknown). *operator* is the person the actor
+    answers to, in the same namespace as *placed_by*: the identity for a hold, their gh
+    login for the label.
+
+    - A ``decision`` hold is refused for everyone: it ends when its proposal is answered.
+    - A person, and the system, keep the class rule (a person may release any other kind).
+    - The assistant (``assistant:<identity>``) acts on its operator's confirmed card: a
+      hold or label the runner, an automation, a session or a bot placed is releasable,
+      and so is one the operator placed; one another PERSON placed is refused, and an
+      unknown placer is refused — only that person can release it.
+    - Every other agent (a session, an unattributed loopback caller) keeps the class
+      gate: ``AGENT_SETTABLE`` kinds only.
+
+    Used by ``release_via_api`` (Retry, Implement now / ``dispatch_backlog``) and by
+    ``POST /api/pm/holds/release`` for the label, so the drawer's release_hold and
+    dispatch_backlog answer every hold the same way."""
+    if kind is None:
+        return None
+    if kind == "decision":
+        return DECISION_HOLD_MESSAGE
+    cls = actor_class(actor)
+    if cls != "agent":
+        return None
+    if not actor.startswith(ASSISTANT_PREFIX):
+        return None if kind in AGENT_SETTABLE else f"{cls} actors may not clear a {kind!r} hold"
+    what = "the parked label" if kind == PARKED else f"this {kind} hold"
+    if not placed_by:
+        return f"who placed {what} is not recorded, so only a person can release it"
+    if kind == PARKED:
+        if is_bot_login(placed_by):
+            return None
+        if not operator:
+            return (f"your GitHub login could not be read, so {what} (placed by "
+                    f"{placed_by}) cannot be matched to you")
+    elif actor_class(placed_by) != "person":
+        return None
+    if placed_by == operator:
+        return None
+    return f"{placed_by} placed {what}; only they can release it"
+
+
+async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal: str,
+                          only_kind: str | None = None, via: str = "api",
+                          reason: str | None = None) -> str | None:
+    """THE release-and-audit sequence behind every API tap that ends a hold (spec §7):
+    the Retry endpoint (``signal="retry"``), Implement now (``signal="implement"``) and
+    the bulk ``POST /api/pm/holds/release``.
+
+    Refuses a ``decision`` hold with ``DecisionHoldError`` and raises
+    ``HoldPermissionError`` when :func:`release_refusal` (the owner rule, with *identity*
+    as the operator) refuses the actor; routes map them to 422 ``bad_hold`` /
+    ``hold_not_permitted``. ``only_kind`` narrows the tap to one kind: dispatch passes
+    ``"owner_action"`` so an ``evidence`` / ``stronger_model`` hold — which has no
+    release path there yet and exits on its own — is left untouched and returns ``None``
+    instead of failing the request.
 
     Returns the kind that WAS released, or ``None`` when nothing was (unheld item, or a
     kind ``only_kind`` skipped). Audits ``pm.hold.release`` with *via* (``"api"``; the
-    runner's automatic escalation approval passes ``"runner"``, #2679) only when a hold
-    actually ended."""
+    runner's automatic escalation approval passes ``"runner"``, #2679) and the caller's
+    *reason*, when given, only when a hold actually ended."""
     from server.audit import record_audit
     refuse_decision_release(wi)
     if only_kind is not None and wi.hold_kind is not None and wi.hold_kind != only_kind:
         return None
     released = wi.hold_kind
-    clear_hold(wi, actor=actor)
     if released is None:
         return None
+    refused = release_refusal(released, wi.hold_by, actor=actor, operator=identity)
+    if refused is not None:
+        raise HoldPermissionError(refused)
+    _blank_hold(wi)
     await db.flush()
-    await record_audit(db=db, type="pm.hold.release", identity=identity,
-                       detail={"workItemId": wi.id, "kind": released,
-                               "actorClass": actor_class(actor), "signal": signal},
-                       via=via)
+    detail: dict[str, object] = {"workItemId": wi.id, "kind": released,
+                                 "actorClass": actor_class(actor), "signal": signal}
+    if reason:
+        detail["reason"] = reason
+    await record_audit(db=db, type="pm.hold.release", identity=identity, detail=detail, via=via)
     return released
 
 
