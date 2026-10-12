@@ -108,6 +108,77 @@ def test_get_pr_detail_does_not_shadow_the_list_route():
     assert fake.calls == []
 
 
+# --- GET /api/prs/{owner}/{name}/{number}/files (assistant get_pr_files) ---------------
+
+
+def test_get_pr_files_passes_the_caps_through_and_returns_the_payload():
+    client, fake = _make_client()
+    seen = {}
+
+    def fake_fetch(repo, number, *, max_files, max_patch_bytes):
+        seen.update(repo=repo, number=number, max_files=max_files,
+                    max_patch_bytes=max_patch_bytes)
+        return {"repo": repo, "number": number, "files": [], "totalFiles": 0, "cut": {}}
+
+    from server.github.pr_files import FILES_MAX, PATCH_BYTES_MAX
+    with patch.dict(os.environ, _ENV), client, \
+            patch("server.github.pr_files.fetch_pr_files", fake_fetch):
+        resp = client.get("/api/prs/acme/billing/42/files",
+                          params={"max_files": 50, "max_patch_bytes": 1000}, headers=_H)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["repo"] == "acme/billing"
+        assert seen == {"repo": "acme/billing", "number": 42, "max_files": 50,
+                        "max_patch_bytes": 1000}
+        default = client.get("/api/prs/acme/billing/42/files", headers=_H)
+    assert default.status_code == 200
+    assert (seen["max_files"], seen["max_patch_bytes"]) == (FILES_MAX, PATCH_BYTES_MAX)
+    # The PR detail route is untouched by the new sub-route.
+    assert fake.calls == []
+
+
+def test_get_pr_files_refuses_caps_above_the_endpoint_ceiling():
+    client, _ = _make_client()
+    from server.github.pr_files import FILES_MAX
+    with patch.dict(os.environ, _ENV), client:
+        resp = client.get("/api/prs/acme/billing/42/files",
+                          params={"max_files": FILES_MAX + 1}, headers=_H)
+    assert resp.status_code == 422
+
+
+def test_get_pr_files_404_and_502():
+    from server.github.pr_files import PrFilesError, PrFilesNotFound
+    client, _ = _make_client()
+
+    def missing(*a, **k):
+        raise PrFilesNotFound
+
+    def broken(*a, **k):
+        raise PrFilesError("gh: HTTP 504")
+
+    with patch.dict(os.environ, _ENV), client:
+        with patch("server.github.pr_files.fetch_pr_files", missing):
+            assert client.get("/api/prs/acme/billing/9/files", headers=_H).status_code == 404
+        with patch("server.github.pr_files.fetch_pr_files", broken):
+            resp = client.get("/api/prs/acme/billing/9/files", headers=_H)
+    assert resp.status_code == 502
+    assert "gh: HTTP 504" in resp.json()["detail"]
+
+
+def test_get_pr_files_rejects_a_relative_path_repo_segment():
+    client, _ = _make_client()
+    with patch.dict(os.environ, _ENV), client, \
+            patch("server.github.pr_files.fetch_pr_files") as fetch:
+        resp = client.get("/api/prs/acme/../42/files", headers=_H)
+    assert resp.status_code in (404, 422)
+    fetch.assert_not_called()
+
+
+def test_get_pr_files_requires_identity():
+    client, _ = _make_client()
+    with patch.dict(os.environ, _ENV), client:
+        assert client.get("/api/prs/acme/billing/42/files").status_code == 401
+
+
 # --- orchestrator.pr_detail: composes all_prs() with a live checks/reviews fetch ---
 
 

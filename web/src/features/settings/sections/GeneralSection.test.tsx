@@ -148,7 +148,7 @@ describe('GeneralSection', () => {
     // Server null → off: the operator tier is opt-in (spec v2 B1), unlike the
     // assistant switch above whose null means the launch default ON.
     expect(operator).not.toBeChecked()
-    expect(screen.getByText(/start deploys, upgrade hosts and refresh accounts/i)).toBeInTheDocument()
+    expect(screen.getByText(/start deploys, upgrade hosts, refresh accounts and change a product's automation policy/i)).toBeInTheDocument()
     await userEvent.click(operator)
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(

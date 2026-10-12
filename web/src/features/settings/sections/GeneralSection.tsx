@@ -311,8 +311,8 @@ export function GeneralSection() {
           // before the click, not after it.
           description={(
             <>
-              Lets the assistant start deploys, upgrade hosts and refresh accounts — each still
-              asks for confirmation. Takes effect on the next New chat.
+              Lets the assistant start deploys, upgrade hosts, refresh accounts and change a
+              product's automation policy — each still asks for confirmation. Takes effect on the next New chat.
               <span className="mt-0.5 block text-warning">
                 These actions change live infrastructure and some cannot be undone once started.
               </span>

@@ -350,20 +350,65 @@ class PolicyEditConflict(Exception):
     """The observed policy changed; the caller must refresh before editing."""
 
 
+class PolicyExpectationMismatch(PolicyEditConflict):
+    """A caller-supplied ``expected`` value is not the field's current effective value.
+
+    ``mismatches`` is ``{field: {"expected": …, "actual": …}}``. A conflict subclass so a
+    caller that only knows ``PolicyEditConflict`` still refuses rather than writes."""
+
+    def __init__(self, mismatches: dict[str, dict]) -> None:
+        stale = "; ".join(f"{k} is {v['actual']!r}, not {v['expected']!r}"
+                          for k, v in sorted(mismatches.items()))
+        self.message = (f"The policy changed since it was read: {stale}. Re-read it and "
+                        "confirm the change again.")
+        super().__init__(self.message)
+        self.mismatches = mismatches
+
+
+def check_expected_values(current: dict | None, expected: Mapping) -> None:
+    """Raise ``PolicyExpectationMismatch`` unless every ``expected`` field equals its
+    current EFFECTIVE value (schema defaults filled — what ``effectivePolicy`` shows).
+
+    ``expected`` goes through the schema first, so an unknown key or a mistyped value is
+    a ``ValueError`` (422) rather than a guard that can never match or silently passes."""
+    wanted = validate_config(PRODUCT_POLICY_SCHEMA, dict(expected),
+                             retired=PRODUCT_POLICY_RETIRED_KEYS)
+    actual = effective_policy(current)
+    mismatches = {k: {"expected": wanted[k], "actual": actual.get(k)}
+                  for k in expected if wanted[k] != actual.get(k)}
+    if mismatches:
+        raise PolicyExpectationMismatch(mismatches)
+
+
+def policy_changes(before: dict | None, after: dict | None) -> dict[str, dict]:
+    """``{field: {"before", "after"}}`` for every field whose EFFECTIVE value differs
+    between two stored policies — the audit's human-readable diff of a write."""
+    b, a = effective_policy(before), effective_policy(after)
+    return {k: {"before": b.get(k), "after": a.get(k)} for k in a if b.get(k) != a.get(k)}
+
+
 async def patch_project_policy(
     db: AsyncSession, project: Project, patch: dict | None, *,
     expected_updated_at: datetime | None = None, check_expected: bool = False,
+    expected_values: Mapping | None = None,
 ) -> dict | None:
     """Sparse policy write with an atomic revision check, shared with migration.
 
     Even compatibility callers without a client revision compare against the row
     they read. Never retry a stale patch automatically. Resets advance revision
     too, so a stale edit or the legacy migration cannot resurrect deleted intent.
+
+    ``expected_values`` (``{field: value}``) additionally requires each named field to
+    still hold that effective value. It is checked against the same observed row the
+    revision-guarded UPDATE below is conditioned on, so a write that lands between the
+    check and the UPDATE fails the revision guard instead of slipping past the check.
     """
     observed = project.automation_policy_updated_at
     if check_expected and iso_utc(expected_updated_at) != iso_utc(observed):
         raise PolicyEditConflict
     merged = merge_policy_patch(project.automation_policy, patch)
+    if expected_values:
+        check_expected_values(project.automation_policy, expected_values)
     revision = naive_utc_now().replace(tzinfo=timezone.utc)
     previous = parse_iso_utc(iso_utc(observed))
     if previous is not None:

@@ -27,7 +27,8 @@ async def assistant_enabled(db) -> bool:
 
 
 async def operator_tools_enabled(db) -> bool:
-    """Whether the operator tier (deploy, host upgrade, account refresh/enable/reauth) is on.
+    """Whether the operator tier (deploy, host upgrade, account refresh/enable/reauth,
+    product automation policy edits) is on.
 
     Same env → AppSettings precedence as `assistant_enabled`, but opt-in: the env default
     is false (spec v2 §7, decision B1). Callers use this at BOTH enforcement points — tool
@@ -96,6 +97,8 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/prs"),
         # PR detail (spec v2 §4.6, Pack G, Task 7.5).
         ("GET", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+"),
+        # get_pr_files: the PR's changed files + patches, read live from GitHub.
+        ("GET", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+/files"),
         # GitHub writes (spec v2 §4.6, Pack G, Task 7.6). The assistant's only free-form
         # PUBLIC side effects (the Session Feedback inbox rows below also reach GitHub,
         # but as that automation's own filing) — so both are MUTATION-class (a
@@ -224,8 +227,8 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 
-# Operator-tier routes (spec v2 §7, Task 9.2): deploy, host upgrade, and account
-# refresh/enable/reauth. Disjoint from ASSISTANT_ROUTE_ALLOW on purpose — these are
+# Operator-tier routes (spec v2 §7, Task 9.2): deploy, host upgrade, account
+# refresh/enable/reauth, and a product's automation policy. Disjoint from ASSISTANT_ROUTE_ALLOW on purpose — these are
 # reachable ONLY when `operator=True` is passed to `route_allowed`, which in turn is
 # gated on `operator_tools_enabled(db)`. A path here must never also appear above.
 OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -235,6 +238,9 @@ OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"/api/accounts/[A-Za-z0-9_.-]+/refresh"),
         ("PATCH", r"/api/accounts/[A-Za-z0-9_.-]+/enabled"),
         ("POST", r"/api/accounts/[A-Za-z0-9_.-]+/reauth"),
+        # update_product_policy. Operator tier only: the base allowlist admits no
+        # `PATCH /api/pm/...` route at all (test_route_allowlist pins that).
+        ("PATCH", r"/api/pm/projects/[a-z0-9-]+/policy"),
     ]
 )
 

@@ -16,13 +16,14 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from server.auth.middleware import current_identity
 from server.deploy.client import DeployControllerUnavailable
 from server.github import ci_issues
+from server.github import pr_files as pr_files_mod
 from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
 from server.pipeline.lane_health import controller_deploy_snapshot, lane_health_ctx
@@ -75,6 +76,32 @@ async def pr_detail(
             detail=f"PR sync for {repo} is failing: {result.get('syncError') or 'unknown error'}",
         )
     return result
+
+
+@router.get("/{owner}/{name}/{number}/files")
+async def pr_files(
+    owner: str,
+    name: str,
+    number: int,
+    max_files: int = Query(pr_files_mod.FILES_MAX, ge=1, le=pr_files_mod.FILES_MAX),
+    max_patch_bytes: int = Query(pr_files_mod.PATCH_BYTES_MAX, ge=0,
+                                 le=pr_files_mod.PATCH_BYTES_MAX),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """One PR's changed files and their patches, read live from GitHub and capped
+    (``server/github/pr_files.py`` reports every cut under ``cut``). The patch text is
+    the PR author's — a caller showing it to a model must frame it as untrusted data."""
+    repo = f"{owner}/{name}"
+    if not ci_issues.valid_repo(repo):
+        raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    try:
+        return await asyncio.to_thread(pr_files_mod.fetch_pr_files, repo, number,
+                                       max_files=max_files, max_patch_bytes=max_patch_bytes)
+    except pr_files_mod.PrFilesNotFound:
+        raise HTTPException(status_code=404, detail="PR not found") from None
+    except pr_files_mod.PrFilesError as e:
+        raise HTTPException(status_code=502,
+                            detail=f"GitHub PR files read for {repo}#{number} failed: {e}") from e
 
 
 class PrCommentBody(BaseModel):

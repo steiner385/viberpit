@@ -381,7 +381,8 @@ export interface AppSettings {
   // VIBERPIT_ASSISTANT_MODEL) for both.
   assistantEnabled?: boolean | null
   assistantModel?: string | null
-  // Operator tier (v2 spec B1): deploy start, host upgrade, account refresh/enable/reauth.
+  // Operator tier (v2 spec B1): deploy start, host upgrade, account refresh/enable/reauth,
+  // product automation policy.
   // null = server env default (VIBERPIT_ASSISTANT_OPERATOR_TOOLS), which is OFF.
   assistantOperatorTools?: boolean | null
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */

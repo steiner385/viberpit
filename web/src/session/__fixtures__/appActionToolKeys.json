@@ -35,6 +35,7 @@
   "get_onboarding_status",
   "get_pipeline_health",
   "get_pr",
+  "get_pr_files",
   "get_pr_doctor_consolidation",
   "get_pr_doctor_job",
   "get_priority_queue",
@@ -105,6 +106,7 @@
   "trigger_automation_action",
   "unarchive_session",
   "unarchive_sessions",
+  "update_product_policy",
   "upgrade_host",
   "watch"
 ]

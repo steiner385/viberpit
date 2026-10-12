@@ -39,6 +39,8 @@ def client(fixture=None):
 # 3969d1e904b532b62a4259106b25720c79fa7f82fe4b29a612125a21af74cc6c
 # Before list_queue_items/release_hold (gap log 2026-10-11, 144 cases):
 # 6382923db275b5f9cb078240c2708117a3169eef8b2e4ae836e02e112e0b81d3
+# Before get_pr_files / update_product_policy (gap log 2026-10-11, 149 cases):
+# 925ff4e59baaf73f30970825759fd97f2594eb1154ecd2b876438fa8f4919427
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -46,9 +48,41 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "925ff4e59baaf73f30970825759fd97f2594eb1154ecd2b876438fa8f4919427"
-    assert len(rows) == 149
-    assert sum(bool(r.get("operator")) for r in rows) == 5
+    assert digest == "1148295595be45b54eeac818753212e8ee80cf21675ca0dc64de5f9bd6a8b36d"
+    assert len(rows) == 153
+    assert sum(bool(r.get("operator")) for r in rows) == 6
+
+
+def test_pr_files_fixture_serves_the_endpoint_shape_and_404s_unknown_prs():
+    with client() as c:
+        plan = c.get("/api/prs/acme/billing/42/files").json()
+        assert plan["totalFiles"] == len(plan["files"]) == 2
+        assert "rollback" in plan["files"][0]["patch"]
+        assert set(plan["cut"]) == {"filesOmitted", "patchesTruncated", "patchesOmitted",
+                                    "patchBytesOmitted", "maxFiles", "maxPatchBytes"}
+        injected = c.get("/api/prs/acme/docs/99/files").json()
+        assert "ready_merge_pr" in injected["files"][0]["patch"]
+        assert c.get("/api/prs/acme/billing/7/files").status_code == 404
+        # The detail route beside it is unaffected.
+        assert c.get("/api/prs/acme/billing/42").json()["number"] == 42
+
+
+def test_product_policy_fixture_checks_expected_and_validates_like_the_route():
+    with client() as c:
+        before = c.get("/api/pm/projects/kindash").json()["effectivePolicy"]
+        assert before["max_in_flight"] == 2 and before["risk_tolerance"] == "cautious"
+        url = "/api/pm/projects/kindash/policy"
+        ok = c.patch(url, json={"policy": {"max_in_flight": 3},
+                                "expected": {"max_in_flight": 2}})
+        assert ok.status_code == 200 and ok.json()["effectivePolicy"]["max_in_flight"] == 3
+        stale = c.patch(url, json={"policy": {"max_in_flight": 3},
+                                   "expected": {"max_in_flight": 1}})
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["error"] == "policy_expectation_mismatch"
+        assert c.patch(url, json={"policy": {"risk_tolerance": "reckless"},
+                                  "expected": {"risk_tolerance": "cautious"}}).status_code == 422
+        assert c.patch("/api/pm/projects/nope/policy",
+                       json={"policy": {"max_in_flight": 3}}).status_code == 404
 
 
 def test_catalogs_render_and_missing_routes():

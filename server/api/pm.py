@@ -20,8 +20,9 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.product_policy import (
-    PRODUCT_POLICY_SCHEMA, PolicyEditConflict, effective_policy, load_policies,
-    patch_project_policy, skip_labels, skips_self_closing_trackers, trusted_authors)
+    PRODUCT_POLICY_SCHEMA, PolicyEditConflict, PolicyExpectationMismatch, effective_policy,
+    load_policies, patch_project_policy, policy_changes, skip_labels,
+    skips_self_closing_trackers, trusted_authors)
 from server.time_iso import iso_utc
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
@@ -190,6 +191,11 @@ class PolicyPatchBody(BaseModel):
     # validated against PRODUCT_POLICY_SCHEMA before it's stored.
     policy: dict | None
     expectedUpdatedAt: datetime | None = None
+    # `{field: value}` each named field must still hold — its EFFECTIVE value, defaults
+    # filled (`effectivePolicy` on the product detail) — or the write is a 409. The
+    # assistant's update_product_policy sends the "before" its confirmation card showed,
+    # so the card cannot have shown a person a value other than the one being replaced.
+    expected: dict | None = None
 
 
 async def _load_project(db, slug: str) -> Project:
@@ -330,6 +336,9 @@ async def _project_detail_dict(db, p: Project) -> dict:
     d = _project_to_dict(p)
     d["repos"] = [_repo_to_dict(r) for r in repos]
     d["edges"] = [_edge_to_dict(e, slug_by_id) for e in edges]
+    # The stored policy with every schema default filled in — what each knob currently
+    # IS, where `automationPolicy` holds only what was explicitly set.
+    d["effectivePolicy"] = effective_policy(p.automation_policy)
     return d
 
 
@@ -663,11 +672,18 @@ async def update_project_policy(
     db=Depends(get_db),
 ) -> dict:
     p = await _load_project(db, slug)
+    before = p.automation_policy
     try:
         validated = await patch_project_policy(
             db, p, body.policy, expected_updated_at=body.expectedUpdatedAt,
             check_expected="expectedUpdatedAt" in body.model_fields_set,
+            expected_values=body.expected,
         )
+    except PolicyExpectationMismatch as e:
+        raise HTTPException(status_code=409, detail={
+            "error": "policy_expectation_mismatch", "message": e.message,
+            "mismatches": e.mismatches,
+        }) from e
     except PolicyEditConflict as e:
         raise HTTPException(status_code=409, detail={
             "error": "policy_conflict",
@@ -677,8 +693,11 @@ async def update_project_policy(
         raise HTTPException(status_code=422, detail={
             "error": "bad_policy", "message": str(e),
         }) from e
-    await record_audit(db=db, type="pm.project.policy", identity=identity,
-                       detail={"slug": slug, "policy": validated})
+    detail: dict = {"slug": slug, "policy": validated,
+                    "changes": policy_changes(before, validated)}
+    if body.expected:
+        detail["expected"] = body.expected
+    await record_audit(db=db, type="pm.project.policy", identity=identity, detail=detail)
     return await _project_detail_dict(db, p)
 
 

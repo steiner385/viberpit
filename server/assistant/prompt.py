@@ -70,7 +70,7 @@ EXCLUSIONS: tuple[tuple[str, str], ...] = (
     ("Fleet host add / remove", "Settings → Fleet"),
     ("Project/initiative authoring, feature-map proposals", "Products / Initiatives pages"),
     ("PR merge/close/label/review beyond `ready_merge_pr`", "the coding session or GitHub"),
-    ("Deploy / upgrade / account refresh **when operator tier is off**",
+    ("Deploy / upgrade / account refresh / product policy edits **when operator tier is off**",
      "Settings → General → AI assistant"),
 )
 
@@ -87,9 +87,9 @@ ASSISTANT_SYSTEM_PROMPT = ASSISTANT_SYSTEM_PROMPT + EXCLUSIONS_TEXT
 OPERATOR_TOOLS_ENABLED_LINE = """
 
 # Operator tools
-Operator tools are enabled for this deployment: start_deploy, upgrade_host, refresh_account, set_account_enabled and start_reauth. start_deploy and upgrade_host are irreversible once started — say so before calling either."""
+Operator tools are enabled for this deployment: start_deploy, upgrade_host, refresh_account, set_account_enabled, start_reauth and update_product_policy. start_deploy and upgrade_host are irreversible once started — say so before calling either. Before update_product_policy, read the product with get_product and pass the current values of the fields you change as before."""
 
 OPERATOR_TOOLS_DISABLED_LINE = """
 
 # Operator tools
-Operator tools (starting a deploy, upgrading a fleet host, refreshing or enabling/disabling an account, starting account re-auth) are disabled for this deployment. If asked for one of these, say so and call report_gap."""
+Operator tools (starting a deploy, upgrading a fleet host, refreshing or enabling/disabling an account, starting account re-auth, changing a product's automation policy) are disabled for this deployment. If asked for one of these, say so and call report_gap."""
