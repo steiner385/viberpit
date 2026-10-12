@@ -14,6 +14,9 @@ from .reconcile_diff import Mutation
 
 MAX_ALIASES = 20
 ISSUE_FIELDS = "id title body state stateReason url"
+#: GitHub's ``IssueClosedStateReason`` values a close may carry. Unquoted enum
+#: literals in the document, so a value is checked against this set, never interpolated.
+CLOSE_STATE_REASONS: frozenset[str] = frozenset({"COMPLETED", "NOT_PLANNED", "DUPLICATE"})
 
 
 def build_issue_query(node_id: str) -> str:
@@ -68,10 +71,16 @@ def _render(m: Mutation, project_node_id: str, field_cache: Mapping[str, dict]) 
                     % (_q(m.target_node_id), _q(m.new_value["title"]),
                        _q(m.new_value["body"]), ISSUE_FIELDS))
         reason = m.new_value["stateReason"]
-        if reason not in {"COMPLETED", "NOT_PLANNED"}:
+        if reason not in CLOSE_STATE_REASONS:
             raise ValueError("unsupported issue close reason")
-        return ("closeIssue(input: {issueId: %s, stateReason: %s}) { issue { %s } }"
-                % (_q(m.target_node_id), reason, ISSUE_FIELDS))
+        # DUPLICATE names the canonical issue (`duplicateIssueId`, in GitHub's live
+        # CloseIssueInput as of 2026-10-12); the other reasons must not carry one.
+        duplicate = m.new_value.get("duplicateIssueId")
+        if (reason == "DUPLICATE") != bool(duplicate):
+            raise ValueError("a DUPLICATE close needs duplicateIssueId, and only it may")
+        extra = ", duplicateIssueId: %s" % _q(duplicate) if duplicate else ""
+        return ("closeIssue(input: {issueId: %s, stateReason: %s%s}) { issue { %s } }"
+                % (_q(m.target_node_id), reason, extra, ISSUE_FIELDS))
     raise ValueError(f"unknown mutation kind {m.kind!r}")
 
 

@@ -173,3 +173,120 @@ async def test_remote_transport_and_unavailable():
     assert client.call.call_args.kwargs["decision"] == decision
     client.call.side_effect = DaemonUnavailable("offline")
     assert (await remote.pm_issue_decision("id", decision))["step"] == "rpc"
+
+
+# --------------------------------------------------------------------------
+# close() — the assistant's close_issue (Refs #2979)
+# --------------------------------------------------------------------------
+
+async def run_close(item, reason="completed", *, duplicate_of=None, remote=None, response=None):
+    from server.pm.issue_disposition import IssueClose, close
+    fetch = AsyncMock(return_value={"data": {"node": remote or node()}})
+    mutate = AsyncMock(return_value=response or {"data": {"m0": {"issue": {
+        **node(), "state": "CLOSED", "stateReason": reason.upper()}}}})
+    async with db_session() as db:
+        row = await db.get(WorkItem, item)
+        result = await close(db, src=row, request=IssueClose(reason=reason, duplicate_of=duplicate_of),
+                             fetch=fetch, mutate=mutate, now=NOW,
+                             ownership=await ownership_snapshot(db, "o/r"))
+    return result, fetch, mutate
+
+
+async def add_issue(number=6, node_id="N6"):
+    async with db_session() as db:
+        row = WorkItem(repo="o/r", number=number, kind="issue", title="Canonical", body="",
+                       state="open", gh_node_id=node_id)
+        db.add(row)
+        await db.flush()
+        return row.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["completed", "not_planned"])
+async def test_close_with_reason_is_journaled_and_confirmed(item, reason):
+    result, _, mutate = await run_close(item, reason)
+    assert result["ok"] and result["item"]["state"] == "closed"
+    doc = mutate.call_args.args[1]
+    assert f"stateReason: {reason.upper()}" in doc and "duplicateIssueId" not in doc
+    async with db_session() as db:
+        row = (await db.scalars(select(GhWriteJournal))).one()
+        assert row.applied and row.batch_id.startswith("issue-close:")
+
+
+@pytest.mark.asyncio
+async def test_close_as_duplicate_links_the_canonical_issue(item):
+    dup = await add_issue()
+    result, _, mutate = await run_close(item, "duplicate", duplicate_of=dup)
+    assert result["ok"]
+    assert 'stateReason: DUPLICATE, duplicateIssueId: "N6"' in mutate.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_close_duplicate_of_unmirrored_or_self_never_mutates(item):
+    for dup in ("missing", item):
+        result, fetch, mutate = await run_close(item, "duplicate", duplicate_of=dup)
+        assert result["step"] == "duplicate"
+        fetch.assert_not_called()
+        mutate.assert_not_called()
+    nodeless = await add_issue(7, None)
+    result, _, mutate = await run_close(item, "duplicate", duplicate_of=nodeless)
+    assert result["step"] == "node_id"
+    mutate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_close_refuses_an_issue_closed_on_github_meanwhile(item):
+    result, _, mutate = await run_close(item, remote={**node(), "state": "CLOSED"})
+    assert result["step"] == "conflict"
+    mutate.assert_not_called()
+    async with db_session() as db:
+        assert (await db.get(WorkItem, item)).state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_close_unconfirmed_reason_marks_the_row_failed(item):
+    result, _, _ = await run_close(item, "not_planned", response={"data": {"m0": {"issue": {
+        **node(), "state": "CLOSED", "stateReason": "COMPLETED"}}}})
+    assert result["step"] == "mutate"
+    async with db_session() as db:
+        assert not (await db.scalars(select(GhWriteJournal))).one().applied
+
+
+def test_issue_close_requires_duplicate_of_iff_duplicate():
+    from pydantic import ValidationError
+    from server.pm.issue_disposition import IssueClose
+    for bad in ({"reason": "duplicate"}, {"reason": "completed", "duplicate_of": "x"},
+                {"reason": "wontfix"}):
+        with pytest.raises(ValidationError):
+            IssueClose(**bad)
+
+
+def test_close_issue_render_rejects_a_mismatched_duplicate():
+    from server.pm.gh_mutations import build_batch
+    from server.pm.reconcile_diff import Mutation
+    for values in ({"stateReason": "DUPLICATE"},
+                   {"stateReason": "COMPLETED", "duplicateIssueId": "N6"},
+                   {"stateReason": "WONTFIX"}):
+        with pytest.raises(ValueError):
+            build_batch([Mutation("close_issue", "N5", None, None, values, "t")],
+                        project_node_id="", field_cache={})
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_close_seam_and_remote_transport(item):
+    from server.ipc.client import DaemonUnavailable
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.remote import RemoteOrchestrator
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._pm_sync_fetch_projects = AsyncMock(return_value={"data": {"node": node()}})
+    orch._pm_reconcile_mutate = AsyncMock(return_value={"data": {"m0": {"issue": {
+        **node(), "state": "CLOSED", "stateReason": "NOT_PLANNED"}}}})
+    assert (await orch._pm_issue_close(item, {"reason": "not_planned"}))["ok"]
+    client = AsyncMock()
+    client.call.return_value = {"ok": True}
+    remote = RemoteOrchestrator(client)
+    assert (await remote.pm_issue_close("id", {"reason": "completed"}))["ok"]
+    assert client.call.call_args.args == ("pm_issue_close",)
+    assert client.call.call_args.kwargs["close"] == {"reason": "completed"}
+    client.call.side_effect = DaemonUnavailable("offline")
+    assert (await remote.pm_issue_close("id", {"reason": "completed"}))["step"] == "rpc"

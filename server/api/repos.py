@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from viberpit import gitrepos
+from server.audit import record_audit
 from server.auth.middleware import current_identity
+from server.db import get_db
 from server.github import ci_issues
 from server.ipc.client import DaemonError, DaemonUnavailable
 
@@ -142,6 +144,44 @@ async def create_github_issue(
     if number is None:
         raise HTTPException(status_code=502, detail="GitHub rejected the issue")
     return {"number": number, "url": ci_issues.issue_url(payload.repo, number)}
+
+
+class IssueCommentBody(BaseModel):
+    body: str = Field(min_length=1, max_length=ci_issues.BODY_MAX_CHARS)
+
+
+@router.post("/issues/{owner}/{name}/{number}/comments", status_code=201)
+async def comment_on_github_issue(
+    owner: str,
+    name: str,
+    number: int,
+    payload: IssueCommentBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Post a comment on an issue as the operator's gh identity — the issue twin of
+    ``POST /api/prs/{owner}/{name}/{number}/comments``.
+
+    Signed when the assistant posts it (`ci_issues.with_authorship`). Deliberately
+    WITHOUT ``AUTOMATION_COMMENT_MARKER``: this is a person's word on the issue, so
+    the mirror should count it as one (it re-arms a not-needed issue, #2683). A gh
+    failure is a 502, never a swallowed success.
+    """
+    repo = f"{owner}/{name}"
+    if not ci_issues.valid_repo(repo):
+        raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    via = getattr(request.state, "via", None)
+    text = ci_issues.with_authorship(payload.body, via=via, identity=identity)
+    url = await asyncio.to_thread(ci_issues.comment_on_issue, repo, number, text,
+                                  automation=False)
+    await record_audit(db=db, type="github.issue.comment", identity=identity, via=via,
+                       detail={"repo": repo, "number": number, "ok": url is not None,
+                               "url": url})
+    if url is None:
+        await db.commit()  # the failed attempt is exactly what the trail must keep
+        raise HTTPException(status_code=502, detail="GitHub rejected the comment")
+    return {"url": url}
 
 
 @router.get("/credential-alerts")

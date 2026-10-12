@@ -138,7 +138,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 100 tools are registered in `server/assistant/tools.py`; 95 are exposed by
+- **Tool surface (v2)** — 103 tools are registered in `server/assistant/tools.py`; 98 are exposed by
   default, Pack O's operator tools registering only once the operator tier is enabled. Packs X and
   U (external access, UX/feedback) add no new `TOOL_SPECS` rows — X reaches the existing table
   through a different transport (see "Use from other agents" below) and U instruments how the
@@ -155,7 +155,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
-  | G — GitHub | 3 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session), plus the two writes that leave ViberPit: PR comment and issue creation, each signed with an authorship trailer |
+  | G — GitHub | 6 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session), plus the writes that leave ViberPit, each signed with an authorship trailer: PR comment, issue creation, issue comment (unmarked, so it counts as the operator's word), and the bulk (≤20 refs) triage writes — `set_board_status` (add to the owning product's Project and/or set Status, journaled, validated against the board's real options) and the destructive `close_issue` (completed / not planned / duplicate-of, a signed comment posted first) |
   | O — operator tier | 5 | deploy/host/account administration, flag-gated off by default |
 
   These counts are pinned by `test_feature_doc_tool_counts_match_the_registry` — a new tool fails

@@ -13523,15 +13523,16 @@ class SessionOrchestrator:
                     DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).first()
         return (str(row[0]), str(row[1] or "")) if row is not None else None
 
-    async def _pm_issue_decision(self, work_item_id: str, decision: dict) -> dict:
+    async def _pm_issue_write(self, work_item_id: str, run) -> dict:
+        """Ownership preflight, per-issue lock and load shared by every human issue
+        write seam (decision, close, board status); *run* gets ``(db, src, ownership)``."""
         from server.db.models import WorkItem
-        from server.pm.issue_disposition import IssueDecision, apply
         from server.pm.repo_project import gather_repo_ownership_snapshot
         async with db_session() as preflight:
             item = await preflight.get(WorkItem, work_item_id)
             repos = [item.repo] if item is not None and item.repo else []
         ownership = await gather_repo_ownership_snapshot(repos)
-        # Serialize decisions on one issue within the authority, including the
+        # Serialize writes on one issue within the authority, including the
         # preflight. A queued request then sees the updated mirrored version.
         locks = getattr(self, "_issue_decision_locks", None)
         if locks is None:
@@ -13543,9 +13544,33 @@ class SessionOrchestrator:
             src = await db.get(WorkItem, work_item_id)
             if src is None or src.kind != "issue":
                 return {"ok": False, "step": "load", "error": "Issue not found"}
-            return await apply(db, src=src, decision=IssueDecision.model_validate(decision),
-                               fetch=self._pm_sync_fetch_projects,
-                               mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc(), ownership=ownership)
+            return await run(db, src, ownership)
+
+    async def _pm_issue_decision(self, work_item_id: str, decision: dict) -> dict:
+        from server.pm.issue_disposition import IssueDecision, apply
+        request = IssueDecision.model_validate(decision)
+        return await self._pm_issue_write(work_item_id, lambda db, src, ownership: apply(
+            db, src=src, decision=request, fetch=self._pm_sync_fetch_projects,
+            mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc(), ownership=ownership))
+
+    async def _pm_issue_close(self, work_item_id: str, close: dict) -> dict:
+        """Close one issue with a stated reason (the assistant's close_issue): THE
+        seam, like ``_pm_issue_decision`` — the router decides a person asked, this
+        owns the transport and the journal."""
+        from server.pm.issue_disposition import IssueClose, close as close_issue
+        request = IssueClose.model_validate(close)
+        return await self._pm_issue_write(work_item_id, lambda db, src, ownership: close_issue(
+            db, src=src, request=request, fetch=self._pm_sync_fetch_projects,
+            mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc(), ownership=ownership))
+
+    async def _pm_board_status(self, work_item_id: str, request: dict) -> dict:
+        """Set one issue's board Status (adding it to its product's board first when
+        asked) — the assistant's set_board_status; see ``server/pm/board_status.py``."""
+        from server.pm.board_status import BoardStatusRequest, apply as set_status
+        body = BoardStatusRequest.model_validate(request)
+        return await self._pm_issue_write(work_item_id, lambda db, src, ownership: set_status(
+            db, src=src, request=body, mutate=self._pm_reconcile_mutate,
+            now=self._pm_sync_now_utc(), ownership=ownership))
 
     async def _pm_remove_dependency(self, work_item_id: str, blocker_ref: str) -> dict:
         """Delete one blocked-by edge on GitHub (roadmap spec §8, #1472).

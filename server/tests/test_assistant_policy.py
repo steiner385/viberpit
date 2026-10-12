@@ -141,6 +141,15 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("POST", "/api/pm/decisions/dp-1/reject", True),
     # Regression (spec §8): the assistant does not propose — only accept/reject.
     ("POST", "/api/pm/work-items/w1/decisions", False),
+    # Triage writes (Refs #2979): the bulk ref routes are open, the UI's per-item
+    # issue edit/close route and any sibling of the new paths are not.
+    ("POST", "/api/github/issues/acme/billing/18/comments", True),
+    ("POST", "/api/pm/board-status", True),
+    ("POST", "/api/pm/issues/close", True),
+    ("POST", "/api/pm/work-items/w1/issue", False),
+    ("POST", "/api/pm/issues/close/all", False),
+    ("POST", "/api/github/issues/acme/billing/18", False),
+    ("PATCH", "/api/github/issues/acme/billing/18/comments", False),
     # Phase 2 roadmap tree (#993 Task 8): the map and its per-node issue leaves are
     # reads, so the assistant needs both to answer roadmap questions.
     ("GET", "/api/pm/map", True),

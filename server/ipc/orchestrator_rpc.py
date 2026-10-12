@@ -442,6 +442,16 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     register_rpc(app, "pm_issue_decision", pm_issue_decision)
 
+    async def pm_issue_close(params: dict) -> dict:
+        return await _maybe_await(orch._pm_issue_close(**params))
+
+    register_rpc(app, "pm_issue_close", pm_issue_close)
+
+    async def pm_board_status(params: dict) -> dict:
+        return await _maybe_await(orch._pm_board_status(**params))
+
+    register_rpc(app, "pm_board_status", pm_board_status)
+
     async def pm_remove_dependency(params: dict) -> dict:
         # Private seam, same reasoning as sdlc_materialize_apply above.
         return await _maybe_await(orch._pm_remove_dependency(**params))

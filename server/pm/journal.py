@@ -24,6 +24,12 @@ STATES = ("pending", "applied", "failed", "parked", "dry_run")
 #: The Projects v2 fields the reconciler owns; the only ones whose applied values
 #: are replayed back into the diff engine's ownership check.
 OWNED_FIELDS = ("Status", "Score", "Stage")
+#: The journal label of a Status write a PERSON asked for (``board_status``, the
+#: assistant's ``set_board_status``). Deliberately NOT in ``OWNED_FIELDS`` and not
+#: ``"Status"``: ``own_applied_values`` would read the row as the reconciler's own
+#: value and its next cycle would revert the person's choice, and
+#: ``recent_own_writes`` would echo-suppress it as ours rather than a human's.
+REQUESTED_STATUS_FIELD = "Status (requested)"
 
 
 def own_write_key(node_id: str | None, field: str | None, value: object) -> tuple[str, str, str]:

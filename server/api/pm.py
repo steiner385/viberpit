@@ -6,13 +6,14 @@ slug identity, 409 on conflicts.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, or_, select, tuple_
 
 from server.audit import record_audit
@@ -25,6 +26,7 @@ from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
 )
 from server.db import get_db
+from server.github import ci_issues
 from server.db.models import (
     PROJECT_EDGE_KINDS,
     WORK_ITEM_TRIAGE_STATES,
@@ -47,7 +49,7 @@ from server.db.models import (
 from server.pm.explain import triage_guidance
 from server.pm.featuredoc import FeatureLinkRef
 from server.pm.health import roadmap_health
-from server.pm.issue_disposition import IssueDecision
+from server.pm.issue_disposition import CloseReason, IssueDecision
 from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind, open_pointer_row
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
@@ -57,6 +59,7 @@ from server.pm.project_slugs import (
     PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
 from server.pm.queue import MIN_STATUS_OPTIONS, SKIP_REASONS, rank, rank_key
 from server.pm.queue_store import queue_inputs
+from server.pm.refs import split_ref
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
     owning_projects_by_repo, require_mutation_owner, require_unregistered_repos,
@@ -2742,3 +2745,143 @@ async def decide_work_item_issue(item_id: str, body: IssueDecision, request: Req
         raise HTTPException(status_code=code, detail={"error": "issue_decision_failed",
             "step": result.get("step"), "message": result.get("error") or "Issue decision failed"})
     return result
+
+
+# One confirmed bulk write by ref (the assistant's set_board_status / close_issue)
+# takes at most this many issues — the same cap its permission card enumerates.
+_REF_BATCH_MAX = 20
+
+
+async def _ref_work_item(db, ref: str) -> tuple[WorkItem | None, str | None]:
+    """``(work item, None)`` for a mirrored issue ref, else ``(None, why not)``. A PR
+    is named as one: "not a mirrored issue" would send the caller looking for a sync
+    problem that isn't there."""
+    parts = split_ref(ref)
+    if parts is None:
+        return None, f"{ref!r} is not an owner/repo#N ref"
+    rows = (await db.execute(select(WorkItem).where(
+        WorkItem.repo == parts[0], WorkItem.number == parts[1]))).scalars().all()
+    issue = next((w for w in rows if w.kind == "issue"), None)
+    if issue is not None:
+        return issue, None
+    if any(w.kind == "pr" for w in rows):
+        return None, f"{ref} is a pull request, not an issue"
+    return None, f"{ref} is not a mirrored issue"
+
+
+class BoardStatusBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    refs: list[str] = Field(min_length=1, max_length=_REF_BATCH_MAX)
+    status: str = Field(min_length=1, max_length=64)
+    add_if_missing: bool = Field(default=True, alias="addIfMissing")
+
+
+@router.post("/board-status")
+async def set_board_status(body: BoardStatusBody, request: Request,
+                           identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    """Set the board Status of up to 20 issues on their owning products' GitHub
+    Projects, adding each to its board first unless ``addIfMissing`` is false.
+
+    Per-ref and partial by design: one ref's refusal (a PR, a closed issue, a
+    tracker, a held item, a Status the board doesn't have) never hides another's
+    success. The status is checked here against each product's REAL board options
+    (the mirrored field cache) so the refusal names them; the orchestrator seam
+    re-checks under its lock and owns the journaled GitHub write."""
+    from server.pm.board_status import board_for, refusal, status_options
+    results: list[dict] = []
+    for ref in dict.fromkeys(r.strip() for r in body.refs):
+        wi, why = await _ref_work_item(db, ref)
+        why = why or (refusal(wi) if wi is not None else None)
+        result: dict
+        if wi is not None and why is None:
+            owner = (await owning_projects_by_repo(db, {wi.repo or ""})).get(wi.repo or "")
+            options = status_options(await board_for(db, owner.project_id)) if owner else []
+            if owner is None:
+                why = f"{ref} belongs to no product"
+            elif body.status not in options:
+                why = (f"{body.status!r} is not a Status on {owner.slug}'s board; "
+                       f"options: {', '.join(options) or 'none mirrored yet'}")
+        if why is not None:
+            result = {"ok": False, "step": "refused", "error": why}
+        else:
+            assert wi is not None
+            result = await request.app.state.sessions.pm_board_status(
+                wi.id, {"status": body.status, "add_if_missing": body.add_if_missing})
+        await record_audit(db=db, type="pm.workitem.board_status", identity=identity,
+                           via=getattr(request.state, "via", None),
+                           detail={"ref": ref, "workItemId": wi.id if wi else None,
+                                   "status": body.status, "ok": bool(result.get("ok")),
+                                   "step": result.get("step"), "added": result.get("added")})
+        results.append({"ref": ref, **{k: v for k, v in result.items()
+                                       if k in ("ok", "step", "error", "previous", "added", "changed")}})
+    return {"status": body.status, "results": results,
+            "updated": sum(1 for r in results if r["ok"]),
+            "refused": sum(1 for r in results if not r["ok"])}
+
+
+class IssueCloseBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    refs: list[str] = Field(min_length=1, max_length=_REF_BATCH_MAX)
+    reason: CloseReason
+    duplicate_of: str | None = Field(default=None, alias="duplicateOf")
+    comment: str = Field(min_length=1, max_length=ci_issues.BODY_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def _duplicate_of_iff_duplicate(self) -> IssueCloseBody:
+        if (self.reason == "duplicate") != bool(self.duplicate_of):
+            raise ValueError("duplicateOf is required for reason 'duplicate', and only for it")
+        return self
+
+
+@router.post("/issues/close")
+async def close_issues(body: IssueCloseBody, request: Request,
+                       identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    """Close up to 20 open issues with a stated reason, each after posting the
+    operator's short comment on it (signed when the assistant posts it).
+
+    Comment first, then close: an issue is never closed without the explanation,
+    and a comment GitHub rejects stops that ref's close. The close itself is the
+    journaled ``closeIssue`` write (``issue_disposition.close``) through the
+    orchestrator seam; ``duplicate`` passes the canonical issue's id along so
+    GitHub links the two. Per-ref results, partial success visible."""
+    dup: WorkItem | None = None
+    if body.duplicate_of is not None:
+        dup, why = await _ref_work_item(db, body.duplicate_of.strip())
+        if dup is None:
+            raise HTTPException(status_code=422, detail={"error": "bad_duplicate_of", "message": why})
+    text = ci_issues.with_authorship(body.comment.strip(), via=getattr(request.state, "via", None),
+                                     identity=identity)
+    results: list[dict] = []
+    for ref in dict.fromkeys(r.strip() for r in body.refs):
+        wi, why = await _ref_work_item(db, ref)
+        if wi is not None and (wi.state or "open") != "open":
+            why = f"{ref} is already closed"
+        if wi is not None and dup is not None and wi.id == dup.id:
+            why = f"{ref} cannot be closed as a duplicate of itself"
+        result: dict
+        comment_url: str | None = None
+        if why is not None:
+            result = {"ok": False, "step": "refused", "error": why}
+        else:
+            assert wi is not None
+            comment_url = await asyncio.to_thread(
+                ci_issues.comment_on_issue, wi.repo or "", int(wi.number or 0), text,
+                automation=False)
+            if comment_url is None:
+                result = {"ok": False, "step": "comment",
+                          "error": "GitHub rejected the comment; the issue was not closed"}
+            else:
+                result = await request.app.state.sessions.pm_issue_close(
+                    wi.id, {"reason": body.reason, "duplicate_of": dup.id if dup else None})
+        await record_audit(db=db, type="pm.workitem.close", identity=identity,
+                           via=getattr(request.state, "via", None),
+                           detail={"ref": ref, "workItemId": wi.id if wi else None,
+                                   "reason": body.reason,
+                                   "duplicateOf": body.duplicate_of if dup else None,
+                                   "commentUrl": comment_url, "ok": bool(result.get("ok")),
+                                   "step": result.get("step")})
+        results.append({"ref": ref, "ok": bool(result.get("ok")), "step": result.get("step"),
+                        "error": result.get("error"), "commentUrl": comment_url})
+    return {"reason": body.reason, "results": results,
+            "closed": sum(1 for r in results if r["ok"]),
+            "refused": sum(1 for r in results if not r["ok"])}
