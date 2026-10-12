@@ -99,7 +99,11 @@ PR linkage, never on labels alone.
   the ladder tops out).
   Candidates come from the **global priority queue** over the mirrored Projects v2 boards
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
-  what the operator sees is what agents do next.
+  what the operator sees is what agents do next. The view judges each product by its own
+  `queue_min_status` / `respect_dependencies` unless the caller overrides them, and
+  `?reason=<skip reason>` adds `skippedItems`, the issues behind a skip count (#2979). A
+  dependency blocks only while its target is open: a closed issue or a merged PR releases its
+  dependants on the next read (`drift.is_open_blocker`), and an unmirrored target fails closed.
 
   **Scope, reach and per-product knobs are the products' now** (product automation policy
   phase 1 — `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md`,

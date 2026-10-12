@@ -25,6 +25,7 @@ from server.mcp_spec import (MCP_PREFIX, ToolArgError, ToolClass, ToolSpec,  # n
 from server.github import ci_issues
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
 from server.pm.desired_state import HELD_KINDS
+from server.pm.queue import MIN_STATUS_OPTIONS, SKIP_REASONS
 
 from .client import AssistantApi, AssistantApiError
 
@@ -950,13 +951,29 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "can meet), 'not_needed' (a session found no PR is needed and the "
                "issue has not materially changed since), 'needs_spec'. `skippedByProduct` and "
                "`dispatchableByProduct` give the same per product slug. `product` narrows "
-               "everything to one slug. min_status limits to items at or above a status "
-               "('backlog' or 'ready'; default 'ready').",
-               _schema(min_status=str, product=str))
+               "everything to one slug. Each product is judged by its own policy (its "
+               "minimum board status and dependency setting), exactly as the runner "
+               "does; min_status ('backlog' or 'ready') overrides that for every product. "
+               "reason (one of the skip reasons above) adds `skippedItems`: the issues "
+               "behind that count — ref, title, url, board status, openBlockers, holdKind "
+               "and workItemId — so you can say WHICH items are blocked or need a person.",
+               _schema(min_status=str, product=str, reason=str))
     @guarded
     async def get_priority_queue(args: dict[str, Any]) -> Any:
-        params = {"min_status": args["min_status"]} if args.get("min_status") else None
-        data = await api.get("/api/pm/queue", params=params)
+        params: dict[str, str] = {}
+        if args.get("min_status"):
+            # The route takes the board's own spelling ('Backlog' / 'Ready'); this
+            # tool has always advertised lowercase, which the route 422'd (#2979).
+            wanted = str(args["min_status"]).strip().lower()
+            match = [o for o in MIN_STATUS_OPTIONS if o.lower() == wanted]
+            if not match:
+                raise ToolArgError("min_status must be 'backlog' or 'ready'")
+            params["min_status"] = match[0]
+        if args.get("reason"):
+            if args["reason"] not in SKIP_REASONS:
+                raise ToolArgError(f"reason must be one of {', '.join(SKIP_REASONS)}")
+            params["reason"] = args["reason"]
+        data = await api.get("/api/pm/queue", params=params or None)
         entries = data.get("entries") or []
         by_product = dict(data.get("skippedByProduct") or {})
         dispatchable = dict(data.get("dispatchableByProduct") or {})
@@ -969,13 +986,17 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             by_product = {k: v for k, v in by_product.items() if k == product}
             dispatchable = {k: v for k, v in dispatchable.items() if k == product}
             skipped = dict(by_product.get(product) or {})
+        items = [i for i in data.get("skippedItems") or []
+                 if not product or i.get("product") == product]
         # `skipped` (reason -> count) is small and is the whole answer to "what is
         # blocked?", so only `entries` is cut. The drop count rides the envelope, so a
         # model seeing 50 rows never reports "50 items queued".
-        return Trimmed({**data, "entries": entries[:_QUEUE_ENTRY_CAP], "skipped": skipped,
-                        "skippedByProduct": by_product,
-                        "dispatchableByProduct": dispatchable},
-                       max(0, len(entries) - _QUEUE_ENTRY_CAP))
+        out = {**data, "entries": entries[:_QUEUE_ENTRY_CAP], "skipped": skipped,
+               "skippedByProduct": by_product, "dispatchableByProduct": dispatchable}
+        if "skippedItems" in data:
+            out["skippedItems"] = items[:_QUEUE_ENTRY_CAP]
+        return Trimmed(out, max(0, len(entries) - _QUEUE_ENTRY_CAP)
+                       + max(0, len(items) - _QUEUE_ENTRY_CAP))
 
     @spec_tool("list_triage",
                "The AI triage inbox: classification proposals awaiting a human decision, "

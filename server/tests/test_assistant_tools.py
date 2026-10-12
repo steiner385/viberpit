@@ -955,8 +955,9 @@ async def test_get_priority_queue_forwards_min_status_and_caps_entries():
 
     out = await _tool(build_tools(_api(handler)), "get_priority_queue").handler(
         {"min_status": "backlog"})
+    # The route takes the board's spelling; lowercase used to 422 there (#2979).
     assert seen == {"method": "GET", "path": "/api/pm/queue",
-                    "params": {"min_status": "backlog"}}
+                    "params": {"min_status": "Backlog"}}
     body = json.loads(out["content"][0]["text"])
     # Capped, but the envelope still reports the drop, so the model never states a
     # truncated queue as if it were the whole one.
@@ -965,6 +966,32 @@ async def test_get_priority_queue_forwards_min_status_and_caps_entries():
     # `skipped` (reason -> count) is what answers "what is blocked by a dependency?",
     # so it must survive the trim untouched.
     assert body["data"]["skipped"] == {"blocked": 4, "status": 9}
+
+
+@pytest.mark.asyncio
+async def test_get_priority_queue_lists_the_items_behind_a_reason():
+    """#2979: ``reason`` forwards to the route, whose ``skippedItems`` is narrowed by
+    ``product`` like everything else; an unknown reason or status never leaves."""
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json={
+            "entries": [], "skipped": {"blocked": 2},
+            "skippedByProduct": {"kindash": {"blocked": 1}, "viberpit": {"blocked": 1}},
+            "skippedItems": [{"ref": "o/k#1", "product": "kindash", "reason": "blocked"},
+                             {"ref": "o/r#2", "product": "viberpit", "reason": "blocked"}]})
+
+    tool = _tool(build_tools(_api(handler)), "get_priority_queue")
+    out = await tool.handler({"reason": "blocked", "product": "viberpit", "min_status": "Ready"})
+    assert seen["params"] == {"reason": "blocked", "min_status": "Ready"}
+    body = json.loads(out["content"][0]["text"])
+    assert [i["ref"] for i in body["data"]["skippedItems"]] == ["o/r#2"]
+
+    seen.clear()
+    for bad in ({"reason": "nope"}, {"min_status": "done"}):
+        res = await tool.handler(bad)
+        assert res.get("is_error") and seen == {}
 
 
 @pytest.mark.asyncio

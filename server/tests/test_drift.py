@@ -65,6 +65,25 @@ def test_top_blockers_counts_open_dependents_and_orders_by_count_then_ref():
              _edge("o/r#9", "o/r#1", "native"), _edge("o/r#4", "o/r#7", "native"),
              _edge("o/r#6", "o/r#8", "native")]
     open_refs = {"o/r#2", "o/r#3", "o/r#4", "o/r#6"}   # #9 is closed
-    out = top_blockers(edges, open_refs, n=2, states={"o/r#1": "open", "o/r#7": "closed"})
+    out = top_blockers(edges, open_refs, n=2, states={"o/r#1": "open", "o/r#7": "open"})
     assert out == [{"ref": "o/r#1", "blocks": 2, "state": "open"},
-                   {"ref": "o/r#7", "blocks": 1, "state": "closed"}]
+                   {"ref": "o/r#7", "blocks": 1, "state": "open"}]
+
+
+def test_top_blockers_drops_a_resolved_blocker_whatever_still_points_at_it():
+    """#2979: a closed issue (or merged PR) blocks nothing, though its active edges
+    survive until the dependant's own next sync. Unknown state still fails closed."""
+    edges = [_edge("o/r#2", "o/r#1", "native"), _edge("o/r#3", "o/r#1", "prose"),
+             _edge("o/r#4", "o/r#7", "prose"), _edge("o/r#5", "o/r#8", "native"),
+             _edge("o/r#6", "x/y#9", "prose")]
+    open_refs = {"o/r#2", "o/r#3", "o/r#4", "o/r#5", "o/r#6"}
+    out = top_blockers(edges, open_refs, states={"o/r#1": "closed", "o/r#7": "merged",
+                                                 "o/r#8": "open"})
+    assert out == [{"ref": "o/r#8", "blocks": 1, "state": "open"},
+                   {"ref": "x/y#9", "blocks": 1, "state": None}]
+
+
+def test_is_open_blocker_only_open_or_unknown_blocks():
+    from server.pm.drift import is_open_blocker
+    assert is_open_blocker("open") and is_open_blocker(None)
+    assert not any(is_open_blocker(s) for s in ("closed", "merged"))

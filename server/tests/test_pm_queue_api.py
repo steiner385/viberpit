@@ -373,3 +373,74 @@ def test_queue_endpoint_lists_a_product_with_nothing_dispatchable_as_zero():
 
         assert body["dispatchableByProduct"] == {"viberpit": 0}
         assert body["skippedByProduct"]["viberpit"]["held"] == 2
+
+
+def _add_backlog_item(c, number: int, *, queue_min_status: str | None) -> None:
+    """A Backlog-status board item on the seeded product, optionally pinning that
+    product's ``queue_min_status``."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import GhProject, GhProjectItem, Project, WorkItem
+
+    async def _seed_async() -> None:
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+            if queue_min_status is not None:
+                proj.automation_policy = {**(proj.automation_policy or {}),
+                                          "queue_min_status": queue_min_status}
+            ghp = (await db.execute(select(GhProject).where(
+                GhProject.project_id == proj.id))).scalar_one()
+            wi = WorkItem(repo="steiner385/viberpit", number=number, kind="issue",
+                          title=f"backlog {number}", state="open", body="b",
+                          url=f"https://example.com/{number}", author="tony")
+            db.add(wi)
+            await db.flush()
+            db.add(GhProjectItem(gh_project_id=ghp.id, work_item_id=wi.id, status="Backlog"))
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_seed_async)
+
+
+def test_queue_reach_defaults_to_each_products_own_policy():
+    """#2979: the view defaulted to a fleet-wide ``Ready`` while the products' policy
+    was ``Backlog``, so every Backlog item read as a ``status`` skip the runner
+    never made. Without an override the view now judges a product as the runner
+    does; ``min_status`` stays an explicit what-if."""
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        _add_backlog_item(c, 103, queue_min_status="Backlog")
+
+        body = c.get("/api/pm/queue", headers=IDENTITY_HEADERS).json()
+        assert "steiner385/viberpit#103" in [e["ref"] for e in body["entries"]]
+        assert "status" not in body["skipped"]
+
+        ready = c.get("/api/pm/queue?min_status=Ready", headers=IDENTITY_HEADERS).json()
+        assert "steiner385/viberpit#103" not in [e["ref"] for e in ready["entries"]]
+        assert ready["skipped"]["status"] == 1
+
+
+def test_queue_reason_lists_the_items_behind_a_skip_count():
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        _add_backlog_item(c, 103, queue_min_status=None)  # policy default: Ready
+
+        body = c.get("/api/pm/queue?reason=blocked", headers=IDENTITY_HEADERS).json()
+        assert body["skipped"] == {"blocked": 1, "status": 1}
+        [item] = body["skippedItems"]
+        assert item["ref"] == "steiner385/viberpit#101" and item["reason"] == "blocked"
+        assert item["openBlockers"] == ["steiner385/viberpit#102"]
+        assert item["status"] == "Ready" and item["workItemId"]
+
+        status = c.get("/api/pm/queue?reason=status", headers=IDENTITY_HEADERS).json()
+        assert [i["ref"] for i in status["skippedItems"]] == ["steiner385/viberpit#103"]
+
+        assert "skippedItems" not in c.get("/api/pm/queue", headers=IDENTITY_HEADERS).json()
+
+
+def test_queue_endpoint_invalid_reason_422():
+    with _client() as c:
+        resp = c.get("/api/pm/queue?reason=nope", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "invalid_reason"

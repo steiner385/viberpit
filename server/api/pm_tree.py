@@ -16,10 +16,11 @@ from server.db.models import (
     Feature, FeatureLink, GhProjectItem, Initiative, Persona, PersonaFeature, Project, ProjectRepo,
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import LIVE_SESSION_STATUSES
+from server.pm.drift import is_open_blocker
 from server.pm.map_changes import Pointer, open_pointer_rows
+from server.pm.mirror_store import blocker_states, blocker_states_stmt
 from server.pm.outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                                 not_needed_suppression, rows_to_bounces, verdicts_by_ref)
-from server.pm.refs import split_ref
 from server.pm.score import rice_score
 from server.pm.triage_accept import _aware, awaiting_decision_clause
 from server.pm.tree import (
@@ -59,15 +60,11 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
     refs = [_ref(w) for w in items]
     deps = (await db.execute(select(WorkItemDep).where(
         WorkItemDep.src_ref.in_(refs), WorkItemDep.active.is_(True)))).scalars().all()
-    dst_refs = {d.dst_ref for d in deps if d.dst_ref}
-    parsed = [p for p in (split_ref(r) for r in dst_refs) if p is not None]
-    dst_state: dict[str, str] = {}
-    if parsed:
-        dst_state = {_ref(w): w.state or "open" for w in (await db.execute(select(WorkItem).where(
-            WorkItem.kind == "issue", tuple_(WorkItem.repo, WorkItem.number).in_(parsed)))).scalars().all()}
+    stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref})
+    dst_state = blocker_states((await db.execute(stmt)).all()) if stmt is not None else {}
     blockers: dict[str, list[str]] = {}
     for d in deps:
-        if d.src_ref and d.dst_ref and dst_state.get(d.dst_ref, "open") == "open":
+        if d.src_ref and d.dst_ref and is_open_blocker(dst_state.get(d.dst_ref)):
             blockers.setdefault(d.src_ref, []).append(d.dst_ref)
     sessions = (await db.execute(select(DbSession.origin_ref, DbSession.status).where(
         DbSession.origin_ref.in_(refs), DbSession.status.in_(LIVE_SESSION_STATUSES)))).all()

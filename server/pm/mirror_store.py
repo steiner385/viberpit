@@ -6,7 +6,7 @@ from collections.abc import Collection, Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import false, or_, update
+from sqlalchemy import false, or_, select, tuple_, update
 from sqlalchemy.orm import Session
 
 from server.db.models import (
@@ -48,6 +48,27 @@ def deps_in_repos(repos: Collection[str]):
         return false()
     return or_(*[WorkItemDep.src_ref.startswith(f"{r}#", autoescape=True)
                  for r in sorted(repos)])
+
+
+def blocker_states_stmt(refs: Collection[str]):
+    """SELECT ``(repo, number, state)`` for the mirrored item behind each blocker
+    ref, or ``None`` when no ref parses (an empty ``in_()`` is a SQLAlchemy warning,
+    not a no-op). Issues AND pull requests (#2979): a ``Depends on #N`` naming a PR
+    resolves when that PR merges, where an issue-only lookup left it unmirrored and
+    blocking forever. GitHub numbers issues and PRs from one sequence, so a ref
+    names at most one row. Fold the rows with ``blocker_states`` and judge each
+    with ``drift.is_open_blocker``."""
+    parsed = sorted({p for p in (split_ref(r) for r in refs) if p is not None})
+    if not parsed:
+        return None
+    return select(WorkItem.repo, WorkItem.number, WorkItem.state).where(
+        WorkItem.kind.in_(("issue", "pr")), tuple_(WorkItem.repo, WorkItem.number).in_(parsed))
+
+
+def blocker_states(rows) -> dict[str, str]:
+    """``blocker_states_stmt`` rows -> ``{ref: state}``. A row with no state reads
+    ``open`` (never resolved); an unmirrored ref is simply absent."""
+    return {f"{repo}#{number}": state or "open" for repo, number, state in rows}
 
 
 def _parse_iso(value: str | None) -> datetime | None:
