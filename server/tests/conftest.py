@@ -23,6 +23,30 @@ from server.tests import _run_scratch
 # --------------------------------------------------------------------------- #
 _run_scratch.install()
 
+# --------------------------------------------------------------------------- #
+# The operator's HOME must not leak into tests either (#3033).                #
+#                                                                              #
+# CI runs on a fresh, empty runner HOME; a dev box's HOME holds a live         #
+# ~/.claude. `paths.shared_base()` falls back to it whenever CLAUDE_CONFIG_DIR #
+# is unset, so every transcript lookup globbed the real ~/.claude/projects     #
+# (1700+ dirs on rocky, seconds per call) and timing-sensitive tests failed    #
+# locally only. Point HOME at a throwaway dir inside the run root, as CI       #
+# effectively has.                                                             #
+#                                                                              #
+# The REAL home is recorded first, in the environment, because xdist workers   #
+# re-import this module with the already-redirected HOME inherited: the        #
+# production guards below (_REAL_HOME / _REAL_STORE) and the host-wide test    #
+# slot dir must keep naming the operator's real paths, never the temp one.     #
+# --------------------------------------------------------------------------- #
+_OPERATOR_HOME_ENV = "VIBERPIT_TESTS_OPERATOR_HOME"
+_OPERATOR_HOME = Path(os.environ.setdefault(_OPERATOR_HOME_ENV, str(Path.home())))
+# The resource guard's default slot dir is ~/.cache/viberpit/test-slots; pin it
+# to the REAL one so concurrent runs still share (and queue on) the same slots.
+os.environ.setdefault("VIBERPIT_TEST_SLOT_DIR",
+                      str(_OPERATOR_HOME / ".cache" / "viberpit" / "test-slots"))
+if Path.home() == _OPERATOR_HOME:
+    os.environ["HOME"] = tempfile.mkdtemp(prefix="viberpit-tests-home-")
+
 
 # --------------------------------------------------------------------------- #
 # Production isolation — redirect ALL ViberPit state to a per-session temp dir #
@@ -44,7 +68,7 @@ _run_scratch.install()
 # Each var is redirected independently iff it is unset or points at the real   #
 # store, so a harness that already isolates one or both is left untouched.     #
 # --------------------------------------------------------------------------- #
-_REAL_HOME = (Path.home() / ".claude-accounts").resolve()
+_REAL_HOME = (_OPERATOR_HOME / ".claude-accounts").resolve()
 
 
 def _db_is_production(db: str | None) -> bool:
@@ -193,6 +217,24 @@ def _no_ambient_remote_daemon_config():
 
 
 _no_ambient_remote_daemon_config()
+
+
+# --------------------------------------------------------------------------- #
+# A real Claude account must not leak into tests either (#3033).               #
+#                                                                              #
+# A suite run from inside a ViberPit session inherits that session's live     #
+# CLAUDE_CONFIG_DIR. Helpers that read it (compose_nudge, the title/refiner    #
+# helpers, …) treat a set dir as "an account is logged in" and spawn a REAL    #
+# Claude CLI call on it: ~100 s per test on the operator's quota, and timing   #
+# assertions that CI — where the variable is unset and the helper declines     #
+# deterministically — never sees fail. Pop it at import, before collection; a  #
+# test that needs a config dir sets its own via monkeypatch / patch.dict.      #
+# --------------------------------------------------------------------------- #
+def _no_ambient_claude_account():
+    os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
+
+_no_ambient_claude_account()
 
 
 # --------------------------------------------------------------------------- #
@@ -518,7 +560,7 @@ def pytest_unconfigure(config):
 # wrapping it here turns a silent production-state corruption into an          #
 # immediate, loud test failure that points at the exact fix.                   #
 # --------------------------------------------------------------------------- #
-_REAL_STORE = (Path.home() / ".claude-accounts").resolve()
+_REAL_STORE = (_OPERATOR_HOME / ".claude-accounts").resolve()
 
 
 def _install_real_store_write_guard():
