@@ -129,6 +129,12 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/pm/projects/acme-billing", True),
     ("GET", "/api/pm/projects/acme-billing/deps", True),
     ("GET", "/api/pm/projects/acme-billing/onboarding", True),
+    # update_product_policy is operator tier ONLY (test_operator_routes_need_the_flag).
+    ("PATCH", "/api/pm/projects/acme-billing/policy", False),
+    # get_pr_files: the files sub-route, and nothing deeper.
+    ("GET", "/api/prs/acme/billing/42/files", True),
+    ("GET", "/api/prs/acme/billing/42/files/extra", False),
+    ("POST", "/api/prs/acme/billing/42/files", False),
     ("GET", "/api/pm/queue", True),
     ("GET", "/api/pm/holds", True),
     ("GET", "/api/pm/triage", True),
@@ -220,6 +226,7 @@ def test_route_allowlist(method, path, ok):
     ("POST", "/api/accounts/a1/refresh"),
     ("PATCH", "/api/accounts/a1/enabled"),
     ("POST", "/api/accounts/a1/reauth"),
+    ("PATCH", "/api/pm/projects/acme-billing/policy"),
 ])
 def test_operator_routes_need_the_flag(method, path):
     assert route_allowed(method, path) is False
@@ -244,6 +251,7 @@ def test_operator_true_does_not_regress_ordinary_routes(method, path):
     ("POST", "/api/accounts/a1/refresh"),
     ("PATCH", "/api/accounts/a1/enabled"),
     ("POST", "/api/accounts/a1/reauth"),
+    ("PATCH", "/api/pm/projects/acme-billing/policy"),
 ])
 def test_operator_routes_not_matched_by_ordinary_allowlist(method, path):
     # ASSISTANT_ROUTE_ALLOW and OPERATOR_ROUTE_ALLOW must stay disjoint: an operator

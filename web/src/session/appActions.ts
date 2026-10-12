@@ -21,6 +21,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   list_hosts: 'Listed fleet hosts',
   list_prs: 'Listed pull requests',
   get_pr: 'Got pull request detail',
+  get_pr_files: 'Read pull request files',
   get_pipeline_health: 'Checked CI health',
   list_repos: 'Listed repositories',
   list_branches: 'Listed branches',
@@ -120,6 +121,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   refresh_account: 'Refreshed account',
   set_account_enabled: 'Changed account enabled state',
   start_reauth: 'Started account re-auth',
+  update_product_policy: 'Changed product automation policy',
 }
 
 /** `fullToolName` is the wire name, e.g. `mcp__viberpit__list_sessions` (or its

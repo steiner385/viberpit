@@ -443,7 +443,7 @@ table, so the model's redirects cannot drift from policy):
 | Fleet host add / remove | topology change | Settings → Fleet |
 | Project/initiative authoring, feature-map proposals | multi-step reviewed flows | Products / Initiatives pages |
 | PR merge/close/label/review beyond `ready_merge_pr` | B5 | the coding session or GitHub |
-| Deploy / upgrade / account refresh **when operator tier is off** | B1 | Settings → General → AI assistant |
+| Deploy / upgrade / account refresh / product policy edits **when operator tier is off** | B1 | Settings → General → AI assistant |
 
 ---
 

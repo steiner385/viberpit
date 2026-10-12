@@ -83,6 +83,26 @@ async def test_api_error_becomes_tool_error():
     assert "SESSION_NOT_FOUND" in out["content"][0]["text"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body,expected", [
+    # The PM routes' structured HTTPException detail.
+    ({"detail": {"error": "policy_expectation_mismatch",
+                 "message": "max_in_flight is 3, not 2"}},
+     "policy_expectation_mismatch: max_in_flight is 3, not 2"),
+    # A plain-string HTTPException detail.
+    ({"detail": "PR not found"}, "404: PR not found"),
+])
+async def test_fastapi_detail_errors_reach_the_model(body, expected):
+    """Most routes raise `HTTPException(detail=…)`, which FastAPI serialises as
+    `{"detail": …}`, not the `{"error": …}` envelope — without reading it the model saw
+    a bare status code and could not tell WHY a call was refused."""
+    status = 409 if isinstance(body["detail"], dict) else 404
+    tools = build_tools(_api(lambda r: httpx.Response(status, json=body)))
+    out = await _tool(tools, "get_session").handler({"id": "zzz"})
+    assert out["is_error"] is True
+    assert expected in out["content"][0]["text"]
+
+
 def test_operator_tools_absent_by_default():
     names = {t.name for t in build_tools(_api(lambda r: httpx.Response(200, json={})))}
     assert not (names & OPERATOR_TOOLS)
@@ -1823,6 +1843,188 @@ async def test_archive_sessions_batch_validates_titles_and_size():
 
     assert calls == [], "a rejected batch must never reach the API"
     assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# get_pr_files (READ) / update_product_policy (operator-tier MUTATION)          #
+# --------------------------------------------------------------------------- #
+
+def _files_payload(patches: list[str | None], **cut) -> dict:
+    return {"repo": "acme/billing", "number": 42, "totalFiles": len(patches),
+            "additions": 1, "deletions": 1,
+            "files": [{"filename": f"docs/f{i}.md", "status": "added", "additions": 1,
+                       "deletions": 0, "patch": p} for i, p in enumerate(patches)],
+            "cut": {"filesOmitted": 0, "patchesTruncated": 0, "patchesOmitted": 0,
+                    "patchBytesOmitted": 0, "maxFiles": 100, "maxPatchBytes": 24000, **cut}}
+
+
+@pytest.mark.asyncio
+async def test_get_pr_files_asks_for_caps_the_envelope_can_carry_and_reports_the_cut():
+    from server.assistant import tools as t
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["call"] = (req.method, req.url.path, dict(req.url.params))
+        return httpx.Response(200, json=_files_payload(["+x\n"], filesOmitted=12))
+
+    out = await _tool(build_tools(_api(handler)), "get_pr_files").handler(
+        {"repo": "acme/billing", "number": 42})
+    assert seen["call"] == ("GET", "/api/prs/acme/billing/42/files",
+                            {"max_files": str(t._PR_FILES_TOOL_MAX),
+                             "max_patch_bytes": str(t._PR_FILES_TOOL_PATCH_BYTES)})
+    env = json.loads(out["content"][0]["text"])
+    assert env["trust"] == "untrusted-data"
+    # The endpoint's cut is what the model sees — reported, never re-derived.
+    assert env["data"]["cut"]["filesOmitted"] == 12
+    assert "capped" not in env
+
+
+@pytest.mark.asyncio
+async def test_get_pr_files_keeps_a_long_patch_whole_across_the_scrubbers_string_cap():
+    """`_scrub` cuts every string at 2000 chars; a patch is split into line-aligned
+    chunks under that so the endpoint's patch budget — not the scrubber — decides how
+    much of the diff the model reads."""
+    patch = "".join(f"+line {i:05d} of a long spec\n" for i in range(400))   # ~11 kB
+
+    out = await _tool(build_tools(_api(lambda r: httpx.Response(200, json=_files_payload(
+        [patch, None])))), "get_pr_files").handler({"repo": "acme/billing", "number": 42})
+    env = json.loads(out["content"][0]["text"])
+    chunks = env["data"]["files"][0]["patch"]
+    assert isinstance(chunks, list) and len(chunks) > 1
+    assert all(len(c) <= 2000 and c.endswith("\n") for c in chunks)
+    assert "".join(chunks) == patch
+    assert env["data"]["files"][1]["patch"] is None
+    assert "capped" not in env
+
+
+def test_get_pr_files_tool_caps_fit_inside_the_result_envelope():
+    """A full-budget answer (every file row, every patch byte) must fit the envelope's
+    own cap, or `wrap_untrusted` would halve the file list on top of the endpoint's cut
+    and the reported `cut` would no longer be the whole story."""
+    from server.assistant import tools as t
+    per_file = t._PR_FILES_TOOL_PATCH_BYTES // t._PR_FILES_TOOL_MAX
+    line = "+ ordinary spec prose line, nothing to escape\n"
+    patch = (line * (per_file // len(line) + 1))[:per_file]
+    data = _files_payload([patch] * t._PR_FILES_TOOL_MAX)
+    for f in data["files"]:
+        f["filename"] = "docs/superpowers/plans/2026-10-12-some-long-plan-name.md"
+        f["patch"] = t._chunk_lines(f["patch"])
+    env = json.loads(wrap_untrusted(data))
+    assert "capped" not in env
+
+
+@pytest.mark.asyncio
+async def test_get_pr_files_rejects_a_bad_repo_locally():
+    calls: list[str] = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+    out = await _tool(build_tools(_api(handler)), "get_pr_files").handler(
+        {"repo": "acme", "number": 1})
+    assert out["is_error"] is True and calls == []
+
+
+def test_get_pr_files_description_flags_untrusted_author_content():
+    desc = _tool(build_tools(_api(lambda r: httpx.Response(200))), "get_pr_files").description
+    assert "untrusted" in desc.lower() and "author" in desc
+
+
+def _policy_tools(handler):
+    return build_tools(_api(handler), operator=True)
+
+
+@pytest.mark.asyncio
+async def test_update_product_policy_patches_with_the_confirmed_before_as_expected():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["call"] = (req.method, req.url.path, json.loads(req.content))
+        return httpx.Response(200, json={
+            "slug": "kindash", "repos": [{"repo": "o/r"}], "edges": [],
+            "automationPolicy": {"max_in_flight": 3},
+            "automationPolicyUpdatedAt": "2026-10-12T00:00:00Z",
+            "effectivePolicy": {"max_in_flight": 3, "risk_tolerance": "cautious",
+                                "dispatch": "off"}})
+
+    out = await _tool(_policy_tools(handler), "update_product_policy").handler(
+        {"product": "kindash", "changes": {"max_in_flight": 3}, "before": {"max_in_flight": 2}})
+    assert out.get("is_error") is not True
+    assert seen["call"] == ("PATCH", "/api/pm/projects/kindash/policy",
+                            {"policy": {"max_in_flight": 3},
+                             "expected": {"max_in_flight": 2}})
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == {"product": "kindash",
+                    "changed": {"max_in_flight": {"before": 2, "after": 3}},
+                    "automationPolicyUpdatedAt": "2026-10-12T00:00:00Z"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args,msg", [
+    ({"product": "kindash", "changes": {}, "before": {}}, "changes"),
+    ({"product": "kindash", "changes": {"dispatch": "auto"}, "before": {"dispatch": "off"}},
+     "risk_tolerance"),
+    ({"product": "kindash", "changes": {"max_in_flight": 3}, "before": {}}, "get_product"),
+    ({"product": "kindash", "changes": {"max_in_flight": 3},
+      "before": {"max_in_flight": 2, "risk_tolerance": "bold"}}, "get_product"),
+    ({"product": "Not A Slug", "changes": {"max_in_flight": 3},
+      "before": {"max_in_flight": 2}}, "product"),
+])
+async def test_update_product_policy_refuses_locally(args, msg):
+    calls: list[str] = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+    out = await _tool(_policy_tools(handler), "update_product_policy").handler(args)
+    assert out["is_error"] is True and calls == []
+    assert msg in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_update_product_policy_relays_a_stale_before_refusal():
+    def handler(req):
+        return httpx.Response(409, json={"detail": {
+            "error": "policy_expectation_mismatch",
+            "message": "The policy changed since it was read: max_in_flight is 3, not 2."}})
+    out = await _tool(_policy_tools(handler), "update_product_policy").handler(
+        {"product": "kindash", "changes": {"max_in_flight": 4}, "before": {"max_in_flight": 2}})
+    assert out["is_error"] is True
+    assert "max_in_flight is 3, not 2" in out["content"][0]["text"]
+
+
+def test_update_product_policy_is_operator_tier_and_a_mutation():
+    from server.assistant.policy import route_allowed
+    assert TOOL_SPECS["update_product_policy"].tool_class is ToolClass.MUTATION
+    assert "update_product_policy" in OPERATOR_TOOLS
+    off = {t.name for t in build_tools(_api(lambda r: httpx.Response(200)))}
+    assert "update_product_policy" not in off
+    assert route_allowed("PATCH", "/api/pm/projects/kindash/policy") is False
+    assert route_allowed("PATCH", "/api/pm/projects/kindash/policy", operator=True) is True
+
+
+def test_update_product_policy_fields_are_real_policy_schema_keys():
+    from server.assistant import tools as t
+    from server.automations.product_policy import PRODUCT_POLICY_SCHEMA
+    assert set(t._POLICY_TOOL_FIELDS) <= {f.key for f in PRODUCT_POLICY_SCHEMA}
+
+
+def test_update_product_policy_card_lists_each_field_before_and_after():
+    items = batch_items(MCP_PREFIX + "update_product_policy", {
+        "product": "kindash",
+        "changes": {"max_in_flight": 3, "skip_labels": ["on-hold", "needs-design"],
+                    "risk_tolerance": "balanced"},
+        "before": {"max_in_flight": 2, "skip_labels": [], "risk_tolerance": "cautious"}})
+    assert items == ["max_in_flight: 2 → 3",
+                     'skip_labels: [] → ["on-hold", "needs-design"]',
+                     "risk_tolerance: cautious → balanced"]
+    # Raw, unvalidated input never breaks the card; a missing before still shows.
+    assert batch_items(MCP_PREFIX + "update_product_policy", {"changes": "x"}) == []
+    assert batch_items(MCP_PREFIX + "update_product_policy",
+                       {"changes": {"max_in_flight": 1}}) == ["max_in_flight: (not given) → 1"]
+    long = batch_items(MCP_PREFIX + "update_product_policy",
+                       {"changes": {"skip_labels": ["x" * 200]}, "before": {"skip_labels": []}})
+    assert len(long[0]) <= 80
 
 
 # --------------------------------------------------------------------------- #

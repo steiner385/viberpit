@@ -3050,6 +3050,65 @@ def test_policy_patch_refuses_corrupt_stored_policy_but_allows_explicit_reset():
         assert c.portal.call(observed)[2] == 1
 
 
+def test_policy_patch_expected_values_guard_the_confirmed_before():
+    """`expected` (the assistant's update_product_policy) pins the values the confirmation
+    card showed as "before": a mismatch is a 409 naming each field, and nothing is
+    written; a match writes, and the audit row records before → after per field."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent
+
+    with _client() as c:
+        c.post("/api/pm/projects", json={"name": "P", "slug": "p",
+                                         "repos": [{"repo": "owner/repo"}]},
+               headers=IDENTITY_HEADERS)
+        url = "/api/pm/projects/p/policy"
+        assert c.patch(url, json={"policy": {"max_in_flight": 3}},
+                       headers=IDENTITY_HEADERS).status_code == 200
+
+        # The product detail carries the effective (default-filled) policy, which is
+        # where the card's "before" values are read from.
+        eff = c.get("/api/pm/projects/p", headers=IDENTITY_HEADERS).json()["effectivePolicy"]
+        assert eff["max_in_flight"] == 3 and eff["risk_tolerance"] == "cautious"
+
+        stale = c.patch(url, json={"policy": {"max_in_flight": 5, "risk_tolerance": "bold"},
+                                   "expected": {"max_in_flight": 2,
+                                                "risk_tolerance": "cautious"}},
+                        headers=IDENTITY_HEADERS)
+        assert stale.status_code == 409, stale.text
+        detail = stale.json()["detail"]
+        assert detail["error"] == "policy_expectation_mismatch"
+        assert detail["mismatches"] == {"max_in_flight": {"expected": 2, "actual": 3}}
+        assert "max_in_flight" in detail["message"]
+        assert c.get("/api/pm/projects/p", headers=IDENTITY_HEADERS).json()[
+            "automationPolicy"] == {"max_in_flight": 3}
+
+        # An unknown field in `expected` is a 422, never a silently ignored guard.
+        bad = c.patch(url, json={"policy": {"max_in_flight": 5},
+                                 "expected": {"max_inflight": 3}}, headers=IDENTITY_HEADERS)
+        assert bad.status_code == 422 and bad.json()["detail"]["error"] == "bad_policy"
+
+        ok = c.patch(url, json={"policy": {"max_in_flight": 5, "skip_labels": ["on-hold"]},
+                                "expected": {"max_in_flight": 3, "skip_labels": []}},
+                     headers=IDENTITY_HEADERS)
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["automationPolicy"] == {"max_in_flight": 5, "skip_labels": ["on-hold"]}
+        assert ok.json()["effectivePolicy"]["max_in_flight"] == 5
+
+        async def _audits():
+            async with db_session() as db:
+                return (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.project.policy"))).scalars().all()
+        last = c.portal.call(_audits)[-1]
+        assert last.detail["changes"] == {
+            "max_in_flight": {"before": 3, "after": 5},
+            "skip_labels": {"before": [], "after": ["on-hold"]},
+        }
+        assert last.detail["expected"] == {"max_in_flight": 3, "skip_labels": []}
+        assert last.detail["policy"] == {"max_in_flight": 5, "skip_labels": ["on-hold"]}
+
+
 def test_triage_rows_carry_guidance_from_the_products_dispatch_policy():
     from sqlalchemy import select
     from server.db import db_session
