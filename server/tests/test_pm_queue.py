@@ -238,6 +238,7 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "bot": _row(author="renovate[bot]"),
         "tracker": _row(labels=("red-watchdog",)),
         "untrusted": _row(author="stranger"),
+        "environment": _row(labels=("env: windows",)),
         "held": _row(hold_kind="owner_action"),
         "parked": _row(labels=("parked",)),
         "not_needed": _row(not_needed_until=NOW + timedelta(days=1),
@@ -581,3 +582,50 @@ def test_a_bare_github_actions_user_cannot_supersede_a_real_alert_series():
     squat = AlertIssue("o/r", 99, title.replace("2026-09-21", "2026-09-30"), "github-actions")
     assert superseded([real, squat]) == []
     assert superseded([real, rest, squat]) == [("o/r#10", "o/r#11")]
+
+
+# ── environment gates: an issue the fleet's hosts cannot run (#2983) ──────────
+ENV_KW = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+
+
+@pytest.mark.parametrize("labels", [
+    ("env: windows",), ("Env: Windows",), ("env:windows",), ("env: macos",),
+    ("bug", "env: windows"),
+    # ``real-target`` needs a specific application in an operator's logged-on session,
+    # which no host can verify — a blanket do-not-auto-dispatch whatever its env.
+    ("real-target",), ("real-target", "env: linux"), ("real-target", "env: any"),
+])
+def test_an_issue_the_fleet_cannot_run_is_skipped_as_environment(labels):
+    row = _row(labels=labels)
+    assert skip_reason(row, **ENV_KW) == "environment"
+    entries, skipped = rank([row], **ENV_KW)
+    assert entries == [] and skipped == {"environment": 1}
+
+
+@pytest.mark.parametrize("labels", [
+    (), ("env: linux",), ("env: both",), ("env: any",), ("ENV: Linux",),
+    # Two env labels: runnable if either names a fleet platform.
+    ("env: windows", "env: linux"),
+    # Not an OS environment (a deploy target, say): no verdict, so no skip.
+    ("env: staging",), ("environment",), ("windows",),
+])
+def test_an_issue_a_linux_host_can_run_is_not_environment_gated(labels):
+    assert skip_reason(_row(labels=labels), **ENV_KW) is None
+
+
+def test_the_fleet_runs_on_linux():
+    """Every session host runs the systemd ``viberpit-daemon.service``; a Windows or
+    macOS host would need this set widened alongside a daemon that runs there."""
+    from server.pm.queue import FLEET_PLATFORMS
+    assert FLEET_PLATFORMS == frozenset({"linux"})
+
+
+def test_ghostdriver_28_windows_real_target_is_not_dispatched():
+    """Dispatched twice in one day to a Linux host; both sessions could only read the
+    banner and put the issue back."""
+    row = _row(repo="steiner385/ghostdriver-mcp", number=28,
+               ref="steiner385/ghostdriver-mcp#28", labels=("real-target", "env: windows"),
+               title="Real-target proof against the line-of-business application")
+    assert skip_reason(row, **ENV_KW) == "environment"
+    # Not a policy choice: a product that works its trackers still cannot run it.
+    assert skip_reason(row, skip_trackers=False, **ENV_KW) == "environment"

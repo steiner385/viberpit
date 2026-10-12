@@ -54,7 +54,8 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
                                                    skips_self_closing_trackers,
                                                    trusted_authors)
     from server.pm.policy_skip import skipped_by_policy
-    from server.pm.queue import is_parked, is_self_closing_tracker, is_trusted_author
+    from server.pm.queue import (is_parked, is_self_closing_tracker, is_trusted_author,
+                                 needs_unavailable_environment)
     escalation = escalation_for(wi.hold_kind, wi.hold_reason)
     if escalation is None:
         raise EscalationApprovalError(
@@ -74,6 +75,8 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
             why = f"it carries {', '.join(named)}"
         elif is_parked(wi.labels or ()):
             why = "a person parked it"
+        elif needs_unavailable_environment(wi.labels or ()):
+            why = "it needs an environment no fleet host has"
         elif not is_trusted_author(wi.author or "", trusted_authors(policy)):
             why = "its author is not a trusted author"
         elif (skips_self_closing_trackers(policy)

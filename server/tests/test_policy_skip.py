@@ -186,3 +186,13 @@ def test_runner_holds_on_self_closing_trackers_go_stale():
     # Opted back in: only the ignore label still releases.
     works = {"kindash": {"skip_self_closing_trackers": False}}
     assert [r.number for r in stale_runner_holds(rows, works, now=NOW)] == [3]
+
+
+def test_approval_tap_refuses_an_issue_the_fleet_cannot_run():
+    """#2983: the approve tap dispatches without re-ranking, so it must refuse an
+    environment-gated issue exactly as the queue skips it."""
+    for labels in (("env: windows",), ("real-target", "env: windows")):
+        assert skipped_by_policy(author="app/github-actions", labels=labels, title="t",
+                                 policy=None)
+    assert not skipped_by_policy(author="app/github-actions", labels=("env: linux",),
+                                 title="t", policy=None)

@@ -501,6 +501,13 @@ PR linkage, never on labels alone.
   UI yet — `AutomationContext.list_events` drops `detail` entirely, so this is data for the
   history, not the activity feed, until a later phase reads it.
 
+  Environment gates (#2983): `rank` skips an issue as `environment` when it carries `real-target`
+  (a specific application in an operator's logged-on session, which no host can verify) or when its
+  `env: <os>` labels (`linux`, `windows`, `macos`, `both`, `any`; any case) name no platform in
+  `queue.FLEET_PLATFORMS` — `{"linux"}`, because every session host runs the systemd daemon. An
+  `env:` value that is not an OS (`env: staging`) carries no verdict. The approve-escalation tap
+  refuses the same issues (`policy_skip.skipped_by_policy`), since it dispatches without re-ranking.
+
   `_backlog_query_queue` threads each ON product's own `give_up_after_bounces` into `rank`
   (`server/pm/queue.py`), which checks the `needs_spec` skip right after the `held` skip (the queue
   skips held items as `held`; the Backlog Runner's give-up writes the hold (`hold_by = runner`) and
