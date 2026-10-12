@@ -301,14 +301,14 @@ async def test_outage_past_the_grace_window_escalates_to_warning(
 
 
 def test_reconnect_log_level_policy(monkeypatch):
-    monkeypatch.setattr(ipc_client, "_RECONNECT_WARN_AFTER_S", 60.0)
+    monkeypatch.setattr(ipc_client, "_RECONNECT_WARN_AFTER_S", 150.0)
     for blip in (TimeoutError("timed out during opening handshake"),
                  ConnectionRefusedError("connection refused"),
                  _keepalive_ping_timeout_close(),
                  _peer_keepalive_ping_timeout_close()):
         assert ipc_client._reconnect_log_level(blip, 0.0) == logging.INFO
-        assert ipc_client._reconnect_log_level(blip, 59.9) == logging.INFO
-        assert ipc_client._reconnect_log_level(blip, 60.0) == logging.WARNING
+        assert ipc_client._reconnect_log_level(blip, 149.9) == logging.INFO
+        assert ipc_client._reconnect_log_level(blip, 150.0) == logging.WARNING
     close = websockets.frames.Close(websockets.CloseCode.SERVICE_RESTART, "restart")
     restart = websockets.ConnectionClosed(close, close, rcvd_then_sent=True)
     assert ipc_client._reconnect_log_level(restart, 3600.0) == logging.INFO
