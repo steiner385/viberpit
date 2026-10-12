@@ -459,16 +459,45 @@ def attested_front_end_hop(conn: Request | WebSocket) -> bool:
         return False
     if not uids:
         return not _is_this_host(host)
+    origin = _stamped_origin(conn, uids)
+    return origin is not None and _is_another_tailnet_device(origin)
+
+
+def _stamped_origin(conn: Request | WebSocket, uids: set[int]) -> str | None:
+    """The original client the front-end owning the socket (*uids*) stamped, or None
+    when the owner is not exactly one front-end or it stamped nothing."""
     if len(uids) != 1:
-        return False
+        return None
     header = _front_end_headers().get(next(iter(uids)))
     if header is None:
-        return False
+        return None
     values = [v.strip() for v in ",".join(conn.headers.getlist(header)).split(",")
               if v.strip()]
     # tailscaled SETS X-Forwarded-For to the source address; were it ever to append
     # instead, the last entry is still the one it wrote. nginx overwrites X-Real-IP.
-    return bool(values) and _is_another_tailnet_device(_forwarded_entry(values[-1])[0])
+    return _forwarded_entry(values[-1])[0] if values else None
+
+
+def _rewritten_by_x_forwarded_for(conn: Request | WebSocket) -> bool:
+    """True when ``scope["client"]`` is not the recorded socket peer, i.e.
+    TransportPeerMiddleware rewrote it from ``X-Forwarded-For``."""
+    peer = conn.scope.get(TRANSPORT_PEER_SCOPE_KEY)
+    return peer is not None and tuple(peer) != tuple(conn.scope.get("client") or ())
+
+
+def _front_end_origin(conn: Request | WebSocket) -> str | None:
+    """The client a front-end relayed this connection for, read from the header THAT
+    front-end stamps (``_FRONT_ENDS``), or None: a socket no single front-end owns, or
+    one that cannot be attributed, names no one."""
+    peer = conn.scope[TRANSPORT_PEER_SCOPE_KEY]
+    server = conn.scope.get("server")
+    try:
+        uids = peer_socket_uids((str(peer[0]), int(peer[1] or 0)),
+                                tuple(server) if server else None,
+                                conn.scope.get(TRANSPORT_INODE_SCOPE_KEY))
+    except (TypeError, ValueError, IndexError):
+        return None
+    return _stamped_origin(conn, uids) if uids else None
 
 
 # Tailscale's address ranges: CGNAT for IPv4, its ULA prefix for IPv6.
@@ -524,6 +553,12 @@ def _whois(request: Request | WebSocket) -> dict | None:
         direct_peer = request.client.host if request.client else None
         peer_ip: str | None = direct_peer
         forwarded = request.headers.get("X-Real-IP")
+        rewritten = _rewritten_by_x_forwarded_for(request)
+        if rewritten:
+            # request.client is X-Forwarded-For, and only tailscaled sets that header.
+            # nginx overwrites X-Real-IP; an X-Forwarded-For it passes through is the
+            # client's own choice, so whois must not follow it (#3010).
+            peer_ip = forwarded = _front_end_origin(request)
         # Only honour X-Real-IP when something entitled to set it sits in front:
         # loopback, one of this node's own tailnet addresses, or an address in
         # VIBERPIT_TRUSTED_PROXY_IPS. This is the same predicate the identity-header
@@ -532,7 +567,7 @@ def _whois(request: Request | WebSocket) -> dict | None:
         # with no X-Real-IP the verdict cannot change peer_ip, and since #2134 the
         # check can cost a `tailscale status` spawn — the exact per-request cost
         # this whole path exists to stop paying.
-        if forwarded and _peer_is_trusted(request):
+        if forwarded and not rewritten and _peer_is_trusted(request):
             peer_ip = forwarded
         if not peer_ip:
             return None

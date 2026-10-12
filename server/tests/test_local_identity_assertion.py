@@ -249,6 +249,58 @@ def test_transport_peer_middleware_records_the_socket_peer_and_still_applies_xff
     assert seen == {"client": ("100.64.0.9", 0), "peer": ("127.0.0.1", 41000), "inode": None}
 
 
+_ATTACKER = "100.64.0.66"  # another tailnet device, not the operator
+
+
+def _whois_target(uids, headers):
+    """The address `tailscale whois` is asked about for a request that reached the edge
+    on 127.0.0.1:41000 with *headers*, the socket owned by *uids*, after the real
+    TransportPeerMiddleware applied X-Forwarded-For."""
+    import asyncio
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["request"] = Request(scope)
+
+    scope = {"type": "http", "client": ("127.0.0.1", 41000), "server": ("127.0.0.1", 8787),
+             "scheme": "http", "path": "/", "method": "GET",
+             "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()]}
+    asyncio.run(TransportPeerMiddleware(app)(scope, None, None))
+    argv = []
+
+    def run(cmd, **_kw):
+        argv.append(cmd[-1])
+        return type("R", (), {"returncode": 1, "stdout": ""})()
+
+    lookup = {"side_effect": uids} if isinstance(uids, BaseException) else {"return_value": uids}
+    with patch(_UIDS, **lookup), patch.object(identity.subprocess, "run", run):
+        identity._whois(seen["request"])
+    return argv[0] if argv else None
+
+
+@pytest.mark.parametrize("uids,headers,target", [
+    # nginx overwrote X-Real-IP with the attacker's address and passed their forged
+    # X-Forwarded-For through (an unpatched vhost): whois must ask about the attacker.
+    ({33}, {_XFF: _PHONE, _XRI: _ATTACKER}, _ATTACKER),
+    ({33}, {_XFF: f"{_ATTACKER}, {_PHONE}", _XRI: _ATTACKER}, _ATTACKER),
+    ({33}, {_XFF: _ATTACKER, _XRI: _ATTACKER}, _ATTACKER),  # the patched vhost
+    # tailscale serve sets X-Forwarded-For itself; a client X-Real-IP is not its header.
+    ({0}, {_XFF: _PHONE, _XRI: _ATTACKER}, _PHONE),
+    # a socket no front-end owns, or one that cannot be attributed, names no one
+    ({_OPERATOR_UID}, {_XFF: _PHONE}, None),
+    (None, {_XFF: _PHONE, _XRI: _PHONE}, None),
+    ({33, 0}, {_XFF: _PHONE, _XRI: _PHONE}, None),
+])
+def test_a_forged_x_forwarded_for_cannot_pick_the_whois_target(uids, headers, target):
+    # #3010: request.client is rewritten from X-Forwarded-For, which only tailscaled sets.
+    assert _whois_target(uids, headers) == target
+
+
+def test_whois_without_a_rewrite_still_honours_x_real_ip_from_a_trusted_peer():
+    assert _whois_target(AssertionError("no rewrite: must not read /proc"),
+                         {_XRI: _PHONE}) == _PHONE
+
+
 def test_human_gate_via_keeps_recorded_attribution_and_skips_non_ip_transports():
     with patch(_UIDS, side_effect=AssertionError("must not read /proc")):
         assert human_gate_via(_conn("127.0.0.1", via="assistant")) == "assistant"
