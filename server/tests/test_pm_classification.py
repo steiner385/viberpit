@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 
 from server.automations.completion_bar import (
+    PrFacts,
     has_keep_draft_instruction,
     has_no_arm_instruction,
+    has_no_pr_dispatch,
+    met_bar,
 )
 from server.pm.classification import (
     CLASSIFY_CHUNK_SIZE,
@@ -141,6 +144,22 @@ def test_classification_prompt_lists_items_and_features():
     assert "sessions" in p and "triage" in p
     assert "no_fit" in p                        # the escape hatch is offered
     assert "JSON" in p                          # structured output requested
+
+
+def test_classification_prompt_declares_output_only_no_pr_scope():
+    """#2916: a classify session's deliverable is the fenced JSON array — the harvest
+    writes the proposals; nothing in the repo is committed. The dispatch must say so
+    in the phrasing the completion bar and goal inference recognize, or a code-flavored
+    (inferred) goal demands "open a PR and arm auto-merge" of a session that cannot."""
+    p = build_classification_prompt(items=[_item(7)], features=[])
+    assert has_no_pr_dispatch(p)
+    verdict = met_bar(
+        "Commit backlog feature classification into feature-map code", "inferred",
+        PrFacts(has_repo=True), "not-needed", pr_resolution_source="tool",
+        instructions=p)
+    assert verdict.met and verdict.confidence == "high"
+    # The JSON contract is still the final instruction.
+    assert p.rstrip().endswith("Do not classify any item not listed above.")
 
 
 def test_classification_prompt_injects_corrections():

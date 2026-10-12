@@ -495,7 +495,9 @@ def build_classification_prompt(
 
     Presents a chunk of open items and the candidate feature map, and asks for a
     JSON array of classifications with RICE-lite scores + a ``no_fit`` escape
-    hatch. Past human corrections (spec §6) are surfaced as ground truth."""
+    hatch. Past human corrections (spec §6) are surfaced as ground truth. The
+    session is output-only (read-only, no PR): the chained harvest records the
+    array, so nothing in the repository is the deliverable (#2916)."""
     feature_lines = "\n".join(
         f"- `{f.slug}` — {f.title}: {f.summary}" for f in features
     ) or "- (no features yet — every item is likely no_fit)"
@@ -516,6 +518,11 @@ def build_classification_prompt(
         "Assign each work item to the single best-fitting feature, or answer "
         "`no_fit` with a suggested new-feature name when none fits — never force "
         "a bad assignment.\n\n"
+        # #2916: say it in the phrasing ``completion_bar.has_no_pr_dispatch`` reads —
+        # the bar and goal inference both take it as the session's scope, so a
+        # code-flavored inferred goal cannot demand a PR from a JSON-only session.
+        "This is a read-only task: your reply is the deliverable (ViberPit records "
+        "the classifications from it). Do not edit files or commit, and open no PR.\n\n"
         "CANDIDATE FEATURES:\n"
         f"{feature_lines}\n\n"
         "WORK ITEMS TO CLASSIFY:\n"
