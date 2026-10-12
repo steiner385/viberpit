@@ -19,6 +19,32 @@ from server.sessions.completion import commit_trailer
 VALID_AUTOFIX_MODES: frozenset[str] = frozenset({"off", "propose", "auto"})
 
 
+def _head_branch(pr: PullRequestInfo) -> str:
+    """The PR's head branch for a push refspec, or a placeholder naming where to
+    read it when the cached info predates ``head_ref``."""
+    return pr.head_ref or f"<head branch from `gh pr view {pr.number} --json headRefName`>"
+
+
+def _checkout_step(pr: PullRequestInfo) -> str:
+    """Check the PR out under a LOCAL name of its own (#2995). A bare
+    ``gh pr checkout N`` names the local branch after the PR head, which git
+    refuses when another worktree already holds that branch — the original
+    session's, usually. ``--branch`` still tracks ``origin/<head>``, so the push
+    below and the completion gate's upstream link (``worktrees.push_evidence``)
+    both land on the PR itself rather than on a new branch that would invite a
+    duplicate PR."""
+    return (
+        f"Check out the PR branch first — your worktree HEAD may have moved on, and "
+        f"the PR's own branch may be checked out in another worktree, so use a local "
+        f"name of your own: `gh pr checkout {pr.number} --branch pr-{pr.number}` "
+        f"(if git says `pr-{pr.number}` is already used by another worktree, pick "
+        f"another local name). It tracks `origin/{_head_branch(pr)}`; push to the PR "
+        f"with an explicit refspec — `git push origin HEAD:{_head_branch(pr)}` — never "
+        f"a bare `git push`, and never open a new PR: the existing PR #{pr.number} is "
+        f"the deliverable."
+    )
+
+
 def build_pr_fix_prompt(
     repo: str, pr: PullRequestInfo, *,
     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
@@ -36,11 +62,11 @@ def build_pr_fix_prompt(
         f"Your pull request {repo}#{pr.number} (\"{pr.title}\") has failing CI checks. "
         f"Investigate and restore it.\n\n"
         f"Steps:\n"
-        f"1. Check out the PR branch first — your worktree HEAD may have moved on: "
-        f"`gh pr checkout {pr.number}` (then `git pull` to get the latest).\n"
+        f"1. {_checkout_step(pr)}\n"
         f"2. Inspect what's red: `gh pr checks {pr.number}` and reproduce the failing "
         f"job locally (run the relevant tests/lint/build).\n"
-        f"3. Fix the root cause, commit, and push so CI re-runs. End the commit "
+        f"3. Fix the root cause, commit, and push "
+        f"(`git push origin HEAD:{_head_branch(pr)}`) so CI re-runs. End the commit "
         f"message with:\n"
         f"   `{commit_trailer(engine)}`\n"
         f"4. Briefly report what was broken and what you changed.\n\n"
@@ -66,8 +92,7 @@ def build_conflict_fix_prompt(
         f"Your pull request {repo}#{pr.number} (\"{pr.title}\") has a MERGE CONFLICT "
         f"with its base branch and cannot be merged. Resolve it.\n\n"
         f"Steps:\n"
-        f"1. Check out the PR branch first — your worktree HEAD may have moved on: "
-        f"`gh pr checkout {pr.number}`.\n"
+        f"1. {_checkout_step(pr)}\n"
         f"2. Bring in the base branch and rebase onto it (prefer rebase; fall back to "
         f"merge if a rebase is unwieldy): `git fetch origin` then "
         f"`git rebase origin/<base>` (or `git merge origin/<base>`).\n"
@@ -75,7 +100,8 @@ def build_conflict_fix_prompt(
         f"discard either. Remove all conflict markers.\n"
         f"4. Run the tests/lint/build to confirm the resolution is correct.\n"
         f"5. Commit the resolution and push (a rebase needs "
-        f"`git push --force-with-lease`; a merge is a normal `git push`) so the PR "
+        f"`git push --force-with-lease origin HEAD:{_head_branch(pr)}`; a merge is a "
+        f"plain `git push origin HEAD:{_head_branch(pr)}`) so the PR "
         f"becomes mergeable and CI re-runs. End the commit message with:\n"
         f"   `{commit_trailer(engine)}`\n"
         f"6. Briefly report which files conflicted and how you reconciled them.\n\n"
