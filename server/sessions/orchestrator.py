@@ -6998,6 +6998,24 @@ class SessionOrchestrator:
                                       instructions=initial_prompt,
                                       pr_resolution_note=claim_note,
                                       claim_confirmed=claim_confirmed)
+                # A not-met verdict about a LINKED PR becomes a nudge to change that PR,
+                # so judge it on GitHub's word, not a cache's (#2982, #2994): re-read
+                # each PR live by number. An unreadable PR holds the session at
+                # `complete` for the stuck-complete sweep instead of nudging blind.
+                if not verdict.met and pr.prs:
+                    live = await self._completion_live_pr_facts(pr)
+                    if live is None:
+                        self._auto_archiving.discard(session_id)
+                        self._complete_nudge_held.add(session_id)
+                        log.info("completion.nudge_unverified sid=%s reason=%s",
+                                 session_id, verdict.reason)
+                        return
+                    pr = live
+                    verdict = met_bar(goal_text, goal_source, pr, resolution,
+                                      pr_resolution_source=source,
+                                      instructions=initial_prompt,
+                                      pr_resolution_note=claim_note,
+                                      claim_confirmed=claim_confirmed)
                 # Salvage the low-confidence "code goal but no PR" case: a research/Q&A
                 # session that legitimately opens no PR shouldn't be nudged to open one,
                 # and a self-declared no-PR is verified (or not) against the goal here.
@@ -14701,11 +14719,7 @@ class SessionOrchestrator:
 
         def _add(pr_repo: str, info) -> None:
             if info is not None and (pr_repo.lower(), info.number) not in seen:
-                seen[(pr_repo.lower(), info.number)] = PrFact(
-                    number=info.number, state=info.state, is_draft=info.is_draft,
-                    auto_merge_enabled=info.auto_merge_enabled,
-                    in_merge_queue=info.in_merge_queue, url=info.url,
-                    checks=info.checks, is_docs_only=info.docs_only)
+                seen[(pr_repo.lower(), info.number)] = PrFact.from_info(info)
 
         population = getattr(self, "_pr_population", None)
         pairs = [(rec.repo, br) for br in self._session_pr_branches(rec) if rec.repo]
@@ -15132,6 +15146,33 @@ class SessionOrchestrator:
             log.warning("autopilot.refresh_pr_facts failed sid=%s", session_id, exc_info=True)
             return None
         return self._autopilot_pr_facts(rec)
+
+    async def _completion_live_pr_facts(self, facts: "PrFacts") -> "PrFacts | None":
+        """*facts* with every linked PR re-read LIVE by number (``_live_pr``), or None
+        when any read fails — the completion gate's last check before it tells a
+        session to change a PR (#2982, #2994).
+
+        Both caches it otherwise judges lag GitHub: the per-branch refresh returns
+        None in cooldown or when transcript linkage replay fails, and the population
+        cache (origin-PR links, head_ref fallback) is refreshed on its own cycle. Prod
+        2026-10-11 (cairnea/web#28): a PR merged at 11:37:58Z was still read as open
+        and unarmed, and the session got "ready the PR and arm auto-merge" three
+        times after reporting the merge. A merge-queued PR (``autoMergeRequest`` null,
+        ``mergeQueueEntry`` set) lags the same way."""
+        from server.automations.completion_bar import PrFact
+        from server.sessions.artifacts import github_pr_ref
+        live: list[PrFact] = []
+        for fact in facts.prs:
+            ref = github_pr_ref(fact.url)
+            try:
+                info = await self._live_pr(*ref) if ref is not None else None
+            except Exception:  # noqa: BLE001 — unverified, never a stuck gate guard
+                log.debug("completion.live_pr_read_failed url=%s", fact.url, exc_info=True)
+                info = None
+            if info is None:
+                return None
+            live.append(PrFact.from_info(info))
+        return dataclass_replace(facts, prs=tuple(live))
 
     async def _autopilot_compose(self, ctx, decision):
         """Compose the actual nudge text (spec §3): rich transcript window + the
@@ -15919,7 +15960,7 @@ class SessionOrchestrator:
         from server.automations import pr_doctor_engine as engine
         target = f"{repo}#{info.number}"
         reason = engine.stale_dispatch_reason(
-            kind, info, await self._pr_doctor_live_pr(repo, info.number))
+            kind, info, await self._live_pr(repo, info.number))
         if reason is None:
             return False
         await self._pr_doctor_report_skip(
@@ -15943,18 +15984,20 @@ class SessionOrchestrator:
 
     # Bounded, like the ETA fetch: the live read yields to an in-flight PR-status
     # refresh on the shared GitHub-App budget, but never waits on a wedged one.
-    _PR_DOCTOR_LIVE_GATE_TIMEOUT_S = 30.0
+    _LIVE_PR_GATE_TIMEOUT_S = 30.0
 
-    async def _pr_doctor_live_pr(self, repo: str, number: int) -> "PullRequestInfo | None":
-        """One live ``gh api graphql`` read of PR *number*, or None on any failure
-        (the caller fails open to its snapshot). Mirrors ``_fetch_pr_detail``, and
-        spends the shared GitHub-App budget as a low-priority caller of
-        ``_api_gate`` (the pollers' ``PriorityGate``)."""
+    async def _live_pr(self, repo: str, number: int) -> "PullRequestInfo | None":
+        """One live ``gh api graphql`` read of PR *number*, or None on any failure.
+        Shared by PR Doctor's pre-dispatch re-check (which fails open to its
+        snapshot) and the completion gate (which holds rather than nudge on an
+        unverified snapshot). Mirrors ``_fetch_pr_detail``, and spends the shared
+        GitHub-App budget as a low-priority caller of ``_api_gate`` (the pollers'
+        ``PriorityGate``)."""
         import json as _json
 
         from server.github.pr_status import build_live_pr_query, parse_live_pr_response
 
-        await self._api_gate.wait_until_idle(self._PR_DOCTOR_LIVE_GATE_TIMEOUT_S)
+        await self._api_gate.wait_until_idle(self._LIVE_PR_GATE_TIMEOUT_S)
 
         def _do() -> "PullRequestInfo | None":
             try:
@@ -15966,7 +16009,8 @@ class SessionOrchestrator:
                     return None
                 return parse_live_pr_response(_json.loads(proc.stdout or "{}"), repo)
             except Exception:  # noqa: BLE001 — a live-read hiccup must not break the sweep
-                log.debug("pr_doctor.live_read_failed repo=%s pr=%s", repo, number, exc_info=True)
+                log.debug("github.live_pr_read_failed repo=%s pr=%s", repo, number,
+                          exc_info=True)
                 return None
 
         return await asyncio.to_thread(_do)
