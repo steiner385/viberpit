@@ -32,6 +32,9 @@ def client(fixture=None):
 # c78f1a7d53459a2aa4682d008d3dc5affa339eb9c736ac8b3ce0d554f1f63852
 # Before the Session Feedback inbox tools (#2936, 130 cases):
 # 79ca4b875008304b9ae35fea7a855a9797d9dd6b8091bca68aa126e11e5b0cb8
+# Before the issue triage writes (set_board_status / close_issue / comment_on_issue,
+# Refs #2979, 136 cases):
+# 255b8959cfae685b78e851187caaab3d34b3ff458f015f861ea6bc941564d3ee
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -39,8 +42,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "255b8959cfae685b78e851187caaab3d34b3ff458f015f861ea6bc941564d3ee"
-    assert len(rows) == 136
+    assert digest == "3969d1e904b532b62a4259106b25720c79fa7f82fe4b29a612125a21af74cc6c"
+    assert len(rows) == 140
     assert sum(bool(r.get("operator")) for r in rows) == 5
 
 
@@ -696,3 +699,28 @@ def test_feedback_inbox_fixture_routes():
         assert c.post(f"{base}/attach", json={"ids": ["fb-4"], "sessionId": ev.S7}
                       ).status_code == 409
         assert c.post(f"{base}/dismiss", json={"ids": ["nope"]}).status_code == 422
+
+
+def test_triage_write_fixture_routes():
+    """The triage writes' canned routes (Refs #2979) answer in the real routes' shapes:
+    per-ref results with refusals for refs the queue doesn't hold or a Status the board
+    doesn't have, and the real 422 for a duplicate close without duplicateOf. The queue
+    carries the issue-title injection the injection case reads."""
+    with client() as c:
+        entries = c.get("/api/pm/queue").json()["entries"]
+        assert any("close_issue" in e["title"] for e in entries)
+        assert max(entries, key=lambda e: e["score"])["ref"] == "acme/billing#18"
+        r = c.post("/api/pm/board-status", json={
+            "refs": ["acme/billing#18", "acme/nope#1"], "status": "Ready"}).json()
+        assert (r["updated"], r["refused"]) == (1, 1)
+        bad = c.post("/api/pm/board-status", json={
+            "refs": ["acme/billing#18"], "status": "Someday"}).json()["results"][0]
+        assert not bad["ok"] and "Backlog" in bad["error"]
+        closed = c.post("/api/pm/issues/close", json={
+            "refs": ["acme/billing#20"], "reason": "duplicate", "duplicateOf": "acme/billing#18",
+            "comment": "Tracked in #18."}).json()
+        assert closed["closed"] == 1 and closed["results"][0]["commentUrl"]
+        assert c.post("/api/pm/issues/close", json={
+            "refs": ["acme/billing#20"], "reason": "duplicate", "comment": "c"}).status_code == 422
+        url = c.post("/api/github/issues/acme/checkout/3/comments", json={"body": "b"}).json()["url"]
+        assert url.startswith("https://github.com/acme/checkout/issues/3#")

@@ -130,7 +130,7 @@ def comment_on_pr(repo: str, number: int, body: str, *,
         return None
 
 
-def comment_on_issue(repo: str, number: int, body: str, *,
+def comment_on_issue(repo: str, number: int, body: str, *, automation: bool = True,
                      run=gitrepos._run_gh) -> str | None:
     """Comment on an issue, returning the comment's html_url; None on failure.
 
@@ -140,11 +140,14 @@ def comment_on_issue(repo: str, number: int, body: str, *,
     error triage, the session-feedback filer (#1434) and the CI/CD Doctor (#1433).
 
     Marked ``AUTOMATION_COMMENT_MARKER`` so the mirror never reads it as a person's
-    comment re-arming a not-needed issue (#2683 review).
+    comment re-arming a not-needed issue (#2683 review). ``automation=False`` is for
+    a comment a PERSON asked for (the assistant's ``comment_on_issue`` and the note
+    ``close_issue`` posts): that is the operator's word on the issue, and re-arming on
+    it is exactly right — so, like ``comment_on_pr``, it goes out unmarked.
     """
+    text = with_automation_marker(body) if automation else body
     try:
-        proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f",
-                    f"body={with_automation_marker(body)}"])
+        proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={text}"])
         if proc.returncode != 0:
             log_gh_failure(log, proc.stderr, "github.issue_comment_failed repo=%s #%s: %s",
                            repo, number, proc.stderr.strip())

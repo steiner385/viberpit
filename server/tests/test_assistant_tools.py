@@ -1767,6 +1767,118 @@ def test_github_write_tools_are_mutation_class():
         assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION
 
 
+# --------------------------------------------------------------------------- #
+# Triage writes on existing issues (Refs #2979): comment_on_issue,              #
+# set_board_status, close_issue                                                 #
+# --------------------------------------------------------------------------- #
+
+def test_triage_write_classes():
+    """Comment and board move are reversible-enough MUTATIONs like comment_on_pr;
+    closing someone's issue is DESTRUCTIVE — a card in every mode."""
+    assert TOOL_SPECS["comment_on_issue"].tool_class is ToolClass.MUTATION
+    assert TOOL_SPECS["set_board_status"].tool_class is ToolClass.MUTATION
+    assert TOOL_SPECS["close_issue"].tool_class is ToolClass.DESTRUCTIVE
+
+
+@pytest.mark.asyncio
+async def test_comment_on_issue_posts_to_the_issue_comments_route():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["call"] = (req.method, req.url.path, json.loads(req.content))
+        return httpx.Response(201, json={"url": "https://c/2"})
+
+    out = await _tool(build_tools(_api(handler)), "comment_on_issue").handler(
+        {"repo": "acme/checkout", "number": 3, "body": "  repros on Safari 18  "})
+    assert out.get("is_error") is not True
+    assert seen["call"] == ("POST", "/api/github/issues/acme/checkout/3/comments",
+                            {"body": "repros on Safari 18"})
+
+
+def test_comment_on_issue_says_operator_only():
+    desc = _tool(build_tools(_api(lambda _: httpx.Response(200))), "comment_on_issue").description
+    assert "Only ever call this when the OPERATOR asked" in desc
+
+
+@pytest.mark.asyncio
+async def test_set_board_status_posts_refs_status_and_add_flag():
+    seen: list = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json={"results": []})
+
+    tool = _tool(build_tools(_api(handler)), "set_board_status")
+    await tool.handler({"refs": ["acme/billing#18", " acme/billing#20 "],
+                        "titles": ["Proration", "CSV"], "status": "Ready"})
+    await tool.handler({"refs": ["acme/billing#18"], "titles": ["Proration"],
+                        "status": "Backlog", "add_if_missing": False})
+    assert seen[0] == ("/api/pm/board-status",
+                       {"refs": ["acme/billing#18", "acme/billing#20"], "status": "Ready"})
+    assert seen[1][1]["addIfMissing"] is False
+
+
+@pytest.mark.asyncio
+async def test_close_issue_posts_reason_comment_and_duplicate_of():
+    seen: list = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json={"results": []})
+
+    tool = _tool(build_tools(_api(handler)), "close_issue")
+    out = await tool.handler({"refs": ["acme/billing#20"], "titles": ["CSV"],
+                              "reason": "duplicate", "duplicate_of": "acme/billing#18",
+                              "comment": "Tracked in #18."})
+    assert out.get("is_error") is not True
+    assert seen == [("/api/pm/issues/close", {
+        "refs": ["acme/billing#20"], "reason": "duplicate", "comment": "Tracked in #18.",
+        "duplicateOf": "acme/billing#18"})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args,msg", [
+    ("set_board_status", {"refs": ["o/r#1"], "titles": ["t"], "status": " "}, "status"),
+    ("set_board_status", {"refs": [f"o/r#{i}" for i in range(21)], "titles": ["t"] * 21,
+                          "status": "Ready"}, "at most 20"),
+    ("set_board_status", {"refs": ["o/r#1", "o/r#2"], "titles": ["t"], "status": "Ready"},
+     "get_priority_queue"),
+    ("close_issue", {"refs": ["o/r#1"], "titles": ["t"], "reason": "wontfix",
+                     "comment": "c"}, "reason"),
+    ("close_issue", {"refs": ["o/r#1"], "titles": ["t"], "reason": "duplicate",
+                     "comment": "c"}, "duplicate_of"),
+    ("close_issue", {"refs": ["o/r#1"], "titles": ["t"], "reason": "completed",
+                     "duplicate_of": "o/r#2", "comment": "c"}, "duplicate_of"),
+    ("close_issue", {"refs": ["o/r#1"], "titles": ["t"], "reason": "duplicate",
+                     "duplicate_of": "o/r", "comment": "c"}, "owner/repo#123"),
+    ("close_issue", {"refs": ["o/r#1"], "titles": ["t"], "reason": "completed",
+                     "comment": ""}, "comment"),
+    ("close_issue", {"refs": [f"o/r#{i}" for i in range(21)], "titles": ["t"] * 21,
+                     "reason": "completed", "comment": "c"}, "at most 20"),
+    ("comment_on_issue", {"repo": "acme", "number": 3, "body": "b"}, "owner/name"),
+    ("comment_on_issue", {"repo": "acme/checkout", "number": 3, "body": " "}, "body"),
+])
+async def test_triage_write_tools_reject_bad_args_locally(name, args, msg):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert out["is_error"] is True
+    assert msg in out["content"][0]["text"]
+    assert calls == []
+
+
+def test_triage_bulk_cards_enumerate_every_ref():
+    inp = {"refs": ["acme/billing#18", "acme/billing#20"], "titles": ["Proration", "CSV"]}
+    for name in ("set_board_status", "close_issue"):
+        assert batch_items(MCP_PREFIX + name, inp) == [
+            "acme/billing#18 — Proration", "acme/billing#20 — CSV"]
+    assert batch_items(MCP_PREFIX + "comment_on_issue", {"repo": "o/r"}) is None
+
+
 def test_pipeline_and_session_descriptions_match_available_data():
     tools = build_tools(_api(lambda _: httpx.Response(200, json={})))
     stages = _tool(tools, "list_stage_models").description

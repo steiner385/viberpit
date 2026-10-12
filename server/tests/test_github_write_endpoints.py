@@ -279,6 +279,68 @@ def test_create_issue_rejects_an_oversized_body():
     assert r.status_code == 422
 
 
+def test_comment_on_issue_marks_automation_posts_but_not_requested_ones():
+    """The filers' comments carry AUTOMATION_COMMENT_MARKER (the mirror must not read
+    them as a person's); a comment the operator asked for must NOT — it is a person's
+    word on the issue and re-arming a not-needed issue on it is right (Refs #2979)."""
+    from server.pm.github_sync import AUTOMATION_COMMENT_MARKER
+    calls: list[list[str]] = []
+    ci_issues.comment_on_issue("acme/billing", 7, "hi", run=_gh_ok({"html_url": "u"}, calls))
+    ci_issues.comment_on_issue("acme/billing", 7, "hi", automation=False,
+                               run=_gh_ok({"html_url": "u"}, calls))
+    assert AUTOMATION_COMMENT_MARKER in calls[0][-1]
+    assert calls[1] == ["api", "repos/acme/billing/issues/7/comments", "-f", "body=hi"]
+
+
+def _fake_issue_comment(sink: list[tuple], result="https://c/2"):
+    def fake(repo, number, body, *, automation=True, **kw):
+        sink.append((repo, number, body, automation))
+        return result
+    return fake
+
+
+def test_issue_comment_from_the_ui_is_unsigned_and_unmarked():
+    client = _make_client()
+    seen: list[tuple] = []
+    with patch.dict(os.environ, _ENV), client, \
+            patch.object(ci_issues, "comment_on_issue", _fake_issue_comment(seen)):
+        r = client.post("/api/github/issues/acme/checkout/3/comments",
+                        json={"body": "repros on Safari"}, headers=_H)
+        assert client.post("/api/github/issues/acme/checkout/3/comments",
+                           json={"body": "x"}).status_code == 401
+    assert r.status_code == 201, r.text
+    assert r.json() == {"url": "https://c/2"}
+    assert seen == [("acme/checkout", 3, "repros on Safari", False)]
+
+
+def test_issue_comment_from_the_assistant_is_signed():
+    client = _make_client()
+    seen: list[tuple] = []
+    loopback = TestClient(client.app, client=("127.0.0.1", 5000), raise_server_exceptions=False)
+    with patch.dict(os.environ, _ENV), client, \
+            patch.object(ci_issues, "comment_on_issue", _fake_issue_comment(seen)):
+        r = loopback.post("/api/github/issues/acme/checkout/3/comments",
+                          json={"body": "repros on Safari"},
+                          headers=_assistant_headers("owner@example.com"))
+    assert r.status_code == 201, r.text
+    assert seen[0][2].endswith("assistant on behalf of owner@example.com")
+    assert seen[0][3] is False
+
+
+def test_issue_comment_rejects_traversal_and_502s_on_failure():
+    client = _make_client()
+    seen: list[tuple] = []
+    with patch.dict(os.environ, _ENV), client:
+        with patch.object(ci_issues, "comment_on_issue", _fake_issue_comment(seen)):
+            r = client.post("/api/github/issues/acme/%2e%2e/3/comments", json={"body": "hi"},
+                            headers=_H)
+            assert r.status_code == 422 and seen == []
+        with patch.object(ci_issues, "comment_on_issue", _fake_issue_comment([], result=None)):
+            r = client.post("/api/github/issues/acme/checkout/3/comments", json={"body": "hi"},
+                            headers=_H)
+            assert r.status_code == 502
+
+
 def test_create_issue_502s_when_github_write_fails():
     client = _make_client()
     with patch.dict(os.environ, _ENV), client, \

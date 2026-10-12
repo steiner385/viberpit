@@ -1328,16 +1328,28 @@ class RemoteOrchestrator:
                     "error": "session daemon did not answer"}
         return result
 
-    async def pm_issue_decision(self, work_item_id: str, decision: dict) -> dict:
+    async def _pm_issue_rpc(self, method: str, **params) -> dict:
+        """One human issue write over the daemon (its gh ladder, its journal). A dead
+        RPC is data, not an exception: the write may still have landed there."""
         try:
-            result = await self._client.call("pm_issue_decision", work_item_id=work_item_id,
-                                             decision=decision, timeout=MATERIALIZE_RPC_TIMEOUT)
+            result = await self._client.call(method, **params, timeout=MATERIALIZE_RPC_TIMEOUT)
         except DaemonUnavailable:
             return {"ok": False, "step": "rpc", "error":
                     "Session daemon unavailable; the change may have completed. Reload before retrying"}
         if not isinstance(result, dict):
             return {"ok": False, "step": "rpc", "error": "Session daemon did not answer"}
         return result
+
+    async def pm_issue_decision(self, work_item_id: str, decision: dict) -> dict:
+        return await self._pm_issue_rpc("pm_issue_decision", work_item_id=work_item_id,
+                                        decision=decision)
+
+    async def pm_issue_close(self, work_item_id: str, close: dict) -> dict:
+        return await self._pm_issue_rpc("pm_issue_close", work_item_id=work_item_id, close=close)
+
+    async def pm_board_status(self, work_item_id: str, request: dict) -> dict:
+        return await self._pm_issue_rpc("pm_board_status", work_item_id=work_item_id,
+                                        request=request)
 
     async def pm_remove_dependency(self, work_item_id: str, blocker_ref: str) -> dict:
         """Delete one blocked-by edge, via the daemon (its gh ladder, its journal).

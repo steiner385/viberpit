@@ -102,6 +102,12 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         # permission card) and both carry an authorship trailer on the way out.
         ("POST", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+/comments"),
         ("POST", r"/api/github/issues"),
+        # Triage writes on existing issues (Refs #2979): a comment (MUTATION), the
+        # board move (MUTATION, journaled) and the close (DESTRUCTIVE). The per-item
+        # issue routes the UI uses (`POST /api/pm/work-items/{id}/issue`) stay closed.
+        ("POST", r"/api/github/issues/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+/comments"),
+        ("POST", r"/api/pm/board-status"),
+        ("POST", r"/api/pm/issues/close"),
         ("GET", r"/api/pipeline/insights/checks"),
         ("GET", r"/api/pipeline/repos"),
         ("GET", r"/api/github/repos"),
