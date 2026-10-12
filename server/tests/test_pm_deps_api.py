@@ -344,3 +344,158 @@ def test_deps_summary_names_only_blockers_that_still_block():
         assert s["drift"]["unresolvedTargets"] == 0
         full = c.get("/api/pm/projects/viberpit/deps", headers=IDENTITY_HEADERS).json()
         assert {e["dst"]: e["dstState"] for e in full["edges"]}[f"{repo}#12"] == "merged"
+
+
+def _seed_stale_fixture(c) -> dict[str, str]:
+    """viberpit product, open issues 1-6 + closed 10, merged PR 12:
+
+    - #1 ← #10 native, blocker closed            -> native_resolved (prunable)
+    - #2 ← #12 prose ("Depends on #12"), PR merged -> derived_resolved (listed, refused)
+    - #3 ← #4 prose, text gone from #3's body     -> prose_vanished (prunable)
+    - #5 ← #6 native, blocker open                -> not stale
+    Returns {ref: work_item_id}."""
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo, WorkItem, WorkItemDep
+
+    repo = "steiner385/viberpit"
+    bodies = {2: "Depends on #12", 3: "Nothing to see here"}
+
+    async def _seed_async() -> dict[str, str]:
+        async with db_session() as db:
+            proj = Project(slug="viberpit", name="viberpit")
+            db.add(proj)
+            await db.flush()
+            db.add(ProjectRepo(project_id=proj.id, repo=repo, is_primary=True))
+            ids: dict[str, str] = {}
+            for n, state in ((1, "open"), (2, "open"), (3, "open"), (4, "open"), (5, "open"),
+                             (6, "open"), (10, "closed")):
+                w = WorkItem(repo=repo, number=n, kind="issue", title=f"i{n}", state=state,
+                             body=bodies.get(n, ""), gh_node_id=f"N{n}")
+                db.add(w)
+                await db.flush()
+                ids[f"{repo}#{n}"] = w.id
+            db.add(WorkItem(repo=repo, number=12, kind="pr", title="pr12", state="merged"))
+            for src, dst, source in ((1, 10, "native"), (2, 12, "prose"), (3, 4, "prose"),
+                                     (5, 6, "native")):
+                db.add(WorkItemDep(src_ref=f"{repo}#{src}", dst_ref=f"{repo}#{dst}",
+                                   source=source, active=True))
+            await db.commit()
+            return ids
+
+    assert c.portal is not None
+    return c.portal.call(_seed_async)
+
+
+def _active_pairs(c) -> set[tuple[str, str]]:
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import WorkItemDep
+
+    async def _read():
+        async with db_session() as db:
+            return {(d.src_ref, d.dst_ref) for d in (await db.execute(
+                select(WorkItemDep).where(WorkItemDep.active.is_(True)))).scalars().all()}
+    return c.portal.call(_read)
+
+
+def test_stale_deps_lists_resolved_and_vanished_edges_only():
+    r = "steiner385/viberpit"
+    with _client() as c:
+        _seed_stale_fixture(c)
+        body = c.get("/api/pm/projects/viberpit/deps/stale", headers=IDENTITY_HEADERS).json()
+        got = {(e["src"], e["blocker"]): (e["kind"], e["prunable"], e["blockerState"])
+               for e in body["edges"]}
+        assert got == {
+            (f"{r}#1", f"{r}#10"): ("native_resolved", True, "closed"),
+            (f"{r}#2", f"{r}#12"): ("derived_resolved", False, "merged"),
+            (f"{r}#3", f"{r}#4"): ("prose_vanished", True, "open"),
+        }
+        assert body["counts"] == {"native_resolved": 1, "prose_vanished": 1,
+                                  "derived_resolved": 1}
+        assert body["prunable"] == 2
+        assert c.get("/api/pm/projects/nope/deps/stale",
+                     headers=IDENTITY_HEADERS).status_code == 404
+
+
+def test_prune_removes_native_via_seam_deactivates_prose_and_refuses_the_rest():
+    r = "steiner385/viberpit"
+    with _client() as c:
+        ids = _seed_stale_fixture(c)
+        calls: list[tuple[str, str]] = []
+
+        async def fake(work_item_id: str, blocker_ref: str) -> dict:
+            calls.append((work_item_id, blocker_ref))
+            return {"ok": True, "src": f"{r}#1", "blocker": blocker_ref}
+        c.app.state.sessions.pm_remove_dependency = fake
+        resp = c.post("/api/pm/projects/viberpit/deps/prune", headers=IDENTITY_HEADERS, json={
+            "edges": [{"src": f"{r}#1", "blocker": f"{r}#10"},
+                      {"src": f"{r}#3", "blocker": f"{r}#4"},
+                      {"src": f"{r}#2", "blocker": f"{r}#12"},
+                      {"src": f"{r}#5", "blocker": f"{r}#6"}]})
+        assert resp.status_code == 200, resp.text
+        out = resp.json()
+        assert [(x["pruned"], x["refused"]) for x in out["results"]] == [
+            ("native", None), ("prose", None), (None, "rederived"), (None, "not_stale")]
+        assert out["pruned"] == 2 and out["refused"] == 2
+        assert calls == [(ids[f"{r}#1"], f"{r}#10")]
+        active = _active_pairs(c)
+        assert (f"{r}#3", f"{r}#4") not in active  # deactivated locally
+        assert (f"{r}#5", f"{r}#6") in active and (f"{r}#2", f"{r}#12") in active
+        audits = _audits(c, "pm.workitem.dep_prune")
+        assert [(a["src"], a["ok"], a["refused"]) for a in audits] == [
+            (f"{r}#1", True, None), (f"{r}#3", True, None),
+            (f"{r}#2", False, "rederived"), (f"{r}#5", False, "not_stale")]
+
+
+def test_prune_revalidates_an_edge_that_stopped_being_stale():
+    """The preview said #1 ← #10 was stale; #10 reopened since. Prune refuses it and
+    never touches GitHub."""
+    from sqlalchemy import update
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+
+    r = "steiner385/viberpit"
+    with _client() as c:
+        _seed_stale_fixture(c)
+        assert c.get("/api/pm/projects/viberpit/deps/stale",
+                     headers=IDENTITY_HEADERS).json()["prunable"] == 2
+
+        async def _reopen():
+            async with db_session() as db:
+                await db.execute(update(WorkItem).where(WorkItem.number == 10)
+                                 .values(state="open"))
+                await db.commit()
+        c.portal.call(_reopen)
+
+        async def boom(*_a) -> dict:
+            raise AssertionError("must not reach GitHub for a no-longer-stale edge")
+        c.app.state.sessions.pm_remove_dependency = boom
+        out = c.post("/api/pm/projects/viberpit/deps/prune", headers=IDENTITY_HEADERS,
+                     json={"edges": [{"src": f"{r}#1", "blocker": f"{r}#10"}]}).json()
+        assert out["results"][0]["refused"] == "not_stale"
+        assert (f"{r}#1", f"{r}#10") in _active_pairs(c)
+
+
+def test_prune_reports_a_github_refusal_and_caps_the_batch():
+    r = "steiner385/viberpit"
+    with _client() as c:
+        _seed_stale_fixture(c)
+
+        async def refuse(*_a) -> dict:
+            return {"ok": False, "step": "mutate", "error": "no such edge"}
+        c.app.state.sessions.pm_remove_dependency = refuse
+        out = c.post("/api/pm/projects/viberpit/deps/prune", headers=IDENTITY_HEADERS,
+                     json={"edges": [{"src": f"{r}#1", "blocker": f"{r}#10"}]}).json()
+        assert out["results"][0] == {"src": f"{r}#1", "blocker": f"{r}#10", "pruned": None,
+                                     "refused": "github", "message": "no such edge"}
+        assert _audits(c, "pm.workitem.dep_prune")[0]["step"] == "mutate"
+        too_many = [{"src": f"{r}#1", "blocker": f"{r}#{n}"} for n in range(21)]
+        assert c.post("/api/pm/projects/viberpit/deps/prune", headers=IDENTITY_HEADERS,
+                      json={"edges": too_many}).status_code == 422
+        assert c.post("/api/pm/projects/viberpit/deps/prune", headers=IDENTITY_HEADERS,
+                      json={"edges": []}).status_code == 422
+        assert c.post("/api/pm/projects/nope/deps/prune", headers=IDENTITY_HEADERS,
+                      json={"edges": [{"src": f"{r}#1", "blocker": f"{r}#10"}]}
+                      ).status_code == 404

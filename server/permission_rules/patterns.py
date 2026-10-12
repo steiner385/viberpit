@@ -50,6 +50,7 @@ NEVER_RULED_TOOLS = frozenset(
             # Human-in-the-loop decisions: another session's question, a decision or triage
             # proposal, an initiative stage, a roadmap proposal.
             "answer_question", "resolve_decision", "resolve_triage", "advance_initiative",
+            "close_initiative",
             "roadmap_resolve", "roadmap_advance",
         )
     }

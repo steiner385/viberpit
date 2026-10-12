@@ -28,6 +28,25 @@ TOOL_CALL_CAPACITY = 30.0
 TOOL_CALL_REFILL_PER_SEC = 1.0
 
 
+def _error_text(body: Any, status: int) -> str:
+    """`code: message` from an error response. Two shapes reach here: the app's
+    `{"error": {code, message}}` envelope, and a route's own `HTTPException`, which
+    FastAPI serves as `{"detail": {error, message, …}}` (or a bare string). Without the
+    second, a refusal the model should act on ("2 of 5 sub-issues are still open")
+    arrived as an empty "409:"."""
+    if not isinstance(body, dict):
+        return str(status)
+    err = body.get("error")
+    if isinstance(err, dict):
+        return f"{err.get('code', status)}: {err.get('message', '')}".strip()
+    detail = body.get("detail")
+    if isinstance(detail, dict):
+        return f"{detail.get('error', status)}: {detail.get('message', '')}".strip()
+    if isinstance(detail, str):
+        return f"{status}: {detail[:200]}"
+    return f"{status}:"
+
+
 class AssistantApiError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(f"{status}: {message}")
@@ -75,8 +94,7 @@ class AssistantApi:
             raise AssistantApiError(0, f"{brand.NAME} API unreachable: {exc.__class__.__name__}") from exc
         if r.status_code >= 400:
             try:
-                err = r.json().get("error", {})
-                msg = f"{err.get('code', r.status_code)}: {err.get('message', '')}".strip()
+                msg = _error_text(r.json(), r.status_code)
             except ValueError:
                 msg = r.text[:200]
             raise AssistantApiError(r.status_code, msg)

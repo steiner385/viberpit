@@ -119,7 +119,7 @@ exception (see Standing rules).
     what sessions may do unasked (`resolve_permission`, `set_permission_mode`,
     `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`); and those that
     settle a human-in-the-loop decision (`answer_question`, `resolve_decision`, `resolve_triage`,
-    `advance_initiative`, and the session tools `roadmap_resolve`, `roadmap_advance`). App
+    `advance_initiative`, `close_initiative`, and the session tools `roadmap_resolve`, `roadmap_advance`). App
     tools are covered under both brand prefixes. A server-wide rule for the app's own MCP server (`mcp__viberpit`, or its
     legacy name) is refused at every scope.
   - *Codex approvals.* `PermissionRegistry.request_external` consults the same gate, so a rule

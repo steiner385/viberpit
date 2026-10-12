@@ -183,6 +183,17 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("POST", "/api/sdlc/initiatives/dark-mode/step-back", False),
     ("POST", "/api/sdlc/initiatives/dark-mode/unblock", False),
     ("DELETE", "/api/pm/work-items/w1/deps?blocker=o/r%2312", False),
+    # Gap log 2026-10-11: stale-edge preview/prune and close. The prune route only
+    # ever removes an edge whose blocker is ALREADY resolved (re-checked server-side),
+    # so the arbitrary per-edge DELETE above stays a human's; close is refused unless
+    # the epic and all its sub-issues are closed.
+    ("GET", "/api/pm/projects/acme-billing/deps/stale", True),
+    ("POST", "/api/pm/projects/acme-billing/deps/prune", True),
+    ("GET", "/api/pm/projects/acme-billing/deps/prune", False),
+    ("POST", "/api/pm/projects/acme-billing/deps/stale", False),
+    ("POST", "/api/sdlc/initiatives/dark-mode/close", True),
+    ("POST", "/api/sdlc/initiatives/" + "a-" * 55 + "z/close", True),
+    ("POST", "/api/sdlc/initiatives/Dark_Mode/close", False),
     # Task 8.3 — watches are the one `/api/assistant/*` exception: a watch belongs
     # to the thread that created it.
     ("GET", "/api/assistant/watches", True),
