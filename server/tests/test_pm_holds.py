@@ -459,3 +459,23 @@ def test_release_policy_skipped_holds_ends_only_the_runners_owner_action_holds()
             for r in rows] == [("policy_skip", "owner_action", "system", "runner")]
     assert release_policy_skipped_holds(db, ["o/r#1"]) == []
     assert release_policy_skipped_holds(db, []) == []
+
+
+def test_release_by_signals_ignores_mirror_lag_from_an_edit_made_before_the_hold():
+    """#2985: the hold fingerprints the lagging mirror body; the triage's own pre-hold
+    edit then lands in the mirror and drifts it. GitHub's updatedAt predates the hold,
+    so that drift is not a release — only an edit after the hold is."""
+    from datetime import timedelta
+    from server.pm.holds import release_by_signals
+    db = _sync_db()
+    lagged = _held(db, 1)
+    edited_after = _held(db, 2)
+    for wi in (lagged, edited_after):
+        wi.hold_set_at = NOW
+        wi.body = "edited"
+    lagged.gh_updated_at = NOW - timedelta(minutes=1)
+    edited_after.gh_updated_at = NOW + timedelta(minutes=1)
+    db.flush()
+    released = release_by_signals(db, human_edits=[], now=NOW)
+    assert [(w.number, s) for w, s in released] == [(2, "body_edit")]
+    assert lagged.hold_kind == "owner_action"

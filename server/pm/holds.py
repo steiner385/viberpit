@@ -6,7 +6,7 @@ the set/clear operations every route and tool must go through.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
 from server.db.models import HOLD_KINDS, WorkItem
@@ -329,6 +329,24 @@ def _audit_release(db: "Session", wi: WorkItem, *, kind: str, signal: str, actor
                                             "actorClass": actor_class(actor), "signal": signal})))
 
 
+def _utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _edit_predates_hold(wi: WorkItem) -> bool:
+    """Whether the mirror shows no GitHub activity after the hold was set (#2985).
+
+    The fingerprint is taken from the MIRROR body at hold time, which lags GitHub: a
+    body edit made just before the hold (typically the triage writing its own
+    Findings) lands in the mirror only after it, and would read as a post-hold edit
+    that releases the hold. ``gh_updated_at`` at or before ``hold_set_at`` means any
+    drift is that lag, not a person's edit. Unknown timestamps keep the old behaviour.
+    """
+    if wi.gh_updated_at is None or wi.hold_set_at is None:
+        return False
+    return _utc(wi.gh_updated_at) <= _utc(wi.hold_set_at)
+
+
 def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
                        now: datetime) -> list[Released]:
     """THE release rule for owner_action holds (spec §7), run once per reconcile
@@ -352,7 +370,8 @@ def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
         signal: str | None = None
         if ref in board_refs:
             signal = "board_edit"
-        elif wi.hold_fingerprint and wi.hold_fingerprint != body_fingerprint(wi.title, wi.body):
+        elif (wi.hold_fingerprint and wi.hold_fingerprint != body_fingerprint(wi.title, wi.body)
+              and not _edit_predates_hold(wi)):
             signal = "body_edit"
         if signal is None:
             continue
