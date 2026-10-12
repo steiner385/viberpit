@@ -103,11 +103,15 @@ RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 def require_human(identity: str, via: str | None) -> None:
     """Standing rules widen what a session may do unattended, so only a person at the UI
-    may create, edit, revoke or preview one: no token-borne caller (assistant, external
-    MCP, CLI, internal, session) and not the system sentinel (spec §4)."""
+    may create, edit, revoke or preview one, or write permission-profile patterns: no
+    token-borne caller (assistant, external MCP, CLI, internal, session), no process on
+    this host asserting an identity header (``identity.LOCAL_PROCESS_VIA``, #2980; callers
+    take ``via`` from ``identity.human_gate_via``) and not the system sentinel (spec §4)."""
     if via is not None or identity == SYSTEM_IDENTITY:
         raise ActionError(
-            RULE_HUMAN_ONLY_CODE, "Only a person in the UI can manage always-allow rules.", 403)
+            RULE_HUMAN_ONLY_CODE,
+            "Only a person in the UI can manage always-allow rules and permission profiles.",
+            403)
 
 
 def rules_enabled() -> bool:

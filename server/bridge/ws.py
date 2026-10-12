@@ -61,7 +61,7 @@ from server.automations.ownership import StaleOwnership
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
-from server.auth.identity import verify_identity
+from server.auth.identity import human_gate_via, verify_identity
 from server.quick_replies import observe_reply
 from server.auth.middleware import require_ws_identity
 from server.config import get_settings
@@ -2152,7 +2152,11 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         try:
                             await session_actions.resolve_permission(
                                 orchestrator, db, session_id=session_id, perm_id=perm_id,
-                                decision=decision, identity=identity, via=via)
+                                decision=decision, identity=identity,
+                                # "always" writes a standing rule: a local process
+                                # holding this socket is not the UI (#2980).
+                                via=(human_gate_via(websocket)
+                                     if decision == "always" else via))
                         except ActionError as exc:
                             action_error = exc
                     if action_error is not None:

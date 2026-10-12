@@ -74,6 +74,29 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now viberpit.service
 ```
 
+## Edge unit: `--no-proxy-headers` (#2980)
+
+`viberpit.service` runs uvicorn with `--no-proxy-headers`. The app applies `X-Forwarded-For`
+itself (`server/auth/identity.py` `TransportPeerMiddleware`) after recording the real socket
+peer, so always-allow rule writes and profile-pattern writes can tell tailscaled's serve hop
+(root) and nginx (www-data) from a process on the host (threat note:
+`docs/security/2026-10-11-local-identity-assertion.md`). `request.client` is rewritten exactly as
+before, so the loopback-only token gates are unchanged.
+
+Unit files do not auto-apply. On a host whose installed unit predates this, those writes through
+`tailscale serve` fail closed with `RULES_HUMAN_ONLY`, and the edge log carries a WARNING naming
+the flag. Rules are written from another tailnet device: a browser on the edge host itself is
+indistinguishable from an agent session there. Reinstall the unit, and the nginx vhost (it now
+overwrites `X-Forwarded-For`, #3010):
+
+```bash
+sudo install -m644 deploy/viberpit.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart viberpit.service
+sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/viberpit-tailnet
+sudo nginx -t && sudo nginx -s reload
+```
+
 ## HTTPS via nginx + tailscale cert (required once per host)
 
 The edge server binds to `127.0.0.1:8787` (loopback). To expose it over HTTPS on the

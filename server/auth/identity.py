@@ -21,6 +21,9 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
+import socket
+import struct
 import subprocess
 import time
 from typing import Union
@@ -224,6 +227,288 @@ def _peer_is_trusted(request: Request | WebSocket) -> bool:
         if addr in network:
             return True
     return False
+
+
+# ``via`` for a caller that reached the edge from a process on THIS host rather than
+# through ``tailscale serve``. Peer IP cannot tell the two apart (#2980): the serve hop
+# and a session's ``curl`` both arrive from loopback / this node's tailnet address, and
+# both may carry a ``Tailscale-User-Login`` header. What differs is who owns the client
+# socket: tailscaled runs as root, an agent session runs as the operator's user.
+LOCAL_PROCESS_VIA = "local"
+_PROC_NET_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
+# The two front-ends deploy/ ships, by the account their client socket belongs to, and
+# the header each one stamps with the ORIGINAL client: tailscaled (`tailscale serve`,
+# root) sets X-Forwarded-For; nginx's workers (deploy/viberpit-tailnet.nginx, www-data)
+# overwrite X-Real-IP. A socket owned by anyone else on this host is a local process.
+_FRONT_ENDS = (("root", "x-forwarded-for"), ("www-data", "x-real-ip"))
+# /proc/net/tcp state for ESTABLISHED. A closed client socket turns into a timewait
+# minisocket that the kernel prints with uid 0 and inode 0, so only a live, established
+# socket says anything about its owner.
+_TCP_ESTABLISHED = "01"
+_UNATTRIBUTABLE_UID = -1
+
+
+def _front_end_headers() -> dict[int, str]:
+    """``{uid: header naming the original client}`` for the front-ends on this host."""
+    import pwd  # noqa: PLC0415
+    out: dict[int, str] = {}
+    for name, header in _FRONT_ENDS:
+        try:
+            out[pwd.getpwnam(name).pw_uid] = header
+        except KeyError:
+            continue
+    return out
+
+# ``scope["client"]`` is NOT the socket peer: uvicorn's ProxyHeadersMiddleware rewrites
+# it from ``X-Forwarded-For`` for any 127.0.0.1 caller (port included), which is how the
+# loopback-only token gates in middleware.py keep serve-proxied tailnet traffic out. It
+# also means a local process picks its own "peer". TransportPeerMiddleware records the
+# real one under this key before anything rewrites it.
+TRANSPORT_PEER_SCOPE_KEY = "viberpit.transport_peer"
+# Inode of the edge's OWN accepted socket for this connection. The /proc lookup requires
+# the server-side row with this inode to still be established, so a client that resets
+# its connection cannot have its freed 4-tuple re-used by a tailscaled connection
+# between the request and the lookup.
+TRANSPORT_INODE_SCOPE_KEY = "viberpit.transport_inode"
+_REWRITTEN_PEER_LOG = LogThrottle()
+
+
+class TransportPeerMiddleware:
+    """Outermost ASGI layer: record the socket peer, then apply uvicorn's
+    ProxyHeadersMiddleware here, with uvicorn's own trusted-host default, so
+    ``request.client`` (and every check reading it) behaves exactly as before.
+
+    The edge unit runs ``uvicorn --no-proxy-headers`` so this is the only rewrite. If
+    uvicorn still rewrites first (an older unit), the recorded peer is itself an
+    ``X-Forwarded-For`` entry; ``human_gate_via`` detects that and fails closed.
+    """
+
+    def __init__(self, app) -> None:
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # noqa: PLC0415
+        self.app = ProxyHeadersMiddleware(
+            app, trusted_hosts=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"))
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            scope[TRANSPORT_PEER_SCOPE_KEY] = scope.get("client")
+            scope[TRANSPORT_INODE_SCOPE_KEY] = _transport_inode(receive)
+        await self.app(scope, receive, send)
+
+
+def _transport_inode(receive) -> int | None:
+    """Inode of the accepted socket behind *receive*, or None. uvicorn hands every ASGI
+    app a ``receive`` bound to an object holding the asyncio ``transport`` (the HTTP
+    request cycle, or the WebSocket protocol); anything else yields None, and the gate
+    then fails closed."""
+    transport = getattr(getattr(receive, "__self__", None), "transport", None)
+    try:
+        sock = transport.get_extra_info("socket") if transport is not None else None
+        return os.fstat(sock.fileno()).st_ino if sock is not None else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _forwarded_entry(value: str) -> tuple[str, int]:
+    """One ``X-Forwarded-For`` entry as ``(host, port)``, parsed the way uvicorn's
+    ProxyHeadersMiddleware does, so a peer it produced compares equal."""
+    if value.startswith("["):
+        end = value.find("]")
+        if end != -1 and value[end + 1:].startswith(":"):
+            try:
+                return value[1:end], int(value[end + 2:])
+            except ValueError:
+                return value[1:end], 0
+        return (value[1:end], 0) if end != -1 else (value, 0)
+    if value.count(":") == 1:
+        host, port = value.rsplit(":", 1)
+        try:
+            return host, int(port)
+        except ValueError:
+            return value, 0
+    return value, 0
+
+
+def _peer_looks_rewritten(conn: Request | WebSocket, host: str, port: int) -> bool:
+    """True when *host*:*port* may have come from ``X-Forwarded-For`` instead of the
+    socket: a real TCP peer never has port 0, and a rewritten one always equals one of
+    the header's entries."""
+    if not port:
+        return True
+    entries = ",".join(conn.headers.getlist("x-forwarded-for"))
+    return any(_forwarded_entry(e.strip()) == (host, port)
+               for e in entries.split(",") if e.strip())
+
+
+def _proc_net_hex(addr: _AnyAddress) -> str:
+    """*addr* as ``/proc/net/tcp{,6}`` prints it: each 32-bit word in host byte order."""
+    packed = addr.packed
+    return "".join(f"{struct.unpack('=I', packed[i:i + 4])[0]:08X}"
+                   for i in range(0, len(packed), 4))
+
+
+def _endpoint_keys(host: str, port: int) -> set[str]:
+    """Every ``ADDR:PORT`` spelling *host* may have across the v4 and v6 tables: a v4
+    client of a dual-stack listener is reported as ``::ffff:a.b.c.d`` but its socket
+    sits in the v4 table, and vice versa."""
+    addr: _AnyAddress = ipaddress.ip_address(host)
+    forms: set[_AnyAddress] = {addr}
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        forms.add(mapped)
+    elif isinstance(addr, ipaddress.IPv4Address):
+        forms.add(ipaddress.IPv6Address(f"::ffff:{addr}"))
+    return {f"{_proc_net_hex(a)}:{port:04X}" for a in forms}
+
+
+def peer_socket_uids(peer: tuple[str, int], server: tuple[str, int] | None,
+                     server_inode: int | None) -> set[int] | None:
+    """Owner uids of the CLIENT end of the connection *peer* → *server*, if that socket
+    lives on this host; an empty set when it does not (a remote peer).
+
+    ``None`` (unattributable) when the tables cannot be read, an address is not an IP,
+    or the edge's own end, the established row with inode *server_inode*, is not there:
+    then the connection is gone and its tuple may already belong to someone else. A
+    matching client row that is not a live, established socket (a timewait/orphaned
+    entry, printed as uid 0) contributes ``_UNATTRIBUTABLE_UID``. More than one uid
+    means the caller cannot attribute it.
+    """
+    if server is None or server_inode is None:
+        return None
+    try:
+        peer_keys = _endpoint_keys(peer[0], int(peer[1]))
+        server_keys = _endpoint_keys(server[0], int(server[1]))
+    except (ValueError, TypeError):
+        return None
+    ours = False
+    uids: set[int] = set()
+    try:
+        for path in _PROC_NET_TCP:
+            try:
+                with open(path, encoding="ascii") as fh:
+                    next(fh, None)  # header
+                    for line in fh:
+                        f = line.split()
+                        if len(f) < 10:
+                            continue
+                        if f[1] in server_keys and f[2] in peer_keys:
+                            ours = ours or (f[3] == _TCP_ESTABLISHED
+                                            and f[9] == str(server_inode))
+                            continue
+                        if f[1] not in peer_keys or f[2] not in server_keys:
+                            continue
+                        live = f[3] == _TCP_ESTABLISHED and f[9] != "0"
+                        uids.add(int(f[7]) if live else _UNATTRIBUTABLE_UID)
+            except FileNotFoundError:
+                continue  # no IPv6 stack
+    except (OSError, ValueError):
+        return None
+    return uids if ours else None
+
+
+def human_gate_via(conn: Request | WebSocket) -> str | None:
+    """``via`` for a human-only gate (``session_actions.require_human``): the attribution
+    the middleware already recorded, else ``LOCAL_PROCESS_VIA`` unless
+    ``attested_front_end_hop`` vouches that a remote person is behind this request
+    (#2980). Reads ``/proc``, so call it only on the rare writes it guards.
+    """
+    via = getattr(conn.state, "via", None)
+    if via is not None:
+        return via
+    return None if attested_front_end_hop(conn) else LOCAL_PROCESS_VIA
+
+
+def attested_front_end_hop(conn: Request | WebSocket) -> bool:
+    """True only when this request reached the edge through a front-end on behalf of a
+    client that is not this host.
+
+    Threat note: docs/security/2026-10-11-local-identity-assertion.md. Every step fails
+    closed:
+    1. The peer is the socket ``TransportPeerMiddleware`` recorded, never the
+       ``X-Forwarded-For``-rewritten ``scope["client"]``; a recorded peer that itself
+       came from that header (uvicorn still rewriting) is refused.
+    2. That socket must be live, established, and owned by exactly one front-end
+       account (``_FRONT_ENDS``). Any other local owner is a process on this host,
+       whatever identity header or X-Real-IP it sends.
+    3. The original client the front-end stamped must be another tailnet device: a
+       tailnet address this host does not own. Otherwise a local process went THROUGH
+       the front-end (``curl https://<this node>``, or nginx's 0.0.0.0 listener via a
+       LAN address), which stamps this node owner's login.
+    A peer with no socket here at all is remote, verified by tailscale (whois or a
+    VIBERPIT_TRUSTED_PROXY_IPS hop).
+    """
+    if TRANSPORT_PEER_SCOPE_KEY not in conn.scope:
+        return False  # not behind TransportPeerMiddleware: no real peer known
+    peer = conn.scope[TRANSPORT_PEER_SCOPE_KEY]
+    if not peer or not peer[0]:
+        return False
+    host, port = str(peer[0]), int(peer[1] or 0)
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True  # a non-IP test transport ("testclient") has no socket to inspect
+    if _peer_looks_rewritten(conn, host, port):
+        log_throttled(
+            logger, _REWRITTEN_PEER_LOG, "rewritten", logging.WARNING,
+            "refusing a human-only write: the transport peer came from X-Forwarded-For, "
+            "so uvicorn is still rewriting it; run the edge with --no-proxy-headers (#2980)")
+        return False
+    server = conn.scope.get("server")
+    uids = peer_socket_uids((host, port), tuple(server) if server else None,
+                            conn.scope.get(TRANSPORT_INODE_SCOPE_KEY))
+    if uids is None:
+        return False
+    if not uids:
+        return not _is_this_host(host)
+    if len(uids) != 1:
+        return False
+    header = _front_end_headers().get(next(iter(uids)))
+    if header is None:
+        return False
+    values = [v.strip() for v in ",".join(conn.headers.getlist(header)).split(",")
+              if v.strip()]
+    # tailscaled SETS X-Forwarded-For to the source address; were it ever to append
+    # instead, the last entry is still the one it wrote. nginx overwrites X-Real-IP.
+    return bool(values) and _is_another_tailnet_device(_forwarded_entry(values[-1])[0])
+
+
+# Tailscale's address ranges: CGNAT for IPv4, its ULA prefix for IPv6.
+_TAILNET_NETS = (ipaddress.ip_network("100.64.0.0/10"),
+                 ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
+def _is_this_host(host: str) -> bool:
+    """True when *host* is loopback, any address this host owns (bindable here: LAN,
+    docker, tailnet interface) or one of this node's tailnet addresses, or when it
+    cannot be judged (not an IP, or this node's tailnet addresses are unknown)."""
+    try:
+        addr: _AnyAddress = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    addr = getattr(addr, "ipv4_mapped", None) or addr
+    if addr.is_loopback:
+        return True
+    own = _self_tailscale_ips()
+    if not own or addr in own:
+        return True
+    family = socket.AF_INET6 if addr.version == 6 else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as probe:
+            probe.bind((str(addr), 0))
+        return True  # assigned to an interface here
+    except OSError:
+        return False
+
+
+def _is_another_tailnet_device(host: str) -> bool:
+    """The origin a front-end stamped is a person elsewhere only if it is a tailnet
+    address (``tailscale whois`` can name it) that this host does not own. A LAN or
+    docker address of this host, reached through nginx's 0.0.0.0 listener, is local."""
+    try:
+        addr: _AnyAddress = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    addr = getattr(addr, "ipv4_mapped", None) or addr
+    return any(addr in net for net in _TAILNET_NETS) and not _is_this_host(str(addr))
 
 
 def _whois(request: Request | WebSocket) -> dict | None:
