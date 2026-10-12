@@ -1,7 +1,10 @@
 """Permission Profile CRUD API (issue #600).
 
 A permission profile is a named, ordered list of tool patterns (e.g.
-'Bash(git *)', 'Read') applied at session spawn to set the tool allowlist.
+'Bash(npm test:*)', 'Edit(src/**)') chosen at session launch. A session's launch
+profile is enforced like a session-scope always-allow rule set
+(``server/permission_rules/gate.py``), so a pattern the rule safety check refuses
+cannot be saved, and only a person in the UI may write patterns.
 
 Routes:
   GET    /api/permission-profiles        → list all
@@ -12,7 +15,7 @@ Routes:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -20,7 +23,9 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import PermissionProfile, _utcnow
+from server.permission_rules.safety import assess
 from server.permission_rules.store import PROFILE_PREFIX
+from server.sessions.session_actions import ActionError, require_human
 from server.sessions.types import VALID_SESSION_MODES
 
 router = APIRouter(prefix="/api/permission-profiles", tags=["permission-profiles"])
@@ -61,6 +66,28 @@ def _validate_mode(mode: str | None) -> None:
         )
 
 
+def _validate_patterns(patterns: list[str] | None, identity: str, request: Request) -> None:
+    """Launch-profile patterns are enforced, so they meet the always-allow rule bar: written
+    by a person (403) and none refused by the safety check (400). A warning-level pattern
+    is allowed; choosing to save it in a named profile is the confirmation."""
+    if not patterns:
+        return
+    try:
+        require_human(identity, getattr(request.state, "via", None))
+    except ActionError as exc:
+        raise HTTPException(status_code=exc.http,
+                            detail={"error": exc.code, "message": exc.message}) from None
+    reasons = [f"{p}: {'; '.join(a.reasons)}"
+               for p in patterns if (a := assess(p, "session")).level == "refuse"]
+    if reasons:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "pattern_refused",
+                    "message": "Some patterns are too broad or unsafe to allow.",
+                    "reasons": reasons},
+        )
+
+
 class ProfileCreateBody(BaseModel):
     name: str
     description: str | None = None
@@ -91,11 +118,13 @@ async def list_profiles(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_profile(
     body: ProfileCreateBody,
+    request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
     """Create a named permission profile. Returns 409 if name already exists."""
     _validate_mode(body.mode)
+    _validate_patterns(body.patterns, identity, request)
     if body.name.startswith(PROFILE_PREFIX):
         raise _managed_profile_error()
 
@@ -144,6 +173,7 @@ async def get_profile(
 async def update_profile(
     profile_id: str,
     body: ProfilePatchBody,
+    request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
@@ -176,6 +206,7 @@ async def update_profile(
         _validate_mode(body.mode)
         profile.mode = body.mode
     if "patterns" in fields:
+        _validate_patterns(body.patterns, identity, request)
         profile.patterns = body.patterns
     profile.updated_at = _utcnow()
 

@@ -55,8 +55,8 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
   // every mode — the server marks this on the request rather than the client
   // inferring it from toolKind, since a MUTATION app_action IS grantable.
   const canAlwaysAllow = block.alwaysAllowed !== false && !block.plan
-  // Server-proposed standing rules → the chooser. A grantable card with none is
-  // engine-managed (Codex): its session-wide accept stays a direct decision.
+  // Server-proposed standing rules → the chooser. A grantable card with none (a Codex
+  // edit-root approval, or rules off) keeps the direct session-wide accept.
   const hasSuggestions = canAlwaysAllow && (block.ruleSuggestions?.length ?? 0) > 0
   const rules = hasSuggestions && onPreviewRule && onGrantRule && hasRepo !== undefined
     ? { hasRepo, onPreviewRule, onGrantRule }

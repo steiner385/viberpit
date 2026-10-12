@@ -823,10 +823,9 @@ async def create_session(
 
     # Preset / permission-profile resolution (Task 7.4, #1228). A preset only
     # fills fields the caller left unset — it never overwrites an explicit
-    # value. `tool_allowlist` is NOT threaded through orch.create_session (see
-    # brief's binding ruling): it is a dormant column with zero in-memory
-    # consumers, so it's applied as a direct DB write after the session record
-    # exists, below.
+    # value. `tool_allowlist` is NOT threaded through orch.create_session: its
+    # only reader is the standing-rule gate, which reads the DB row, so it's
+    # applied as a direct DB write after the session record exists, below.
     from server.db.models import SessionPreset, PermissionProfile, Session as _DbSession
 
     _resolved_tool_allowlist: list[str] | None = None
@@ -1037,10 +1036,10 @@ async def create_session(
             exc, limited_message="All accounts are at or above the usage ceiling")
 
     if _resolved_tool_allowlist is not None:
-        # Recorded, not enforced: this column has zero readers today (see the
-        # resolution block above), so this write only persists the profile's
-        # patterns on the row — it does not restrict which tools the session
-        # can use.
+        # Enforced by the standing-rule gate (server/permission_rules/gate.py):
+        # each pattern that passes the rule safety check auto-allows matching
+        # requests like a session-scope always-allow rule (#2952). It widens what
+        # runs without a card; it never restricts which tools the session can use.
         from sqlalchemy import update as sa_update
 
         await db.execute(

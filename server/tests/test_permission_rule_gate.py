@@ -6,7 +6,7 @@ from sqlalchemy import select
 from server.db import db_session
 from server.db.models import AuditEvent
 from server.permission_rules import store
-from server.permission_rules.gate import StandingRuleGate, first_match
+from server.permission_rules.gate import StandingRuleGate, covering_rules
 from server.permission_rules.patterns import parse
 from server.sessions.permissions import PermissionRegistry
 from viberpit.brand import LEGACY_MCP_TOOL_PREFIX
@@ -95,12 +95,70 @@ def test_pending_carries_suggestions_and_always_allowed():
     asyncio.run(go())
 
 
-def test_external_prompt_is_engine_managed_with_no_suggestions():
+def test_external_prompt_is_engine_managed_and_suggests_rules_for_the_unwrapped_script():
     async def go():
         reg = _reg()
-        await reg.request_external("s1", "t", "Bash", {"command": "ls"}, identity="me")
+        pid, _ = await reg.request_external(
+            "s1", "t", "Bash", {"command": "/bin/bash -lc 'npm test'", "cwd": "/w/repo"},
+            identity="me")
         [p] = reg.pending("s1")
-        assert p["engine_managed"] is True and p["suggestions"] == []
+        assert p["engine_managed"] is True
+        assert p["input"]["command"] == "/bin/bash -lc 'npm test'"  # the card shows the argv
+        assert p["rule_input"]["command"] == "npm test"
+        assert p["suggestions"][0]["pattern"] == "Bash(npm test)"
+        assert reg.suggestions_for(pid) == p["suggestions"]
+        # An edit-root approval names no file: nothing to suggest.
+        await reg.request_external("s1", "t", "Edit", {"grant_root": "/w"}, identity="me")
+        assert reg.pending("s1")[1]["suggestions"] == []
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("command", [
+    "/bin/bash -lc 'npm test -w web'", "bash -c \"npm test\"", "npm test",
+])
+def test_rule_answers_a_codex_approval_with_no_card(command):
+    async def go():
+        r = await _add("repo", "o/r", "Bash(npm test:*)")
+        reg = _reg()
+        pid, fut = await reg.request_external("s1", "t", "Bash", {"command": command},
+                                              identity="me")
+        assert pid is None and fut.result() == "allow" and reg.pending("s1") == []
+        async with db_session() as db:
+            assert (await store.get_rule(db, r.id)).hit_count == 1
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("command", [
+    "/bin/bash -lc 'npm test; rm -rf ~'", "bash -c \"npm test $(rm x)\"",
+    "/bin/bash -lc 'npm test' extra", "python -c 'npm test'",
+])
+def test_codex_wrapper_never_launders_a_command_past_a_rule(command):
+    async def go():
+        await _add("global", None, "Bash(npm test:*)")
+        reg = _reg()
+        pid, fut = await reg.request_external("s1", "t", "Bash", {"command": command},
+                                              identity="me")
+        assert pid is not None and not fut.done()
+    asyncio.run(go())
+
+
+def test_external_deny_all_during_gate_await_settles_denied(monkeypatch):
+    async def go():
+        reg = _reg()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_match(session_id, tool, input):
+            entered.set()
+            await release.wait()
+            return None
+        monkeypatch.setattr(reg.rule_gate, "match", slow_match)
+        task = asyncio.ensure_future(reg.request_external(
+            "s1", "t", "Bash", {"command": "npm test"}, identity="me"))
+        await entered.wait()
+        reg.deny_all("s1")
+        release.set()
+        pid, fut = await task
+        assert pid is None and fut.result() is False and reg.pending("s1") == []
     asyncio.run(go())
 
 
@@ -115,14 +173,97 @@ def test_kill_switch_disables_gate(monkeypatch):
     asyncio.run(go())
 
 
-def test_first_match_attributes_hit_to_matching_rule():
+def test_covering_rules_attributes_hit_to_matching_rule():
     class R:
         def __init__(self, id, pattern):
             self.id, self.pattern = id, pattern
     rules = [R("a", "Bash(git status)"), R("bad", "((("), R("b", "Bash(npm test:*)")]
-    assert first_match(rules, "Bash", {"command": "npm test -w"}, "/w").id == "b"  # type: ignore[arg-type]
-    assert first_match(rules, "Bash", {"command": "rm x"}, "/w") is None  # type: ignore[arg-type]
+    assert [r.id for r in covering_rules(rules, "Bash", {"command": "npm test -w"}, "/w")] == ["b"]  # type: ignore[arg-type]
+    assert covering_rules(rules, "Bash", {"command": "rm x"}, "/w") == []  # type: ignore[arg-type]
+    assert [r.id for r in covering_rules(  # type: ignore[arg-type]
+        rules, "Bash", {"command": "npm test && git status && npm test -w x"}, "/w")] == ["b", "a"]
     assert parse("Bash(git status)")
+
+
+def test_compound_hit_credits_every_covering_rule():
+    async def go():
+        a = await _add("session", "s1", "Bash(npm test:*)")
+        b = await _add("repo", "o/r", "Bash(ruff check:*)")
+        unused = await _add("global", None, "Bash(git status)")
+        reg = _reg()
+        pid, _, _ = await _ask(reg, "s1", "Bash", {"command": "npm test && ruff check ."})
+        assert pid is None
+        async with db_session() as db:
+            assert [(await store.get_rule(db, r.id)).hit_count for r in (a, b, unused)] == [1, 1, 0]
+            [row] = (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "permission.rule_allow"))).scalars().all()
+            assert row.detail["ruleId"] == a.id and row.detail["ruleIds"] == [a.id, b.id]
+    asyncio.run(go())
+
+
+async def _launch_session(sid, patterns, repo="o/r"):
+    from server.db.models import Session
+    async with db_session() as db:
+        db.add(Session(id=sid, name="n", account_name="a", cwd="/w/repo", repo=repo,
+                       tool_allowlist=patterns))
+        await db.commit()
+
+
+def test_launch_profile_patterns_are_enforced_after_safety_check():
+    async def go():
+        await _launch_session("s1", ["Bash(npm test:*)", "Bash(git *)", "Bash", "((("])
+        reg = _reg()
+        pid, fut, _ = await _ask(reg, "s1", "Bash", {"command": "npm test -w web"})
+        assert pid is None and fut.result() is True
+        # Refused patterns (too broad / unparsable) are recorded but never enforced.
+        for cmd in ("git status", "rm -rf build"):
+            assert (await _ask(reg, "s1", "Bash", {"command": cmd}))[0] is not None
+        # Another session is not covered by s1's launch profile.
+        assert (await _ask(reg, "s2", "Bash", {"command": "npm test"}))[0] is not None
+        async with db_session() as db:
+            [row] = (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "permission.rule_allow"))).scalars().all()
+            assert row.detail["scope"] == "launch" and row.detail["ruleId"] is None
+            assert row.detail["pattern"] == "Bash(npm test:*)"
+            assert await store.list_rules(db) == []  # nothing stored, no stats row
+    asyncio.run(go())
+
+
+def test_session_rule_is_credited_before_launch_profile():
+    async def go():
+        await _launch_session("s1", ["Bash(npm test:*)"])
+        r = await _add("session", "s1", "Bash(npm test:*)")
+        reg = _reg()
+        assert (await _ask(reg, "s1", "Bash", {"command": "npm test"}))[0] is None
+        async with db_session() as db:
+            assert (await store.get_rule(db, r.id)).hit_count == 1
+    asyncio.run(go())
+
+
+def test_deny_generation_is_dropped_once_no_gate_check_is_in_flight(monkeypatch):
+    """The per-session deny counter exists only while a gate check is awaiting, so it does
+    not hold one entry per session id ever seen."""
+    async def go():
+        reg = _reg()
+        for sid in ("s1", "s2"):
+            await _ask(reg, sid, "Bash", {"command": "npm test"})
+            reg.deny_all(sid)
+        assert reg._deny_gen == {} and reg._gate_inflight == {}
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_match(session_id, tool, input):
+            entered.set()
+            await release.wait()
+            return None
+        monkeypatch.setattr(reg.rule_gate, "match", slow_match)
+        task = asyncio.ensure_future(_ask(reg, "s1", "Bash", {"command": "npm test"}))
+        await entered.wait()
+        reg.deny_all("s1")
+        assert reg._deny_gen == {"s1": 1}
+        release.set()
+        assert (await task)[0] is None
+        assert reg._deny_gen == {} and reg._gate_inflight == {}
+    asyncio.run(go())
 
 
 @pytest.mark.parametrize("tool,inp", [

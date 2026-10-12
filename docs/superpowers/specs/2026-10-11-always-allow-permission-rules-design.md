@@ -39,11 +39,13 @@ The guard against non-human grants has a hole. `session_actions.resolve_permissi
 
 - **Enforcing a named profile's `patterns` chosen at launch (`Session.tool_allowlist`).** Those
   patterns were never validated. Enforcing them is a follow-up that must first run them through the
-  §4 safety check. The column stays dormant.
+  §4 safety check. The column stays dormant. *(Done in #2952: enforced by the gate, each pattern
+  re-assessed at session scope.)*
 - **Codex native approvals are not auto-resolved by rules** (`request_external`). Codex Bash and
   edit-root approvals still card. Their "Always" stays Codex's own session-scoped
   `acceptForSession`. A grant made on a Claude card does *not* resolve pending Codex cards
-  either (§3.3). Applying rules to them is a follow-up.
+  either (§3.3). Applying rules to them is a follow-up. *(Done in #2952 for command approvals;
+  see `docs/product/features/session-permissions.md`.)*
 - **Deny rules.** This feature only allows. Denylist behaviour is unchanged.
 - **Destructive ViberPit tools** (`ToolClass.DESTRUCTIVE`), plan approvals (`ExitPlanMode`),
   `AskUserQuestion`, and the app tools that widen what sessions may do unasked

@@ -310,3 +310,33 @@ def test_never_ruled_app_tools_all_exist():
     from server.sessions.tools import registry as _session_registry  # noqa: F401
     for tool in NEVER_RULED_TOOLS - {"ExitPlanMode", "AskUserQuestion"}:
         assert annotation_for(tool) is not None, tool
+
+
+@pytest.mark.parametrize("command,script", [
+    ("/bin/bash -lc 'npm test'", "npm test"),
+    ("/bin/zsh -lc 'ls -la'", "ls -la"),
+    ("bash -c 'npm test && ruff check .'", "npm test && ruff check ."),
+    ('/usr/bin/bash -lc "npm test"', "npm test"),
+    ("sh -c ''", ""),
+    # Not a plain wrapper: returned unchanged (and so matched, or not, as written).
+    ("npm test", "npm test"),
+    ('bash -lc "echo $HOME"', 'bash -lc "echo $HOME"'),
+    ('bash -lc "a\\"b"', 'bash -lc "a\\"b"'),
+    ("bash -lc 'a' 'b'", "bash -lc 'a' 'b'"),
+    ("bash -lc 'it'\\''s'", "bash -lc 'it'\\''s'"),
+    ("python -c 'x'", "python -c 'x'"),
+    ("bash -x -c 'ls'", "bash -x -c 'ls'"),
+])
+def test_unwrap_shell(command, script):
+    from server.permission_rules.patterns import unwrap_shell
+    assert unwrap_shell(command) == script
+
+
+def test_covering_lists_each_rule_a_compound_command_needs_once():
+    from server.permission_rules.patterns import covering
+    a, b, c = parse("Bash(npm test:*)"), parse("Bash(ruff check:*)"), parse("Bash(ls)")
+    cmd = {"command": "npm test && ruff check . && npm test -w x"}
+    assert covering([a, b, c], "Bash", cmd, "/w") == [a, b]
+    assert covering([a, c], "Bash", cmd, "/w") == []
+    assert covering([c, a], "Read", {"file_path": "x"}, "/w") == []
+    assert covering([parse("WebSearch")], "WebSearch", {}, "/w") == [parse("WebSearch")]

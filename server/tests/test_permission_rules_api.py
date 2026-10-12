@@ -41,6 +41,16 @@ def _card(perm_id, command, *, engine_managed=False, always_allowed=True, sugges
     }
 
 
+def _codex_card(perm_id, script, *, suggestions=None):
+    """A Codex command approval as the registry lists it: the shell-wrapped argv Codex sends,
+    plus the script rules match (``rule_input``)."""
+    card = _card(perm_id, f"/bin/bash -lc '{script}'", engine_managed=True)
+    card["rule_input"] = {"command": script}
+    card["suggestions"] = suggestions if suggestions is not None else [
+        {"pattern": f"Bash({script})", "description": "d", "level": "ok"}]
+    return card
+
+
 def _rec(sid, repo=REPO):
     return SessionRecord(id=sid, name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
                          engine_session_id="c", cols=80, rows=24, cwd="/x", detached=False,
@@ -144,21 +154,22 @@ def test_grant_from_card_creates_rule_resolves_card_and_sweeps_matching_pending(
     assert all(d["trigger"] == "grant" for d in grants)
 
 
-def test_sweep_skips_engine_managed_cards_and_survives_a_failing_session():
-    """Rules never apply to engine-managed (Codex) cards at enforcement, so the sweep and the
-    preview's alsoPending skip them too."""
+def test_sweep_answers_codex_cards_on_their_unwrapped_command_and_survives_a_failing_session():
+    """Rules apply to Codex command approvals at enforcement (#2952), so the sweep and the
+    preview's alsoPending count them too, matched on the script inside the shell wrapper."""
     client, fake = _make_client()
-    fake.pending[S1] = [_card("p1", "npm test"), _card("p8", "npm test", engine_managed=True)]
-    fake.pending[S2] = [_card("p9", "npm test", engine_managed=True)]
+    fake.pending[S1] = [_card("p1", "npm test"), _codex_card("p8", "npm test -w web"),
+                        _codex_card("p7", "rm -rf build")]
+    fake.pending[S2] = [_codex_card("p9", "npm test")]
     with patch.dict(os.environ, _ENV), client:
         client.portal.call(_seed_sessions)
         body = {"sessionId": S1, "permId": "p1", "pattern": "Bash(npm test:*)", "scope": "repo"}
         assert client.post("/api/permission-rules/preview", json=body,
-                           headers=_H).json()["alsoPending"] == 0
+                           headers=_H).json()["alsoPending"] == 1
         r = _always(client, S1, "p1", "Bash(npm test:*)", "repo")
-        assert r.json()["resolvedPermIds"] == ["p1"]
-        assert [c[1] for c in fake.resolve_calls] == ["p1"]
-        assert [p["permId"] for p in fake.pending[S2]] == ["p9"]
+        assert r.json()["resolvedPermIds"] == ["p1", "p8", "p9"]
+        assert [c[2] for c in fake.resolve_calls] == ["allow"] * 3
+        assert [p["permId"] for p in fake.pending[S1]] == ["p7"]
     client2, fake2 = _make_client()
     fake2.pending[S1] = [_card("p1", "npm test")]
     fake2.raise_for = {S2}
@@ -215,19 +226,28 @@ def test_global_scope_needs_confirm():
                        ).status_code == 200
 
 
-def test_grant_rejects_bad_scope_unknown_card_and_engine_managed_creation():
+def test_grant_rejects_bad_scope_unknown_card_and_card_that_cannot_be_always_allowed():
     client, fake = _make_client()
-    fake.pending[S1] = [_card("p1", "npm test"), _card("pe", "npm test", engine_managed=True),
-                        _card("pn", "npm test", always_allowed=False)]
+    fake.pending[S1] = [_card("p1", "npm test"), _card("pn", "npm test", always_allowed=False)]
     with patch.dict(os.environ, _ENV), client:
         assert _always(client, S1, "p1", "Bash(npm test:*)", "nope").json()[
             "detail"]["code"] == "INVALID_SCOPE"
         r = _always(client, S1, "gone", "Bash(npm test:*)", "session")
         assert r.status_code == 404 and r.json()["detail"]["code"] == "PERMISSION_NOT_PENDING"
-        for pid in ("pe", "pn"):
-            r = _always(client, S1, pid, "Bash(npm test:*)", "session")
-            assert r.status_code == 400 and r.json()["detail"]["code"] == "RULE_NOT_ALLOWED"
+        r = _always(client, S1, "pn", "Bash(npm test:*)", "session")
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "RULE_NOT_ALLOWED"
         assert client.portal.call(_rules) == []
+
+
+def test_grant_from_codex_card_covers_the_unwrapped_command():
+    client, fake = _make_client()
+    fake.pending[S1] = [_codex_card("pc", "npm test")]
+    with patch.dict(os.environ, _ENV), client:
+        assert _always(client, S1, "pc", "Bash(yarn test)", "session").json()[
+            "detail"]["code"] == "PATTERN_DOES_NOT_COVER"
+        r = _always(client, S1, "pc", "Bash(npm test)", "session")
+        assert r.status_code == 200 and r.json()["resolvedPermIds"] == ["pc"]
+    assert fake.resolve_calls == [(S1, "pc", "allow", "testuser@example.com")]
 
 
 def test_assistant_token_cannot_grant_or_edit():
@@ -275,7 +295,9 @@ def test_legacy_always_creates_session_rule():
     assert [c[2] for c in fake.resolve_calls] == ["allow"]
 
 
-def test_legacy_always_engine_managed_passes_through():
+def test_legacy_always_engine_managed_without_suggestion_passes_through():
+    """A Codex card no rule can cover (an edit-root approval) keeps Codex's own
+    session-scoped accept."""
     client, fake = _make_client()
     fake.pending[S1] = [_card("p1", "npm test", engine_managed=True)]
     with patch.dict(os.environ, _ENV), client:
@@ -284,6 +306,18 @@ def test_legacy_always_engine_managed_passes_through():
         assert r.status_code == 200
         assert client.portal.call(_rules) == []
     assert [c[2] for c in fake.resolve_calls] == ["always"]
+
+
+def test_legacy_always_on_codex_card_with_ok_suggestion_creates_session_rule():
+    client, fake = _make_client()
+    fake.pending[S1] = [_codex_card("p1", "npm test")]
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post(f"/api/sessions/{S1}/permissions/p1", json={"decision": "always"},
+                        headers=_H)
+        assert r.status_code == 200
+        [rule] = client.portal.call(_rules)
+        assert (rule["pattern"], rule["scope"], rule["scopeKey"]) == ("Bash(npm test)", "session", S1)
+    assert [c[2] for c in fake.resolve_calls] == ["allow"]
 
 
 def test_legacy_always_without_ok_suggestion_resolves_allow_only():
@@ -369,6 +403,29 @@ def test_list_with_session_id_returns_only_applicable_rules():
         _always(client, S1, "p1", "Bash(npm test:*)", "repo")
         assert len(client.get(f"/api/permission-rules?sessionId={S1}", headers=_H).json()) == 1
         assert client.get(f"/api/permission-rules?sessionId={S2}", headers=_H).json() == []
+
+
+def test_list_hides_rules_of_archived_sessions():
+    client, fake = _make_client()
+    fake.pending[S1] = [_card("p1", "npm test")]
+    fake.pending[S2] = [_card("p2", "npm test")]
+
+    async def archive_s2():
+        from server.db import db_session
+        from server.db.models import Session
+        async with db_session() as db:
+            (await db.get(Session, S2)).status = "archived"
+            await db.commit()
+
+    with patch.dict(os.environ, _ENV), client:
+        client.portal.call(_seed_sessions)
+        _always(client, S1, "p1", "Bash(npm test)", "session")
+        _always(client, S2, "p2", "Bash(npm test)", "session")
+        client.portal.call(archive_s2)
+        listed = client.get("/api/permission-rules", headers=_H).json()
+        assert [(r["scope"], r["scopeKey"]) for r in listed] == [("session", S1)]
+        # The session's own view still lists them (it can be unarchived).
+        assert len(client.get(f"/api/permission-rules?sessionId={S2}", headers=_H).json()) == 1
 
 
 def test_kill_switch_off_404s_every_route_and_degrades_legacy_always():

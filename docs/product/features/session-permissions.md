@@ -77,6 +77,8 @@ exception (see Standing rules).
     worktree-relative globs; WebFetch takes `domain:host`.
   - *Scopes.* `session`, `repo`, `global`. A repo or global rule reaches **every** session on
     that repo or the whole fleet (all accounts and hosts), including sessions already running.
+    A session's own rules are hidden from the full rules list while it is archived and deleted
+    with it on permanent delete (`store.delete_session_rules`).
   - *Human-only.* Creating, editing or revoking a rule needs a person in the UI. The assistant
     and other token-borne callers are refused (`resolve_permission` is allow/deny only), and a
     grant refuses a card owned by another identity. Legacy plain "always" is now a **session**
@@ -88,7 +90,8 @@ exception (see Standing rules).
       `IPython`, `idlelib`);
     - package runners, whatever follows, because the next word is a package fetched from the
       network: `npx`, `bunx`, `uvx`, `npm exec`/`x`, `pnpm dlx`, `yarn dlx`, `pipx run`,
-      `uv tool run` (an exact command such as `Bash(npx tsc --noEmit)` can still be stored);
+      `uv tool run`, `pnpx`, and the scaffolders `npm init`/`create`, `pnpm create`,
+      `yarn create` (an exact command such as `Bash(npx tsc --noEmit)` can still be stored);
     - local command launchers (`uv run`, `pnpm exec`, `yarn exec`, `poetry run`) unless followed
       by the command they run, which is then judged as a head of its own (`uv run pytest:*` ok,
       `uv run python:*` refused);
@@ -110,15 +113,26 @@ exception (see Standing rules).
     never matched (Python's and Node's URL parsers disagree on those) and is always carded.
   - *Enforcement.* `StandingRuleGate` is consulted wherever a card would otherwise be created,
     in **every** mode including `interactive`; it fails closed (any error = ask the human).
-    Hits are counted and audited. `patterns.NEVER_RULED_TOOLS` is never matched, suggested or
+    Hits are counted and audited; a compound Bash command covered by several rules credits
+    each of them (`patterns.covering`). `patterns.NEVER_RULED_TOOLS` is never matched, suggested or
     storable, in any mode: `ExitPlanMode`, `AskUserQuestion`; the app's own tools that widen
     what sessions may do unasked (`resolve_permission`, `set_permission_mode`,
     `resolve_model_approval`, `set_autopilot_paused`, `set_automation_enabled`); and those that
     settle a human-in-the-loop decision (`answer_question`, `resolve_decision`, `resolve_triage`,
     `advance_initiative`, and the session tools `roadmap_resolve`, `roadmap_advance`). App
     tools are covered under both brand prefixes. A server-wide rule for the app's own MCP server (`mcp__viberpit`, or its
-    legacy name) is refused at every scope. Engine-managed (Codex) cards are never answered by
-    rules: a new rule neither sweeps them nor can be created from one.
+    legacy name) is refused at every scope.
+  - *Codex approvals.* `PermissionRegistry.request_external` consults the same gate, so a rule
+    answers a Codex command approval with no card. Codex sends the argv it will exec
+    (`/bin/bash -lc 'npm test'`); rules match the script inside a plain single- or double-quoted
+    `sh`/`bash`/`zsh -c` wrapper (`patterns.unwrap_shell`), and anything else stays wrapped and
+    unmatchable. A Codex card offers the rule chooser, and a grant sweeps matching Codex cards.
+    Edit-root (`grant_root`) approvals name no file, so no rule covers them; their "Always" is
+    still Codex's own session-scoped `acceptForSession`.
+  - *Launch profiles.* A named profile chosen at launch is recorded in `Session.tool_allowlist`
+    and enforced by the gate after the session's own rules and before repo/global ones. Each
+    pattern is re-assessed at session scope on every check and a refused one is skipped; its hits
+    are audited (`scope: "launch"`) but have no counter.
   - *Kill switch.* `VIBERPIT_PERMISSION_RULES_ENABLED=false`: nothing is consulted or
     suggested, the rules routes 404, and every prompt cards as before.
   - *Grant cache removed.* The old in-memory 1-hour "always" grant cache is gone; the stored
@@ -133,7 +147,9 @@ exception (see Standing rules).
   account-level default instead of defaulting to prompt-everything (#862, #858).
 - **Permission profiles.** `server/api/permission_profiles.py` is CRUD for named bundles of
   (mode, tool-pattern list) that a user applies when configuring a session — part of the power-user
-  presets/templates/profiles set (#605).
+  presets/templates/profiles set (#605). The patterns auto-allow like a session rule set (see
+  *Launch profiles* above), so writing them is human-only and a pattern the safety check refuses
+  is a 400 (`pattern_refused`, with per-pattern reasons).
 - **Model-approval gate.** `model_policy.py::resolve_model_policy` classifies a requested model's
   tier (via `model_catalog.py`, which probes the `claude` binary's alias list — opus/sonnet/haiku/
   fable) and, using the same account→global→env precedence, returns `allow`, `require_approval`, or

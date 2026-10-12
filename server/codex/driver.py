@@ -1463,6 +1463,13 @@ class CodexAgentDriver:
             )
             return _decline(method)
         tool, tool_input = _approval_shape(params)
+        approval = _PendingApproval(
+            method=method,
+            thread_id=thread_id,
+            item_id=params.item_id,
+            generation=generation,
+            turn_id=params.turn_id,
+        )
         perm_id, future = await self._reg.request_external(
             self.session_id,
             params.turn_id,
@@ -1470,13 +1477,13 @@ class CodexAgentDriver:
             tool_input,
             identity=self.identity,
         )
-        self._pending_approvals[perm_id] = _PendingApproval(
-            method=method,
-            thread_id=thread_id,
-            item_id=params.item_id,
-            generation=generation,
-            turn_id=params.turn_id,
-        )
+        if perm_id is None:
+            # A standing always-allow rule answered it (or a deny_all landed during the
+            # check): no card. The fence still applies across the rule lookup's await.
+            if future.result() == "allow" and self._approval_still_valid(approval):
+                return _response(method, "accept")
+            return _decline(method)
+        self._pending_approvals[perm_id] = approval
         self._emit(
             ev.PermissionRequest(
                 perm_id,
@@ -1484,6 +1491,7 @@ class CodexAgentDriver:
                 tool,
                 ev.tool_kind(tool),
                 tool_input,
+                rule_suggestions=self._reg.suggestions_for(perm_id),
             )
         )
         await self._emit_status()
@@ -1511,8 +1519,8 @@ class CodexAgentDriver:
         await self._emit_status()
         if decision == "always":
             # The engine's OWN session-scoped accept — never a ViberPit grant
-            # (``request_external`` writes none) and never a persisted global
-            # exception.
+            # (``request_external`` writes none; a standing rule is created at the
+            # edge, which then answers ``"allow"``).
             return _response(method, "acceptForSession")
         return _response(method, "accept") if allowed else _decline(method)
 
