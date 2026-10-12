@@ -4,13 +4,24 @@ Loaded by pytest before any test module in this package is collected, so the
 ``write_json_secure`` guard below is in place before tests bind the function via
 their (function-local) ``creds.write_json_secure`` imports.
 """
-import atexit
 import functools
 import importlib
 import os
-import shutil
 import tempfile
 from pathlib import Path
+
+from server.tests import _run_scratch
+
+# --------------------------------------------------------------------------- #
+# Every temp file this suite writes goes under ONE run root (#2993).           #
+#                                                                              #
+# install() points tempfile and $TMPDIR at <tmp>/vpt-XXXXXXXX before anything  #
+# below allocates, so the redirected home, the durable in-memory DBs, helper   #
+# scratch, tmp_path and each test's own mkstemp/mkdtemp all land inside it. A  #
+# clean exit removes it; a killed run (atexit never runs) is reaped by the     #
+# next run, which sees the dead run's flock released. See _run_scratch.py.     #
+# --------------------------------------------------------------------------- #
+_run_scratch.install()
 
 
 # --------------------------------------------------------------------------- #
@@ -78,7 +89,7 @@ def _archive_home_is_production(archive: str | None) -> bool:
     """
     if archive is None:
         return False
-    return not str(Path(archive).resolve()).startswith(tempfile.gettempdir())
+    return not str(Path(archive).resolve()).startswith(str(_run_scratch.SYSTEM_TMP))
 
 
 def _first_set(*names: str) -> str | None:
@@ -104,7 +115,7 @@ def _redirect_state_off_production():
         name for name in repo_vars
         if not os.environ.get(name)
         or not Path(os.environ[name]).expanduser().resolve().is_relative_to(
-            Path(tempfile.gettempdir()).resolve()
+            _run_scratch.SYSTEM_TMP
         )
     ]
     home_is_prod = home is None or Path(home).resolve() == _REAL_HOME
@@ -114,7 +125,6 @@ def _redirect_state_off_production():
         return  # caller already isolated everything — respect it
 
     session_home = Path(tempfile.mkdtemp(prefix="viberpit-tests-"))
-    atexit.register(shutil.rmtree, session_home, ignore_errors=True)
     if unsafe_repo_vars:
         # Preserve an explicitly isolated harness root, including new-prefix-only
         # configuration; otherwise allocate an empty root owned by this run.
@@ -197,7 +207,6 @@ _no_ambient_remote_daemon_config()
 # --------------------------------------------------------------------------- #
 if not os.environ.get("VIBERPIT_HELPER_SCRATCH_ROOT"):
     _scratch_root = Path(tempfile.mkdtemp(prefix="viberpit-tests-scratch-"))
-    atexit.register(shutil.rmtree, _scratch_root, ignore_errors=True)
     os.environ["VIBERPIT_HELPER_SCRATCH_ROOT"] = str(_scratch_root)
 
 
@@ -566,7 +575,7 @@ _install_real_store_write_guard()
 # sweep fired from a background task may land after its test finishes, so the   #
 # failure can surface on the following test; the recorded path names the root.  #
 # --------------------------------------------------------------------------- #
-_TMP_ROOT = Path(tempfile.gettempdir()).resolve()
+_TMP_ROOT = _run_scratch.SYSTEM_TMP
 
 # Paths a test tried to sweep or destroy outside the temp dir. Appended to from
 # janitor threads (`asyncio.to_thread`); list.append is atomic, no lock needed.
@@ -725,14 +734,6 @@ def _no_real_worktree_access():
 # survives to GC after its loop is gone; the loop-safe worker installed by      #
 # server/db/aiosqlite_guard.py is what keeps that harmless (issue #1134).       #
 # --------------------------------------------------------------------------- #
-def _cleanup_sqlite_file(path: str) -> None:
-    for suffix in ("", "-wal", "-shm"):
-        try:
-            os.unlink(path + suffix)
-        except OSError:
-            pass
-
-
 def _install_durable_inmemory_db():
     import server.db as _db
     from sqlalchemy.pool import NullPool
@@ -744,8 +745,7 @@ def _install_durable_inmemory_db():
     def _durable_make_engine(db_url: str, *, poolclass=None):
         if db_url.startswith("sqlite") and ":memory:" in db_url:
             fd, path = tempfile.mkstemp(prefix="viberpit-test-db-", suffix=".sqlite")
-            os.close(fd)
-            atexit.register(_cleanup_sqlite_file, path)
+            os.close(fd)  # removed with the run root (_run_scratch)
             db_url = f"sqlite+aiosqlite:///{path}"
             # NullPool, not StaticPool: no single shared wedge-able connection,
             # so no abandoned teardown phase can hang loop-close (issue #890).
