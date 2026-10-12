@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +27,7 @@ from server.github import ci_issues
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
 from server.pm.desired_state import HELD_KINDS
 from server.pm.queue import MIN_STATUS_OPTIONS, SKIP_REASONS
+from server.pm.refs import split_ref
 
 from .client import AssistantApi, AssistantApiError
 
@@ -262,19 +264,70 @@ BATCH_TOOLS: frozenset[str] = frozenset({"archive_sessions", "unarchive_sessions
                                          "resume_sessions", "rotate_sessions",
                                          "delete_sessions"})
 _BATCH_MAX = 20
+_CARD_ITEM_MAX = 80
+
+
+def _title_items(tool_input: dict[str, Any]) -> list[str]:
+    titles = tool_input.get("titles")
+    return ([str(t)[:_CARD_ITEM_MAX] for t in titles][:_BATCH_MAX]
+            if isinstance(titles, list) else [])
+
+
+def _ref_title_items(tool_input: dict[str, Any]) -> list[str]:
+    """`"owner/repo#12 — Title"` per target of a ref-list tool (see `_ref_batch_args`).
+    A missing or short `titles` still lists every ref: the ref is what gets acted on."""
+    refs, titles = tool_input.get("refs"), tool_input.get("titles")
+    if not isinstance(refs, list):
+        return []
+    titles = titles if isinstance(titles, list) else []
+    return [(f"{r} — {titles[i]}" if i < len(titles) else str(r))[:_CARD_ITEM_MAX]
+            for i, r in enumerate(refs[:_BATCH_MAX])]
+
+
+# The permission card's item rows, per tool: raw, NOT-yet-validated tool input → the
+# strings the card lists, so a person confirms the actual targets (or the actual change)
+# rather than a count. A renderer must never raise — the handler's own validation is
+# what turns bad input into a corrective error for the model. Tools absent here get no
+# items. A tool that acts on several targets registers a renderer when it is added.
+CARD_ITEMS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
+    **{name: _title_items for name in BATCH_TOOLS},
+}
 
 
 def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
-    """Titles for a batch tool's permission card (spec v2 B4): the card must name every
+    """Item rows for a tool's permission card (spec v2 B4): the card must name every
     target, not count them. Called by the driver BEFORE `PermissionRegistry.request`, so
-    it works from the raw, not-yet-validated tool input — a malformed `titles` yields an
-    empty list rather than raising (the tool handler itself, `_batch_args`, is what turns
-    that into a corrective error for the model). None for non-batch tools."""
+    it works from the raw tool input via the tool's `CARD_ITEMS` renderer. None for a
+    tool with no renderer."""
     spec = annotation_for(mcp_name)
-    if spec is None or spec.name not in BATCH_TOOLS:
+    render = CARD_ITEMS.get(spec.name) if spec is not None else None
+    if render is None:
         return None
-    titles = tool_input.get("titles")
-    return [str(t)[:80] for t in titles][:_BATCH_MAX] if isinstance(titles, list) else []
+    try:
+        return render(tool_input if isinstance(tool_input, dict) else {})
+    except Exception:  # noqa: BLE001 - a card must still be raised on malformed input
+        log.warning("card items renderer failed tool=%s", spec.name if spec else mcp_name,
+                    exc_info=True)
+        return []
+
+
+def _ref_batch_args(args: dict[str, Any], *, source: str) -> list[str]:
+    """`refs` ('owner/repo#123') + `titles` (each issue's title, same order) for a tool
+    that acts on up to `_BATCH_MAX` issues in one confirmed action. `source` names the
+    tool the model should read titles off, so the corrective message is actionable."""
+    refs, titles = args.get("refs"), args.get("titles")
+    if not isinstance(refs, list) or not isinstance(titles, list) or not refs:
+        raise ToolArgError("refs and titles are required lists")
+    if len(refs) != len(titles):
+        raise ToolArgError(f"titles must name every ref, in order — read them off {source}")
+    if len(refs) > _BATCH_MAX:
+        raise ToolArgError(f"at most {_BATCH_MAX} issues per call; split the request")
+    out = []
+    for r in refs:
+        if not isinstance(r, str) or split_ref(r.strip()) is None:
+            raise ToolArgError(f"each ref must look like owner/repo#123, got {r!r}")
+        out.append(r.strip())
+    return out
 
 
 def _batch_args(args: dict[str, Any]) -> list[str]:

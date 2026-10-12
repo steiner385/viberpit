@@ -1612,6 +1612,42 @@ def test_batch_items_returns_titles():
     assert batch_items(MCP_PREFIX + "delete_sessions", {"ids": ["a"]}) == []
 
 
+def test_card_items_renderer_failure_still_yields_a_list(monkeypatch):
+    """A renderer that raises must not stop the card: the driver raises it before the
+    handler validates anything, so the fallback is an empty item list, not an error."""
+    from server.assistant import tools as t
+
+    def boom(_inp):
+        raise RuntimeError("bad input")
+    monkeypatch.setitem(t.CARD_ITEMS, "archive_sessions", boom)
+    assert batch_items(MCP_PREFIX + "archive_sessions", {"titles": ["x"]}) == []
+
+
+def test_ref_title_items_lists_every_ref_even_without_titles():
+    from server.assistant.tools import _ref_title_items
+    assert _ref_title_items({"refs": ["o/r#1", "o/r#2"], "titles": ["One"]}) == [
+        "o/r#1 — One", "o/r#2"]
+    assert _ref_title_items({"refs": "o/r#1"}) == []
+
+
+@pytest.mark.parametrize("args,msg", [
+    ({"refs": ["o/r#1"]}, "required lists"),
+    ({"refs": ["o/r#1", "o/r#2"], "titles": ["a"]}, "name every ref"),
+    ({"refs": ["o/r#x"], "titles": ["a"]}, "owner/repo#123"),
+    ({"refs": [f"o/r#{i}" for i in range(21)], "titles": ["t"] * 21}, "at most 20"),
+])
+def test_ref_batch_args_refusals(args, msg):
+    from server.assistant.tools import ToolArgError, _ref_batch_args
+    with pytest.raises(ToolArgError, match=msg):
+        _ref_batch_args(args, source="list_holds")
+
+
+def test_ref_batch_args_accepts_a_full_batch():
+    from server.assistant.tools import _ref_batch_args
+    refs = [f"o/r#{i}" for i in range(1, 21)]
+    assert _ref_batch_args({"refs": refs, "titles": ["t"] * 20}, source="list_holds") == refs
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name,path", [
     ("archive_sessions", "/api/sessions/batch/archive"),
