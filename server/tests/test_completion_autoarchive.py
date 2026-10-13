@@ -74,21 +74,21 @@ def _armed_pr():
     return types.SimpleNamespace(
         number=42, state="open", is_draft=False, auto_merge_enabled=True,
         in_merge_queue=False, checks="passing", url="https://github.com/o/r/pull/42",
-        docs_only=False)
+        docs_only=False, merge_state_status="")
 
 
 def _unarmed_pr():
     return types.SimpleNamespace(
         number=99, state="open", is_draft=False, auto_merge_enabled=False,
         in_merge_queue=False, checks="passing", url="https://github.com/o/r/pull/99",
-        docs_only=False)
+        docs_only=False, merge_state_status="")
 
 
 def _merged_pr():
     return types.SimpleNamespace(
         number=7, state="merged", is_draft=False, auto_merge_enabled=False,
         in_merge_queue=False, checks="passing", url="https://github.com/o/r/pull/7",
-        docs_only=False)
+        docs_only=False, merge_state_status="")
 
 
 async def _drain():

@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from server.pipeline.stage import is_required_ci_red
+
 # Research-escape signal: a goal that reads as investigation/Q&A rather than a code
 # change is allowed to complete with no PR. Kept deliberately narrow — when unsure we
 # treat a repo-attached session as code work (the safe direction: it only ever routes
@@ -113,6 +115,9 @@ class PrFact:
     # True when every changed file (files page-1) is under docs/ — a spec/plan-only
     # PR that merging does not mean the implementation landed (#1756).
     is_docs_only: bool = False
+    # GitHub mergeStateStatus. With the rollup it tells a required red from one only
+    # a non-required check earned (UNSTABLE, #3039); "" = unknown, read fail-safe.
+    merge_state_status: str = ""
 
     @classmethod
     def from_info(cls, info) -> "PrFact":
@@ -121,7 +126,8 @@ class PrFact:
         return cls(number=info.number, state=info.state, is_draft=info.is_draft,
                    auto_merge_enabled=info.auto_merge_enabled,
                    in_merge_queue=info.in_merge_queue, url=info.url,
-                   checks=info.checks, is_docs_only=info.docs_only)
+                   checks=info.checks, is_docs_only=info.docs_only,
+                   merge_state_status=info.merge_state_status)
 
     @property
     def is_armed(self) -> bool:
@@ -134,10 +140,12 @@ class PrFact:
 
     @property
     def ci_is_red(self) -> bool:
-        """True when the check rollup is FAILURE/ERROR — a required check is red, so
-        an armed merge is blocked. 'pending' is NOT red: auto-merge will still land
-        the PR once running checks pass, so it must not flip the goal-met verdict."""
-        return self.checks == "failing"
+        """True when a red check blocks the merge (``stage.is_required_ci_red``). The
+        rollup alone reads FAILURE for ANY red check, so an advisory one (e2e, the
+        Python 3.14 run) held sessions at "fix the failing CI" on PRs auto-merge was
+        about to land (#3039). 'pending' is NOT red: auto-merge will still land the PR
+        once running checks pass, so it must not flip the goal-met verdict."""
+        return is_required_ci_red(self.checks, self.merge_state_status)
 
 
 @dataclass(frozen=True)

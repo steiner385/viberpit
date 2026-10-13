@@ -15455,6 +15455,7 @@ class SessionOrchestrator:
             return
 
         from server.automations import pr_doctor_engine as engine
+        from server.pipeline.stage import is_required_ci_red
 
         info = self.pr_for(repo, branch)
         # A rollup that went red only because its checks were CANCELLED (a push
@@ -15464,7 +15465,14 @@ class SessionOrchestrator:
         # to act on the same evidence, but it keeps the per-target mechanical
         # bookkeeping ticking, and the ``_pushed_pr`` debounce is deliberately
         # NOT armed here so a red that later proves real still notifies.
-        unproven = info is not None and engine.ci_red_is_unproven(info)
+        #
+        # Likewise a rollup only a NON-required check turned red (GitHub's UNSTABLE:
+        # every required check passed, auto-merge will land it, #3039). ``classify``
+        # declines it too, so without this the transition fell through to the
+        # "PR broke" push and paged the operator over an advisory check.
+        unproven = info is not None and (
+            engine.ci_red_is_unproven(info)
+            or not is_required_ci_red(info.checks, info.merge_state_status))
 
         # Surface the failure on the activity feed once, on the transition INTO
         # failing (not on every failing→failing re-poll).

@@ -165,7 +165,7 @@ def test_completed_backlog_archive_context_includes_pr_state_with_pr():
         pr_info = types.SimpleNamespace(
             number=42, state="open", is_draft=False, auto_merge_enabled=True,
             in_merge_queue=False, checks="passing",
-            url="https://github.com/o/r/pull/42", docs_only=False)
+            url="https://github.com/o/r/pull/42", docs_only=False, merge_state_status="")
         orch, calls = _orch_with_pr({"s1": rec}, pr_info=pr_info)
         orch._maybe_autoarchive_completed("s1", "complete", rec)
         await _drain()
@@ -236,7 +236,7 @@ def _unarmed_pr():
     return types.SimpleNamespace(
         number=99, state="open", is_draft=False, auto_merge_enabled=False,
         in_merge_queue=False, checks="passing", url="https://github.com/o/r/pull/99",
-        docs_only=False)
+        docs_only=False, merge_state_status="")
 
 
 def _armed_pr():
@@ -244,7 +244,7 @@ def _armed_pr():
     return types.SimpleNamespace(
         number=99, state="open", is_draft=False, auto_merge_enabled=True,
         in_merge_queue=False, checks="passing", url="https://github.com/o/r/pull/99",
-        docs_only=False)
+        docs_only=False, merge_state_status="")
 
 
 def test_open_unarmed_pr_with_arm_step_in_instructions_defers_archive():

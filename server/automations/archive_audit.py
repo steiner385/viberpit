@@ -238,6 +238,9 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
     The changed-file paths (files page-1) flow into PrFact.is_docs_only via the same
     _is_docs_only SoT the live poller uses, so a spec/plan-only merged PR does not
     read as a landed implementation here either (issue #1756).
+
+    mergeStateStatus flows into PrFact.merge_state_status, so a rollup that only a
+    non-required check turned red (UNSTABLE) is judged as the live bar judges it (#3039).
     """
     from server.github.pr_status import _classify_checks, _is_docs_only
     state = str(d.get("state", "")).lower()
@@ -251,7 +254,8 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
                   in_merge_queue=d.get("mergeQueueEntry") is not None,
                   url=str(d.get("url", "")),
                   checks=_classify_checks(rollup.get("state") if rollup else None),
-                  is_docs_only=_is_docs_only(d))
+                  is_docs_only=_is_docs_only(d),
+                  merge_state_status=str(d.get("mergeStateStatus") or ""))
 
 
 def build_pr_facts(
@@ -472,7 +476,7 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
         "query($o:String!,$n:String!,$br:String!){"
         "repository(owner:$o,name:$n){pullRequests(headRefName:$br,first:20,"
         "states:[OPEN,CLOSED,MERGED]){nodes{"
-        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state} "
+        "number url state isDraft mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{state} "
         "commits(last:1){nodes{commit{statusCheckRollup{state}}}} "
         "files(first:100){nodes{path}}}}}}"
     )
@@ -529,7 +533,7 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
     query = (
         "query($o:String!,$n:String!,$num:Int!){"
         "repository(owner:$o,name:$n){pullRequest(number:$num){"
-        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state} "
+        "number url state isDraft mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{state} "
         "commits(last:1){nodes{commit{statusCheckRollup{state}}}} "
         "files(first:100){nodes{path}}}}}"
     )

@@ -187,3 +187,59 @@ def test_drives_fleet_automations_tracks_the_daemon_role(monkeypatch):
     assert drives_fleet_automations() is True
     monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
     assert drives_fleet_automations() is False
+
+
+# ---------------------------------------------------------------------------
+# A red only a non-required check earned (#3039)
+# ---------------------------------------------------------------------------
+
+
+def test_a_red_only_a_non_required_check_earned_raises_no_alert(monkeypatch, tmp_path):
+    """#3039: the rollup reads FAILURE when ANY check fails, but UNSTABLE is GitHub's
+    word that every required check passed and auto-merge will land the PR. PR Doctor's
+    ``classify`` already declined to act on it, yet the transition still fell through
+    to the "PR broke" push and the activity feed's "CI failing" warning, so a red
+    advisory check (e2e, the Python 3.14 run) paged the operator for nothing."""
+    async def run():
+        import server.sessions.orchestrator as orch_mod
+
+        await _init_pr_doctor_db(tmp_path)
+        await _set_mode(monkeypatch, "auto")
+        pr = _pr(checks="failing", merge_state_status="UNSTABLE")
+        orch = _build_orch({("o/r", "feat/x"): pr}, [("o/r", "feat/x")])
+        pushed: list[str] = []
+
+        async def fake_notify_event(event, title, body, **kw):
+            pushed.append(event)
+
+        monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify_event)
+
+        await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+
+        assert pushed == []
+        assert await orch._pr_doctor_ctx.list_events(kind="detected") == []
+
+    asyncio.run(run())
+
+
+def test_a_required_red_still_raises_the_alert(monkeypatch, tmp_path):
+    """The guard must not swallow a real break: BLOCKED + failing still pushes."""
+    async def run():
+        import server.sessions.orchestrator as orch_mod
+
+        await _init_pr_doctor_db(tmp_path)
+        await _set_mode(monkeypatch, "off")
+        pr = _pr(checks="failing", merge_state_status="BLOCKED")
+        orch = _build_orch({("o/r", "feat/x"): pr}, [("o/r", "feat/x")])
+        pushed: list[str] = []
+
+        async def fake_notify_event(event, title, body, **kw):
+            pushed.append(event)
+
+        monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify_event)
+
+        await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+
+        assert "pr_broke" in pushed, pushed
+
+    asyncio.run(run())

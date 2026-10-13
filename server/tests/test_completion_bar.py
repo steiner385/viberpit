@@ -17,10 +17,11 @@ def _facts(prs=(), has_repo=True):
 
 
 def _pr(number=1, state="open", is_draft=False, auto_merge=False, in_merge_queue=False,
-        checks="none", is_docs_only=False):
+        checks="none", is_docs_only=False, merge_state_status=""):
     return PrFact(number=number, state=state, is_draft=is_draft,
                   auto_merge_enabled=auto_merge, in_merge_queue=in_merge_queue,
-                  url=f"http://x/{number}", checks=checks, is_docs_only=is_docs_only)
+                  url=f"http://x/{number}", checks=checks, is_docs_only=is_docs_only,
+                  merge_state_status=merge_state_status)
 
 
 def test_merged_pr_is_met_high():
@@ -138,6 +139,42 @@ def test_armed_pr_with_failing_ci_is_not_met_high():
     v = met_bar("fix ci", "explicit",
                 _facts([_pr(state="open", auto_merge=True, checks="failing")]))
     assert not v.met and v.confidence == "high" and v.remedy
+
+
+def test_armed_pr_red_only_on_a_non_required_check_is_met():
+    """#3039: the rollup reads FAILURE when ANY check fails, but GitHub's mergeStateStatus
+    UNSTABLE says every required check passed and the branch is mergeable, so auto-merge
+    WILL land it. A red advisory check (e2e, the Python 3.14 run) must not hold the
+    session at "fix the failing CI" or stop it auto-archiving."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", auto_merge=True, checks="failing",
+                            merge_state_status="UNSTABLE")]))
+    assert v.met and v.confidence == "high"
+
+
+def test_armed_pr_red_and_blocked_is_still_not_met():
+    """BLOCKED + a red rollup is a required failure (or an unknown gate): still red."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", auto_merge=True, checks="failing",
+                            merge_state_status="BLOCKED")]))
+    assert not v.met and v.remedy
+
+
+def test_ci_is_red_fails_safe_when_the_merge_state_is_unknown():
+    """No mergeStateStatus (an older cache row, a fetch that lacked it) keeps today's
+    reading of the rollup: red is red."""
+    for status in ("", "UNKNOWN", "BLOCKED", "DRAFT"):
+        assert _pr(checks="failing", merge_state_status=status).ci_is_red, status
+    assert not _pr(checks="failing", merge_state_status="UNSTABLE").ci_is_red
+    assert not _pr(checks="pending", merge_state_status="BLOCKED").ci_is_red
+
+
+def test_from_info_carries_the_merge_state():
+    from server.github.pr_status import PullRequestInfo
+    info = PullRequestInfo(number=7, url="u", state="open", checks="failing", title="t",
+                           merge_state_status="UNSTABLE")
+    fact = PrFact.from_info(info)
+    assert fact.merge_state_status == "UNSTABLE" and not fact.ci_is_red
 
 
 def test_queued_pr_with_failing_ci_is_not_met_high():
