@@ -348,6 +348,68 @@ async def test_repo_error_still_warns_for_a_non_host_failure(caplog):
     assert "pm_sync.repo_error repo=o/bad" in warned[0].getMessage()
 
 
+def _incremental_pr_fetch_failing(stderr):
+    """A backfilled o/bad whose incremental issues query succeeds but whose
+    ``build_prs_query`` fetch fails with *stderr* — the #3022 shape."""
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    views = [_view(repo="o/bad", backfill_done=True, watermark=wm),
+             _view(repo="o/good", project_id="p2")]
+    ok_pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    calls = []
+
+    async def fetch(query):
+        if '"bad"' in query:
+            calls.append("prs" if "pullRequests" in query else "issues")
+            if "pullRequests" in query:
+                raise RuntimeError(f"gh graphql failed: {stderr}")
+            return _issue_page([], None, False)
+        return ok_pages.pop(0)
+
+    return views, fetch, calls
+
+
+@pytest.mark.asyncio
+async def test_repo_error_logs_a_github_edge_5xx_at_info(caplog):
+    """GitHub's own edge returning 504 on the incremental PR query is an outage
+    retried next tick, not a defect — it must not auto-file a
+    ``pm_sync.repo_error`` WARNING (#3022), while the operator card still gets
+    the ``sync_error`` warn event."""
+    ctx = Ctx()
+    views, fetch, calls = _incremental_pr_fetch_failing("gh: HTTP 504")
+    loop, saved, upserted, applied = _loop(ctx, views, [])
+    loop._fetch = fetch
+    with caplog.at_level(logging.DEBUG):
+        await loop.tick()
+
+    assert calls == ["issues", "prs"]  # failed on the incremental PR query
+    repo_records = [r for r in caplog.records if r.name == "server.automations.pm_sync"]
+    warned = [r for r in repo_records if r.levelno >= logging.WARNING]
+    assert warned == [], f"an edge 5xx must not warn: {[r.getMessage() for r in warned]}"
+    assert any(r.levelno == logging.INFO
+               and "pm_sync.repo_error repo=o/bad" in r.getMessage()
+               for r in repo_records)
+    assert any(level == "warn" and kw.get("kind") == "sync_error"
+               and kw.get("target") == "o/bad" for level, _, kw in ctx.events)
+
+
+@pytest.mark.asyncio
+async def test_repo_error_still_warns_for_a_non_edge_incremental_failure(caplog):
+    """The edge demotion must not swallow a real per-repo failure: it keeps the
+    WARNING with ``repo=`` unchanged so the existing fingerprint lineage holds."""
+    ctx = Ctx()
+    views, fetch, calls = _incremental_pr_fetch_failing(
+        "GraphQL: Could not resolve to a Repository with the name 'o/bad'.")
+    loop, saved, upserted, applied = _loop(ctx, views, [])
+    loop._fetch = fetch
+    with caplog.at_level(logging.DEBUG):
+        await loop.tick()
+
+    warned = [r for r in caplog.records
+              if r.name == "server.automations.pm_sync" and r.levelno >= logging.WARNING]
+    assert len(warned) == 1
+    assert warned[0].getMessage() == "pm_sync.repo_error repo=o/bad"
+
+
 @pytest.mark.asyncio
 async def test_feature_read_failure_skips_reindex_without_orphaning():
     """A failed feature-doc read must SKIP the reindex, never orphan features.
