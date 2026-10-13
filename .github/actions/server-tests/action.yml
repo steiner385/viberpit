@@ -15,7 +15,7 @@ inputs:
     required: true
   total:
     description: >-
-      Number of shards. Callers pass `${{ strategy.job-total }}`, never a literal: a
+      Number of shards. Callers pass the `strategy.job-total` expression, never a literal: a
       matrix and a hand-written count that disagree run only part of the suite and
       still report green (tests/test_ci_shard_tests.py enforces this).
     required: true
