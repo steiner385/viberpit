@@ -410,6 +410,25 @@ def test_a_locally_initiated_stream_reset_is_not_a_github_edge_failure():
         "stream error: stream ID 1; FLOW_CONTROL_ERROR; received from peer") is False
 
 
+def test_is_transient_github_edge_failure_matches_graphql_internal_error():
+    """#3025: GitHub's generic GraphQL internal-error envelope; the timestamp
+    and request id vary per occurrence and must not matter."""
+    assert host_failures.is_transient_github_edge_failure(
+        "gh: Something went wrong while executing your query on "
+        "2026-10-12T12:52:08Z. Please include `8A50:3B861C:7E1F7:1A4AE1:6ACCD7F6`"
+        " when reporting this issue.") is True
+    assert host_failures.is_transient_github_edge_failure(
+        "gh: Something went wrong while executing your query on 2026-01-01T00:00:00Z."
+    ) is True
+
+
+def test_a_bare_something_went_wrong_is_not_a_github_edge_failure():
+    assert host_failures.is_transient_github_edge_failure(
+        "Something went wrong") is False
+    assert host_failures.is_transient_github_edge_failure(
+        "gh: HTTP 401: Bad credentials") is False
+
+
 def test_success_is_untouched():
     url = ci_issues.comment_on_issue(
         "o/r", 7, "hi",

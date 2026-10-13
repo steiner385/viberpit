@@ -175,6 +175,14 @@ _RE_STREAM_RESET = re.compile(
     r" received from peer"
 )
 
+#: GitHub's generic GraphQL internal-error envelope: ``gh: Something went wrong
+#: while executing your query on <ts>. Please include `<request-id>` when
+#: reporting this issue.`` The fourth wording of the same GitHub-side transient
+#: (#3025, after #1681/#2490/#2677). Anchored on the full "while executing your
+#: query" phrase — not a bare "Something went wrong" — so it cannot mask an
+#: unrelated defect; the timestamp and request id are deliberately not matched.
+_RE_GRAPHQL_INTERNAL_ERROR = re.compile(r"Something went wrong while executing your query")
+
 
 def is_transient_5xx(stderr: str) -> bool:
     """Whether *stderr* is gh reporting a GitHub-side 5xx: the request reached
@@ -188,13 +196,15 @@ def is_transient_github_edge_failure(stderr: str) -> bool:
     """Whether *stderr* is GitHub's own edge failing a request that reached
     it — a bare 5xx (:func:`is_transient_5xx`), or a response cut short by the
     same edge timeout, either mid-body (:data:`_RE_TRUNCATED_JSON`) or as an
-    HTTP/2 stream reset (:data:`_RE_STREAM_RESET`). Not a host condition — just
+    HTTP/2 stream reset (:data:`_RE_STREAM_RESET`), or GraphQL's generic
+    internal-error envelope (:data:`_RE_GRAPHQL_INTERNAL_ERROR`). Not a host condition — just
     the shared read of when a per-target failure is GitHub's outage rather than
     a defect to chase."""
     return (
         is_transient_5xx(stderr)
         or bool(_RE_TRUNCATED_JSON.search(stderr))
         or bool(_RE_STREAM_RESET.search(stderr))
+        or bool(_RE_GRAPHQL_INTERNAL_ERROR.search(stderr))
     )
 
 
