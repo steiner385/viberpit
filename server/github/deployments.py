@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .host_failures import log_gh_failure
+from .host_failures import is_transient_github_edge_failure, log_gh_failure
 from .pr_status import _DEPLOY_NODE_FIELDS, _alias
 
 log = logging.getLogger(__name__)
@@ -148,9 +148,14 @@ def fetch_deployments(repos: list[str], *, run=None) -> dict[str, list[Deploymen
                 data = json.loads(getattr(proc, "stdout", "") or "")
             else:
                 stderr = str(getattr(proc, "stderr", "") or "")
-                log_gh_failure(log, stderr,
-                               "github.deployments_fetch_failed repos='%s': %s",
-                               group_desc, stderr.strip())
+                if is_transient_github_edge_failure(stderr):
+                    # GitHub's own edge failing a request: not ours to file.
+                    log.info("github.deployments_fetch_failed repos='%s': %s",
+                             group_desc, stderr.strip())
+                else:
+                    log_gh_failure(log, stderr,
+                                   "github.deployments_fetch_failed repos='%s': %s",
+                                   group_desc, stderr.strip())
         except Exception:
             log.warning("github.deployments_fetch_failed repos='%s'", group_desc,
                         exc_info=True)

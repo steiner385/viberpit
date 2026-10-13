@@ -309,7 +309,7 @@ def test_a_four_and_a_five_repo_group_are_one_lineage(caplog):
     `repos=[<str>, <str>, <str>, <str>]` is not the five-element string. Pinned
     on an UNRELATED failure on purpose: the classifier fix hides this one, and
     the next non-host failure would have re-split it."""
-    run = _runner(STDERR_UNRELATED)
+    run = _runner(STDERR_UNRELATED_NOT_5XX)
     with caplog.at_level(logging.DEBUG):
         deployments.fetch_deployments(["o/a", "o/b", "o/c", "o/d"], run=run)
         deployments.fetch_deployments(["o/a", "o/b", "o/c", "o/d", "o/e"], run=run)

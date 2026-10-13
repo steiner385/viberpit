@@ -103,3 +103,24 @@ def test_fetch_never_raises_on_bad_json_or_exception():
     assert mod.fetch_deployments(["a/b"], run=bad_json) == {"a/b": None}
     assert mod.fetch_deployments(["a/b"], run=explode) == {"a/b": None}
     assert mod.fetch_deployments([], run=explode) == {}
+
+
+def _failing(stderr):
+    return lambda args, token=None: SimpleNamespace(returncode=1, stdout="", stderr=stderr)
+
+
+def test_fetch_edge_5xx_logs_below_warning(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="server.github.deployments"):
+        out = mod.fetch_deployments(["a/b", "a/c"], run=_failing("gh: HTTP 504"))
+    assert out == {"a/b": None, "a/c": None}
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(r.levelno == logging.INFO for r in caplog.records)
+
+
+def test_fetch_non_transient_failure_still_warns(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="server.github.deployments"):
+        out = mod.fetch_deployments(["a/b"], run=_failing("gh: HTTP 404"))
+    assert out == {"a/b": None}
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING]
