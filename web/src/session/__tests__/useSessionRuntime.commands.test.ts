@@ -86,6 +86,13 @@ describe('runtime commands', () => {
     act(() => emit('commandResult', { type: 'commandResult', sessionId: 's1', ok: true, render: 'help', data: null }))
     expect(result.current.commandResult).toMatchObject({ render: 'help' })
   })
+
+  it('mcp result opens the MCP panel with its servers', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    const data = { servers: [{ name: 'aws', status: 'needs-auth', error: null, toolCount: null, scope: 'user', auth: 'oauth' }] }
+    act(() => emit('commandResult', { type: 'commandResult', sessionId: 's1', ok: true, name: 'mcp', render: 'mcp', data }))
+    expect(result.current.commandResult).toEqual({ render: 'mcp', data })
+  })
 })
 
 

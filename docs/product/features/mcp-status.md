@@ -54,11 +54,17 @@ Plugin servers appear under their CLI name (`plugin:<p>:<s>`); the pill and read
 
 **Reauth** on a `needs-auth` row opens the existing paste-back `McpAuthFlow`. On success the edge:
 
-1. Refreshes only the `mcpOAuth` key of each account's `.credentials.json`, with a stat guard against a concurrent CLI write, using the same merge policy as `merge_shared_mcp`.
+1. Syncs only the `mcpOAuth` key of each account's `.credentials.json` (`sync_cfg_mcp_oauth`), with a stat guard against a concurrent CLI write, using the same merge policy as `merge_shared_mcp`. The dir receives the bundle's public view, which has no refresh token.
 2. Reconnects that server in every live session whose latest row for it is `needs-auth` or `failed` (bounded fan-out: 4 concurrent, 15 s each).
 3. Re-probes the account.
 
 Reconnect failures are logged and show up in the next status poll; they never fail the login response.
+
+## Token refresh
+
+`store/mcp.shared.json` is the only file that holds MCP refresh tokens, so no session's CLI refreshes a shared grant. On the refresh authority, the edge refreshes each bundle that expires within 10 minutes. It checks every 60 s, writes the result back compare-and-swap, and publishes the public view to every Anthropic account dir. Session start (`compose`) uses the same sync, so it never rolls back a rotation and never writes a refresh token into a dir. A dead grant (`invalid_grant` and the CLI's equivalents) is cleared to the CLI's signed-out shape and needs a Reauth. Any other failure is retried on the next tick.
+
+**Kill switch** - `VIBERPIT_MCP_OAUTH_REFRESH_ENABLED` (default on). When off, nothing refreshes MCP grants, and a token stays valid only until it expires.
 
 ## In-session readout
 

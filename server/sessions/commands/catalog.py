@@ -21,7 +21,9 @@ is now the declaration BOTH the palette and `run_command` read, so a command
 cannot be dispatchable while being invisible, or visible while being refused.
 
 `kind` is assigned here, server-side, so the client never re-derives command
-semantics.
+semantics. A vendor entry that shares a name with a gated app-owned client
+command (the CLI's own `/mcp`, which only says "use /mcp in the terminal" here)
+takes our render only where that gate holds; elsewhere it stays the engine's.
 """
 from __future__ import annotations
 import re
@@ -51,7 +53,7 @@ def parse_command_line(raw: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 # Commands handled by a dedicated client-side render (no model turn).
-CLIENT = {"help", "context"}
+CLIENT = {"help", "context", "mcp"}
 # Commands executed via a dedicated SDK method (not raw passthrough).
 CONTROL = {"model", "clear"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
@@ -110,8 +112,8 @@ def _always(_caps: AgentCapabilities) -> bool:
 #:
 #: `/help` and `/context` render client-side from data every driver publishes
 #: (the catalog itself; `context_usage()`), and `/clear` is `driver.reconnect()`
-#: — all three are AgentDriver protocol surface, so they are ungated. `/model`
-#: and `/account` are gated because an engine can genuinely lack them.
+#: — all three are AgentDriver protocol surface, so they are ungated. `/model`,
+#: `/account` and `/mcp` are gated because an engine can genuinely lack them.
 APP_COMMANDS: tuple[AppCommand, ...] = (
     AppCommand(
         Command(name="help", description="List the commands this session accepts",
@@ -138,11 +140,20 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
                 argument_hint="<account>", kind="control", source=APP),
         gate=lambda caps: caps.account_rotation or caps.account_switch_new_thread,
     ),
+    AppCommand(
+        Command(name="mcp", description="Show MCP servers, their sign-in state, and sign in",
+                argument_hint=None, kind="client", source=APP),
+        gate=lambda caps: caps.mcp_status,
+    ),
 )
 
 
-def classify(name: str) -> str:
+def classify(name: str, capabilities: AgentCapabilities | None = None) -> str:
+    """The execution kind of *name*. With *capabilities*, a CLIENT name whose app-owned
+    entry is gated off for this engine is the engine's own command (passthrough)."""
     if name in CLIENT:
+        if capabilities is not None and app_command(name, capabilities) is None:
+            return "passthrough"
         return "client"
     if name in CONTROL:
         return "control"
@@ -164,7 +175,7 @@ def app_command(name: str, capabilities: AgentCapabilities) -> Command | None:
     return None
 
 
-def _coerce(entry, *, vendor_skills: bool) -> Command | None:
+def _coerce(entry, capabilities: AgentCapabilities) -> Command | None:
     if isinstance(entry, str):
         name, desc, hint = entry, "", None
     elif isinstance(entry, dict):
@@ -180,7 +191,7 @@ def _coerce(entry, *, vendor_skills: bool) -> Command | None:
     # passthrough entry: passthrough means "write `/name` into the prompt and
     # let the engine parse it", which an engine that does not parse slash syntax
     # would forward to the model as literal text.
-    kind = "skill" if vendor_skills else classify(name)
+    kind = "skill" if capabilities.vendor_skills else classify(name, capabilities)
     return Command(name=name, description=str(desc), argument_hint=hint,
                    kind=kind, source=VENDOR)
 
@@ -202,7 +213,7 @@ def build_catalog(
     seen: set[str] = set()
     if capabilities.vendor_commands:
         for e in entries:
-            cmd = _coerce(e, vendor_skills=capabilities.vendor_skills)
+            cmd = _coerce(e, capabilities)
             if cmd is None or cmd.name in seen:
                 continue
             seen.add(cmd.name)

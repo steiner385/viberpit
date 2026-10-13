@@ -847,6 +847,8 @@ export interface McpServerState {
   error: string | null
   toolCount: number | null
   scope: string | null
+  /** 'oauth' when the server signs in through MCP OAuth (Reauth is offered); null/absent otherwise. */
+  auth?: 'oauth' | null
 }
 
 /** One observed (account, host, server) status row — from a live session or a probe. */

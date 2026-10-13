@@ -16,7 +16,7 @@ from pathlib import Path
 
 from server.hostname import self_host_name
 from server.mcp_health import store
-from server.mcp_health.status import McpServerState, sanitize_statuses
+from server.mcp_health.status import McpServerState, read_mcp_oauth, sanitize_statuses
 from server.sessions.account_auth import account_store_io, helper_env
 from server.sessions.helper_call import is_account_helper_ready
 
@@ -143,17 +143,26 @@ async def _bounded(account, factory, settle_s, interval_s, budget_s) -> list[Mcp
         raise ProbeSkipped("timed out" if slot else "budget exhausted") from None
 
 
+def _mirror_dir(client) -> str | None:
+    """The scratch mirror the client runs on (its CLAUDE_CONFIG_DIR), or None."""
+    env = getattr(getattr(client, "options", None), "env", None)
+    d = env.get("CLAUDE_CONFIG_DIR") if isinstance(env, dict) else None
+    return d if isinstance(d, str) and d else None
+
+
 async def _run(account, cfg, factory, settle_s, interval_s) -> list[McpServerState]:
     client = factory(account, cfg)
     if inspect.isawaitable(client):
         client = await client
     async with client:
+        # The mirror's copy of mcpOAuth is what the CLI authenticates with (spec 2026-10-13).
+        creds = await asyncio.to_thread(read_mcp_oauth, _mirror_dir(client))
         loop = asyncio.get_running_loop()
         deadline = loop.time() + settle_s
-        states = sanitize_statuses(await client.get_mcp_status())
+        states = sanitize_statuses(await client.get_mcp_status(), credentials=creds)
         while any(s.status == "pending" for s in states) and loop.time() < deadline:
             await asyncio.sleep(interval_s)
-            states = sanitize_statuses(await client.get_mcp_status())
+            states = sanitize_statuses(await client.get_mcp_status(), credentials=creds)
     return [replace(s, error=s.error or f"timed out after {int(settle_s)}s") if s.status == "pending" else s
             for s in states]
 

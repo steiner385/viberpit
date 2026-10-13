@@ -28,7 +28,7 @@ export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; f
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null; questionId?: string; permId?: string }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
 export interface WsCommandsMsg      { type: 'commands';      sessionId: string; commands: import('@/session/events').Command[] }
-export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'notice' | 'clear'; data?: unknown; error?: string }
+export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'mcp' | 'notice' | 'clear'; data?: unknown; error?: string }
 export interface WsUpdatePendingMsg   { type: 'updatePending' }
 export interface WsUpdateCancelledMsg { type: 'updateCancelled' }
 export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string; replySource?: 'suggested' }

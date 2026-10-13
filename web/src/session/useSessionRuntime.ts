@@ -32,6 +32,12 @@ import { fetchOlderTurns } from '@/api/transcript'
 // Dispatch payload for attached images: the DB-backed attachment ids.
 export type AttachmentIds = string[]
 
+/** A client command's overlay result: `/help`, `/context` or `/mcp` (data `{ servers }`). */
+export interface CommandResultView {
+  render: 'help' | 'context' | 'mcp'
+  data: unknown
+}
+
 export interface SessionRuntime {
   sessionId: string
   state: TranscriptState
@@ -98,7 +104,7 @@ export interface SessionRuntime {
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
   commands: Command[]
-  commandResult: { render: 'help' | 'context'; data: unknown } | null
+  commandResult: CommandResultView | null
   onCommand: (name: string, args: string) => void
   /** Switch model: 'now' stops + restarts a busy turn on the new model; 'after_turn'
    *  hands the model to the SDK without interrupting (applies on the next turn). */
@@ -173,7 +179,7 @@ export function useSessionRuntime(
     return () => { for (const t of timers) clearTimeout(t); timers.clear() }
   }, [])
   const [commands, setCommands] = useState<Command[]>([])
-  const [commandResult, setCommandResult] = useState<{ render: 'help' | 'context'; data: unknown } | null>(null)
+  const [commandResult, setCommandResult] = useState<CommandResultView | null>(null)
   const modeRef = useRef('interactive')
 
   // Attach / detach + subscribe to session events
@@ -254,7 +260,7 @@ export function useSessionRuntime(
       if (!msg.ok) { dispatch({ type: '_notice', text: msg.error ? `Command failed: ${msg.error}` : 'Command failed' }); return }
       if (msg.render === 'clear')  { dispatch({ type: '_clear', text: (msg.data as { text: string })?.text ?? 'Conversation cleared' }); return }
       if (msg.render === 'notice') { dispatch({ type: '_notice', text: (msg.data as { text: string })?.text ?? '' }); return }
-      if (msg.render === 'help' || msg.render === 'context') { setCommandResult({ render: msg.render, data: msg.data }) }
+      if (msg.render === 'help' || msg.render === 'context' || msg.render === 'mcp') { setCommandResult({ render: msg.render, data: msg.data }) }
     }
 
     on('sessionEvent', onEvent)

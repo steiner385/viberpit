@@ -67,6 +67,9 @@ describe('McpAuthFlow', () => {
     expect(screen.getByRole('button', { name: /submit/i })).toBeTruthy()
     // Cancel button
     expect(screen.getByRole('button', { name: /cancel/i })).toBeTruthy()
+    // Cross-host hint: the link works on any device, and the failed localhost page is expected
+    expect(screen.getByText(/open the link on any device/i)).toBeTruthy()
+    expect(screen.getByText(/failing to load is expected/i)).toBeTruthy()
   })
 
   // (b) success state renders "cleared for N account(s)"

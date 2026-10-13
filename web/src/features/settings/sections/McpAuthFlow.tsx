@@ -115,7 +115,7 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
     return (
       <div className="mt-1 px-3 pb-2 flex flex-col gap-2">
         <p className="text-xs text-warning">
-          Open the link below and approve access.
+          Waiting for you to approve access.
         </p>
         {status?.authUrl ? (
           <div className="flex items-center gap-2 min-w-0">
@@ -150,8 +150,9 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
           <p className="text-xs text-danger">Authorization link unavailable — cancel and retry.</p>
         )}
         <p className="text-xs text-ink-muted">
-          Open the link and approve. Your browser will redirect to a localhost address that may fail
-          to load — copy that full address and paste it here.
+          Open the link on any device and approve access. The browser then tries to load a localhost
+          address — that page failing to load is expected. Copy the full address from the address bar
+          and paste it here.
         </p>
         <div className="flex items-center gap-2">
           <input

@@ -15,7 +15,7 @@ from typing import Callable
 from . import account_registry, brand, copilot, credential_envelope, fleet_role, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
-from .creds import merge_shared_mcp, merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
+from .creds import capture_cfg_mcp, merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .engines import AgentEngine
 from .quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED, QuotaSnapshot, unknown_snapshot
 from .selector import AllAccountsBusy, Picked, eligible_names, select_picked
@@ -871,7 +871,7 @@ def sync_back(name: str) -> None:
         write_credentials(paths.slot_path(name), merge_keep_later(existing, claude_oauth))
     # Merge under the MCP store lock; this account may predate another server login.
     if mcp:
-        merge_shared_mcp(mcp)
+        capture_cfg_mcp(mcp)
 
 
 def remove_account(name: str) -> None:

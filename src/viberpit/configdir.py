@@ -5,7 +5,8 @@ import time
 from pathlib import Path
 
 from . import paths
-from .creds import compose_credentials, read_credentials, read_json, write_json_secure
+from .creds import (capture_cfg_mcp, compose_credentials, publish_mcp, read_credentials, read_json,
+                    read_shared_mcp, write_json_secure)
 
 CREDENTIALS_NAME = ".credentials.json"
 CLAUDE_JSON_NAME = ".claude.json"
@@ -162,6 +163,16 @@ def trust_project(name: str, cwd: str, *, disabled_mcp: list[str] | None = None)
     write_json_secure(claude_json_path, data)
 
 
+def _dir_mcp_oauth(cred_path: Path) -> dict:
+    """The ``mcpOAuth`` a cfg dir's .credentials.json holds now; ``{}`` if absent/unreadable
+    (compose rewrites the file anyway, so a torn one must not block a launch)."""
+    try:
+        mcp = read_json(cred_path).get("mcpOAuth") if cred_path.is_file() else None
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return mcp if isinstance(mcp, dict) else {}
+
+
 def compose(name: str) -> Path:
     """Reconcile links and write the composed .credentials.json + .claude.json.
 
@@ -184,8 +195,15 @@ def compose(name: str) -> Path:
         # the token and a composed claudeAiOauth blob would only be ignored — or rotated.
         claude_oauth = ({} if accounts.runner_uses_envelope(name)
                         else read_credentials(paths.slot_path(name)))
-        mcp = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
-        write_json_secure(cfg_dir / CREDENTIALS_NAME, compose_credentials(claude_oauth, mcp))
+        # MCP OAuth: the same capture + publish as sync_cfg_mcp_oauth (spec 2026-10-13).
+        # Capture first, so a bundle a CLI rotated in this dir is never rolled back; then
+        # publish the store's public view, so a dir never holds an MCP refresh token and a
+        # cleared bundle is not resurrected.
+        cred_path = cfg_dir / CREDENTIALS_NAME
+        dir_mcp = _dir_mcp_oauth(cred_path)
+        capture_cfg_mcp(dir_mcp)
+        mcp = publish_mcp(dir_mcp, read_shared_mcp())
+        write_json_secure(cred_path, compose_credentials(claude_oauth, mcp))
 
     # Write .claude.json (real file, never a symlink)
     write_json_secure(cfg_dir / CLAUDE_JSON_NAME, compose_claude_json(name))

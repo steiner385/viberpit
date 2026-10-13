@@ -125,3 +125,30 @@ def test_app_command_tolerates_a_leading_slash():
     assert app_command("/model", CLAUDE) is not None
     assert app_command("model", CLAUDE) is not None
     assert app_command("nonesuch", CLAUDE) is None
+
+
+# --- /mcp (spec 2026-10-13 "`/mcp` inside a session") -----------------------------------
+
+
+def test_mcp_is_an_app_client_command_only_where_status_is_reportable():
+    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    assert by["mcp"].kind == "client" and by["mcp"].source == APP
+    assert "mcp" not in {c.name for c in build_catalog(None, AgentCapabilities(models=True))}
+    assert "mcp" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+
+
+def test_a_vendor_mcp_entry_renders_our_panel_where_status_is_reportable():
+    """The CLI publishes its own /mcp, which in a ViberPit session only prints
+    "use /mcp in the terminal". With mcp_status the entry is client (our panel)."""
+    info = {"commands": [{"name": "mcp", "description": "Manage MCP servers"}]}
+    [mcp] = [c for c in build_catalog(info, CLAUDE) if c.name == "mcp"]
+    assert mcp.kind == "client" and mcp.source == VENDOR
+
+
+def test_a_vendor_mcp_entry_stays_passthrough_without_mcp_status():
+    caps = AgentCapabilities(vendor_commands=True)
+    info = {"commands": [{"name": "mcp", "description": "Manage MCP servers"}]}
+    [mcp] = [c for c in build_catalog(info, caps) if c.name == "mcp"]
+    assert mcp.kind == "passthrough"
+    assert classify("mcp", caps) == "passthrough"
+    assert classify("mcp", CLAUDE) == "client"

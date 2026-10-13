@@ -29,6 +29,11 @@ async def dispatch(driver, cmd: Command, args: str) -> dict | None:
     if cmd.kind == "client":
         if cmd.name == "context":
             return {"name": "context", "render": "context", "data": await driver.context_usage()}
+        if cmd.name == "mcp":
+            # Wire dicts (McpServerState.to_wire), so the result crosses the daemon RPC as-is.
+            mcp_status = getattr(driver, "mcp_status", None)
+            servers = await mcp_status() if mcp_status is not None else []
+            return {"name": "mcp", "render": "mcp", "data": {"servers": [s.to_wire() for s in servers]}}
         # /help (and any other client command) renders from the client's cached catalog.
         return {"name": cmd.name, "render": "help", "data": None}
 

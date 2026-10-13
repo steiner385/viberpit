@@ -125,6 +125,7 @@ describe('Overlays — app.overlays', () => {
           result={{ render: 'help', data: null }}
           commands={COMMANDS}
           onClose={() => {}}
+          rt={{ sessionId: 's1', account: 'work', state: { mcpServers: null } } as never}
         />
       </Shell>,
     )

@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 
 def _refresh(account: str, server: str | None = None) -> bool:
-    return creds.refresh_cfg_mcp_oauth(paths.account_cfg_dir(account), server=server)
+    return creds.sync_cfg_mcp_oauth(paths.account_cfg_dir(account), server=server)
 
 
 async def after_login(orch, server: str, accounts: list[str]) -> dict:  # noqa: ANN001
