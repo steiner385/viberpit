@@ -145,19 +145,10 @@ jobs:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        # ECR Public mirror of the Docker official image: anonymous Docker Hub
-        # pulls from shared runner IPs hit `toomanyrequests` and fail every shard.
-        image: public.ecr.aws/docker/library/postgres:16
-        env:
-          POSTGRES_USER: viberpit_test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: viberpit_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 10s
-          --health-timeout 5s --health-retries 5
+    # No Postgres service container: the shared action starts the runner's own
+    # preinstalled PostgreSQL. Anonymous pulls of the postgres image (Docker Hub,
+    # then the public.ecr.aws mirror) hit `toomanyrequests` from shared runner IPs
+    # and failed whole shards at "Initialize containers".
     steps:
       - if: needs.changes.outputs.py == 'true'
         uses: actions/checkout@v7
@@ -190,17 +181,6 @@ jobs:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:16
-        env:
-          POSTGRES_USER: viberpit_test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: viberpit_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 10s
-          --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/server-tests
