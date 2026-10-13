@@ -12696,7 +12696,10 @@ class SessionOrchestrator:
                     continue
                 dup = (await db.execute(select(TriageProposal.id).where(
                     TriageProposal.work_item_id == wi.id,
-                    TriageProposal.status == "pending"))).scalar_one_or_none()
+                    TriageProposal.status == "pending"
+                ).limit(1))).first()
+                # Existence only: nothing constrains a work item to one pending
+                # proposal, so scalar_one_or_none() raised MultipleResultsFound (#3048).
                 if dup is not None:
                     continue
                 db.add(TriageProposal(
