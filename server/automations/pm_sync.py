@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
-from server.github.host_failures import log_gh_failure
+from server.github.host_failures import log_gh_failure as _log_gh_failure
 from server.obs.context import log_event
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.pm.feature_index import (
@@ -42,6 +42,13 @@ from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
+
+
+def log_gh_failure(*args: Any, **kwargs: Any) -> None:
+    """``host_failures.log_gh_failure`` with GitHub-edge 5xx demoted to INFO:
+    the Projects v2 queries are heavy and 504 on GitHub's side (#3018) — the
+    sync retries next tick and the observation stays marked degraded."""
+    _log_gh_failure(*args, demote_edge_failures=True, **kwargs)
 
 # NOTE on the two feature-doc log throttles (``_bad_doc_log`` /
 # ``_skipped_docs_log``, built per loop in ``__init__``): a doc that cannot be

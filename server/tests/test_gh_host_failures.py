@@ -520,3 +520,32 @@ def test_a_success_between_two_blips_resets_the_timer(blip_gate, caplog):
         blip_gate.t += 200
         _fail()
     assert _unreachable_levels(caplog) == ["INFO", "INFO"]
+
+
+def test_log_gh_failure_demotes_a_github_edge_5xx_to_info(caplog):
+    """GitHub's own edge failing one request (HTTP 504 on a heavy Projects v2
+    query, #3018) is an outage to retry, not a defect: INFO, same message."""
+    lg = logging.getLogger("test.gh_edge")
+    with caplog.at_level(logging.DEBUG, logger=lg.name):
+        host_failures.log_gh_failure(
+            lg, "gh graphql failed: gh: HTTP 504",
+            "pm_sync.project_error project=%s", "p1", exc_info=False,
+            demote_edge_failures=True)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.INFO] == [
+        "pm_sync.project_error project=p1"]
+
+
+def test_log_gh_failure_still_warns_on_a_non_edge_failure(caplog):
+    lg = logging.getLogger("test.gh_edge")
+    with caplog.at_level(logging.DEBUG, logger=lg.name):
+        host_failures.log_gh_failure(
+            lg, "gh: Could not resolve to a Repository", "x.failed %s", "a")
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+def test_log_gh_failure_keeps_a_5xx_at_warning_by_default(caplog):
+    lg = logging.getLogger("test.gh_edge")
+    with caplog.at_level(logging.DEBUG, logger=lg.name):
+        host_failures.log_gh_failure(lg, "gh graphql failed: gh: HTTP 504", "x %s", "a")
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
