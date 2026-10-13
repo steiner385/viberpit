@@ -118,6 +118,25 @@ def test_github_5xx_logs_info_not_a_warning(caplog):
     assert any("pr_population.refresh_unavailable" in r.getMessage() for r in info)
 
 
+def test_graphql_internal_error_logs_info_not_a_warning(caplog):
+    """#3025: GitHub's generic GraphQL internal-error envelope is the same
+    transient as a 5xx; its per-occurrence request id must not file issues."""
+    def qfn(repo: str) -> dict:
+        raise pop.gitrepos.GhError(
+            "gh: Something went wrong while executing your query on "
+            "2026-10-12T12:52:08Z. Please include `8A50:3B861C:7E1F7:1A4AE1:6ACCD7F6`"
+            " when reporting this issue.")
+
+    p = PrPopulationPoller(query_fn=qfn)
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(p.refresh_once(["o/bad"]))
+
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned == [], [r.getMessage() for r in warned]
+    assert any("pr_population.refresh_unavailable" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.INFO)
+
+
 def test_non_5xx_failure_still_warns(caplog):
     """The demotion is specific to a GitHub 5xx — any other target-specific
     failure keeps reporting at WARNING with repo= exactly as before."""
