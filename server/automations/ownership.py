@@ -92,6 +92,17 @@ def _pending_execution(*, stopped: bool = False) -> dict:
         "pending": {"generation": 0, "stopped": 0 if stopped else None}}}
 
 
+def stopped_work_attested(operation: AutomationOperation) -> bool:
+    """The ``ReleaseProof.WORK_STOPPED`` bar: an operation with a native session
+    releases only once its WHOLE managed tree's current execution generation is
+    attested stopped. The one predicate, so a caller deciding whether to attempt
+    that release asks exactly what ``_validate_release`` will check (#3026)."""
+    if not (operation.session_id or operation.reserved_session_id):
+        return True
+    return (operation.execution_generation is not None
+            and operation.stopped_generation == operation.execution_generation)
+
+
 class OwnershipTransaction:
     """Valid only within its acquire/owned context. db is the retry-state seam."""
 
@@ -167,10 +178,8 @@ class OwnershipTransaction:
         if proof is ReleaseProof.NOT_STARTED and self.operation.phase == "claimed":
             return
         if proof is ReleaseProof.WORK_STOPPED:
-            if self.operation.session_id or self.operation.reserved_session_id:
-                if (self.operation.execution_generation is None
-                        or self.operation.stopped_generation != self.operation.execution_generation):
-                    raise ValueError("native session execution has no current stopped-work attestation")
+            if not stopped_work_attested(self.operation):
+                raise ValueError("native session execution has no current stopped-work attestation")
             return
         raise ValueError("possible external effects require proven stopped work")
 

@@ -859,6 +859,10 @@ class BacklogRunnerLoop:
         # re-derives "stopped" from generation counters that a stuck proof never
         # converges — the release call itself then raises (#2202, #2232/#2233).
         self._session_terminal_attest = session_terminal_attest
+        # Ownership tokens ``_work_stopped`` is holding because their managed tree
+        # is not attested stopped yet (a dispatched child still live, #3026): the
+        # wait is logged once on entry, not on every tick it lasts.
+        self._stop_waits: set[str] = set()
         # (session_id) -> True only when the session row no longer EXISTS (not merely
         # terminal). The evidence bar for releasing a token-holding claim whose
         # session was permanently deleted (``_release_orphaned_claim``).
@@ -2164,7 +2168,7 @@ class BacklogRunnerLoop:
                     # "native session execution has no current stopped-work
                     # attestation" every tick forever (#2202, #2232/#2233).
                     await self._repair_stopped_proof(sid)
-                    return True
+                    return await self._stop_attested(st, sid)
             except Exception:  # pragma: no cover — a probe failure must not stall the sweep
                 log.warning("backlog_runner.session_gone_probe_failed sid=%s", sid,
                             exc_info=True)
@@ -2180,7 +2184,38 @@ class BacklogRunnerLoop:
             # proof ``_validate_release`` re-derives, so repair it here too
             # (2026-10-06/07: ``tick_failed`` every minute for ~11 h, #2722).
             await self._repair_stopped_proof(sid)
-        return stopped
+            return await self._stop_attested(st, sid)
+        return False
+
+    async def _stop_attested(self, st: dict, sid: str) -> bool:
+        """Whether the WORK_STOPPED release that follows a True ``_work_stopped``
+        will pass: ``_validate_release``'s own predicate, re-read after the repair.
+
+        Both probes above vouch for the ROOT session only; the release needs the
+        whole managed tree. A child the root dispatched that is still running
+        keeps that proof open — correctly, it can still touch the target — so
+        answering True here sent the sweep into a release that raised every tick
+        until the child ended (#3026). Not provable yet is the quiet retain-and-
+        retry every other not-stopped case already is. A token-less (legacy) row
+        has no operation for that release to validate."""
+        token = st.get("ownership_token")
+        if not token:
+            return True
+        from .ownership import StaleOwnership, owned, stopped_work_attested
+        try:
+            async with owned(token) as tx:
+                attested = stopped_work_attested(tx.operation)
+        except StaleOwnership:
+            self._stop_waits.discard(token)
+            return False
+        if attested:
+            self._stop_waits.discard(token)
+        elif token not in self._stop_waits:
+            self._stop_waits.add(token)
+            log.info("backlog_runner.closeout_waiting_on_tree sid=%s — the managed tree"
+                     " is not attested stopped yet (a dispatched child still live?);"
+                     " claim retained", sid)
+        return attested
 
     async def _repair_stopped_proof(self, sid: str) -> None:
         """Best-effort: attest *sid*'s retained executions so a WORK_STOPPED release
