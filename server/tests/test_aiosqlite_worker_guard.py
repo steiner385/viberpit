@@ -188,6 +188,55 @@ def test_an_orphaned_worker_is_tracked_and_can_be_stopped():
         t.join(5)
 
 
+class _Result:
+    """A weak-referenceable stand-in for an operation's return value."""
+
+
+@pytest.mark.parametrize("loop_alive", [False, True], ids=["orphaned", "delivered"])
+def test_a_waiting_worker_holds_no_reference_to_the_item_it_served(loop_alive):
+    """#3035: the worker's frame is a GC root for as long as its thread lives. If it
+    keeps the served item's ``future`` bound while it blocks on the next ``get()``,
+    that future pins whatever it references. On Python 3.14 a cancelled future
+    keeps its done-callback (the task's wakeup), so it pinned task → coroutine →
+    ``Connection``: ``Connection.__del__`` never ran, its ``stop()`` was never
+    enqueued, and the non-daemon worker leaked until interpreter exit."""
+    import weakref
+
+    loop = asyncio.new_event_loop()
+    fut = loop.create_future()
+    if not loop_alive:
+        loop.close()
+    box = [_Result()]  # handed over on call, so only the worker ever holds it
+    served = threading.Event()
+
+    def function():
+        served.set()
+        return box.pop()
+
+    refs = {"future": weakref.ref(fut), "function": weakref.ref(function),
+            "result": weakref.ref(box[0])}
+    tx = _queue((fut, function))
+    del fut, function
+    t = threading.Thread(target=build_loop_safe_worker(), args=(tx,), daemon=True)
+    t.start()
+    try:
+        assert served.wait(5)
+        deadline = time.monotonic() + 5
+        while tx.qsize() and time.monotonic() < deadline:  # pragma: no cover — racing get()
+            time.sleep(0.01)
+        time.sleep(0.05)  # let the worker finish the item and block on the next get()
+        if loop_alive:
+            loop.run_until_complete(asyncio.sleep(0))  # drain the delivered callback
+            loop.close()
+        gc.collect()
+        leaked = [name for name, ref in refs.items() if ref() is not None]
+        assert leaked == [], f"waiting worker still references the served item's {leaked}"
+    finally:
+        tx.put_nowait(_stop_item())
+        t.join(5)
+        stop_orphaned_workers()
+
+
 def test_a_worker_that_never_lost_its_loop_is_not_tracked():
     async def drive():
         ok = asyncio.get_running_loop().create_future()

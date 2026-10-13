@@ -164,6 +164,14 @@ def build_loop_safe_worker(core: ModuleType = _aiosqlite_core) -> Callable[..., 
                     orphaned = _deliver(future, set_result, result)
                 except BaseException as exc:  # noqa: B036 — mirrors upstream
                     orphaned = _deliver(future, set_exception, exc)
+                # Drop the served item BEFORE blocking on the next get() (#3035): this
+                # frame is a GC root for the thread's whole life, so a lingering
+                # ``future`` pins everything it references. On Python 3.14 a
+                # cancelled future keeps its done-callback (the task's wakeup), so an
+                # abandoned borrower's task → coroutine → Connection stayed reachable,
+                # ``Connection.__del__`` never enqueued ``stop()``, and this
+                # non-daemon worker leaked until interpreter exit.
+                future = function = result = None
                 if orphaned:
                     with _orphans_lock:
                         _orphan_queues.add(tx)
