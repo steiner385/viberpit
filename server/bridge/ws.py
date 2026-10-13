@@ -76,6 +76,7 @@ from server.obs.tasks import supervise
 from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
+from server.sessions.orchestrator import DriverStartTimeout, ENSURE_DRIVER_WORST_CASE_S
 from server.sessions.replay import replay_window
 from server.sessions.origin_backfill import apply_origin_backfill
 from server.sessions import session_actions
@@ -153,7 +154,15 @@ async def _log_attach_daemon_unavailable(session_id: str) -> None:
 # seconds cold — but it must never block forever. On a saturated box a wedged
 # resume used to hang the attach with no timeout, leaving the client spinning on
 # "Loading session…" indefinitely. Bound it and surface SESSION_RESUME_TIMEOUT.
-_RESUME_TIMEOUT = 90.0
+# Derived from the worker's own worst case plus RPC headroom (#3020): a fixed 90 s
+# gave up ~40 s before the worker could, so its structured DriverStartTimeout never
+# arrived and slow-but-progressing resumes filed edge WARNINGs. An expiry here now
+# means the worker itself is unresponsive. Read from the edge's env, so a
+# VIBERPIT_DRIVER_* override must be set on both hosts to keep the two aligned.
+_RESUME_RPC_MARGIN_S = 15.0
+_RESUME_TIMEOUT = ENSURE_DRIVER_WORST_CASE_S + _RESUME_RPC_MARGIN_S
+_RESUME_TIMEOUT_MESSAGE = ("This session is taking too long to resume — the server may be "
+                           "busy. Try again in a moment.")
 # Frames that mutate a session's live stream or its turn ordering run on that
 # session's ordered work chain instead of inline on the receive loop (#1180).
 # Everything NOT listed here is handled inline — deliberately, because those are
@@ -168,7 +177,7 @@ _CHAINED_FRAMES = frozenset({
 # had implicit backpressure — a client could not outrun a handler it was waiting
 # on, because TCP stopped reading. Deferring removes that, so the queue needs an
 # explicit bound or a fast client could pile unbounded 256KB frames on a session
-# stuck in a 90 s resume. Over the cap the frame is refused, never silently dropped.
+# stuck in a minutes-long resume. Over the cap the frame is refused, never silently dropped.
 _MAX_SESSION_WORK = 64
 # Only log a chain wait that a human would notice; an idle chain starts work in
 # well under a millisecond and logging every frame would drown the journal.
@@ -565,7 +574,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         # Keyed per session because the invariant it protects — live_tasks[sid] and
         # sid's membership in `attached` — is per session; there is no cross-session
         # invariant here. A socket-global lock put an unrelated session's user prompt
-        # behind a wedged auto re-attach for up to _RESUME_TIMEOUT (90 s), undoing
+        # behind a wedged auto re-attach for up to _RESUME_TIMEOUT (~145 s), undoing
         # exactly the cross-session independence #1180's per-session work chains
         # introduced — and, unlike a slow user attach, it was triggerable with no
         # user action at all.
@@ -780,6 +789,17 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                          "sessionId": session_id})
             out_q.put_nowait(_error_complete(session_id))
 
+        async def _worker_start_timed_out(session_id: str, exc: Exception,
+                                          auto: bool) -> None:
+            # The worker gave its structured verdict: driver.start() overran its budget
+            # and was closed (#3020). Retryable, so the same hint as an edge timeout —
+            # but INFO, because the worker's own WARNING already covers this failure.
+            log.info("ws.attach: driver start timed out on the worker for %s (%s)",
+                     session_id, exc)
+            await _attach_failed(
+                session_id, "SESSION_RESUME_TIMEOUT",
+                _RESUME_TIMEOUT_MESSAGE, auto)
+
         async def _resume_driver_or_error(session_id: str, *, auto: bool = False):
             """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
 
@@ -805,6 +825,12 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 driver = await call_with_deadline(
                     orchestrator.ensure_driver, session_id, identity,
                     timeout=_RESUME_TIMEOUT)
+            except DriverStartTimeout as exc:
+                # In process, the worker's own start deadline (a TimeoutError, so it
+                # must precede the branch below). Over RPC it is a DaemonError — see
+                # the generic branch. The worker already logged the WARNING.
+                await _worker_start_timed_out(session_id, exc, auto)
+                return None
             except (asyncio.TimeoutError, DaemonTimeout):
                 # A wedged resume (saturated box / stuck MCP fleet) must not hang the
                 # socket forever — surface it so the client can stop spinning and retry.
@@ -812,8 +838,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                             session_id, _RESUME_TIMEOUT)
                 await _attach_failed(
                     session_id, "SESSION_RESUME_TIMEOUT",
-                    "This session is taking too long to resume — the server may be "
-                    "busy. Try again in a moment.", auto)
+                    _RESUME_TIMEOUT_MESSAGE, auto)
                 return None
             except DaemonUnavailable:
                 await _log_attach_daemon_unavailable(session_id)
@@ -834,6 +859,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # backlog-runner closed the claim out — same terminal condition
                 # `_reassign` already parks as `automation_ownership_stale` (see
                 # test_reassign_stale_ownership.py).
+                if isinstance(exc, DaemonError) and exc.err_type == "DriverStartTimeout":
+                    await _worker_start_timed_out(session_id, exc, auto)
+                    return None
                 stale_ownership = isinstance(exc, StaleOwnership) or (
                     isinstance(exc, DaemonError) and exc.err_type == "StaleOwnership")
                 if not stale_ownership:
@@ -2272,7 +2300,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     # Deliberately NOT by taking a lock: a teardown must unwind
                     # promptly and must never sit on an unbounded await (#1164). A
                     # _handle_attach wedged on a cold MCP fleet holds its session's
-                    # lock for up to _RESUME_TIMEOUT (90 s); a cancellation arriving
+                    # lock for up to _RESUME_TIMEOUT (~145 s); a cancellation arriving
                     # while we waited for it would skip the reaps below, orphaning the
                     # forwarding tasks.
                     closing = True

@@ -750,8 +750,8 @@ TRANSCRIPT_EXPORT_CEILING_S = env_float("VIBERPIT_TRANSCRIPT_EXPORT_CEILING_S", 
 # avoid racing the old process's session-file flush, but `AgentDriver.aclose()` is
 # only partly bounded (the account sync-back is not), so an unbounded wait would
 # leave a session with a stuck teardown permanently unopenable. The wait runs BEFORE
-# `_ensure_lock` (#2655), so it bounds only the attaching caller's latency; it stays
-# well under the bridge's 90 s attach deadline, leaving room for the resume build.
+# `_ensure_lock` (#2655), so it bounds only the attaching caller's latency; it is part
+# of ENSURE_DRIVER_WORST_CASE_S, which the bridge's attach deadline is derived from.
 # minimum=0.1: a 0/negative override would fire the timeout instantly and defeat the
 # race protection entirely — fall back to the default instead.
 DRIVER_RELEASE_WAIT_S = env_float("VIBERPIT_DRIVER_RELEASE_WAIT_S", 20.0, minimum=0.1)
@@ -774,7 +774,7 @@ DRIVER_CLOSE_SLOW_S = 10.0
 # giving up (asyncio.TimeoutError → the bridge's SESSION_RESUME_TIMEOUT hint). A
 # spawn is driver.start() — the SDK subprocess plus its MCP fleet — normally a few
 # seconds; on a saturated box it can be far longer, and building a second driver
-# meanwhile is never the right answer. Stays under the bridge's 90 s attach deadline.
+# meanwhile is never the right answer. Stays under the bridge's attach deadline.
 SPAWN_WAIT_S = env_float("VIBERPIT_SPAWN_WAIT_S", 60.0, minimum=1.0)
 # Budget for one driver start() — the CLI cold start plus its MCP fleet — inside a
 # swap (_reassign) or a resume build (ensure_driver). Unbounded, a start that never
@@ -788,6 +788,12 @@ DRIVER_START_TIMEOUT_S = env_float("VIBERPIT_DRIVER_START_TIMEOUT_S", 90.0, mini
 # midway could leave the old CLI running next to the new one (#1040). Also the bound
 # on _reassign's wait for a prior swap of the same session.
 DRIVER_SWAP_TIMEOUT_S = env_float("VIBERPIT_DRIVER_SWAP_TIMEOUT_S", 150.0, minimum=1.0)
+# Worst case one ensure_driver resume legitimately takes (#3020): the wait for an
+# in-flight release, a start() that runs its whole budget, then the bounded close of
+# the half-built driver before DriverStartTimeout is raised. The bridge derives its
+# attach deadline from this, so it cannot give up before the worker's verdict arrives.
+ENSURE_DRIVER_WORST_CASE_S = (DRIVER_RELEASE_WAIT_S + DRIVER_START_TIMEOUT_S
+                              + DRIVER_RELEASE_WAIT_S)
 # Total budget for the drain-time recovery snapshots (#2913). begin_drain is an RPC
 # the deploy controller awaits under the IPC client's 30 s read timeout, so this
 # stays well inside it: an overrun skips the remaining worktrees, never the drain.

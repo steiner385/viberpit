@@ -84,10 +84,12 @@ _POOL_WARN_INTERVAL_S = 30.0
 # signals below, and a window shorter than the longest RPC would misread legitimate slow
 # work as a strand on either — a lockstep automation fan-out has zero pool-wide turnover
 # for the whole call,
-# and a connection mid-flight on a 90s RPC has not "turned over" for 90s. 120s = 90s plus
-# headroom keeps both clear. (Not imported from remote.py: that module imports THIS one, so
-# the coupling is a comment, not a cycle — the test pins the invariant instead.)
-_WEDGE_QUIET_S = 120.0
+# and a connection mid-flight on a 90s RPC has not "turned over" for 90s. The longest is
+# now the ws attach's `ensure_driver`, which carries `bridge.ws._RESUME_TIMEOUT` (~145s,
+# derived from the worker's resume budget, #3020); 180s keeps both clear of it. (Not
+# imported from those modules: they import THIS one, so the coupling is a comment, not a
+# cycle — the test pins the invariant instead.)
+_WEDGE_QUIET_S = 180.0
 
 # Partial-strand threshold. A strand accumulates one stranded slot at a time — most of the
 # pool sits ACTIVE and never completes while a few sockets still recycle — so the pool-wide
