@@ -1316,6 +1316,65 @@ def test_daemon_timeout_on_resume_takes_the_timeout_branch_not_the_1013_close(tm
             )
 
 
+@pytest.mark.parametrize("remote", [True, False], ids=["daemon-error", "local"])
+def test_worker_driver_start_timeout_is_a_resume_timeout_logged_at_info(tmp_path, caplog,
+                                                                        remote):
+    """The worker's own start deadline is a resume timeout, not a failure (#3020).
+
+    Over the fleet RPC it arrives as DaemonError(err_type="DriverStartTimeout"); in
+    process it is the bare DriverStartTimeout (a TimeoutError). Either way the client
+    gets the retry hint, and the edge logs INFO — the worker already logged the
+    WARNING for this start, so a second one double-files one failure as two issues.
+    """
+    from server.ipc.client import DaemonError
+    from server.sessions.orchestrator import DriverStartTimeout
+
+    with _rehydrated_detached_client(tmp_path, []) as (orch, client, session_id):
+        async def _start_timed_out(*_a, **_k):
+            if remote:
+                raise DaemonError("DriverStartTimeout",
+                                  f"session {session_id}: driver start did not finish "
+                                  "within 90s")
+            raise DriverStartTimeout(session_id, 90.0)
+
+        orch.ensure_driver = _start_timed_out
+
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            _drain_events(ws, until_type="replayComplete", timeout=8.0)
+
+            with caplog.at_level(logging.INFO, logger="server.bridge.ws"):
+                ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id,
+                                         "text": "go"}))
+                events = _drain_events(ws, until_type="error", timeout=4.0)
+            assert any(e.get("code") == "SESSION_RESUME_TIMEOUT" for e in events), events
+
+    ws_records = [r for r in caplog.records if r.name == "server.bridge.ws"]
+    assert not [r for r in ws_records if r.levelno >= logging.WARNING], [
+        r.getMessage() for r in ws_records if r.levelno >= logging.WARNING]
+    assert any("start timed out on the worker" in r.getMessage() for r in ws_records), [
+        r.getMessage() for r in ws_records]
+
+
+def test_edge_resume_deadline_outlasts_the_worker_resume_budget():
+    """The edge must never give up before the worker's verdict can arrive (#3020).
+
+    At 90 s against a worker that can legitimately spend ~130 s in ensure_driver (a
+    release wait, a full start budget, then closing the half-built driver), every slow
+    resume became a generic edge WARNING and a "taking too long" banner — sometimes for
+    a resume that finished seconds later. Derived from the worker's constants, so this
+    pins the margin rather than a number.
+    """
+    import server.bridge.ws as wsmod
+    from server.sessions import orchestrator as orch_mod
+
+    worst_case = (orch_mod.DRIVER_RELEASE_WAIT_S + orch_mod.DRIVER_START_TIMEOUT_S
+                  + orch_mod.DRIVER_RELEASE_WAIT_S)
+    assert orch_mod.ENSURE_DRIVER_WORST_CASE_S >= worst_case
+    assert wsmod._RESUME_TIMEOUT > orch_mod.ENSURE_DRIVER_WORST_CASE_S
+    assert wsmod._WORK_DRAIN_TIMEOUT > wsmod._RESUME_TIMEOUT
+
+
 def test_ws_attach_daemon_unavailable_is_throttled_not_flooded(tmp_path, caplog):
     """A daemon-connectivity blip (restart, deploy, brief outage) makes every attach
     of an affected session hit DaemonUnavailable and log at WARNING; #2025 was 368

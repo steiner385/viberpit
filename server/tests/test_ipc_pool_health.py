@@ -358,11 +358,16 @@ def test_the_quiet_window_clears_the_longest_caller_budget():
     automation fan-out as exhaustion and makes an in-flight slow RPC look like a strand
     — a false positive on the one diagnostic an operator is asked to trust.
     """
+    from server.bridge.ws import _RESUME_TIMEOUT
     from server.sessions.remote import SPAWN_RPC_TIMEOUT
 
     assert ipc_client._WEDGE_QUIET_S > SPAWN_RPC_TIMEOUT, (
         f"_WEDGE_QUIET_S={ipc_client._WEDGE_QUIET_S} must exceed the longest caller "
         f"budget SPAWN_RPC_TIMEOUT={SPAWN_RPC_TIMEOUT}")
+    # The attach's ensure_driver RPC carries the edge resume deadline (#3020).
+    assert ipc_client._WEDGE_QUIET_S > _RESUME_TIMEOUT, (
+        f"_WEDGE_QUIET_S={ipc_client._WEDGE_QUIET_S} must exceed the ws resume "
+        f"deadline _RESUME_TIMEOUT={_RESUME_TIMEOUT}")
 
 
 @pytest.mark.asyncio
