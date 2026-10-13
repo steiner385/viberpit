@@ -123,6 +123,19 @@ async def test_resolve_permission_always_from_other_non_human_via_is_rules_human
     audit.assert_not_awaited()
 
 
+def test_require_human_local_process_message_names_the_same_host_cause():
+    """A browser on the edge host is refused like an agent there; the 403 must say so,
+    not claim the caller is outside the UI."""
+    from server.auth.identity import LOCAL_PROCESS_VIA
+    with pytest.raises(sa.ActionError) as exc_info:
+        sa.require_human("u@example.com", LOCAL_PROCESS_VIA)
+    assert exc_info.value.code == "RULES_HUMAN_ONLY"
+    assert "another device" in exc_info.value.message
+    with pytest.raises(sa.ActionError) as exc_info:
+        sa.require_human("u@example.com", "mcp-external")
+    assert "another device" not in exc_info.value.message
+
+
 @pytest.mark.asyncio
 async def test_resolve_permission_always_allowed_for_human(orch):
     with _patched_audit():
