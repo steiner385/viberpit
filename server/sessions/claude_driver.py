@@ -22,7 +22,9 @@ from server.assistant.context import PromptContext, render_context_header
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
 from server.config import get_settings
-from server.mcp_health.status import sanitize_statuses
+from server.mcp_health.status import (apply_auth_latch, observed_auth_failure, read_mcp_oauth,
+                                      rejected_error, sanitize_statuses, server_for_tool,
+                                      token_fingerprint)
 from server.mcp_spec import is_mcp_tool
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
 from server.obs.context import bind_session
@@ -356,7 +358,12 @@ class ClaudeAgentDriver:
         # is otherwise never re-emitted, leaving reloaded sessions on the 0%-pinning fallback).
         self._on_context_usage = on_context_usage
         self._on_mcp_status = on_mcp_status
-        self._mcp_last: list = []                     # last sanitized snapshot
+        self._mcp_last: list = []                     # last snapshot, auth latch applied
+        self._mcp_base: list = []                     # last sanitized snapshot, before the latch
+        # Observed auth failures (spec 2026-10-13): server -> (error, token fingerprint). The
+        # fingerprint is a hash of the token the server rejected, so a re-auth clears it.
+        self._mcp_auth_latch: dict[str, tuple[str, str]] = {}
+        self._mcp_tool_calls: dict[str, str] = {}     # in-flight MCP tool_id -> tool name
         # Servers the orchestrator wrote to the CLI's disabledMcpServers; re-applied once per
         # CLI start because a racing compose() can erase that list before the CLI reads it.
         self._desired_disabled_mcp = desired_disabled_mcp
@@ -1572,6 +1579,10 @@ class ClaudeAgentDriver:
                 self._turn_produced_output = True
             self._note_progress(e)
             self._emit(e)
+            if isinstance(e, ev.ToolCall) and e.kind is ev.ToolKind.MCP:
+                self._note_mcp_tool_call(e)
+            elif isinstance(e, ev.ToolResult) and e.tool_id in self._mcp_tool_calls:
+                await self._observe_mcp_result(e)
         if self._engine_session_id is None and self._tr.session_id:
             self._engine_session_id = self._tr.session_id
             if self._on_session_id is not None:
@@ -2138,6 +2149,7 @@ class ClaudeAgentDriver:
         if self._client is None or self._stream_ended:
             raise RuntimeError("session not live")
         await self._client.reconnect_mcp_server(name)
+        self._mcp_auth_latch.pop(name, None)
         await self._poll_mcp_status()
 
     async def toggle_mcp_server(self, name: str, enabled: bool) -> None:
@@ -2162,11 +2174,22 @@ class ClaudeAgentDriver:
                 or not get_settings().mcp_status_enabled):
             return None
         try:
-            states = sanitize_statuses(await self._client.get_mcp_status())
+            raw = await self._client.get_mcp_status()
         except Exception:
             self._mcp_unsupported = True
             log.debug("mcp_status pull failed session=%s", self.session_id, exc_info=True)
             return None
+        creds = await asyncio.to_thread(read_mcp_oauth, self.config_dir)
+        self._mcp_base = sanitize_statuses(raw, credentials=creds)
+        for name, (_err, fp) in list(self._mcp_auth_latch.items()):
+            if token_fingerprint(creds, name) != fp:      # a re-auth landed
+                del self._mcp_auth_latch[name]
+        return await self._publish_mcp_status()
+
+    async def _publish_mcp_status(self) -> list:
+        """Apply the auth latch to the last sanitized snapshot, then emit + persist it."""
+        states = apply_auth_latch(self._mcp_base,
+                                  {n: err for n, (err, _fp) in self._mcp_auth_latch.items()})
         self._mcp_last = states
         self._emit(ev.McpStatus(servers=states))
         if self._on_mcp_status is not None:
@@ -2175,6 +2198,37 @@ class ClaudeAgentDriver:
             except Exception:
                 log.debug("on_mcp_status persist failed session=%s", self.session_id, exc_info=True)
         return states
+
+    _MCP_TOOL_CALLS_MAX = 256
+
+    def _note_mcp_tool_call(self, e: ev.ToolCall) -> None:
+        """Remember an in-flight third-party MCP call (sub-agents' included) so its result
+        can be attributed to a server. Bounded: a call whose result never lands ages out."""
+        self._mcp_tool_calls[e.tool_id] = e.name
+        while len(self._mcp_tool_calls) > self._MCP_TOOL_CALLS_MAX:
+            del self._mcp_tool_calls[next(iter(self._mcp_tool_calls))]
+
+    async def _observe_mcp_result(self, e: ev.ToolResult) -> None:
+        """Latch (or clear) an observed auth failure and re-emit the cached snapshot.
+
+        Never a control round-trip here: this runs inside the event pump."""
+        server = server_for_tool(self._mcp_tool_calls.pop(e.tool_id, None),
+                                 [s.name for s in self._mcp_base])
+        if server is None or self._closing:
+            return
+        marker = observed_auth_failure(e.ok, e.payload)
+        if marker is not None:
+            creds = await asyncio.to_thread(read_mcp_oauth, self.config_dir)
+            entry = (rejected_error(marker), token_fingerprint(creds, server))
+            if self._mcp_auth_latch.get(server) == entry:
+                return
+            self._mcp_auth_latch[server] = entry
+            log.info("mcp auth rejected session=%s server=%s", self.session_id, server)
+        elif e.ok and server in self._mcp_auth_latch:
+            del self._mcp_auth_latch[server]
+        else:
+            return
+        await self._publish_mcp_status()
 
     def _start_mcp_settle(self) -> None:
         if self._mcp_poll_task is None or self._mcp_poll_task.done():
@@ -2308,6 +2362,8 @@ class ClaudeAgentDriver:
         self._mcp_unsupported = False
         self._mcp_enforced = False
         self._mcp_last = []
+        self._mcp_base = []
+        self._mcp_tool_calls = {}
         self._start_mcp_settle()
 
     def resolve_permission(self, perm_id, decision, identity) -> bool:

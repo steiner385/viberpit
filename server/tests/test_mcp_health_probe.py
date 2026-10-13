@@ -263,3 +263,29 @@ async def test_scratch_mirror_gets_current_shared_servers_real_dir_untouched(mon
     await probe.probe_account("alice")
     assert set(seen["servers"]) == {"fresh"}
     assert {p.name: p.read_bytes() for p in real.iterdir()} == before
+
+
+@pytest.mark.asyncio
+async def test_probe_overlays_the_scratch_mirrors_mcp_oauth(monkeypatch, tmp_path):
+    """The probe reads mcpOAuth from the scratch mirror the client runs on (its
+    CLAUDE_CONFIG_DIR), not the real cfg dir: an expired token reports needs-auth."""
+    import json
+    from types import SimpleNamespace
+    real, scratch = tmp_path / "real", tmp_path / "scratch"
+    real.mkdir()
+    scratch.mkdir()
+    (scratch / ".credentials.json").write_text(json.dumps({"mcpOAuth": {"aws|1": {
+        "serverName": "aws", "accessToken": "t", "expiresAt": 1}}}))
+    monkeypatch.setattr(probe, "_cfg_dir_for", lambda a: real)
+
+    def make(account, cfg_dir):
+        c = FakeSDKClient([], mcp_status=[{"name": "aws", "status": "connected"},
+                                          {"name": "gh", "status": "connected"}], startup_frames=[])
+        c.options = SimpleNamespace(env={"CLAUDE_CONFIG_DIR": str(scratch)})
+        return c
+
+    states = await probe.probe_account("alice", client_factory=make)
+    by = {s.name: s for s in states}
+    assert (by["aws"].status, by["aws"].auth) == ("needs-auth", "oauth")
+    assert by["aws"].error.startswith("Sign-in expired")
+    assert (by["gh"].status, by["gh"].auth) == ("connected", None)

@@ -1,4 +1,5 @@
 """Credential file I/O and the claudeAiOauth/mcpOAuth split."""
+import contextlib
 import copy
 import fcntl
 import json
@@ -7,6 +8,7 @@ import math
 import os
 import tempfile
 import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from . import paths
@@ -99,13 +101,9 @@ def _mcp_bundle_replaces(old: object, new: dict, *, explicit: bool) -> bool:
     return True
 
 
-def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = None) -> int:
-    """Merge account MCP snapshots without rolling back another account's login.
-
-    Keep whole credential bundles together: token, issuer, client and refresh
-    metadata must come from the same observation. Empty/discovery-only snapshots
-    cannot revoke shared credentials. Explicit server login can replace a bundle
-    without a later expiry; background sync must prove its token is newer.
+@contextlib.contextmanager
+def _shared_mcp_locked() -> Iterator[Path]:
+    """Hold the shared MCP store's thread lock + flock; yields the store path.
 
     The lock serializes local threads/processes; flock is not a distributed lock
     on SSHFS. Callers on separate hosts still rely on credential-authority policy.
@@ -118,20 +116,99 @@ def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = No
         fd = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            existing = read_json(path) if path.exists() else {}
-            merged = dict(existing)
-            for key, new in incoming.items():
-                if not isinstance(new, dict):
-                    continue
-                explicit = authenticated_keys is not None and key in authenticated_keys
-                if _mcp_bundle_replaces(existing.get(key), new, explicit=explicit):
-                    merged[key] = new
-            if merged != existing:
-                write_json_secure(path, merged)
-            return len(merged)
+            yield path
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+
+def read_shared_mcp() -> dict:
+    """The shared MCP store (``store/mcp.shared.json``), or ``{}`` when absent."""
+    path = paths.shared_mcp_path()
+    return read_json(path) if path.exists() else {}
+
+
+def update_shared_mcp(update: Callable[[dict], dict]) -> dict:
+    """Read-modify-write the shared MCP store under its lock; return the new contents.
+
+    *update* receives a deep copy of the store and returns the desired store. The file is
+    rewritten only when the result differs. The one locked writer of the store: the
+    per-key merge and the refresher's compare-and-swap both go through it."""
+    with _shared_mcp_locked() as path:
+        existing = read_json(path) if path.exists() else {}
+        updated = update(copy.deepcopy(existing))
+        if updated != existing:
+            write_json_secure(path, updated)
+        return updated
+
+
+def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = None) -> int:
+    """Merge account MCP snapshots without rolling back another account's login.
+
+    Keep whole credential bundles together: token, issuer, client and refresh
+    metadata must come from the same observation. Empty/discovery-only snapshots
+    cannot revoke shared credentials. Explicit server login can replace a bundle
+    without a later expiry; background sync must prove its token is newer.
+    """
+    def merge(existing: dict) -> dict:
+        merged = dict(existing)
+        for key, new in incoming.items():
+            if not isinstance(new, dict):
+                continue
+            explicit = authenticated_keys is not None and key in authenticated_keys
+            if _mcp_bundle_replaces(existing.get(key), new, explicit=explicit):
+                merged[key] = new
+        return merged
+
+    return len(update_shared_mcp(merge))
+
+
+def public_view(bundle: dict) -> dict:
+    """The copy of an MCP OAuth bundle an account dir may hold: everything but the refresh
+    token. The shared store is the only holder of MCP refresh tokens (spec 2026-10-13), so a
+    CLI never refreshes a grant ViberPit's single refresher owns. Client registration is
+    kept so a later login reuses the DCR client."""
+    return {k: v for k, v in bundle.items() if k != "refreshToken"}
+
+
+def _holds_refresh_token(blob: object) -> bool:
+    return isinstance(blob, dict) and bool(blob.get("refreshToken"))
+
+
+def capture_cfg_mcp(dir_mcp: dict) -> int:
+    """Offer a dir's MCP bundles to the shared store under the bundle policy (newer wins).
+
+    Keeps a login made directly in a terminal ``claude`` under that dir, including one from a
+    provider that issues no refresh token. A bundle without a refresh token is offered only
+    for a key the store lacks: for any other key it is the store's own public copy, and
+    offering it back would resurrect an access token the refresher has since cleared as dead.
+    Returns the number of bundles offered."""
+    store = read_shared_mcp()
+    held = {k: v for k, v in dir_mcp.items()
+            if isinstance(v, dict) and (_holds_refresh_token(v) or k not in store)}
+    if held:
+        merge_shared_mcp(held)
+        log.debug("mcp capture: offered %d bundle(s) keys=%s", len(held), sorted(held))
+    return len(held)
+
+
+def publish_mcp(dir_mcp: dict, store: dict, *, server: str | None = None) -> dict:
+    """The dir's ``mcpOAuth`` after publishing *store* into it. Pure.
+
+    For each store key the public view replaces the dir copy when that copy is missing,
+    holds a refresh token, or loses under the bundle policy (explicit for *server*'s keys
+    after a login). Keys only the dir has are kept."""
+    merged = dict(dir_mcp)
+    for key, blob in store.items():
+        if not isinstance(blob, dict):
+            continue
+        old = dir_mcp.get(key)
+        explicit = (server is not None and short_name(str(blob.get("serverName"))) == server
+                    and bool(blob.get("accessToken")))
+        if (key not in dir_mcp or _holds_refresh_token(old)
+                or _mcp_bundle_replaces(old, blob, explicit=explicit)):
+            merged[key] = public_view(blob)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -184,41 +261,32 @@ def write_credentials(path: Path, data: dict) -> None:
     write_json_secure(path, data)
 
 
-def refresh_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None) -> bool:
-    """Merge the shared mcpOAuth store into ONE cfg dir's .credentials.json in place.
+def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None) -> bool:
+    """The one dir <-> store MCP OAuth sync for ONE cfg dir's .credentials.json, in place.
+
+    1. Capture: the dir's refresh-token-bearing bundles merge into the shared store.
+    2. Publish: the store's public view lands in the dir per :func:`publish_mcp`.
 
     Touches only the ``mcpOAuth`` key: a live CLI may have just rotated ``claudeAiOauth``
-    in this same file, and a full compose would clobber it (cf. #2695). Used after an MCP
-    login so live sessions of OTHER accounts can reconnect with the new token (spec
-    2026-10-09 section 4). Per-key policy is ``merge_shared_mcp``'s
-    (``_mcp_bundle_replaces``); shared keys whose ``serverName`` is *server* are the
-    explicit login and win whenever they carry a token. If the file is replaced between
-    read and write (the CLI rotates it atomically) the write is skipped and the next
-    compose/login catches up. Returns True when the file changed."""
+    in this same file, and a full compose would clobber it (cf. #2695). If the file is
+    replaced between read and write (the CLI rotates it atomically) the write is skipped
+    and the next sync catches up. Returns True when the file changed."""
     from .configdir import CREDENTIALS_NAME  # configdir imports this module
 
     path = Path(cfg_dir) / CREDENTIALS_NAME
     if not path.is_file():
         return False
-    shared_path = paths.shared_mcp_path()
-    shared = read_json(shared_path) if shared_path.exists() else {}
     before = path.stat()
     current = read_json(path)
     existing = current.get("mcpOAuth")
     existing = existing if isinstance(existing, dict) else {}
-    merged = dict(existing)
-    for key, blob in shared.items():
-        if not isinstance(blob, dict):
-            continue
-        explicit = (server is not None and short_name(str(blob.get("serverName"))) == server
-                    and bool(blob.get("accessToken")))
-        if _mcp_bundle_replaces(existing.get(key), blob, explicit=explicit):
-            merged[key] = blob
+    capture_cfg_mcp(existing)
+    merged = publish_mcp(existing, read_shared_mcp(), server=server)
     if merged == existing:
         return False
     after = path.stat()
     if (after.st_ino, after.st_mtime_ns) != (before.st_ino, before.st_mtime_ns):
-        log.debug("refresh_cfg_mcp_oauth: %s changed during merge; skipping write", path)
+        log.debug("sync_cfg_mcp_oauth: %s changed during merge; skipping write", path)
         return False
     current["mcpOAuth"] = merged
     write_json_secure(path, current)

@@ -126,3 +126,62 @@ class TestComposeOnEnvelopeRunner(unittest.TestCase):
                     self.assertEqual(json.loads(paths.slot_path("alpha").read_text())["accessToken"], "A")
             finally:
                 ce.reset_runner_store()
+
+
+# --- compose publishes the shared MCP store's public view (spec 2026-10-13) ----------------
+
+def _compose_with(dir_mcp, store_mcp):
+    from viberpit import configdir, paths
+    from viberpit.creds import write_json_secure
+    write_json_secure(paths.slot_path("alpha"), {"accessToken": "A", "expiresAt": 9})
+    write_json_secure(paths.shared_mcp_path(), store_mcp)
+    if dir_mcp is not None:
+        write_json_secure(paths.account_cfg_dir("alpha") / ".credentials.json",
+                          {"claudeAiOauth": {"accessToken": "A"}, "mcpOAuth": dir_mcp})
+    cfg = configdir.compose("alpha")
+    return (json.loads((cfg / ".credentials.json").read_text()),
+            json.loads(paths.shared_mcp_path().read_text()))
+
+
+def test_compose_never_writes_a_refresh_token():
+    from viberpit.creds import public_view
+    bundle = {"serverName": "aws", "accessToken": "a", "refreshToken": "r", "expiresAt": 5}
+    with temp_env():
+        out, store = _compose_with(None, {"k": bundle})
+        assert out["mcpOAuth"] == {"k": public_view(bundle)}
+        assert out["claudeAiOauth"]["accessToken"] == "A"
+        assert store == {"k": bundle}
+
+
+def test_compose_captures_a_newer_dir_rotation_instead_of_rolling_it_back():
+    from viberpit.creds import public_view
+    old = {"serverName": "aws", "accessToken": "a1", "refreshToken": "r1", "expiresAt": 5}
+    rotated = {"serverName": "aws", "accessToken": "a2", "refreshToken": "r2", "expiresAt": 9}
+    with temp_env():
+        out, store = _compose_with({"k": rotated}, {"k": old})
+        assert store == {"k": rotated}
+        assert out["mcpOAuth"] == {"k": public_view(rotated)}
+
+
+def test_compose_does_not_resurrect_a_cleared_bundle():
+    cleared = {"serverName": "aws", "accessToken": "", "expiresAt": 0, "clientId": "c"}
+    with temp_env():
+        out, store = _compose_with({"k": cleared}, {"k": cleared})
+        assert out["mcpOAuth"] == {"k": cleared}
+        assert store == {"k": cleared}
+
+
+def test_compose_keeps_and_shares_a_dir_only_key_without_refresh_token():
+    local = {"serverName": "x", "accessToken": "t", "expiresAt": 3}
+    with temp_env():
+        out, store = _compose_with({"x": local}, {"srv": {"k": 1}})
+        assert out["mcpOAuth"] == {"x": local, "srv": {"k": 1}}
+        assert store == {"srv": {"k": 1}, "x": local}
+
+
+def test_compose_live_store_token_replaces_an_empty_dir_copy():
+    from viberpit.creds import public_view
+    live = {"serverName": "aws", "accessToken": "a", "refreshToken": "r", "expiresAt": 9}
+    with temp_env():
+        out, _ = _compose_with({"k": {"serverName": "aws", "accessToken": "", "expiresAt": 0}}, {"k": live})
+        assert out["mcpOAuth"] == {"k": public_view(live)}

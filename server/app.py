@@ -517,6 +517,33 @@ async def _lifespan(app: FastAPI):
             _codex_auth_sync_loop(), name="codex-auth-sync"
         )
 
+    # --- MCP OAuth refresher -------------------------------------------------
+    # The store is the only holder of MCP refresh tokens; account dirs get the public
+    # view, so no CLI refreshes a shared grant (spec 2026-10-13). This is the single
+    # refresher, on the one refresh authority only: N refreshers of a rotating grant
+    # are what killed aws-oauth. Each 60 s tick also republishes to every account dir.
+    app.state.mcp_oauth_refresh_task = None
+    from server.config import get_settings as _mcp_refresh_settings
+    from viberpit import accounts as _vp_accounts
+
+    if (_mcp_refresh_settings().mcp_oauth_refresh_enabled
+            and _vp_accounts.is_refresh_authority()):
+        from viberpit import mcp_oauth_refresh as _mcp_oauth_refresh
+
+        async def _mcp_oauth_refresh_loop() -> None:
+            _log = _logging.getLogger("server.mcp_oauth")
+            while True:
+                try:
+                    await asyncio.to_thread(_mcp_oauth_refresh.run_once)
+                except Exception:
+                    # run_once never raises by contract; this guards the loop itself.
+                    _log.warning("mcp oauth refresh tick failed", exc_info=True)
+                await asyncio.sleep(60.0)
+
+        app.state.mcp_oauth_refresh_task = asyncio.create_task(
+            _mcp_oauth_refresh_loop(), name="mcp-oauth-refresh"
+        )
+
     yield
     # Shutdown. Every await below is bounded via bounded_wait (issue #846): a single
     # wedged phase used to hang TestClient exits (CI red for the full job budget) and
@@ -532,6 +559,7 @@ async def _lifespan(app: FastAPI):
     for _attr, _phase in (("loop_lag_task", "loop-lag-watchdog"),
                           ("app_sessions_prune_task", "app-sessions-prune"),
                           ("codex_auth_sync_task", "codex-auth-sync"),
+                          ("mcp_oauth_refresh_task", "mcp-oauth-refresh"),
                           ("fleet_probe_task", "fleet-probe"),
                           ("fleet_creds_task", "fleet-creds-push"),
                           ("fleet_queue_drain_task", "fleet-queue-drain")):

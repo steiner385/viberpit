@@ -33,9 +33,15 @@ def make(monkeypatch):
 
         async def on_mcp(sid, states):
             seen.append([(s.name, s.status) for s in states])
+        def factory(*a, **k):
+            # One fake across CLI starts (tests read client.toggled), but each start is
+            # a fresh process with a fresh stream: drop the previous __aexit__'s EOF, or
+            # the new pump ends the stream before enforcement runs.
+            client._inbox = None
+            return client
         d = ClaudeAgentDriver(
             "s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
-            sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
+            sdk_factory=factory, registry=PermissionRegistry(),
             identity="me", on_mcp_status=on_mcp, desired_disabled_mcp=desired, **kw)
         return d, client, seen
     return _make

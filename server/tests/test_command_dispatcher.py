@@ -113,3 +113,23 @@ async def test_a_skill_on_a_driver_that_cannot_run_one_raises():
     with pytest.raises(UnsupportedCommandDispatch):
         await dispatch(d, _cmd("pr-review", "skill"), "")
     assert d.prompts == []
+
+
+@pytest.mark.anyio
+async def test_mcp_renders_the_live_server_list():
+    from server.mcp_health.status import McpServerState
+
+    class D(FakeDriver):
+        async def mcp_status(self):
+            return [McpServerState("aws", "needs-auth", "Not signed in", None, "user", auth="oauth")]
+
+    res = await dispatch(D(), _cmd("mcp", "client"), "")
+    assert res == {"name": "mcp", "render": "mcp", "data": {"servers": [
+        {"name": "aws", "status": "needs-auth", "error": "Not signed in", "toolCount": None,
+         "scope": "user", "auth": "oauth"}]}}
+
+
+@pytest.mark.anyio
+async def test_mcp_without_driver_support_returns_no_servers():
+    res = await dispatch(FakeDriver(), _cmd("mcp", "client"), "")
+    assert res == {"name": "mcp", "render": "mcp", "data": {"servers": []}}

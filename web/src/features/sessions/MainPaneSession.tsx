@@ -123,6 +123,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
         result={rt.commandResult}
         commands={rt.commands}
         onClose={rt.dismissCommandResult}
+        rt={rt}
       />
     </div>
   )

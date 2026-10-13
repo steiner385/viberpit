@@ -50,6 +50,7 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("permission_rules_enabled", "VIBERPIT_PERMISSION_RULES_ENABLED", "Standing \"always allow\" permission rules are enforced and suggested on prompts"),
     ("mcp_status_enabled", "VIBERPIT_MCP_STATUS_ENABLED", "Sessions report MCP server connection status; Settings › MCP can test servers"),
     ("mcp_scope_enabled", "VIBERPIT_MCP_SCOPE_ENABLED", "Per-repo MCP server scope and live session toggles"),
+    ("mcp_oauth_refresh_enabled", "VIBERPIT_MCP_OAUTH_REFRESH_ENABLED", "ViberPit alone refreshes MCP OAuth tokens and publishes them to every account"),
     ("session_feedback_cap", "VIBERPIT_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
     ("error_sink_enabled", "VIBERPIT_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
     ("gh_reconcile_enabled", "VIBERPIT_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),

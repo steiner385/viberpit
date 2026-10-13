@@ -2,14 +2,18 @@
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import type { Command } from '@/session/events'
+import type { CommandResultView, SessionRuntime } from '@/session/useSessionRuntime'
+import { DeferredMcpCommandPanel } from '../DeferredMcpStatusReadout'
 
 interface Props {
-  result: { render: 'help' | 'context'; data: unknown } | null
+  result: CommandResultView | null
   commands: Command[]
   onClose: () => void
+  /** The session `/mcp` acts on: its id, account (Reauth) and live MCP state. */
+  rt: Pick<SessionRuntime, 'sessionId' | 'account' | 'state'>
 }
 
-export function CommandResultOverlay({ result, commands, onClose }: Props) {
+export function CommandResultOverlay({ result, commands, onClose, rt }: Props) {
   if (!result) return null
   return (
     <Dialog open onClose={onClose} aria-label="Command result" size="md">
@@ -27,6 +31,8 @@ export function CommandResultOverlay({ result, commands, onClose }: Props) {
             ))}
           </ul>
         </>
+      ) : result.render === 'mcp' ? (
+        <DeferredMcpCommandPanel data={result.data} onClose={onClose} rt={rt} />
       ) : (
         <>
           <h2 className="mb-2 text-sm font-semibold text-ink">Context usage</h2>

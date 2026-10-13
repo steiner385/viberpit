@@ -58,7 +58,7 @@ async def test_probe_runs_even_if_reconnect_raises(monkeypatch):
 @pytest.mark.asyncio
 async def test_refresh_receives_server(monkeypatch):
     seen = []
-    monkeypatch.setattr(after_login.creds, "refresh_cfg_mcp_oauth",
+    monkeypatch.setattr(after_login.creds, "sync_cfg_mcp_oauth",
                         lambda cfg, server=None: seen.append(server) or False)
     await after_login.after_login(_Orch(), "notion", ["alice"])
     assert seen == ["notion"]
