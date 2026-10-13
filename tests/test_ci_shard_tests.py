@@ -73,7 +73,7 @@ def test_workflow_matrix_matches_the_shard_count():
 
     Disagreeing is the silent-green case: a matrix of [1..4] against `--total 5`
     runs four fifths of the suite and reports success on the missing fifth. Both
-    server-test jobs (the required 3.12 one and the advisory 3.14 one) run their
+    server-test jobs (the required 3.12 one and the non-required 3.14 one) run their
     steps from .github/actions/server-tests, which forwards `--total` from its
     `total` input; each job must pass `${{ strategy.job-total }}`, GitHub's own
     count of the matrix, so no second hand-written number exists to drift.
