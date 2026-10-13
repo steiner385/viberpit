@@ -14,8 +14,11 @@ inputs:
     description: This shard's 1-based index.
     required: true
   total:
-    description: Number of shards.
-    default: "4"
+    description: >-
+      Number of shards. Callers pass `${{ strategy.job-total }}`, never a literal: a
+      matrix and a hand-written count that disagree run only part of the suite and
+      still report green (tests/test_ci_shard_tests.py enforces this).
+    required: true
   artifact-name:
     description: Name of the uploaded junit artifact (unique per job and shard).
     required: true
