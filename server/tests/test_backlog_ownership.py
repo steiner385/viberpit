@@ -266,8 +266,9 @@ async def test_restart_after_stop_observation_prevents_terminal_release(runner):
         return True
 
     loop._session_work_stopped = stale_proof
-    with pytest.raises(ValueError):
-        await loop._write_state("o/r#1", before, None)
+    # The restart is caught before the release is attempted (#3026: the gate
+    # re-reads the proof the release validates), so nothing raises either.
+    assert not await loop._write_state("o/r#1", before, None)
     assert await ctx.get_target_state("o/r#1") == before
 
 
@@ -364,6 +365,19 @@ async def test_monitor_ignores_predecessor_stop_proof_for_active_successor(runne
     assert await loop._work_stopped(state)
 
 
+async def _attest_tree(state) -> None:
+    """Stand-in for a successful ``_session_terminal_attest`` repair."""
+    async with owned(state["ownership_token"]) as tx:
+        tx.operation.stopped_generation = tx.operation.execution_generation
+
+
+def _attesting(state):
+    async def attest(_sid):
+        await _attest_tree(state)
+        return True
+    return attest
+
+
 @pytest.mark.asyncio
 async def test_work_stopped_trusts_an_archived_session_over_a_stuck_generation_proof(runner):
     """#2202: a claim whose owning session the daemon itself archived is proof
@@ -374,6 +388,7 @@ async def test_work_stopped_trusts_an_archived_session_over_a_stuck_generation_p
     loop, ctx = runner
     await dispatch(loop, "o/r#1")
     state = await ctx.get_target_state("o/r#1")
+    await _attest_tree(state)
     loop._session_work_stopped = AsyncMock(return_value=False)
     loop._session_gone = AsyncMock(return_value=True)
     assert await loop._work_stopped(state)
@@ -389,6 +404,7 @@ async def test_work_stopped_falls_back_to_native_proof_when_session_not_gone(run
     loop, ctx = runner
     await dispatch(loop, "o/r#1")
     state = await ctx.get_target_state("o/r#1")
+    await _attest_tree(state)
     loop._session_work_stopped = AsyncMock(return_value=True)
     loop._session_gone = AsyncMock(return_value=False)
     assert await loop._work_stopped(state)
@@ -413,7 +429,12 @@ async def test_work_stopped_repairs_the_generation_proof_when_session_gone(runne
     await dispatch(loop, "o/r#1")
     state = await ctx.get_target_state("o/r#1")
     loop._session_gone = AsyncMock(return_value=True)
-    loop._session_terminal_attest = AsyncMock(return_value=True)
+    loop._session_terminal_attest = AsyncMock(return_value=False)
+    # A repair that cannot converge leaves the release unprovable (#3026).
+    assert not await loop._work_stopped(state)
+    loop._session_terminal_attest.assert_awaited_once_with(state["session_id"])
+
+    loop._session_terminal_attest = AsyncMock(side_effect=_attesting(state))
     assert await loop._work_stopped(state)
     loop._session_terminal_attest.assert_awaited_once_with(state["session_id"])
 
@@ -428,7 +449,7 @@ async def test_work_stopped_repairs_the_proof_when_the_live_probe_vouches(runner
     state = await ctx.get_target_state("o/r#1")
     loop._session_gone = AsyncMock(return_value=False)
     loop._session_work_stopped = AsyncMock(return_value=True)
-    loop._session_terminal_attest = AsyncMock(return_value=True)
+    loop._session_terminal_attest = AsyncMock(side_effect=_attesting(state))
     assert await loop._work_stopped(state)
     loop._session_terminal_attest.assert_awaited_once_with(state["session_id"])
 
@@ -549,6 +570,49 @@ async def test_terminal_attest_never_attests_a_live_child_in_the_tree(runner):
         async with owned(state["ownership_token"]) as tx:
             await tx.transfer(owner="backlog-runner", source="terminal-closeout",
                               proof=ReleaseProof.WORK_STOPPED, reason="hold released")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe", ["gone", "work_stopped"])
+async def test_merged_closeout_waits_quietly_on_a_live_child(runner, caplog, probe):
+    """#3026: the root is proven stopped (by either probe) but a child it
+    dispatched is still live, so the tree's WORK_STOPPED proof cannot be repaired.
+    ``_work_stopped`` must answer the release's own verdict — the merged-PR sweep
+    retains the claim quietly instead of raising ``_validate_release``'s
+    ValueError every tick — and close out once the child ends."""
+    import logging
+
+    from server.automations.ownership import attest_terminal_session_stopped
+    from server.db.models import Session as DbSession
+    from server.github.pr_status import PullRequestInfo
+
+    loop, ctx = runner
+    await dispatch(loop, "o/r#1")
+    state = await ctx.get_target_state("o/r#1")
+    child = await _seed_tree_with_child(state, root_status="done", child_status="in_progress")
+    loop._session_gone = AsyncMock(return_value=probe == "gone")
+    loop._session_work_stopped = AsyncMock(return_value=probe == "work_stopped")
+    loop._session_terminal_attest = attest_terminal_session_stopped
+    loop._pr_status_for = AsyncMock(return_value=PullRequestInfo(
+        number=9, url="", state="merged", checks="none", title="", merged=True))
+    loop._close_out = AsyncMock(return_value="retry")
+
+    caplog.set_level(logging.INFO, logger="server.automations.backlog_runner")
+    for _ in range(2):
+        await loop._sweep_one("o/r#1", state, set())  # raised ValueError before #3026
+    assert await ctx.get_target_state("o/r#1") == state
+    loop._close_out.assert_not_awaited()
+    assert not [r for r in caplog.records
+                if r.name == "server.automations.backlog_runner" and r.levelno >= logging.WARNING]
+    assert len([r for r in caplog.records if "closeout_waiting_on_tree" in r.message]) == 1
+
+    async with owned(state["ownership_token"]) as tx:
+        (await tx.db.get(DbSession, child)).status = "archived"
+    # The root itself never ended in this shape, so the live probe repairs only
+    # what it vouches for; the archived child is attested with it.
+    await loop._sweep_one("o/r#1", state, set())
+    loop._close_out.assert_awaited_once()
+    assert (await ctx.get_target_state("o/r#1"))["closeout_started"]
 
 
 @pytest.mark.asyncio

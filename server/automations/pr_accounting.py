@@ -1,5 +1,5 @@
 """Exactly-once PR attempt accounting shared by callbacks and durable observers."""
-from server.automations.ownership import OwnershipTransaction
+from server.automations.ownership import OwnershipTransaction, stopped_work_attested
 from server.db.models import AutomationTargetState, Session
 
 
@@ -20,8 +20,7 @@ async def account(tx: OwnershipTransaction, target: str) -> bool:
             if (session is not None and session.origin == operation.owner == "pr-doctor"
                     and session.origin_ref == operation.provenance.get("origin_ref") == target
                     and operation.phase in ("launching", "uncertain")
-                    and operation.execution_generation is not None
-                    and operation.stopped_generation == operation.execution_generation):
+                    and stopped_work_attested(operation)):
                 # A lost bind response cannot erase the persisted launch. The
                 # reserved UUID, actor provenance and current stopped generation
                 # jointly prove this association; status alone never does.
