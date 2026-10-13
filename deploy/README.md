@@ -97,6 +97,15 @@ sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/viberpit-tailne
 sudo nginx -t && sudo nginx -s reload
 ```
 
+A drop-in that resets `ExecStart=` (dobby's `viberpit.service.d/loopback-bind.conf` from the
+2026-08-30 serve migration) overrides the reinstalled unit, so add `--no-proxy-headers` there
+too. Confirm the running edge has it; the WARNING above keeps firing until it does:
+
+```bash
+systemctl cat viberpit.service | grep '^ExecStart='   # the LAST one wins
+pgrep -af 'uvicorn server.app' | grep -c -- --no-proxy-headers   # want 1
+```
+
 ## HTTPS via nginx + tailscale cert (required once per host)
 
 The edge server binds to `127.0.0.1:8787` (loopback). To expose it over HTTPS on the
