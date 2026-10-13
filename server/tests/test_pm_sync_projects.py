@@ -624,3 +624,18 @@ async def test_a_failure_about_the_board_still_warns_per_project(
             and r.levelno == logging.WARNING
             and "pm_sync.project_error" in r.getMessage()]
     assert not [r for r in caplog.records if r.name == "server.github.host"]
+
+
+@pytest.mark.asyncio
+async def test_a_github_edge_504_on_the_board_fetch_is_info_not_a_warning(
+        caplog, _fresh_host_throttle):
+    """#3018: GitHub's edge timing out on the heavy items query is an outage,
+    not a defect — no WARNING (so no auto-error), operator card still warns."""
+    import logging
+    caplog.set_level(logging.DEBUG)
+    ctx = await _tick_with_board_fetch_error("gh graphql failed: gh: HTTP 504")
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(r.name == "server.automations.pm_sync" and r.levelno == logging.INFO
+               and "pm_sync.project_error" in r.getMessage() for r in caplog.records)
+    assert any(level == "warn" for level, _, _ in ctx.events)

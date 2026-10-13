@@ -204,6 +204,7 @@ def log_gh_failure(
     msg: str,
     *args: object,
     exc_info: bool | BaseException | None = None,
+    demote_edge_failures: bool = False,
 ) -> None:
     """Report one failed gh call — as the host condition when it is one.
 
@@ -219,9 +220,20 @@ def log_gh_failure(
     class and the innermost app frame, so attaching a traceback would re-split
     the condition by httpx/subprocess failure mode — the 60-line stack was never
     the signal for a host that is simply offline.
+
+    ``demote_edge_failures`` logs a GitHub-edge 5xx / truncated body / stream
+    reset (:func:`is_transient_github_edge_failure`) at INFO instead.
     """
     condition = gh_credential.classify_gh_failure(stderr)
     entry = _EVENTS.get(condition) if condition is not None else None
+    if (demote_edge_failures and condition is None
+            and is_transient_github_edge_failure(stderr)):
+        # Opt-in: for a heavy query where GitHub's own edge timing out (5xx,
+        # truncated body, stream reset) is an outage to retry next tick, not a
+        # defect to file. Default off — other callers treat a 5xx as the
+        # target's problem and keep WARNING.
+        caller_log.info(msg, *args, exc_info=exc_info)
+        return
     if condition is None or entry is None:
         caller_log.warning(msg, *args, exc_info=exc_info)
         return
