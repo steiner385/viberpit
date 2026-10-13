@@ -3,8 +3,9 @@ description: >-
   Install the server package and run one shard of server/tests/ on a given Python.
   THE step list for both ci.yml server-test jobs: the required 3.12 `server-tests`
   matrix and the advisory `server-tests-py314` one, so the two cannot drift apart.
-  The caller checks the repo out first and provides the Postgres service (a
-  composite action cannot declare services).
+  The caller checks the repo out first. Postgres is the runner's own preinstalled
+  server, started here, not a service container: anonymous image pulls from shared
+  runner IPs hit `toomanyrequests` and failed shards before a single step ran.
 
 inputs:
   python-version:
@@ -54,16 +55,50 @@ runs:
         else
           exit 1
         fi
+    - name: Start Postgres
+      # GitHub's Ubuntu runners ship PostgreSQL installed but stopped. Starting it
+      # replaces the postgres:16 service container, whose anonymous pull from
+      # public.ecr.aws ("toomanyrequests: Data limit exceeded") failed whole shards
+      # at "Initialize containers", before any step and so before the advisory
+      # exit-0 path could run. The role is a SUPERUSER, as the container's
+      # POSTGRES_USER was: a throwaway CI database, same privileges as before.
+      id: postgres
+      if: steps.install.outputs.ok == 'true'
+      shell: bash
+      env:
+        ADVISORY: ${{ inputs.advisory }}
+        PY: ${{ inputs.python-version }}
+      run: |
+        start_postgres() {
+          sudo systemctl start postgresql.service || return 1
+          for _ in $(seq 1 30); do
+            pg_isready -h 127.0.0.1 -p 5432 -q && break
+            sleep 1
+          done
+          pg_isready -h 127.0.0.1 -p 5432 || return 1
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -q \
+            -c "CREATE ROLE viberpit_test LOGIN SUPERUSER PASSWORD 'test';" \
+            -c "CREATE DATABASE viberpit_test OWNER viberpit_test;" || return 1
+          psql "postgresql://viberpit_test:test@127.0.0.1:5432/viberpit_test" -tAc "select version();"
+        }
+        if start_postgres; then
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+        elif [ "$ADVISORY" = "true" ]; then
+          echo "::warning title=Python $PY: Postgres failed to start (advisory)::the runner's PostgreSQL did not start; no tests ran. This check is advisory and never blocks."
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+        else
+          exit 1
+        fi
     - name: CPU diagnostics
       # Confirms the 2-worker hypothesis in #1137 on the record, per its
       # suggested first step, each time this job runs.
-      if: steps.install.outputs.ok == 'true'
+      if: steps.postgres.outputs.ok == 'true'
       shell: bash
       run: |
         echo "nproc: $(nproc)"
         python -c "import os, sys; print('os.cpu_count():', os.cpu_count(), '| python', sys.version.split()[0])"
     - name: Server tests (shard ${{ inputs.shard }}/${{ inputs.total }}, Python ${{ inputs.python-version }})
-      if: steps.install.outputs.ok == 'true'
+      if: steps.postgres.outputs.ok == 'true'
       shell: bash
       env:
         VIBERPIT_TEST_PG_URL: postgresql+asyncpg://viberpit_test:test@127.0.0.1:5432/viberpit_test
@@ -110,7 +145,7 @@ runs:
       # one, whose killed reporter leaves a truncated/0-byte report (#1768) — and
       # only when the tests actually ran, or a gated-out run would try to upload a
       # directory that was never created.
-      if: ${{ !cancelled() && steps.install.outputs.ok == 'true' }}
+      if: ${{ !cancelled() && steps.postgres.outputs.ok == 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.artifact-name }}
