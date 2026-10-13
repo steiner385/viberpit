@@ -105,6 +105,15 @@ def _build_client(fake_orch: _FakeOrch, db_url: str) -> TestClient:
             return 0
 
         real_orch._maybe_start_queued = _no_drain  # type: ignore[method-assign]
+
+        # Same race, other loop: the Backlog Runner ticks once at startup, and its
+        # sweep releases a seeded token-less claim with no session as "never
+        # started" (``_release_legacy_claim``) — the full-product seed's in-flight
+        # count drops to 0 before the GET reads it, a load-dependent CI-only red.
+        async def _no_backlog_tick() -> None:
+            return None
+
+        real_orch._backlog_tick_once = _no_backlog_tick  # type: ignore[method-assign]
         app = create_app(orchestrator=real_orch)
     app.state.sessions = fake_orch
     return TestClient(app, raise_server_exceptions=False)
