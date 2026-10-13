@@ -205,11 +205,7 @@ class X11Manager:
                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
                 )
                 await addp.wait()
-                xvfb = await self._spawn(
-                    "Xvfb", f":{lease.display}", "-screen", "0", self._resolution,
-                    "-auth", xauth, "-nolisten", "tcp",
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-                )
+                xvfb, lease = await self._start_xvfb_with_retry(lease, xauth, cookie)
             except FileNotFoundError:
                 log.exception("x11: Xvfb/xauth binary missing")
                 await self._allocator.release(lease)
@@ -218,21 +214,85 @@ class X11Manager:
                 except OSError:
                     pass
                 return None
-            if not await self._await_ready(lease.display, xauth):
-                log.warning("x11: display :%d never became ready", lease.display)
-                await _terminate(xvfb)
+            if xvfb is None:
                 await self._allocator.release(lease)
                 return None
             spec = DisplaySpec(session_id=session_id, lease=lease, xauthority=xauth, xvfb=xvfb)
             self._specs[session_id] = spec
             return spec
 
-    async def _await_ready(self, display: int, xauthority: str) -> bool:
+    async def _spawn_xvfb(self, lease: DisplayLease, xauth: str):
+        """Spawn Xvfb with stderr captured to a tempfile so a failed start is diagnosable."""
+        err = tempfile.TemporaryFile()
+        try:
+            proc = await self._spawn(
+                "Xvfb", f":{lease.display}", "-screen", "0", self._resolution,
+                "-auth", xauth, "-nolisten", "tcp",
+                stdout=asyncio.subprocess.DEVNULL, stderr=err,
+            )
+        except BaseException:
+            err.close()
+            raise
+        return proc, err
+
+    @staticmethod
+    def _stderr_tail(err, limit: int = 1024) -> str:
+        try:
+            err.seek(0)
+            return err.read().decode("utf-8", "replace").strip()[-limit:]
+        except (OSError, ValueError):
+            return ""
+
+    async def _start_xvfb_with_retry(self, lease: DisplayLease, xauth: str, cookie: str):
+        """Start Xvfb and wait for readiness; if it exited early, retry once on a fresh
+        display. Returns ``(xvfb | None, lease)`` — the lease is the one now held (the
+        failed first lease is released on retry). WARNING only on the final give-up."""
+        xvfb, err = await self._spawn_xvfb(lease, xauth)
+        if await self._await_ready(lease.display, xauth, xvfb):
+            err.close()
+            return xvfb, lease
+        exited = getattr(xvfb, "returncode", None)
+        tail = self._stderr_tail(err)
+        err.close()
+        await _terminate(xvfb)
+        if exited is None:
+            log.warning("x11: display :%d never became ready within %.1fs (Xvfb still running)",
+                        lease.display, self._ready_timeout_s)
+            return None, lease
+        log.info("x11: Xvfb for :%d exited early (code %s): %s — retrying on a fresh display",
+                 lease.display, exited, tail)
+        try:
+            retry = await self._allocator.alloc()
+        except PoolExhausted:
+            log.warning("x11: display :%d never became ready (Xvfb exited %s: %s)",
+                        lease.display, exited, tail)
+            return None, lease
+        await self._allocator.release(lease)
+        addp = await self._spawn(
+            "xauth", "-f", xauth, "add", f":{retry.display}", ".", cookie,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await addp.wait()
+        xvfb, err = await self._spawn_xvfb(retry, xauth)
+        if await self._await_ready(retry.display, xauth, xvfb):
+            err.close()
+            return xvfb, retry
+        exited = getattr(xvfb, "returncode", None)
+        tail = self._stderr_tail(err)
+        err.close()
+        await _terminate(xvfb)
+        log.warning("x11: display :%d never became ready after retry (Xvfb exit %s): %s",
+                    retry.display, exited, tail)
+        return None, retry
+
+    async def _await_ready(self, display: int, xauthority: str, proc=None) -> bool:
         deadline = self._ready_timeout_s
         waited = 0.0
         while waited <= deadline:
             if await asyncio.to_thread(self._ready_check, display, xauthority):
                 return True
+            if proc is not None and getattr(proc, "returncode", None) is not None:
+                return False  # Xvfb died — no point polling out the budget
             await asyncio.sleep(self._ready_interval_s)
             waited += self._ready_interval_s
         return await asyncio.to_thread(self._ready_check, display, xauthority)
@@ -537,4 +597,5 @@ def build_x11_manager(settings) -> "X11Manager | None":
         no_sandbox=getattr(settings, "chromium_no_sandbox", False),
         chromium_cmd=chromium or "chromium",
         browser_liveness_s=getattr(settings, "browser_liveness_s", 0.3),
+        ready_timeout_s=getattr(settings, "x11_ready_timeout_s", 10.0),
     )

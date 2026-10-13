@@ -160,6 +160,8 @@ try:
         # startup-FATAL launch isn't counted as live. 0 disables the check.
         browser_liveness_s: float = Field(default=0.3, alias="VIBERPIT_BROWSER_LIVENESS_S")
         vnc_idle_timeout_s: float = Field(default=1800.0, alias="VIBERPIT_VNC_IDLE_TIMEOUT_S")
+        # Budget (s) for a fresh Xvfb to accept the cookie handshake; polling returns at once when ready.
+        x11_ready_timeout_s: float = Field(default=10.0, alias="VIBERPIT_X11_READY_TIMEOUT_S")
         enable_copilot: bool = Field(default=False, alias="VIBERPIT_ENABLE_COPILOT")
         copilot_port_base: int = Field(default=4142, alias="VIBERPIT_COPILOT_PORT_BASE")
         copilot_port_count: int = Field(default=8, alias="VIBERPIT_COPILOT_PORT_COUNT")
@@ -509,6 +511,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         vnc_idle_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("VIBERPIT_VNC_IDLE_TIMEOUT_S", "1800"))
+        )
+        x11_ready_timeout_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("VIBERPIT_X11_READY_TIMEOUT_S", "10"))
         )
         enable_copilot: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_ENABLE_COPILOT", "false").lower() in ("1","true","yes","on")

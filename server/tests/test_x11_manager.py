@@ -533,3 +533,51 @@ def test_sweep_orphan_matches_google_chrome_in_range_only(tmp_path):
     n = mgr.sweep_orphan_processes(lister=lambda: procs,
                                    killer=lambda pid: killed.append(pid) or True)
     assert n == 2 and set(killed) == {30, 31}
+
+
+@pytest.mark.asyncio
+async def test_start_display_waits_past_old_two_second_budget(tmp_path):
+    """A slow-to-bind Xvfb inside the (configurable) budget still yields a display."""
+    async def fake_spawn(*argv, **kw): return FakeProc()
+    calls = {"n": 0}
+    def slow(_d, _xa):
+        calls["n"] += 1
+        return calls["n"] > 5
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn, ready_check=slow,
+                     run_dir=str(tmp_path), ready_timeout_s=5.0, ready_interval_s=0.01)
+    assert await mgr.start_display("slow") is not None
+
+
+@pytest.mark.asyncio
+async def test_start_display_retries_on_fresh_display_after_early_exit(tmp_path, caplog):
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv)
+        if argv[0] == "Xvfb":
+            return DeadProc(1) if argv[1] == ":100" else FakeProc()
+        return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d, xa: d == 101, run_dir=str(tmp_path),
+                     ready_timeout_s=5.0, ready_interval_s=0.01)
+    with caplog.at_level("INFO", logger="server.x11"):
+        spec = await mgr.start_display("r")
+    assert spec is not None and spec.lease.display == 101
+    assert [a[1] for a in spawned if a[0] == "Xvfb"] == [":100", ":101"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    # the failed first lease went back to the pool
+    assert mgr._allocator.in_use() == 1
+
+
+@pytest.mark.asyncio
+async def test_start_display_warns_once_when_retry_also_fails(tmp_path, caplog):
+    async def fake_spawn(*argv, **kw):
+        return DeadProc(1) if argv[0] == "Xvfb" else FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn, ready_check=lambda d, xa: False,
+                     run_dir=str(tmp_path), ready_timeout_s=5.0, ready_interval_s=0.01)
+    with caplog.at_level("INFO", logger="server.x11"):
+        assert await mgr.start_display("f") is None
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+    assert mgr._allocator.in_use() == 0
