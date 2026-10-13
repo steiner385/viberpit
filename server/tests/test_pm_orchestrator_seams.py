@@ -439,6 +439,21 @@ async def test_classify_ingest_is_idempotent(db_env):
 
 
 @pytest.mark.asyncio
+async def test_classify_ingest_tolerates_duplicate_pending_proposals(db_env):
+    """#3048: two pending rows for one work item must not abort the ingest."""
+    from sqlalchemy import select
+    await _seed(db_env)
+    orch = _bare_orch()
+    output = ('[{"number": 100, "kind": "issue", "feature_slug": "sessions",'
+              ' "rationale": "x", "confidence_level": "medium"}]')
+    assert await orch._pm_classify_ingest("sess-1", "viberpit", output) == 1
+    async with db_session() as db:
+        existing = (await db.execute(select(TriageProposal))).scalars().one()
+        db.add(TriageProposal(work_item_id=existing.work_item_id, status="pending"))
+    assert await orch._pm_classify_ingest("sess-1", "viberpit", output) == 0
+
+
+@pytest.mark.asyncio
 async def test_apply_feature_plan_map_proposed_advances_to_map_merged(db_env):
     """Bug #2 regression: applying ≥1 feature to a map_proposed project must
     advance onboarding_state to map_merged."""
