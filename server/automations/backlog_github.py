@@ -27,7 +27,7 @@ import re
 from typing import Callable, Iterable
 
 from viberpit import brand, gitrepos
-from server.github.host_failures import log_gh_failure
+from server.github.host_failures import is_transient_github_edge_failure, log_gh_failure
 from server.pm.github_sync import AUTOMATION_COMMENT_MARKER, with_automation_marker
 
 from . import backlog_deps
@@ -35,6 +35,20 @@ from . import backlog_deps
 log = logging.getLogger(__name__)
 
 GhRun = Callable[..., "object"]
+
+
+def _log_gh_failure(stderr: str, msg: str, *args: object) -> None:
+    """Report one failed gh call from this module.
+
+    GitHub's own transient edge failure (a 5xx, or a heavy query cut short by
+    the edge timeout) is INFO, not an auto-error: every caller already returns
+    "unknown" and the runner retries on the next tick (#3017). Anything else goes
+    through :func:`log_gh_failure` unchanged, so host conditions still collapse.
+    """
+    if is_transient_github_edge_failure(stderr):
+        log.info(msg, *args)
+        return
+    log_gh_failure(log, stderr, msg, *args)
 
 # Human-gate signals (#784, narrowed by #2681). Linkage (#642) proves a PR
 # *references* an issue; the close-out still keeps an issue OPEN — and hands it to
@@ -218,7 +232,7 @@ def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> b
                       token=gitrepos.app_token_for_owner(owner))
         if getattr(proc, "returncode", 1) != 0:
             stderr = str(getattr(proc, "stderr", "") or "")
-            log_gh_failure(log, stderr,
+            _log_gh_failure(stderr,
                            "backlog_github.verify_ready_failed owner='%s' err=%s",
                            owner, stderr.strip())
             return None
@@ -297,7 +311,7 @@ def _issue_crossref_pr_nodes(ref: str, *, gh_run: GhRun) -> list[dict] | None:
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         stderr = str(getattr(proc, "stderr", "") or "")
-        log_gh_failure(log, stderr,
+        _log_gh_failure(stderr,
                        "backlog_github.find_referencing_pr_failed ref='%s' err=%s",
                        ref, stderr.strip())
         return None
@@ -407,7 +421,7 @@ def issue_state_live(ref: str, *, gh_run: GhRun = gitrepos._run_gh) -> str | Non
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         stderr = str(getattr(proc, "stderr", "") or "")
-        log_gh_failure(log, stderr,
+        _log_gh_failure(stderr,
                        "backlog_github.issue_state_failed ref='%s' err=%s",
                        ref, stderr.strip())
         return None
@@ -597,7 +611,7 @@ def _pr_linkage(repo: str, pr_number: int, *, gh_run: GhRun) -> dict | None:
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         stderr = str(getattr(proc, "stderr", "") or "")
-        log_gh_failure(log, stderr,
+        _log_gh_failure(stderr,
                        "backlog_github.pr_linkage_failed repo='%s' pr=%s err=%s",
                        repo, pr_number, stderr.strip())
         return None
@@ -735,7 +749,7 @@ def _issue_signals(ref: str, *, gh_run: GhRun) -> dict | None:
                   token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         stderr = str(getattr(proc, "stderr", "") or "")
-        log_gh_failure(log, stderr,
+        _log_gh_failure(stderr,
                        "backlog_github.issue_signals_failed ref='%s' err=%s",
                        ref, stderr.strip())
         return None

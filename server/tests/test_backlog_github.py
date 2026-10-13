@@ -926,3 +926,55 @@ def test_announce_claim_retracts_a_standing_claim_before_posting():
     kinds = ["patch" if "PATCH" in c else c[0] + " " + c[1].split("?")[0][-8:]
              for c in gh.calls]
     assert kinds == ["api comments", "patch", "issue comment"]
+
+
+# --------------------------------------------------------------------------- #
+# gh failures — GitHub's edge timeout is INFO, anything else stays WARNING     #
+# (#3017). Every site already answers "unknown"; only the log level differs.   #
+# --------------------------------------------------------------------------- #
+
+_EDGE_504 = "gh: HTTP 504"
+
+
+def _failing_site(site: str, gh: FakeGh):
+    """Run one of the five gh-failure sites against *gh* and return its answer."""
+    from server.automations import backlog_github as bg
+    if site == "verify_ready":
+        return bg.verify_ready_live(["o/r#5"], gh_run=gh)
+    if site == "find_referencing_pr":
+        return bg.find_referencing_pr("o/r#5", gh_run=gh)
+    if site == "issue_state":
+        return bg.issue_state_live("o/r#5", gh_run=gh)
+    if site == "pr_linkage":
+        return bg._pr_linkage("o/r", 7, gh_run=gh)
+    if site == "issue_signals":
+        return bg._issue_signals("o/r#5", gh_run=gh)
+    raise AssertionError(site)
+
+
+_FAILURE_SITES = ["verify_ready", "find_referencing_pr", "issue_state",
+                  "pr_linkage", "issue_signals"]
+
+
+def _gh_for(site: str, stderr: str) -> FakeGh:
+    """A FakeGh that fails the one gh call *site* makes, with *stderr*."""
+    key = ("issue", "view") if site == "issue_state" else ("api", "graphql")
+    return FakeGh({key: _proc(returncode=1, stderr=stderr)})
+
+
+@pytest.mark.parametrize("site", _FAILURE_SITES)
+def test_gh_edge_timeout_is_info_not_warning(site, caplog):
+    with _app_tokens(), caplog.at_level("INFO", logger="server.automations.backlog_github"):
+        assert _failing_site(site, _gh_for(site, _EDGE_504)) is None
+    records = [r for r in caplog.records if r.name == "server.automations.backlog_github"]
+    assert records, "the failure should still be logged"
+    assert all(r.levelno < 30 for r in records), [r.getMessage() for r in records]
+
+
+@pytest.mark.parametrize("site", _FAILURE_SITES)
+def test_other_gh_failure_is_still_a_warning(site, caplog):
+    with _app_tokens(), caplog.at_level("INFO", logger="server.automations.backlog_github"):
+        assert _failing_site(site, _gh_for(site, "boom")) is None
+    warnings = [r for r in caplog.records
+                if r.name == "server.automations.backlog_github" and r.levelname == "WARNING"]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
