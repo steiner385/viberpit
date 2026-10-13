@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from server.db.models import INITIATIVE_STAGES
+from server.github.host_failures import is_transient_github_edge_failure, log_gh_failure
 from server.github.sha_fence import FenceVerdict
 from server.pm.desired_state import (
     STATUS_OPTIONS,
@@ -216,9 +217,10 @@ class GhReconcileLoop:
     async def tick(self) -> None:
         try:
             await self._run()
-        except Exception:
+        except Exception as exc:
             observation_failed(self._ctx)
-            log.warning("gh_reconcile.tick_failed", exc_info=True)
+            log_gh_failure(log, str(exc), "gh_reconcile.tick_failed", exc_info=True,
+                           demote_edge_failures=True)
 
     def _stash(self, **counts: int) -> None:
         full = {k: 0 for k in _COUNT_KEYS}
@@ -292,9 +294,10 @@ class GhReconcileLoop:
             try:
                 await self._converge(product, now, dry_run, cap, applied_keys, counts,
                                      migrate=migrate, own_values=own_values, dry_keys=dry_keys)
-            except Exception:
+            except Exception as exc:
                 counts["failed"] += 1
-                log.warning("gh_reconcile.product_failed", exc_info=True)
+                log_gh_failure(log, str(exc), "gh_reconcile.product_failed", exc_info=True,
+                               demote_edge_failures=True)
                 await self._ctx.emit("warn", f"reconcile failed for {product.slug}",
                                      kind="gh_reconcile_error", target=product.project_id)
         self._stash(**counts)
@@ -638,7 +641,25 @@ class GhReconcileLoop:
                 continue
             if dry_run:
                 continue
-            payload = await self._mutate(facts.owner, doc)
+            try:
+                payload = await self._mutate(facts.owner, doc)
+            except Exception as exc:
+                if not is_transient_github_edge_failure(str(exc)):
+                    raise
+                # A GitHub-edge blip (5xx, truncated body, stream reset) is a transport
+                # failure, not a judgement on the batch: mark it transient like a failed
+                # document. A cut-short response may have applied; next cycle's diff
+                # absorbs that ("already true" = converged, #1947).
+                for rid in row_ids:
+                    await self._j_failed(rid, TRANSIENT_PREFIX + str(exc), now)
+                counts["failed"] += len(row_ids)
+                await self._ctx.emit(
+                    "warn", f"reconcile batch failed for {product.slug}: "
+                    f"{exc}; will retry next tick",
+                    kind="gh_reconcile_error", target=product.project_id,
+                    detail={"transient": True, "error": str(exc),
+                            "mutations": len(row_ids)})
+                continue
             results = parse_batch(payload, alias_map)
             if results.failed_transiently():
                 # The DOCUMENT failed (502, abuse limit, timeout), so every alias carries
