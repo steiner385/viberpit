@@ -77,8 +77,9 @@ jobs:
           # the core suite and the full server suite), and a docs-only PR paid all of it
           # to prove nothing — which is what made bypassing the gate look attractive.
           # ci.yml counts here too, exactly as it does for web: an edit to THIS detection
-          # must be proven against a real run before it lands.
-          if grep -qE '^(src/|server/|tests/|pyproject\.toml$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+          # must be proven against a real run before it lands. So does the composite
+          # action both server-test jobs run their steps from.
+          if grep -qE '^(src/|server/|tests/|pyproject\.toml$|\.github/workflows/ci\.yml$|\.github/actions/server-tests/)' <<<"$changed"; then
             py=true
           else
             py=false
@@ -160,52 +161,53 @@ jobs:
     steps:
       - if: needs.changes.outputs.py == 'true'
         uses: actions/checkout@v7
+      # The steps themselves (install, shard selection, pytest, junit upload) live in
+      # the composite action, shared with server-tests-py314 below.
       - if: needs.changes.outputs.py == 'true'
-        uses: actions/setup-python@v5
+        uses: ./.github/actions/server-tests
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Install deps
-        if: needs.changes.outputs.py == 'true'
-        run: pip install -e ".[server]"
-      - name: CPU diagnostics
-        # Confirms the 2-worker hypothesis in #1137 on the record, per its
-        # suggested first step, each time this job runs.
-        if: needs.changes.outputs.py == 'true'
-        run: |
-          echo "nproc: $(nproc)"
-          python -c "import os; print('os.cpu_count():', os.cpu_count())"
-      - name: Server tests (shard ${{ matrix.shard }}/4)
-        if: needs.changes.outputs.py == 'true'
+          shard: ${{ matrix.shard }}
+          artifact-name: junit-python-server-shard-${{ matrix.shard }}
+
+  # ADVISORY: the same suite on Python 3.14. CI otherwise tests only 3.12, while
+  # rocky's venv and live session daemon run 3.14 and pyproject allows >=3.11, so a
+  # 3.14-only break (#3033, #3035) landed unseen. Deliberately NOT a required check
+  # and NOT in the lint-and-test aggregator's `needs`, so a 3.14 install failure,
+  # hang or timeout can never block a merge. It also never goes red: GitHub's
+  # statusCheckRollup turns FAILURE on any failed check, and ViberPit's completion
+  # bar reads that rollup (#3039), so a red advisory check would mark every PR's CI
+  # red. A failure surfaces as a warning annotation and the failing-test list in the
+  # job summary. Being advisory, it skips outright when no python changed (the
+  # always-report rule above applies only to required checks).
+  server-tests-py314:
+    needs: changes
+    if: needs.changes.outputs.py == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: public.ecr.aws/docker/library/postgres:16
         env:
-          VIBERPIT_TEST_PG_URL: postgresql+asyncpg://viberpit_test:test@127.0.0.1:5432/viberpit_test
-        # scripts/ci_shard_tests.py buckets whole FILES (never individual
-        # tests) by a hash of their path, so --dist loadfile's per-file worker
-        # pinning still holds — files that share DB/Postgres state (e.g.
-        # test_postgres_compat) stay serialized, now within one shard job
-        # instead of within the single runner. pytest-timeout converts a hung
-        # test into a NAMED failure after 300s (a bad shuffle once ate the
-        # whole job budget silently and held up the deploy controller); the
-        # outer `timeout` guard is the backstop.
-        run: |
-          files="$(python scripts/ci_shard_tests.py --shard ${{ matrix.shard }} --total 4)"
-          echo "Shard ${{ matrix.shard }}/4: $files"
-          # $files is a space-separated list of repo-relative paths (no spaces in
-          # path names) and must word-split into separate pytest args.
-          # shellcheck disable=SC2086
-          timeout --signal=SIGTERM 1500 python -m pytest $files -q -n auto --dist loadfile --timeout=300 --junitxml=test-results/server-shard-${{ matrix.shard }}.xml
-      - name: Upload test results
-        # !cancelled() so a FAILING run still uploads its junit — but not a cancelled
-        # one, whose killed reporter leaves a truncated/0-byte report (#1768) — and
-        # only when the tests actually ran, or a gated-out run would try to upload a
-        # directory that was never created.
-        if: ${{ !cancelled() && needs.changes.outputs.py == 'true' }}
-        uses: actions/upload-artifact@v4
+          POSTGRES_USER: viberpit_test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: viberpit_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/server-tests
         with:
-          name: junit-python-server-shard-${{ matrix.shard }}
-          path: test-results/*.xml
-          retention-days: 30
+          python-version: "3.14"
+          shard: ${{ matrix.shard }}
+          artifact-name: junit-python314-server-shard-${{ matrix.shard }}
+          advisory: "true"
 
   lint-and-test:
     # REQUIRED check: branch protection and server/deploy/steps.py:ci_verdict

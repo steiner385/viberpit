@@ -1,0 +1,115 @@
+name: Server test shard
+description: >-
+  Install the server package and run one shard of server/tests/ on a given Python.
+  THE step list for both ci.yml server-test jobs: the required 3.12 `server-tests`
+  matrix and the advisory `server-tests-py314` one, so the two cannot drift apart.
+  The caller checks the repo out first and provides the Postgres service (a
+  composite action cannot declare services).
+
+inputs:
+  python-version:
+    description: Python version for actions/setup-python.
+    required: true
+  shard:
+    description: This shard's 1-based index.
+    required: true
+  total:
+    description: Number of shards.
+    default: "4"
+  artifact-name:
+    description: Name of the uploaded junit artifact (unique per job and shard).
+    required: true
+  advisory:
+    description: >-
+      "true" for a run that reports but must never fail its check. GitHub's
+      statusCheckRollup goes FAILURE on ANY failed check, required or not, and
+      ViberPit's completion bar reads that rollup (#3039), so a red advisory
+      check would wrongly mark every PR's CI red. Failures are surfaced as a
+      warning annotation plus the failing-test list in the job summary instead.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+        cache-dependency-path: pyproject.toml
+    - name: Install deps
+      id: install
+      shell: bash
+      env:
+        ADVISORY: ${{ inputs.advisory }}
+        PY: ${{ inputs.python-version }}
+      run: |
+        if pip install -e ".[server]"; then
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+        elif [ "$ADVISORY" = "true" ]; then
+          echo "::warning title=Python $PY: install failed (advisory)::pip install -e .[server] failed on Python $PY; no tests ran. This check is advisory and never blocks."
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+        else
+          exit 1
+        fi
+    - name: CPU diagnostics
+      # Confirms the 2-worker hypothesis in #1137 on the record, per its
+      # suggested first step, each time this job runs.
+      if: steps.install.outputs.ok == 'true'
+      shell: bash
+      run: |
+        echo "nproc: $(nproc)"
+        python -c "import os, sys; print('os.cpu_count():', os.cpu_count(), '| python', sys.version.split()[0])"
+    - name: Server tests (shard ${{ inputs.shard }}/${{ inputs.total }}, Python ${{ inputs.python-version }})
+      if: steps.install.outputs.ok == 'true'
+      shell: bash
+      env:
+        VIBERPIT_TEST_PG_URL: postgresql+asyncpg://viberpit_test:test@127.0.0.1:5432/viberpit_test
+        ADVISORY: ${{ inputs.advisory }}
+        PY: ${{ inputs.python-version }}
+        SHARD: ${{ inputs.shard }}
+        TOTAL: ${{ inputs.total }}
+      # scripts/ci_shard_tests.py buckets whole FILES (never individual
+      # tests) by a hash of their path, so --dist loadfile's per-file worker
+      # pinning still holds — files that share DB/Postgres state (e.g.
+      # test_postgres_compat) stay serialized, now within one shard job
+      # instead of within the single runner. pytest-timeout converts a hung
+      # test into a NAMED failure after 300s (a bad shuffle once ate the
+      # whole job budget silently and held up the deploy controller); the
+      # outer `timeout` guard is the backstop.
+      run: |
+        set -uo pipefail
+        files="$(python scripts/ci_shard_tests.py --shard "$SHARD" --total "$TOTAL")"
+        echo "Shard $SHARD/$TOTAL: $files"
+        # `shell: bash` runs this as `bash -eo pipefail`, so a bare failing pipeline
+        # would exit right here, before the advisory branch below could run. `|| rc=$?`
+        # captures pytest's (pipefail) status without tripping -e.
+        rc=0
+        # $files is a space-separated list of repo-relative paths (no spaces in
+        # path names) and must word-split into separate pytest args.
+        # shellcheck disable=SC2086
+        timeout --signal=SIGTERM 1500 python -m pytest $files -q -rf -n auto --dist loadfile \
+          --timeout=300 --junitxml="test-results/server-shard-$SHARD.xml" 2>&1 | tee pytest.log || rc=$?
+        if [ "$rc" -eq 0 ] || [ "$ADVISORY" != "true" ]; then
+          exit "$rc"
+        fi
+        failed="$(grep -E '^(FAILED|ERROR) ' pytest.log || true)"
+        echo "::warning title=Python $PY: shard $SHARD failed (advisory)::$(grep -cE '^(FAILED|ERROR) ' pytest.log || true) failing test(s) on Python $PY (pytest exit $rc). This check is advisory and never blocks; see the job summary."
+        {
+          echo "### Python $PY, shard $SHARD/$TOTAL: pytest exited $rc (advisory)"
+          echo
+          echo '```'
+          if [ -n "$failed" ]; then echo "$failed"; else tail -n 40 pytest.log; fi
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        exit 0
+    - name: Upload test results
+      # !cancelled() so a FAILING run still uploads its junit — but not a cancelled
+      # one, whose killed reporter leaves a truncated/0-byte report (#1768) — and
+      # only when the tests actually ran, or a gated-out run would try to upload a
+      # directory that was never created.
+      if: ${{ !cancelled() && steps.install.outputs.ok == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: test-results/*.xml
+        retention-days: 30
