@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from server.sessions.account_auth import account_store_io, helper_env
+from server.sessions import failure
 from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import (
     helper_credentials_pending, helper_cwd, run_helper_call, stateless_helper_options)
@@ -54,8 +55,11 @@ def _note_decide_failure(error: BaseException, kind: str | None = None,
             _consecutive_decide_failures, _ESCALATE_FAILURE_THRESHOLD,
             kind or "unknown", error, detail or "")
     else:
-        log.warning("autopilot.decide failed (%d consecutive): kind=%s %s detail=%r",
-                    _consecutive_decide_failures, kind or "unknown", error, detail or "")
+        # An external condition (slow CLI start, throttle, DNS) logs at INFO so it
+        # does not auto-file; the threshold escalation above still catches an outage.
+        log.log(failure.log_level(kind),
+                "autopilot.decide failed (%d consecutive): kind=%s %s detail=%r",
+                _consecutive_decide_failures, kind or "unknown", error, detail or "")
 
 
 def _note_decide_success() -> None:

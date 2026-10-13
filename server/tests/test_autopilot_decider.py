@@ -262,3 +262,34 @@ async def test_no_helper_account_outside_the_renewal_window_still_escalates(monk
     assert (d.action, d.reason) == ("escalate", "decider-skipped:no-helper-account")
     assert any("no helper account" in r.getMessage() and r.levelno == logging.WARNING
                for r in caplog.records)
+
+
+@pytest.mark.parametrize("kind,level", [
+    ("cli_startup_timeout", "INFO"), ("rate_limit", "INFO"), ("network", "INFO"),
+    ("other", "WARNING"), (None, "WARNING"),
+])
+def test_sub_threshold_failure_logs_at_the_kinds_level(caplog, kind, level):
+    import logging
+    from server.automations import autopilot_decider as decider_mod
+
+    decider_mod._consecutive_decide_failures = 0
+    try:
+        with caplog.at_level(logging.INFO, logger="server.automations.autopilot_decider"):
+            decider_mod._note_decide_failure(RuntimeError("x"), kind)
+        assert [r.levelname for r in caplog.records] == [level]
+    finally:
+        decider_mod._consecutive_decide_failures = 0
+
+
+def test_external_kind_still_escalates_to_error_at_threshold(caplog):
+    import logging
+    from server.automations import autopilot_decider as decider_mod
+
+    decider_mod._consecutive_decide_failures = 0
+    try:
+        with caplog.at_level(logging.INFO, logger="server.automations.autopilot_decider"):
+            for _ in range(decider_mod._ESCALATE_FAILURE_THRESHOLD):
+                decider_mod._note_decide_failure(RuntimeError("x"), "cli_startup_timeout")
+        assert caplog.records[-1].levelno == logging.ERROR
+    finally:
+        decider_mod._consecutive_decide_failures = 0
