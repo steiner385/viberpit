@@ -17,8 +17,8 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Must match `matrix: shard: [...]` and the `--total` argument in ci.yml; the
-# drift test below is what keeps that true.
+# Must match every server-test job's `matrix: shard: [...]` in ci.yml; the drift
+# test below is what keeps that true.
 TOTAL = 4
 
 
@@ -69,19 +69,41 @@ def test_every_shard_gets_work(capsys):
 
 
 def test_workflow_matrix_matches_the_shard_count():
-    """`matrix: shard` and `--total` must agree.
+    """`matrix: shard` and `--total` must agree, in EVERY job that runs a shard.
 
-    They are two hand-written numbers in the same file, and disagreeing is the
-    silent-green case: a matrix of [1..4] against `--total 5` runs four fifths of
-    the suite and reports success on the missing fifth.
+    Disagreeing is the silent-green case: a matrix of [1..4] against `--total 5`
+    runs four fifths of the suite and reports success on the missing fifth. Both
+    server-test jobs (the required 3.12 one and the advisory 3.14 one) run their
+    steps from .github/actions/server-tests, which forwards `--total` from its
+    `total` input; each job must pass `${{ strategy.job-total }}`, GitHub's own
+    count of the matrix, so no second hand-written number exists to drift.
     """
-    ci = (_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    import yaml
 
-    match = re.search(r"^\s*shard: \[([0-9, ]+)\]\s*$", ci, re.M)
-    assert match, "no `shard: [...]` matrix found in ci.yml"
-    assert [int(n) for n in match.group(1).split(",")] == list(range(1, TOTAL + 1))
+    workflows = _REPO_ROOT / ".github"
+    ci = yaml.safe_load((workflows / "workflows" / "ci.yml").read_text())
+    action = yaml.safe_load((workflows / "actions" / "server-tests" / "action.yml").read_text())
 
-    assert f"--total {TOTAL}" in ci, f"ci.yml does not pass --total {TOTAL}"
+    shard_jobs = {
+        name: job for name, job in ci["jobs"].items()
+        if any(str(step.get("uses", "")) == "./.github/actions/server-tests"
+               for step in job.get("steps", []))
+    }
+    assert set(shard_jobs) >= {"server-tests", "server-tests-py314"}, sorted(shard_jobs)
+    for name, job in shard_jobs.items():
+        assert job["strategy"]["matrix"]["shard"] == list(range(1, TOTAL + 1)), name
+        (step,) = [s for s in job["steps"] if s.get("uses") == "./.github/actions/server-tests"]
+        assert step["with"]["shard"] == "${{ matrix.shard }}", name
+        assert step["with"]["total"] == "${{ strategy.job-total }}", name
+
+    assert "default" not in action["inputs"]["total"], "a default `total` can drift from the matrix"
+    run = next(s["run"] for s in action["runs"]["steps"]
+               if "ci_shard_tests.py" in str(s.get("run", "")))
+    assert re.search(r'--shard "\$SHARD" --total "\$TOTAL"', run), run
+    test_step = next(s for s in action["runs"]["steps"]
+                     if "ci_shard_tests.py" in str(s.get("run", "")))
+    assert test_step["env"]["TOTAL"] == "${{ inputs.total }}"
+    assert test_step["env"]["SHARD"] == "${{ inputs.shard }}"
 
 
 def test_bucket_depends_only_on_the_path():
