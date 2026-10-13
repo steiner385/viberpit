@@ -165,12 +165,11 @@ jobs:
   # ADVISORY: the same suite on Python 3.14. CI otherwise tests only 3.12, while
   # rocky's venv and live session daemon run 3.14 and pyproject allows >=3.11, so a
   # 3.14-only break (#3033, #3035) landed unseen. Deliberately NOT a required check
-  # and NOT in the lint-and-test aggregator's `needs`, so a 3.14 install failure,
-  # hang or timeout can never block a merge. It also never goes red: GitHub's
-  # statusCheckRollup turns FAILURE on any failed check, and ViberPit's completion
-  # bar reads that rollup (#3039), so a red advisory check would mark every PR's CI
-  # red. A failure surfaces as a warning annotation and the failing-test list in the
-  # job summary. Being advisory, it skips outright when no python changed (the
+  # and NOT in the lint-and-test aggregator's `needs`, so a 3.14 failure, hang or
+  # timeout can never block a merge, but it does go red, like e2e. That is safe since
+  # #3039: the completion bar, pipeline board and "PR broke" push read a red check as
+  # blocking only when GitHub's mergeStateStatus is not UNSTABLE (every required check
+  # passed). Being advisory, it skips outright when no python changed (the
   # always-report rule above applies only to required checks).
   server-tests-py314:
     needs: changes
@@ -189,7 +188,6 @@ jobs:
           shard: ${{ matrix.shard }}
           total: ${{ strategy.job-total }}
           artifact-name: junit-python314-server-shard-${{ matrix.shard }}
-          advisory: "true"
 
   lint-and-test:
     # REQUIRED check: branch protection and server/deploy/steps.py:ci_verdict
