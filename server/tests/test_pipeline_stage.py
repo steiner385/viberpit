@@ -1,7 +1,8 @@
 """Unit tests for the open-stage classifier (server/pipeline/stage.py)."""
 from datetime import datetime, timezone, timedelta
 
-from server.pipeline.stage import derive_open_stage, derive_queue_stage, derive_merged_stage
+from server.pipeline.stage import (
+    derive_merged_stage, derive_open_stage, derive_queue_stage, is_required_ci_red)
 
 
 def test_draft_is_parked():
@@ -117,3 +118,19 @@ def test_queue_unmergeable_precedence_over_group_failed():
     assert derive_queue_stage(
         queue_state="UNMERGEABLE", merge_state_status="DIRTY", group_failed=True
     ) == ("queue", "unmergeable")
+
+
+def test_red_only_on_a_non_required_check_is_ready_not_parked():
+    """#3039: UNSTABLE = every required check passed and the branch is mergeable, so a
+    PR whose rollup is red only from an advisory check is not parked on the board."""
+    assert derive_open_stage("failing", "UNSTABLE", is_draft=False) == "ready"
+    assert derive_open_stage("failing", "BLOCKED", is_draft=False) == "parked"
+
+
+def test_is_required_ci_red_reads_the_merge_state_and_fails_safe():
+    assert is_required_ci_red("failing", "BLOCKED")
+    assert is_required_ci_red("failing", None)      # unknown -> the rollup's word
+    assert is_required_ci_red("failing", "")
+    assert not is_required_ci_red("failing", "UNSTABLE")
+    for checks in ("passing", "pending", "none"):
+        assert not is_required_ci_red(checks, "BLOCKED"), checks

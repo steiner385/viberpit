@@ -390,6 +390,23 @@ def test_real_gh_num_real_failures_still_warn(monkeypatch, caplog):
 # Merge-queue awareness tests
 # ---------------------------------------------------------------------------
 
+def test_pr_fact_from_gh_carries_the_merge_state():
+    """#3039: the retro audit must judge a non-required red the way the live bar does,
+    so the GraphQL mergeStateStatus reaches PrFact."""
+    d = {"number": 1, "state": "OPEN", "isDraft": False, "mergeStateStatus": "UNSTABLE",
+         "autoMergeRequest": {"enabledAt": "t"}, "mergeQueueEntry": None, "url": "http://x/1",
+         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]}}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.checks == "failing" and fact.merge_state_status == "UNSTABLE"
+    assert not fact.ci_is_red
+
+
+def test_archive_audit_queries_fetch_the_merge_state():
+    import inspect
+    src = inspect.getsource(aa)
+    assert src.count("mergeStateStatus") >= 2, "both PR queries must select mergeStateStatus"
+
+
 def test_pr_fact_from_gh_in_merge_queue_true_when_entry_present():
     """_pr_fact_from_gh sets in_merge_queue=True when mergeQueueEntry is non-null."""
     d = {"number": 1, "state": "OPEN", "isDraft": False,

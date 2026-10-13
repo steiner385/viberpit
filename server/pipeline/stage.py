@@ -31,6 +31,21 @@ from datetime import datetime, timezone
 _OPEN_STAGES = frozenset({"ci", "ready", "parked"})
 
 
+def is_required_ci_red(checks: str, merge_state_status: str | None) -> bool:
+    """True when the PR's CI is red in a way that blocks its merge.
+
+    ``checks`` is GitHub's raw statusCheckRollup, which reads FAILURE when ANY check
+    fails, required or not. ``merge_state_status`` UNSTABLE is GitHub's own verdict
+    that every required check passed and the branch is mergeable despite a red
+    non-required one (e2e, the advisory Python 3.14 run), so auto-merge will still
+    land it (#3039). Anything else, including an unknown status, keeps the rollup's
+    word: a red the merge state cannot clear is treated as red.
+
+    THE rule; PR Doctor, the completion bar and the pipeline board all read it.
+    """
+    return checks == "failing" and merge_state_status != "UNSTABLE"
+
+
 def derive_open_stage(
     checks: str,
     merge_state_status: str | None,
@@ -48,11 +63,11 @@ def derive_open_stage(
     """
     if is_draft:
         return "parked"
-    if checks == "failing":
+    if is_required_ci_red(checks, merge_state_status):
         return "parked"
     if checks == "pending":
         return "ci"
-    # checks == 'passing' or 'none'
+    # checks == 'passing' or 'none', or 'failing' only on non-required checks
     if merge_state_status == "DIRTY":
         return "parked"
     return "ready"

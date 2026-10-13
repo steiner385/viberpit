@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from server.github.pr_status import PullRequestInfo
+from server.pipeline.stage import is_required_ci_red
 
 # First match wins — conflict before CI (never fight CI on an unmergeable branch).
 # ``comment_command`` is last: fires only when the PR is otherwise green.
@@ -139,8 +140,9 @@ def classify(info: PullRequestInfo) -> str | None:
         return "out_of_date"
     # failing_ci only for a *required* failure: UNSTABLE = a non-required check is
     # red on a mergeable branch → not actionable. (merge_state_status is the
-    # required-ness discriminator the poller always has.)
-    if info.checks == "failing" and info.merge_state_status != "UNSTABLE":
+    # required-ness discriminator the poller always has; the rule itself is
+    # stage.is_required_ci_red, shared with the completion bar and the board.)
+    if is_required_ci_red(info.checks, info.merge_state_status):
         return None if ci_red_is_unproven(info) else "failing_ci"
     return None
 
