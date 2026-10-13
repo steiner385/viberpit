@@ -9,6 +9,7 @@ cycle through the same ``mutate`` seam with ``build_rate_limit_query()`` — the
 below answers that document, and mutate-call assertions account for it.
 """
 import asyncio
+from server.pm.journal import TRANSIENT_PREFIX
 from datetime import datetime, timedelta, timezone
 
 from server.automations.gh_reconcile import GhReconcile, GhReconcileLoop
@@ -990,3 +991,30 @@ def test_guards_preserve_last_observation_and_refresh_failure():
         assert ctx.last_refresh_failed_at is None
         assert ctx.gh_reconcile_guard is None
         assert ctx.observed_at > first
+
+
+def _raising_mutate(message):
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        raise RuntimeError(message)
+    return mutate
+
+
+def test_edge_failure_on_mutate_is_transient_and_quiet(caplog):
+    msg = "gh graphql failed: unexpected end of JSON input"
+    ctx = Ctx(); loop, calls = _loop(ctx, mutate=_raising_mutate(msg))
+    with caplog.at_level("INFO", logger="server.automations.gh_reconcile"):
+        asyncio.run(loop.tick())
+    assert calls["failed"] and all(e.startswith(TRANSIENT_PREFIX) for _, e in calls["failed"])
+    assert calls["park"] == []
+    assert any(d and d.get("transient") for d in ctx.details)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_non_edge_mutate_failure_still_warns_product_failed(caplog):
+    ctx = Ctx(); loop, calls = _loop(ctx, mutate=_raising_mutate("gh graphql failed: boom"))
+    with caplog.at_level("INFO", logger="server.automations.gh_reconcile"):
+        asyncio.run(loop.tick())
+    assert any(r.levelname == "WARNING" and r.getMessage() == "gh_reconcile.product_failed"
+               for r in caplog.records)
