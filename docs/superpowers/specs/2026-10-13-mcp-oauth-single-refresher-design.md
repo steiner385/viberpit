@@ -68,13 +68,16 @@ We chose the first, for three reasons:
   - For each store bundle with a refresh token and an `expiresAt` less than 10 minutes away, it runs the
     `refresh_token` grant against the authorization server's token endpoint. It discovers the endpoint with
     RFC 8414 or OIDC metadata from `discoveryState`, falling back to `<origin>/token`, and sends
-    `resource=<serverUrl>` as the CLI does.
+    the `resource` the CLI's MCP SDK sends. That is the protected-resource metadata's `resource`
+    when one is published, else the server URL minus its fragment. As built, the first version
+    sent the raw configured URL. AWS answered `400 INVALID_TARGET` (aws-oauth is configured as
+    `…/mcp?oauth=initialize`; its metadata names `…/mcp`), so the grant was never refreshed.
   - It writes the result back compare-and-swap: under the store lock, and only if that key's refresh token is
     unchanged.
   - Then it publishes to every Anthropic account dir. The publish also runs on every tick, so a dir that missed
     an update catches up.
 - **Failure classes.**
-  - Dead grant: `400`/`401` with `invalid_grant`, or the CLI's non-standard `invalid_refresh_token`,
+  - Dead grant: `400`/`401` with (case-insensitively, since AWS answers in upper case) `invalid_grant`, or the CLI's non-standard `invalid_refresh_token`,
     `expired_refresh_token` or `token_expired`. The store bundle is cleared to the CLI's own cleared shape
     (`accessToken: ""`, no refresh token, `expiresAt: 0`), logged at INFO with the server name only.
   - Any other status (other 4xx, 429, 5xx, network): transient. The bundle is untouched and retried next tick.
