@@ -15225,7 +15225,12 @@ class SessionOrchestrator:
                     return False
                 opts = stuck.get("options") or []
                 idx = decision.answer_index or 0
-                selected = [opts[idx]] if 0 <= idx < len(opts) else []
+                # A live option is a normalized {"label", ...} dict; the driver's
+                # answer is the label string — a dict here raised in its join and
+                # failed the whole AskUserQuestion call (#3089).
+                opt = opts[idx] if 0 <= idx < len(opts) else None
+                selected = ([] if opt is None else
+                            [str(opt.get("label", "")) if isinstance(opt, dict) else str(opt)])
                 ok = bool(await self.answer_question(
                     session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
             elif act == "nudge" and decision.prompt:

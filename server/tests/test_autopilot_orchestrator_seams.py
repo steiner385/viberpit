@@ -389,6 +389,50 @@ def test_apply_skips_approve_and_answer_once_a_real_human_owns_the_driver(tmp_pa
     asyncio.run(run())
 
 
+def test_apply_answer_passes_the_option_label_not_the_option_dict(tmp_path):
+    """Live question options are normalized dicts ({"label", "description"}), so
+    picking ``opts[idx]`` handed the driver a dict as the selected answer and its
+    ``", ".join(selected)`` raised inside the permission callback — every
+    AskUserQuestion of an unowned (post-restart) session failed with "sequence item
+    0: expected str instance, dict found" (#3089). apply must pass the label."""
+    async def run():
+        from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
+
+        class _FakeDriver:
+            identity = SYSTEM_IDENTITY  # rebuilt after a daemon restart, no human yet
+
+        orch = _bare_orch()
+        orch._records["s1"] = SessionRecord(
+            id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+        orch._records["s1"].status = "waiting_question"
+        await _init_db(tmp_path)
+        await seed_authority(orch)
+        seen: list = []
+
+        async def _ensure(sid, ident=None):
+            return _FakeDriver()
+
+        async def _answer(sid, qid, selected, ident, mode):
+            seen.append((qid, selected, mode))
+            return True
+
+        orch.ensure_driver = _ensure
+        orch.answer_question = _answer
+        orch._autopilot_may_act = lambda *a, **k: _true()
+        opts = [{"label": "Option A", "description": "first"},
+                {"label": "Option B", "description": "second"}]
+        assert await orch._autopilot_apply(
+            "s1", Decision(action="answer", answer_index=1),
+            _question_ctx("Q1", opts)) is True
+        assert seen == [("Q1", ["Option B"], "option")]
+    asyncio.run(run())
+
+
+async def _true():
+    return True
+
+
 def test_get_context_populates_transcript_tail(tmp_path):
     """The decider is only as good as its input: get_context must carry a compact
     transcript tail (the deployed empty-tail starved the model into prose/escalate)."""
