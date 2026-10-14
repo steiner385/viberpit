@@ -74,3 +74,34 @@ def test_typed_refusal_logged_at_info_not_warning(caplog):
         c.post("/rpc/busy", json={})
     recs = [r for r in caplog.records if "rpc.error method=busy" in r.getMessage()]
     assert recs and all(r.levelno == logging.INFO for r in recs)
+
+
+def test_expected_edge_refusals_log_at_info_not_warning(caplog):
+    """StaleOwnership / DriverStartTimeout carry no error_data but the edge treats
+    them as expected outcomes — no errsink WARNING (#3079); a bare RuntimeError still warns."""
+    from server.automations.ownership import StaleOwnership
+    from server.sessions.orchestrator import DriverStartTimeout
+
+    app = create_daemon_app()
+
+    async def stale(params):
+        raise StaleOwnership("operation no longer owns its targets")
+
+    async def slow(params):
+        raise DriverStartTimeout("s1", 1.0)
+
+    async def defect(params):
+        raise RuntimeError("bug")
+
+    for name, fn in (("stale", stale), ("slow", slow), ("defect", defect)):
+        register_rpc(app, name, fn)
+    with caplog.at_level(logging.INFO, logger="server.ipc.daemon"), TestClient(app) as c:
+        for name in ("stale", "slow", "defect"):
+            c.post(f"/rpc/{name}", json={})
+
+    def level(name):
+        return [r.levelno for r in caplog.records if f"rpc.error method={name} " in r.getMessage()]
+
+    assert level("stale") == [logging.INFO]
+    assert level("slow") == [logging.INFO]
+    assert level("defect") == [logging.WARNING]
