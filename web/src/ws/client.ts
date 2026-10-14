@@ -152,6 +152,12 @@ export class SessionSocket {
   // first-immediately-then-throttled schedule as the srcSeq gaps above.
   private _listenerErrCounts: Map<keyof EventMap, number> = new Map()
   private _listenerErrLastLogAt: Map<keyof EventMap, number> = new Map()
+  // Session ids whose status frame found no list row and already triggered one list
+  // refetch (#831). The list polls slowly because status frames keep it live; a frame
+  // for a row it lacks means a session was created elsewhere, so fetch once rather than
+  // waiting out the poll. Once per id: assistant threads are filtered out of the list
+  // and would otherwise refetch it on every frame.
+  private _unknownStatusIds: Set<string> = new Set()
   private static readonly LISTENER_ERR_LOG_INTERVAL_MS = 10_000
 
   constructor(url: string = '/ws') {
@@ -904,6 +910,11 @@ export class SessionSocket {
   private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean, stall?: Pick<WsStatusMsg, 'pausedReason' | 'pausedUntil' | 'usageStalled' | 'suspectedCompleteReason' | 'handBackReason'>) {
     const qc = this._queryClient
     if (!qc) return
+    const rows = qc.getQueryData<Session[]>(QK.sessions)
+    if (rows && !rows.some((s) => s.id === sessionId) && !this._unknownStatusIds.has(sessionId)) {
+      this._unknownStatusIds.add(sessionId)
+      void qc.invalidateQueries({ queryKey: QK.sessions })
+    }
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
       if (!old) return old
       return old.map((s) => {

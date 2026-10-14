@@ -11,6 +11,14 @@ in-memory cache. The ``/api/pipeline/events`` fan-out and ``/api/pipeline/snapsh
 read that cache instead of recomputing, so build cost is constant regardless of
 how many tabs are connected, and a freshly opened tab paints from a warm frame.
 
+The loop is demand-driven (#831): it rebuilds only while a reader has asked for a
+frame within ``_IDLE_AFTER_S``. Only the Pipeline page reads it, yet it used to
+rebuild every 10 s for the edge's whole lifetime -- five daemon RPCs per build
+(``all_prs``, ``all_merge_trains``, ``latest_queue_entries``, ``deploy_config_list``,
+``all_repos_stage_models``), ~30 RPC/min with nobody looking. A frame older than
+that window is reported as absent, so the endpoints' cold-start path rebuilds it
+inline rather than serving stale data.
+
 Lifecycle mirrors ``PrPopulationPoller`` / ``DeployWatcher`` (start/stop/run).
 """
 from __future__ import annotations
@@ -18,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import Awaitable, Callable
 
 from server.aio import cancel_and_reap
@@ -28,6 +37,11 @@ log = logging.getLogger(__name__)
 
 # Match the historic SSE cadence so per-tab freshness is unchanged.
 _POLL_INTERVAL_S = 10.0
+
+# No reader for this long -> the loop parks until the next one. The SSE feed reads
+# at least every _EVENTS_INTERVAL_S (10 s) per connection, so an open page never
+# lapses; this also bounds how old a served frame can be after a lapse.
+_IDLE_AFTER_S = 60.0
 
 Builder = Callable[[], Awaitable[dict]]
 
@@ -66,10 +80,17 @@ class PipelineStatePoller:
         builder: Builder,
         *,
         interval_s: float = _POLL_INTERVAL_S,
+        idle_after_s: float = _IDLE_AFTER_S,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._builder = builder
         self._interval_s = interval_s
+        self._idle_after_s = idle_after_s
+        self._clock = clock
         self._state: dict | None = None
+        self._frame_at: float | None = None
+        self._last_demand_at: float | None = None
+        self._demand = asyncio.Event()
         self._generation = 0
         self._task: asyncio.Task | None = None
         self._cond = asyncio.Condition()
@@ -87,9 +108,23 @@ class PipelineStatePoller:
         """Monotonic counter, bumped once per published frame (0 = none yet)."""
         return self._generation
 
+    def note_demand(self) -> None:
+        """Record that a reader wants frames; wakes a parked loop."""
+        self._last_demand_at = self._clock()
+        self._demand.set()
+
+    def _wanted(self) -> bool:
+        return (self._last_demand_at is not None
+                and self._clock() - self._last_demand_at <= self._idle_after_s)
+
+    def _frame_is_stale(self) -> bool:
+        return self._frame_at is None or self._clock() - self._frame_at > self._idle_after_s
+
     def snapshot(self) -> dict | None:
-        """Latest cached frame, or ``None`` before the first successful build."""
-        return self._state
+        """Latest cached frame, or ``None`` before the first successful build or once
+        the frame is older than the idle window (the loop parked; rebuild inline)."""
+        self.note_demand()
+        return None if self._frame_is_stale() else self._state
 
     async def wait_for_frame(
         self, after_generation: int, timeout: float
@@ -100,6 +135,7 @@ class PipelineStatePoller:
         (possibly unchanged) so callers can emit a heartbeat rather than hang —
         this preserves the ~10 s cadence the frontend's staleness watchdog expects.
         """
+        self.note_demand()
         async with self._cond:
             if self._generation <= after_generation:
                 with contextlib.suppress(asyncio.TimeoutError):
@@ -155,6 +191,7 @@ class PipelineStatePoller:
     async def _publish(self, state: dict) -> None:
         async with self._cond:
             self._state = state
+            self._frame_at = self._clock()
             self._generation += 1
             self._cond.notify_all()
 
@@ -164,6 +201,14 @@ class PipelineStatePoller:
 
     async def run(self) -> None:
         while True:
+            if not self._wanted():
+                self._demand.clear()
+                await self._demand.wait()
+                if self._frame_is_stale():
+                    # The waking reader found no usable frame and is building one
+                    # inline (cold path); don't race it with a second build.
+                    await asyncio.sleep(self._interval_s)
+                continue
             await self.poll_once()
             await asyncio.sleep(self._interval_s)
 

@@ -44,6 +44,32 @@ _DAEMON_GRACEFUL_SHUTDOWN_TIMEOUT_S = 10
 BOOT_CREDS_WAIT_S = env_float("VIBERPIT_BOOT_CREDS_WAIT_S",
                               2 * credential_envelope.CREDS_PUSH_INTERVAL_S, minimum=0.0)
 
+# #831: read-only calls the edge makes on a timer (page polls, health probes). Their
+# uvicorn access lines were ~130 journald writes/min with one browser tab open and
+# carried nothing a reader needs. A failed call (status >= 400) still logs, and every
+# mutating RPC keeps its line. Measured from the daemon journal, 2026-10-14.
+QUIET_ACCESS_PATHS = frozenset({"/info", "/healthz"} | {f"/rpc/{m}" for m in (
+    "list_sessions", "get_session", "list_archived", "prs_for_many",
+    "latest_summary_many", "latest_suggestions_many", "session_queue_positions",
+    "resume_recovery_status", "startup_report", "all_prs", "all_merge_trains",
+    "latest_queue_entries", "deploy_config_list", "all_repos_stage_models",
+    "live_session_load", "live_session_counts", "active_session_count", "usage",
+    "codex_account_status", "git_credential_alerts", "automation_statuses",
+    "automation_overview", "pending_permissions", "pending_questions",
+)})
+
+
+class QuietPollAccessFilter(logging.Filter):
+    """Drops successful uvicorn access lines for :data:`QUIET_ACCESS_PATHS`."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn's access record: args = (client, method, path_with_query, http_version, status)
+        args = record.args
+        if not (isinstance(args, tuple) and len(args) == 5):
+            return True
+        path, status = str(args[2]).split("?", 1)[0], args[4]
+        return not (isinstance(status, int) and status < 400 and path in QUIET_ACCESS_PATHS)
+
 
 def uvicorn_run_kwargs(endpoint: Endpoint, *, daemon_tls: DaemonTLSFiles | None = None,
                        allowlist: frozenset[str] | None = None) -> dict:
@@ -372,6 +398,9 @@ def serve(socket_path: str | None = None) -> None:
     # app's diagnostic surface — and it never configured logging, so every INFO
     # was dropped and WARNING+ leaked as bare text. Same call the edge makes.
     configure_logging(process="daemon")
+    # On the logger, not a handler: uvicorn's dictConfig replaces handlers but keeps
+    # logger filters.
+    logging.getLogger("uvicorn.access").addFilter(QuietPollAccessFilter())
     # Back-compat: an explicit socket_path arg forces a unix bind at that path.
     endpoint = Endpoint("unix", path=socket_path) if socket_path else sessiond_endpoint()
     app, orchestrator = build_daemon()
