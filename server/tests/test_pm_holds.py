@@ -303,10 +303,12 @@ def test_release_by_signals_board_edit_and_body_edit():
     # the Retry endpoint, and an explicit clear through the overlay editor. Time is
     # not one of them — except ``expired``, which ends only a migration hold (#2682);
     # nor is a policy edit — except ``policy_skip``, which ends only a hold the
-    # RUNNER wrote on an issue the product's policy now skips (KinDash#16652).
+    # RUNNER wrote on an issue the product's policy now skips (KinDash#16652), and
+    # ``assessment``, which ends only a close-out hand-off an assessment found an
+    # agent can finish (design 2026-10-14 §3).
     assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
                                     "implement", "dispatch", "investigation", "decision",
-                                    "escalation", "expired", "policy_skip"}
+                                    "escalation", "expired", "policy_skip", "assessment"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]
@@ -597,3 +599,47 @@ def test_release_via_api_applies_the_owner_rule_and_records_the_reason(tmp_path)
             assert [(r.detail["workItemId"], r.detail["reason"], r.detail["actorClass"], r.via)
                     for r in rows] == [("w1", "stale bounce", "agent", "assistant")]
     asyncio.run(_run())
+
+
+def test_assessed_closeout_writes_touch_only_the_system_hold_they_judged():
+    """Design 2026-10-14 §3: a close-out assessment's release and rewrite re-check the
+    hold they judged — open issue, system actor, same reason — so a person's park or
+    a re-worded hold written in between is never touched. A rewrite keeps the hold's
+    age and fingerprint; a release audits ``assessment``."""
+    from server.automations.backlog_github import closeout_hold_reason
+    from server.db.models import AuditEvent
+    from server.pm.holds import (release_assessed_closeout_hold, rewrite_assessed_hold_reason,
+                                 set_runner_hold)
+    db = _sync_db()
+    reason = closeout_hold_reason("the PR references it with `Refs`")
+    items = []
+    for n in (1, 2, 3):
+        wi = WorkItem(repo="o/r", number=n, kind="issue", state="open", title="t", body="b")
+        set_runner_hold(wi, reason=reason, now=NOW)
+        items.append(wi)
+    person = WorkItem(repo="o/r", number=4, kind="issue", state="open", title="t", body="b",
+                      hold_kind="owner_action", hold_reason=reason, hold_by="tony@example.com")
+    db.add_all([*items, person])
+    db.flush()
+    fp, set_at = items[1].hold_fingerprint, items[1].hold_set_at
+    actor = "automation:needs-you-hygiene"
+    assert release_assessed_closeout_hold(db, "o/r#1", expected_reason=reason, actor=actor,
+                                          via="automation")
+    assert rewrite_assessed_hold_reason(db, "o/r#2", expected_reason=reason,
+                                        reason="Left for you:\n- [ ] check prod", actor=actor)
+    assert not release_assessed_closeout_hold(db, "o/r#3", expected_reason="other",
+                                              actor=actor, via="automation")
+    assert not release_assessed_closeout_hold(db, "o/r#4", expected_reason=reason,
+                                              actor=actor, via="automation")
+    assert not rewrite_assessed_hold_reason(db, "o/r#4", expected_reason=reason,
+                                            reason="x", actor=actor)
+    db.commit()
+    assert items[0].hold_kind is None
+    assert (items[1].hold_kind, items[1].hold_reason, items[1].hold_by) == (
+        "owner_action", "Left for you:\n- [ ] check prod", actor)
+    assert items[1].hold_fingerprint == fp
+    assert items[1].hold_set_at.replace(tzinfo=None) == set_at.replace(tzinfo=None)
+    assert items[2].hold_reason == reason and person.hold_reason == reason
+    rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
+    assert [(r.detail["signal"], r.identity, r.via) for r in rows] == [
+        ("assessment", actor, "automation")]

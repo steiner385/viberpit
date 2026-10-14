@@ -124,17 +124,38 @@ the series.
 
 ## 3. Shrinking owner_action holds (PR 3)
 
-* **Refs-not-Fixes close-out holds** (`closeout_hold_reason`) no longer park for a
-  human by default. The hygiene loop dispatches one bounded **assessment session** per
-  held issue (origin `needs-you-assess`, cheapest unattended model, read-mostly prompt).
-  If the remaining acceptance items are agent-verifiable, it verifies them and closes
-  the issue (or releases the hold so the runner continues). Otherwise it replaces the
-  hold reason with a concise checklist ("Left for you: - [ ] …") and keeps the
-  owner_action hold. One assessment per (issue, body fingerprint), so a re-hold does
-  not loop.
+* **Refs-not-Fixes close-out holds** (`closeout_hold_reason`, and the pre-#2681
+  `LEGACY_CLOSEOUT_HOLD_REASON`) no longer park for a human by default. The hygiene loop
+  runs rule 5, `closeout_assess`: one bounded **stateless helper assessment** per held
+  issue (`server/automations/closeout_assessor.py`, Sonnet, `stateless_helper_options()`,
+  ≤ 3 per tick fleet-wide). It reads the issue body (the mirror) and the newest merged
+  PRs that reference it (cross-reference timeline; body, changed files, a 12k-character
+  diff excerpt) and classifies each unchecked acceptance item — or, with none, the rest
+  of the issue — as `done` (with evidence), `agent_doable` or `human_only`
+  (`server/pm/closeout_assess.py`, pure). `decide`: all done → **close** with a comment
+  citing the evidence; no human-only item but some agent-doable → **release** the hold
+  (signal `assessment`) so the runner continues; otherwise **rewrite** the hold reason
+  to a concise checklist ("Left for you: - [ ] …", ≤ 5 items, ≤ 500 chars) and keep
+  the owner_action hold (age and body fingerprint unchanged). An unusable reply decides
+  nothing.
+* *Why a helper call, not an assessment session* (the earlier wording): the server, not
+  the model, applies the outcome — through the same executor as every other rule — so
+  each action is `risk_tolerance`-gated (`cautious` → an `OwnerRecommendation`),
+  dry-run-able and audited `pm.hygiene.closeout_assess`. A session's free-form tool
+  calls would bypass all three.
+* One assessment per (issue, body fingerprint), stored as the automation's
+  `AutomationTargetState` (target = ref; dropped once the issue leaves every board).
+  Once an outcome is applied it is stamped and never re-proposed for that body, so a
+  re-hold does not loop. Every write re-checks the hold it judged
+  (`holds.assessed_system_hold`: same system-written reason), so a person's park in
+  between is never touched. Only system-written holds are assessed. The backlog tick's
+  old legacy-reason re-judge pass is gone: this rule covers both spellings.
 * **"bounced at X; Y needs approval"** holds get `attentionKind: "model_approval"`
-  with `{from, to}` parsed by `outcomes.needs_approval_suffix`. The Needs-you card
-  renders one "Approve Y" button that calls the existing approve-escalation path.
+  (`escalation.attention_kind`; the `{bouncedAt, needsApproval}` pair is the existing
+  `escalation` wire object from `outcomes.escalation_for`). An assessed checklist is
+  `"checklist"`, a decision `"decision"`, anything else `"owner_action"`. The Needs-you
+  card labels each kind and renders a checklist as a list; the "Approve Y" button is the
+  existing approve-escalation path.
 
 ## 4. Parked review (PR 4)
 

@@ -266,59 +266,6 @@ async def test_needs_human_skips_the_comment_for_a_covered_escalation(db_env):
 
 
 @pytest.mark.asyncio
-async def test_legacy_closeout_holds_close_when_nothing_is_left_else_say_what_is(db_env):
-    """#2681: a pre-#2681 close-out hold (generic reason, linked PR already merged)
-    is re-judged by the current gate — closed when nothing is left, re-worded to
-    name what is when something is, left alone when the signals read fails."""
-    import json
-
-    from sqlalchemy import select
-
-    from server.automations.backlog_github import LEGACY_CLOSEOUT_HOLD_REASON
-    from server.db.models import WorkItem
-    await init_db(db_env)
-    bodies = {1: "flaky test, fixed", 2: "- [x] done\n- [ ] QA retest on main", 3: None}
-    async with db_session() as db:
-        for n in bodies:
-            db.add(WorkItem(id=f"wi{n}", repo="o/r", number=n, kind="issue", state="open",
-                            title=f"t{n}", body="", hold_kind="owner_action", hold_by="runner",
-                            hold_reason=LEGACY_CLOSEOUT_HOLD_REASON))
-    rows = [_row(number=n, hold_kind="owner_action", hold_by="runner",
-                 hold_reason=LEGACY_CLOSEOUT_HOLD_REASON, work_item_id=f"wi{n}")
-            for n in bodies]
-    rows.append(_row(number=4, hold_kind="owner_action", hold_by="runner",
-                     hold_reason="PR closed unmerged", work_item_id="wi4"))
-    orch = _orch(rows, {"kindash": {"dispatch": "auto"}})
-    calls: list[list[str]] = []
-
-    def gh_run(args, token=None):
-        calls.append(list(args))
-        if args[:2] == ["api", "graphql"]:
-            n = next(k for k in bodies if f"issue(number: {k})" in args[-1])
-            if bodies[n] is None:
-                return SimpleNamespace(returncode=1, stdout="", stderr="boom")
-            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
-                {"data": {"repository": {"issue": {"title": f"t{n}", "body": bodies[n],
-                                                   "labels": {"nodes": []},
-                                                   "subIssues": {"nodes": []}}}}}))
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    orch._gh_run = gh_run
-    with patch("viberpit.gitrepos.app_token_for_repo", lambda repo: None):
-        assert await orch._backlog_settle_legacy_closeout_holds() == ["o/r#1"]
-
-    assert [c[2] for c in calls if c[:2] == ["issue", "close"]] == ["1"]
-    async with db_session() as db:
-        got = {w.number: (w.state, w.hold_reason) for w in
-               (await db.execute(select(WorkItem))).scalars()}
-    assert got[1][0] == "closed"
-    assert got[2] == ("open", "human gate: merged PR left the issue open — 1 unchecked "
-                              "acceptance item(s) remain on the issue (first: 'QA retest on main')")
-    assert got[3] == ("open", LEGACY_CLOSEOUT_HOLD_REASON)      # unknown: retried next pass
-    assert [kw["kind"] for _, _, kw in orch._backlog_ctx.events] == ["closeout_closed"]
-
-
-@pytest.mark.asyncio
 async def test_policy_skipped_runner_holds_are_released_so_nothing_is_left_to_approve(db_env):
     """cairnea/KinDash#16652: the runner handed the issue off ("bounced at opus;
     fable needs approval") on 09-23; the product added ``forced-deploy-audit`` to

@@ -1103,6 +1103,8 @@ def _held_to_dict(item) -> dict:
         # hold that is not an approval-gated hand-off) — see ``outcomes.escalation_for``.
         "workItemId": item.work_item_id,
         "escalation": escalation_to_wire(item.escalation),
+        # What the card asks of a person (``escalation.attention_kind``).
+        "attentionKind": item.attention_kind,
     }
 
 

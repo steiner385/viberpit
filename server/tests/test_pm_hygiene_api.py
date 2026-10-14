@@ -247,8 +247,18 @@ def test_load_reads_queue_rows_board_stamps_and_stale_edges():
                 return w4.id
         w4 = _call(c, _board)
         orch = c.app.state.sessions._orch
+        ctx = orch._needs_you_hygiene_ctx
+
+        async def _assessed():
+            await ctx.set_target_state(f"{REPO}#4", {"fingerprint": "f", "decision": None})
+            await ctx.set_target_state(f"{REPO}#999", {"fingerprint": "f", "decision": None})
+        _call(c, _assessed)
         [p] = _call(c, orch._needs_you_hygiene_load)
         assert p.slug == "viberpit" and [r.ref for r in p.rows] == [f"{REPO}#4"]
         assert abs((p.board_updated_at[w4] - old).total_seconds()) < 1
         assert {(e.src, e.blocker) for e in p.stale_edges if e.prunable} == {
             (f"{REPO}#1", f"{REPO}#10"), (f"{REPO}#3", f"{REPO}#4")}
+        # Close-out assessments ride along per row; one whose issue left every
+        # board (closed) is dropped — AutomationTargetState stays bounded.
+        assert list(p.closeout_states) == [f"{REPO}#4"]
+        assert list(_call(c, ctx.list_target_states)) == [f"{REPO}#4"]

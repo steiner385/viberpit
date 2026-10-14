@@ -169,3 +169,22 @@ def test_held_items_carry_the_work_item_id_and_the_approvable_escalation():
     assert items["o/r#2"].escalation is None
     assert items["o/r#2"].released_by == "Retry, a board move to Ready/Backlog, or an issue-body edit"
     assert items["o/r#3"].work_item_id is None and items["o/r#3"].escalation is None
+
+
+def test_held_items_say_what_they_ask_of_a_person():
+    """Design 2026-10-14 §3: one ``attention_kind`` per card — a model approval, the
+    checklist a close-out assessment narrowed the hold to, a decision, else an
+    owner action."""
+    from server.pm.escalation import attention_kind
+    rows = [_row(ref="o/r#1", number=1, hold_kind="owner_action", hold_by="runner",
+                 hold_reason="bounced at opus; fable needs approval", work_item_id="w1"),
+            _row(ref="o/r#2", number=2, hold_kind="owner_action",
+                 hold_by="automation:needs-you-hygiene",
+                 hold_reason="Left for you:\n- [ ] check prod", work_item_id="w2"),
+            _row(ref="o/r#4", number=4, hold_kind="owner_action", hold_by="runner",
+                 hold_reason="needs the keyring", work_item_id="w4"),
+            _held("o/r#3", "decision", work_item_id=None)]
+    items = {i.ref: i.attention_kind for i in held_items(rows, {}, **KW)}
+    assert items == {"o/r#1": "model_approval", "o/r#2": "checklist",
+                     "o/r#4": "owner_action", "o/r#3": "decision"}
+    assert attention_kind("decision", "Left for you: x", None) == "decision"

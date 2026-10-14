@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/evidence.py, server/pm/tree.py, server/pm/attention.py, server/pm/hygiene.py, server/pm/dep_prune.py, server/automations/needs_you_hygiene.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, server/api/pm_hygiene.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/evidence.py, server/pm/tree.py, server/pm/attention.py, server/pm/hygiene.py, server/pm/dep_prune.py, server/automations/needs_you_hygiene.py, server/pm/closeout_assess.py, server/automations/closeout_assessor.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, server/api/pm_hygiene.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -271,11 +271,16 @@ dependency and no hold → the policy's `queue_min_status`, through `board_statu
 `stale_holds` (a system actor's `owner_action` hand-off the queue already skips →
 released, signal `policy_skip`; `policy_skip.stale_system_holds` is the ONE rule the backlog tick
 shares) and `resolved_edges` (prunable stale dependency edges → `dep_prune.prune`, the same core as
-`POST /api/pm/projects/{slug}/deps/prune`). Triage-accepted issues missing from the board need no
+`POST /api/pm/projects/{slug}/deps/prune`), plus (design §3) `closeout_assess`: a system-written
+close-out hold ("merged PR left the issue open") is assessed by a stateless helper
+(`server/automations/closeout_assessor.py`, ≤ 3 per tick, one per issue body) and becomes a close
+(every item done, with evidence), a release (signal `assessment`: an agent can finish it) or a
+rewrite of the hold reason to "Left for you: - [ ] …" (only what a person must do; the hold keeps
+its age). Each write re-checks the hold it judged (`holds.assessed_system_hold`). Triage-accepted issues missing from the board need no
 rule: the reconciler adds every open issue (`reconcile_diff.membership`) and places a classified
 one at Ready. The product's `needs_you_automation` policy key (`off | dry_run | on`, default `on`)
 lowers the automation's mode for that product; `risk_tolerance` `balanced`/`bold` applies each
-action (capped per tick: 10 closes, 20 moves, 20 releases, 20 prunes; audited
+action (capped per tick: 10 closes, 20 moves, 20 releases, 20 prunes, 20 hold rewrites; audited
 `pm.hygiene.<rule>`), `cautious` records an `OwnerRecommendation` instead. A refused write is
 logged at INFO and retried no sooner than a day later. `GET /api/pm/recommendations` lists them;
 `POST /api/pm/recommendations/apply` (`{ids, confirm: true}`) runs the same executor as the caller,
@@ -292,7 +297,10 @@ parked it and why and what ends it (`features/products/vocab.ts:holdExplanation`
 the Review-and-decide dialog shows), and carries the taps that release it, each bound to that
 card's own work item: **Retry**, **Approve escalation to <tier>** on an approval-gated hand-off,
 **Review and decide**, **Edit on GitHub**, and the board-move wording; a `decision` hold links to
-its Inbox proposal instead of offering Retry.
+its Inbox proposal instead of offering Retry. Each held row carries `attentionKind`
+(`escalation.attention_kind`): `model_approval` (an approval-gated climb), `checklist` (a hold a
+close-out assessment narrowed to "Left for you: …", rendered as a list), `decision` or
+`owner_action`; the card's badge says which ("Model approval", "Checklist for you", …).
 
 Click a summary tile to open its corresponding work list. Issues needing input appear before
 blocked and other open issues. An issue that needs a spec explains that its description needs

@@ -177,3 +177,96 @@ async def test_status_reads_the_published_counts():
     status = NeedsYouHygiene().status(t.ctx)
     assert status.counts == {"applied": 1, "recommended": 1, "dryRun": 0, "failed": 0}
     assert status.level == "active"
+
+
+# --- close-out assessment (design §3) ----------------------------------------------------
+
+def _closeout(number: int, **over: Any) -> QueueRow:
+    from server.automations.backlog_github import closeout_hold_reason
+    return _row(number, status="Held", hold_kind="owner_action", hold_by="runner",
+                hold_reason=closeout_hold_reason("the PR said `Refs`"), body=f"b{number}",
+                **over)
+
+
+def _assessor(decision="close"):
+    from server.pm import closeout_assess as ca
+    from server.pm.outcomes import body_fingerprint
+    calls: list[str] = []
+
+    async def assess(row):
+        calls.append(row.ref)
+        d = None if decision is None else ca.Decision(decision, "Left for you:\n- [ ] x"
+                                                       if decision == "checklist" else "t")
+        return ca.assessment_state(fingerprint=body_fingerprint(row.title, row.body),
+                                   decision=d, summary="s", at="now")
+    return assess, calls
+
+
+@pytest.mark.asyncio
+async def test_assessments_are_capped_fleet_wide_and_acted_on_the_same_tick():
+    rows_a = [_closeout(n) for n in (1, 2)]
+    rows_b = [_closeout(n) for n in (3, 4)]
+    t = _Harness([_product(rows_a, slug="a"), _product(rows_b, slug="b")])
+    assess, calls = _assessor("close")
+    t.loop._assess = assess
+    await t.loop.tick()
+    assert len(calls) == h.ASSESSMENTS_PER_TICK == 3
+    assert [(a.rule, a.ref, a.action) for a in t.applied] == [
+        ("closeout_assess", r, "close") for r in calls]
+    assert _kinds(t.ctx).count("hygiene_assessed") == 3
+
+
+@pytest.mark.asyncio
+async def test_cautious_recommends_the_assessed_outcome_and_dry_run_only_reports_it():
+    assess, _ = _assessor("checklist")
+    t = _Harness([_product([_closeout(1)], risk="cautious")])
+    t.loop._assess = assess
+    await t.loop.tick()
+    assert t.applied == []
+    [(pid, a)] = t.recommended
+    assert (pid, a.rule, a.action) == ("pid-p", "closeout_assess", "rewrite_hold")
+    assert a.detail["reason"].startswith("Left for you:")
+
+    d = _Harness([_product([_closeout(1)])], mode="dry_run")
+    d.loop._assess = assess
+    await d.loop.tick()
+    assert d.applied == [] and d.recommended == []
+    assert _kinds(d.ctx) == ["hygiene_assessed", "hygiene_dry_run"]
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_or_failed_assessment_acts_on_nothing(caplog):
+    assess, calls = _assessor(None)
+    t = _Harness([_product([_closeout(1)])])
+    t.loop._assess = assess
+    await t.loop.tick()
+    assert calls == ["o/r#1"] and t.applied == []
+
+    async def unavailable(row):
+        return None
+    u = _Harness([_product([_closeout(1)])])
+    u.loop._assess = unavailable
+    await u.loop.tick()
+    assert u.applied == [] and "hygiene_assessed" not in _kinds(u.ctx)
+
+    async def boom(row):
+        raise RuntimeError("x")
+    b = _Harness([_product([_closeout(1)])])
+    b.loop._assess = boom
+    with caplog.at_level(logging.WARNING):
+        await b.loop.tick()
+    assert b.applied == [] and "assess_crashed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_stored_assessment_is_not_re_asked():
+    from server.pm.outcomes import body_fingerprint
+    row = _closeout(1)
+    stored = {"fingerprint": body_fingerprint(row.title, row.body), "decision": None,
+              "text": "", "summary": "", "at": "x", "appliedAt": None}
+    p = replace(_product([row]), closeout_states={row.ref: stored})
+    assess, calls = _assessor("close")
+    t = _Harness([p])
+    t.loop._assess = assess
+    await t.loop.tick()
+    assert calls == [] and t.applied == []

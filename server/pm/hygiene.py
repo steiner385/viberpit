@@ -14,6 +14,11 @@ rules never write.
    (``policy_skip.stale_system_holds``, the rule the backlog tick shares) → release.
 4. ``resolved_edges`` — prunable stale dependency edges (``stale_deps.classify_stale``)
    → prune through ``dep_prune.prune``.
+5. ``closeout_assess`` (§3) — a system-written close-out hold
+   (``closeout_assess.is_closeout_hold``) whose assessment for the issue's current
+   body has decided → close, release the hold, or rewrite its reason to the checklist
+   of what only a person can do. The assessment itself (a helper model call) is the
+   loop's, before ``plan``; this rule only reads its stored outcome.
 
 Triage-accepted items missing from the board (§2 rule 5) need no rule here: the
 reconciler adds every open issue to its product's board (``reconcile_diff.membership``)
@@ -29,7 +34,10 @@ from datetime import datetime, timedelta, timezone
 
 from server.automations.product_policy import (NEEDS_YOU_AUTOMATION_MODES, effective_policy,
                                                skip_labels)
+from server.pm import closeout_assess as ca
 from server.pm.desired_state import HELD_KINDS, STATUS_BLOCKED, STATUS_DONE
+from server.pm.holds import actor_class
+from server.pm.outcomes import body_fingerprint
 from server.pm.policy_skip import stale_system_holds
 from server.pm.queue import QueueRow, is_bot_noise, is_self_closing_tracker
 from server.pm.stale_deps import DEP_PRUNE_MAX, StaleEdge
@@ -38,21 +46,27 @@ RULE_DONE_BUT_OPEN = "done_but_open"
 RULE_BOARD_BLOCKED = "board_blocked_no_blockers"
 RULE_STALE_HOLDS = "stale_holds"
 RULE_RESOLVED_EDGES = "resolved_edges"
+RULE_CLOSEOUT_ASSESS = "closeout_assess"
 RULES: tuple[str, ...] = (RULE_DONE_BUT_OPEN, RULE_BOARD_BLOCKED, RULE_STALE_HOLDS,
-                          RULE_RESOLVED_EDGES)
+                          RULE_RESOLVED_EDGES, RULE_CLOSEOUT_ASSESS)
 
 ACTION_CLOSE = "close"
 ACTION_SET_STATUS = "set_status"
 ACTION_RELEASE_HOLD = "release_hold"
 ACTION_PRUNE_EDGE = "prune_edge"
+ACTION_REWRITE_HOLD = "rewrite_hold"
 ACTIONS: tuple[str, ...] = (ACTION_CLOSE, ACTION_SET_STATUS, ACTION_RELEASE_HOLD,
-                            ACTION_PRUNE_EDGE)
+                            ACTION_PRUNE_EDGE, ACTION_REWRITE_HOLD)
 
 #: Writes per product per tick, by action: each close and status move is a GitHub
 #: write, and an unexpected flood (a board migration, a sync glitch) must trickle,
 #: not land at once. Prune uses the route's own batch cap.
 ACTION_CAPS: Mapping[str, int] = {ACTION_CLOSE: 10, ACTION_SET_STATUS: 20,
-                                  ACTION_RELEASE_HOLD: 20, ACTION_PRUNE_EDGE: DEP_PRUNE_MAX}
+                                  ACTION_RELEASE_HOLD: 20, ACTION_PRUNE_EDGE: DEP_PRUNE_MAX,
+                                  ACTION_REWRITE_HOLD: 20}
+
+#: Close-out assessments (one helper model call each) per tick, fleet-wide.
+ASSESSMENTS_PER_TICK = 3
 
 #: How long a card must have sat untouched in Done before its open issue is closed.
 #: ``GhProjectItem.gh_updated_at`` is the last change to ANY field on the card (there
@@ -101,6 +115,8 @@ class ProductInputs:
     #: ``work_item_id`` → the board card's ``gh_updated_at`` (aware UTC).
     board_updated_at: Mapping[str, datetime]
     stale_edges: list[StaleEdge]
+    #: Issue ref → its stored close-out assessment (``closeout_assess.assessment_state``).
+    closeout_states: Mapping[str, Mapping] = field(default_factory=dict)
 
 
 def _aware(dt: datetime) -> datetime:
@@ -196,6 +212,66 @@ def resolved_edges(product: str, edges: Iterable[StaleEdge],
         for e in edges if e.prunable]
 
 
+def _closeout_held(rows: Iterable[QueueRow]) -> list[QueueRow]:
+    """Close-out hand-offs a SYSTEM actor wrote, with nobody on the item."""
+    return [r for r in rows if ca.is_closeout_hold(r.hold_kind, r.hold_reason)
+            and r.hold_by and actor_class(str(r.hold_by)) == "system"
+            and not r.live_session and not r.claimed]
+
+
+def _assessed(row: QueueRow, states: Mapping[str, Mapping]) -> Mapping | None:
+    """*row*'s stored assessment when it judged the issue's CURRENT body."""
+    state = states.get(row.ref)
+    if state and state.get("fingerprint") == body_fingerprint(row.title, row.body):
+        return state
+    return None
+
+
+def _closeout_rows(inputs: ProductInputs, *, now: datetime) -> list[QueueRow]:
+    """*inputs*' close-out holds, less any rule 3 already releases (the queue skips
+    the issue anyway, so there is nothing to assess)."""
+    rows = [r for r in inputs.rows if r.product == inputs.slug]
+    stale = {r.ref for r in stale_system_holds(rows, {inputs.slug: inputs.policy}, now=now)}
+    return [r for r in _closeout_held(rows) if r.ref not in stale]
+
+
+def closeout_pending(inputs: ProductInputs, *, now: datetime) -> list[QueueRow]:
+    """The close-out holds still waiting for an assessment of their current body."""
+    return [r for r in _closeout_rows(inputs, now=now)
+            if _assessed(r, inputs.closeout_states) is None]
+
+
+def closeout_assess(rows: Iterable[QueueRow],
+                    states: Mapping[str, Mapping]) -> list[HygieneAction]:
+    """Rule 5 (§3): each of *rows* (close-out holds, ``_closeout_rows``) whose
+    current-body assessment decided and has not been applied yet → its outcome.
+    ``holdReason`` is the reason judged: every write re-checks it
+    (``holds.assessed_system_hold``)."""
+    out: list[HygieneAction] = []
+    verbs = {ca.DECISION_CLOSE: ACTION_CLOSE, ca.DECISION_RELEASE: ACTION_RELEASE_HOLD,
+             ca.DECISION_CHECKLIST: ACTION_REWRITE_HOLD}
+    for row in rows:
+        state = _assessed(row, states)
+        if state is None or state.get("appliedAt") or state.get("decision") not in verbs:
+            continue
+        decision, text = str(state["decision"]), str(state.get("text") or "")
+        detail = {"title": row.title, "holdReason": row.hold_reason or "",
+                  "decision": decision, "summary": state.get("summary") or ""}
+        if decision == ca.DECISION_CLOSE:
+            detail["comment"] = text
+            evidence = f"the merged PR(s) already cover every item {row.ref} still listed"
+        elif decision == ca.DECISION_RELEASE:
+            detail["note"] = text
+            evidence = (f"nothing left on {row.ref} needs a person; the runner can "
+                        f"finish it ({text})")
+        else:
+            detail["reason"] = text
+            evidence = f"only some of {row.ref} needs a person; the hold now lists just that"
+        out.append(HygieneAction(RULE_CLOSEOUT_ASSESS, row.product, row.ref,
+                                 row.work_item_id, verbs[decision], detail, evidence))
+    return out
+
+
 def plan(inputs: ProductInputs, *, now: datetime) -> list[HygieneAction]:
     """Every rule over one product, uncapped (``capped`` limits what is WRITTEN; a
     recommendation for every finding is cheap and must not be superseded just
@@ -206,7 +282,8 @@ def plan(inputs: ProductInputs, *, now: datetime) -> list[HygieneAction]:
     return [*done_but_open(rows, inputs.board_updated_at, policies, now=now),
             *board_blocked_no_blockers(rows, policies),
             *stale_holds(rows, policies, now=now),
-            *resolved_edges(inputs.slug, inputs.stale_edges, ids)]
+            *resolved_edges(inputs.slug, inputs.stale_edges, ids),
+            *closeout_assess(_closeout_rows(inputs, now=now), inputs.closeout_states)]
 
 
 def capped(actions: Iterable[HygieneAction]) -> list[HygieneAction]:

@@ -237,3 +237,5 @@ def test_holds_names_the_row_and_the_approvable_escalation():
         plain = by_ref["o/r#4"]
         assert plain["workItemId"] and plain["escalation"] is None
         assert plain["releasedBy"] == "Retry, a board move to Ready/Backlog, or an issue-body edit"
+        assert (gated["attentionKind"], plain["attentionKind"]) == ("model_approval",
+                                                                   "owner_action")
