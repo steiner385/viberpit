@@ -119,7 +119,13 @@ sudo systemctl restart viberpit.service   # the edge only; sessions on the daemo
 
 Confirm it on Settings › About, or with `journalctl -u viberpit.service | grep RULES_TRUST_LOCAL_HOST`.
 Keep `/etc/viberpit/viberpit.env` `root:root 0600`. If a session can write that file, it can turn
-this on. Rules written under the opt-in show `createdVia: local-trusted`.
+this on. Rules written under the opt-in show `createdVia: local-trusted`, and their audit rows (and
+those for profile-pattern writes) carry `via: local-trusted`.
+
+The edge reads this flag only from its service environment, that is `/etc/viberpit/viberpit.env`
+as systemd applies it at start. A `VIBERPIT_RULES_TRUST_LOCAL_HOST` line in the deploy checkout's
+`.env` is deliberately ignored: that file is writable by the operator's user, so any agent session
+could otherwise turn the flag on for itself.
 
 ## HTTPS via nginx + tailscale cert (required once per host)
 

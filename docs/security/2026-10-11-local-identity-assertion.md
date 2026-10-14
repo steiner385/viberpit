@@ -132,8 +132,10 @@ dobby), so the lookup stays off the per-request path.
   `VIBERPIT_RULES_TRUST_LOCAL_HOST=true` (spec `docs/superpowers/specs/2026-10-14-rules-trust-local-host-design.md`).
   The cost is explicit: every process on the host running as the operator, agent sessions
   included, can then write rules and profile patterns. Token-borne callers stay refused. Writes
-  admitted this way carry `via`/`created_via` = `local-trusted`. The setting lives only in the
-  root-owned env file, so a session cannot turn it on. A passkey step-up (#1410) remains the
+  admitted this way, rule and profile-pattern writes alike, carry `via`/`created_via` =
+  `local-trusted`. The setting is read from the process environment only (systemd sets it from the
+  root-owned env file at start), never from `.env`: the edge's working directory is writable by the
+  operator's user, so a `.env` line would let a session turn it on. A passkey step-up (#1410) remains the
   route to an agent-proof answer.
 - **Any process running as www-data** is trusted like nginx. On dobby that account runs only
   nginx. Anything else given that account (a PHP app, say) would inherit the trust.

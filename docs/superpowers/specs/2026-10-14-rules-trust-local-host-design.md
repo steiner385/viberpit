@@ -33,8 +33,16 @@ Considered and not chosen:
 
 ### Setting
 
-- Add `rules_trust_local_host` to both settings classes in `server/config.py`, next to
-  `permission_rules_enabled`. Alias `VIBERPIT_RULES_TRUST_LOCAL_HOST`, default `False`.
+- Expose `rules_trust_local_host` on both settings classes in `server/config.py` as a read-only
+  property, not a field. Both properties call one module-level helper that parses
+  `os.environ["VIBERPIT_RULES_TRUST_LOCAL_HOST"]` with the sibling flags' truthy set
+  (`1`/`true`/`yes`/`on`, case-insensitive), default `False`. `get_settings()` mirrors the legacy
+  prefix first, as for every setting.
+- **Why not a field:** pydantic `Settings` also reads `.env` from the working directory, on every
+  `get_settings()` call. The edge's working directory is the deploy checkout, which the operator's
+  user, and so every agent session, can write. A field would let a session append the flag there
+  and have its next rule write admitted, with no restart. The property reads only the process
+  environment, which systemd sets at start and nothing can change afterwards.
 - **Environment only.** No Settings UI control and no API write path. An agent can call the API
   but cannot edit the edge's env file: on dobby, `/etc/viberpit/viberpit.env` is `root:root 0600`.
   The deploy docs say the file must stay root-owned.
