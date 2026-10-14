@@ -17,6 +17,11 @@ from viberpit import brand
 
 log = logging.getLogger("server.ipc.daemon")
 
+# Refusals the edge matches by ``err_type`` as an expected outcome (ws.py: the
+# stale-ownership banner, ``_worker_start_timed_out``) though they carry no
+# ``error_data``. Logging them at WARNING auto-files an issue per attach (#3079).
+_EXPECTED_RPC_ERRORS = frozenset({"StaleOwnership", "DriverStartTimeout"})
+
 
 def create_daemon_app() -> FastAPI:
     from server.obs.context import PROC_EPOCH
@@ -362,7 +367,8 @@ def create_daemon_app() -> FastAPI:
             # create failed on both hosts and nothing said why). Typed refusals the
             # edge reconstructs (they carry error_data) are expected — INFO; anything
             # else is a handler defect — WARNING with the traceback.
-            if getattr(exc, "error_data", None) is not None:
+            if (getattr(exc, "error_data", None) is not None
+                    or type(exc).__name__ in _EXPECTED_RPC_ERRORS):
                 log.info("rpc.error method=%s type=%s message=%s",
                          method, type(exc).__name__, exc)
             else:
