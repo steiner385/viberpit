@@ -1386,16 +1386,49 @@ async def batch_rotate_sessions(
     return {"succeeded": succeeded, "failed": failed}
 
 
+async def _stored_session_dict(session_id: str) -> dict | None:
+    """The wire dict for a session no live record holds, read from its DB row.
+
+    Uses the orchestrator's one row→record mapping, so this cannot drift from what a
+    rehydrate or unarchive would build. No liveness keys: there is no driver to be
+    live. ``archivedAt``/``archivedBy`` say why it left the live list.
+    """
+    from server.db import db_session as _db_session
+    from server.db.models import Session as _DbSession
+    from server.sessions.orchestrator import SessionOrchestrator
+    from sqlalchemy import select as sa_select
+
+    async with _db_session() as db:
+        row = (await db.execute(
+            sa_select(_DbSession).where(_DbSession.id == session_id)
+        )).scalars().first()
+    if row is None:
+        return None
+    d = _record_to_dict(SessionOrchestrator._record_from_row(row))
+    d["archivedAt"] = iso_utc(row.archived_at)
+    d["archivedBy"] = row.archived_by
+    return d
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Return a single session record, or 404 if unknown."""
+    """Return a single session record, or 404 if no row exists at all.
+
+    The orchestrator only holds live records, so an archived/ended session is served
+    from its DB row, with its real status. Before #3082 it 404'd while its transcript
+    and export (which already fall back to the row) still served, and the assistant
+    read that 404 as "the session vanished".
+    """
     orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
+        stored = await _stored_session_dict(session_id)
+        if stored is not None:
+            return stored
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
