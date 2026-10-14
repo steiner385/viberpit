@@ -41,6 +41,14 @@ Progress = Callable[[str, "HostProgress"], None]
 SSH_OPTS = ("-oBatchMode=yes", "-oConnectTimeout=10")
 VERIFY_TIMEOUT_S = 180.0
 VERIFY_INTERVAL_S = 3.0
+# restore_deploy re-launches every snapshotted session serially in the fresh daemon, one
+# full resume each. Rocky took 132s for four on 2026-10-14, against the client's 30s
+# default, and the deploy reported "restore call failed" for a restore that succeeded
+# (#3082). The read timeout has to cover a busy host, not the median.
+RESTORE_TIMEOUT_S = 600.0
+# Pauses between restore attempts. Safe to retry: the daemon's restore_deploy is
+# single-flight, so a retry joins the run in flight or reads its result.
+RESTORE_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 20.0)
 DEFAULT_CONCURRENCY = 2
 
 SKIPPED_STATES = frozenset({"offline", "disabled"})
@@ -232,6 +240,7 @@ class RunnerDeploy:
                  fetch_info: Fetch | None = None, drain_mod=_drain,
                  verify_timeout_s: float = VERIFY_TIMEOUT_S,
                  verify_interval_s: float = VERIFY_INTERVAL_S,
+                 restore_retry_delays_s: tuple[float, ...] = RESTORE_RETRY_DELAYS_S,
                  on_progress: Progress | None = None):
         self.target = target
         self.local_name = local_name
@@ -241,6 +250,7 @@ class RunnerDeploy:
         self._drain = drain_mod
         self._verify_timeout_s = verify_timeout_s
         self._verify_interval_s = verify_interval_s
+        self._restore_retry_delays_s = restore_retry_delays_s
         self._on_progress = on_progress
         self.progress = HostProgress()
 
@@ -368,10 +378,10 @@ class RunnerDeploy:
         except Exception:  # noqa: BLE001 — teardown must never fail a deploy
             log.debug("runner %s: client teardown failed", self.target.name, exc_info=True)
 
-    async def _rpc(self, method: str) -> dict:
+    async def _rpc(self, method: str, **kw: Any) -> dict:
         client = self._client_factory(self.target.endpoint)
         try:
-            return await client.call(method)
+            return await client.call(method, **kw)
         finally:
             await self._close_quietly(client)
 
@@ -391,6 +401,30 @@ class RunnerDeploy:
         except Exception:
             log.debug("runner %s: close_events_connections failed (best-effort)",
                       self.target.name, exc_info=True)
+
+    async def _restore(self, snapshot_ids: list[str]) -> dict:
+        """Call restore_deploy, retrying with backoff. Never raises.
+
+        On final failure the result carries ``error`` and ``unconfirmed`` (the
+        snapshotted ids, whose restore outcome is unknown) so the controller can
+        raise an alert that names them. The daemon keeps retrying any session it
+        could not resume on its own (``_resume_recovery``); this only covers the call.
+        """
+        attempts = len(self._restore_retry_delays_s) + 1
+        last: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return await self._rpc("restore_deploy", timeout=RESTORE_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 — retried, then reported, never raised
+                last = exc
+                log.warning("runner %s: restore_deploy attempt %d/%d failed: %s",
+                            self.target.name, attempt + 1, attempts, exc,
+                            exc_info=attempt + 1 == attempts)
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(self._restore_retry_delays_s[attempt])
+        return {"restored": [], "failed": [], "unconfirmed": list(snapshot_ids),
+                "error": f"restore call failed after {attempts} attempts: "
+                         f"{type(last).__name__}: {last}"[:300]}
 
     async def _verify(self, target_sha: str, *, require_process: bool) -> str:
         """Poll /info until the checkout (and, after a restart, the process) is on target."""
@@ -441,8 +475,13 @@ class RunnerDeploy:
             repo_path = t.repo_path
         try:
             self._mark("running", step="snapshot")
+            # The ids the restore must answer for: if every restore attempt fails, these
+            # are the sessions whose fate is unknown, and the alert has to name them.
+            snapshot_ids: list[str] = []
             try:
-                await self._rpc("snapshot_deploy")
+                snap = await self._rpc("snapshot_deploy")
+                snapshot_ids = [str(e["id"]) for e in (snap or {}).get("live", [])
+                                if isinstance(e, dict) and e.get("id")]
             except Exception:
                 log.warning("runner %s: session snapshot failed (continuing)", t.name, exc_info=True)
 
@@ -467,11 +506,7 @@ class RunnerDeploy:
 
             if daemon_changed:
                 self._mark(step="restore")
-                try:
-                    self.progress.restore = await self._rpc("restore_deploy")
-                except Exception:
-                    log.warning("runner %s: restore_deploy failed", t.name, exc_info=True)
-                    self.progress.restore = {"restored": [], "failed": [], "error": "restore call failed"}
+                self.progress.restore = await self._restore(snapshot_ids)
             self._mark(step="unit-drift")
             self.progress.warnings = await self._unit_drift(local=local)
             self._mark("done")

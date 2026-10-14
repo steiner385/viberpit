@@ -222,10 +222,13 @@ def dismiss_comment(env: str) -> str:
             f"deployments.")
 
 
-async def notify_deploy_failed(title: str, body: str, *, repo: str, url: str | None) -> None:
+async def notify_deploy_failed(title: str, body: str, *, repo: str | None,
+                               url: str | None) -> None:
     """The one ``deploy_failed`` call site. Fans out like ``pr_broke`` when no
     rules are configured: a failing deploy is what a user with no rules still
-    expects to hear about. (test_assistant_watches_api source-walks this literal.)"""
+    expects to hear about. (test_assistant_watches_api source-walks this literal.)
+    ``repo`` is None for ViberPit's own deploy (the deploy controller's restore
+    alert, #3082), which has no GitHub environment to scope a rule by."""
     from server.sessions.push import notify_event
     await notify_event("deploy_failed", title, body, repo=repo, url=url,
                        fanout_when_unconfigured=True)

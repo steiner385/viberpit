@@ -22,6 +22,8 @@ class MiniOrch:
     failed resume, matching the real method's two failure shapes."""
 
     restore_deploy = SessionOrchestrator.restore_deploy
+    _restore_deploy_once = SessionOrchestrator._restore_deploy_once
+    _deploy_restore = None
     _recover_resume_failures_once = SessionOrchestrator._recover_resume_failures_once
     _drop_unrecoverable = SessionOrchestrator._drop_unrecoverable
     _prune_recovered = SessionOrchestrator._prune_recovered

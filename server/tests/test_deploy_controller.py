@@ -124,6 +124,9 @@ def make_controller(g, s, *, runners=None, state=None, daemon_enabled=True,
     st, _ = state or make_state()
     kw.setdefault("changed_files_fn",
                   lambda repo, a, b: list(getattr(s, "_changed_files", []) or []))
+    async def _no_notify(title, body):
+        pass
+    kw.setdefault("notify_fn", _no_notify)
     return DeployController("/r", health_url=health_url, venv_python="/v/python",
                             git_mod=g, steps_mod=s, runners_mod=r, state_mod=st,
                             daemon_enabled=daemon_enabled, local_name="dobby", **kw)
@@ -1161,3 +1164,60 @@ def test_status_wire_carries_daemon_restarted_at():
     assert d["daemonRestartedAt"] == "2026-10-11T12:00:00+00:00"
     assert DeployStatus.from_dict(d).daemon_restarted_at == st.daemon_restarted_at
     assert DeployStatus.from_dict({}).daemon_restarted_at is None
+
+
+# --- restore alert (#3082) -------------------------------------------------------------
+
+def _alerting_controller(restore):
+    g = FakeGit("old0000000", "new1111111", ["server/sessions/orchestrator.py"])
+    s, _ = make_steps(changed=["server/sessions/orchestrator.py"])
+    targets = [RunnerTarget(name=n, endpoint=f"https://{n}", enabled=True, healthy=True,
+                            ssh_host=n, repo_path="/srv/cc") for n in ("rocky", "sunny")]
+    r, rc = make_runners(targets=targets, restore=restore)
+    sent: list = []
+
+    async def notify(title, body):
+        sent.append((title, body))
+    return make_controller(g, s, runners=(r, rc), notify_fn=notify), sent
+
+
+@pytest.mark.asyncio
+async def test_a_restore_call_that_failed_raises_an_alert_naming_its_sessions():
+    c, sent = _alerting_controller(lambda n: (
+        {"restored": [], "failed": [], "unconfirmed": ["s1", "s2"],
+         "error": "restore call failed after 3 attempts: DaemonTimeout: x"}
+        if n == "rocky" else {"restored": ["d1"], "failed": []}))
+    st = await c.deploy_once()
+    assert st.error is None, "the restart happened; a lost restore result is not a failed deploy"
+    assert st.restore == {"restored": ["d1"], "failed": [], "unconfirmed": ["s1", "s2"]}
+    assert any("rocky: restore call failed" in w for w in st.warnings)
+    assert len(sent) == 1
+    title, body = sent[0]
+    assert "need attention" in title
+    assert "s1, s2" in body and "rocky" in body
+
+
+@pytest.mark.asyncio
+async def test_sessions_that_failed_to_resume_raise_an_alert():
+    c, sent = _alerting_controller(lambda n: {"restored": [], "failed": [f"{n}-x"]})
+    await c.deploy_once()
+    assert len(sent) == 1 and "rocky-x" in sent[0][1] and "sunny-x" in sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_a_clean_restore_raises_no_alert():
+    c, sent = _alerting_controller(lambda n: {"restored": [f"{n}-s1"], "failed": []})
+    st = await c.deploy_once()
+    assert sent == [] and st.restore["unconfirmed"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_alert_that_raises_never_fails_the_deploy():
+    g = FakeGit("old0000000", "new1111111", ["server/sessions/orchestrator.py"])
+    s, _ = make_steps(changed=["server/sessions/orchestrator.py"])
+    r, rc = make_runners(restore={"restored": [], "failed": ["s1"]})
+
+    async def boom(title, body):
+        raise RuntimeError("push down")
+    st = await make_controller(g, s, runners=(r, rc), notify_fn=boom).deploy_once()
+    assert st.error is None and st.phases["resume"] == PhaseState.DONE.value
