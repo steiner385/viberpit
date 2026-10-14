@@ -84,6 +84,7 @@ socket in `/proc/net/tcp{,6}` by its 4-tuple and decides:
 
 | Peer socket on this host | `via` for the gate |
 | --- | --- |
+| any row below that yields `"local"`, with `VIBERPIT_RULES_TRUST_LOCAL_HOST=true` | `"local-trusted"`: admitted, recorded as such (spec 2026-10-14) |
 | established, owned by one front-end, original client is another tailnet device | unchanged (`None`, i.e. human) |
 | established, owned by one front-end, original client is this host (any address) or not a tailnet address | `"local"`: refused |
 | the edge's own socket for this connection is gone (reset, closed) or its inode is unknown | `"local"`: fails closed |
@@ -125,11 +126,15 @@ dobby), so the lookup stays off the per-request path.
 ## Residual risk
 
 - **Root on the host** can forge anything. That is out of scope: root also owns tailscaled.
-- **A browser on the edge host itself cannot write rules or profile patterns.** At the network
-  level it is the same as an agent session on that host: same user, same source address, same
-  front-end. The operator writes rules from another tailnet device (phone, laptop). A
-  browser-held factor cannot fix this either, because a session running as the same user can
-  read that browser's profile. This is the deliberate cost of the acceptance criterion.
+- **A browser on the edge host itself cannot write rules or profile patterns by default.** At the
+  network level it is the same as an agent session on that host: same user, same source address,
+  same front-end. Operators who use ViberPit mainly from the host can opt in with
+  `VIBERPIT_RULES_TRUST_LOCAL_HOST=true` (spec `docs/superpowers/specs/2026-10-14-rules-trust-local-host-design.md`).
+  The cost is explicit: every process on the host running as the operator, agent sessions
+  included, can then write rules and profile patterns. Token-borne callers stay refused. Writes
+  admitted this way carry `via`/`created_via` = `local-trusted`. The setting lives only in the
+  root-owned env file, so a session cannot turn it on. A passkey step-up (#1410) remains the
+  route to an agent-proof answer.
 - **Any process running as www-data** is trusted like nginx. On dobby that account runs only
   nginx. Anything else given that account (a PHP app, say) would inherit the trust.
 - **Until the edge unit is reinstalled** with `--no-proxy-headers` (`deploy/README.md`, "Edge

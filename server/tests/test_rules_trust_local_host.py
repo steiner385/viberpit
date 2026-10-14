@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import time
 from unittest.mock import patch
@@ -168,3 +169,16 @@ def test_ws_always_from_host_browser_uses_local_trusted(ws_env, real_attestation
                 time.sleep(0.02)
     client.portal.call(orch.close_session, session_id)
     assert seen == [("always", LOCAL_TRUSTED_VIA)]
+
+
+def test_startup_logs_trust_local_host_at_info_only_when_on(caplog):
+    from server.app import _log_rules_trust_local_host
+    with caplog.at_level(logging.INFO, logger="server.auth"):
+        with patch.dict(os.environ, {"VIBERPIT_RULES_TRUST_LOCAL_HOST": "false"}):
+            _log_rules_trust_local_host()
+        assert not caplog.records
+        with patch.dict(os.environ, _ON):
+            _log_rules_trust_local_host()
+    [rec] = caplog.records
+    assert rec.levelno == logging.INFO
+    assert "VIBERPIT_RULES_TRUST_LOCAL_HOST" in rec.getMessage()

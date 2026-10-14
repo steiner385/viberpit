@@ -166,6 +166,17 @@ async def seed_host_ssh_from_env() -> None:
                           .values(ssh_host=ssh_host, repo_path=repo))
 
 
+def _log_rules_trust_local_host() -> None:
+    """One INFO line when the operator trusts this host for rule writes (spec 2026-10-14).
+    INFO, not WARNING: a WARNING would auto-file an Error Triage issue every restart."""
+    from server.config import get_settings
+
+    if get_settings().rules_trust_local_host:
+        logging.getLogger("server.auth").info(
+            "VIBERPIT_RULES_TRUST_LOCAL_HOST is on: requests from this host, including agent "
+            "sessions, may write always-allow rules and permission-profile patterns")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
@@ -221,6 +232,8 @@ async def _lifespan(app: FastAPI):
                 "VIBERPIT_TAILNET_ALLOWLIST and/or bind 127.0.0.1.",
                 _s.host,
             )
+
+    _log_rules_trust_local_host()
 
     db_url = os.environ.get("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)

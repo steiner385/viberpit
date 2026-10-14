@@ -106,6 +106,21 @@ systemctl cat viberpit.service | grep '^ExecStart='   # the LAST one wins
 pgrep -af 'uvicorn server.app' | grep -c -- --no-proxy-headers   # want 1
 ```
 
+### Writing rules from the host's own browser (opt-in)
+
+By default, a browser on the edge host gets `RULES_HUMAN_ONLY` when it writes always-allow rules or
+permission-profile patterns, because it looks the same as an agent session there. If you mainly use
+ViberPit from the host and accept that agent sessions on it could then write rules too, opt in:
+
+```bash
+echo 'VIBERPIT_RULES_TRUST_LOCAL_HOST=true' | sudo tee -a /etc/viberpit/viberpit.env
+sudo systemctl restart viberpit.service   # the edge only; sessions on the daemon keep running
+```
+
+Confirm it on Settings › About, or with `journalctl -u viberpit.service | grep RULES_TRUST_LOCAL_HOST`.
+Keep `/etc/viberpit/viberpit.env` `root:root 0600`. If a session can write that file, it can turn
+this on. Rules written under the opt-in show `createdVia: local-trusted`.
+
 ## HTTPS via nginx + tailscale cert (required once per host)
 
 The edge server binds to `127.0.0.1:8787` (loopback). To expose it over HTTPS on the
