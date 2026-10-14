@@ -1,6 +1,5 @@
 """Flock-guarded JSON state: a usage cache + soft reservations. No secrets."""
 import contextlib
-import errno
 import fcntl
 import json
 import logging
@@ -15,15 +14,6 @@ from .quota import (WINDOW_SESSION, WINDOW_WEEKLY, QuotaSnapshot,
 
 log = logging.getLogger(__name__)
 
-#: errnos a flapping network mount (the sshfs account store on a worker host) returns
-#: from ``open()`` on a perfectly healthy, owner-writable file. EPERM in particular is
-#: how the FUSE/SFTP layer reports a connection blip (#2291) — not a real permission
-#: problem — so these are worth a moment's retry; EACCES/ENOENT/EROFS are not.
-_TRANSIENT_OPEN_ERRNOS = frozenset(
-    {errno.EPERM, errno.EIO, errno.ESTALE, errno.ENOTCONN})
-#: Sleeps between attempts, so ``len + 1`` tries in total (~0.7s worst case).
-_OPEN_RETRY_DELAYS_S = (0.2, 0.5)
-
 
 def _open_lock(lock_path):
     """Open the lock file, riding out a momentary mount error.
@@ -32,11 +22,11 @@ def _open_lock(lock_path):
     still surfaces to the caller's loop as an ERROR. Callers already run this under
     ``asyncio.to_thread`` or in a CLI, so the short blocking sleep is safe.
     """
-    for delay in _OPEN_RETRY_DELAYS_S:
+    for delay in paths.TRANSIENT_RETRY_DELAYS_S:
         try:
             return open(lock_path, "a+", encoding="utf-8")
         except OSError as e:
-            if e.errno not in _TRANSIENT_OPEN_ERRNOS:
+            if e.errno not in paths.TRANSIENT_MOUNT_ERRNOS:
                 raise
             log.debug("ledger lock open failed transiently (%s) — retrying", e)
             time.sleep(delay)

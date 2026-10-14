@@ -128,7 +128,7 @@ def test_lock_open_reraises_once_the_budget_is_spent(led_home, monkeypatch):
     calls = _fail_lock_opens(monkeypatch, 99, errno.EPERM)
     with pytest.raises(PermissionError), ledger.locked_ledger():
         pass
-    assert calls["n"] == len(ledger._OPEN_RETRY_DELAYS_S) + 1
+    assert calls["n"] == len(paths.TRANSIENT_RETRY_DELAYS_S) + 1
 
 
 def test_lock_open_does_not_retry_a_real_permission_error(led_home, monkeypatch):
