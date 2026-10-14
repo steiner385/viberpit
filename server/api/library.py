@@ -118,7 +118,7 @@ async def toggle_plugin(
     if not valid_plugin_id(plugin_id):
         raise _bad("invalid plugin id")
     try:
-        found = mutate.set_plugin_enabled(plugin_id, body.enabled)
+        found = await asyncio.to_thread(mutate.set_plugin_enabled, plugin_id, body.enabled)
     except ConfigUnreadableError as err:
         return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
     if not found:
@@ -149,7 +149,7 @@ async def put_skill(name: str, body: ContentBody,
                     identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
     if not valid_skill_name(name):
         raise _bad("invalid skill name")
-    mutate.write_skill(name, body.content)
+    await asyncio.to_thread(mutate.write_skill, name, body.content)
     await record_audit(db=db, type="library_skill_saved", identity=identity,
                        detail={"skill": name})
     return {"name": name}
@@ -160,7 +160,7 @@ async def delete_skill(name: str,
                        identity: str = Depends(current_identity), db=Depends(get_db)) -> None:
     if not valid_skill_name(name):
         raise _bad("invalid skill name")
-    if not mutate.delete_skill(name):
+    if not await asyncio.to_thread(mutate.delete_skill, name):
         raise HTTPException(status_code=404, detail={"error": "unknown_skill"})
     await record_audit(db=db, type="library_skill_deleted", identity=identity,
                        detail={"skill": name})
@@ -187,7 +187,7 @@ async def put_command(path: str, body: ContentBody,
                       identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
     if not valid_command_path(path):
         raise _bad("invalid command path")
-    mutate.write_command(path, body.content)
+    await asyncio.to_thread(mutate.write_command, path, body.content)
     await record_audit(db=db, type="library_command_saved", identity=identity,
                        detail={"command": path})
     return {"path": path}
@@ -198,7 +198,7 @@ async def delete_command(path: str,
                          identity: str = Depends(current_identity), db=Depends(get_db)) -> None:
     if not valid_command_path(path):
         raise _bad("invalid command path")
-    if not mutate.delete_command(path):
+    if not await asyncio.to_thread(mutate.delete_command, path):
         raise HTTPException(status_code=404, detail={"error": "unknown_command"})
     await record_audit(db=db, type="library_command_deleted", identity=identity,
                        detail={"command": path})
@@ -243,7 +243,7 @@ async def put_mcp(name: str, body: McpBody,
     if error:
         raise HTTPException(status_code=400, detail={"error": "invalid_config", "message": error})
     try:
-        mutate.put_mcp_server(name, body.config)
+        await asyncio.to_thread(mutate.put_mcp_server, name, body.config)
     except ConfigUnreadableError as err:
         return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
     transport = scan.infer_transport(body.config)
@@ -259,7 +259,7 @@ async def delete_mcp(name: str,
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
     try:
-        found = mutate.delete_mcp_server(name)
+        found = await asyncio.to_thread(mutate.delete_mcp_server, name)
     except ConfigUnreadableError as err:
         return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
     if not found:

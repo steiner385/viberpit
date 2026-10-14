@@ -38,6 +38,42 @@ def test_plugins_list_and_toggle(client: TestClient):
                         headers=IDENTITY_HEADERS).status_code == 400
 
 
+def test_library_mutations_run_off_the_event_loop(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """#3067 — a mutation (and its pre-mutation snapshot) is blocking file I/O.
+    Called inline from an ``async def`` route it froze the whole edge for 57 s;
+    each one must run in a worker thread, where no event loop is running."""
+    import asyncio
+
+    from server.library import mutate
+
+    on_loop: list[str] = []
+
+    def _probe(name: str, ret: object):
+        def _fn(*_a: object, **_k: object) -> object:
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(name)
+            except RuntimeError:
+                pass
+            return ret
+        return _fn
+
+    for name, ret in [("set_plugin_enabled", True), ("write_skill", None), ("delete_skill", True),
+                      ("write_command", None), ("delete_command", True),
+                      ("put_mcp_server", None), ("delete_mcp_server", True)]:
+        monkeypatch.setattr(mutate, name, _probe(name, ret))
+
+    h = IDENTITY_HEADERS
+    assert client.patch("/api/library/plugins/a@m", json={"enabled": False}, headers=h).status_code == 200
+    assert client.put("/api/library/skills/s", json={"content": "x"}, headers=h).status_code == 200
+    assert client.delete("/api/library/skills/s", headers=h).status_code == 204
+    assert client.put("/api/library/commands/c", json={"content": "x"}, headers=h).status_code == 200
+    assert client.delete("/api/library/commands/c", headers=h).status_code == 204
+    assert client.put("/api/library/mcp/srv", json={"config": {"command": "x"}}, headers=h).status_code == 200
+    assert client.delete("/api/library/mcp/srv", headers=h).status_code == 204
+    assert on_loop == []
+
+
 def test_engine_support_reports_claude_yes_codex_deferred(client: TestClient):
     """#1285 — the Library surface only ever scans CLAUDE_CONFIG_DIR; a consumer
     must be told that plainly rather than inferring it from an empty Codex

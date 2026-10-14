@@ -1,7 +1,10 @@
 """Config snapshot / export / import / diff for the shared library layer.
 
-A snapshot is a tar.gz of the non-excluded files under ``paths.shared_base()``
-plus a JSON sidecar of metadata, stored under ``paths.root()/"snapshots"``.
+A snapshot is a tar.gz of the CONFIG files under ``paths.shared_base()`` plus a
+JSON sidecar of metadata, stored under ``paths.root()/"snapshots"``. Capture is
+an allowlist of config roots, not a denylist over the whole tree: the shared
+base also holds GBs of plugin caches, transcripts, logs and tool venvs, and a
+denylist capture tar'd ~27 GB of it inline on every Library mutation (#3067).
 
 SECURITY (constitution II/IV): credential- and identity-bearing files are
 NEVER captured in a snapshot/export NOR written during restore/import. The
@@ -24,18 +27,25 @@ from typing import Any
 
 from viberpit import paths
 
-# Top-level path segments that are heavy/ephemeral and never captured.
-_EXCLUDED_TOP_DIRS = {
-    "projects",
-    "todos",
-    "shell-snapshots",
-    "statsig",
-    "history",
-}
-# Two-segment prefixes excluded wholesale (kept siblings must not match).
-_EXCLUDED_DIR_PREFIXES = (
-    ("plugins", "cache"),
-)
+# The config a snapshot captures: these exact files (relative POSIX paths) ...
+_CAPTURED_FILES = frozenset({
+    "settings.json",
+    "settings.local.json",
+    "CLAUDE.md",
+    "keybindings.json",
+    "plugins/installed_plugins.json",
+    "plugins/known_marketplaces.json",
+    "plugins/blocklist.json",
+    "plugins/config.json",
+})
+# ... and everything under these top-level directories.
+_CAPTURED_DIRS = frozenset({
+    "skills",
+    "commands",
+    "agents",
+    "hooks",
+    "output-styles",
+})
 # Auto-snapshot throttle: collapse a burst of mutations into one snapshot.
 _AUTO_THROTTLE_S = 5.0
 
@@ -43,10 +53,10 @@ _AUTO_THROTTLE_S = 5.0
 def is_excluded(rel_posix_path: str) -> bool:
     """True if this relative POSIX path must never be captured or restored.
 
-    Excludes credential/identity files (by basename, case-insensitive) and
-    heavy/ephemeral directories (by leading path segments), matching on segments
-    so ``plugins/cache/...`` is excluded but ``plugins/installed_plugins.json``
-    is kept.
+    Excludes credential/identity files (by basename, case-insensitive) anywhere,
+    and every path outside the config allowlist (``_CAPTURED_FILES`` /
+    ``_CAPTURED_DIRS``), so ``plugins/installed_plugins.json`` is kept while
+    ``plugins/cache/...`` and ``projects/...`` are not.
     """
     segments = [s for s in rel_posix_path.split("/") if s and s != "."]
     if not segments:
@@ -56,25 +66,33 @@ def is_excluded(rel_posix_path: str) -> bool:
         return True
     if basename in (".credentials", ".claude.json"):
         return True
-    if segments[0] in _EXCLUDED_TOP_DIRS:
-        return True
-    for prefix in _EXCLUDED_DIR_PREFIXES:
-        if tuple(segments[: len(prefix)]) == prefix:
-            return True
-    return False
+    if "/".join(segments) in _CAPTURED_FILES:
+        return False
+    return not (len(segments) > 1 and segments[0] in _CAPTURED_DIRS)
 
 
 def snapshots_dir() -> Path:
     d = paths.root() / "snapshots"
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Snapshots hold settings/hooks/MCP-adjacent config: keep them user-only,
+    # including a dir created before this mode was enforced (#3067).
+    os.chmod(d, 0o700)
     return d
 
 
 def _iter_files(base: Path) -> Iterator[tuple[Path, str]]:
-    """Yield (abs_path, rel_posix) for every non-excluded file under base."""
+    """Yield (abs_path, rel_posix) for every non-excluded file under base.
+
+    Walks only the captured roots: an ``rglob`` of the whole base would stat
+    every file of the plugin cache and transcript tree just to discard it.
+    """
     if not base.is_dir():
         return
-    for abs_path in base.rglob("*"):
+    candidates = [base / rel for rel in sorted(_CAPTURED_FILES)]
+    for top in sorted(_CAPTURED_DIRS):
+        if (base / top).is_dir():
+            candidates.extend(sorted((base / top).rglob("*")))
+    for abs_path in candidates:
         if not abs_path.is_file():
             continue
         rel = abs_path.relative_to(base).as_posix()
@@ -87,7 +105,8 @@ def _write_tar_gz(dest: Path, base: Path) -> tuple[int, int]:
     """Tar.gz the non-excluded files of base into dest. Return (fileCount, sizeBytes)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     file_count = 0
-    with tarfile.open(dest, "w:gz") as tar:
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
         for abs_path, rel in _iter_files(base):
             tar.add(abs_path, arcname=rel)
             file_count += 1
