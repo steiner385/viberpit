@@ -16,6 +16,7 @@ import { TIER_TEXT } from '../roadmapTier'
 import { needsYouRows, waitingRows } from './needsYou'
 import { LeafList } from './LeafList'
 import { HeldIssueCard } from './HeldIssueCard'
+import { OwnerDigestCard } from './OwnerDigestCard'
 
 function InitiativeRow({ product, initiative }: { product: ProductNode; initiative: InitiativeNode }) {
   // Subtitle and CTA from one table (`vocab.initiativeAsk`): the "why" is the
@@ -61,6 +62,10 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
 
   return (
     <section aria-label="Next actions" className="flex flex-col gap-3">
+      {/* Today's digest leads the tab (design 2026-10-14 §5): the items above the
+          fold, each with its one recommended action. Not on the overview, nor in
+          a capability scope (its LeafList rows are the actions there). */}
+      {!overview && !capability && <OwnerDigestCard products={products} />}
       {!empty && <h3 className="text-sm font-semibold text-ink">Next actions</h3>}
       {/* `max-w-prose` (the `EmptyState` measure): in a wide detail pane this
           sentence ran ~144 characters a line (2026-09-30 Roadmap critique, P3). */}

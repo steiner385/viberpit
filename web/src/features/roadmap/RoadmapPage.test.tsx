@@ -34,6 +34,8 @@ const acceptScope = vi.hoisted(() => vi.fn())
 // the project, the queue, the incidents and the onboarding view.
 vi.mock('@/api/hooks', () => ({
   useHolds: () => ({ data: undefined }),
+  useOwnerDigest: () => ({ data: undefined }),
+  useApplyDigest: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
   useRoadmapMap: () => map,
   useSyncProject: () => sync,
   useCreateInitiative: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),

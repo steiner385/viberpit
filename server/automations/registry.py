@@ -330,13 +330,17 @@ registry.register(NeedsYouHygiene(), oversight=AutomationOversight(
     'Board cards, holds and dependency edges across every onboarded product that read as '
     'needing a person but need only a machine (design 2026-10-14 §2).',
     {
-        'off': 'Disable hygiene and the needs-you samples.',
-        'dry_run': 'Record what it would close, move, release or prune; change nothing.',
+        'off': 'Disable hygiene, the parked review, the owner digest push and the needs-you '
+               'samples.',
+        'dry_run': 'Record what it would close, move, release or prune; change nothing. Still '
+                   'reviews parked issues (read-only) and sends the daily owner digest.',
         'on': 'Per product (its needs_you_automation setting can lower this): balanced or bold '
               'risk tolerance applies each action — close a day-old Done card\'s open issue, move '
               'a stale Blocked card to the queue, end a system hold the queue already skips, '
               'prune a resolved edge — capped per tick and audited; cautious records a '
-              'recommendation for the owner to approve instead.',
+              'recommendation for the owner to approve instead. Parked issues are reviewed '
+              'weekly and only ever recommended (close or unpark), never applied; one daily '
+              'owner digest push per product with anything needing a person.',
     },
     (Relationship('shares_work_with', 'gh-reconcile',
                   'Moves board cards the reconciler leaves alone; the reconciler owns every '

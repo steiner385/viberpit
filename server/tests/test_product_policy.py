@@ -16,6 +16,7 @@ def test_schema_keys_and_defaults():
                     "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
                     "triage_auto_accept_repeat", "triage_dismiss_bot_artifacts",
                     "triage_bot_artifact_patterns", "risk_tolerance", "needs_you_automation",
+                    "parked_review_threshold",
                     "max_initiatives_in_flight", "unattended_model_floor", "session_assistance",
                     "artifact_layout"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
@@ -29,7 +30,7 @@ def test_schema_keys_and_defaults():
         "auto_escalate_budget": 0, "triage_auto_accept": "off", "triage_auto_accept_dispatch_off": False,
         "triage_auto_accept_repeat": 3, "triage_dismiss_bot_artifacts": True,
         "triage_bot_artifact_patterns": [], "risk_tolerance": "cautious",
-        "needs_you_automation": "on",
+        "needs_you_automation": "on", "parked_review_threshold": 20,
         "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "session_assistance": "on",
         "artifact_layout": "docs_sdlc"}
 

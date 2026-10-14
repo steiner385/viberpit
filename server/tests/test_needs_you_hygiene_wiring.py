@@ -75,3 +75,50 @@ def test_the_loop_assesses_close_outs_through_the_orchestrators_gh_seam(monkeypa
     assert asyncio.run(mod.SessionOrchestrator._needs_you_hygiene_assess(orch, "row")) == {
         "decision": None}
     assert seen == {"ctx": ctx, "row": "row", "gh_run": gh, "cfg": "/cfg/helper"}
+
+
+def test_the_loop_reviews_parked_issues_through_the_orchestrators_gh_seam(monkeypatch):
+    """Design §4: the parked reviewer gets the orchestrator's ``gh_run`` and context
+    with the engine-safe helper identity; a run's state lands under its own target."""
+    from server.automations import parked_reviewer
+    from server.sessions import helper_call
+    from server.sessions import orchestrator as mod
+    src = inspect.getsource(mod.SessionOrchestrator.__init__)
+    assert "review_parked=self._needs_you_hygiene_review_parked" in src
+    assert "digest=self._needs_you_hygiene_digest_seams()" in src
+    seen: dict = {}
+
+    async def fake(ctx, row, *, gh_run, _config_dir=None, _query_fn=None):
+        seen.update(ctx=ctx, row=row, gh_run=gh_run, cfg=_config_dir)
+        return {"verdict": None}
+    monkeypatch.setattr(parked_reviewer, "review_and_record", fake)
+    monkeypatch.setattr(helper_call, "pick_helper_config_dir", lambda: "/cfg/helper")
+    orch = mod.SessionOrchestrator.__new__(mod.SessionOrchestrator)
+    orch._gh_run = gh = object()
+    runs: list = []
+
+    class _Ctx:
+        async def set_target_state(self, target, state):
+            runs.append((target, state))
+    orch._needs_you_hygiene_ctx = ctx = _Ctx()
+    assert asyncio.run(mod.SessionOrchestrator._needs_you_hygiene_review_parked(
+        orch, "row")) == {"verdict": None}
+    assert seen == {"ctx": ctx, "row": "row", "gh_run": gh, "cfg": "/cfg/helper"}
+    asyncio.run(mod.SessionOrchestrator._needs_you_hygiene_record_parked_run(
+        orch, "p", {"pending": []}))
+    assert runs == [("parked-review:p", {"pending": []})]
+
+
+def test_the_digest_push_reuses_the_decision_needed_notify_path():
+    """Design §5: one push class (``decision_needed``) for both digests, through one
+    orchestrator helper — no second notify surface."""
+    from server.sessions import orchestrator as mod
+    src = inspect.getsource(mod.SessionOrchestrator._pm_decision_needed_notify)
+    assert 'notify_event("decision_needed"' in src
+    for name in ("_owner_digest_notify", "_decision_escalation_notify"):
+        assert "_pm_decision_needed_notify" in inspect.getsource(
+            getattr(mod.SessionOrchestrator, name))
+    orch = mod.SessionOrchestrator.__new__(mod.SessionOrchestrator)
+    seams = mod.SessionOrchestrator._needs_you_hygiene_digest_seams(orch)
+    for name in ("in_quiet_hours", "load", "last_sent", "notify", "record_sent"):
+        assert callable(getattr(seams, name))

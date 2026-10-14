@@ -107,31 +107,36 @@ def _default_query_fn():
     return query
 
 
-async def _ask(prompt: str, *, query_fn: Any = None, config_dir: str | None = None) -> str | None:
-    """The model's reply text, or ``None`` when no call could be made (no account,
-    the lane cooled down, the call failed) — retried on a later tick."""
+async def ask_helper(prompt: str, *, system_prompt: str, subsystem: str,
+                     query_fn: Any = None, config_dir: str | None = None) -> str | None:
+    """One bounded stateless helper call (``ASSESS_MODEL``, ``ASSESS_EFFORT``) — the
+    needs-you hygiene loop's classifiers (this close-out assessment and the parked
+    review, ``parked_reviewer``) share it. The model's reply text, or ``None`` when
+    no call could be made (no account, the lane cooled down, the call failed) —
+    retried on a later tick."""
     options = None
     if query_fn is None:
         cfg = config_dir or await account_store_io(pick_helper_config_dir, default=None)
         if not cfg:
-            log.info("closeout_assessor.no_helper_account")
+            log.info("needs_you_hygiene.no_helper_account subsystem=%s", subsystem)
             return None
         config_dir = cfg
         from claude_agent_sdk import ClaudeAgentOptions
         query_fn = _default_query_fn()
         options = ClaudeAgentOptions(
-            model=ASSESS_MODEL, system_prompt=ca.SYSTEM_PROMPT, cwd=helper_cwd(),
+            model=ASSESS_MODEL, system_prompt=system_prompt, cwd=helper_cwd(),
             env=await account_store_io(helper_env, config_dir),
             **stateless_helper_options(), thinking={"type": "adaptive"},
             effort=ASSESS_EFFORT, **(await asyncio.to_thread(cli_path_kwargs)))
     outcome = await run_helper_call(
         lambda: query_fn(prompt=prompt, options=options),
-        subsystem="needs_you_hygiene.closeout_assess",
+        subsystem=subsystem,
         account_key=config_dir or os.environ.get("CLAUDE_CONFIG_DIR", ""), retries=1)
     if outcome.skipped:
         return None
     if outcome.error is not None:
-        log.log(outcome.log_level, "closeout_assessor.call_failed: %s", outcome.describe())
+        log.log(outcome.log_level, "needs_you_hygiene.helper_call_failed subsystem=%s: %s",
+                subsystem, outcome.describe())
         return None
     parts: list[str] = []
     for msg in outcome.messages:
@@ -152,7 +157,9 @@ async def assess(row: QueueRow, *, gh_run: Any, _query_fn: Any = None,
     if prs is None:
         return None
     prompt = ca.build_prompt(row.title, row.body, backlog_github.unchecked_items(row.body), prs)
-    reply = await _ask(prompt, query_fn=_query_fn, config_dir=_config_dir)
+    reply = await ask_helper(prompt, system_prompt=ca.SYSTEM_PROMPT,
+                             subsystem="needs_you_hygiene.closeout_assess",
+                             query_fn=_query_fn, config_dir=_config_dir)
     if reply is None:
         return None
     assessment = ca.parse_verdict(reply)

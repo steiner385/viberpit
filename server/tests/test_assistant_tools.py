@@ -2003,6 +2003,71 @@ def test_update_product_policy_is_operator_tier_and_a_mutation():
     assert route_allowed("PATCH", "/api/pm/projects/kindash/policy", operator=True) is True
 
 
+# --------------------------------------------------------------------------- #
+# get_owner_digest (READ) / apply_owner_digest (operator-tier DESTRUCTIVE)      #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_get_owner_digest_is_one_get_narrowed_by_product():
+    seen: list = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path, dict(req.url.params)))
+        return httpx.Response(200, json={"products": [], "total": 0, "withRecommendation": 0})
+    tool = _tool(build_tools(_api(handler)), "get_owner_digest")
+    await tool.handler({"product": "kindash"})
+    await tool.handler({})
+    assert seen == [("GET", "/api/pm/digest", {"product": "kindash"}),
+                    ("GET", "/api/pm/digest", {})]
+    assert TOOL_SPECS["get_owner_digest"].tool_class is ToolClass.READ
+
+
+@pytest.mark.asyncio
+async def test_apply_owner_digest_posts_the_ids_with_confirm():
+    seen: list = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json={"results": [], "applied": 1, "failed": 0})
+    out = await _tool(_policy_tools(handler), "apply_owner_digest").handler(
+        {"ids": ["hold:wi1"], "titles": ["Approve fable — o/r#1"], "confirm": True})
+    assert out.get("is_error") is not True
+    assert seen == [("POST", "/api/pm/digest/apply", {"ids": ["hold:wi1"], "confirm": True})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [
+    {"ids": ["hold:wi1"], "titles": ["x"], "confirm": False},
+    {"ids": ["hold:wi1"], "titles": ["x"]},
+    {"ids": ["hold:wi1", "rec:r1"], "titles": ["x"], "confirm": True},
+    {"ids": [], "titles": [], "confirm": True},
+    {"ids": [f"rec:{n}" for n in range(21)], "titles": ["t"] * 21, "confirm": True},
+])
+async def test_apply_owner_digest_refuses_locally(args):
+    calls: list = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+    out = await _tool(_policy_tools(handler), "apply_owner_digest").handler(args)
+    assert out["is_error"] is True and calls == []
+
+
+def test_apply_owner_digest_is_operator_tier_destructive_and_its_card_names_each_item():
+    from server.assistant.policy import route_allowed
+    assert TOOL_SPECS["apply_owner_digest"].tool_class is ToolClass.DESTRUCTIVE
+    assert "apply_owner_digest" in OPERATOR_TOOLS
+    off = {t.name for t in build_tools(_api(lambda r: httpx.Response(200)))}
+    assert "apply_owner_digest" not in off and "get_owner_digest" in off
+    assert route_allowed("GET", "/api/pm/digest") is True
+    assert route_allowed("POST", "/api/pm/digest/apply") is False
+    assert route_allowed("POST", "/api/pm/digest/apply", operator=True) is True
+    assert batch_items(MCP_PREFIX + "apply_owner_digest", {
+        "ids": ["hold:wi1", "rec:r1"], "titles": ["Approve fable — o/r#1"]}) == [
+        "Approve fable — o/r#1", "rec:r1"]
+    assert batch_items(MCP_PREFIX + "apply_owner_digest", {"ids": "x"}) == []
+
+
 def test_update_product_policy_fields_are_real_policy_schema_keys():
     from server.assistant import tools as t
     from server.automations.product_policy import PRODUCT_POLICY_SCHEMA

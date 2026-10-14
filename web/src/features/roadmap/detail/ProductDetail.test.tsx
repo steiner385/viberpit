@@ -31,6 +31,8 @@ const projectHealthQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoa
 // `NeedsYouList`), and the onboarding hooks in `OnboardingWizard`.
 vi.mock('@/api/hooks', () => ({
   useHolds: () => ({ data: undefined }),
+  useOwnerDigest: () => ({ data: undefined }),
+  useApplyDigest: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
   useProject: () => projectQuery,
   useOnboarding: () => onboardingQuery,
   useProposeMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),

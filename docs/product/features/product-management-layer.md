@@ -289,6 +289,44 @@ at most hourly, writes an `AttentionSample` with the map's own numbers
 (`pm_tree.product_attention_counts` — the badge count, `tree.needs_you_total`, and the waiting
 counters); `GET /api/pm/attention/history?product=&days=` serves the trend.
 
+**Parked review** (design §4, rule `parked_review` of the same automation). Parked issues (the
+`parked` label; the queue skips them) are reviewed weekly per product, and daily while more than
+the policy's `parked_review_threshold` (default 20; 0 = weekly only) are parked. A run covers up to
+15 parked issues, the least recently reviewed first, at most 5 helper calls per tick fleet-wide
+(the run's pending refs persist as the automation's `parked-review:<slug>` target state). For each,
+a stateless helper (`server/automations/parked_reviewer.py`, the close-out assessor's
+`ask_helper` and `merged_prs`) reads the issue and the merged PRs that reference it and answers one
+verdict (`server/pm/parked_review.py`): `close_fixed` (must cite one of those merged PRs),
+`close_obsolete` (with evidence), `unpark` or `keep`; an unusable reply decides nothing. Each verdict
+is stored per issue (`parked:<ref>`, keyed to the body fingerprint). A non-`keep` verdict is ALWAYS
+an `OwnerRecommendation` — whatever the product's `risk_tolerance`, and the executor refuses a
+parked-review action that arrives via `automation` — so a parked label a person placed is only
+removed, or the issue closed (`completed` for fixed, `not_planned` for obsolete), when the owner
+approves; each write first re-checks the mirror still shows the issue open and parked, and an unpark
+explains itself on the issue (marked as automation's) before removing the label as spelled.
+
+**Owner digest** (design §5). `GET /api/pm/digest?product=` lists every item that truly needs
+the owner, grouped by product, each with at most ONE recommended action
+(`server/pm/digest.py`; composition in `server/api/pm_digest.py:load_digest`): held issues from
+the escalation read model (a `model_approval` recommends approving the requested tier; a
+checklist, a decision or a hand-off recommends nothing), the map's other needs-you issues (needs a
+spec, a session waiting on a person, assigned to the owner) and initiative gates (never
+recommended — no auto-advance; the item links to the gate), pending decisions not already held on a
+board, triage proposals (accept recommended only at `high` confidence onto a capability), and
+pending `OwnerRecommendation`s (their own action, with any parked-review evidence links; one
+targeting an issue the digest already lists stands in for that item). `POST /api/pm/digest/apply`
+(`{ids, confirm: true}`; 422 without confirm; "approve all" passes every id with a recommendation)
+re-derives each id's action from current state and runs it through the path that owns it —
+`escalation_approval.approve_escalation`, `pm_hygiene.apply_pending` (the recommendations
+executor), `triage_accept.apply_accept` — each with its own audit, plus one `pm.digest.apply`
+row per call; per-id `{id, ok, step, error}`. Once a day per product (when its digest is non-empty
+and its `needs_you_automation` is not `off`, never in quiet hours) the hygiene tick sends one
+`decision_needed` push — "N items need you — M have a recommendation" — linking to the product's
+Needs-you tab, deduped on its `pm.digest.sent` audit row. The **Today's digest** card leads the
+product and portfolio Needs-you tabs: each item with its recommendation as a button, evidence links,
+and **Approve all recommendations (N)** behind a dialog that lists each action. The assistant reads
+it with `get_owner_digest` and, operator tier only, applies it with `apply_owner_digest`.
+
 **Held issues** lead the product and portfolio Needs-you lists, read from the escalation read
 model (`GET /api/pm/holds`) rather than from the map's per-capability counts — an unclassified
 held issue has no capability row to appear under, so without this list it surfaced only as a

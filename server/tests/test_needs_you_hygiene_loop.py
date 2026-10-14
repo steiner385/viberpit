@@ -270,3 +270,188 @@ async def test_a_stored_assessment_is_not_re_asked():
     t.loop._assess = assess
     await t.loop.tick()
     assert calls == [] and t.applied == []
+
+
+# --- parked review (design §4) -------------------------------------------------------------
+
+def _parked(number: int, **over: Any) -> QueueRow:
+    return _row(number, status="Backlog", labels=("parked",), body=f"b{number}",
+                gh_created_at=NOW - timedelta(days=200 - number), **over)
+
+
+def _reviewer(verdict: str | None = "unpark"):
+    from server.pm import parked_review as pr
+    from server.pm.outcomes import body_fingerprint
+    calls: list[str] = []
+
+    async def review(row):
+        calls.append(row.ref)
+        v = pr.Verdict(verdict, "x", "still wanted") if verdict else None
+        return pr.review_state(fingerprint=body_fingerprint(row.title, row.body), verdict=v,
+                               prs=[], repo=row.repo, at=NOW.isoformat())
+    return review, calls
+
+
+def _with_parked_review(t: _Harness, review) -> list[tuple[str, dict]]:
+    runs: list[tuple[str, dict]] = []
+
+    async def record(slug, run):
+        runs.append((slug, dict(run)))
+    t.loop._review_parked = review
+    t.loop._record_parked_run = record
+    return runs
+
+
+@pytest.mark.asyncio
+async def test_a_due_run_reviews_parked_issues_across_ticks_and_only_recommends():
+    """Balanced risk APPLIES the other rules, yet a parked review is only ever a
+    recommendation (design §4: no automatic unpark, ever)."""
+    from server.pm import parked_review as pr
+    rows = [_parked(n) for n in range(1, 8)]
+    t = _Harness([_product(rows, risk="bold")])
+    review, calls = _reviewer("unpark")
+    runs = _with_parked_review(t, review)
+    await t.loop.tick()
+    assert calls == [f"o/r#{n}" for n in range(1, pr.REVIEWS_PER_TICK + 1)]
+    assert t.applied == []
+    assert {a.ref for _, a in t.recommended} == set(calls)
+    assert {a.rule for _, a in t.recommended} == {"parked_review"}
+    assert t.kept[-1][1] == {("parked_review", r, "unpark") for r in calls}
+    slug, run = runs[-1]
+    assert slug == "p" and run["pending"] == ["o/r#6", "o/r#7"] and run["startedAt"]
+    assert "hygiene_parked_review" in _kinds(t.ctx)
+
+
+@pytest.mark.asyncio
+async def test_a_pending_run_continues_and_a_finished_run_waits_a_week():
+    from server.pm import parked_review as pr
+    rows = [_parked(n) for n in (1, 2, 3)]
+    started = (NOW - timedelta(days=2)).isoformat()
+    review, calls = _reviewer("keep")
+    p = replace(_product(rows), parked_run={"startedAt": started, "pending": ["o/r#2", "o/r#9"]})
+    t = _Harness([p])
+    runs = _with_parked_review(t, review)
+    await t.loop.tick()
+    # o/r#9 left the parked set: dropped; o/r#2 reviewed; no new run (not due).
+    assert calls == ["o/r#2"] and runs[-1] == ("p", {"startedAt": started, "pending": []})
+    assert t.recommended == []   # keep -> nothing
+
+    idle = _Harness([replace(_product(rows), parked_run={"startedAt": started, "pending": []})])
+    review2, calls2 = _reviewer()
+    runs2 = _with_parked_review(idle, review2)
+    await idle.loop.tick()
+    assert calls2 == [] and runs2 == []
+    assert pr.REVIEW_INTERVAL == timedelta(days=7)
+
+
+@pytest.mark.asyncio
+async def test_over_the_threshold_a_run_is_due_daily():
+    rows = [_parked(n) for n in (1, 2, 3)]
+    started = (NOW - timedelta(days=1, minutes=1)).isoformat()
+    base = _product(rows)
+    p = replace(base, policy={**base.policy, "parked_review_threshold": 2},
+                parked_run={"startedAt": started, "pending": []})
+    t = _Harness([p])
+    review, calls = _reviewer("keep")
+    _with_parked_review(t, review)
+    await t.loop.tick()
+    assert calls == ["o/r#1", "o/r#2", "o/r#3"]
+
+
+@pytest.mark.asyncio
+async def test_no_helper_leaves_the_run_pending_and_dry_run_still_reviews():
+    rows = [_parked(1)]
+
+    async def unavailable(row):
+        return None
+    t = _Harness([_product(rows)])
+    runs = _with_parked_review(t, unavailable)
+    await t.loop.tick()
+    assert runs[-1][1]["pending"] == ["o/r#1"] and t.recommended == []
+
+    d = _Harness([_product(rows)], mode="dry_run")
+    review, calls = _reviewer("unpark")
+    _with_parked_review(d, review)
+    await d.loop.tick()
+    assert calls == ["o/r#1"] and d.recommended == []
+    assert _kinds(d.ctx)[-1] == "hygiene_dry_run" and "would unpark o/r#1" in d.ctx.events[-1][1]
+
+
+# --- daily owner digest push (design §5) -------------------------------------------------------
+
+class _Digest:
+    def __init__(self, view, *, quiet=False, last=None) -> None:
+        self.view = view
+        self.quiet = quiet
+        self.last = dict(last or {})
+        self.sent: list[tuple[str, str, str, str]] = []
+        self.recorded: list[tuple[str, dict]] = []
+
+    async def in_quiet_hours(self, now):
+        return self.quiet
+
+    async def load(self):
+        return self.view
+
+    async def last_sent(self):
+        return self.last
+
+    async def notify(self, title, body, *, slug, url):
+        self.sent.append((title, body, slug, url))
+
+    async def record_sent(self, slug, detail):
+        self.recorded.append((slug, detail))
+        self.last[slug] = NOW
+
+
+def _view(**items_by_slug):
+    return {"products": [{"slug": s, "items": items} for s, items in items_by_slug.items()]}
+
+
+_ITEMS = [{"id": "hold:wi1", "recommendation": {"action": "approve_escalation"}},
+          {"id": "gate:x", "recommendation": None}]
+
+
+@pytest.mark.asyncio
+async def test_the_digest_push_sends_one_summary_per_product_once_a_day():
+    t = _Harness([_product([], slug="p"), _product([], slug="q")])
+    digest = _Digest(_view(p=_ITEMS, q=[]))
+    t.loop._digest = digest
+    await t.loop.tick()
+    await t.loop.tick()
+    assert digest.sent == [("p: today's digest", "2 items need you — 1 has a recommendation",
+                            "p", "/roadmap/p?tab=needs-you")]
+    assert digest.recorded[0][1]["total"] == 2
+    assert "hygiene_digest_sent" in _kinds(t.ctx)
+    t.now = NOW + timedelta(hours=24)
+    await t.loop.tick()
+    assert len(digest.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_digest_push_skips_quiet_hours_and_products_with_hygiene_off():
+    t = _Harness([_product([], slug="p")])
+    quiet = _Digest(_view(p=_ITEMS), quiet=True)
+    t.loop._digest = quiet
+    await t.loop.tick()
+    assert quiet.sent == [] and quiet.recorded == []
+
+    off = _Harness([_product([], slug="p", toggle="off")])
+    digest = _Digest(_view(p=_ITEMS))
+    off.loop._digest = digest
+    await off.loop.tick()
+    assert digest.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_push_records_nothing_and_retries(caplog):
+    t = _Harness([_product([], slug="p")])
+    digest = _Digest(_view(p=_ITEMS))
+
+    async def boom(*a, **k):
+        raise RuntimeError("push down")
+    digest.notify = boom  # type: ignore[method-assign]
+    t.loop._digest = digest
+    with caplog.at_level(logging.WARNING):
+        await t.loop.tick()
+    assert digest.recorded == [] and "digest_send_failed" in caplog.text

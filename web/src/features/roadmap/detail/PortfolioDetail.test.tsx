@@ -10,6 +10,8 @@ import { ViewportProvider } from '@/shell/useViewport'
 // `NeedsYouList` mounts `IncidentQueue`, which calls the two incident hooks.
 vi.mock('@/api/hooks', () => ({
   useHolds: () => ({ data: undefined }),
+  useOwnerDigest: () => ({ data: undefined }),
+  useApplyDigest: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
   useQueue: () => ({
     data: {
       entries: [

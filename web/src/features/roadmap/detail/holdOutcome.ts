@@ -40,6 +40,16 @@ export const ATTENTION_LABEL: Record<string, string> = {
 export const attentionLabel = (kind: string | null | undefined): string =>
   kind ? (ATTENTION_LABEL[kind] ?? kind) : ''
 
+/** A digest item's kind badge (`server/pm/digest.py:KINDS`): the held-issue kinds
+ *  read as on their card (`ATTENTION_LABEL`); the rest name what they ask. */
+export const DIGEST_KIND_LABEL: Record<string, string> = {
+  ...ATTENTION_LABEL,
+  recommendation: 'Recommendation',
+  triage: 'Triage',
+  gate: 'Stage gate',
+  issue: 'Needs you',
+}
+
 /** The items of a checklist hold reason (`server/pm/closeout_assess.py:
  *  checklist_reason`: a `Left for you:` head, one `- [ ] item` line each, then an
  *  optional `(+N more)`), plus that remainder line. */

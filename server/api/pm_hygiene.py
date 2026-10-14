@@ -50,14 +50,14 @@ async def attention_history(product: str, days: int = Query(30, ge=1, le=365),
         for r in rows]}
 
 
-def _to_wire(r: OwnerRecommendation, slug: str | None) -> dict:
+def recommendation_to_wire(r: OwnerRecommendation, slug: str | None) -> dict:
     return {"id": r.id, "product": slug, "rule": r.rule, "ref": r.target_ref,
             "workItemId": r.work_item_id, "action": r.action, "detail": r.detail or {},
             "evidence": r.evidence, "status": r.status, "createdAt": iso_utc(r.created_at),
             "resolvedAt": iso_utc(r.resolved_at), "resolvedBy": r.resolved_by}
 
 
-async def _slugs(db) -> dict[str, str]:
+async def project_slugs(db) -> dict[str, str]:
     return {pid: slug or pid for pid, slug in (await db.execute(
         select(Project.id, Project.slug))).all()}
 
@@ -75,8 +75,8 @@ async def list_recommendations(product: str | None = None, status: str = "pendin
     if product is not None:
         stmt = stmt.where(OwnerRecommendation.project_id == (await _project(db, product)).id)
     rows = (await db.execute(stmt.order_by(OwnerRecommendation.created_at.desc()))).scalars().all()
-    slugs = await _slugs(db)
-    return {"recommendations": [_to_wire(r, slugs.get(r.project_id)) for r in rows]}
+    slugs = await project_slugs(db)
+    return {"recommendations": [recommendation_to_wire(r, slugs.get(r.project_id)) for r in rows]}
 
 
 class RecommendationApplyBody(BaseModel):
@@ -90,19 +90,39 @@ class RecommendationDismissBody(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=RECOMMENDATION_BATCH_MAX)
 
 
-async def _pending(db, ids: list[str]) -> dict[str, OwnerRecommendation]:
+async def recommendations_by_id(db, ids: list[str]) -> dict[str, OwnerRecommendation]:
     rows = (await db.execute(select(OwnerRecommendation).where(
         OwnerRecommendation.id.in_(ids)))).scalars().all()
     return {r.id: r for r in rows}
 
 
-def _refused(rid: str, row: OwnerRecommendation | None) -> dict | None:
+def refused(rid: str, row: OwnerRecommendation | None) -> dict | None:
+    """The per-id refusal for a recommendation that is missing or no longer pending."""
     if row is None:
         return {"id": rid, "ok": False, "step": "not_found", "error": "no such recommendation"}
     if row.status != "pending":
         return {"id": rid, "ok": False, "step": "not_pending",
                 "error": f"this recommendation is {row.status}"}
     return None
+
+
+async def apply_pending(db, row: OwnerRecommendation, *, product: str, seams,
+                        identity: str) -> dict:
+    """Apply ONE pending recommendation through the needs-you hygiene executor, as
+    *identity* via ``api``, and mark it ``applied`` or ``failed`` (committed). THE
+    apply both ``POST /recommendations/apply`` and the owner digest
+    (``POST /digest/apply``) run. The caller has committed its reads first: the
+    executor's writes go through their own sessions."""
+    action = HygieneAction(rule=row.rule, product=product, ref=row.target_ref,
+                           work_item_id=row.work_item_id, action=row.action,
+                           detail=dict(row.detail or {}), evidence=row.evidence or "")
+    result = await apply_action(action, seams=seams, identity=identity, actor=identity,
+                                via="api")
+    ok = bool(result.get("ok"))
+    row.status = "applied" if ok else "failed"
+    row.resolved_at, row.resolved_by = datetime.now(timezone.utc), identity
+    await db.commit()
+    return {"id": row.id, "ok": ok, "step": result.get("step"), "error": result.get("error")}
 
 
 @router.post("/recommendations/apply")
@@ -118,30 +138,21 @@ async def apply_recommendations(body: RecommendationApplyBody, request: Request,
             "error": "confirm_required",
             "message": "applying writes to GitHub; resend with confirm: true"})
     ids = list(dict.fromkeys(body.ids))
-    rows = await _pending(db, ids)
-    slugs = await _slugs(db)
+    rows = await recommendations_by_id(db, ids)
+    slugs = await project_slugs(db)
     # Read first, write after: the executor's writes go through their own sessions.
     await db.commit()
     results: list[dict] = []
     for rid in ids:
         row = rows.get(rid)
-        refused = _refused(rid, row)
-        if refused is not None:
-            results.append(refused)
+        refusal = refused(rid, row)
+        if refusal is not None:
+            results.append(refusal)
             continue
         assert row is not None
-        action = HygieneAction(rule=row.rule, product=slugs.get(row.project_id, row.project_id),
-                               ref=row.target_ref, work_item_id=row.work_item_id,
-                               action=row.action, detail=dict(row.detail or {}),
-                               evidence=row.evidence or "")
-        result = await apply_action(action, seams=request.app.state.sessions,
-                                    identity=identity, actor=identity, via="api")
-        ok = bool(result.get("ok"))
-        row.status = "applied" if ok else "failed"
-        row.resolved_at, row.resolved_by = datetime.now(timezone.utc), identity
-        await db.commit()
-        results.append({"id": rid, "ok": ok, "step": result.get("step"),
-                        "error": result.get("error")})
+        results.append(await apply_pending(
+            db, row, product=slugs.get(row.project_id, row.project_id),
+            seams=request.app.state.sessions, identity=identity))
     return {"results": results, "applied": sum(1 for r in results if r["ok"]),
             "failed": sum(1 for r in results if not r["ok"])}
 
@@ -153,13 +164,13 @@ async def dismiss_recommendations(body: RecommendationDismissBody,
     """Dismiss pending recommendations: nothing is written to GitHub, and the loop
     never re-recommends a dismissed finding (``needs_you_hygiene.upsert_recommendation``)."""
     ids = list(dict.fromkeys(body.ids))
-    rows = await _pending(db, ids)
+    rows = await recommendations_by_id(db, ids)
     results: list[dict] = []
     for rid in ids:
         row = rows.get(rid)
-        refused = _refused(rid, row)
-        if refused is not None:
-            results.append(refused)
+        refusal = refused(rid, row)
+        if refusal is not None:
+            results.append(refusal)
             continue
         assert row is not None
         row.status, row.resolved_at, row.resolved_by = (
