@@ -34,7 +34,7 @@ def _seed(db_url: str, **row) -> None:
 
 
 def _get(tmp_path, sid: str):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
     app = create_app(orchestrator=orch)
     with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}), \
@@ -43,7 +43,7 @@ def _get(tmp_path, sid: str):
 
 
 def test_archived_row_is_served_with_its_real_status(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
     archived_at = datetime(2026, 10, 14, 12, 9, 7)
     with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}):
         _seed(db_url, id="arch-1", name="FCM rollout", account_name="acct",
@@ -62,7 +62,7 @@ def test_archived_row_is_served_with_its_real_status(tmp_path):
 
 
 def test_unknown_id_still_404s(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
     with patch.dict(os.environ, {"VIBERPIT_DB_URL": db_url}):
         _seed(db_url, id="other", name="x", account_name="acct",
               engine_session_id=None, status="archived", cwd=str(tmp_path))
