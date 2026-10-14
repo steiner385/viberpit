@@ -6,6 +6,7 @@ a ``.env`` there would let a session change security settings on the running edg
 Under systemd the root-owned EnvironmentFile is the only source; dev runs keep ``.env``.
 """
 import pytest
+from viberpit import brand
 
 from server.config import get_settings
 
@@ -17,9 +18,9 @@ def hostile_dotenv(tmp_path, monkeypatch):
         "VIBERPIT_TAILNET_ALLOWLIST=attacker@example.com\n"
     )
     monkeypatch.chdir(tmp_path)
-    for name in ("VIBERPIT_ALLOW_UNAUTHENTICATED", "CCSWITCH_ALLOW_UNAUTHENTICATED",
-                 "VIBERPIT_TAILNET_ALLOWLIST", "CCSWITCH_TAILNET_ALLOWLIST"):
-        monkeypatch.delenv(name, raising=False)
+    for prefix in (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX):
+        for name in ("ALLOW_UNAUTHENTICATED", "TAILNET_ALLOWLIST"):
+            monkeypatch.delenv(f"{prefix}{name}", raising=False)
 
 
 def test_systemd_service_ignores_dotenv(hostile_dotenv, monkeypatch):
