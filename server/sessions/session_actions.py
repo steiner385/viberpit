@@ -16,7 +16,7 @@ import logging
 from typing import Any
 
 from server.audit import record_audit
-from server.auth.identity import LOCAL_PROCESS_VIA
+from server.auth.identity import LOCAL_PROCESS_VIA, LOCAL_TRUSTED_VIA
 from server.config import get_settings
 from server.sessions.types import SYSTEM_IDENTITY
 
@@ -107,7 +107,16 @@ def require_human(identity: str, via: str | None) -> None:
     may create, edit, revoke or preview one, or write permission-profile patterns: no
     token-borne caller (assistant, external MCP, CLI, internal, session), no process on
     this host asserting an identity header (``identity.LOCAL_PROCESS_VIA``, #2980; callers
-    take ``via`` from ``identity.human_gate_via``) and not the system sentinel (spec §4)."""
+    take ``via`` from ``identity.human_gate_via``) and not the system sentinel (spec §4).
+    ``identity.LOCAL_TRUSTED_VIA`` is that local caller under the operator's opt-in
+    (``VIBERPIT_RULES_TRUST_LOCAL_HOST``, spec 2026-10-14) and is admitted."""
+    if identity == SYSTEM_IDENTITY:
+        raise ActionError(
+            RULE_HUMAN_ONLY_CODE,
+            "Only a person in the UI can manage always-allow rules and permission profiles.",
+            403)
+    if via == LOCAL_TRUSTED_VIA:
+        return
     if via == LOCAL_PROCESS_VIA:
         # A browser on the edge host itself lands here too: it is indistinguishable from
         # an agent session on that host, so say where the change CAN be made.
@@ -115,9 +124,11 @@ def require_human(identity: str, via: str | None) -> None:
             RULE_HUMAN_ONLY_CODE,
             "This request came from the ViberPit host itself, where an agent could send the "
             "same one. Change always-allow rules and permission profiles from a browser on "
-            "another device on your tailnet (phone, laptop).",
+            "another device on your tailnet (phone, laptop), or have the host's admin set "
+            "VIBERPIT_RULES_TRUST_LOCAL_HOST=true in the ViberPit environment file, which "
+            "lets agents on this host write them too.",
             403)
-    if via is not None or identity == SYSTEM_IDENTITY:
+    if via is not None:
         raise ActionError(
             RULE_HUMAN_ONLY_CODE,
             "Only a person in the UI can manage always-allow rules and permission profiles.",

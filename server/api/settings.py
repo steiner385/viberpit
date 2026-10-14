@@ -48,6 +48,7 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("self_model_switch_cap", "VIBERPIT_SELF_MODEL_SWITCH_CAP", "Auto-applied model switches per session before parking for approval"),
     ("session_tools_enabled", "VIBERPIT_SESSION_TOOLS_ENABLED", f"Coding sessions get the {brand.NAME} MCP tools (session_context, report_feedback)"),
     ("permission_rules_enabled", "VIBERPIT_PERMISSION_RULES_ENABLED", "Standing \"always allow\" permission rules are enforced and suggested on prompts"),
+    ("rules_trust_local_host", "VIBERPIT_RULES_TRUST_LOCAL_HOST", "Requests from the edge host itself may write always-allow rules and profile patterns (agents on the host can too)"),
     ("mcp_status_enabled", "VIBERPIT_MCP_STATUS_ENABLED", "Sessions report MCP server connection status; Settings › MCP can test servers"),
     ("mcp_scope_enabled", "VIBERPIT_MCP_SCOPE_ENABLED", "Per-repo MCP server scope and live session toggles"),
     ("mcp_oauth_refresh_enabled", "VIBERPIT_MCP_OAUTH_REFRESH_ENABLED", "ViberPit alone refreshes MCP OAuth tokens and publishes them to every account"),

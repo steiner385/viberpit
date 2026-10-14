@@ -67,15 +67,21 @@ def _validate_mode(mode: str | None) -> None:
         )
 
 
-def _validate_patterns(patterns: list[str] | None, identity: str, request: Request) -> None:
+def _validate_patterns(
+    patterns: list[str] | None, identity: str, request: Request,
+) -> str | None:
     """Launch-profile patterns are enforced, so they meet the always-allow rule bar: written
     by a person (403) and none refused by the safety check (400). A warning-level pattern
-    is allowed; choosing to save it in a named profile is the confirmation."""
+    is allowed; choosing to save it in a named profile is the confirmation.
+
+    Returns the gate's ``via`` for the audit row (``local-trusted`` under the opt-in), or
+    None when no patterns are written: then no gate ran and the audit keeps no ``via``."""
     if not patterns:
-        return
+        return None
+    # A local process asserting the operator's identity is not the UI (#2980).
+    via = human_gate_via(request)
     try:
-        # A local process asserting the operator's identity is not the UI (#2980).
-        require_human(identity, human_gate_via(request))
+        require_human(identity, via)
     except ActionError as exc:
         raise HTTPException(status_code=exc.http,
                             detail={"error": exc.code, "message": exc.message}) from None
@@ -88,6 +94,7 @@ def _validate_patterns(patterns: list[str] | None, identity: str, request: Reque
                     "message": "Some patterns are too broad or unsafe to allow.",
                     "reasons": reasons},
         )
+    return via
 
 
 class ProfileCreateBody(BaseModel):
@@ -126,7 +133,7 @@ async def create_profile(
 ) -> dict:
     """Create a named permission profile. Returns 409 if name already exists."""
     _validate_mode(body.mode)
-    _validate_patterns(body.patterns, identity, request)
+    via = _validate_patterns(body.patterns, identity, request)
     if body.name.startswith(PROFILE_PREFIX):
         raise _managed_profile_error()
 
@@ -149,7 +156,7 @@ async def create_profile(
     await db.flush()
     await record_audit(
         db=db, type="permission_profile.create",
-        identity=identity, detail={"name": body.name},
+        identity=identity, detail={"name": body.name}, via=via,
     )
     return _profile_to_dict(profile)
 
@@ -189,6 +196,7 @@ async def update_profile(
         raise _managed_profile_error()
 
     fields = body.model_fields_set
+    via: str | None = None
     if "name" in fields and body.name:
         if body.name != profile.name:
             if body.name.startswith(PROFILE_PREFIX):
@@ -208,14 +216,14 @@ async def update_profile(
         _validate_mode(body.mode)
         profile.mode = body.mode
     if "patterns" in fields:
-        _validate_patterns(body.patterns, identity, request)
+        via = _validate_patterns(body.patterns, identity, request)
         profile.patterns = body.patterns
     profile.updated_at = _utcnow()
 
     await db.flush()
     await record_audit(
         db=db, type="permission_profile.update",
-        identity=identity, detail={"id": profile_id},
+        identity=identity, detail={"id": profile_id}, via=via,
     )
     return _profile_to_dict(profile)
 
