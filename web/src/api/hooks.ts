@@ -55,9 +55,8 @@ import {
   type DispatchOutcome,
 } from './pm'
 import {
-  fetchRoadmapMap, fetchLeaves, fetchQueue, fetchHolds, fetchProject, fetchOwnerDigest, applyOwnerDigest,
+  fetchRoadmapMap, fetchLeaves, fetchQueue, fetchHolds, fetchProject,
   type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type HoldsView, type MapChangesPointer,
-  type OwnerDigest, type DigestApplyResult,
 } from './roadmap'
 import { fetchCapacity, fetchCapacityBinding, type CapacityReadout } from './capacity'
 import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
@@ -1761,7 +1760,7 @@ export function useRevokePermissionRule() {
  *  (via `extractMutationErrorMessage` from queryClient, which already unwraps
  *  the `{detail: {error, message}}` body shape these endpoints return). Before
  *  this every failure produced two toasts — the hook's own and the global one. */
-const PM_MUTATION_META = { suppressErrorToast: true } as const
+export const PM_MUTATION_META = { suppressErrorToast: true } as const
 
 /** The human-gate tap. On success, refresh the map (every list of initiatives
  *  the roadmap renders comes from it) and this initiative's own detail. */
@@ -2140,38 +2139,6 @@ export function useHolds(
     enabled,
     staleTime: 5_000,
     refetchInterval: 30_000,
-  })
-}
-
-/** Today's owner digest (design 2026-10-14 §5): every needs-you item with its one
- *  recommended action — one product, or all. */
-export function useOwnerDigest(
-  product?: string,
-  { enabled = true }: { enabled?: boolean } = {},
-) {
-  return useQuery<OwnerDigest>({
-    queryKey: [...QK.digest, product ?? null],
-    queryFn: () => fetchOwnerDigest(product),
-    enabled,
-    staleTime: 5_000,
-    refetchInterval: 60_000,
-  })
-}
-
-/** Apply digest items' recommended actions (`POST /pm/digest/apply`). Each may
- *  release a hold, dispatch a session, close or unpark an issue or accept a triage
- *  proposal, so every view those touch is invalidated. Failures show inline. */
-export function useApplyDigest() {
-  const qc = useQueryClient()
-  return useMutation<DigestApplyResult, ApiRequestError, string[]>({
-    mutationFn: (ids) => applyOwnerDigest(ids),
-    onSuccess: () => {
-      for (const key of [QK.digest, QK.holds, QK.roadmapMap, QK.queue, QK.triage, ['pm', 'leaves']]) {
-        void qc.invalidateQueries({ queryKey: key })
-      }
-      void qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
-    },
-    meta: PM_MUTATION_META,
   })
 }
 

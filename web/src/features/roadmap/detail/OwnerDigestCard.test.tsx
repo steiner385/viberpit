@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import type { DigestItem, OwnerDigest } from '@/api/roadmap'
+import type { DigestItem, OwnerDigest } from '@/api/digest'
 import { product } from '../__fixtures__/map'
 import { OwnerDigestCard } from './OwnerDigestCard'
 
@@ -12,7 +12,7 @@ const h = vi.hoisted(() => ({
   digestFor: [] as (string | undefined)[],
   apply: vi.fn(),
 }))
-vi.mock('@/api/hooks', () => ({
+vi.mock('@/api/digest', () => ({
   useOwnerDigest: (p: string | undefined) => { h.digestFor.push(p); return { data: h.digest } },
   useApplyDigest: () => ({ mutateAsync: (ids: string[]) => h.apply(ids), isPending: false, error: null, variables: undefined }),
 }))

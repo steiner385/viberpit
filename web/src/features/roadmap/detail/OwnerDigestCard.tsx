@@ -7,8 +7,8 @@
 // where a person decides; a gate is never advanced from here.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { DigestApplyResult, DigestItem, ProductNode } from '@/api/roadmap'
-import { useApplyDigest, useOwnerDigest } from '@/api/hooks'
+import type { ProductNode } from '@/api/roadmap'
+import { useApplyDigest, useOwnerDigest, type DigestApplyResult, type DigestItem } from '@/api/digest'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
