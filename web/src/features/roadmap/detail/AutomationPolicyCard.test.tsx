@@ -274,6 +274,17 @@ describe('AutomationPolicyCard', () => {
     expect(dismissBots).toBeChecked()
     expect(legendFor(screen.getByLabelText('Bot artifact patterns'))).toBe('Gates')
   })
+
+  it('places the needs-you hygiene toggle beside the risk dial (design 2026-10-14 §2)', () => {
+    Object.assign(h.schema, { data: [
+      ...SCHEMA,
+      { key: 'needs_you_automation', label: 'Needs-you hygiene', type: 'enum', default: 'on', help: '', choices: ['off', 'dry_run', 'on'] },
+    ] })
+    renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
+    const toggle = screen.getByLabelText('Needs-you hygiene')
+    expect(legendFor(toggle)).toBe('Gates')
+    expect(toggle).toHaveValue('on')
+  })
 })
 
 

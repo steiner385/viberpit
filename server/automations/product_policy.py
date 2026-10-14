@@ -51,6 +51,10 @@ log = logging.getLogger(__name__)
 
 DISPATCH_MODES: tuple[str, ...] = ("off", "propose", "auto")
 SESSION_ASSISTANCE_MODES: tuple[str, ...] = ("on", "off")
+#: The needs-you hygiene automation's vocabulary, for its own mode and for this
+#: per-product key alike (design 2026-10-14 §2): the effective mode is the lower
+#: of the two, in this order.
+NEEDS_YOU_AUTOMATION_MODES: tuple[str, ...] = ("off", "dry_run", "on")
 
 PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     ConfigField(key="dispatch", label="Dispatch", type="enum", default="off",
@@ -211,6 +215,18 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="cautious: every roadmap gate waits for you. balanced: low-risk gates "
                      "resolve themselves (artifact PR merges, stage advances). bold: also "
                      "medium-risk gates (plan decomposition accept, model upgrades)."),
+    # Design 2026-10-14 §2: the product's say over the Needs-you Hygiene automation.
+    # It only RESTRICTS the automation's own mode; risk_tolerance above decides
+    # whether an action is applied or left as a recommendation.
+    ConfigField(key="needs_you_automation", label="Needs-you hygiene", type="enum",
+                default="on", choices=list(NEEDS_YOU_AUTOMATION_MODES),
+                help="Whether the Needs-you Hygiene automation tidies this product: closes "
+                     "issues the board has shown as Done for a day, moves stale Blocked "
+                     "cards back to the queue, ends system holds the queue already skips, "
+                     "and prunes resolved dependency edges. on: act — risk tolerance "
+                     "decides how (balanced or bold apply; cautious leaves a "
+                     "recommendation for you to approve). dry_run: only record what it "
+                     "would do. off: leave this product alone."),
     # ``min=0``: 0 pauses new artifact sessions for the product without losing its
     # other settings; gate resolutions are never capped (they finish work).
     ConfigField(key="max_initiatives_in_flight", label="Max initiatives in flight", type="int",

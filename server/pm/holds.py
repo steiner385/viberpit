@@ -488,16 +488,19 @@ def release_on_investigation(db: "Session", ref: str) -> bool:
     return True
 
 
-def release_policy_skipped_holds(db: "Session", refs: "Sequence[str]") -> list[str]:
-    """End the RUNNER's ``owner_action`` hold on each of *refs* whose issue the
-    product's policy now skips (``server/pm/policy_skip.py`` picked them), audited
-    as ``policy_skip`` via the runner; answers the refs released
-    (cairnea/KinDash#16652).
+def release_policy_skipped_holds(db: "Session", refs: "Sequence[str]", *,
+                                 actor: str = RUNNER_ACTOR, via: str = "runner") -> list[str]:
+    """End the SYSTEM-written ``owner_action`` hold on each of *refs* whose issue the
+    product's policy now skips (``policy_skip.stale_system_holds`` picked them),
+    audited as ``policy_skip`` by *actor* via *via* — the runner's backlog tick by
+    default, the needs-you hygiene loop as its automation actor, or a person applying
+    a hygiene recommendation; answers the refs released (cairnea/KinDash#16652).
 
-    Narrowed here AGAIN to ``hold_kind == "owner_action"`` and ``hold_by ==
-    RUNNER_ACTOR`` rather than trusting the caller's read: the pass reads the pool,
-    then writes in a second session, and a person who parked the item in between
-    must not have their hold ended by the runner's hygiene. The runner's fourth
+    Narrowed here AGAIN to ``hold_kind == "owner_action"`` placed by a system actor
+    (``actor_class``) rather than trusting the caller's read: the pass reads the pool,
+    then writes in a second session, and a person (or an agent) who parked the item
+    in between must not have their hold ended by hygiene. A ``decision`` hold is
+    never released here. The runner's fourth
     release rule, beside ``release_on_dispatch`` / ``release_on_investigation`` —
     same ``clear_hold`` + ``_audit_release(via="runner")`` shape, so "how can a hold
     end?" keeps one answer per signal in one file. Idempotent and blind to a
@@ -513,11 +516,13 @@ def release_policy_skipped_holds(db: "Session", refs: "Sequence[str]") -> list[s
     released: list[str] = []
     for wi in db.scalars(select(WorkItem).where(
             WorkItem.kind == "issue", WorkItem.hold_kind == "owner_action",
-            WorkItem.hold_by == RUNNER_ACTOR,
+            WorkItem.hold_by.is_not(None),
             tuple_(WorkItem.repo, WorkItem.number).in_(parts))).all():
-        clear_hold(wi, actor=RUNNER_ACTOR)
+        if actor_class(str(wi.hold_by)) != "system":
+            continue
+        clear_hold(wi, actor=actor)
         _audit_release(db, wi, kind="owner_action", signal="policy_skip",
-                       actor=RUNNER_ACTOR, via="runner")
+                       actor=actor, via=via)
         released.append(f"{wi.repo}#{wi.number}")
     db.flush()
     return released

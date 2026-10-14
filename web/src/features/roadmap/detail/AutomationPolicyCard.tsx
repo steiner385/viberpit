@@ -45,8 +45,10 @@ const MODELS_FIELD_KEYS = new Set([
 // 0 = off, only meaningful while auto-accept is on), and the bot-artifact
 // dismissal with its regex list (on by default since #2908). Type, default and
 // help come from the server schema; this set only places them.
+// `needs_you_automation` sits beside the risk dial that decides whether its
+// hygiene actions are applied or left as recommendations (design 2026-10-14 §2).
 const GATES_FIELD_KEYS = new Set([
-  'risk_tolerance', 'triage_auto_accept', 'triage_auto_accept_dispatch_off',
+  'risk_tolerance', 'needs_you_automation', 'triage_auto_accept', 'triage_auto_accept_dispatch_off',
   'triage_auto_accept_repeat', 'triage_dismiss_bot_artifacts', 'triage_bot_artifact_patterns',
   'give_up_after_bounces', 'max_initiatives_in_flight',
 ])

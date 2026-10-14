@@ -471,3 +471,30 @@ def build_product_tree(product: ProductIn) -> dict:
     return {"slug": product.slug, "name": product.name, "tier": tier, "counts": counts,
             "capabilities": roots, "initiatives": initiative_nodes,
             "mapChanges": product.map_changes}
+
+
+def _flatten(caps: list[dict]) -> list[dict]:
+    return [n for c in caps for n in (c, *_flatten(c["children"]))]
+
+
+def needs_you_total(product: dict) -> int:
+    """How many things need you in one product node (``build_product_tree``): the
+    unscoped ``needsYouCount`` the web's badge shows
+    (``web/src/features/roadmap/detail/needsYou.ts``), computed the same way so the
+    needs-you metric (design 2026-10-14 §2) is the number on the badge —
+
+    - every initiative whose OWN tier is ``needs-you`` (a program counts for its own
+      gate, never once more per phase);
+    - each capability's DIRECT needs-you issues: its count minus its children's and
+      minus its primary leaf initiatives at ``needs-you``;
+    - one per product with triage proposals or owner-held items with no capability.
+    """
+    initiatives = product["initiatives"]
+    n = sum(1 for i in initiatives if i.get("ownTier", i["tier"]) == "needs-you")
+    for cap in _flatten(product["capabilities"]):
+        primary = sum(1 for i in initiatives if i["primaryCapability"] == cap["slug"]
+                      and not i["hasChildren"] and i["tier"] == "needs-you")
+        n += max(0, cap["counts"]["needsYou"]
+                 - sum(c["counts"]["needsYou"] for c in cap["children"]) - primary)
+    counts = product["counts"]
+    return n + (1 if counts["awaitingTriage"] > 0 or counts["needsHome"] > 0 else 0)

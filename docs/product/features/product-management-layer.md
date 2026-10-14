@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/evidence.py, server/pm/tree.py, server/pm/attention.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/evidence.py, server/pm/tree.py, server/pm/attention.py, server/pm/hygiene.py, server/pm/dep_prune.py, server/automations/needs_you_hygiene.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, server/api/pm_hygiene.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -261,6 +261,28 @@ issue groups list under a quiet **Waiting** section of the Needs-you tab. Each p
 `rank` composition `GET /api/pm/queue` uses (`product_policy.rank_kwargs`), so the map and the
 queue cannot disagree. The product row on the Map says them as muted text ("Waiting: 31 blocked by
 a dependency · 28 parked"), never as a badge.
+
+**Needs-you hygiene** (design §2; automation `needs-you-hygiene`, primary-only, 15-minute tick,
+modes `off | dry_run | on`). Pure rules in `server/pm/hygiene.py` find what a machine can tidy:
+`done_but_open` (a board card Done and untouched for 24 h on an open issue → close as completed,
+after a one-line comment; never bot noise, trackers or generated/daily reports such as the Renovate
+Dependency Dashboard or `traceability-drift`), `board_blocked_no_blockers` (Blocked with no open
+dependency and no hold → the policy's `queue_min_status`, through `board_status.apply`),
+`stale_holds` (a system actor's `owner_action` hand-off the queue already skips →
+released, signal `policy_skip`; `policy_skip.stale_system_holds` is the ONE rule the backlog tick
+shares) and `resolved_edges` (prunable stale dependency edges → `dep_prune.prune`, the same core as
+`POST /api/pm/projects/{slug}/deps/prune`). Triage-accepted issues missing from the board need no
+rule: the reconciler adds every open issue (`reconcile_diff.membership`) and places a classified
+one at Ready. The product's `needs_you_automation` policy key (`off | dry_run | on`, default `on`)
+lowers the automation's mode for that product; `risk_tolerance` `balanced`/`bold` applies each
+action (capped per tick: 10 closes, 20 moves, 20 releases, 20 prunes; audited
+`pm.hygiene.<rule>`), `cautious` records an `OwnerRecommendation` instead. A refused write is
+logged at INFO and retried no sooner than a day later. `GET /api/pm/recommendations` lists them;
+`POST /api/pm/recommendations/apply` (`{ids, confirm: true}`) runs the same executor as the caller,
+`…/dismiss` drops one for good. Each tick also sets the `viberpit_pm_needs_you{product}` gauge and,
+at most hourly, writes an `AttentionSample` with the map's own numbers
+(`pm_tree.product_attention_counts` — the badge count, `tree.needs_you_total`, and the waiting
+counters); `GET /api/pm/attention/history?product=&days=` serves the trend.
 
 **Held issues** lead the product and portfolio Needs-you lists, read from the escalation read
 model (`GET /api/pm/holds`) rather than from the map's per-capability counts — an unclassified

@@ -2375,6 +2375,66 @@ class DecisionProposal(Base):
         DateTime(timezone=True), nullable=True)
 
 
+#: An owner recommendation's lifecycle (design 2026-10-14 §2): ``pending`` until a
+#: person applies or dismisses it, ``superseded`` once the condition behind it no
+#: longer holds, ``failed`` when applying it was refused.
+OWNER_RECOMMENDATION_STATUSES: tuple[str, ...] = (
+    "pending", "applied", "dismissed", "superseded", "failed")
+
+
+class OwnerRecommendation(Base):
+    """One needs-you hygiene action (``server/pm/hygiene.py``) the machine would take
+    but a ``cautious`` product leaves to its owner (design 2026-10-14 §2): applied in
+    one click through the same executor the loop uses, or dismissed.
+
+    At most one PENDING row per ``(project_id, rule, target_ref, action)``, enforced in
+    code by the single writer (``needs_you_hygiene.upsert_recommendation``) under the
+    loop's lock — a plain index serves the lookup, because a partial unique index
+    would differ between SQLite and Postgres for one primary-only writer."""
+
+    __tablename__ = "owner_recommendations"
+    __table_args__ = (
+        Index("ix_owner_recommendations_lookup", "project_id", "status", "rule",
+              "target_ref"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(String, nullable=False)
+    rule: Mapped[str] = mapped_column(String, nullable=False)
+    target_ref: Mapped[str] = mapped_column(String, nullable=False)
+    work_item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(  # OWNER_RECOMMENDATION_STATUSES
+        String, nullable=False, default="pending", server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class AttentionSample(Base):
+    """One product's needs-you count at a moment (design 2026-10-14 §2 "Metric"):
+    the same count the Products map shows (``pm_tree.product_attention_counts``),
+    plus its waiting counters, written at most hourly by the needs-you hygiene loop
+    so the burden's trend is visible (``GET /api/pm/attention/history``)."""
+
+    __tablename__ = "attention_samples"
+    __table_args__ = (
+        Index("ix_attention_samples_project_sampled", "project_id", "sampled_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(String, nullable=False)
+    sampled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    needs_you: Mapped[int] = mapped_column(Integer, nullable=False)
+    # {waiting key: n} — ``attention.WAITING_KEYS``.
+    waiting: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
 class MaterializationProposal(Base):
     """One proposed decomposition of a merged plan, awaiting the human gate
     (spec 003 §7b). ``payload`` is the parsed `materialize.Decomposition`

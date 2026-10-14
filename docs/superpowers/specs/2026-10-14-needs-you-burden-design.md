@@ -85,28 +85,37 @@ what happens:
   default `on`). With the automation in `dry_run` or the product in `dry_run`, it only
   records what it would do.
 * **Risk:** `risk_tolerance` `bold`/`balanced` → apply. `cautious` → write an
-  `OwnerRecommendation` row (pending), cleared in one click from the digest.
+  `OwnerRecommendation` row (pending), cleared in one click from the digest
+  (`POST /api/pm/recommendations/apply` with `confirm: true` until PR 4's digest). A
+  dismissed finding is never recommended again; a pending one whose condition is gone
+  is `superseded`.
 * **Audit:** every applied action writes `record_audit(…, "pm.hygiene.<rule>",
   SYSTEM_IDENTITY, detail, via="automation")` plus an `AutomationContext.emit` line;
   dry-run writes the emit line only.
 
 Rules:
 
-1. **done_but_open**: board Done, issue open, card's Done stamp older than 24 h → close
-   as completed with a one-line comment. Skips bot / tracker / generated digests (the
-   queue's `is_bot_noise` and `is_self_closing_tracker` predicates, plus the Renovate
-   Dependency Dashboard and daily auto-upserted reports by title/author).
+1. **done_but_open**: board Done, issue open, card untouched for 24 h (the card's
+   `gh_updated_at` is its last change to any field — there is no Done stamp — so this is a
+   conservative proxy) → close as completed with a one-line comment. Skips bot / tracker /
+   generated digests (the queue's `is_bot_noise` and `is_self_closing_tracker` predicates;
+   the Renovate Dependency Dashboard is a built-in bot title and the daily
+   `traceability-drift` report a tracker label and title shape), open epics, and items with
+   a session, claim or hold.
 2. **board_blocked_no_blockers**: board Blocked, no open dependency, no hold → set the
    board to the policy's `queue_min_status` via `pm.board_status.apply`.
-3. **stale_tracker_hold**: an owner_action hold on an issue the tracker skip now covers,
-   or a "session found no PR is needed (not-needed)" hold the not-needed back-off
-   covers → release via `holds.release_via_api` semantics, signal `policy_skip`.
-4. **resolved_edges**: active `WorkItemDep` edges whose blocker is closed/merged →
-   prune through `stale_deps.classify_stale` + `dep_remove.remove`, part 1 of #2979 as
-   hygiene.
-5. **triage_off_board**: classified, open, triage-accepted items with no `GhProjectItem`
-   on the product's board → add at `queue_min_status` (part 2 of #2979). Skips tracker,
-   bot and PR artifacts.
+3. **stale_holds**: an owner_action hold a SYSTEM actor (runner, reconciler, migration,
+   `automation:*`) wrote on an issue the queue's not-work rule now skips, or a "session
+   found no PR is needed (not-needed)" hold the not-needed back-off covers → release,
+   signal `policy_skip`. `policy_skip.stale_system_holds` is the one rule; the backlog
+   tick's release calls it too. Never a person's, an agent's or a `decision` hold.
+4. **resolved_edges**: prunable stale edges (`stale_deps.classify_stale`:
+   `native_resolved`, `prose_vanished`) → `dep_prune.prune`, the same core as the prune
+   route, part 1 of #2979 as hygiene.
+5. **triage_off_board**: no rule — the reconciler already owns it. `reconcile_diff.membership`
+   adds every open issue with a node id to its product's board, and once mirrored
+   `desired_state.derive_status` places a classified item at Ready (pinned by
+   `test_reconcile_convergence.py::test_a_classified_issue_missing_from_the_board_is_added_and_placed_at_ready`).
 
 **Metric:** each tick writes one `AttentionSample(project_id, sampled_at, needs_you,
 waiting JSON)` per product, at most hourly, and sets an `obs.metrics` gauge

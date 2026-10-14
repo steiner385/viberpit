@@ -243,6 +243,11 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # data_backfills joins the sweep via applied_at; name is the PK and has no default
     # (it names the one-shot backfill the row marks).
     "data_backfills": {"name": "dtcheck-backfill"},
+    # owner_recommendations / attention_samples (0087) join the sweep via created_at/
+    # resolved_at and sampled_at; their NOT NULL keys are mandatory at INSERT.
+    "owner_recommendations": {"project_id": "dtcheck-project", "rule": "done_but_open",
+                              "target_ref": "o/r#1", "action": "close"},
+    "attention_samples": {"project_id": "dtcheck-project", "needs_you": 0},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

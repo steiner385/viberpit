@@ -48,6 +48,7 @@ def test_every_registered_automation_declares_its_work_class():
         "decision-escalation": "maintenance",
         "session-feedback": "maintenance",
         "capacity-governor": "maintenance",
+        "needs-you-hygiene": "maintenance",
     }
 
 

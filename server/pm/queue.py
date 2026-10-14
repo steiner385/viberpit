@@ -62,10 +62,13 @@ PARKED_LABELS = frozenset({PARKED})
 # its workflow goes green (#17030 and #17388 were re-dispatched ~70 times), the
 # ``nightly-consecutive-failure`` escalation on a green nightly, a
 # ``forced-deploy-audit`` latch once a green nightly runs on the forced SHA, and
-# the ``nightly-scoreboard`` is a permanent singleton the workflow rewrites.
+# the ``nightly-scoreboard`` is a permanent singleton the workflow rewrites — as is
+# the daily ``traceability-drift`` report, upserted in place and re-dated each day
+# (cairnea/KinDash#16677; design 2026-10-14 §2: never closed as "Done but open").
 TRACKER_LABELS = frozenset({"flaky", "nightly-failure", "weekly-failure", "midday-e2e-failure",
                             "red-watchdog", "nightly-consecutive-failure",
-                            "forced-deploy-audit", "nightly-scoreboard"})
+                            "forced-deploy-audit", "nightly-scoreboard",
+                            "traceability-drift"})
 # ``flaky`` alone marks a tracker only on an issue an AUTOMATION filed (the flaky
 # detector's): a person's "fix flaky test X" carrying the label is work (#2683
 # review). The detector's ``[flaky]`` title tag counts whoever filed it.
@@ -81,7 +84,9 @@ _TRACKER_TITLE = re.compile(
     # 2026-10-06" (an em/en dash and the run's date), and the auto-revert's
     # "weekly full-ci failed — culprit identified — …".
     r"|^\s*(?:nightly|weekly|midday)(?:\s+e2e)?\s+failed\s+[—–]\s+\d{4}-\d{2}-\d{2}\s*$"
-    r"|^\s*(?:nightly|weekly)\s+full-ci\s+failed\s+[—–]\s+culprit\b",
+    r"|^\s*(?:nightly|weekly)\s+full-ci\s+failed\s+[—–]\s+culprit\b"
+    # The daily drift report: "traceability-drift — 2026-10-14".
+    r"|^\s*traceability-drift\s+[—–]\s+\d{4}-\d{2}-\d{2}\s*$",
     re.IGNORECASE)
 # A generated report: its title is "<emoji> … Digest" ("🧮 UI Maintenance Cost &
 # Architecture ROI Digest", "📊 CI / Delivery Observability Digest"). The leading

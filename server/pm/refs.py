@@ -9,6 +9,12 @@ raise).
 """
 from __future__ import annotations
 
+import re
+
+#: A canonical ``owner/repo#N`` ref, whole-string — what a route accepts from a
+#: caller before looking anything up (the dep prune and the dep delete).
+ISSUE_REF_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+$")
+
 
 def split_ref(ref: str) -> tuple[str, int] | None:
     """``"owner/repo#123"`` → ``("owner/repo", 123)``; anything else → ``None``.

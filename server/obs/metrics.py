@@ -229,6 +229,13 @@ assistant_feedback_total = Counter(
 assistant_mentions_total = Counter(
     "assistant_mentions_total", "Assistant prompts that embed a `[title](/sessions/<id>)` mention")
 
+# Needs-you burden (design 2026-10-14 §2 "Metric"): each product's needs-you count —
+# the Products-map badge population — set by the needs-you hygiene loop every tick.
+# The hourly ``AttentionSample`` rows carry the history; this is the live value.
+pm_needs_you = Gauge(
+    "viberpit_pm_needs_you", "Items that need a person, per product (the map badge)",
+    labelnames=("product",))
+
 # Session tool surface (session tools spec §3, §4). Same shape as the assistant's
 # counters so one Grafana row can compare the two surfaces.
 session_tool_calls_total = Counter(
