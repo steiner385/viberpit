@@ -8,7 +8,9 @@
 #      fleet-runner daemon (#807/#839). If the process is alive but the probe is
 #      unresponsive (the "wedge" — invisible to systemd's Restart= policy
 #      because the process never exits), restart ${DAEMON_UNIT}. Honors a cooldown
-#      so a genuine crash-loop is left to systemd's Restart= policy instead of being thrashed here.
+#      so a genuine crash-loop is left to systemd's Restart= policy instead of being thrashed here
+#      — until it stops converging: NRestarts climbing with the daemon never healthy is
+#      escalated as an urgent alert (1b, #816), never auto-repaired.
 #   2. EARLY WARNING: alert on low disk, account needs-reauth, or daemon memory near the
 #      MemoryMax ceiling — the three conditions that silently broke prior deploys.
 #
@@ -50,13 +52,19 @@
 #       when the endpoint points at THIS host (it IS the configured daemon), or when this
 #       host is a registered+enabled fleet host in the hosts table (#807) — both are the
 #       deliberate fleet-runner layout, not the two-orchestrators accident.
-# All of 5a-5e are strictly additive and opt-in: with no remote endpoint configured, this
+#   5f. Non-converging restart loop (#816) — while 5a fails, read the daemon host's
+#       NRestarts over SSH; a counter that keeps climbing means Restart= is retrying an
+#       identical failure (2026-08-29: 57 restarts on a 0-byte module) and is escalated
+#       with read-only diagnostics (dirty checkout count, last error) instead of deferred.
+# All of 5a-5f are strictly additive and opt-in: with no remote endpoint configured, this
 # script's behavior (including section 1's own systemctl check) is unchanged.
 set -uo pipefail
 
 # Shell equivalent of server.host_units.resolve_unit; lookup stays on this host.
+# Also handed to the restart-loop probe (#816) to resolve the unit on the daemon host.
+DAEMON_UNIT_CANDIDATES="viberpit-daemon.service ccswitch-daemon.service"
 DAEMON_UNIT=viberpit-daemon.service
-for candidate in viberpit-daemon.service ccswitch-daemon.service; do
+for candidate in $DAEMON_UNIT_CANDIDATES; do
   if [[ "$(systemctl show "$candidate" -p LoadState --value 2>/dev/null)" == loaded ]]; then
     DAEMON_UNIT="$candidate"
     break
@@ -127,10 +135,14 @@ alert() {
   local statef="$STATE_DIR/alert-$key" last=0 t; t=$(now)
   [ -f "$statef" ] && last=$(cat "$statef" 2>/dev/null || echo 0)
   if [ $(( t - last )) -ge 1800 ]; then
-    curl -fsS -m 10 -H "Title: ViberPit alert" -d "$msg" "$ALERT_WEBHOOK" >/dev/null 2>&1 || true
+    curl -fsS -m 10 -H "Title: ViberPit alert" ${ALERT_PRIORITY:+-H "Priority: $ALERT_PRIORITY"} \
+      -d "$msg" "$ALERT_WEBHOOK" >/dev/null 2>&1 || true
     echo "$t" > "$statef"
   fi
 }
+# alert_urgent <key> <message>: as alert, at ntfy's top priority — for conditions that
+# stay down until a human acts, so the push breaks through do-not-disturb.
+alert_urgent() { ALERT_PRIORITY=urgent alert "$@"; }
 clear_alert() { rm -f "$STATE_DIR/alert-$1" 2>/dev/null || true; }
 
 # --- Fleet-aware topology helpers (#839) -----------------------------------------
@@ -230,6 +242,73 @@ mount_alert_key() {  # mount_alert_key <path> — stable alert-state key for a m
   printf 'mount-%s' "$(printf '%s' "$1" | tr -c 'a-zA-Z0-9' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//')"
 }
 
+# --- Restart-loop convergence (#816) -----------------------------------------------
+# A restart loop is either CONVERGING (a transient fault; systemd's Restart= owns it and
+# deferring is right) or NON-CONVERGING (the same failure every time — a 0-byte module
+# after a hard reset, a broken venv, a deploy importing something that isn't there —
+# which Restart= will retry forever). On 2026-08-29 rocky's daemon crash-looped 57 times
+# while every check here deferred to Restart=, and nobody was told. This tracks the
+# unit's NRestarts from the first unhealthy sighting and escalates once it climbs by
+# CRASHLOOP_RESTARTS with the daemon still down. Escalation only: auto-repairing a
+# checkout is a bigger decision, so the alert carries the read-only diagnostics instead.
+CRASHLOOP_RESTARTS="${VIBERPIT_CRASHLOOP_RESTARTS:-5}"
+# Run as `bash -s -- $DAEMON_UNIT_CANDIDATES` on whichever host owns the daemon (locally,
+# or over SSH). Prints KEY=VALUE lines; every probe is read-only and best-effort.
+# shellcheck disable=SC2016  # expanded by the bash that runs it, not here
+UNIT_LOOP_PROBE='
+u="$1"
+for c in "$@"; do
+  if [ "$(systemctl show "$c" -p LoadState --value 2>/dev/null)" = loaded ]; then u="$c"; break; fi
+done
+echo "UNIT=$u"
+systemctl show "$u" -p NRestarts -p ActiveState -p Result -p WorkingDirectory 2>/dev/null
+wd=$(systemctl show "$u" -p WorkingDirectory --value 2>/dev/null)
+if [ -n "$wd" ] && [ -e "$wd/.git" ]; then
+  echo "DIRTY=$(timeout 10 git -C "$wd" status --porcelain 2>/dev/null | wc -l)"
+fi
+echo "LASTERR=$(timeout 5 journalctl -u "$u" -n 50 -o cat --no-pager 2>/dev/null \
+  | grep -E "Error|Exception" | tail -1 | cut -c1-200)"
+'
+
+# crashloop_check <scope> <where> <probe output> — scope keys the alert/baseline state
+# ("local" / "remote"), where names the host in the alert text.
+crashloop_check() {
+  local scope="$1" where="$2" out="$3" basef n base unit active result wd dirty lasterr diag
+  basef="$STATE_DIR/crashloop-baseline-$scope"
+  n=$(sed -n 's/^NRestarts=//p' <<<"$out")
+  unit=$(sed -n 's/^UNIT=//p' <<<"$out")
+  active=$(sed -n 's/^ActiveState=//p' <<<"$out")
+  result=$(sed -n 's/^Result=//p' <<<"$out")
+  wd=$(sed -n 's/^WorkingDirectory=//p' <<<"$out")
+  dirty=$(sed -n 's/^DIRTY=//p' <<<"$out" | tr -dc '0-9')
+  lasterr=$(sed -n 's/^LASTERR=//p' <<<"$out")
+  if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+    log "restart-loop check ($where) skipped — could not read NRestarts"
+    return 0
+  fi
+  base=$(cat "$basef" 2>/dev/null)
+  # First unhealthy sighting, or the counter went backwards (a manual start resets it):
+  # (re)baseline. Only restarts observed WHILE unhealthy count toward the threshold.
+  if ! [[ "$base" =~ ^[0-9]+$ ]] || [ "$n" -lt "$base" ]; then
+    echo "$n" > "$basef"; base="$n"
+  fi
+  # systemd's own give-up (StartLimitBurst) is the same verdict, reached by systemd.
+  if [ $(( n - base )) -lt "$CRASHLOOP_RESTARTS" ] \
+      && ! { [ "$active" = failed ] && [ "$result" = start-limit-hit ]; }; then
+    return 0
+  fi
+  diag=""
+  if [ -n "$dirty" ] && [ "$dirty" -gt 0 ]; then
+    diag+=" Checkout $wd has $dirty uncommitted change(s) (git status --porcelain) — a deploy-managed checkout should be clean; damaged files there were the 2026-08-29 cause (restored by hand with git checkout -- .)."
+  fi
+  [ -n "$lasterr" ] && diag+=" Last error: $lasterr"
+  alert_urgent "daemon-crashloop-$scope" "NON-CONVERGING RESTART LOOP: ${unit:-the daemon unit} on $where has restarted $(( n - base )) time(s) while unreachable (NRestarts=$n, state=${active:-?}/${result:-?}) — systemd Restart= retries the same failure forever, so nothing will recover this without manual action.${diag}"
+}
+crashloop_clear() {  # crashloop_clear <scope> — the daemon is healthy again
+  rm -f "$STATE_DIR/crashloop-baseline-$1" 2>/dev/null || true
+  clear_alert "daemon-crashloop-$1"
+}
+
 # --- 1. Control-plane watchdog --------------------------------------------------
 # Probes the local daemon over whatever IT binds (LOCAL_BIND above): the UDS in the
 # classic layout, https+mTLS for a fleet-runner daemon.
@@ -324,6 +403,14 @@ else
   log "daemon service not active — not our job (systemd Restart= + viberpit-daemon-ensure.timer own this)"
 fi
 
+# 1b. ...unless that restart loop is not converging (#816). A local daemon that never
+# comes up healthy while NRestarts climbs is escalated, not deferred.
+if [ "$healthy" -eq 1 ]; then
+  crashloop_clear local
+else
+  crashloop_check local "$(hostname 2>/dev/null || echo this host)" "$(bash -s -- $DAEMON_UNIT_CANDIDATES <<<"$UNIT_LOOP_PROBE" 2>/dev/null)"
+fi
+
 # --- 2. Disk --------------------------------------------------------------------
 use=$(df --output=pcent "$DISK_PATH" 2>/dev/null | tail -1 | tr -dc '0-9')
 if [ -n "$use" ] && [ "$use" -ge "$DISK_WARN_PCT" ]; then
@@ -400,7 +487,19 @@ if [[ "$DAEMON_ENDPOINT" == https://* ]]; then
   if [ "$remote_healthy" -eq 1 ]; then
     clear_alert remote-daemon-unreachable
   else
-    alert remote-daemon-unreachable "remote daemon at $DAEMON_ENDPOINT unreachable after ${PROBE_RETRIES} mTLS probes — NOT auto-restarting (cross-host restart is a bigger decision; systemd Restart=always on the daemon host owns recovery there)"
+    alert remote-daemon-unreachable "remote daemon at $DAEMON_ENDPOINT unreachable after ${PROBE_RETRIES} mTLS probes — NOT auto-restarting (cross-host restart is a bigger decision; systemd Restart=always on the daemon host owns a converging loop, and a non-converging one escalates as daemon-crashloop-remote)"
+  fi
+
+  # 5f. Non-convergence (#816) — the handoff above assumes Restart= can fix it. Read the
+  # daemon host's NRestarts over SSH (only while unreachable, so a healthy fleet pays
+  # nothing) and escalate a loop that climbs without the daemon ever answering. A local
+  # daemon is section 1b's job.
+  if [ "$remote_healthy" -eq 1 ] || [ "$DAEMON_IS_LOCAL" -eq 1 ]; then
+    crashloop_clear remote
+  elif [ -n "$DAEMON_SSH_HOST" ]; then
+    loop_out=$(timeout "$SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
+      "$DAEMON_SSH_HOST" bash -s -- $DAEMON_UNIT_CANDIDATES <<<"$UNIT_LOOP_PROBE" 2>/dev/null)
+    crashloop_check remote "$DAEMON_SSH_HOST" "$loop_out"
   fi
 
   # Protocol check only runs off a successful probe; a failure to read either side's
