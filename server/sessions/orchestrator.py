@@ -17101,13 +17101,16 @@ class SessionOrchestrator:
                 .values(engine_session_id=engine_session_id)
             )
 
-    def _record_from_row(self, row, **overrides) -> SessionRecord:
+    @staticmethod
+    def _record_from_row(row, **overrides) -> SessionRecord:
         """Single source of truth for rebuilding an in-memory SessionRecord from a
         DB row (rehydrate + unarchive). Every row-backed field maps HERE, once — the
         previous hand-maintained parallel constructions drifted and silently dropped
         fields (origin/origin_ref vanished on restart, autopilot_paused on unarchive:
         the purple provenance badge disappearing after a redeploy was this bug).
-        Call sites pass only their genuine differences as ``overrides``."""
+        Call sites pass only their genuine differences as ``overrides``. Static so
+        the edge can serve a row no live record holds (an archived session, #3082)
+        through the same mapping."""
         fields = dict(
             id=row.id,
             name=row.name,

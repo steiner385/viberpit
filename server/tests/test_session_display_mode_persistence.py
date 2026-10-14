@@ -34,7 +34,7 @@ def test_record_from_row_maps_display_mode():
                           engine_session_id="", cwd="/tmp", repo=None, status="idle",
                           name_is_auto=True, permission_mode="interactive", created_at=None,
                           display_mode="native")
-    rec = SessionOrchestrator._record_from_row(SessionOrchestrator.__new__(SessionOrchestrator), row)
+    rec = SessionOrchestrator._record_from_row(row)
     assert rec.display_mode == "native"
 
 
@@ -70,7 +70,7 @@ def test_fallback_reason_roundtrip_row_and_api():
                           engine_session_id="", cwd="/tmp", repo=None, status="idle",
                           name_is_auto=True, permission_mode="interactive", created_at=None,
                           display_mode="virtual", display_fallback_reason="connect_refused")
-    rec = SessionOrchestrator._record_from_row(SessionOrchestrator.__new__(SessionOrchestrator), row)
+    rec = SessionOrchestrator._record_from_row(row)
     assert rec.display_fallback_reason == "connect_refused"
 
 
