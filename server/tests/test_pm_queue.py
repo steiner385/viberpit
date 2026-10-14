@@ -359,6 +359,10 @@ TRACKERS = {
     "forced-deploy-audit": dict(labels=("ci-infrastructure", "forced-deploy-audit"),
                                 title="⚠️ Unverified prod deploy b80aa1b03c — 2026-09-21"),
     "nightly-scoreboard": dict(labels=("nightly-scoreboard",), title="Nightly scoreboard"),
+    # A daily report the workflow upserts in place, its title re-dated each day
+    # (cairnea/KinDash#16677, design 2026-10-14 §2 rule 1).
+    "traceability-drift label": dict(labels=("traceability-drift",), title="t"),
+    "traceability-drift title": dict(labels=(), title="traceability-drift — 2026-10-14"),
 }
 
 NOT_TRACKERS = {
@@ -379,6 +383,8 @@ NOT_TRACKERS = {
     "weekly report failed": dict(labels=(), title="Weekly report failed - timeout"),
     # A feature named "... Digest" — no emoji prefix, so not a generated report.
     "family digest": dict(labels=(), title="Add Weekly Family Digest"),
+    # Work ABOUT the drift report is not the report.
+    "traceability-drift fix": dict(labels=(), title="traceability-drift report misses specs/"),
 }
 
 

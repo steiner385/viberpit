@@ -13,11 +13,14 @@ of them were dispatched again — each a session that could only report "no code
 write".
 
 Pure half. ``skipped_by_policy`` is the approve tap's predicate (the not-work rule
-plus author trust). The backlog tick ends every RUNNER-written ``owner_action`` hold
-the not-work rule alone names (``stale_runner_holds``: ``not_work_by_policy`` — the
-``bot`` and ``tracker`` skips under the product's policy; trust is NOT a release
-reason), so the inbox stops offering them and the queue's ordinary skip takes over.
-Only the runner's own holds: a person who parked a skipped issue meant to.
+plus author trust). The backlog tick and the needs-you hygiene loop (design
+2026-10-14 §2) end every SYSTEM-written ``owner_action`` hold the not-work rule alone
+names (``stale_system_holds``: ``not_work_by_policy`` — the ``bot`` and ``tracker``
+skips under the product's policy; trust is NOT a release reason), so the inbox stops
+offering them and the queue's ordinary skip takes over. Only holds the runner, the
+reconciler, the legacy conversion or an automation wrote (``holds.actor_class``):
+a person who parked a skipped issue meant to, and an agent's hold is not the
+system's to end.
 """
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ from datetime import datetime
 
 from server.automations.product_policy import (skip_labels, skips_self_closing_trackers,
                                                trusted_authors)
-from server.pm.holds import RUNNER_ACTOR
+from server.pm.holds import actor_class
 from server.pm.queue import (QueueRow, is_bot_noise, is_parked, is_self_closing_tracker,
                              is_trusted_author, needs_unavailable_environment)
 
@@ -40,7 +43,7 @@ def not_work_by_policy(*, author: str, labels: Iterable[str], title: str,
     ``parked`` label is not part of it: that is a park, not a verdict that the issue
     is not work, and it must not end the runner's own hand-off hold (#2683 review;
     ``skipped_by_policy`` and the not-needed settle add it themselves). Author trust
-    is not part of it either (see ``stale_runner_holds``)."""
+    is not part of it either (see ``stale_system_holds``)."""
     labels = tuple(labels)
     if is_bot_noise(author=author, labels=labels, title=title,
                     extra_skip_labels=skip_labels(policy)):
@@ -83,10 +86,20 @@ def _is_not_needed_hold(row: QueueRow) -> bool:
             and (row.hold_reason or "").startswith(NOT_NEEDED_HOLD_PREFIX))
 
 
-def stale_runner_holds(rows: Iterable[QueueRow], policies: Mapping[str, Mapping], *,
+def is_system_hold(row: QueueRow) -> bool:
+    """Whether *row*'s hold is an ``owner_action`` hand-off a SYSTEM actor wrote —
+    the only holds the hygiene passes may end (``holds.actor_class``: the runner,
+    the reconciler, the legacy conversion, ``automation:*``). Never a ``decision``
+    hold, a person's, an agent's, or one with no recorded placer."""
+    return (row.hold_kind == "owner_action" and bool(row.hold_by)
+            and actor_class(str(row.hold_by)) == "system")
+
+
+def stale_system_holds(rows: Iterable[QueueRow], policies: Mapping[str, Mapping], *,
                        now: datetime) -> list[QueueRow]:
-    """The RUNNER-written ``owner_action`` holds the hygiene pass ends, in the order
-    given:
+    """The SYSTEM-written ``owner_action`` holds (``is_system_hold``) the hygiene
+    passes end, in the order given — ONE rule for the backlog tick and the needs-you
+    hygiene loop (``server/pm/hygiene.py``):
 
     - the owning product's policy now skips the issue as ``bot`` or ``tracker``
       (``not_work_by_policy``) — the queue's ordinary skip takes over;
@@ -96,8 +109,8 @@ def stale_runner_holds(rows: Iterable[QueueRow], policies: Mapping[str, Mapping]
       inbox. Once the window has ended, release makes the issue dispatchable at
       once, so at most ``EXPIRED_NOT_NEEDED_RELEASES_PER_PASS`` of those go per pass.
 
-    A person's hold, a hold of another kind, and an issue the policy still treats as
-    work are not stale. Neither is a runner hold on an issue a person has since
+    A person's or an agent's hold, a hold of another kind, and an issue the policy
+    still treats as work are not stale. Neither is a system hold on an issue a person has since
     labelled ``parked`` — the label keeps it out of the queue, and the hand-off is
     still the owner's to read (#2683 review). Author TRUST is deliberately not part
     of this: an untrusted author's issue is not dispatched, but the owner's inbox
@@ -106,7 +119,7 @@ def stale_runner_holds(rows: Iterable[QueueRow], policies: Mapping[str, Mapping]
     out: list[QueueRow] = []
     expired_budget = EXPIRED_NOT_NEEDED_RELEASES_PER_PASS
     for row in rows:
-        if row.hold_kind != "owner_action" or row.hold_by != RUNNER_ACTOR:
+        if not is_system_hold(row):
             continue
         if not_work_by_policy(author=row.author, labels=row.labels, title=row.title,
                               policy=policies.get(row.product)):

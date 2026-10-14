@@ -4,7 +4,7 @@ The Backlog Runner handed ``forced-deploy-audit`` issues to their owner ("bounce
 at opus; fable needs approval") BEFORE the product listed that label in
 ``skip_labels``. The hold outlived the policy change: the Held inbox kept offering
 "Approve escalation" for issues the queue would skip as ``bot`` the moment the hold
-ended, and approving dispatched them anyway. ``stale_runner_holds`` names those
+ended, and approving dispatched them anyway. ``stale_system_holds`` names those
 holds so the backlog tick can end them; ``skipped_by_policy`` is the predicate the
 approval tap refuses on.
 """
@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from server.pm.policy_skip import skipped_by_policy, stale_runner_holds
+from server.pm.policy_skip import skipped_by_policy, stale_system_holds
 from server.pm.queue import QueueRow
 
 NOW = datetime(2026, 10, 6, 14, 0, tzinfo=timezone.utc)
@@ -48,7 +48,7 @@ def test_skipped_by_policy_reads_the_products_skip_labels_and_the_global_filter(
                                  policy={"trusted_authors": ["tony"]})
 
 
-def test_stale_runner_holds_picks_only_the_runners_owner_action_holds_on_skipped_rows():
+def test_stale_system_holds_picks_only_system_owner_action_holds_on_skipped_rows():
     # ``forced-deploy-audit`` is a built-in tracker label since #2683, so "other" opts
     # back in to trackers to keep a product for which the label is still work.
     policies = {"kindash": {"skip_labels": ["forced-deploy-audit"]},
@@ -81,9 +81,27 @@ def test_stale_runner_holds_picks_only_the_runners_owner_action_holds_on_skipped
         # No policy, but the global filter fires: stale as well.
         _row(number=9, hold_kind="owner_action", hold_by="runner", hold_reason=ESCALATION,
              labels=("dependencies",), product="unknown"),
+        # Design 2026-10-14 §2: every SYSTEM actor's owner_action hand-off, not only
+        # the runner's — the reconciler, the legacy conversion, an automation.
+        _row(number=10, hold_kind="owner_action", hold_by="reconciler", hold_reason="r",
+             labels=AUDIT),
+        _row(number=11, hold_kind="owner_action", hold_by="migration", hold_reason="r",
+             labels=AUDIT),
+        _row(number=12, hold_kind="owner_action", hold_by="automation:error-triage",
+             hold_reason="r", labels=AUDIT),
+        # An agent is not the system: a session's or the assistant's hold stays.
+        _row(number=13, hold_kind="owner_action", hold_by="assistant:tony@example.com",
+             hold_reason="r", labels=AUDIT),
+        # A hold with no recorded placer is nobody's to end.
+        _row(number=14, hold_kind="owner_action", hold_by=None, hold_reason="r",
+             labels=AUDIT),
+        # Never a decision hold, whoever placed it.
+        _row(number=15, hold_kind="decision", hold_by="runner", hold_reason="r",
+             labels=AUDIT),
     ]
-    assert [r.number for r in stale_runner_holds(rows, policies, now=NOW)] == [1, 2, 8, 9]
-    assert stale_runner_holds([], policies, now=NOW) == []
+    assert [r.number for r in stale_system_holds(rows, policies, now=NOW)] == [
+        1, 2, 8, 9, 10, 11, 12]
+    assert stale_system_holds([], policies, now=NOW) == []
 
 
 def test_approval_tap_refuses_an_untrusted_author():
@@ -101,8 +119,8 @@ def test_trust_never_makes_a_runner_hold_stale():
                author="stranger", labels=("bug",))
     assert skipped_by_policy(author="stranger", labels=("bug",), title="t",
                              policy=policies["kindash"])
-    assert stale_runner_holds([row], policies, now=NOW) == []
-    assert stale_runner_holds([row], {}, now=NOW) == []
+    assert stale_system_holds([row], policies, now=NOW) == []
+    assert stale_system_holds([row], {}, now=NOW) == []
 
 
 def test_a_self_closing_tracker_is_not_work_unless_the_product_works_trackers():
@@ -133,7 +151,7 @@ def test_a_self_closing_tracker_is_not_work_unless_the_product_works_trackers():
 def test_a_parked_label_never_ends_the_runners_give_up_hold():
     rows = [_row(number=1, hold_kind="owner_action", hold_by="runner", hold_reason=ESCALATION,
                  author="tony", labels=("bug", "parked"))]
-    assert stale_runner_holds(rows, {"kindash": {}}, now=NOW) == []
+    assert stale_system_holds(rows, {"kindash": {}}, now=NOW) == []
 
 
 def _not_needed_hold(number, *, until):
@@ -158,9 +176,9 @@ def test_not_needed_holds_clear_inside_the_window_and_drip_once_it_has_ended():
         _not_needed_hold(3, until=NOW - timedelta(days=2)),
         _not_needed_hold(4, until=NOW + timedelta(days=3)),
     ]
-    assert [r.number for r in stale_runner_holds(rows, {"kindash": {}}, now=NOW)] == [1, 2, 4]
+    assert [r.number for r in stale_system_holds(rows, {"kindash": {}}, now=NOW)] == [1, 2, 4]
     # The next pass (row 1 now released) takes the next expired one.
-    assert [r.number for r in stale_runner_holds(rows[1:], {"kindash": {}}, now=NOW)] == [
+    assert [r.number for r in stale_system_holds(rows[1:], {"kindash": {}}, now=NOW)] == [
         2, 3, 4]
 
 
@@ -182,10 +200,10 @@ def test_runner_holds_on_self_closing_trackers_go_stale():
         _row(number=4, hold_kind="owner_action", hold_by="runner", hold_reason=reason,
              title="ops: actions budget / runner tier", labels=("ops",)),
     ]
-    assert [r.number for r in stale_runner_holds(rows, {"kindash": {}}, now=NOW)] == [1, 2, 3]
+    assert [r.number for r in stale_system_holds(rows, {"kindash": {}}, now=NOW)] == [1, 2, 3]
     # Opted back in: only the ignore label still releases.
     works = {"kindash": {"skip_self_closing_trackers": False}}
-    assert [r.number for r in stale_runner_holds(rows, works, now=NOW)] == [3]
+    assert [r.number for r in stale_system_holds(rows, works, now=NOW)] == [3]
 
 
 def test_approval_tap_refuses_an_issue_the_fleet_cannot_run():

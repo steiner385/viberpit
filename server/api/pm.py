@@ -10,7 +10,6 @@ import asyncio
 import logging
 import re
 import subprocess
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
@@ -47,7 +46,6 @@ from server.db.models import (
     WorkItem,
     WorkItemDep,
 )
-from server.pm.drift import DepEdgeView
 from server.pm.explain import triage_guidance
 from server.pm.featuredoc import FeatureLinkRef
 from server.pm.health import roadmap_health
@@ -55,19 +53,20 @@ from server.pm.issue_disposition import CloseReason, IssueDecision
 from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind, open_pointer_row
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
-from server.pm.mirror_store import blocker_states, blocker_states_stmt, deps_in_repos
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
     PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
 from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, age_days, rank, rank_key,
                              skip_detail)
 from server.pm.queue_store import queue_inputs
-from server.pm.refs import split_ref
+from server.pm import dep_prune
+from server.pm.dep_prune import dep_scope, stale_edges
+from server.pm.refs import ISSUE_REF_RE, split_ref
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
     owning_projects_by_repo, require_mutation_owner, require_unregistered_repos,
 )
-from server.pm.stale_deps import DEP_PRUNE_MAX, STALE_KINDS, StaleEdge, classify_stale
+from server.pm.stale_deps import DEP_PRUNE_MAX, STALE_KINDS
 from server.pm.score import RICE_FIELDS, rice_score, validate_rice
 from server.pm.sync_request import request_project_sync
 # The accept write path and the undo-snapshot format live in server/pm/triage_accept.py
@@ -743,61 +742,6 @@ async def create_edge(
     return _edge_to_dict(edge, {src.id: src.slug, dst.id: dst.slug})
 
 
-@dataclass
-class _DepScope:
-    """One product's dependency rows with every blocker's state resolved — the shared
-    load behind the deps view and the stale-edge preview/prune, so they can never
-    disagree about which edge exists or whether its blocker is resolved."""
-    items: dict[str, WorkItem]
-    open_refs: set[str]
-    edges: list[DepEdgeView]
-    cross_states: dict[str, str]
-
-    def dst_state(self, ref: str) -> str | None:
-        if ref in self.items:
-            return self.items[ref].state
-        return self.cross_states.get(ref)
-
-
-async def _dep_scope(db, p: Project) -> _DepScope:
-    repos = {r.repo for r in (await db.execute(
-        select(ProjectRepo).where(ProjectRepo.project_id == p.id)
-    )).scalars().all() if r.repo}
-    work_items_raw = (await db.execute(
-        select(WorkItem).where(WorkItem.repo.in_(repos), WorkItem.kind == "issue")
-    )).scalars().all()
-    items: dict[str, WorkItem] = {f"{w.repo}#{w.number}": w for w in work_items_raw}
-    open_refs = {ref for ref, w in items.items() if (w.state or "open") == "open"}
-    # Push the src_ref repo-prefix filter into SQL (issue #973) — keep only deps
-    # whose src belongs to a project repo, instead of scanning the whole
-    # WorkItemDep table in Python. Shared with the reconciler's facts loader.
-    dep_rows = list((await db.execute(
-        select(WorkItemDep).where(deps_in_repos(repos)))).scalars().all())
-    # Cross-product visibility (spec goal): a dep may target another onboarded
-    # product's mirrored issue, or a pull request (#2979). Resolve dst refs that are
-    # NOT in the project-scoped issue map through the queue's own blocker lookup
-    # (single query), so their dstState is populated and they don't land in
-    # unresolvedTargets. Genuinely unmirrored targets stay null → unresolvedTargets.
-    stmt = blocker_states_stmt(
-        {d.dst_ref for d in dep_rows if d.dst_ref and d.dst_ref not in items})
-    cross_states: dict[str, str] = (
-        blocker_states((await db.execute(stmt)).all()) if stmt is not None else {})
-    scope = _DepScope(items=items, open_refs=open_refs, edges=[], cross_states=cross_states)
-    scope.edges = [DepEdgeView(
-        src_ref=d.src_ref or "",
-        dst_ref=d.dst_ref or "",
-        source=d.source or "",
-        active=bool(d.active),
-        dst_state=scope.dst_state(d.dst_ref or ""),
-    ) for d in dep_rows]
-    return scope
-
-
-def _stale_edges(scope: _DepScope) -> list[StaleEdge]:
-    return classify_stale(scope.edges, open_srcs=scope.open_refs,
-                          bodies={ref: scope.items[ref].body for ref in scope.open_refs})
-
-
 @router.get("/projects/{slug}/deps/stale")
 async def project_stale_deps(
     slug: str,
@@ -810,7 +754,7 @@ async def project_stale_deps(
     still-derived prose/order edge whose blocker is resolved (listed, not prunable).
     A resolved blocker is already inert since #2979 — this is map/count hygiene."""
     p = await _load_project(db, slug)
-    stale = _stale_edges(await _dep_scope(db, p))
+    stale = stale_edges(await dep_scope(db, p))
     counts = {k: sum(1 for s in stale if s.kind == k) for k in STALE_KINDS}
     return {"product": slug, "edges": [s.to_wire() for s in stale], "counts": counts,
             "prunable": sum(1 for s in stale if s.prunable)}
@@ -842,54 +786,10 @@ async def prune_stale_deps(
     — a sync would re-derive it, so the fix is editing the issue body. Per-edge results,
     each audited; a partial success is reported as one, never all-or-nothing."""
     p = await _load_project(db, slug)
-    scope = await _dep_scope(db, p)
-    stale = {(s.src, s.blocker): s for s in _stale_edges(scope)}
-    results: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-    for ref in body.edges:
-        pair = (ref.src.strip(), ref.blocker.strip())
-        if pair in seen:
-            continue
-        seen.add(pair)
-        src, blocker = pair
-        edge = stale.get(pair)
-        pruned: str | None = None
-        refused: str | None = None
-        message: str | None = None
-        step: str | None = None
-        if not _REF_RE.match(src) or not _REF_RE.match(blocker):
-            refused, message = "bad_ref", "src and blocker must be owner/repo#N"
-        elif edge is None:
-            refused = "not_stale"
-            message = (f"{src} ← {blocker} is not a stale active edge of {slug} any more "
-                       "(its blocker is open or unknown, or the edge is gone)")
-        elif not edge.prunable:
-            refused = "rederived"
-            message = (f"{src} still names {blocker} in its body (or epic order), so the "
-                       "next sync would re-create the edge; edit the issue instead")
-        elif edge.kind == "native_resolved":
-            result = await request.app.state.sessions.pm_remove_dependency(
-                scope.items[src].id, blocker)
-            step = result.get("step")
-            if result.get("ok"):
-                pruned = "native"
-            else:
-                refused = "github"
-                message = str(result.get("error") or "dependency removal failed")
-        else:
-            rows = (await db.execute(select(WorkItemDep).where(
-                WorkItemDep.src_ref == src, WorkItemDep.dst_ref == blocker,
-                WorkItemDep.source == "prose", WorkItemDep.active.is_(True)))).scalars().all()
-            for row in rows:
-                row.active = False
-            await db.flush()
-            pruned = "prose"
-        await record_audit(db=db, type="pm.workitem.dep_prune", identity=identity,
-                           detail={"slug": slug, "src": src, "blocker": blocker,
-                                   "kind": edge.kind if edge else None,
-                                   "ok": pruned is not None, "refused": refused, "step": step})
-        results.append({"src": src, "blocker": blocker, "pruned": pruned,
-                        "refused": refused, "message": message})
+    results = await dep_prune.prune(
+        db, slug=slug, scope=await dep_scope(db, p),
+        pairs=[(ref.src, ref.blocker) for ref in body.edges],
+        remove_dependency=request.app.state.sessions.pm_remove_dependency, identity=identity)
     return {"results": results,
             "pruned": sum(1 for r in results if r["pruned"]),
             "refused": sum(1 for r in results if r["refused"])}
@@ -912,7 +812,7 @@ async def project_deps(
     from server.pm.drift import compute_drift, top_blockers
 
     p = await _load_project(db, slug)
-    scope = await _dep_scope(db, p)
+    scope = await dep_scope(db, p)
     items, open_refs, edges, _dst_state = (
         scope.items, scope.open_refs, scope.edges, scope.dst_state)
 
@@ -2566,9 +2466,6 @@ async def get_work_item_outcomes(
     return {"items": [outcome_to_dict(r) for r in rows]}
 
 
-_REF_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+$")
-
-
 @router.delete("/work-items/{item_id}/deps")
 async def delete_work_item_dep(
     item_id: str,
@@ -2587,7 +2484,7 @@ async def delete_work_item_dep(
     audit trail whether or not GitHub agreed. A refusal is a 502 carrying the
     seam's ``step`` so the web can say what to do (an unmirrored side means
     "wait for the sync", a GitHub error means "look at the issue")."""
-    if not _REF_RE.match(blocker):
+    if not ISSUE_REF_RE.match(blocker):
         raise HTTPException(status_code=422, detail={
             "error": "bad_blocker", "message": "blocker must be owner/repo#N"})
     wi = (await db.execute(select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()

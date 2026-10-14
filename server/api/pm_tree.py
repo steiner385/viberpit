@@ -29,7 +29,7 @@ from server.pm.score import rice_score
 from server.pm.triage_accept import _aware, awaiting_decision_clause
 from server.pm.tree import (
     CapabilityIn, InitiativeIn, ProductIn, build_product_tree, derived_stage, issue_reason,
-    issue_tier)
+    issue_tier, needs_you_total)
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
@@ -133,9 +133,26 @@ def needs_home_stmt(repos: list[str]):
 
 @router.get("/map")
 async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    return {"products": await product_nodes(db),
+            "generatedAt": datetime.now(timezone.utc).isoformat()}
+
+
+async def product_attention_counts(db) -> dict[str, dict]:
+    """Per product slug, ``{"needsYou": n, "waiting": {key: n}}`` — exactly what the
+    Products map shows (its badge population, ``tree.needs_you_total``, and its
+    waiting counters), from the SAME ``product_nodes`` composition ``/map`` serves.
+    The needs-you hygiene loop samples it (design 2026-10-14 §2 "Metric"), so the
+    trend and the badge cannot disagree."""
+    return {node["slug"]: {"needsYou": needs_you_total(node),
+                           "waiting": dict(node["counts"]["waiting"])}
+            for node in await product_nodes(db)}
+
+
+async def product_nodes(db) -> list[dict]:
+    """Every product's map tree (``tree.build_product_tree``) — the body of ``/map``."""
     projects = (await db.execute(select(Project).order_by(Project.created_at))).scalars().all()
     if not projects:
-        return {"products": [], "generatedAt": datetime.now(timezone.utc).isoformat()}
+        return []
     pids = [p.id for p in projects]
     slug_of = {p.id: p.slug for p in projects}
 
@@ -284,7 +301,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             map_changes=map_changes.get(p.id),
             waiting=waiting_by_product.get(p.slug or p.id, {}),
         )))
-    return {"products": products, "generatedAt": datetime.now(timezone.utc).isoformat()}
+    return products
 
 
 async def _not_needed_until(db, items: list[WorkItem], now: datetime) -> dict[str, datetime]:

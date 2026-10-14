@@ -49,6 +49,16 @@ RECONCILE_EXEMPT: set[str] = {
     "permission_rule_stats.profile_id",
     "permission_rule_stats.pattern",
     "permission_rule_stats.created_by",
+    # owner_recommendations / attention_samples (0087, design 2026-10-14 §2): NEW tables
+    # installed whole by create_all; the product, rule, target and action of a hygiene
+    # recommendation, and a sample's product and count, are mandatory at INSERT
+    # (server/automations/needs_you_hygiene.py), so no synthesizable default.
+    "owner_recommendations.project_id",
+    "owner_recommendations.rule",
+    "owner_recommendations.target_ref",
+    "owner_recommendations.action",
+    "attention_samples.project_id",
+    "attention_samples.needs_you",
     "sessions.name",           # required at session create; no sane default
     "sessions.account_name",   # required at session create; no sane default
     "sessions.cwd",            # required at session create; no sane default

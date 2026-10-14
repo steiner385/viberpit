@@ -429,11 +429,11 @@ async def test_release_via_api_still_refuses_a_decision_hold():
     assert wi.hold_kind == "decision"
 
 
-def test_release_policy_skipped_holds_ends_only_the_runners_owner_action_holds():
+def test_release_policy_skipped_holds_ends_only_system_owner_action_holds():
     """The hold-hygiene release (cairnea/KinDash#16652): among the refs it is handed
-    it ends the RUNNER's ``owner_action`` holds only — a person's park, an evidence
-    hold and an unlisted ref are untouched — audited as ``policy_skip`` via the
-    runner, and a second pass finds nothing."""
+    it ends SYSTEM actors' ``owner_action`` holds only (design 2026-10-14 §2) — a
+    person's park, an evidence hold and an unlisted ref are untouched — audited as
+    ``policy_skip`` via the runner, and a second pass finds nothing."""
     from server.db.models import AuditEvent
     from server.pm.holds import RELEASE_SIGNALS, release_policy_skipped_holds, set_runner_hold
     db = _sync_db()
@@ -446,9 +446,18 @@ def test_release_policy_skipped_holds_ends_only_the_runners_owner_action_holds()
     evidence = _held(db, 3, kind="evidence")
     db.flush()
 
-    released = release_policy_skipped_holds(db, ["o/r#1", "o/r#2", "o/r#3", "o/r#9", "garbage"])
+    reconciler = WorkItem(repo="o/r", number=5, kind="issue", state="open", title="t", body="b",
+                          hold_kind="owner_action", hold_reason="r", hold_by="reconciler")
+    agent = WorkItem(repo="o/r", number=6, kind="issue", state="open", title="t", body="b",
+                     hold_kind="owner_action", hold_reason="r", hold_by="session:s1")
+    db.add_all([reconciler, agent])
+    db.flush()
+
+    released = release_policy_skipped_holds(
+        db, ["o/r#1", "o/r#2", "o/r#3", "o/r#5", "o/r#6", "o/r#9", "garbage"])
     db.commit()
-    assert released == ["o/r#1"]
+    assert sorted(released) == ["o/r#1", "o/r#5"]
+    assert reconciler.hold_kind is None and agent.hold_kind == "owner_action"
     assert runner.hold_kind is None and runner.hold_fingerprint is None
     assert person.hold_kind == "owner_action"
     assert evidence.hold_kind == "evidence"
@@ -456,9 +465,28 @@ def test_release_policy_skipped_holds_ends_only_the_runners_owner_action_holds()
     assert "policy_skip" in RELEASE_SIGNALS
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert [(r.detail["signal"], r.detail["kind"], r.detail["actorClass"], r.via)
-            for r in rows] == [("policy_skip", "owner_action", "system", "runner")]
+            for r in rows] == [("policy_skip", "owner_action", "system", "runner")] * 2
     assert release_policy_skipped_holds(db, ["o/r#1"]) == []
     assert release_policy_skipped_holds(db, []) == []
+
+
+def test_release_policy_skipped_holds_records_the_caller_as_actor():
+    """The needs-you hygiene loop releases as its own automation actor, and a person
+    applying a hygiene recommendation as themselves — never a person's own hold."""
+    from server.db.models import AuditEvent
+    from server.pm.holds import release_policy_skipped_holds, set_runner_hold
+    db = _sync_db()
+    runner = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="t", body="b")
+    set_runner_hold(runner, reason="bounced at opus; fable needs approval", now=NOW)
+    db.add(runner)
+    person = _held(db, 2)
+    db.flush()
+    released = release_policy_skipped_holds(db, ["o/r#1", "o/r#2"], actor="tony@example.com",
+                                             via="api")
+    assert released == ["o/r#1"] and person.hold_kind == "owner_action"
+    row = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").one()
+    assert (row.identity, row.via, row.detail["actorClass"]) == ("tony@example.com", "api",
+                                                                 "person")
 
 
 def test_release_by_signals_ignores_mirror_lag_from_an_edit_made_before_the_hold():

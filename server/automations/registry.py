@@ -134,6 +134,7 @@ from .error_triage import ErrorTriage  # noqa: E402
 from .session_feedback import SessionFeedbackFiler  # noqa: E402
 from .deploy_monitor import DeployMonitor  # noqa: E402
 from .capacity_governor import CapacityGovernor  # noqa: E402
+from .needs_you_hygiene import NeedsYouHygiene  # noqa: E402
 from .decision_escalation import DecisionEscalation  # noqa: E402
 
 # Current effects, not future policy. Keep metadata beside each registration.
@@ -323,5 +324,25 @@ registry.register(DecisionEscalation(), oversight=AutomationOversight(
     },
     (Relationship('uses', 'backlog-runner', 'Reads the same queue the runner dispatches from.'),
      Relationship('uses', 'pm-sync', 'Reads mirrored holds and decision proposals.')),
+))
+registry.register(NeedsYouHygiene(), oversight=AutomationOversight(
+    Responsibility.ORGANIZATION,
+    'Board cards, holds and dependency edges across every onboarded product that read as '
+    'needing a person but need only a machine (design 2026-10-14 §2).',
+    {
+        'off': 'Disable hygiene and the needs-you samples.',
+        'dry_run': 'Record what it would close, move, release or prune; change nothing.',
+        'on': 'Per product (its needs_you_automation setting can lower this): balanced or bold '
+              'risk tolerance applies each action — close a day-old Done card\'s open issue, move '
+              'a stale Blocked card to the queue, end a system hold the queue already skips, '
+              'prune a resolved edge — capped per tick and audited; cautious records a '
+              'recommendation for the owner to approve instead.',
+    },
+    (Relationship('shares_work_with', 'gh-reconcile',
+                  'Moves board cards the reconciler leaves alone; the reconciler owns every '
+                  'other Status, and adds missing open issues to the board.'),
+     Relationship('shares_work_with', 'backlog-runner',
+                  'Ends the same stale system holds the runner\'s tick ends, through one rule.'),
+     Relationship('uses', 'pm-sync', 'Reads the mirrored board, holds and dependency edges.')),
 ))
 registry.validate_oversight(require_all=True)

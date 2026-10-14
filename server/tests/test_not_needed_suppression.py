@@ -21,7 +21,7 @@ from server.db.models import (NOT_NEEDED_CAUSE, Base, DispatchOutcome, GhProject
 from server.pm.outcomes import (NOT_NEEDED_BACKOFF, NotNeededVerdict, body_fingerprint,
                                 material_fingerprint, not_needed_backoff,
                                 not_needed_suppression)
-from server.pm.policy_skip import NOT_NEEDED_HOLD_PREFIX, stale_runner_holds
+from server.pm.policy_skip import NOT_NEEDED_HOLD_PREFIX, stale_system_holds
 from server.pm.queue import SKIP_REASONS, QueueRow, rank, skip_reason
 from server.pm.queue_store import load_queue_rows
 
@@ -175,7 +175,7 @@ def test_runner_not_needed_holds_go_stale_while_the_verdict_stands():
         _row(number=4, ref="o/r#4", hold_by="runner", not_needed_standing=True,
              hold_kind="owner_action", hold_reason="bounced at fable: no mergeable PR"),
     ]
-    assert [r.number for r in stale_runner_holds(rows, {"p": {}}, now=T0)] == [1]
+    assert [r.number for r in stale_system_holds(rows, {"p": {}}, now=T0)] == [1]
 
 
 def _db():

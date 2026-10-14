@@ -15,7 +15,7 @@ def test_schema_keys_and_defaults():
                     "trusted_authors", "auto_escalate_match",
                     "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
                     "triage_auto_accept_repeat", "triage_dismiss_bot_artifacts",
-                    "triage_bot_artifact_patterns", "risk_tolerance",
+                    "triage_bot_artifact_patterns", "risk_tolerance", "needs_you_automation",
                     "max_initiatives_in_flight", "unattended_model_floor", "session_assistance",
                     "artifact_layout"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
@@ -29,6 +29,7 @@ def test_schema_keys_and_defaults():
         "auto_escalate_budget": 0, "triage_auto_accept": "off", "triage_auto_accept_dispatch_off": False,
         "triage_auto_accept_repeat": 3, "triage_dismiss_bot_artifacts": True,
         "triage_bot_artifact_patterns": [], "risk_tolerance": "cautious",
+        "needs_you_automation": "on",
         "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "session_assistance": "on",
         "artifact_layout": "docs_sdlc"}
 
@@ -203,6 +204,17 @@ def test_risk_tolerance_is_the_gate_vocabulary_defaulting_to_cautious():
     assert effective_policy({"risk_tolerance": "bold"})["risk_tolerance"] == "bold"
     # Garbage degrades the WHOLE policy to defaults: a bad row can only be more careful.
     assert effective_policy({"risk_tolerance": "reckless"})["risk_tolerance"] == "cautious"
+
+
+def test_needs_you_automation_is_off_dry_run_on_defaulting_on():
+    """Design 2026-10-14 §2: the product's own say over the needs-you hygiene
+    automation; risk_tolerance (not this key) decides apply vs recommend."""
+    from server.automations.product_policy import NEEDS_YOU_AUTOMATION_MODES
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["needs_you_automation"]
+    assert field.type == "enum" and field.default == "on"
+    assert field.choices == list(NEEDS_YOU_AUTOMATION_MODES) == ["off", "dry_run", "on"]
+    assert "risk" in (field.help or "").lower()
+    assert effective_policy({"needs_you_automation": "dry_run"})["needs_you_automation"] == "dry_run"
 
 
 def test_max_initiatives_in_flight_defaults_to_two_and_zero_pauses():

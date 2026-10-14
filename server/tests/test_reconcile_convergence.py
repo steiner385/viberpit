@@ -181,3 +181,24 @@ def test_a_real_human_edit_is_detected_and_wins():
     # newer than our decision, so the ownership rule suppresses it.
     _facts, muts = _plan(db, product, human_time)
     assert [(m.target_node_id, m.field) for m in muts] == [("PVTI_9", "Status")]
+
+
+def test_a_classified_issue_missing_from_the_board_is_added_and_placed_at_ready():
+    """Design 2026-10-14 §2 rule 5 (#2979 part 2): a triage-accepted (classified),
+    open issue with no ``GhProjectItem`` on its product's board needs no hygiene
+    rule — the reconciler owns it. Membership adds it, and once mirrored its first
+    Status fill is Ready (``derive_status``), so the queue can reach it."""
+    db = _db()
+    gid = _seed(db)
+    product = list_product_views(db)[0]
+    db.add(WorkItem(repo=REPO, number=12, kind="issue", state="open", gh_node_id="I_12",
+                    triage_state="classified", classified_at=T, reach=2, impact=2, effort=2,
+                    confidence=50, labels=[]))
+    db.commit()
+
+    muts, _ = _cycle(db, product, gid, T)
+    assert ("add_item", "I_12") in [(m.kind, m.new_value) for m in muts]
+
+    muts, _ = _cycle(db, product, gid, T + timedelta(minutes=2))
+    assert ("PVTI_12", "Status", "Ready") in [
+        (m.target_node_id, m.field, m.new_value) for m in muts]

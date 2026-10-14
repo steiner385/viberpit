@@ -433,3 +433,38 @@ def test_product_counts_carry_waiting_in_stable_key_order():
     waiting = build_product_tree(product)["counts"]["waiting"]
     assert list(waiting) == list(WAITING_KEYS)
     assert waiting["parked"] == 3 and waiting["blocked"] == 2 and waiting["tracker"] == 0
+
+
+def test_needs_you_total_is_the_web_badge_count():
+    """``needs_you_total`` is ``needsYouCount`` (web ``detail/needsYou.ts``) over one
+    product node, so the needs-you metric (design 2026-10-14 §2) is the badge:
+    initiatives by OWN tier, each capability's DIRECT needs-you issues (its children's
+    and its primary leaf initiatives subtracted), and one per product with triage."""
+    from server.pm.tree import needs_you_total
+    phase_epic = {"ref": "o/r#2", "url": "u", "total": 4, "done": 4, "blocked": 0, "held": 0}
+    product = ProductIn(
+        slug="p", name="P",
+        capabilities=(_cap("parent", issues=("needs-you", "blocked")),
+                      _cap("child", parent="parent", issues=("needs-you", "needs-you"))),
+        initiatives=(
+            # A program raised to needs-you by its phase: counted once, for the phase.
+            InitiativeIn(slug="prog", title="Prog", stage="design", status="active",
+                         primary_slug="child", capability_slugs=("child",), epic=None),
+            InitiativeIn(slug="phase", title="Phase", stage="build", status="active",
+                         primary_slug="child", capability_slugs=("child",), epic=phase_epic,
+                         parent_slug="prog"),
+            # A gate, primary under the parent capability.
+            InitiativeIn(slug="gate", title="Gate", stage="design", status="awaiting_human",
+                         primary_slug="parent", capability_slugs=("parent",), epic=None),
+            # Waiting: never counted.
+            InitiativeIn(slug="stuck", title="Stuck", stage="build", status="blocked",
+                         primary_slug="parent", capability_slugs=("parent",), epic=None),
+        ),
+        awaiting_triage=0, needs_home=0, incident_statuses=())
+    tree = build_product_tree(product)
+    # phase + gate + parent's 1 direct issue + child's 2.
+    assert needs_you_total(tree) == 5
+    triage = build_product_tree(ProductIn(slug="p", name="P", capabilities=(), initiatives=(),
+                                          awaiting_triage=3, needs_home=1,
+                                          incident_statuses=()))
+    assert needs_you_total(triage) == 1

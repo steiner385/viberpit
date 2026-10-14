@@ -912,6 +912,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task", "_session_feedback_task",
     "_deploy_monitor_task", "_capacity_governor_task", "_decision_escalation_task",
+    "_needs_you_hygiene_task",
 })
 
 
@@ -1778,6 +1779,19 @@ class SessionOrchestrator:
             record_digest=self._decision_escalation_record_digest,
             notify=self._decision_escalation_notify)
         self._decision_escalation_task: asyncio.Task | None = None
+        # Needs-you Hygiene: the mechanical auto-resolves + the hourly needs-you
+        # sample (design 2026-10-14 §2). Writes only through the issue seams.
+        from server.automations.needs_you_hygiene import NeedsYouHygieneLoop
+        self._needs_you_hygiene_ctx = AutomationContext("needs-you-hygiene")
+        self._needs_you_hygiene_loop = NeedsYouHygieneLoop(
+            self._needs_you_hygiene_ctx,
+            read_config=self._needs_you_hygiene_read_config,
+            load=self._needs_you_hygiene_load,
+            apply_action=self._needs_you_hygiene_apply,
+            record_recommendation=self._needs_you_hygiene_recommend,
+            supersede_recommendations=self._needs_you_hygiene_supersede,
+            record_samples=self._needs_you_hygiene_samples)
+        self._needs_you_hygiene_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
         from server.automations.archive_audit import (
@@ -2888,6 +2902,13 @@ class SessionOrchestrator:
             self._decision_escalation_task = asyncio.create_task(
                 self._decision_escalation_tick_loop(), name="decision-escalation-loop"
             )
+            # Needs-you Hygiene: 15 min — board hygiene is not urgent, and every
+            # applied action is a capped GitHub write.
+            from server.automations.needs_you_hygiene import TICK_S as _HYGIENE_TICK_S
+            self._needs_you_hygiene_task = asyncio.create_task(
+                self._needs_you_hygiene_tick_loop(interval=_HYGIENE_TICK_S),
+                name="needs-you-hygiene-loop"
+            )
             # Archive Audit: re-audit recently-archived sessions every 6 hours.
             self._archaudit_task = asyncio.create_task(
                 self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
@@ -3543,6 +3564,7 @@ class SessionOrchestrator:
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_error_triage_task", "_session_feedback_task",
                      "_deploy_monitor_task", "_decision_escalation_task",
+                     "_needs_you_hygiene_task",
                      "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
@@ -9813,8 +9835,10 @@ class SessionOrchestrator:
         return closed
 
     async def _backlog_release_policy_skipped_holds(self) -> list[str]:
-        """End every ``owner_action`` hold the RUNNER wrote on an issue the owning
-        product's policy now skips (``server/pm/policy_skip.py``, cairnea/KinDash#16652).
+        """End every ``owner_action`` hold a SYSTEM actor (the runner, the reconciler,
+        an automation) wrote on an issue the owning product's policy now skips
+        (``policy_skip.stale_system_holds`` — the ONE rule the needs-you hygiene loop
+        shares, design 2026-10-14 §2; cairnea/KinDash#16652).
 
         A hand-off ("bounced at opus; fable needs approval", a close-out) is written
         once; ``skip_labels`` can be edited after it. The stale hold then sits in the
@@ -9826,12 +9850,12 @@ class SessionOrchestrator:
         it changed. A person's own park is never this pass's to end. Returns the
         refs released; a failed read releases nothing and logs."""
         from server.pm import holds
-        from server.pm.policy_skip import stale_runner_holds
+        from server.pm.policy_skip import stale_system_holds
         released: list[str] = []
         try:
             from datetime import datetime, timezone
             rows, policies = await self._backlog_queue_inputs()
-            stale = stale_runner_holds(rows, policies, now=datetime.now(timezone.utc))
+            stale = stale_system_holds(rows, policies, now=datetime.now(timezone.utc))
             if not stale:
                 return released
             refs = [row.ref for row in stale]
@@ -9843,7 +9867,7 @@ class SessionOrchestrator:
                     continue
                 await self._backlog_ctx.emit(
                     "info",
-                    f"{row.ref}: released the runner's hold — the queue skips this issue "
+                    f"{row.ref}: released the {row.hold_by} hold — the queue skips this issue "
                     f"(the product's policy, or a standing not-needed verdict), so there "
                     f"is nothing to approve",
                     kind="policy_skip_released", target=row.ref,
@@ -14172,6 +14196,126 @@ class SessionOrchestrator:
         await push_mod.notify_event("decision_needed", title, body, repo=repo,
                                     automation="decision-escalation", url=url,
                                     fanout_when_unconfigured=True, orch=self)
+
+    # ------------------------------------------------------------------
+    # Needs-you Hygiene control loop (design 2026-10-14 §2)
+    # ------------------------------------------------------------------
+    async def _needs_you_hygiene_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._needs_you_hygiene_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _needs_you_hygiene_tick_once(self) -> None:
+        if not await self._schedule_allows_tick("needs-you-hygiene"):
+            return
+        await self._needs_you_hygiene_loop.tick()
+        try:
+            mode, _ = await self._needs_you_hygiene_read_config()
+            if mode != "off":
+                await self._bump_automation_active("needs-you-hygiene")
+        except Exception:
+            log.debug("needs_you_hygiene.heartbeat_failed", exc_info=True)
+
+    async def _needs_you_hygiene_read_config(self) -> tuple[str, dict]:
+        from server.automations import config_store
+        from server.automations.needs_you_hygiene import NeedsYouHygiene
+        active = tuple(m for m in NeedsYouHygiene.modes if m != "off")
+        # An enabled row with no explicit mode runs ``on`` (the design's default).
+        return await config_store.read_automation_config(
+            NeedsYouHygiene, modes=active, default_mode="on", log_key="needs_you_hygiene")
+
+    async def _needs_you_hygiene_load(self) -> list:
+        """One ``hygiene.ProductInputs`` per product: the queue's rows and policies
+        (``queue_inputs``, the composition every queue view shares), each Done card's
+        last board change, and the product's stale dependency edges (``dep_prune``,
+        the prune route's own load)."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import func as sa_func, select
+
+        from server.automations.product_policy import effective_policy
+        from server.db.models import GhProjectItem, Project
+        from server.pm.dep_prune import dep_scope, stale_edges
+        from server.pm.desired_state import STATUS_DONE
+        from server.pm.hygiene import ProductInputs
+        from server.pm.queue_store import queue_inputs
+        from server.pm.reconcile_inputs import _aware
+        now = datetime.now(timezone.utc)
+        out: list[ProductInputs] = []
+        async with db_session() as db:
+            rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            done_ids = [r.work_item_id for r in rows
+                        if r.status == STATUS_DONE and r.work_item_id]
+            board: dict[str, datetime] = {}
+            if done_ids:
+                for wid, at in (await db.execute(
+                        select(GhProjectItem.work_item_id,
+                               sa_func.max(GhProjectItem.gh_updated_at))
+                        .where(GhProjectItem.work_item_id.in_(done_ids))
+                        .group_by(GhProjectItem.work_item_id))).all():
+                    stamp = _aware(at)
+                    if wid and stamp is not None:
+                        board[str(wid)] = stamp
+            projects = (await db.execute(
+                select(Project).order_by(Project.created_at))).scalars().all()
+            for p in projects:
+                key = p.slug or p.id
+                try:
+                    edges = stale_edges(await dep_scope(db, p))
+                except Exception:
+                    log.warning("needs_you_hygiene.edges_load_failed slug=%s", key,
+                                exc_info=True)
+                    edges = []
+                prows = [r for r in rows if r.product == key]
+                out.append(ProductInputs(
+                    slug=key, project_id=p.id,
+                    policy=policies.get(key) or effective_policy(p.automation_policy),
+                    rows=prows,
+                    board_updated_at={wid: board[wid] for wid in (r.work_item_id for r in prows)
+                                      if wid is not None and wid in board},
+                    stale_edges=edges))
+        return out
+
+    def _hygiene_seams(self):
+        """This orchestrator's issue-write seams under the public names the
+        hygiene executor calls (``needs_you_hygiene.IssueSeams``)."""
+        from types import SimpleNamespace
+        return SimpleNamespace(pm_issue_close=self._pm_issue_close,
+                               pm_board_status=self._pm_board_status,
+                               pm_remove_dependency=self._pm_remove_dependency)
+
+    async def _needs_you_hygiene_apply(self, action) -> dict:
+        from server.automations.needs_you_hygiene import HYGIENE_ACTOR, apply_action
+        return await apply_action(action, seams=self._hygiene_seams(), identity=SYSTEM_IDENTITY,
+                                  actor=HYGIENE_ACTOR, via="automation")
+
+    async def _needs_you_hygiene_recommend(self, project_id: str, action) -> bool:
+        from server.automations.needs_you_hygiene import upsert_recommendation
+        async with db_session() as db:
+            return await upsert_recommendation(db, project_id, action)
+
+    async def _needs_you_hygiene_supersede(self, project_id: str, keep: set) -> int:
+        from datetime import datetime, timezone
+
+        from server.automations.needs_you_hygiene import supersede_recommendations
+        async with db_session() as db:
+            return await supersede_recommendations(db, project_id, keep,
+                                                   now=datetime.now(timezone.utc))
+
+    async def _needs_you_hygiene_samples(self) -> list[str]:
+        """The map's own counts (``pm_tree.product_attention_counts``), sampled."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import select
+
+        from server.api.pm_tree import product_attention_counts
+        from server.automations.needs_you_hygiene import record_samples
+        from server.db.models import Project
+        async with db_session() as db:
+            counts = await product_attention_counts(db)
+            ids = {slug: pid for slug, pid in (await db.execute(
+                select(Project.slug, Project.id))).all() if slug}
+            return await record_samples(db, counts, ids, now=datetime.now(timezone.utc))
 
     # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)
@@ -18663,6 +18807,7 @@ class SessionOrchestrator:
             "session-feedback": getattr(self, "_session_feedback_ctx", None),
             "deploy-monitor": getattr(self, "_deploy_monitor_ctx", None),
             "decision-escalation": getattr(self, "_decision_escalation_ctx", None),
+            "needs-you-hygiene": getattr(self, "_needs_you_hygiene_ctx", None),
             "sdlc-intake": getattr(self, "_sdlc_intake_ctx", None),
             "sdlc-synthesizer": getattr(self, "_sdlc_synth_ctx", None),
             "control-band-monitor": getattr(self, "_control_band_ctx", None),
