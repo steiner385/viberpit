@@ -120,22 +120,20 @@ def escalation_detail(outcome: str | None) -> str | None:
     return None
 
 
-#: The runner's close-out hold reason before #2681 — generic, naming nothing.
-#: Kept only so the post-tick pass can find and re-judge those holds.
+#: The runner's close-out hold reason before #2681 — generic, naming nothing. Still
+#: written when an escalation names nothing (``closeout_hold_reason("")``); the
+#: needs-you hygiene close-out assessment (``server/pm/closeout_assess.py``) reads
+#: both spellings as a close-out hold.
 LEGACY_CLOSEOUT_HOLD_REASON = "human gate: merged PR needs a human close-out"
+#: The head of every close-out hold reason that names what is left (#2681).
+CLOSEOUT_HOLD_PREFIX = "human gate: merged PR left the issue open"
 
 
 def closeout_hold_reason(detail: str) -> str:
     """THE close-out hold reason: what is left after the merge (#2681), or the
     legacy generic sentence when the outcome named nothing."""
-    return (f"human gate: merged PR left the issue open — {detail}" if detail
+    return (f"{CLOSEOUT_HOLD_PREFIX} — {detail}" if detail
             else LEGACY_CLOSEOUT_HOLD_REASON)
-
-
-def closed_with_nothing_left_comment() -> str:
-    """The comment on a close-out-held issue closed once nothing is left for a person."""
-    return (f"Its linked PR merged and nothing is left for a person (no unchecked "
-            f"acceptance items, no manual step) — closed by {brand.NAME} Backlog Runner.")
 
 
 # --------------------------------------------------------------------------- #

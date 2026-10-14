@@ -1790,7 +1790,8 @@ class SessionOrchestrator:
             apply_action=self._needs_you_hygiene_apply,
             record_recommendation=self._needs_you_hygiene_recommend,
             supersede_recommendations=self._needs_you_hygiene_supersede,
-            record_samples=self._needs_you_hygiene_samples)
+            record_samples=self._needs_you_hygiene_samples,
+            assess=self._needs_you_hygiene_assess)
         self._needs_you_hygiene_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
@@ -9713,13 +9714,13 @@ class SessionOrchestrator:
         if mode == "auto":
             # Hold hygiene, after the tick and outside the loop's lock (an approval
             # dispatches, and dispatch takes that lock): close superseded alerts
-            # (#2680), re-judge pre-#2681 close-out holds, end the runner's own
-            # holds on issues the policy now skips (KinDash#16652) — BEFORE the
+            # (#2680), end the runner's own holds on issues the policy now skips (KinDash#16652) — BEFORE the
             # approval step, so a stale escalation is never auto-approved — then
             # approve covered escalations within budget (#2679).
-            # Each is best-effort and logs its own failure.
+            # Each is best-effort and logs its own failure. Close-out holds (the
+            # pre-#2681 generic reason included) are the needs-you hygiene loop's
+            # close-out assessment, not this tick's.
             await self._backlog_supersede_alerts()
-            await self._backlog_settle_legacy_closeout_holds()
             await self._backlog_release_policy_skipped_holds()
             await self._backlog_auto_approve_escalations()
 
@@ -9779,59 +9780,6 @@ class SessionOrchestrator:
                     target=old, detail={"supersededBy": new})
         except Exception:
             log.warning("backlog_runner.supersede_alerts_failed", exc_info=True)
-        return closed
-
-    async def _backlog_settle_legacy_closeout_holds(self) -> list[str]:
-        """Re-judge every close-out hold written before #2681 — the generic
-        ``LEGACY_CLOSEOUT_HOLD_REASON``, whose linked PR already merged — with the
-        current human gate (``backlog_github._human_gate_reason``): nothing left →
-        close the issue with a comment; something left → rewrite the hold reason so
-        it names it. A failed signals read leaves the hold for the next pass.
-        Returns the refs closed. Converges: neither outcome leaves the legacy
-        reason behind, so a settled pile costs one filtered read per tick."""
-        from datetime import datetime, timezone
-
-        from sqlalchemy import select as sa_select
-
-        from server.automations import backlog_github
-        from server.db.models import WorkItem
-        from server.pm.holds import RUNNER_ACTOR, set_runner_hold
-        closed: list[str] = []
-        try:
-            rows, _policies = await self._backlog_queue_inputs()
-            legacy = [r for r in rows if r.hold_kind == "owner_action"
-                      and r.hold_by == RUNNER_ACTOR
-                      and r.hold_reason == backlog_github.LEGACY_CLOSEOUT_HOLD_REASON]
-            for row in legacy:
-                signals = await asyncio.to_thread(
-                    backlog_github._issue_signals, row.ref, gh_run=self._gh_run)
-                if signals is None:
-                    continue
-                gate = backlog_github._human_gate_reason(signals)
-                if gate is None:
-                    ok = await asyncio.to_thread(
-                        backlog_github._close_issue, row.ref,
-                        backlog_github.closed_with_nothing_left_comment(),
-                        gh_run=self._gh_run)
-                    if not ok:
-                        continue
-                async with db_session() as db:
-                    wi = (await db.execute(sa_select(WorkItem).where(
-                        WorkItem.id == row.work_item_id))).scalar_one_or_none()
-                    if wi is None:
-                        continue
-                    if gate is None:
-                        wi.state = "closed"
-                    else:
-                        set_runner_hold(wi, reason=backlog_github.closeout_hold_reason(gate),
-                                        now=datetime.now(timezone.utc))
-                if gate is None:
-                    closed.append(row.ref)
-                    await self._backlog_ctx.emit(
-                        "info", f"{row.ref}: merged PR left nothing for a person — closed",
-                        kind="closeout_closed", target=row.ref)
-        except Exception:
-            log.warning("backlog_runner.settle_closeout_holds_failed", exc_info=True)
         return closed
 
     async def _backlog_release_policy_skipped_holds(self) -> list[str]:
@@ -14228,7 +14176,8 @@ class SessionOrchestrator:
         """One ``hygiene.ProductInputs`` per product: the queue's rows and policies
         (``queue_inputs``, the composition every queue view shares), each Done card's
         last board change, and the product's stale dependency edges (``dep_prune``,
-        the prune route's own load)."""
+        the prune route's own load), plus the stored close-out assessments of its
+        rows (design §3). Assessments of issues no longer on any board are dropped."""
         from datetime import datetime, timezone
 
         from sqlalchemy import func as sa_func, select
@@ -14242,6 +14191,7 @@ class SessionOrchestrator:
         from server.pm.reconcile_inputs import _aware
         now = datetime.now(timezone.utc)
         out: list[ProductInputs] = []
+        assessed = await self._needs_you_hygiene_ctx.list_target_states()
         async with db_session() as db:
             rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
             done_ids = [r.work_item_id for r in rows
@@ -14273,8 +14223,23 @@ class SessionOrchestrator:
                     rows=prows,
                     board_updated_at={wid: board[wid] for wid in (r.work_item_id for r in prows)
                                       if wid is not None and wid in board},
-                    stale_edges=edges))
+                    stale_edges=edges,
+                    closeout_states={r.ref: assessed[r.ref] for r in prows if r.ref in assessed}))
+        # Terminal rest: the issue closed or left every board, so its assessment
+        # can never be read again (AutomationTargetState stays bounded).
+        live = {r.ref for r in rows}
+        for ref in set(assessed) - live:
+            await self._needs_you_hygiene_ctx.delete_target_state(ref)
         return out
+
+    async def _needs_you_hygiene_assess(self, row) -> dict | None:
+        """Assess one close-out hold (design §3) with the engine-safe helper
+        identity, and persist the outcome as this automation's target state."""
+        from server.automations.closeout_assessor import assess_and_record
+        from server.sessions.helper_call import pick_helper_config_dir
+        config_dir = await account_store_io(pick_helper_config_dir, default=None)
+        return await assess_and_record(self._needs_you_hygiene_ctx, row, gh_run=self._gh_run,
+                                       _config_dir=config_dir)
 
     def _hygiene_seams(self):
         """This orchestrator's issue-write seams under the public names the

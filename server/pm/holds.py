@@ -258,7 +258,12 @@ RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay
                                     # policy now skips (``skip_labels``): nothing is left
                                     # for a person to approve, so the backlog tick ends it
                                     # (``release_policy_skipped_holds``, KinDash#16652).
-                                    "policy_skip")
+                                    "policy_skip",
+                                    # A close-out hand-off the needs-you hygiene's
+                                    # assessment found an agent can finish
+                                    # (``release_assessed_closeout_hold``, design
+                                    # 2026-10-14 §3).
+                                    "assessment")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -526,6 +531,61 @@ def release_policy_skipped_holds(db: "Session", refs: "Sequence[str]", *,
         released.append(f"{wi.repo}#{wi.number}")
     db.flush()
     return released
+
+
+def assessed_system_hold(db: "Session", ref: str, *, expected_reason: str) -> WorkItem | None:
+    """The open issue *ref* when it still carries the SYSTEM-written ``owner_action``
+    hold an assessment judged — same reason, word for word — else ``None``. THE
+    narrowing every close-out assessment write re-checks (design 2026-10-14 §3): the
+    loop judged a read, writes in another session, and a person who parked or
+    re-worded the item in between must keep their hold."""
+    from sqlalchemy import select
+
+    from server.pm.refs import split_ref
+    parts = split_ref(ref)
+    if parts is None:
+        return None
+    wi = db.scalars(select(WorkItem).where(
+        WorkItem.kind == "issue", WorkItem.state == "open", WorkItem.repo == parts[0],
+        WorkItem.number == parts[1], WorkItem.hold_kind == "owner_action")).first()
+    if (wi is None or not wi.hold_by or actor_class(str(wi.hold_by)) != "system"
+            or (wi.hold_reason or "").strip() != expected_reason.strip()):
+        return None
+    return wi
+
+
+def release_assessed_closeout_hold(db: "Session", ref: str, *, expected_reason: str,
+                                   actor: str, via: str) -> bool:
+    """End the close-out hold on *ref* because the needs-you hygiene's assessment
+    found nothing a person must do (an agent can finish the rest), audited as
+    ``assessment``. Only the hold :func:`assessed_system_hold` still finds; answers
+    whether one was released. Sync — callers run it under ``db.run_sync``."""
+    wi = assessed_system_hold(db, ref, expected_reason=expected_reason)
+    if wi is None:
+        return False
+    _blank_hold(wi)
+    _audit_release(db, wi, kind="owner_action", signal="assessment", actor=actor, via=via)
+    db.flush()
+    return True
+
+
+def rewrite_assessed_hold_reason(db: "Session", ref: str, *, expected_reason: str,
+                                 reason: str, actor: str) -> bool:
+    """Replace the reason of the close-out hold on *ref* with what is really left
+    for a person (the assessment's checklist), now attributed to *actor* (the
+    automation that wrote the words). The hold itself stays: ``hold_set_at`` keeps
+    the original hand-off's age and ``hold_fingerprint`` its body, so a body edit
+    still releases it. Only the hold :func:`assessed_system_hold` still finds;
+    answers whether it was rewritten."""
+    if not (reason or "").strip():
+        raise ValueError("hold_reason is required")
+    wi = assessed_system_hold(db, ref, expected_reason=expected_reason)
+    if wi is None:
+        return False
+    wi.hold_reason = reason.strip()
+    wi.hold_by = actor
+    db.flush()
+    return True
 
 
 def _blank_hold(wi: WorkItem) -> None:

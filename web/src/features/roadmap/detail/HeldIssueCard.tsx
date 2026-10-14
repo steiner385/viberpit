@@ -15,7 +15,7 @@ import { useApproveEscalation, useReleaseHold } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
-import { holdExplanation, holdLabel, ROADMAP } from '@/features/products/vocab'
+import { attentionLabel, checklistItems, holdActorLabel, holdExplanation, ROADMAP } from '@/features/products/vocab'
 import { tierLabel } from '@/session/modelName'
 import { sessionPath } from '@/session/sessionNavState'
 import { inboxPath } from '../roadmapNavState'
@@ -32,6 +32,7 @@ export function HeldIssueCard({ item, showProduct = false }: { item: HeldItem; s
   const [notice, setNotice] = useState<string | null>(null)
   const [spawned, setSpawned] = useState<{ id: string; name: string | null } | null>(null)
   const { why, next } = holdExplanation(item, tierLabel)
+  const checklist = item.attentionKind === 'checklist' ? checklistItems(item.holdReason) : null
   const pending = release.isPending || approve.isPending
   const age = heldFor(item.ageHours)
   const retry = async () => {
@@ -59,7 +60,7 @@ export function HeldIssueCard({ item, showProduct = false }: { item: HeldItem; s
         {item.url
           ? <a href={item.url} target="_blank" rel="noreferrer" className="min-w-0 font-medium text-ink hover:underline">#{item.number} {item.title ?? item.ref}</a>
           : <span className="min-w-0 font-medium text-ink">#{item.number} {item.title ?? item.ref}</span>}
-        <Badge tone="warning">{holdLabel(item.holdKind)}</Badge>
+        <Badge tone="warning">{attentionLabel(item.attentionKind)}</Badge>
         {item.downstream > 0 && <Badge tone="danger">Blocks {item.downstream}</Badge>}
         <span className="text-xs text-ink-muted">
           {showProduct && <>{item.product}{' · '}</>}
@@ -67,7 +68,15 @@ export function HeldIssueCard({ item, showProduct = false }: { item: HeldItem; s
           {age && <>{' · '}{age}</>}
         </span>
       </div>
-      <p className="max-w-prose text-ink">{why}</p>
+      {checklist ? (
+        <div className="max-w-prose text-ink">
+          <p>{holdActorLabel(item.holdBy)} checked what the merged pull request left open. Only you can do the rest:</p>
+          <ul className="mt-1 list-disc pl-5" aria-label="Left for you">
+            {checklist.items.map((text, i) => <li key={i}>{text}</li>)}
+          </ul>
+          {checklist.more && <p className="text-ink-muted">{checklist.more}</p>}
+        </div>
+      ) : <p className="max-w-prose text-ink">{why}</p>}
       {next && <p className="max-w-prose text-ink-muted">{next}</p>}
       <div className="flex flex-wrap items-center gap-2">
         {item.holdKind === 'owner_action' && itemId && (

@@ -51,3 +51,27 @@ def test_the_loop_applies_through_the_orchestrators_issue_seams():
         assert getattr(seams, name).__func__ is getattr(SessionOrchestrator, f"_{name}")
         assert hasattr(InProcessOrchestratorAdapter, name)
         assert hasattr(RemoteOrchestrator, name)
+
+
+def test_the_loop_assesses_close_outs_through_the_orchestrators_gh_seam(monkeypatch):
+    """Design §3: the loop's assessor is the orchestrator's, which hands the
+    assessor its own ``gh_run`` seam and context, with the engine-safe helper
+    identity — so tests (and the runner's fakes) govern every GitHub read."""
+    from server.automations import closeout_assessor
+    from server.sessions import helper_call
+    from server.sessions import orchestrator as mod
+    assert "assess=self._needs_you_hygiene_assess" in inspect.getsource(
+        mod.SessionOrchestrator.__init__)
+    seen: dict = {}
+
+    async def fake(ctx, row, *, gh_run, _config_dir=None, _query_fn=None):
+        seen.update(ctx=ctx, row=row, gh_run=gh_run, cfg=_config_dir)
+        return {"decision": None}
+    monkeypatch.setattr(closeout_assessor, "assess_and_record", fake)
+    monkeypatch.setattr(helper_call, "pick_helper_config_dir", lambda: "/cfg/helper")
+    orch = mod.SessionOrchestrator.__new__(mod.SessionOrchestrator)
+    orch._gh_run = gh = object()
+    orch._needs_you_hygiene_ctx = ctx = object()
+    assert asyncio.run(mod.SessionOrchestrator._needs_you_hygiene_assess(orch, "row")) == {
+        "decision": None}
+    assert seen == {"ctx": ctx, "row": "row", "gh_run": gh, "cfg": "/cfg/helper"}

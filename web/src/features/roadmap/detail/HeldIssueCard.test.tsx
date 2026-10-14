@@ -27,7 +27,7 @@ const item = (over: Partial<HeldItem> = {}): HeldItem => ({
   holdSetAt: '2026-09-20T12:29:56+00:00', ageHours: 290.9, proposalId: null, options: [], recommendedKey: null,
   downstream: 0, downstreamDispatchable: 0, downstreamRefs: [], dispatchableOnRelease: true,
   releasedBy: 'Retry, a board move to Ready/Backlog, an issue-body edit, or approving the escalation to fable',
-  workItemId: 'w28', escalation: { bouncedAt: 'opus', needsApproval: 'fable' }, ...over,
+  workItemId: 'w28', escalation: { bouncedAt: 'opus', needsApproval: 'fable' }, attentionKind: 'model_approval', ...over,
 })
 
 beforeEach(() => { h.release.mockReset(); h.approve.mockReset(); h.releaseFor.length = 0; h.approveFor.length = 0 })
@@ -45,7 +45,7 @@ describe('HeldIssueCard', () => {
     const card = screen.getByTestId('held-issue')
     expect(within(card).getByRole('link', { name: '#28 Gate 3 scale is unproven: it ran on 108 windows, not ~1,100' }))
       .toHaveAttribute('href', 'https://github.com/steiner385/ghostdriver-mcp/issues/28')
-    expect(card).toHaveTextContent('Held for the owner')
+    expect(card).toHaveTextContent('Model approval')
     expect(card).toHaveTextContent('held 12 days')
     expect(card).toHaveTextContent(/The Backlog Runner could not get a pull request merged at Opus and stopped: the next step up is Fable, which your model-approval policy gates behind a person\./)
     expect(card).toHaveTextContent(/Approve escalation to run it once at Fable now, or Retry/)
@@ -60,7 +60,7 @@ describe('HeldIssueCard', () => {
   it('binds every tap to its own work item, never a neighbour', async () => {
     h.release.mockResolvedValue({ ok: true }); h.approve.mockResolvedValue({ status: 'spawned', session_id: 's-1', session_name: 'backlog #28', approval: 'approved', model: 'fable' })
     const review = mount([
-      item({ ref: 'o/r#1', number: 1, title: 'First', workItemId: 'w1', escalation: null, holdReason: 'needs the keyring' }),
+      item({ ref: 'o/r#1', number: 1, title: 'First', workItemId: 'w1', escalation: null, holdReason: 'needs the keyring', attentionKind: 'owner_action' }),
       item(),
     ])
     const [first, second] = screen.getAllByTestId('held-issue')
@@ -87,12 +87,33 @@ describe('HeldIssueCard', () => {
   })
 
   it('points a decision hold at its proposal and offers no Retry', () => {
-    mount([item({ holdKind: 'decision', holdReason: 'Awaiting a product decision', holdBy: 'session:s1', escalation: null, proposalId: 'dp-9' })])
+    mount([item({ holdKind: 'decision', holdReason: 'Awaiting a product decision', holdBy: 'session:s1', escalation: null, proposalId: 'dp-9', attentionKind: 'decision' })])
     const card = screen.getByTestId('held-issue')
     expect(card).toHaveTextContent('Awaiting your decision')
     expect(card).toHaveTextContent(/A session proposed options instead of guessing/)
     expect(within(card).queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(within(card).getByRole('link', { name: 'Open in the inbox' })).toHaveAttribute('href', '/roadmap?scope=inbox&proposal=dp-9')
+  })
+
+  it('labels each kind of ask and renders an assessed checklist as a list', () => {
+    mount([
+      item({ ref: 'o/r#1', number: 1, workItemId: 'w1', escalation: null, attentionKind: 'owner_action', holdReason: 'needs the keyring' }),
+      item({
+        ref: 'o/r#2', number: 2, workItemId: 'w2', escalation: null, attentionKind: 'checklist',
+        holdBy: 'automation:needs-you-hygiene',
+        holdReason: 'Left for you:\n- [ ] Verify the fix on production\n- [ ] Renew the Apple certificate\n(+3 more)',
+      }),
+    ])
+    const [plain, checklist] = screen.getAllByTestId('held-issue')
+    expect(plain).toHaveTextContent('Held for the owner')
+    expect(checklist).toHaveTextContent('Checklist for you')
+    expect(checklist).toHaveTextContent('The needs-you-hygiene automation checked what the merged pull request left open. Only you can do the rest:')
+    const list = within(checklist).getByRole('list', { name: 'Left for you' })
+    expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Verify the fix on production', 'Renew the Apple certificate'])
+    expect(checklist).toHaveTextContent('(+3 more)')
+    expect(checklist).not.toHaveTextContent('- [ ]')
+    expect(within(checklist).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
   it('renders only the GitHub link when the mirror has no work-item id', () => {

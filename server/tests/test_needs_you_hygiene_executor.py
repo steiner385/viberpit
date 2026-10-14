@@ -146,3 +146,110 @@ def test_an_unknown_action_is_a_refusal_not_a_crash(isolated_db, action):
         HygieneAction("done_but_open", "p", "o/r#1", "w", action), seams=_Seams(),
         identity="system", actor=nyh.HYGIENE_ACTOR, via="automation"))
     assert (out["ok"], out["step"]) == (False, "unknown_action")
+
+
+# --- close-out assessment outcomes (design §3) ---------------------------------------------
+
+def _closeout_reason() -> str:
+    from server.automations.backlog_github import closeout_hold_reason
+    return closeout_hold_reason("the PR references it with `Refs`")
+
+
+async def _seed_closeout(number: int, *, hold_by: str = "runner", reason: str | None = None):
+    from server.automations.context import AutomationContext
+    from server.db import db_session
+    from server.db.models import WorkItem
+    async with db_session() as db:
+        db.add(WorkItem(id=f"wi{number}", repo="o/r", number=number, kind="issue",
+                        state="open", title="t", body="b", hold_kind="owner_action",
+                        hold_by=hold_by, hold_reason=reason or _closeout_reason(),
+                        hold_set_at=NOW.replace(tzinfo=None)))
+    await AutomationContext(nyh.AUTOMATION_ID).set_target_state(
+        f"o/r#{number}", {"fingerprint": "f", "decision": "x", "appliedAt": None})
+
+
+def _closeout_action(number: int, action: str, **detail) -> HygieneAction:
+    return HygieneAction("closeout_assess", "p", f"o/r#{number}", f"wi{number}", action,
+                         {"holdReason": _closeout_reason(), **detail}, "assessed")
+
+
+async def _hold(number: int):
+    from server.db import db_session
+    from server.db.models import WorkItem
+    async with db_session() as db:
+        wi = await db.get(WorkItem, f"wi{number}")
+        assert wi is not None
+        return (wi.hold_kind, wi.hold_reason, wi.hold_by)
+
+
+async def _applied_at(number: int):
+    from server.automations.context import AutomationContext
+    return (await AutomationContext(nyh.AUTOMATION_ID).get_target_state(
+        f"o/r#{number}")).get("appliedAt")
+
+
+def test_closeout_rewrite_narrows_the_hold_audits_and_stamps_the_assessment(isolated_db):
+    async def run():
+        await _seed_closeout(1)
+        out = await nyh.apply_action(
+            _closeout_action(1, "rewrite_hold", reason="Left for you:\n- [ ] prod check"),
+            seams=_Seams(), identity="tony@example.com", actor="tony@example.com", via="api")
+        return out, await _hold(1), await _applied_at(1)
+    out, hold, applied = asyncio.run(run())
+    assert out["ok"]
+    # The words are the automation's whoever applied them; the audit names the applier.
+    assert hold == ("owner_action", "Left for you:\n- [ ] prod check", nyh.HYGIENE_ACTOR)
+    assert applied is not None
+    [(identity, via, detail)] = asyncio.run(_audits("pm.hygiene.closeout_assess"))
+    assert (identity, via, detail["action"], detail["ok"]) == (
+        "tony@example.com", "api", "rewrite_hold", True)
+
+
+def test_closeout_release_ends_the_hold_as_assessment(isolated_db):
+    async def run():
+        await _seed_closeout(2)
+        out = await nyh.apply_action(_closeout_action(2, "release_hold", note="add a test"),
+                                     seams=_Seams(), identity="system",
+                                     actor=nyh.HYGIENE_ACTOR, via="automation")
+        return out, await _hold(2), await _applied_at(2)
+    out, hold, applied = asyncio.run(run())
+    assert out["ok"] and hold == (None, None, None) and applied is not None
+    [(identity, via, detail)] = asyncio.run(_audits("pm.hold.release"))
+    assert (identity, via, detail["signal"]) == (nyh.HYGIENE_ACTOR, "automation", "assessment")
+
+
+def test_closeout_close_posts_the_evidence_comment(isolated_db, monkeypatch):
+    from server.github import ci_issues
+    posted: list[str] = []
+    monkeypatch.setattr(ci_issues, "comment_on_issue",
+                        lambda repo, number, body, **_: posted.append(body) or "url")
+    seams = _Seams()
+
+    async def run():
+        await _seed_closeout(3)
+        return await nyh.apply_action(
+            _closeout_action(3, "close", comment="The merged PR(s) already cover: - a — x.py:3"),
+            seams=seams, identity="system", actor=nyh.HYGIENE_ACTOR, via="automation")
+    assert asyncio.run(run())["ok"]
+    assert posted[0].startswith("The merged PR(s) already cover: - a — x.py:3")
+    assert seams.calls == [("close", "wi3", {"reason": "completed"})]
+
+
+@pytest.mark.parametrize("action", ["close", "release_hold", "rewrite_hold"])
+def test_a_closeout_outcome_never_touches_a_hold_that_changed(isolated_db, monkeypatch, action):
+    """A person re-parked it (or re-worded it) after the assessment: nothing is
+    written, nothing stamped, and the refusal is audited."""
+    from server.github import ci_issues
+    monkeypatch.setattr(ci_issues, "comment_on_issue", lambda *a, **k: "url")
+    seams = _Seams()
+
+    async def run():
+        await _seed_closeout(4, hold_by="tony@example.com")
+        out = await nyh.apply_action(_closeout_action(4, action, reason="Left for you: x"),
+                                     seams=seams, identity="system",
+                                     actor=nyh.HYGIENE_ACTOR, via="automation")
+        return out, await _hold(4), await _applied_at(4)
+    out, hold, applied = asyncio.run(run())
+    assert (out["ok"], out["step"]) == (False, "hold_changed")
+    assert hold == ("owner_action", _closeout_reason(), "tony@example.com")
+    assert applied is None and seams.calls == []

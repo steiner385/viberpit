@@ -245,6 +245,8 @@ export interface HoldEscalation {
   needsApproval: string
 }
 
+export type HeldAttentionKind = 'model_approval' | 'checklist' | 'decision' | 'owner_action'
+
 export interface HeldItem {
   ref: string
   repo: string
@@ -269,6 +271,10 @@ export interface HeldItem {
    *  decide) act on; null only for a row the mirror has not resolved. */
   workItemId: string | null
   escalation: HoldEscalation | null
+  /** What the card asks of a person (`server/pm/escalation.py:attention_kind`):
+   *  approve a model climb, tick off the checklist a close-out assessment
+   *  narrowed the hold to, pick a decision's option, or act on a hand-off. */
+  attentionKind: HeldAttentionKind
 }
 
 export interface HoldsView {

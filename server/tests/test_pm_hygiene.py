@@ -112,10 +112,12 @@ def test_plan_runs_every_rule_and_caps_limit_writes_per_action():
     actions = h.plan(_inputs(rows, board={r.work_item_id: OLD for r in rows}, edges=edges),
                      now=NOW)
     by = {a: sum(1 for x in actions if x.action == a) for a in h.ACTIONS}
-    assert by == {"close": 14, "set_status": 25, "release_hold": 0, "prune_edge": 30}
+    assert by == {"close": 14, "set_status": 25, "release_hold": 0, "prune_edge": 30,
+                  "rewrite_hold": 0}
     capped = h.capped(actions)
     assert {a: sum(1 for x in capped if x.action == a) for a in h.ACTIONS} == {
-        "close": 10, "set_status": 20, "release_hold": 0, "prune_edge": DEP_PRUNE_MAX}
+        "close": 10, "set_status": 20, "release_hold": 0, "prune_edge": DEP_PRUNE_MAX,
+        "rewrite_hold": 0}
 
 
 @pytest.mark.parametrize("auto,product,expected", [
@@ -136,3 +138,64 @@ def test_sample_due_at_most_hourly():
     assert h.sample_due(NOW - timedelta(minutes=60), NOW)
     # A naive stored stamp (SQLite) reads as UTC.
     assert not h.sample_due((NOW - timedelta(minutes=5)).replace(tzinfo=None), NOW)
+
+
+# --- rule 5: closeout_assess (design §3) --------------------------------------------------
+
+def _closeout_row(number: int, **over: Any) -> QueueRow:
+    from server.automations.backlog_github import closeout_hold_reason
+    base: dict[str, Any] = dict(hold_kind="owner_action", hold_by="runner", body=f"b{number}",
+                                hold_reason=closeout_hold_reason("the PR said `Refs`"))
+    base.update(over)
+    return _row(number, **base)
+
+
+def _state(row: QueueRow, decision: str | None, text: str = "t", **over: Any) -> dict:
+    from server.pm.outcomes import body_fingerprint
+    return {"fingerprint": body_fingerprint(row.title, row.body), "decision": decision,
+            "text": text, "summary": "s", "at": "x", "appliedAt": None, **over}
+
+
+def test_closeout_pending_is_system_closeout_holds_without_a_current_assessment():
+    from server.automations.backlog_github import LEGACY_CLOSEOUT_HOLD_REASON
+    rows = [_closeout_row(1), _closeout_row(2), _closeout_row(3),
+            _closeout_row(4, hold_reason=LEGACY_CLOSEOUT_HOLD_REASON),
+            _closeout_row(5, hold_by="tony@example.com"),       # a person's: never
+            _closeout_row(6, live_session=True),                  # somebody is on it
+            _closeout_row(7, hold_reason="bounced at opus; fable needs approval"),
+            _closeout_row(8, hold_by="automation:needs-you-hygiene",
+                          hold_reason="Left for you:\n- [ ] x")]  # already narrowed
+    states = {"o/r#2": _state(rows[1], "close"),
+              # assessed an older body: stale, so pending again
+              "o/r#3": {**_state(rows[2], "close"), "fingerprint": "old"}}
+    pending = h.closeout_pending(h.ProductInputs(
+        slug="p", project_id="pid", policy={}, rows=rows, board_updated_at={},
+        stale_edges=[], closeout_states=states), now=NOW)
+    assert [r.ref for r in pending] == ["o/r#1", "o/r#3", "o/r#4"]
+
+
+def test_closeout_pending_skips_a_hold_rule_3_already_releases():
+    rows = [_closeout_row(1, labels=("tracking",)), _closeout_row(2)]
+    p = h.ProductInputs(slug="p", project_id="pid", policy={"skip_labels": ["tracking"]},
+                        rows=rows, board_updated_at={}, stale_edges=[])
+    assert [r.ref for r in h.closeout_pending(p, now=NOW)] == ["o/r#2"]
+    assert [a.rule for a in h.plan(p, now=NOW)] == ["stale_holds"]
+
+
+def test_closeout_assess_maps_each_decision_once_and_never_after_it_applied():
+    rows = [_closeout_row(n) for n in range(1, 6)]
+    states = {"o/r#1": _state(rows[0], "close", "comment"),
+              "o/r#2": _state(rows[1], "release", "Left for an agent: add a test"),
+              "o/r#3": _state(rows[2], "checklist", "Left for you:\n- [ ] prod check"),
+              "o/r#4": _state(rows[3], None),                        # unusable reply
+              "o/r#5": _state(rows[4], "close", appliedAt="2026-10-14T00:00:00Z")}
+    out = h.closeout_assess(rows, states)
+    assert [(a.ref, a.action) for a in out] == [
+        ("o/r#1", "close"), ("o/r#2", "release_hold"), ("o/r#3", "rewrite_hold")]
+    assert {a.rule for a in out} == {"closeout_assess"}
+    assert out[0].detail["comment"] == "comment"
+    assert out[2].detail["reason"] == "Left for you:\n- [ ] prod check"
+    assert all(a.detail["holdReason"] == rows[0].hold_reason for a in out)
+    p = h.ProductInputs(slug="p", project_id="pid", policy={}, rows=rows,
+                        board_updated_at={}, stale_edges=[], closeout_states=states)
+    assert [a.ref for a in h.plan(p, now=NOW)] == ["o/r#1", "o/r#2", "o/r#3"]

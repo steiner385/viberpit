@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Any
 
 from server.automations.product_policy import is_on, rank_kwargs
+from server.pm.closeout_assess import is_checklist_reason
 from server.pm.desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
                                      STATUS_HELD, STATUS_READY)
 from server.pm.drift import DepEdgeView, reverse_blockers
@@ -46,6 +47,31 @@ def released_by(hold_kind: str, escalation: Escalation | None) -> str:
     if escalation is not None:
         return RELEASED_BY_ESCALATION.format(tier=escalation.needs_approval)
     return RELEASED_BY.get(hold_kind, "")
+
+#: What a held item asks of a person (design 2026-10-14 §3), one word per card kind:
+#: approve a model climb, tick off a checklist the close-out assessment narrowed the
+#: hold to, pick a decision's option, or act on an owner_action hand-off.
+ATTENTION_MODEL_APPROVAL = "model_approval"
+ATTENTION_CHECKLIST = "checklist"
+ATTENTION_DECISION = "decision"
+ATTENTION_OWNER_ACTION = "owner_action"
+ATTENTION_KINDS: tuple[str, ...] = (ATTENTION_MODEL_APPROVAL, ATTENTION_CHECKLIST,
+                                    ATTENTION_DECISION, ATTENTION_OWNER_ACTION)
+
+
+def attention_kind(hold_kind: str, hold_reason: str | None,
+                   escalation: Escalation | None) -> str:
+    """THE attention kind of a hold (``ATTENTION_KINDS``): an approval-gated climb
+    (``outcomes.escalation_for``), an assessed checklist
+    (``closeout_assess.is_checklist_reason``), a decision, else an owner action."""
+    if escalation is not None:
+        return ATTENTION_MODEL_APPROVAL
+    if hold_kind == "decision":
+        return ATTENTION_DECISION
+    if is_checklist_reason(hold_reason):
+        return ATTENTION_CHECKLIST
+    return ATTENTION_OWNER_ACTION
+
 
 #: Spec §5 default: a product with this many or fewer dispatchable items while
 #: anything is held is starving. The automation's config overrides it.
@@ -81,6 +107,8 @@ class HeldItem:
     # positional constructions in older callers keep working.
     work_item_id: str | None = None
     escalation: Escalation | None = None
+    #: What the card asks of a person (:func:`attention_kind`).
+    attention_kind: str = ATTENTION_OWNER_ACTION
 
 
 @dataclass(frozen=True)
@@ -196,6 +224,7 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
             dispatchable_on_release=on_release,
             released_by=released_by(str(row.hold_kind), escalation),
             work_item_id=row.work_item_id, escalation=escalation,
+            attention_kind=attention_kind(str(row.hold_kind), row.hold_reason, escalation),
         ))
     return out
 

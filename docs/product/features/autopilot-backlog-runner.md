@@ -593,8 +593,19 @@ PR linkage, never on labels alone.
 - The runner had to learn to see its own PRs (#546 sweep-time resolution) and to fail-closed
   on PR↔issue linkage before closing (#643), and not to auto-close action-required issues
   (#784/#786) or ones with unchecked `- [ ]` acceptance items (#2681). The hold names what is
-  left; a close-out hold written before #2681 (generic "needs a human close-out") is re-judged
-  after each `auto` tick — closed if nothing is left, otherwise re-worded to say what is.
+  left. Every close-out hold — this one and a pre-#2681 generic "needs a human close-out" —
+  is then the needs-you hygiene loop's **close-out assessment** (design 2026-10-14 §3,
+  `server/pm/closeout_assess.py`): a stateless Sonnet helper reads the issue and the merged
+  PRs that reference it (body, files, a 12k-character diff excerpt) and classifies each
+  unchecked item (or the rest of the issue) as `done`, `agent_doable` or `human_only`. All
+  done → the issue closes with a comment citing the evidence; nothing human-only → the hold
+  is released (signal `assessment`) and the runner picks it up again; otherwise the hold
+  reason becomes the checklist of only the human items ("Left for you: - [ ] …", ≤ 5 items,
+  ≤ 500 chars). One assessment per (issue, body fingerprint), ≤ 3 per tick fleet-wide, and an
+  applied outcome is never re-proposed for the same body — a re-hold stays with a person.
+  Like every hygiene action it is `risk_tolerance`-gated (`cautious` → an owner
+  recommendation), dry-run-able and audited `pm.hygiene.closeout_assess`; the assessment
+  is recorded in the automation's `AutomationTargetState` (target = the issue ref).
 - Hold hygiene after every `auto` tick (#2679/#2680): recurring alert issues an automation
   files per occurrence (bot author + a title ending in an ISO date, e.g. "Weekly failed —
   <date>") are closed as superseded by the newest of their type (`server/pm/alert_series.py`),
