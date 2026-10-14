@@ -64,9 +64,16 @@ async def test_factory_registers_precompact_hook_when_callback_given():
 
 
 @pytest.mark.asyncio
-async def test_factory_no_hooks_without_callback():
-    client = await real_sdk_factory("/tmp", "/tmp/cfg", None, "default", None)
-    assert client.options.hooks is None
+async def test_factory_without_precompact_callback_still_guards_human_hold():
+    """No PreCompact callback → no PreCompact hook, but the `hold:human` guard is
+    registered on every spawn (#3088): it is a PreToolUse hook so no permission
+    mode or allow rule can skip it."""
+    from server.sessions.human_hold_guard import human_hold_pre_tool_use
+    client = await real_sdk_factory("/tmp", "/tmp/cfg", None, "bypassPermissions", None)
+    hooks = client.options.hooks
+    assert "PreCompact" not in hooks
+    (matcher,) = hooks["PreToolUse"]
+    assert matcher.matcher == "Bash" and human_hold_pre_tool_use in matcher.hooks
 
 
 @pytest.mark.asyncio
