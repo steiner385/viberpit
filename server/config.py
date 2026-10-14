@@ -1,6 +1,7 @@
 """ViberPit web backend configuration.
 
-Reads settings from environment variables. Copy .env.example → .env and fill in values.
+Reads settings from environment variables. For a dev run, copy .env.example → .env and
+fill in values; a systemd-managed process ignores .env (see ``_dotenv_file``).
 """
 import os
 from pathlib import Path
@@ -72,6 +73,21 @@ def _rules_trust_local_host_from_process_env() -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _dotenv_file() -> str | None:
+    """The ``.env`` Settings reads, or None under systemd (#3073).
+
+    ``get_settings()`` builds a fresh Settings per call, and pydantic resolves
+    ``env_file`` against the working directory, which for the deployed edge and
+    daemon is the deploy checkout: writable by the operator's user, so by every
+    agent session. Read live, that file would let a session change security
+    settings (VIBERPIT_ALLOW_UNAUTHENTICATED, the allowlist, …) on the running
+    edge. systemd sets ``INVOCATION_ID`` for every unit it starts, so a managed
+    process takes its config from the root-owned EnvironmentFile alone; dev runs
+    from a shell keep the ``.env`` convenience.
+    """
+    return None if os.environ.get("INVOCATION_ID") else ".env"
+
+
 def _reauth_chrome_profile_default() -> Path:
     """Dedicated reauth Chrome profile path, via the core's single definition."""
     from viberpit.paths import reauth_chrome_profile_dir
@@ -89,6 +105,7 @@ try:
         def __init__(self, **kwargs: Any) -> None:
             # Fill either prefix from the other before pydantic reads the aliases.
             mirror_legacy_env()
+            kwargs.setdefault("_env_file", _dotenv_file())
             super().__init__(**kwargs)
 
         host: str = Field(default="127.0.0.1", alias="VIBERPIT_HOST")
@@ -379,7 +396,8 @@ try:
         assistant_watch_max_per_identity: int = Field(
             default=20, alias="VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY")
 
-        model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
+        # No env_file here: __init__ passes _dotenv_file(), which is None under systemd.
+        model_config = {"populate_by_name": True, "extra": "ignore"}
 
         @property
         def rules_trust_local_host(self) -> bool:

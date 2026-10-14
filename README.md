@@ -99,7 +99,8 @@ export VIBERPIT_TAILNET_ALLOWLIST="you@example.com"
 # VIBERPIT_DB_URL=sqlite+aiosqlite:///~/.claude-accounts/ccswitch.db
 ```
 
-Or copy `.env.example` → `.env` and fill in values; the server loads it automatically.
+Or copy `.env.example` → `.env` and fill in values; the server loads it automatically when run
+from a shell. A systemd-managed edge or daemon ignores `.env` and reads its service environment only.
 
 #### 2. Install and build
 
