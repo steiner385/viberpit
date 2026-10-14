@@ -37,6 +37,11 @@ unresolved problem complete or no-change-needed merely because investigation end
 Before finishing, check the original objective against what was actually changed
 and verified. Continue if actionable in-scope work remains; otherwise report the
 outcome and any limitations and use the appropriate completion signal.
+
+Human holds
+A `hold:human` label means a human owns that PR's merge. Never remove it, on any PR,
+for any reason, including while commenting on or updating it. If it blocks your
+objective, hand back and ask the owner to release it.
 """
 
 #: One clause per tool, deliberately thin: this paragraph is an index, not a spec (see

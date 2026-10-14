@@ -6,6 +6,7 @@ import os
 
 from .account_auth import account_store_io, helper_env
 from .claude_bin import cli_path_kwargs as _cli_path_kwargs
+from .human_hold_guard import human_hold_pre_tool_use
 from .permissions import to_sdk_permission_mode
 
 
@@ -117,10 +118,12 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir, **session_tmpdir_env())
     if extra_env:
         env.update(extra_env)
-    hooks = None
+    from claude_agent_sdk import HookMatcher
+    # Always on: no mode or allow rule may let a session strip `hold:human` (#3088).
+    hooks: dict = {"PreToolUse": [HookMatcher(matcher="Bash",
+                                              hooks=[human_hold_pre_tool_use])]}
     if on_pre_compact is not None:
-        from claude_agent_sdk import HookMatcher
-        hooks = {"PreCompact": [HookMatcher(hooks=[on_pre_compact])]}
+        hooks["PreCompact"] = [HookMatcher(hooks=[on_pre_compact])]
     kwargs = dict(
         cwd=cwd, env=env, can_use_tool=can_use_tool,
         permission_mode=to_sdk_permission_mode(mode),
