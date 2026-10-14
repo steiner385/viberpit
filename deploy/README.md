@@ -125,7 +125,9 @@ those for profile-pattern writes) carry `via: local-trusted`.
 The edge reads this flag only from its service environment, that is `/etc/viberpit/viberpit.env`
 as systemd applies it at start. A `VIBERPIT_RULES_TRUST_LOCAL_HOST` line in the deploy checkout's
 `.env` is deliberately ignored: that file is writable by the operator's user, so any agent session
-could otherwise turn the flag on for itself.
+could otherwise turn the flag on for itself. The same holds for every setting: a systemd-managed
+edge or daemon (`INVOCATION_ID` set) never reads `.env` at all (#3073), so put service config in
+`/etc/viberpit/viberpit.env`, not in a checkout's `.env`.
 
 ## HTTPS via nginx + tailscale cert (required once per host)
 
