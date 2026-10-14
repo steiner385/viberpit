@@ -473,3 +473,18 @@ def test_hand_back_requested_is_internal_and_has_no_wire_form():
     transcript event — there is no card for a top-level hand_back (reducer.ts)."""
     from server.sessions.events import HandBackRequested
     assert not hasattr(HandBackRequested("t1", "r"), "to_wire")
+
+
+def test_prose_survives_the_sdk_splitting_one_api_message_per_block():
+    """The CLI emits [text] and [tool_use] as separate AssistantMessages sharing a
+    `message_id`; the hand_back acknowledgement must still see the prose (#3059)."""
+    from claude_agent_sdk import ToolUseBlock
+    options = "Pick one:\nA) x\nB) y"
+    t = Translator()
+    t.feed(f.assistant(TextBlock(text=options), uuid="a", message_id="msg_1"))
+    t.feed(f.assistant(ToolUseBlock(id="tc_hb", name=HAND_BACK, input={"reason": "pick"}),
+                       uuid="b", message_id="msg_1"))
+    assert t.has_signal("hand_back") and t.message_prose() == options
+    # A NEW API message resets it.
+    t.feed(f.assistant(TextBlock(text="after"), uuid="c", message_id="msg_2"))
+    assert t.message_prose() == "after"
