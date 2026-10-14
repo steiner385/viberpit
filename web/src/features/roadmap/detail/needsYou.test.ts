@@ -1,8 +1,9 @@
-// "Needs you" is every pending human decision AND every stall a human can clear
-// (design spec item 17): needs-you rows first, blocked rows after them.
+// "Needs you" is only what a human alone can unblock (design 2026-10-14 §1):
+// the needs-you tier. Blocked rows are WAITING — listed by `waitingRows`, never
+// counted.
 import { describe, it, expect } from 'vitest'
 import { cap, ini, product } from '../__fixtures__/map'
-import { needsYouCount, needsYouRows } from './needsYou'
+import { needsYouCount, needsYouRows, waitingRows, waitingSummary } from './needsYou'
 
 const p = product({
   slug: 'kindash', name: 'KinDash',
@@ -14,12 +15,46 @@ const p = product({
 })
 
 describe('needsYouRows', () => {
-  it('lists needs-you rows first, then blocked rows, never in-flight ones', () => {
-    const rows = needsYouRows([p]).initiatives.map((r) => r.initiative.slug)
-    expect(rows).toEqual(['ready', 'stuck'])
+  it('lists only needs-you rows — blocked ones wait, in-flight ones move', () => {
+    expect(needsYouRows([p]).initiatives.map((r) => r.initiative.slug)).toEqual(['ready'])
+    expect(waitingRows([p]).initiatives.map((r) => r.initiative.slug)).toEqual(['stuck'])
   })
-  it('counts what it lists', () => {
-    expect(needsYouCount([p])).toBe(2)
+  it('counts what it lists, and never a waiting row', () => {
+    expect(needsYouCount([p])).toBe(1)
+  })
+})
+
+describe('programs count for their OWN tier, never once more per phase', () => {
+  const prog = product({ slug: 'p', initiatives: [
+    // Raised to needs-you by its phase; its own tier is in-flight.
+    ini({ slug: 'prog', projectSlug: 'p', hasChildren: true, tier: 'needs-you', ownTier: 'in-flight' }),
+    ini({ slug: 'phase', projectSlug: 'p', parentInitiative: 'prog', tier: 'needs-you', ownTier: 'needs-you' }),
+    // Its own gate needs you.
+    ini({ slug: 'gate', projectSlug: 'p', hasChildren: true, tier: 'needs-you', ownTier: 'needs-you' }),
+  ] })
+  it('lists the phase and the gated program, not the raised one', () => {
+    expect(needsYouRows([prog]).initiatives.map((r) => r.initiative.slug)).toEqual(['gate', 'phase'])
+    expect(needsYouCount([prog])).toBe(2)
+  })
+  it('falls back to tier when an older server sends no ownTier', () => {
+    const old = product({ slug: 'o', initiatives: [ini({ slug: 'x', projectSlug: 'o', tier: 'needs-you' })] })
+    expect(needsYouCount([old])).toBe(1)
+  })
+})
+
+describe('waitingSummary', () => {
+  it('lists non-zero waiting counters in WAITING_KEYS order with their words', () => {
+    const w = product({ slug: 'w', counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 0, awaitingTriage: 0, needsHome: 0,
+      waiting: { blocked: 31, boardBlocked: 0, boardHeld: 0, parked: 28, epicOpen: 8, inProgress: 0, tracker: 0,
+        notNeeded: 0, assigned: 0, offQueue: 0, done: 0, bot: 0, untrusted: 0, environment: 0 } } })
+    expect(waitingSummary(w)).toEqual([
+      { key: 'blocked', label: 'blocked by a dependency', count: 31 },
+      { key: 'parked', label: 'parked', count: 28 },
+      { key: 'epicOpen', label: 'epic with open sub-issues', count: 8 },
+    ])
+  })
+  it('is empty for an older server that sends no waiting counters', () => {
+    expect(waitingSummary(product({ slug: 'old' }))).toEqual([])
   })
 })
 
@@ -39,13 +74,14 @@ describe('needsYouRows — newest first inside a tier (#1476, spec §7)', () => 
       .toEqual(['newest', 'middle', 'oldest'])
   })
 
-  it('keeps the TIER as the primary order — a stale decision still outranks a fresh block', () => {
+  it('sorts waiting rows newest first too, apart from the needs-you ones', () => {
     const prod = product({ slug: 'kindash', initiatives: [
+      dated('old-block', '2026-09-01T00:00:00Z', 'blocked'),
       dated('fresh-block', '2026-09-19T00:00:00Z', 'blocked'),
       dated('stale-decision', '2026-09-01T00:00:00Z', 'needs-you'),
     ] })
-    expect(needsYouRows([prod]).initiatives.map((r) => r.initiative.slug))
-      .toEqual(['stale-decision', 'fresh-block'])
+    expect(needsYouRows([prod]).initiatives.map((r) => r.initiative.slug)).toEqual(['stale-decision'])
+    expect(waitingRows([prod]).initiatives.map((r) => r.initiative.slug)).toEqual(['fresh-block', 'old-block'])
   })
 
   it('sorts ACROSS products within a tier, not per product', () => {
@@ -77,16 +113,20 @@ const scopedProduct = product({ slug: 'p', capabilities: [parent], initiatives: 
 ] })
 
 it('counts individual direct issues without counting child rollups or primary initiatives twice', () => {
-  const rows = needsYouRows([scopedProduct])
-  expect(rows.issues.map(({ capability, needsYou, blocked }) => [capability.slug, needsYou, blocked]))
-    .toEqual([['parent', 1, 0], ['child', 1, 1]])
-  expect(needsYouCount([scopedProduct])).toBe(5)
+  expect(needsYouRows([scopedProduct]).issues.map(({ capability, needsYou }) => [capability.slug, needsYou]))
+    .toEqual([['parent', 1], ['child', 1]])
+  expect(waitingRows([scopedProduct]).issues.map(({ capability, blocked }) => [capability.slug, blocked]))
+    .toEqual([['child', 1]])
+  // review + parent's 1 + child's 1; the blocked issue and initiative wait.
+  expect(needsYouCount([scopedProduct])).toBe(3)
 })
 
-it('keeps blocked initiatives and descendant issue groups in capability scope', () => {
+it('keeps initiatives and descendant issue groups in capability scope', () => {
   expect(needsYouRows([scopedProduct], parent).initiatives.map(({ initiative }) => initiative.slug))
-    .toEqual(['review', 'stalled'])
-  expect(needsYouCount([scopedProduct], child)).toBe(2)
+    .toEqual(['review'])
+  expect(waitingRows([scopedProduct], parent).initiatives.map(({ initiative }) => initiative.slug))
+    .toEqual(['stalled'])
+  expect(needsYouCount([scopedProduct], child)).toBe(1)
 })
 
 describe('issue attention counts', () => {
@@ -99,9 +139,12 @@ describe('issue attention counts', () => {
       ini({ slug: 'touching', projectSlug: 'p', primaryCapability: 'elsewhere', capabilities: ['root'], tier: 'needs-you' }),
       ini({ slug: 'program', projectSlug: 'p', primaryCapability: 'root', hasChildren: true, tier: 'needs-you' }),
     ] })
-    expect(needsYouRows([scoped]).issues.map(({ capability, needsYou, blocked }) => [capability.slug, needsYou + blocked]))
-      .toEqual([['root', 2], ['child', 2]])
-    expect(needsYouCount([scoped])).toBe(8)
+    expect(needsYouRows([scoped]).issues.map(({ capability, needsYou }) => [capability.slug, needsYou]))
+      .toEqual([['root', 1], ['child', 1]])
+    expect(waitingRows([scoped]).issues.map(({ capability, blocked }) => [capability.slug, blocked]))
+      .toEqual([['root', 1], ['child', 1]])
+    // primary + touching + program (no ownTier: falls back to tier) + 2 issues.
+    expect(needsYouCount([scoped])).toBe(5)
   })
 
   it('does not turn in-flight issues or inconsistent negative rollups into attention', () => {
@@ -110,9 +153,10 @@ describe('issue attention counts', () => {
       cap({ slug: 'root', children: [child] }),
       cap({ slug: 'moving', counts: { openIssues: 2, inFlight: 2, needsYou: 0, blocked: 0 } }),
     ] })
-    expect(needsYouRows([scoped]).issues.map(({ capability, needsYou, blocked }) => [capability.slug, needsYou + blocked]))
+    expect(needsYouRows([scoped]).issues).toEqual([])
+    expect(waitingRows([scoped]).issues.map(({ capability, blocked }) => [capability.slug, blocked]))
       .toEqual([['child', 1]])
-    expect(needsYouCount([scoped])).toBe(1)
+    expect(needsYouCount([scoped])).toBe(0)
     expect(needsYouRows([product({ slug: 'empty' })]).issues).toEqual([])
   })
 })

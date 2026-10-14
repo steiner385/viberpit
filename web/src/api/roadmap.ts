@@ -55,6 +55,11 @@ export interface InitiativeNode {
   primaryCapability: string | null
   capabilities: string[]
   tier: RoadmapTier
+  /** The node's OWN tier, before the server raises a program's `tier` to the
+   *  max over its phases (`server/pm/tree.py`). Equal to `tier` for a leaf.
+   *  Optional: an older server does not send it. A program counts toward
+   *  needs-you only for its own tier, never once more per phase. */
+  ownTier?: RoadmapTier
   /** Why it needs a human beyond its status: 'advance', or for a blocked row 'blocked' | 'epic_blocked'. */
   reason: 'advance' | 'blocked' | 'epic_blocked' | string | null
   epic: InitiativeEpic | null
@@ -89,6 +94,18 @@ export interface AutoResolved {
   tolerance: string | null
 }
 
+/**
+ * Why an item is not moving without needing a human (design 2026-10-14 §1),
+ * in display order — mirrors `server/pm/attention.py:WAITING_KEYS`. The server
+ * buckets the queue's own skip reasons, so the map and the queue agree.
+ */
+export const WAITING_KEYS = [
+  'blocked', 'boardBlocked', 'boardHeld', 'parked', 'epicOpen', 'inProgress',
+  'tracker', 'notNeeded', 'assigned', 'offQueue', 'done', 'bot', 'untrusted',
+  'environment',
+] as const
+export type WaitingKey = (typeof WAITING_KEYS)[number]
+
 export interface ProductCounts {
   inFlight: number
   blocked: number
@@ -96,6 +113,8 @@ export interface ProductCounts {
   capabilities: number
   awaitingTriage: number
   needsHome: number
+  /** Waiting counters by reason. Optional: an older server does not send them. */
+  waiting?: Record<WaitingKey, number>
 }
 
 /**

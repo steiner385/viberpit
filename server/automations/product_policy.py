@@ -24,7 +24,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -463,6 +463,27 @@ def trusted_authors(policy: "Mapping | None") -> frozenset[str]:
     # A bare app login (``BARE_APP_LOGINS``) is never honoured, even from a row written
     # before write-time validation rejected it: it could only match a squatting user.
     return frozenset(a for a in logins if a and a not in BARE_APP_LOGINS)
+
+
+def rank_kwargs(policy: "Mapping", *, min_status: str | None = None,
+                respect_dependencies: bool | None = None) -> dict[str, Any]:
+    """THE policy → ``queue.rank`` / ``queue.skip_reason`` keyword composition: the
+    product's reach (``queue_min_status``, ``respect_dependencies``), its D8 bounce
+    threshold and the three readers above. One function for the runner's pool,
+    ``GET /api/pm/queue``, the escalation read model and the map's waiting counters,
+    so no two views of the pool can rank one product under different rules.
+    *min_status* / *respect_dependencies* are a view's explicit what-if overrides;
+    ``None`` reads the policy. ``now`` (and ``skipped_out``) stay the caller's."""
+    return {
+        "min_status": (min_status if min_status is not None
+                       else str(policy["queue_min_status"])),
+        "respect_dependencies": (respect_dependencies if respect_dependencies is not None
+                                 else bool(policy["respect_dependencies"])),
+        "give_up_after_bounces": int(policy.get("give_up_after_bounces", 0)),
+        "extra_skip_labels": skip_labels(policy),
+        "trusted_authors": trusted_authors(policy),
+        "skip_trackers": skips_self_closing_trackers(policy),
+    }
 
 
 async def policy_for_repo(db: AsyncSession, repo: str) -> dict | None:

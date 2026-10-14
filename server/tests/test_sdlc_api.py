@@ -380,9 +380,13 @@ def test_build_stage_surfaces_backlog_sessions():
 
 
 def test_get_detail_includes_epic_progress():
-    """Seed Initiative(epic_repo, epic_number) + an epic WorkItem with 4 children
-    (1 closed, 1 'Blocked', 1 'Ready', 1 'Held' via GhProjectItem.status); GET
-    detail → epic.total==4, epic.done==1, epic.blocked==1, epic.held==1 (#991)."""
+    """Seed Initiative(epic_repo, epic_number) + an epic WorkItem with 6 children
+    (1 closed, 1 'Blocked', 1 'Ready', 1 'Held' with an owner_action hold, 1 bare
+    board 'Held' card with no hold, 1 closed child still carrying a decision
+    hold); GET detail → epic.total==6, epic.done==2, epic.blocked==1,
+    epic.held==1 (#991). ``held`` counts OPEN children with a real hold
+    (``HELD_KINDS``), never a bare board Held card (design 2026-10-14 §1): it
+    feeds ``initiative_tier``'s needs-you."""
     from server.db import db_session
     from server.db.models import GhProjectItem, Initiative, WorkItem
 
@@ -418,13 +422,21 @@ def test_get_detail_includes_epic_progress():
                 state="open", parent_work_item_id=epic_wi.id)
             held_child = WorkItem(
                 repo="o/r", number=4, kind="issue", title="Held child",
+                state="open", parent_work_item_id=epic_wi.id, hold_kind="owner_action")
+            bare_held_child = WorkItem(
+                repo="o/r", number=5, kind="issue", title="Bare board-Held child",
                 state="open", parent_work_item_id=epic_wi.id)
-            db.add_all([done_child, blocked_child, ready_child, held_child])
+            closed_held_child = WorkItem(
+                repo="o/r", number=6, kind="issue", title="Closed, hold left over",
+                state="closed", parent_work_item_id=epic_wi.id, hold_kind="decision")
+            db.add_all([done_child, blocked_child, ready_child, held_child,
+                        bare_held_child, closed_held_child])
             await db.flush()
 
             db.add(GhProjectItem(work_item_id=blocked_child.id, status="Blocked"))
             db.add(GhProjectItem(work_item_id=ready_child.id, status="Ready"))
             db.add(GhProjectItem(work_item_id=held_child.id, status="Held"))
+            db.add(GhProjectItem(work_item_id=bare_held_child.id, status="Held"))
 
     with tempfile.TemporaryDirectory() as tmp:
         db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
@@ -448,8 +460,8 @@ def test_get_detail_includes_epic_progress():
                 epic = body["epic"]
                 assert epic["ref"] == "o/r#997"
                 assert epic["url"] == "https://github.com/o/r/issues/997"
-                assert epic["total"] == 4
-                assert epic["done"] == 1
+                assert epic["total"] == 6
+                assert epic["done"] == 2
                 assert epic["blocked"] == 1
                 assert epic["held"] == 1
                 child_refs = {c["ref"]: c for c in epic["children"]}

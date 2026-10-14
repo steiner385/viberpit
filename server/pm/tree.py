@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from server.db.models import INITIATIVE_STAGES
+from server.pm.attention import WAITING_KEYS
 from server.pm.desired_state import (
     ACTIVE_SESSION_STATUSES,
     FAILED_TURN_SESSION_STATUSES,
@@ -117,7 +119,13 @@ def issue_reason(*, state: str | None = None, bounces: int = 0,
 def issue_tier(state: str | None, triage_state: str | None,
                has_open_blocker: bool, session_status: str | None,
                board_status: str | None = None, *,
-               reason: str | None = None, hold_kind: str | None = None) -> str:
+               reason: str | None = None, hold_kind: str | None = None,
+               assigned_to_owner: bool = False) -> str:
+    """needs-you only when a human alone can unblock it (design 2026-10-14 §1,
+    ``server/pm/attention.py``): a ``HELD_KINDS`` hold, a session waiting on a
+    person, a *reason* (``needs_spec``), or an issue assigned to the product
+    owner. A bare board ``Held`` card is WAITING — ``blocked``, so the leaf still
+    reads as stopped — like a board ``Blocked`` card or an open dependency."""
     # triage_state stays in the signature (callers pass it positionally) but is no
     # longer read for needs-you — that is the hold's job now (spec 2026-09-18 §7).
     if state in ("closed", "merged"):
@@ -125,9 +133,9 @@ def issue_tier(state: str | None, triage_state: str | None,
     if reason is not None:
         return "needs-you"
     if (hold_kind in HELD_KINDS or session_status in HUMAN_WAIT_SESSION_STATUSES
-            or board_status == STATUS_HELD):
+            or assigned_to_owner):
         return "needs-you"
-    if has_open_blocker or board_status == STATUS_BLOCKED:
+    if has_open_blocker or board_status in (STATUS_BLOCKED, STATUS_HELD):
         return "blocked"
     if (session_status in (ACTIVE_SESSION_STATUSES | FAILED_TURN_SESSION_STATUSES)
             or board_status == STATUS_IN_PROGRESS):
@@ -281,6 +289,10 @@ class ProductIn:
     # or None. Carried through verbatim: the shape is the service's, and the
     # product header renders it (open PR, its age, Rebase while behind).
     map_changes: dict | None = None
+    # Items not moving and not needing a human, by `attention.WAITING_KEYS`
+    # bucket (design 2026-10-14 §1) — the queue's skip reasons, classified by
+    # `attention.waiting_reason_for_skip`. Served as `counts.waiting`.
+    waiting: dict[str, int] = field(default_factory=dict)
 
 
 def _initiative_node(ini: InitiativeIn, project_slug: str, *,
@@ -303,6 +315,10 @@ def _initiative_node(ini: InitiativeIn, project_slug: str, *,
         "projectSlug": project_slug, "primaryCapability": ini.primary_slug,
         "capabilities": list(ini.capability_slugs),
         "tier": tier,
+        # The node's OWN tier. `build_product_tree` raises a program's `tier` to
+        # the max over its phases; `ownTier` stays put, so a program counts
+        # toward needs-you only for its own gate, never once more per phase.
+        "ownTier": tier,
         "reason": reason,
         "epic": ini.epic,
         "priority": epic.get("priority"),
@@ -437,7 +453,7 @@ def build_product_tree(product: ProductIn) -> dict:
     roots = [build(c) for c in sorted(children_of.get(None, []), key=lambda c: c.slug)]
     # Product-level counts have their own shape (no openIssues) — do not reuse the
     # capability-shaped _empty_counts()/_add_counts() helpers here.
-    counts = {"inFlight": 0, "blocked": 0, "needsYou": 0}
+    counts: dict[str, Any] = {"inFlight": 0, "blocked": 0, "needsYou": 0}
     for r in roots:
         counts["inFlight"] += r["counts"]["inFlight"]
         counts["blocked"] += r["counts"]["blocked"]
@@ -448,6 +464,7 @@ def build_product_tree(product: ProductIn) -> dict:
     counts["capabilities"] = len(product.capabilities)
     counts["awaitingTriage"] = product.awaiting_triage
     counts["needsHome"] = product.needs_home
+    counts["waiting"] = {k: int(product.waiting.get(k, 0)) for k in WAITING_KEYS}
     pseudo = "needs-you" if (product.awaiting_triage or product.needs_home) else "idle"
     tier = max_tier(pseudo, *(r["tier"] for r in roots), *(i["tier"] for i in initiative_nodes),
                     *(incident_tier(s) for s in product.incident_statuses))

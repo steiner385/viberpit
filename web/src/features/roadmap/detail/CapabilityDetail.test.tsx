@@ -232,8 +232,10 @@ describe('CapabilityDetail', () => {
     expect(tile('In flight')).toHaveTextContent('2')
     expect(screen.getByRole('tab', { name: 'In flight (2)' })).toBeInTheDocument()
     expect(tile('Blocked')).toHaveTextContent('2')
-    expect(tile('Needs you')).toHaveTextContent('3') // one initiative and two blocked issues
-    expect(screen.getByRole('tab', { name: 'Needs you (3, needs attention)' })).toBeInTheDocument()
+    // One initiative; the two blocked issues WAIT (design 2026-10-14 §1) — the
+    // Blocked tile counts them, Needs you does not.
+    expect(tile('Needs you')).toHaveTextContent('1')
+    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Sub-capabilities (1)' })).toBeInTheDocument()
   })
 
@@ -388,7 +390,7 @@ it('explains issue-only attention on Overview and opens its actions', () => {
   expect(screen.queryByText('Nothing needs you')).toBeNull()
 })
 
-it('routes descendant-only issue attention to the child and retains a blocked initiative', () => {
+it('routes descendant-only issue attention to the child and lists a blocked initiative as waiting', () => {
   const child = cap({ slug: 'child', title: 'Child', counts: { openIssues: 1, needsYou: 1, blocked: 0, inFlight: 0 } })
   const capability = cap({ slug: 'parent', children: [child], counts: { openIssues: 1, needsYou: 1, blocked: 1, inFlight: 0 } })
   const p = product({ slug: 'p', capabilities: [capability], initiatives: [
@@ -397,9 +399,10 @@ it('routes descendant-only issue attention to the child and retains a blocked in
   ] })
   mount({ product: p, capability }, '/roadmap/p/capabilities/parent?tab=needs-you')
   expect(screen.getByRole('link', { name: 'Review issues in Child' })).toHaveAttribute('href', '/roadmap/p/capabilities/child?tab=needs-you')
-  expect(screen.getByRole('link', { name: 'Clear the block' })).toHaveAttribute('href', '/initiatives/stalled')
+  expect(within(screen.getByRole('list', { name: 'Initiatives waiting' }))
+    .getByRole('link', { name: 'Clear the block' })).toHaveAttribute('href', '/initiatives/stalled')
   expect(screen.queryByText('Other work')).toBeNull()
-  expect(tile('Needs you')).toHaveTextContent('2')
+  expect(tile('Needs you')).toHaveTextContent('1')   // the child's issue; the stalled one waits
 })
 
 // ── the queue leads (2026-09-30 Roadmap critique, P1; docs/PAGE-TABS.md §4) ──

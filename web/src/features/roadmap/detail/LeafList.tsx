@@ -21,7 +21,7 @@ import { TierDot } from '../rows/TierDot'
 import { flattenCapabilities } from '../lookup'
 import { LeafScoreButton, LeafCapabilityChip } from './LeafEditors'
 import { leafRows, type LeafListRow } from './leafRows'
-import { leafNeedsAttention } from './leafAttention'
+import { leafNeedsAttention, leafNeedsYou } from './leafAttention'
 import { IssueDispositionContext } from './IssueDispositionContext'
 
 /** `owner/repo#N` → `#N` when it is the leaf's own repo; the full ref otherwise. */
@@ -159,7 +159,7 @@ export function LeafList({ scope, product, attentionOnly = false }: { scope: Lea
     )
   }
   if (isLoading && !data) return <Skeleton lines={5} />
-  const leaves = attentionOnly ? (data ?? []).filter(leafNeedsAttention) : (data ?? [])
+  const leaves = attentionOnly ? (data ?? []).filter(leafNeedsYou) : (data ?? [])
   if (leaves.length === 0) return <EmptyState title={attentionOnly ? 'No issues need your attention' : `No ${ISSUE.plural.toLowerCase()} here yet`} />
   return <VirtualRows rows={leafRows(leaves)} capabilities={capabilities} />
 }

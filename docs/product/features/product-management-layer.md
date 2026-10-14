@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/evidence.py, server/pm/tree.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/evidence.py, server/pm/tree.py, server/pm/attention.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -239,11 +239,28 @@ under the nav section `roadmap`, on the same master/detail chassis as Sessions:
 
 **Acting on attention.** Product and capability overviews show **Next actions** with links to
 initiative decisions, issue lists, and proposal triage. **Needs you** uses the same selection for
-its map badge, summary tile, and tab: initiatives needing input or blocked, direct issue groups
-per capability, and product triage groups. A capability includes attention under its descendants;
+its map badge, summary tile, and tab: initiatives needing input, direct issue groups per
+capability, and product triage groups. A capability includes attention under its descendants;
 issue groups link to the capability that owns those issues. The selected capability shows its
 attention issues inline, with guidance and actions. Counts include individual attention issues
 plus initiative and product triage rows. Incidents retain their separate live queue.
+
+**Needs you vs waiting** (design `docs/superpowers/specs/2026-10-14-needs-you-burden-design.md`
+§1; the one definition is `server/pm/attention.py`). An item needs you only when a human alone can
+unblock it: a `decision` or `owner_action` hold, a session waiting on a person, a bounced-out issue
+that needs a better spec, an initiative gate (`awaiting_human`, or `advance`), triage proposals,
+owner-held items with no capability, or an open issue assigned on GitHub to the product owner (a
+human login in the policy's `trusted_authors`). A program counts for its OWN tier (`ownTier`),
+never once more per phase. Everything else that is stopped is **waiting** and is never counted: a
+bare board `Held` card (no hold, no human-wait session) tiers `blocked`, not needs-you, and an
+epic's `held` roll-up counts only open sub-issues with a real hold. Blocked initiatives and blocked
+issue groups list under a quiet **Waiting** section of the Needs-you tab. Each product's
+`counts.waiting` (`GET /api/pm/map`) buckets every row the queue skips by reason (`blocked`,
+`boardBlocked`, `boardHeld`, `parked`, `epicOpen`, `inProgress`, `tracker`, `notNeeded`,
+`assigned`, `offQueue`, `done`, `bot`, `untrusted`, `environment`), from the same `queue_inputs` →
+`rank` composition `GET /api/pm/queue` uses (`product_policy.rank_kwargs`), so the map and the
+queue cannot disagree. The product row on the Map says them as muted text ("Waiting: 31 blocked by
+a dependency · 28 parked"), never as a badge.
 
 **Held issues** lead the product and portfolio Needs-you lists, read from the escalation read
 model (`GET /api/pm/holds`) rather than from the map's per-capability counts — an unclassified

@@ -7,7 +7,7 @@
  */
 import { INITIATIVE_STAGES, type InitiativeStage, type InitiativeStatus } from '@/api/sdlc'
 import type { OnboardingState } from '@/api/pm'
-import type { InitiativeNode, RoadmapTier } from '@/api/roadmap'
+import type { InitiativeNode, RoadmapTier, WaitingKey } from '@/api/roadmap'
 
 export const PRODUCT = {
   singular: 'Product',
@@ -103,6 +103,25 @@ export const TIER_LABEL: Record<RoadmapTier, string> = {
   proposed: 'Proposed',
   live: 'Live',
   idle: 'Idle',
+}
+
+/** Why an item is waiting rather than needing you (server `counts.waiting`,
+ *  `server/pm/attention.py`): the queue's skip reasons in the map's words. */
+export const WAITING_LABEL: Record<WaitingKey, string> = {
+  blocked: 'blocked by a dependency',
+  boardBlocked: 'marked blocked, no blocker',
+  boardHeld: 'held on the board',
+  parked: 'parked',
+  epicOpen: 'epic with open sub-issues',
+  inProgress: 'in progress',
+  tracker: 'tracker',
+  notNeeded: 'no PR needed (backing off)',
+  assigned: 'assigned',
+  offQueue: 'below the queue’s status',
+  done: 'done on the board',
+  bot: 'bot',
+  untrusted: 'untrusted author',
+  environment: 'needs another environment',
 }
 
 /** Why a row needs a human beyond its tier (server `reason`). */

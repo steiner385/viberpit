@@ -1,4 +1,5 @@
 """Pure attention-tier and rollup rules for the roadmap tree (spec §11)."""
+from server.pm.attention import WAITING_KEYS
 from server.pm.tree import (
     TIERS, CapabilityIn, InitiativeIn, ProductIn, build_product_tree,
     capability_own_tier, derived_stage, incident_tier, initiative_tier,
@@ -41,7 +42,14 @@ def test_issue_and_capability_and_incident_tiers():
     assert issue_tier("open", "classified", False, "in_progress") == "in-flight"
     assert issue_tier("open", "classified", False, None) == "idle"
     # Board Status tier rows (spec §11): GhProjectItem.status mirrors the board.
-    assert issue_tier("open", "classified", False, None, board_status="Held") == "needs-you"
+    # A bare board Held card (no hold, no human-wait session, no reason) is
+    # WAITING, not needs-you (design 2026-10-14 §1): it reads as stopped.
+    assert issue_tier("open", "classified", False, None, board_status="Held") == "blocked"
+    assert issue_tier("open", "classified", False, None, board_status="Held",
+                      hold_kind="owner_action") == "needs-you"
+    assert issue_tier("open", "classified", False, "waiting_input", board_status="Held") == "needs-you"
+    assert issue_tier("open", "classified", False, None, board_status="Held",
+                      reason="needs_spec") == "needs-you"
     assert issue_tier("open", "classified", False, None, board_status="Blocked") == "blocked"
     assert issue_tier("open", "classified", False, None, board_status="In progress") == "in-flight"
     assert issue_tier("open", "classified", False, None, board_status="Backlog") == "idle"
@@ -82,6 +90,9 @@ def test_issue_tier_honours_reason():
     assert issue_tier("merged", "classified", False, None, reason="needs_spec") == "live"
     # No reason: the existing chain is unaffected.
     assert issue_tier("open", "classified", False, None) == "idle"
+
+
+_NO_WAITING = {k: 0 for k in WAITING_KEYS}
 
 
 def _cap(slug, parent=None, state="live", issues=(), links=(), personas=()):
@@ -128,7 +139,8 @@ def test_build_product_tree_nests_and_rolls_up():
     assert tree["counts"]["capabilities"] == 4
     assert tree["counts"]["needsYou"] == 1
     assert tree["counts"] == {"capabilities": 4, "inFlight": 0, "blocked": 1,
-                              "needsYou": 1, "awaitingTriage": 0, "needsHome": 0}
+                              "needsYou": 1, "awaitingTriage": 0, "needsHome": 0,
+                              "waiting": _NO_WAITING}
 
 
 def test_capability_node_carries_persona_slugs():
@@ -168,7 +180,8 @@ def test_edge_cases_root_fallback_and_empty_product():
     empty_tree = build_product_tree(empty)
     assert empty_tree["tier"] == "idle"
     assert empty_tree["counts"] == {"capabilities": 0, "inFlight": 0, "blocked": 0,
-                                    "needsYou": 0, "awaitingTriage": 0, "needsHome": 0}
+                                    "needsYou": 0, "awaitingTriage": 0, "needsHome": 0,
+                                    "waiting": _NO_WAITING}
     assert empty_tree["capabilities"] == []
 
     product = ProductIn(
@@ -316,6 +329,8 @@ def test_program_reason_tier_and_counts_come_from_its_phases():
     assert by_slug["audit-01"]["reason"] == "advance" and by_slug["audit-01"]["tier"] == "needs-you"
     assert by_slug["audit"]["reason"] is None                 # a program never "advances"
     assert by_slug["audit"]["tier"] == "needs-you"            # …but inherits its phase's tier
+    assert by_slug["audit"]["ownTier"] == "in-flight"         # its OWN tier, before the max
+    assert by_slug["audit-01"]["ownTier"] == by_slug["audit-01"]["tier"]   # leaf: same
     assert by_slug["audit"]["hasChildren"] is True and by_slug["audit"]["parentInitiative"] is None
     assert by_slug["audit-01"]["parentInitiative"] == "audit"
     a11y = tree["capabilities"][0]
@@ -382,3 +397,39 @@ def test_initiative_node_exposes_the_epic_entrys_priority():
     assert node["priority"] == 15.25
     bare = _initiative_node(InitiativeIn("y", "Y", "design", "active", None, (), None), "p")
     assert bare["priority"] is None
+
+
+def test_issue_tier_assigned_to_owner_needs_you():
+    """Design 2026-10-14 §1: an open issue assigned to the product owner is
+    needs-you; a closed one is still live."""
+    assert issue_tier("open", "classified", False, None, assigned_to_owner=True) == "needs-you"
+    assert issue_tier("open", "classified", True, None, assigned_to_owner=True) == "needs-you"
+    assert issue_tier("closed", "classified", False, None, assigned_to_owner=True) == "live"
+    assert issue_tier("open", "classified", False, None, assigned_to_owner=False) == "idle"
+
+
+def test_program_own_tier_is_its_tier_before_the_phase_max():
+    """A program counts toward needs-you only when its OWN tier is needs-you —
+    ``ownTier`` carries that, never the max over phases."""
+    held = {"ref": "o/r#1", "url": "u", "total": 2, "done": 0, "blocked": 0, "held": 1}
+    product = ProductIn(
+        slug="p", name="P", capabilities=(),
+        initiatives=(
+            InitiativeIn(slug="prog", title="Prog", stage="design", status="awaiting_human",
+                         primary_slug=None, capability_slugs=(), epic=None),
+            InitiativeIn(slug="ph", title="Ph", stage="build", status="active",
+                         primary_slug=None, capability_slugs=(), epic=held, parent_slug="prog"),
+        ),
+        awaiting_triage=0, needs_home=0)
+    by_slug = {i["slug"]: i for i in build_product_tree(product)["initiatives"]}
+    assert by_slug["prog"]["ownTier"] == "needs-you" and by_slug["prog"]["tier"] == "needs-you"
+    assert by_slug["ph"]["ownTier"] == "needs-you"
+
+
+def test_product_counts_carry_waiting_in_stable_key_order():
+    product = ProductIn(slug="p", name="P", capabilities=(), initiatives=(),
+                        awaiting_triage=0, needs_home=0,
+                        waiting={"parked": 3, "blocked": 2})
+    waiting = build_product_tree(product)["counts"]["waiting"]
+    assert list(waiting) == list(WAITING_KEYS)
+    assert waiting["parked"] == 3 and waiting["blocked"] == 2 and waiting["tracker"] == 0

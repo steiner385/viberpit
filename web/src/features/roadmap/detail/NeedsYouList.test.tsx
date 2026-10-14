@@ -33,15 +33,42 @@ describe('NeedsYouList initiative rows — the CTA names the move, not "Review"'
     render(<MemoryRouter><NeedsYouList products={[p]} /></MemoryRouter>)
     const list = screen.getByRole('list', { name: 'Initiatives that need you' })
     const rows = [...list.querySelectorAll('li')].map((li) => li.textContent)
-    // needs-you tier first, then blocked; slug order inside a tier (no updatedAt).
+    // needs-you only; slug order inside the tier (no updatedAt).
     expect(rows).toEqual([
       'Held workPea · 2 issues held for youReview 2 held issues',
       'Ship itPea · Ready to advanceAdvance → Deploy',
       'Spec itPea · Awaiting humanReview the spec',
+    ])
+    // The blocked one WAITS: its own quiet section, same row, same move.
+    const waiting = screen.getByRole('list', { name: 'Initiatives waiting' })
+    expect([...waiting.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
       'StuckPea · Blocked by open dependenciesClear the blocking dependencies',
     ])
     expect(screen.getByRole('link', { name: 'Review the spec' })).toHaveAttribute('href', '/initiatives/spec')
     expect(screen.queryByText(/requested input/)).not.toBeInTheDocument()
+  })
+})
+
+describe('NeedsYouList waiting section — listed, never counted as needing you', () => {
+  it('lists blocked issue groups apart, linking to the capability issues', () => {
+    render(<MemoryRouter><NeedsYouList products={products} /></MemoryRouter>)
+    expect(screen.getByText('Waiting · 1')).toBeInTheDocument()
+    const list = screen.getByRole('list', { name: 'Issues waiting' })
+    expect(list).toHaveTextContent('Child capability · p · 1 blocked issue')
+    expect(screen.getByRole('link', { name: 'Child capability' })).toHaveAttribute('href', '/roadmap/p/capabilities/child?tab=issues')
+    // The needs-you group says only the needs-you count.
+    expect(screen.getByRole('list', { name: 'Issues that need you' })).not.toHaveTextContent('blocked')
+  })
+
+  it('is not on the overview, and nothing but waiting work is still "Nothing needs you"', () => {
+    const blockedOnly = [product({ slug: 'b', capabilities: [
+      cap({ slug: 'c', title: 'Cee', counts: { openIssues: 1, inFlight: 0, needsYou: 0, blocked: 1 } })] })]
+    const { unmount } = render(<MemoryRouter><NeedsYouList products={blockedOnly} overview /></MemoryRouter>)
+    expect(screen.queryByText(/Waiting/)).not.toBeInTheDocument()
+    unmount()
+    render(<MemoryRouter><NeedsYouList products={blockedOnly} /></MemoryRouter>)
+    expect(screen.getByText('Nothing needs you')).toBeInTheDocument()
+    expect(screen.getByText('Waiting · 1')).toBeInTheDocument()
   })
 })
 

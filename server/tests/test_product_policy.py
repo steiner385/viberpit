@@ -292,3 +292,21 @@ def test_merge_policy_patch_accepts_the_app_form_and_ordinary_users():
     merged = merge_policy_patch(None, {"trusted_authors": ["app/viberpit", "app/github-actions",
                                                            "steiner385"]})
     assert merged == {"trusted_authors": ["app/viberpit", "app/github-actions", "steiner385"]}
+
+
+def test_rank_kwargs_is_the_one_policy_to_rank_reading():
+    """ONE policy → ``queue.rank`` kwargs composition for the runner's pool,
+    ``GET /api/pm/queue``, the escalation read model and the map's waiting
+    counters — so no two views of the pool can rank under different rules."""
+    from server.automations.product_policy import rank_kwargs
+    policy = effective_policy({"dispatch": "auto", "queue_min_status": "Backlog",
+                               "respect_dependencies": False, "give_up_after_bounces": 3,
+                               "skip_labels": [" On-Hold "], "trusted_authors": ["Tony"],
+                               "skip_self_closing_trackers": False})
+    assert rank_kwargs(policy) == {
+        "min_status": "Backlog", "respect_dependencies": False, "give_up_after_bounces": 3,
+        "extra_skip_labels": frozenset({"on-hold"}), "trusted_authors": frozenset({"tony"}),
+        "skip_trackers": False}
+    # A view's explicit overrides win over the policy's reach.
+    kw = rank_kwargs(policy, min_status="Ready", respect_dependencies=True)
+    assert kw["min_status"] == "Ready" and kw["respect_dependencies"] is True
