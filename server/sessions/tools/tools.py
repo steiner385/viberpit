@@ -107,18 +107,23 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "children (id, name, status), plus scratchDir: a private directory that "
                f"survives {brand.NAME} daemon restarts — write the logs of long test or build "
                "runs there rather than /tmp, so they are still readable if a restart "
-               "interrupts the run. Call it when you need to know how you were "
-               "dispatched or how your child sessions are doing.",
+               "interrupts the run; and issueOwnerMarker: put it on its own line in the "
+               "body of an issue or epic you file to implement yourself, so the Backlog "
+               "Runner leaves it and its sub-issues alone while this session is live. "
+               "Call it when you need to know how you were dispatched, how your child "
+               "sessions are doing, or before filing issues for your own plan.",
                {"type": "object", "properties": {}, "required": []})
     @guarded
     async def session_context(args: dict[str, Any]) -> Any:
         import asyncio
 
+        from server.pm.session_ownership import owner_marker
         from server.sessions.session_scratch import scratch_dir_for
         snap = context_snapshot(ctx)
         scratch = await asyncio.to_thread(scratch_dir_for, snap.get("cwd"), ctx.session_id)
         if scratch is not None:
             snap["scratchDir"] = scratch
+        snap["issueOwnerMarker"] = owner_marker(ctx.session_id)
         return snap
 
     @spec_tool("report_feedback",

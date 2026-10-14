@@ -25,6 +25,7 @@ from .outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                        not_needed_suppression, rows_to_bounces, verdicts_by_ref)
 from .queue import QueueRow
 from .reconcile_inputs import _aware
+from .session_ownership import MAX_ANCESTOR_DEPTH, missing_parents, owned_by_live_session
 
 # ``BacklogRunner.id``, as a literal: importing ``server.automations.backlog_runner``
 # from ``server.pm`` to read it would drag the whole automation registry into the
@@ -61,6 +62,25 @@ def queue_inputs(s: Session, *, now: datetime) -> tuple[list[QueueRow], dict[str
     return load_queue_rows(s, now=now, claimed_refs=runner_claims(s)), policies_by_slug(s)
 
 
+def _ownership_nodes(db: Session, items: list[WorkItem]
+                     ) -> dict[str, tuple[str, str | None, str | None]]:
+    """``{id: (ref, body, parent_id)}`` for *items* and their ancestors, up to
+    ``MAX_ANCESTOR_DEPTH`` — the graph ``owned_by_live_session`` walks. One query per
+    ancestor level, never one per item."""
+    def node(w: WorkItem) -> tuple[str, str | None, str | None]:
+        return f"{w.repo}#{w.number}", w.body, w.parent_work_item_id
+
+    nodes = {w.id: node(w) for w in items}
+    frontier = missing_parents(nodes, nodes)
+    for _ in range(MAX_ANCESTOR_DEPTH):
+        if not frontier:
+            break
+        fetched = db.scalars(select(WorkItem).where(WorkItem.id.in_(frontier))).all()
+        nodes.update((w.id, node(w)) for w in fetched)
+        frontier = missing_parents(nodes, [w.id for w in fetched])
+    return nodes
+
+
 def load_queue_rows(db: Session, *, now: datetime,
                     claimed_refs: AbstractSet[str] = frozenset()) -> list[QueueRow]:
     """One ``QueueRow`` per open, board-linked issue across every onboarded product.
@@ -76,16 +96,17 @@ def load_queue_rows(db: Session, *, now: datetime,
     ``queue.skip_reason``.
     """
     rows: list[QueueRow] = []
-    # Only origin_ref is read here, so select that column directly rather than
+    # Only id + origin_ref are read here, so select those columns directly rather than
     # loading full Session ORM rows. Deliberately NOT the same definition as
     # reconcile_inputs (latest session per ref) — this is "any live session for
     # this ref" — they agree in practice because archiving always flips status to
     # a non-live value, so a ref never has both a live and a non-live session.
-    live_refs = {
-        ref for ref in
-        db.scalars(select(DbSession.origin_ref).where(DbSession.status.in_(LIVE_SESSION_STATUSES)))
-        if ref
-    }
+    live = db.execute(select(DbSession.id, DbSession.origin_ref)
+                      .where(DbSession.status.in_(LIVE_SESSION_STATUSES))).all()
+    live_refs = {ref for _, ref in live if ref}
+    # #3076: a live session also owns the descendants of its origin ref, and any item
+    # (or ancestor) whose body carries its ownership marker.
+    live_ids = {sid for sid, _ in live}
 
     for product in list_product_views(db):
         if not product.gh_project_db_id:
@@ -135,6 +156,8 @@ def load_queue_rows(db: Session, *, now: datetime,
             if is_open_blocker(dst_state.get(d.dst_ref)):
                 blockers.setdefault(d.src_ref, []).append(d.dst_ref)
 
+        nodes = _ownership_nodes(db, [w for _, w in items])
+
         product_slug = product.slug or product.project_id
         for it, w in items:
             ref = f"{w.repo}#{w.number}"
@@ -151,7 +174,9 @@ def load_queue_rows(db: Session, *, now: datetime,
                 labels=tuple(w.labels or ()),
                 open_children=int(open_children.get(w.id, 0)),
                 open_blockers=tuple(sorted(blockers.get(ref, ()))),
-                live_session=ref in live_refs, claimed=ref in claimed_refs,
+                live_session=owned_by_live_session(
+                    w.id, nodes=nodes, live_refs=live_refs, live_ids=live_ids),
+                claimed=ref in claimed_refs,
                 hold_kind=w.hold_kind,
                 bounces=bounces.get(ref, 0),
                 hold_reason=w.hold_reason, hold_by=w.hold_by,

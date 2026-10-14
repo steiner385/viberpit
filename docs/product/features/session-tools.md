@@ -44,7 +44,7 @@ eleven tools (plus the roadmap tools):
 
 | Tool | Class | Args | What it does |
 |---|---|---|---|
-| `session_context` | READ | none | id, name, repo, branch, cwd, host, engine, model, account, dispatch origin/ref, effective goal, permission mode |
+| `session_context` | READ | none | id, name, repo, branch, cwd, host, engine, model, account, dispatch origin/ref, effective goal, permission mode, `scratchDir`, `issueOwnerMarker` (an issue/epic body carrying it is skipped by the Backlog Runner, with its sub-issues, while this session is live — `server/pm/session_ownership.py`, #3076) |
 | `report_feedback` | READ | category, impact, title, body, evidence? | Reports a problem with ViberPit itself (not the project). One call per distinct problem, at most `session_feedback_cap` per session. |
 | `mark_complete` | SIGNAL | none | Declares the session's objective is fully done. |
 | `mark_no_pr` | SIGNAL | resolution (`not-needed` \| `cancelled` \| `awaiting-decision`), note? | Declares the work is finished but no PR is appropriate — or, with `awaiting-decision`, that it stopped on a `propose_decision` the person must answer. |
