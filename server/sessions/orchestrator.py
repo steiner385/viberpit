@@ -548,6 +548,21 @@ class ArchiveMissingError(Exception):
     and hides a real misconfiguration (e.g. an archive root that moved disks)."""
 
 
+class ArchiveOwnedElsewhereError(Exception):
+    """Raised when unarchive is asked to restore a session whose row names another
+    fleet host (#3097). Its worktree lives on that host's filesystem, so the local
+    ``cwd.exists()`` new-style/legacy heuristic is meaningless here: a present-on-rocky
+    worktree reads as "moved away" on dobby and fails as ArchiveMissingError with
+    advice to fix ``archive_root``. Route the call to the owning host instead."""
+
+    def __init__(self, session_id: str, host: str | None) -> None:
+        self.session_id = session_id
+        self.host = host
+        super().__init__(
+            f"Archived session {session_id} is owned by host {host!r}; unarchive it "
+            f"on that host (its worktree is not on this host's filesystem).")
+
+
 # Session-window utilisation ceiling that triggers rotation (100 = hard ceiling per spec)
 _ROTATION_CEILING: float = 100.0
 
@@ -1807,7 +1822,7 @@ class SessionOrchestrator:
             list_rows=lambda since: list_recent_archived_rows(db_session, since),
             gh_fn=_real_gh,
             gh_num_fn=_real_gh_num,
-            unarchive_fn=lambda sid: self.unarchive(sid),  # type: ignore[arg-type,return-value]
+            unarchive_fn=self._unarchive_on_owning_host,  # type: ignore[arg-type]
             clock=time.time,
             record_findings_fn=lambda results, mode: persist_findings(db_session, results, mode),
             mark_auto_reopen_failed_fn=lambda sid: mark_auto_reopen_failed(db_session, sid),
@@ -14428,12 +14443,40 @@ class SessionOrchestrator:
                 return "not_found"
             if row.status != "open":
                 return "already_decided"
-            if decision == "reopen" and await self.unarchive(row.session_id or "") is None:
+            if decision == "reopen" and await self._unarchive_on_owning_host(
+                    row.session_id or "") is None:
                 return "unarchive_failed"
             row.status = "retained" if decision == "retain" else "reopened"
             row.decided_at, row.decided_by = naive_utc_now(), "operator"
             await db.commit()
         return "retained" if decision == "retain" else "reopened"
+
+    async def _unarchive_on_owning_host(self, session_id: str) -> "SessionRecord | None":
+        """Unarchive ``session_id`` on the host whose filesystem holds its worktree
+        (#3097). The archive-audit rows span every host, but ``self.unarchive`` is this
+        daemon's local path; a worker's row goes to that worker's daemon over the same
+        RPC the edge's FleetOrchestrator routes ``unarchive`` through. A row naming a
+        host with no enabled Host row raises ArchiveOwnedElsewhereError."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import Host
+        async with db_session() as db:
+            host = (await db.execute(sa_select(DbSession.host).where(
+                DbSession.id == session_id))).scalar_one_or_none()
+            if _stamp_is_this_host(host):
+                endpoint = None
+            else:
+                endpoint = (await db.execute(sa_select(Host.endpoint).where(
+                    Host.name == host, Host.enabled.is_(True)))).scalar_one_or_none()
+        if _stamp_is_this_host(host):
+            return await self.unarchive(session_id)
+        if endpoint is None:
+            raise ArchiveOwnedElsewhereError(session_id, host)
+        from server.sessions.fleet_orchestrator import _orch_for_endpoint
+        remote = _orch_for_endpoint(endpoint)
+        try:
+            return await remote.unarchive(session_id)
+        finally:
+            await remote.aclose()
 
     # ------------------------------------------------------------------
     # Recurring-session scheduler (#603 dispatch): fire cron-scheduled sessions
@@ -24601,6 +24644,10 @@ class SessionOrchestrator:
             )).scalars().first()
         if row is None:
             return None
+        # The cwd.exists() test below is only meaningful on the host holding the
+        # worktree; from any other host it misreads a new-style archive as legacy.
+        if not _stamp_is_this_host(getattr(row, "host", None)):
+            raise ArchiveOwnedElsewhereError(session_id, row.host)
 
         stored_root = getattr(row, "archive_root", None)
         original_cwd = Path(row.cwd)

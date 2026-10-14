@@ -41,6 +41,7 @@ from server.config import get_settings
 from server.db import db_session, get_db
 from server.sessions.orchestrator import (
     ArchiveMissingError,
+    ArchiveOwnedElsewhereError,
     BranchSwitchError,
     InsufficientStorageError,
     ModelBlockedError,
@@ -1791,6 +1792,12 @@ async def unarchive_session(
             status_code=status.HTTP_410_GONE,
             detail={"code": "archive_missing", "message": str(exc)},
         )
+    except ArchiveOwnedElsewhereError as exc:
+        # 409: the row is fine, but this host is the wrong one to restore it (#3097).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "archive_owned_elsewhere", "message": str(exc)},
+        )
     except DaemonError as exc:
         if exc.err_type == "InsufficientStorageError":
             raise HTTPException(
@@ -1801,6 +1808,11 @@ async def unarchive_session(
             raise HTTPException(
                 status_code=status.HTTP_410_GONE,
                 detail={"code": "archive_missing", "message": exc.message},
+            )
+        if exc.err_type == "ArchiveOwnedElsewhereError":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "archive_owned_elsewhere", "message": exc.message},
             )
         raise
     except DaemonUnavailable:
