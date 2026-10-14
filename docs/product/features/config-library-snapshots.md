@@ -30,7 +30,10 @@ MCP server health (status pills, Test, in-session readout) is covered in [MCP Li
 mutated, and applied safely. Read routes are direct filesystem scans that degrade gracefully
 (a missing or malformed file yields an empty result / `parseError` flag, never an exception).
 Mutations are atomic (tempfile+rename, secure 0600 writes) and audited. Every mutation takes a
-throttled best-effort snapshot first, so any change is reversible; snapshots can be listed,
+throttled best-effort snapshot first, so any change is reversible. A snapshot captures an
+allowlist of config roots (`settings*.json`, `CLAUDE.md`, `skills/`, `commands/`, `agents/`,
+`hooks/`, `output-styles/`, the plugin registry files), never the plugin cache, transcripts or
+logs, and is written user-only. Routes run it off the event loop (#3067). Snapshots can be listed,
 diffed, restored, exported, and imported. Reusable templates — session presets and permission
 profiles (named, ordered tool-pattern allowlists applied at spawn) — sit on top of the same base.
 Hooks can be validated and dry-run in a light sandbox, and enabled/disabled without deletion via a

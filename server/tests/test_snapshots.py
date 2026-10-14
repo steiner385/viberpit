@@ -40,6 +40,17 @@ def test_is_excluded_predicate():
         "shell-snapshots/s",
         "statsig/s",
         "history/h",
+        # #3067: outside the config allowlist — caches, logs, venvs, backups.
+        "plugins/marketplaces/m/README.md",
+        "plugins/plugin-directory-cache-v2.json",
+        "security/agent-sdk-venv/lib/x.py",
+        "file-history/abc",
+        "history.jsonl",
+        "daemon.log",
+        "settings.json.bak-20260922-145611",
+        "skills",  # a bare captured dir name is not a file inside it
+        # credential basenames stay excluded even inside a captured dir
+        "hooks/.credentials.json",
     ]
     for rel in excluded:
         assert snapshots.is_excluded(rel), rel
@@ -48,6 +59,11 @@ def test_is_excluded_predicate():
         "skills/foo/SKILL.md",
         "plugins/installed_plugins.json",
         "commands/bar.md",
+        "settings.local.json",
+        "CLAUDE.md",
+        "agents/reviewer.md",
+        "hooks/pre.sh",
+        "plugins/known_marketplaces.json",
     ]
     for rel in kept:
         assert not snapshots.is_excluded(rel), rel
@@ -64,6 +80,27 @@ def test_create_and_list_snapshot(shared: Path):
     listed = snapshots.list_snapshots()
     assert len(listed) == 1
     assert listed[0]["id"] == meta["id"]
+
+
+def test_snapshot_captures_only_config_and_is_user_only(shared: Path):
+    """#3067 — a pre-mutation snapshot tar'd the whole 27 GB shared base. Only
+    the config allowlist is captured, and the tarball is not world-readable."""
+    for rel in ("plugins/cache/x/big.bin", "plugins/marketplaces/m/README.md",
+                "security/agent-sdk-venv/lib/x.py", "file-history/f", "debug/d.txt"):
+        (shared / rel).parent.mkdir(parents=True, exist_ok=True)
+        (shared / rel).write_text("noise")
+    (shared / "history.jsonl").write_text("{}\n")
+    (shared / "plugins" / "installed_plugins.json").write_text("{}")
+
+    meta = snapshots.create_snapshot()
+    assert sorted(snapshots._snapshot_members(meta["id"])) == [
+        "commands/bar.md",
+        "plugins/installed_plugins.json",
+        "settings.json",
+        "skills/foo/SKILL.md",
+    ]
+    assert snapshots._tar_path(meta["id"]).stat().st_mode & 0o077 == 0
+    assert snapshots.snapshots_dir().stat().st_mode & 0o077 == 0
 
 
 def test_snapshot_dir_missing_yields_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
