@@ -725,3 +725,62 @@ def test_untracked_sweep_script_only_removes_paths_tracked_at_target_sha():
 
         m2 = run(["git", "-C", repo, "merge", "--ff-only", sha])
         assert m2.returncode == 0
+
+
+# --- restore retry (#3082) ------------------------------------------------------------
+# 2026-10-14: rocky's restore_deploy ran 132s against a 30s client timeout, succeeded,
+# and the deploy still reported "restore call failed" with no session ids.
+
+class RestoreClient(FakeClient):
+    """snapshot_deploy lists two sessions; restore_deploy fails `fail_times` times."""
+    def __init__(self, calls, state):
+        super().__init__(calls)
+        self.state = state
+
+    async def call(self, method, **kw):
+        if method == "snapshot_deploy":
+            self.calls.append(method)
+            return {"live": [{"id": "s1", "status": "working"}, {"id": "s2", "status": "idle"}]}
+        if method == "restore_deploy":
+            self.calls.append(method)
+            self.state["timeouts"].append(kw.get("timeout"))
+            if self.state["fail_times"] > 0:
+                self.state["fail_times"] -= 1
+                from server.ipc.client import DaemonTimeout
+                raise DaemonTimeout("restore_deploy timed out: ", outcome_unknown=True)
+            return {"restored": ["s1", "s2"], "failed": []}
+        return await super().call(method, **kw)
+
+
+def _restore_runner(state, rpc):
+    return R.RunnerDeploy(ROCKY, local_name="dobby", run=_recorder([]),
+                          client_factory=lambda e: RestoreClient(rpc, state),
+                          fetch_info=_info("abc1234"), verify_interval_s=0,
+                          restore_retry_delays_s=(0, 0))
+
+
+def test_restore_uses_a_long_timeout_and_retries_until_it_answers():
+    state = {"fail_times": 2, "timeouts": []}
+    rpc: list = []
+    st = asyncio.run(_restore_runner(state, rpc).deploy(
+        target_sha="abc1234", daemon_changed=True, deps_changed=False,
+        local_daemon_enabled=True))
+    assert st.state == "done"
+    assert st.restore == {"restored": ["s1", "s2"], "failed": []}
+    assert rpc.count("restore_deploy") == 3
+    assert state["timeouts"] == [R.RESTORE_TIMEOUT_S] * 3
+    assert R.RESTORE_TIMEOUT_S >= 300, "must cover a multi-session serial resume"
+
+
+def test_restore_that_never_answers_names_the_unconfirmed_sessions():
+    state = {"fail_times": 99, "timeouts": []}
+    rpc: list = []
+    st = asyncio.run(_restore_runner(state, rpc).deploy(
+        target_sha="abc1234", daemon_changed=True, deps_changed=False,
+        local_daemon_enabled=True))
+    assert st.state == "done", "a failed restore is reported, it does not fail the runner"
+    assert rpc.count("restore_deploy") == 3
+    assert st.restore["unconfirmed"] == ["s1", "s2"]
+    assert st.restore["restored"] == [] and st.restore["failed"] == []
+    assert "after 3 attempts" in st.restore["error"]
+    assert "DaemonTimeout" in st.restore["error"]

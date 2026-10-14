@@ -25158,10 +25158,43 @@ class SessionOrchestrator:
                 entry["lastPrompt"] = last
             live.append(entry)
         _deploy_snapshot.write_snapshot(live, path=path)
+        self._deploy_restore = None   # a new snapshot is a new restore (#3082)
         return {"live": live}
 
+    # The single-flight restore_deploy run for the current snapshot: (path, task). Lets
+    # a deploy controller retry a timed-out restore without re-launching or re-replaying
+    # anything (#3082). Reset by snapshot_deploy. A class default rather than an
+    # __init__ field: per-process state that starts empty on every construction path.
+    _deploy_restore: "tuple[str | None, asyncio.Future] | None" = None
+
     async def restore_deploy(self, *, path: str | None = None) -> dict:
-        """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon.
+        """RESUME step, single-flight: run :meth:`_restore_deploy_once` at most once
+        per snapshot.
+
+        The deploy controller retries this call when it times out (#3082: rocky's
+        restore took 132s against a 30s client timeout, finished fine, and the
+        deploy still reported "restore call failed"). A timed-out call is outcome
+        unknown, so a retry must never re-launch or re-replay: it joins the run
+        still in flight, or gets that run's result once it has finished (the
+        snapshot file is already cleared by then, so a fresh run would report an
+        empty, falsely clean restore). ``snapshot_deploy`` starts a new snapshot and
+        so resets this. A run that raised is not cached; the retry runs again.
+        Shielded: a caller that disconnects does not cancel the restore under it.
+        """
+        cached = self._deploy_restore
+        if cached is not None and cached[0] == path:
+            task = cached[1]
+            if task.done() and (task.cancelled() or task.exception() is not None):
+                cached = None
+        if cached is None or cached[0] != path:
+            task = asyncio.ensure_future(self._restore_deploy_once(path=path))
+            self._deploy_restore = (path, task)
+        else:
+            task = cached[1]
+        return dict(await asyncio.shield(task))
+
+    async def _restore_deploy_once(self, *, path: str | None = None) -> dict:
+        """Eagerly re-launch each snapshotted session in the fresh daemon.
 
         ensure_driver only resumes the transcript — it does NOT continue a turn the
         restart killed — so a session snapshotted mid-turn gets its recorded prompt

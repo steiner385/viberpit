@@ -22,6 +22,8 @@ class MiniOrch:
     from server.sessions.orchestrator import SessionOrchestrator
     snapshot_deploy = SessionOrchestrator.snapshot_deploy
     restore_deploy = SessionOrchestrator.restore_deploy
+    _restore_deploy_once = SessionOrchestrator._restore_deploy_once
+    _deploy_restore = None
     _owns_record = SessionOrchestrator._owns_record
     _owns_record_by_stamp = SessionOrchestrator._owns_record_by_stamp
     orphaned_interaction = SessionOrchestrator.orphaned_interaction
@@ -269,3 +271,85 @@ def test_snapshot_restore_registered_as_rpc():
     from server.ipc import orchestrator_rpc
     src = inspect.getsource(orchestrator_rpc.register_orchestrator_rpc)
     assert "snapshot_deploy" in src and "restore_deploy" in src
+
+
+# --- single-flight restore (#3082) ----------------------------------------------------
+# The controller retries a timed-out restore_deploy. A timeout is outcome-unknown, so a
+# retry must join the run in flight or read its result, never re-launch or re-replay.
+
+class SlowOrch(MiniOrch):
+    """ensure_driver parks on a gate, like a real resume that outlives the RPC timeout."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        import asyncio
+        self.gate = asyncio.Event()
+
+    async def ensure_driver(self, session_id, identity="system"):
+        await self.gate.wait()
+        return await super().ensure_driver(session_id, identity)
+
+
+@pytest.mark.asyncio
+async def test_retry_while_in_flight_joins_the_same_run(tmp_path):
+    import asyncio
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "s1", "status": "in_progress", "lastPrompt": "go on"}], path=p)
+    o = SlowOrch(drivers={}, records={}, resumable={"s1"})
+    first = asyncio.ensure_future(o.restore_deploy(path=p))
+    await asyncio.sleep(0)
+    first.cancel()                       # the controller's call timed out and went away
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    retry = asyncio.ensure_future(o.restore_deploy(path=p))
+    await asyncio.sleep(0)
+    o.gate.set()
+    res = await retry
+    assert res["restored"] == ["s1"] and res["replayed"] == ["s1"]
+    assert o.ensured == ["s1"], "the abandoned call's run is the one that finished"
+    assert o.built["s1"].prompts == ["go on"], "replayed exactly once"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_finish_returns_the_cached_result(tmp_path):
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "s1", "status": "idle"}, {"id": "s2", "status": "idle"}], path=p)
+    o = MiniOrch(drivers={}, records={}, resumable={"s1"})
+    first = await o.restore_deploy(path=p)
+    again = await o.restore_deploy(path=p)
+    assert again == first == {"restored": ["s1"], "failed": ["s2"], "replayed": [],
+                              "skipped": []}
+    assert o.ensured == ["s1", "s2"], "the snapshot is not re-read: no second run"
+
+
+@pytest.mark.asyncio
+async def test_a_new_snapshot_starts_a_new_restore(tmp_path):
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "s1", "status": "idle"}], path=p)
+    o = MiniOrch(drivers={}, records={}, resumable={"s1", "s2"})
+    await o.restore_deploy(path=p)
+    o._drivers = {"s2": 1}
+    o._records = {"s2": FakeRec("idle")}
+    o.snapshot_deploy(path=p)
+    res = await o.restore_deploy(path=p)
+    assert res["restored"] == ["s2"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_raised_is_not_cached(tmp_path):
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "s1", "status": "idle"}], path=p)
+    o = MiniOrch(drivers={}, records={}, resumable={"s1"})
+    calls = {"n": 0}
+    real = o._session_row_liveness
+
+    async def flaky(ids):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db blip")
+        return await real(ids)
+
+    o._session_row_liveness = flaky
+    with pytest.raises(RuntimeError):
+        await o.restore_deploy(path=p)
+    res = await o.restore_deploy(path=p)
+    assert res["restored"] == ["s1"]

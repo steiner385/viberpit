@@ -6,7 +6,7 @@ import math
 import os
 import subprocess
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Awaitable, Callable
 
 from server.config import env_float
 
@@ -31,6 +31,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def _default_notify(title: str, body: str) -> None:
+    """Raise the restore alert through the one ``deploy_failed`` emitter. Never raises."""
+    from server.automations.deploy_monitor import notify_deploy_failed
+    await notify_deploy_failed(title, body, repo=None, url=None)
+
+
 def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
     try:
         r = subprocess.run(["git", "-C", repo, "diff", "--name-only", a, b],
@@ -47,7 +53,8 @@ class DeployController:
                  local_name: str | None = None,
                  changed_files_fn: Callable[[str, str, str], list[str] | None] = _default_changed_files,
                  status_path: str | None = None,
-                 clock: Callable[[], datetime] = _utc_now):
+                 clock: Callable[[], datetime] = _utc_now,
+                 notify_fn: Callable[[str, str], Awaitable[None]] = _default_notify):
         self.repo = repo
         self.health_url = health_url
         self.venv_python = venv_python
@@ -63,6 +70,7 @@ class DeployController:
         self._lock_acquired = False
         self._status_path = status_path
         self._clock = clock
+        self._notify = notify_fn
         # Set by the runners phase; read by _rollback to rewind the checkouts it moved.
         self._runner_targets: list | None = None
         self._runner_results: dict | None = None
@@ -71,6 +79,28 @@ class DeployController:
         # empty DeployStatus made /status report that completed upgrade as "did not
         # complete" (#865) — load the persisted terminal state instead.
         self.status = self._load_status() or DeployStatus(target_sha="")
+
+    async def _alert_restore(self, short: str, failed: list[str], unconfirmed: list[str],
+                             errors: list[str]) -> None:
+        """A needs-attention alert naming the sessions a restart may have left behind.
+
+        The deploy status alone was not enough (#3082): it is wiped by the controller's
+        own self-restart, and nobody is watching it after a scheduled deploy. Never
+        raises: the deploy already happened, and an alert failure must not undo it.
+        """
+        parts = []
+        if failed:
+            parts.append(f"Could not resume {len(failed)} session(s): {', '.join(failed)}. "
+                         "The daemon keeps retrying them.")
+        if errors:
+            parts.append("Restore call failed (" + "; ".join(errors) + ").")
+        if unconfirmed:
+            parts.append(f"Check these {len(unconfirmed)} session(s), whose restore is "
+                         f"unconfirmed: {', '.join(unconfirmed)}.")
+        try:
+            await self._notify(f"Deploy {short}: sessions need attention", " ".join(parts))
+        except Exception:
+            log.warning("deploy: restore alert failed", exc_info=True)
 
     def _load_status(self) -> DeployStatus | None:
         if not self._status_path:
@@ -378,20 +408,35 @@ class DeployController:
             self._set(Phase.RESUME, PhaseState.RUNNING)
             restored: list[str] = []
             failed_sessions: list[str] = []
+            # Sessions whose restore outcome is unknown because the restore CALL failed
+            # on their host after its retries (#3082), and why, per host.
+            unconfirmed: list[str] = []
+            restore_errors: list[str] = []
             for name, p in results.items():
                 r = p.restore or {}
                 restored += list(r.get("restored", []))
                 failed_sessions += list(r.get("failed", []))
-            self.status.restore = {"restored": restored, "failed": failed_sessions}
+                unconfirmed += list(r.get("unconfirmed", []))
+                if r.get("error"):
+                    restore_errors.append(f"{name}: {r['error']}")
+            self.status.restore = {"restored": restored, "failed": failed_sessions,
+                                   "unconfirmed": unconfirmed}
             # The full outcome, not just counts: this status object is wiped seconds later
             # by the controller's own scheduled self-restart (issue #864).
             log_event(log, logging.INFO, "deploy.sessions.reattach",
                       deploy_id=self._deploy_id, recovered=len(restored),
-                      lost=len(failed_sessions), restored=restored, failed=failed_sessions)
+                      lost=len(failed_sessions), restored=restored, failed=failed_sessions,
+                      unconfirmed=unconfirmed, restore_errors=restore_errors)
             if failed_sessions:
                 self.status.warnings.append(
                     f"resume failed for {len(failed_sessions)} session(s): "
                     f"{', '.join(failed_sessions)}")
+            if restore_errors:
+                self.status.warnings.append("session restore failed on " + "; ".join(
+                    restore_errors))
+            if failed_sessions or restore_errors:
+                await self._alert_restore(short, failed_sessions, unconfirmed,
+                                          restore_errors)
             self._set(Phase.RESUME, PhaseState.DONE)
 
             # --- publish (best-effort) ---
