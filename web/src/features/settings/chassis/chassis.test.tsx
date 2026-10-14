@@ -26,6 +26,21 @@ describe('settings chassis', () => {
     expect(await axe(container)).toHaveNoViolations()
   })
 
+  it('form sections keep a readable measure; registry-wide sections take the full column', () => {
+    render(
+      <>
+        <SettingsSection id="general" title="General" description="d" scope="server"><p>form</p></SettingsSection>
+        <SettingsSection id="deploy" title="Deploy" description="d" scope="server"><p>log</p></SettingsSection>
+      </>,
+    )
+    const form = screen.getByRole('region', { name: 'General' })
+    const wide = screen.getByRole('region', { name: 'Deploy' })
+    expect(form).toHaveAttribute('data-layout', 'form')
+    expect(form).toHaveClass('max-w-3xl')
+    expect(wide).toHaveAttribute('data-layout', 'wide')
+    expect(wide).not.toHaveClass('max-w-3xl')
+  })
+
   it('group is a fieldset with a legend; danger tone marks it', () => {
     render(
       <SettingsGroup legend="Danger zone" tone="danger" description="Cannot be undone.">
