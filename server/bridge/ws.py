@@ -106,6 +106,24 @@ _MAX_FRAME = 262144
 _WS_ATTACH_DAEMON_UNAVAILABLE_LOG = LogThrottle()
 
 
+# Expected, policy-level refusals: the gate worked and the user got the error
+# frame, so they are not defects. RULES_HUMAN_ONLY is an "Always allow" click
+# from a browser on the edge host itself (no attested front-end hop, #2980).
+_EXPECTED_REFUSAL_CODES = frozenset({
+    session_actions.RULE_HUMAN_ONLY_CODE,
+    "ALWAYS_FORBIDDEN_VIA_ASSISTANT",
+})
+
+
+def _rejection_log(action_error: ActionError):
+    """Log method for a rejected permission/question frame. WARNING (which auto-files
+    an error issue) is reserved for real defects such as 403 PERMISSION_NOT_OWNED;
+    a stale-card 404 (#2210) and the gate's own policy refusals are INFO."""
+    if action_error.http == 404 or action_error.code in _EXPECTED_REFUSAL_CODES:
+        return log.info
+    return log.warning
+
+
 async def _close_once(websocket: WebSocket, code: int) -> None:
     """Close ``websocket`` unless it is already closing/closed.
 
@@ -2197,7 +2215,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # lines, so the benign one dominated auto-error triage
                         # (#2210). The code is logged either way so the
                         # fingerprint separates them on its own.
-                        _log = log.warning if action_error.http != 404 else log.info
+                        _log = _rejection_log(action_error)
                         _log("ws.resolve_permission rejected session=%s perm=%s identity=%s code=%s",
                              session_id, perm_id, identity, action_error.code)
                         # The helper's message, not a copy: it distinguishes "gone"
@@ -2227,7 +2245,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # and leave the user staring at a card that never reacts.
                         # Same NOT_OWNED-vs-NOT_PENDING split as resolve_permission
                         # above (#2210).
-                        _log = log.warning if action_error.http != 404 else log.info
+                        _log = _rejection_log(action_error)
                         _log("ws.answer_question rejected session=%s qid=%s identity=%s code=%s",
                              session_id, question_id, identity, action_error.code)
                         # questionId rides along (#2206) so the client can undo the
