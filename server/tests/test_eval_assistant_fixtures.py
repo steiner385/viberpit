@@ -41,6 +41,8 @@ def client(fixture=None):
 # 6382923db275b5f9cb078240c2708117a3169eef8b2e4ae836e02e112e0b81d3
 # Before get_pr_files / update_product_policy (gap log 2026-10-11, 149 cases):
 # 925ff4e59baaf73f30970825759fd97f2594eb1154ecd2b876438fa8f4919427
+# Before get_owner_digest / apply_owner_digest (design 2026-10-14 §5, 153 cases):
+# 1148295595be45b54eeac818753212e8ee80cf21675ca0dc64de5f9bd6a8b36d
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
@@ -48,9 +50,9 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "1148295595be45b54eeac818753212e8ee80cf21675ca0dc64de5f9bd6a8b36d"
-    assert len(rows) == 153
-    assert sum(bool(r.get("operator")) for r in rows) == 6
+    assert digest == "3e9a05c37e44bb69c6c8bd116f81a90c4ba9a7ce5d51eb0e10a02c1b7c3fe8f4"
+    assert len(rows) == 155
+    assert sum(bool(r.get("operator")) for r in rows) == 7
 
 
 def test_pr_files_fixture_serves_the_endpoint_shape_and_404s_unknown_prs():
@@ -833,3 +835,19 @@ def test_stale_deps_and_close_initiative_fixture_routes():
         assert refused.status_code == 409
         assert refused.json()["detail"]["error"] == "sub_issues_open"
         assert c.post("/api/sdlc/initiatives/nope/close").status_code == 404
+
+
+def test_owner_digest_fixture_is_the_real_shape_and_apply_needs_confirm():
+    with client() as c:
+        digest = c.get("/api/pm/digest").json()
+        items = {i["id"]: i for p in digest["products"] for i in p["items"]}
+        assert digest["withRecommendation"] == 2 and digest["total"] == 4
+        assert items["hold:wi-kd-250"]["recommendation"]["params"]["model"] == "fable"
+        assert items["rec:rec-kd-1"]["evidence"][0]["url"].endswith("/pull/310")
+        assert [p["slug"] for p in c.get("/api/pm/digest", params={"product": "kindash"})
+                .json()["products"]] == ["kindash"]
+        assert c.post("/api/pm/digest/apply", json={"ids": ["rec:rec-kd-1"]}).status_code == 422
+        out = c.post("/api/pm/digest/apply", json={
+            "ids": ["rec:rec-kd-1", "gate:one-page-checkout"], "confirm": True}).json()
+        assert [(r["id"], r["ok"]) for r in out["results"]] == [
+            ("rec:rec-kd-1", True), ("gate:one-page-checkout", False)]

@@ -1,6 +1,7 @@
 """Needs-you Hygiene (design ``docs/superpowers/specs/2026-10-14-needs-you-burden-design.md``
-§2): the mechanical auto-resolves — so "needs you" stops counting things a machine can
-tidy — and the hourly needs-you sample.
+§2–§5): the mechanical auto-resolves — so "needs you" stops counting things a machine can
+tidy — the close-out assessment (§3), the parked review (§4), the daily owner digest
+push (§5) and the hourly needs-you sample.
 
 The rules are pure (``server/pm/hygiene.py``). This module is the executor and the
 loop, in the ``DecisionEscalation`` mould:
@@ -31,7 +32,9 @@ from server.automations.base import AutomationStatus
 from server.automations.context import observation_failed, publish_observation
 from server.automations.engine_policy import EnginePolicy
 from server.automations.product_policy import NEEDS_YOU_AUTOMATION_MODES
+from server.pm import digest as dg
 from server.pm import hygiene as h
+from server.pm import parked_review as pr
 from server.pm.hygiene import HygieneAction
 from server.pm.queue import QueueRow
 
@@ -48,7 +51,7 @@ FAILED_RETRY = timedelta(hours=24)
 
 _VERB = {h.ACTION_CLOSE: "close", h.ACTION_SET_STATUS: "move", h.ACTION_RELEASE_HOLD:
          "release the hold on", h.ACTION_PRUNE_EDGE: "prune the edge",
-         h.ACTION_REWRITE_HOLD: "narrow the hold on"}
+         h.ACTION_REWRITE_HOLD: "narrow the hold on", h.ACTION_UNPARK: "unpark"}
 
 
 class IssueSeams(Protocol):
@@ -63,20 +66,45 @@ class IssueSeams(Protocol):
     def pm_remove_dependency(self) -> Callable[[str, str], Awaitable[dict]]: ...
 
 
+class DigestSeams(Protocol):
+    """What the daily owner digest push (§5) needs from the orchestrator."""
+    async def in_quiet_hours(self, now: datetime) -> bool: ...
+    async def load(self) -> dict: ...
+    async def last_sent(self) -> dict[str, datetime]: ...
+    async def notify(self, title: str, body: str, *, slug: str, url: str) -> None: ...
+    async def record_sent(self, slug: str, detail: dict) -> None: ...
+
+
 def _describe(action: HygieneAction) -> str:
     if action.action == h.ACTION_SET_STATUS:
         return f"move {action.ref} to {action.detail.get('status')}"
     return f"{_VERB.get(action.action, action.action)} {action.ref}"
 
 
+def _close_reason(action: HygieneAction) -> str:
+    """``completed`` unless the finding says otherwise (a parked review's obsolete
+    verdict closes ``not_planned``)."""
+    return "not_planned" if action.detail.get("closeReason") == "not_planned" else "completed"
+
+
 def close_comment(action: HygieneAction) -> str:
-    """The note a hygiene close posts before closing: the close-out assessment's
-    evidence per item (design §3), else the one line of §2 rule 1."""
+    """The note a hygiene close posts before closing: the close-out assessment's or
+    the parked review's evidence (design §3/§4), else the one line of §2 rule 1."""
     comment = str(action.detail.get("comment") or "").strip()
+    closing = ("Closing as not planned." if _close_reason(action) == "not_planned"
+               else "Closing as completed.")
     if comment:
-        return f"{comment}\n\nClosing as completed. Reopen it if there is still work to do here."
-    return (f"Closing as completed: {action.evidence}. "
+        return f"{comment}\n\n{closing} Reopen it if there is still work to do here."
+    return (f"{closing[:-1]}: {action.evidence}. "
             "Reopen it if there is still work to do here.")
+
+
+def unpark_comment(action: HygieneAction) -> str:
+    """The note an approved unpark posts before removing the label (design §4)."""
+    reason = str(action.detail.get("summary") or "").strip() or action.evidence
+    return (f"Unparking: {reason}\n\nThe owner approved this from the parked review; the "
+            f"`{action.detail.get('label') or 'parked'}` label is removed so the queue can "
+            "pick it up. Re-add it to park it again.")
 
 
 async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
@@ -87,6 +115,8 @@ async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
         return {"ok": False, "step": "load", "error": f"{action.ref} is not a mirrored issue"}
     if action.rule == h.RULE_CLOSEOUT_ASSESS and not await _assessed_hold_current(action):
         return _HOLD_MOVED
+    if action.rule == h.RULE_PARKED_REVIEW and not await _still_parked(action):
+        return _NOT_PARKED
     # Comment first, then close — ``POST /api/pm/issues/close``'s order: an issue is
     # never closed without its explanation.
     url = await asyncio.to_thread(ci_issues.comment_on_issue, parts[0], parts[1],
@@ -94,8 +124,49 @@ async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
     if url is None:
         return {"ok": False, "step": "comment",
                 "error": "GitHub rejected the comment; the issue was not closed"}
-    result = await seams.pm_issue_close(action.work_item_id, {"reason": "completed"})
+    result = await seams.pm_issue_close(action.work_item_id, {"reason": _close_reason(action)})
     return {**result, "commentUrl": url}
+
+
+#: A parked review's write found the issue no longer parked (or gone).
+_NOT_PARKED = {"ok": False, "step": "not_parked",
+               "error": "the issue is no longer parked (or no longer mirrored)"}
+
+
+async def _still_parked(action: HygieneAction) -> bool:
+    """Whether the mirror still shows *action*'s issue open and parked — a person
+    who unparked or closed it in between is never overridden."""
+    from server.db import db_session
+    from server.db.models import WorkItem
+    from server.pm.queue import is_parked
+    if not action.work_item_id:
+        return False
+    async with db_session() as db:
+        wi = await db.get(WorkItem, action.work_item_id)
+        return wi is not None and wi.state == "open" and is_parked(wi.labels or ())
+
+
+async def _unpark(action: HygieneAction) -> dict:
+    """Remove the ``parked`` label an approved parked review named (design §4):
+    re-check it is still parked, explain on the issue (marked as automation's, so
+    it does not re-arm a not-needed verdict), then remove the label as spelled."""
+    from server.github import ci_issues
+    from server.pm.refs import split_ref
+    parts = split_ref(action.ref)
+    if parts is None or not action.work_item_id:
+        return {"ok": False, "step": "load", "error": f"{action.ref} is not a mirrored issue"}
+    if not await _still_parked(action):
+        return _NOT_PARKED
+    url = await asyncio.to_thread(ci_issues.comment_on_issue, parts[0], parts[1],
+                                  unpark_comment(action), automation=True)
+    if url is None:
+        return {"ok": False, "step": "comment",
+                "error": "GitHub rejected the comment; the label was not removed"}
+    label = str(action.detail.get("label") or "parked")
+    if not await asyncio.to_thread(ci_issues.remove_label, parts[0], parts[1], label):
+        return {"ok": False, "step": "label", "commentUrl": url,
+                "error": f"GitHub refused to remove the {label!r} label"}
+    return {"ok": True, "commentUrl": url}
 
 
 #: A close-out assessment's write found the hold it judged gone or changed.
@@ -149,16 +220,23 @@ async def _rewrite(action: HygieneAction) -> dict:
     return {"ok": True} if done else _HOLD_MOVED
 
 
-async def _mark_assessment_applied(ref: str) -> None:
-    """Stamp the stored close-out assessment of *ref* applied, so the rule stops
-    proposing it — a later re-hold of the same body is left for a person rather
-    than looped through the same outcome again."""
+async def _mark_applied(target: str) -> None:
+    """Stamp the stored assessment or review at *target* applied, so its rule stops
+    proposing it — a later re-hold (or a stale mirror still showing the label) of
+    the same body is left for a person rather than looped through the same outcome
+    again."""
     from server.automations.context import AutomationContext
     from server.time_iso import iso_utc
     ctx = AutomationContext(AUTOMATION_ID)
-    state = await ctx.get_target_state(ref)
+    state = await ctx.get_target_state(target)
     if state:
-        await ctx.set_target_state(ref, {**state, "appliedAt": iso_utc(datetime.now(timezone.utc))})
+        await ctx.set_target_state(target, {**state,
+                                            "appliedAt": iso_utc(datetime.now(timezone.utc))})
+
+
+#: Where each rule with a stored outcome keeps it (``AutomationTargetState`` target).
+_STORED_OUTCOME = {h.RULE_CLOSEOUT_ASSESS: lambda ref: ref,
+                   h.RULE_PARKED_REVIEW: pr.item_target}
 
 
 async def _prune(action: HygieneAction, seams: IssueSeams, *, identity: str, via: str) -> dict:
@@ -189,12 +267,17 @@ async def apply_action(action: HygieneAction, *, seams: IssueSeams, identity: st
     the policy-skip hold release (system holds only), and ``dep_prune.prune``; a
     close-out assessment's (§3) close, release and hold rewrite first re-check the
     hold it judged (``holds.assessed_system_hold``), and once one lands its stored
-    assessment is stamped applied.
+    assessment is stamped applied. A parked review's (§4) close and unpark first
+    re-check the issue is still parked, and are refused outright via ``automation``
+    (``RECOMMEND_ONLY_RULES``: only a person's approval applies them).
     Answers ``{"ok", "step", "error", …}``; a refusal is data, not an exception.
     Every attempt is audited ``pm.hygiene.<rule>`` with its outcome."""
     from server.audit import record_audit
     from server.db import db_session
-    if action.action == h.ACTION_CLOSE:
+    if action.rule in h.RECOMMEND_ONLY_RULES and via == "automation":
+        result = {"ok": False, "step": "recommend_only",
+                  "error": f"{action.rule} findings are applied only on the owner's approval"}
+    elif action.action == h.ACTION_CLOSE:
         result = await _close(action, seams)
     elif action.action == h.ACTION_SET_STATUS:
         result = await seams.pm_board_status(str(action.work_item_id), {
@@ -205,14 +288,17 @@ async def apply_action(action: HygieneAction, *, seams: IssueSeams, identity: st
         result = await _prune(action, seams, identity=identity, via=via)
     elif action.action == h.ACTION_REWRITE_HOLD:
         result = await _rewrite(action)
+    elif action.action == h.ACTION_UNPARK:
+        result = await _unpark(action)
     else:
         result = {"ok": False, "step": "unknown_action", "error": f"unknown {action.action!r}"}
     async with db_session() as db:
         await record_audit(db, f"pm.hygiene.{action.rule}", identity, {
             **action.to_wire(), "ok": bool(result.get("ok")), "step": result.get("step"),
             "error": result.get("error"), "commentUrl": result.get("commentUrl")}, via=via)
-    if result.get("ok") and action.rule == h.RULE_CLOSEOUT_ASSESS:
-        await _mark_assessment_applied(action.ref)
+    stored = _STORED_OUTCOME.get(action.rule)
+    if result.get("ok") and stored is not None:
+        await _mark_applied(stored(action.ref))
     return result
 
 
@@ -304,8 +390,11 @@ class NeedsYouHygiene:
                    "model assess each merged-PR close-out hold: close it when the PR did "
                    "the work, hand it back to the runner when an agent can finish it, "
                    "else narrow it to the checklist only you can do. Products with "
-                   "cautious risk tolerance get a recommendation to approve instead. Also "
-                   "samples each product's needs-you count hourly.")
+                   "cautious risk tolerance get a recommendation to approve instead. Reviews "
+                   "parked issues weekly and recommends closing (fixed or obsolete) or "
+                   "unparking them — only ever a recommendation. Sends one daily owner "
+                   "digest push per product, and samples each product's needs-you count "
+                   "hourly.")
     modes: tuple[str, ...] = NEEDS_YOU_AUTOMATION_MODES
     engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema: list = []
@@ -334,6 +423,9 @@ class NeedsYouHygieneLoop:
                  supersede_recommendations: Callable[[str, set], Awaitable[int]],
                  record_samples: Callable[[], Awaitable[Any]],
                  assess: Callable[[QueueRow], Awaitable[Mapping | None]] | None = None,
+                 review_parked: Callable[[QueueRow], Awaitable[Mapping | None]] | None = None,
+                 record_parked_run: Callable[[str, dict], Awaitable[None]] | None = None,
+                 digest: "DigestSeams | None" = None,
                  now: Callable[[], datetime] | None = None) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -346,6 +438,14 @@ class NeedsYouHygieneLoop:
         #: its ``closeout_assess.assessment_state`` — or ``None`` when the call
         #: could not be made (retried next tick). ``None``: no assessments.
         self._assess = assess
+        #: The parked reviewer (§4): reviews one parked row, persists and answers
+        #: its ``parked_review.review_state`` — ``None`` when the call could not be
+        #: made (retried next tick). With ``record_parked_run`` (persists a
+        #: product's run state). ``None``: no parked review.
+        self._review_parked = review_parked
+        self._record_parked_run = record_parked_run
+        #: The daily owner digest push (§5). ``None``: no push.
+        self._digest = digest
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._lock = asyncio.Lock()
         #: Dry-run findings already announced (one line per finding, not per tick).
@@ -368,6 +468,7 @@ class NeedsYouHygieneLoop:
         now = self._now()
         counts = {"applied": 0, "recommended": 0, "dryRun": 0, "failed": 0}
         products = await self._assess_closeouts(await self._load(), mode, now)
+        products = await self._review_parked_items(products, mode, now)
         for product in products:
             try:
                 await self._product(product, mode, now, counts)
@@ -379,6 +480,10 @@ class NeedsYouHygieneLoop:
             await self._record_samples()
         except Exception:
             log.warning("needs_you_hygiene.sample_failed", exc_info=True)
+        try:
+            await self._send_digests(products, mode, now)
+        except Exception:
+            log.warning("needs_you_hygiene.digest_failed", exc_info=True)
         publish_observation(self._ctx, "needs_you_hygiene_counts", counts)
 
     async def _assess_closeouts(self, products: list[h.ProductInputs], mode: str,
@@ -414,6 +519,101 @@ class NeedsYouHygieneLoop:
             out.append(replace(p, closeout_states=states) if pending else p)
         return out
 
+    async def _review_parked_items(self, products: list[h.ProductInputs], mode: str,
+                                   now: datetime) -> list[h.ProductInputs]:
+        """The parked review (§4). A product's run starts when ``parked_review.run_due``
+        (weekly, or daily while more than its ``parked_review_threshold`` are parked)
+        and covers up to ``REVIEWS_PER_RUN`` parked issues, the least recently
+        reviewed first; at most ``REVIEWS_PER_TICK`` helper calls a tick fleet-wide,
+        so a run spans ticks (its ``pending`` refs persist). Runs in dry run too: a
+        review writes nothing to GitHub. Answers *products* with the new reviews
+        folded in, so this tick's ``plan`` recommends from them."""
+        if self._review_parked is None or self._record_parked_run is None:
+            return products
+        budget = pr.REVIEWS_PER_TICK
+        out: list[h.ProductInputs] = []
+        for p in products:
+            eff = h.effective_mode(mode, str(p.policy.get("needs_you_automation", "off")))
+            if eff == "off":
+                out.append(p)
+                continue
+            parked = {r.ref: r for r in pr.parked_rows(r for r in p.rows if r.product == p.slug)}
+            run = dict(p.parked_run)
+            pending = [ref for ref in run.get("pending") or () if ref in parked]
+            changed = pending != list(run.get("pending") or ())
+            threshold = int(p.policy.get("parked_review_threshold") or 0)
+            if not pending and pr.run_due(pr.parse_at(run.get("startedAt")), len(parked),
+                                          threshold, now=now):
+                pending = [r.ref for r in pr.pick(list(parked.values()), p.parked_states,
+                                                  pr.REVIEWS_PER_RUN)]
+                run = {"startedAt": now.isoformat()}
+                changed = True
+                if pending:
+                    await self._ctx.emit(
+                        "info", f"{p.slug}: reviewing {len(pending)} of {len(parked)} parked "
+                        "issue(s)", kind="hygiene_parked_review", target=p.slug,
+                        detail={"pending": pending, "parked": len(parked)})
+            states = dict(p.parked_states)
+            while pending and budget > 0:
+                ref = pending[0]
+                budget -= 1
+                try:
+                    state = await self._review_parked(parked[ref])
+                except Exception:
+                    log.warning("needs_you_hygiene.parked_review_crashed slug=%s ref=%s",
+                                p.slug, ref, exc_info=True)
+                    state = None
+                if state is None:
+                    break   # no helper (or the read failed): the run waits for a later tick
+                pending.pop(0)
+                changed = True
+                states[ref] = state
+                await self._ctx.emit(
+                    "info", f"{p.slug}: reviewed parked {ref} — "
+                    f"{state.get('verdict') or 'no usable verdict'}",
+                    kind="hygiene_parked_reviewed", target=ref,
+                    detail={"verdict": state.get("verdict"), "summary": state.get("summary")})
+            if changed:
+                run["pending"] = pending
+                await self._record_parked_run(p.slug, run)
+            out.append(replace(p, parked_states=states, parked_run=run))
+        return out
+
+    async def _send_digests(self, products: list[h.ProductInputs], mode: str,
+                            now: datetime) -> None:
+        """The daily owner digest push (§5): one ``decision_needed`` line per product
+        whose digest is non-empty and whose ``needs_you_automation`` is not off, at
+        most once per ``digest.DIGEST_INTERVAL`` (deduped on its ``pm.digest.sent``
+        audit row) and never inside quiet hours (deferred, not dropped)."""
+        if self._digest is None:
+            return
+        on = {p.slug for p in products if h.effective_mode(
+            mode, str(p.policy.get("needs_you_automation", "off"))) != "off"}
+        if not on or await self._digest.in_quiet_hours(now):
+            return
+        last = await self._digest.last_sent()
+        if not any(dg.digest_due(last.get(slug), now) for slug in on):
+            return   # the composition is a full map read: skip it until a send is due
+        view = await self._digest.load()
+        for product in view.get("products") or ():
+            slug = product.get("slug")
+            items = list(product.get("items") or ())
+            if slug not in on or not items or not dg.digest_due(last.get(slug), now):
+                continue
+            with_rec = sum(1 for i in items if i.get("recommendation"))
+            title, body = dg.summary_text(slug, len(items), with_rec)
+            try:
+                await self._digest.notify(title, body, slug=slug, url=dg.digest_path(slug))
+                await self._digest.record_sent(slug, {"slug": slug, "total": len(items),
+                                                      "withRecommendation": with_rec,
+                                                      "ids": [i.get("id") for i in items][:50]})
+            except Exception:
+                log.warning("needs_you_hygiene.digest_send_failed slug=%s", slug, exc_info=True)
+                continue
+            await self._ctx.emit("info", f"{slug}: sent the owner digest — {body}",
+                                 kind="hygiene_digest_sent", target=slug,
+                                 detail={"total": len(items), "withRecommendation": with_rec})
+
     async def _product(self, p: h.ProductInputs, mode: str, now: datetime,
                        counts: dict) -> None:
         eff = h.effective_mode(mode, str(p.policy.get("needs_you_automation", "off")))
@@ -429,17 +629,19 @@ class NeedsYouHygieneLoop:
                 await self._ctx.emit("info", f"{p.slug}: would {_describe(a)} — {a.evidence}",
                                      kind="hygiene_dry_run", target=a.ref, detail=a.to_wire())
             return
-        if not h.applies(p.policy):
-            for a in actions:
-                counts["recommended"] += 1
-                if await self._record_recommendation(p.project_id, a):
-                    await self._ctx.emit(
-                        "info", f"{p.slug}: recommended — {_describe(a)} ({a.evidence})",
-                        kind="hygiene_recommended", target=a.ref, detail=a.to_wire())
-            await self._supersede(p.project_id, {a.key for a in actions})
+        # Recommend-only findings (the parked review) never apply, whatever the risk.
+        applying = h.applies(p.policy)
+        recommend = [a for a in actions if not applying or a.rule in h.RECOMMEND_ONLY_RULES]
+        for a in recommend:
+            counts["recommended"] += 1
+            if await self._record_recommendation(p.project_id, a):
+                await self._ctx.emit(
+                    "info", f"{p.slug}: recommended — {_describe(a)} ({a.evidence})",
+                    kind="hygiene_recommended", target=a.ref, detail=a.to_wire())
+        await self._supersede(p.project_id, {a.key for a in recommend})
+        if not applying:
             return
-        await self._supersede(p.project_id, set())
-        for a in h.capped(actions):
+        for a in h.capped(a for a in actions if a.rule not in h.RECOMMEND_ONLY_RULES):
             failed_at = self._failed.get((p.slug, a.key))
             if failed_at is not None and now - failed_at < FAILED_RETRY:
                 continue

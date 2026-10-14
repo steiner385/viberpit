@@ -29,6 +29,10 @@ const projectHealthQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoa
 // Every hook the tree under test reaches: `useProject` here, `useQueue` in
 // `RankedList`, the two incident hooks in `IncidentQueue` (mounted by
 // `NeedsYouList`), and the onboarding hooks in `OnboardingWizard`.
+vi.mock('@/api/digest', () => ({
+  useOwnerDigest: () => ({ data: undefined }),
+  useApplyDigest: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
+}))
 vi.mock('@/api/hooks', () => ({
   useHolds: () => ({ data: undefined }),
   useProject: () => projectQuery,

@@ -86,7 +86,9 @@ def is_checklist_reason(hold_reason: str | None) -> bool:
     return bool(hold_reason) and str(hold_reason).lstrip().startswith(CHECKLIST_PREFIX)
 
 
-def _cut(text: str, limit: int) -> str:
+def cut_text(text: str, limit: int) -> str:
+    """*text* stripped and cut to *limit* characters with an ellipsis (shared with
+    ``parked_review``)."""
     text = text.strip()
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
@@ -98,14 +100,14 @@ def build_prompt(issue_title: str, issue_body: str, unchecked: Sequence[str],
     files and a diff excerpt — ``DIFF_EXCERPT_MAX`` characters across all PRs."""
     items = list(unchecked) or [REST_OF_ISSUE]
     lines = [f"Issue: {issue_title}", "", "Issue body:", "---",
-             _cut(issue_body or "(empty)", _ISSUE_BODY_MAX), "---", "",
+             cut_text(issue_body or "(empty)", _ISSUE_BODY_MAX), "---", "",
              "Items to classify:"]
     lines += [f"{i}. {item}" for i, item in enumerate(items, 1)]
     budget = DIFF_EXCERPT_MAX
     for pr in prs:
         files = [str(f) for f in (pr.get("files") or ())]
         lines += ["", f"Merged PR #{pr.get('number')}: {pr.get('title') or ''}",
-                  "PR body:", _cut(str(pr.get("body") or "(empty)"), _PR_BODY_MAX),
+                  "PR body:", cut_text(str(pr.get("body") or "(empty)"), _PR_BODY_MAX),
                   f"Changed files ({len(files)}): " + ", ".join(files[:_FILES_MAX])
                   + (" …" if len(files) > _FILES_MAX else "")]
         diff = str(pr.get("diff_excerpt") or "")
@@ -134,7 +136,9 @@ class Assessment:
     summary: str = ""
 
 
-def _json_objects(text: str):
+def json_objects(text: str):
+    """Every JSON object embedded in *text*, in order — a model reply may wrap its
+    answer in prose (shared with ``parked_review``)."""
     dec = json.JSONDecoder()
     idx = 0
     while True:
@@ -154,7 +158,7 @@ def parse_verdict(text: str | None) -> Assessment | None:
     """The first JSON object in *text* with a non-empty ``items`` list whose every
     entry has text and a known verdict; ``None`` for anything else (prose, an
     unknown verdict, no items) — an unusable reply decides nothing."""
-    for obj in _json_objects(text or ""):
+    for obj in json_objects(text or ""):
         if not isinstance(obj, dict) or not isinstance(obj.get("items"), list):
             continue
         items: list[AssessedItem] = []
@@ -182,7 +186,7 @@ class Decision:
 def checklist_reason(items: Sequence[str]) -> str:
     """``"Left for you:\\n- [ ] <item>…"`` — at most ``CHECKLIST_SHOWN`` items and
     ``CHECKLIST_MAX_CHARS`` characters, the rest counted as ``(+N more)``."""
-    cut = [_cut(i, _ITEM_MAX_CHARS) for i in items]
+    cut = [cut_text(i, _ITEM_MAX_CHARS) for i in items]
     shown = cut[:CHECKLIST_SHOWN]
     while True:
         more = len(cut) - len(shown)
@@ -195,9 +199,9 @@ def checklist_reason(items: Sequence[str]) -> str:
 
 def _close_comment(items: Sequence[AssessedItem]) -> str:
     lines = ["The merged PR(s) already cover what this issue still listed:"]
-    lines += [f"- {_cut(i.text, _ITEM_MAX_CHARS)} — {_cut(i.evidence or 'see the PR', 300)}"
+    lines += [f"- {cut_text(i.text, _ITEM_MAX_CHARS)} — {cut_text(i.evidence or 'see the PR', 300)}"
               for i in items]
-    return _cut("\n".join(lines), _COMMENT_MAX)
+    return cut_text("\n".join(lines), _COMMENT_MAX)
 
 
 def assessment_state(*, fingerprint: str, decision: Decision | None, summary: str,
@@ -223,6 +227,6 @@ def decide(assessment: Assessment | None) -> Decision | None:
         return Decision(DECISION_CHECKLIST, checklist_reason(human))
     agent = [i.text for i in assessment.items if i.verdict == VERDICT_AGENT]
     if agent:
-        note = "Left for an agent: " + "; ".join(_cut(t, _ITEM_MAX_CHARS) for t in agent)
-        return Decision(DECISION_RELEASE, _cut(note, CHECKLIST_MAX_CHARS))
+        note = "Left for an agent: " + "; ".join(cut_text(t, _ITEM_MAX_CHARS) for t in agent)
+        return Decision(DECISION_RELEASE, cut_text(note, CHECKLIST_MAX_CHARS))
     return Decision(DECISION_CLOSE, _close_comment(assessment.items))

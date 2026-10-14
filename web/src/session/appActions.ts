@@ -45,6 +45,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   list_triage: 'Listed triage proposals',
   list_decisions: 'Listed pending decisions',
   list_holds: 'Listed held issues',
+  get_owner_digest: 'Read the owner digest',
   list_queue_items: 'Listed skipped queue items',
   get_onboarding_status: 'Checked onboarding status',
   get_automation_actionable: 'Checked automation actions',
@@ -122,6 +123,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   set_account_enabled: 'Changed account enabled state',
   start_reauth: 'Started account re-auth',
   update_product_policy: 'Changed product automation policy',
+  apply_owner_digest: 'Applied owner digest recommendations',
 }
 
 /** `fullToolName` is the wire name, e.g. `mcp__viberpit__list_sessions` (or its

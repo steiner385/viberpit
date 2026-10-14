@@ -113,11 +113,11 @@ def test_plan_runs_every_rule_and_caps_limit_writes_per_action():
                      now=NOW)
     by = {a: sum(1 for x in actions if x.action == a) for a in h.ACTIONS}
     assert by == {"close": 14, "set_status": 25, "release_hold": 0, "prune_edge": 30,
-                  "rewrite_hold": 0}
+                  "rewrite_hold": 0, "unpark": 0}
     capped = h.capped(actions)
     assert {a: sum(1 for x in capped if x.action == a) for a in h.ACTIONS} == {
         "close": 10, "set_status": 20, "release_hold": 0, "prune_edge": DEP_PRUNE_MAX,
-        "rewrite_hold": 0}
+        "rewrite_hold": 0, "unpark": 0}
 
 
 @pytest.mark.parametrize("auto,product,expected", [

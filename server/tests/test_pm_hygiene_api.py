@@ -252,6 +252,10 @@ def test_load_reads_queue_rows_board_stamps_and_stale_edges():
         async def _assessed():
             await ctx.set_target_state(f"{REPO}#4", {"fingerprint": "f", "decision": None})
             await ctx.set_target_state(f"{REPO}#999", {"fingerprint": "f", "decision": None})
+            # Parked reviews (design §4) and the product's review run, keyed apart.
+            await ctx.set_target_state(f"parked:{REPO}#4", {"verdict": "keep"})
+            await ctx.set_target_state(f"parked:{REPO}#999", {"verdict": "keep"})
+            await ctx.set_target_state("parked-review:viberpit", {"startedAt": "x"})
         _call(c, _assessed)
         [p] = _call(c, orch._needs_you_hygiene_load)
         assert p.slug == "viberpit" and [r.ref for r in p.rows] == [f"{REPO}#4"]
@@ -261,4 +265,7 @@ def test_load_reads_queue_rows_board_stamps_and_stale_edges():
         # Close-out assessments ride along per row; one whose issue left every
         # board (closed) is dropped — AutomationTargetState stays bounded.
         assert list(p.closeout_states) == [f"{REPO}#4"]
-        assert list(_call(c, ctx.list_target_states)) == [f"{REPO}#4"]
+        assert p.parked_states == {f"{REPO}#4": {"verdict": "keep"}}
+        assert p.parked_run == {"startedAt": "x"}
+        assert set(_call(c, ctx.list_target_states)) == {
+            f"{REPO}#4", "parked-review:viberpit", f"parked:{REPO}#4"}

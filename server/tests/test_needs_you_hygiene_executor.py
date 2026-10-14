@@ -253,3 +253,127 @@ def test_a_closeout_outcome_never_touches_a_hold_that_changed(isolated_db, monke
     assert (out["ok"], out["step"]) == (False, "hold_changed")
     assert hold == ("owner_action", _closeout_reason(), "tony@example.com")
     assert applied is None and seams.calls == []
+
+
+# --- parked review outcomes (design §4) ------------------------------------------------------
+
+async def _seed_parked(number: int, *, labels=("Parked", "bug"), state: str = "open"):
+    from server.automations.context import AutomationContext
+    from server.db import db_session
+    from server.db.models import WorkItem
+    from server.pm.parked_review import item_target
+    async with db_session() as db:
+        db.add(WorkItem(id=f"wi{number}", repo="o/r", number=number, kind="issue",
+                        state=state, title="t", body="b", labels=list(labels)))
+    await AutomationContext(nyh.AUTOMATION_ID).set_target_state(
+        item_target(f"o/r#{number}"), {"fingerprint": "f", "verdict": "unpark",
+                                       "appliedAt": None})
+
+
+async def _parked_applied_at(number: int):
+    from server.automations.context import AutomationContext
+    from server.pm.parked_review import item_target
+    return (await AutomationContext(nyh.AUTOMATION_ID).get_target_state(
+        item_target(f"o/r#{number}"))).get("appliedAt")
+
+
+def _parked_action(number: int, action: str, **detail) -> HygieneAction:
+    return HygieneAction("parked_review", "p", f"o/r#{number}", f"wi{number}", action,
+                         {"title": "t", "summary": "still wanted", **detail}, "reviewed")
+
+
+def _fake_gh(monkeypatch, *, remove_ok: bool = True):
+    from server.github import ci_issues
+    calls: list[tuple] = []
+
+    def comment(repo, number, body, **kw):
+        calls.append(("comment", repo, number, body, kw.get("automation")))
+        return "url"
+
+    def remove_label(repo, number, name, **_):
+        calls.append(("unlabel", repo, number, name))
+        return remove_ok
+    monkeypatch.setattr(ci_issues, "comment_on_issue", comment)
+    monkeypatch.setattr(ci_issues, "remove_label", remove_label)
+    return calls
+
+
+def test_an_approved_unpark_explains_then_removes_the_label_as_spelled(isolated_db, monkeypatch):
+    calls = _fake_gh(monkeypatch)
+
+    async def run():
+        await _seed_parked(11)
+        out = await nyh.apply_action(_parked_action(11, "unpark", label="Parked"),
+                                     seams=_Seams(), identity="tony@example.com",
+                                     actor="tony@example.com", via="api")
+        return out, await _parked_applied_at(11)
+    out, applied = asyncio.run(run())
+    assert out["ok"] and applied is not None
+    assert [c[0] for c in calls] == ["comment", "unlabel"]
+    assert calls[0][4] is True and "still wanted" in calls[0][3]
+    assert calls[1] == ("unlabel", "o/r", 11, "Parked")
+    [(identity, via, detail)] = asyncio.run(_audits("pm.hygiene.parked_review"))
+    assert (identity, via, detail["action"], detail["ok"]) == (
+        "tony@example.com", "api", "unpark", True)
+
+
+def test_the_loop_can_never_apply_a_parked_review(isolated_db, monkeypatch):
+    """Recommend-only (design §4: no automatic unpark, ever) — even if a caller
+    hands the loop's executor a parked-review action."""
+    calls = _fake_gh(monkeypatch)
+    seams = _Seams()
+
+    async def run():
+        await _seed_parked(12)
+        return await nyh.apply_action(_parked_action(12, "unpark", label="Parked"),
+                                      seams=seams, identity="system",
+                                      actor=nyh.HYGIENE_ACTOR, via="automation")
+    out = asyncio.run(run())
+    assert (out["ok"], out["step"]) == (False, "recommend_only")
+    assert calls == [] and seams.calls == []
+
+
+@pytest.mark.parametrize("labels,state", [(("bug",), "open"), (("parked",), "closed")])
+def test_a_parked_review_never_touches_an_issue_no_longer_parked(isolated_db, monkeypatch,
+                                                                 labels, state):
+    calls = _fake_gh(monkeypatch)
+    seams = _Seams()
+
+    async def run():
+        await _seed_parked(13, labels=labels, state=state)
+        out = await nyh.apply_action(_parked_action(13, "close", closeReason="not_planned",
+                                                    comment="gone"),
+                                     seams=seams, identity="tony@example.com",
+                                     actor="tony@example.com", via="api")
+        return out, await _parked_applied_at(13)
+    out, applied = asyncio.run(run())
+    assert (out["ok"], out["step"]) == (False, "not_parked")
+    assert calls == [] and seams.calls == [] and applied is None
+
+
+def test_an_obsolete_parked_issue_closes_as_not_planned(isolated_db, monkeypatch):
+    calls = _fake_gh(monkeypatch)
+    seams = _Seams()
+
+    async def run():
+        await _seed_parked(14)
+        return await nyh.apply_action(
+            _parked_action(14, "close", closeReason="not_planned",
+                           comment="This parked issue no longer applies.\n\nx.py was removed"),
+            seams=seams, identity="tony@example.com", actor="tony@example.com", via="api")
+    assert asyncio.run(run())["ok"]
+    assert "Closing as not planned." in calls[0][3]
+    assert seams.calls == [("close", "wi14", {"reason": "not_planned"})]
+
+
+def test_a_refused_label_removal_is_a_failure_not_a_stamp(isolated_db, monkeypatch):
+    _fake_gh(monkeypatch, remove_ok=False)
+
+    async def run():
+        await _seed_parked(15)
+        out = await nyh.apply_action(_parked_action(15, "unpark", label="parked"),
+                                     seams=_Seams(), identity="tony@example.com",
+                                     actor="tony@example.com", via="api")
+        return out, await _parked_applied_at(15)
+    out, applied = asyncio.run(run())
+    assert (out["ok"], out["step"]) == (False, "label") and applied is None

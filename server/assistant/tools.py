@@ -72,6 +72,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_triage", ToolClass.READ, "List triage proposals"),
     ToolSpec("list_decisions", ToolClass.READ, "List pending decision proposals"),
     ToolSpec("list_holds", ToolClass.READ, "List held items ranked by what they block"),
+    ToolSpec("get_owner_digest", ToolClass.READ, "Get today's owner digest"),
     ToolSpec("list_queue_items", ToolClass.READ, "List the issues the queue skipped, and why"),
     ToolSpec("get_onboarding_status", ToolClass.READ, "Get product onboarding status"),
     ToolSpec("get_automation_actionable", ToolClass.READ, "Get automation actionable items"),
@@ -175,6 +176,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # MUTATION, not DESTRUCTIVE: every knob it turns is reversible by turning it back,
     # and the card lists each field's before → after.
     ToolSpec("update_product_policy", ToolClass.MUTATION, "Change product automation policy"),
+    # DESTRUCTIVE like close_issue and dispatch_backlog: an owner digest recommendation
+    # may close an issue, unpark one, or approve a model climb that dispatches a session.
+    ToolSpec("apply_owner_digest", ToolClass.DESTRUCTIVE, "Apply owner digest recommendations"),
 ]}
 
 register_surface("assistant", TOOL_SPECS)
@@ -185,7 +189,7 @@ register_surface("assistant", TOOL_SPECS)
 # tools that are NOT operator-gated (e.g. delete_session, ready_merge_pr).
 OPERATOR_TOOLS: frozenset[str] = frozenset({
     "start_deploy", "upgrade_host", "refresh_account", "set_account_enabled", "start_reauth",
-    "update_product_policy",
+    "update_product_policy", "apply_owner_digest",
 })
 
 
@@ -344,6 +348,20 @@ CARD_ITEMS["set_board_status"] = _ref_title_items
 CARD_ITEMS["close_issue"] = _ref_title_items
 CARD_ITEMS["prune_stale_dependencies"] = _edge_items
 CARD_ITEMS["release_hold"] = _ref_title_items
+
+
+def _digest_items(tool_input: dict[str, Any]) -> list[str]:
+    """`"<what will happen> — <item>"` per id apply_owner_digest acts on (its `titles`,
+    read off get_owner_digest); a missing title still lists the id."""
+    ids, titles = tool_input.get("ids"), tool_input.get("titles")
+    if not isinstance(ids, list):
+        return []
+    titles = titles if isinstance(titles, list) else []
+    return [str(titles[i] if i < len(titles) else r)[:_CARD_ITEM_MAX]
+            for i, r in enumerate(ids[:_BATCH_MAX])]
+
+
+CARD_ITEMS["apply_owner_digest"] = _digest_items
 
 
 def _card_value(v: Any) -> str:
@@ -1341,6 +1359,22 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return Trimmed({"products": data.get("products") or [], "held": held},
                        int(data.get("truncated") or 0))
 
+    @spec_tool("get_owner_digest",
+               "Today's owner digest: every item that needs a person, grouped by product, "
+               "each with at most ONE recommended action (approve a model escalation, apply "
+               "a hygiene recommendation such as closing or unparking an issue, accept a "
+               "confident triage proposal) or recommendation null when only the owner can "
+               "decide (a decision, a checklist, an initiative gate — never advanced from "
+               "here). Parked-review recommendations carry evidence links. total / "
+               "withRecommendation count the items. product narrows to one product slug. "
+               "To act, pass ids to apply_owner_digest.",
+               _schema(product=str))
+    @guarded
+    async def get_owner_digest(args: dict[str, Any]) -> Any:
+        params = ({"product": _slug(args["product"], field="product")}
+                  if args.get("product") else None)
+        return await api.get("/api/pm/digest", params=params)
+
     @spec_tool("get_onboarding_status",
                "Where a product is in the onboarding wizard: its state, the next action "
                "to take (register, await_backfill, propose_map, classify, live…) and the "
@@ -2236,6 +2270,31 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                 "changed": {k: {"before": before[k], "after": after.get(k)} for k in changes},
                 "automationPolicyUpdatedAt": (res or {}).get("automationPolicyUpdatedAt")}
 
+    @spec_tool("apply_owner_digest",
+               "Carry out the recommended action of owner digest items. ids are item ids "
+               "from get_owner_digest that HAVE a recommendation (\"approve all\" = every "
+               "such id); titles gives, in the same order, each item's recommendation "
+               "label and title (e.g. 'Approve fable — o/r#12 Fix login') so the "
+               "confirmation card names what will happen. confirm must be true. Each item "
+               f"runs through its own path and reports ok/step/error; at most {_BATCH_MAX} "
+               "per call.",
+               _schema(("ids", "titles", "confirm"), ids={"type": "array",
+                                                       "items": {"type": "string"}},
+                       titles={"type": "array", "items": {"type": "string"}}, confirm=bool))
+    @guarded
+    async def apply_owner_digest(args: dict[str, Any]) -> Any:
+        ids = _str_list(args.get("ids"), field="ids")
+        titles = args.get("titles")
+        if not isinstance(titles, list) or len(titles) != len(ids):
+            raise ToolArgError("titles must name every id, in order — read them off "
+                               "get_owner_digest")
+        if len(ids) > _BATCH_MAX:
+            raise ToolArgError(f"at most {_BATCH_MAX} items per call; split the request")
+        if args.get("confirm") is not True:
+            raise ToolArgError("confirm must be true: applying writes to GitHub and may "
+                               "dispatch sessions")
+        return await api.post("/api/pm/digest/apply", {"ids": ids, "confirm": True})
+
     base_tools = [list_sessions, get_session, get_session_transcript, get_tool_result,
             export_session, search_sessions,
             list_archived_sessions, list_accounts, list_hosts, list_prs, get_pr,
@@ -2248,7 +2307,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             list_repos, list_branches, list_stage_models,
             list_initiatives, get_initiative, preview_stale_dependencies,
             list_products, get_product, get_product_deps, get_priority_queue, list_triage,
-            list_decisions, list_holds, list_queue_items,
+            list_decisions, list_holds, get_owner_digest, list_queue_items,
             get_onboarding_status,
             get_automation_actionable, list_automation_sessions, list_backlog_candidates,
             get_backlog_groups, get_cicd_findings, get_pr_doctor_consolidation,
@@ -2273,5 +2332,5 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             get_feedback_clusters, draft_feedback_cluster_issue, file_feedback_cluster,
             dismiss_feedback_cluster, attach_feedback_to_issue, attach_feedback_to_session]
     operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,
-                      start_reauth, update_product_policy]
+                      start_reauth, update_product_policy, apply_owner_digest]
     return base_tools + (operator_tools if operator else [])

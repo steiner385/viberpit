@@ -171,6 +171,9 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/pm/queue"),
         # Spec 2026-09-30 §4.2: the escalation read model, read-only.
         ("GET", r"/api/pm/holds"),
+        # Design 2026-10-14 §5: the owner digest, read-only (get_owner_digest). Its
+        # apply route is operator tier, below.
+        ("GET", r"/api/pm/digest"),
         # release_hold (MUTATION): the bulk release; the owner rule lives in the route
         # (`holds.release_refusal`), so this row grants no more than dispatch_backlog's.
         ("POST", r"/api/pm/holds/release"),
@@ -241,6 +244,9 @@ OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         # update_product_policy. Operator tier only: the base allowlist admits no
         # `PATCH /api/pm/...` route at all (test_route_allowlist pins that).
         ("PATCH", r"/api/pm/projects/[a-z0-9-]+/policy"),
+        # apply_owner_digest (design 2026-10-14 §5): each item's own path — a close,
+        # an unpark, a model approval that dispatches — so operator tier only.
+        ("POST", r"/api/pm/digest/apply"),
     ]
 )
 

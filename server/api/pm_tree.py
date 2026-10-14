@@ -3,6 +3,7 @@ from, and the issue leaves under one node. Reads only; a fixed number of grouped
 queries per request, never one per node."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -148,8 +149,23 @@ async def product_attention_counts(db) -> dict[str, dict]:
             for node in await product_nodes(db)}
 
 
-async def product_nodes(db) -> list[dict]:
-    """Every product's map tree (``tree.build_product_tree``) — the body of ``/map``."""
+@dataclass(frozen=True)
+class IssueAttention:
+    """One open classified issue as the map tiered it — what ``product_nodes``
+    hands an ``issues_out`` caller (the owner digest) so it lists exactly the
+    issues the badge counts, never a re-derivation of ``issue_tier``."""
+    product: str
+    item: WorkItem
+    tier: str
+    reason: str | None
+    session_status: str | None
+    assigned_to_owner: bool
+
+
+async def product_nodes(db, *, issues_out: list[IssueAttention] | None = None) -> list[dict]:
+    """Every product's map tree (``tree.build_product_tree``) — the body of ``/map``.
+    *issues_out*, when given, collects every open classified issue with the tier it
+    was counted at (``IssueAttention``)."""
     projects = (await db.execute(select(Project).order_by(Project.created_at))).scalars().all()
     if not projects:
         return []
@@ -212,10 +228,14 @@ async def product_nodes(db) -> list[dict]:
         owners = owners_by_project.get(feat.project_id, frozenset()) if feat else frozenset()
         reason = issue_reason(state=w.state, bounces=bounces[w.id],
                               give_up_after_bounces=threshold)
-        tiers_by_feature.setdefault(w.feature_id, []).append(
-            issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
-                      board_status[w.id], reason=reason, hold_kind=w.hold_kind,
-                      assigned_to_owner=assigned_to_owner(w.assignees, owners)))
+        assigned = assigned_to_owner(w.assignees, owners)
+        tier = issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
+                          board_status[w.id], reason=reason, hold_kind=w.hold_kind,
+                          assigned_to_owner=assigned)
+        tiers_by_feature.setdefault(w.feature_id, []).append(tier)
+        if issues_out is not None and feat is not None:
+            issues_out.append(IssueAttention(slug_of.get(feat.project_id) or feat.project_id,
+                                             w, tier, reason, session[w.id], assigned))
 
     initiatives = (await db.execute(select(Initiative).where(
         Initiative.project_id.in_(pids)).order_by(Initiative.created_at))).scalars().all()

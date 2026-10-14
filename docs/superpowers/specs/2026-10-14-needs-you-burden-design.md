@@ -159,22 +159,46 @@ the series.
 
 ## 4. Parked review (PR 4)
 
-The `parked-review` rule runs weekly, or when parked > `parked_review_threshold`
-(policy, default 20). It is a read-only checker: for each parked item, a cheap stateless
-helper reads the issue, the merged PRs that reference it, and a code grep. It proposes
-`close` (fixed/obsolete, with evidence links), `unpark`, or `keep`, written as
-`OwnerRecommendation` rows. Nothing is ever applied without approval: a parked label a
-person placed is only removed when the owner approves.
+Rule 6 of the hygiene loop, `parked_review`, runs per product weekly, or daily while more
+than `parked_review_threshold` (policy int, default 20, `0` = weekly only) issues are parked
+(`parked_review.run_due`). A run covers up to 15 parked issues, the least recently reviewed
+first, at ≤ 5 helper calls per tick fleet-wide; its pending refs persist in the automation's
+target state `parked-review:<slug>`, so a run spans ticks. It is a read-only checker: for each
+parked item a cheap stateless helper (`server/automations/parked_reviewer.py`, the close-out
+assessor's `ask_helper` + `merged_prs`) reads the issue and the merged PRs that reference it
+(cross-reference timeline: title, body, changed files, a diff excerpt) and answers ONE verdict
+(`server/pm/parked_review.py`): `close_fixed` (must cite one of those merged PRs),
+`close_obsolete` (with evidence), `unpark`, or `keep`. The verdict is stored per issue
+(`parked:<ref>`, keyed to the body fingerprint) and turned into an `OwnerRecommendation` —
+`close` (`completed` / `not_planned`, the evidence as the comment, the PRs as links) or
+`unpark` (remove the label, with an explaining comment). Nothing is ever applied without
+approval: `RECOMMEND_ONLY_RULES` keeps it a recommendation whatever `risk_tolerance` says,
+the executor refuses it via `automation`, and every approved write re-checks the issue is still
+open and parked. A dismissed recommendation is never re-proposed; one whose issue was unparked
+or closed meanwhile is superseded.
+
+*Deviation:* no code grep. The helper has no tools (`stateless_helper_options()`), and a GitHub
+code search per item is rate-limited to 10/min; `close_obsolete` therefore rests on what the
+merged PRs show (removed or replaced code), and the model is told to answer `keep` when unsure.
 
 ## 5. Daily owner digest (PR 4)
 
 `GET /api/pm/digest?product=` groups every remaining needs-you item plus pending
-`OwnerRecommendation`s, one recommended action each: approve model, advance gate,
-release hold, close, unpark, accept triage. `POST /api/pm/digest/apply` takes
-`{ids, confirm: true}` ("approve all" passes every id) and audits each action. Once a
-day, when the digest is non-empty, the `decision_needed` push sends a single summary
-line. The assistant gets `get_owner_digest` (read) and `apply_owner_digest`
-(operator-tier, confirmation required), each one loopback call.
+`OwnerRecommendation`s, one recommended action each (`server/pm/digest.py`, composed by
+`server/api/pm_digest.py:load_digest`): approve model (a `model_approval` hold), apply a
+recommendation (close, unpark, release hold, …), accept triage (only a `high`-confidence
+proposal onto a capability). A checklist, a decision, a hand-off and an initiative gate carry
+none — a gate is never advanced from here; its item links to the gate. An owner recommendation
+targeting an item the digest already lists stands in for it. `POST /api/pm/digest/apply` takes
+`{ids, confirm: true}` ("approve all" passes every id with a recommendation), re-derives each
+action from current state and runs it through the existing path (`approve_escalation`,
+`pm_hygiene.apply_pending`, `apply_accept`), each with its own audit plus one `pm.digest.apply`
+row per call. Once a day per product, when the digest is non-empty and `needs_you_automation`
+is not off and outside quiet hours, the hygiene tick sends a single `decision_needed` push
+("N items need you — M have a recommendation"), deduped on its `pm.digest.sent` audit row. The
+assistant gets `get_owner_digest` (read) and `apply_owner_digest` (operator-tier, destructive
+class: a confirmation card naming each item), each one loopback call. The web shows a "Today's
+digest" card at the top of the Needs-you tab.
 
 ## Non-goals
 

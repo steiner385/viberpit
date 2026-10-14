@@ -927,6 +927,65 @@ def _holds(now: datetime) -> dict[str, Any]:
             "generatedAt": now.isoformat()}
 
 
+def _digest(now: datetime, product: str | None = None) -> dict[str, Any]:
+    """``GET /api/pm/digest``, assembled by the real ``server/pm/digest.py`` so the
+    wire shape cannot drift: kindash's model approval and a parked-review
+    recommendation (each with a recommended action), acme-checkout's decision and a
+    gate (neither has one — only the owner can decide)."""
+    from server.pm import digest as dg
+    approval = dg.DigestItem(
+        id="hold:wi-kd-250", kind=dg.KIND_MODEL_APPROVAL, product="kindash",
+        title="Fix the family-sharing sync race", ref="steiner385/kindash#250",
+        why="bounced at opus; fable needs approval",
+        url="https://github.com/steiner385/kindash/issues/250",
+        recommendation=dg.Recommendation(dg.ACTION_APPROVE_ESCALATION, "Approve fable",
+                                         {"workItemId": "wi-kd-250", "model": "fable"}))
+    parked = dg.from_recommendation({
+        "id": "rec-kd-1", "product": "kindash", "rule": "parked_review",
+        "ref": "steiner385/kindash#120", "action": "close",
+        "evidence": "steiner385/kindash#120 is parked, but a merged PR already does it: "
+                    "#310 added the CSV export",
+        "detail": {"title": "Export chores as CSV", "closeReason": "completed",
+                   "prs": [{"number": 310, "title": "feat: CSV export",
+                            "url": "https://github.com/steiner385/kindash/pull/310"}]}},
+        url="https://github.com/steiner385/kindash/issues/120")
+    decision = dg.from_decision(proposal_id="dp-1", product="acme-checkout",
+                                ref="acme/checkout#14",
+                                title="Guest checkout or account required?",
+                                url="https://github.com/acme/checkout/issues/14",
+                                rationale="Two flows are in flight; pick one")
+    gate = dg.from_initiative("acme-checkout", {"slug": "one-page-checkout",
+                                                "title": "One-page checkout",
+                                                "status": "awaiting_human"})
+    items = [approval, parked, decision, gate]
+    if product is not None:
+        items = [i for i in items if i.product == product]
+    return dg.assemble(items, products=[product] if product else ["kindash", "acme-checkout"],
+                       now=now)
+
+
+def _apply_digest(body: dict[str, Any], now: datetime) -> httpx.Response:
+    """``POST /api/pm/digest/apply``: 422 without confirm; each id with a
+    recommendation applies, any other is refused as the real route refuses it."""
+    if body.get("confirm") is not True:
+        return httpx.Response(422, json={"detail": {"error": "confirm_required"}})
+    known = {i["id"]: i for p in _digest(now)["products"] for i in p["items"]}
+    results = []
+    for rid in body.get("ids") or []:
+        item = known.get(rid)
+        if item is None:
+            results.append({"id": rid, "ok": False, "step": "bad_id",
+                            "error": "not a digest item id"})
+        elif item["recommendation"] is None:
+            results.append({"id": rid, "ok": False, "step": "no_recommendation",
+                            "error": "nothing to apply: only a person can decide this one"})
+        else:
+            results.append({"id": rid, "ok": True, "step": None, "error": None})
+    return httpx.Response(200, json={"results": results,
+                                     "applied": sum(r["ok"] for r in results),
+                                     "failed": sum(not r["ok"] for r in results)})
+
+
 def _transcript(session_id: str) -> dict[str, Any]:
     events: list[dict[str, Any]]
     if session_id == S_TRANSCRIPT_MAL:
@@ -1485,6 +1544,8 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             if params.get("impact") == "true":
                 rows = [{**r, "downstream": 2, "downstreamDispatchable": 1} for r in rows]
             return httpx.Response(200, json=rows)
+        if path == "/api/pm/digest":
+            return httpx.Response(200, json=_digest(fixture.now, params.get("product")))
         if path == "/api/pm/holds":
             holds_body = _holds(fixture.now)
             keep = [h for h in holds_body["held"]
@@ -1567,6 +1628,8 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
     # depend on a real spawn, and a graded answer has to be the same on every run.
     if method == "POST" and path == "/api/pm/holds/release":
         return _release_holds(json.loads(request.content or b"{}"), fixture.now)
+    if method == "POST" and path == "/api/pm/digest/apply":
+        return _apply_digest(json.loads(request.content or b"{}"), fixture.now)
     if method == "POST" and path == "/api/automations/backlog-runner/dispatch":
         refs = json.loads(request.content or b"{}").get("refs") or []
         return httpx.Response(200, json={

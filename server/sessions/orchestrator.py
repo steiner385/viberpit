@@ -1791,7 +1791,10 @@ class SessionOrchestrator:
             record_recommendation=self._needs_you_hygiene_recommend,
             supersede_recommendations=self._needs_you_hygiene_supersede,
             record_samples=self._needs_you_hygiene_samples,
-            assess=self._needs_you_hygiene_assess)
+            assess=self._needs_you_hygiene_assess,
+            review_parked=self._needs_you_hygiene_review_parked,
+            record_parked_run=self._needs_you_hygiene_record_parked_run,
+            digest=self._needs_you_hygiene_digest_seams())
         self._needs_you_hygiene_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
@@ -14138,11 +14141,18 @@ class SessionOrchestrator:
 
     async def _decision_escalation_notify(self, title: str, body: str, *, slug: str,
                                           url: str | None) -> None:
+        await self._pm_decision_needed_notify(title, body, slug=slug, url=url,
+                                              automation="decision-escalation")
+
+    async def _pm_decision_needed_notify(self, title: str, body: str, *, slug: str,
+                                         url: str | None, automation: str) -> None:
+        """One ``decision_needed`` push scoped to *slug*'s primary repo — decision
+        escalation's digest and the needs-you hygiene's daily owner digest."""
         from server.pm.repo_project import primary_repo_for_slug
         async with db_session() as db:
             repo = await primary_repo_for_slug(db, slug)
         await push_mod.notify_event("decision_needed", title, body, repo=repo,
-                                    automation="decision-escalation", url=url,
+                                    automation=automation, url=url,
                                     fanout_when_unconfigured=True, orch=self)
 
     # ------------------------------------------------------------------
@@ -14177,7 +14187,8 @@ class SessionOrchestrator:
         (``queue_inputs``, the composition every queue view shares), each Done card's
         last board change, and the product's stale dependency edges (``dep_prune``,
         the prune route's own load), plus the stored close-out assessments of its
-        rows (design §3). Assessments of issues no longer on any board are dropped."""
+        rows (design §3) and its parked reviews and review run (§4). Assessments
+        and reviews of issues no longer on any board are dropped."""
         from datetime import datetime, timezone
 
         from sqlalchemy import func as sa_func, select
@@ -14186,12 +14197,19 @@ class SessionOrchestrator:
         from server.db.models import GhProjectItem, Project
         from server.pm.dep_prune import dep_scope, stale_edges
         from server.pm.desired_state import STATUS_DONE
+        from server.pm import parked_review as pr
         from server.pm.hygiene import ProductInputs
         from server.pm.queue_store import queue_inputs
         from server.pm.reconcile_inputs import _aware
         now = datetime.now(timezone.utc)
         out: list[ProductInputs] = []
-        assessed = await self._needs_you_hygiene_ctx.list_target_states()
+        stored = await self._needs_you_hygiene_ctx.list_target_states()
+        runs = {slug: st for t, st in stored.items()
+                if (slug := pr.slug_of_run_target(t)) is not None}
+        reviews = {ref: st for t, st in stored.items()
+                   if (ref := pr.ref_of_item_target(t)) is not None}
+        assessed = {t: st for t, st in stored.items()
+                    if pr.slug_of_run_target(t) is None and pr.ref_of_item_target(t) is None}
         async with db_session() as db:
             rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
             done_ids = [r.work_item_id for r in rows
@@ -14224,12 +14242,16 @@ class SessionOrchestrator:
                     board_updated_at={wid: board[wid] for wid in (r.work_item_id for r in prows)
                                       if wid is not None and wid in board},
                     stale_edges=edges,
-                    closeout_states={r.ref: assessed[r.ref] for r in prows if r.ref in assessed}))
-        # Terminal rest: the issue closed or left every board, so its assessment
-        # can never be read again (AutomationTargetState stays bounded).
+                    closeout_states={r.ref: assessed[r.ref] for r in prows if r.ref in assessed},
+                    parked_states={r.ref: reviews[r.ref] for r in prows if r.ref in reviews},
+                    parked_run=runs.get(key, {})))
+        # Terminal rest: the issue closed or left every board, so its assessment or
+        # review can never be read again (AutomationTargetState stays bounded).
         live = {r.ref for r in rows}
         for ref in set(assessed) - live:
             await self._needs_you_hygiene_ctx.delete_target_state(ref)
+        for ref in set(reviews) - live:
+            await self._needs_you_hygiene_ctx.delete_target_state(pr.item_target(ref))
         return out
 
     async def _needs_you_hygiene_assess(self, row) -> dict | None:
@@ -14240,6 +14262,67 @@ class SessionOrchestrator:
         config_dir = await account_store_io(pick_helper_config_dir, default=None)
         return await assess_and_record(self._needs_you_hygiene_ctx, row, gh_run=self._gh_run,
                                        _config_dir=config_dir)
+
+    async def _needs_you_hygiene_review_parked(self, row) -> dict | None:
+        """Review one parked issue (design §4) with the engine-safe helper identity,
+        and persist the verdict as this automation's target state."""
+        from server.automations.parked_reviewer import review_and_record
+        from server.sessions.helper_call import pick_helper_config_dir
+        config_dir = await account_store_io(pick_helper_config_dir, default=None)
+        return await review_and_record(self._needs_you_hygiene_ctx, row, gh_run=self._gh_run,
+                                       _config_dir=config_dir)
+
+    async def _needs_you_hygiene_record_parked_run(self, slug: str, run: dict) -> None:
+        from server.pm.parked_review import run_target
+        await self._needs_you_hygiene_ctx.set_target_state(run_target(slug), run)
+
+    def _needs_you_hygiene_digest_seams(self):
+        """The daily owner digest push's seams (``needs_you_hygiene.DigestSeams``,
+        design §5): the quiet window and the ``decision_needed`` notify path decision
+        escalation uses, the digest's own composition, and its ``pm.digest.sent``
+        audit rows as the dedupe record."""
+        from types import SimpleNamespace
+        return SimpleNamespace(in_quiet_hours=self._owner_digest_in_quiet_hours,
+                               load=self._owner_digest_load,
+                               last_sent=self._owner_digest_last_sent,
+                               notify=self._owner_digest_notify,
+                               record_sent=self._owner_digest_record_sent)
+
+    async def _owner_digest_in_quiet_hours(self, now) -> bool:
+        from server.sessions.notify_rules import in_quiet_hours, localize_now
+        start, end, tz = await self._decision_escalation_quiet_window()
+        return in_quiet_hours(start, end, localize_now(now, tz))
+
+    async def _owner_digest_load(self) -> dict:
+        from server.api.pm_digest import load_digest
+        async with db_session() as db:
+            return await load_digest(db)
+
+    async def _owner_digest_last_sent(self) -> dict:
+        """slug -> when its newest digest push went out (the latest 200 rows, once)."""
+        from sqlalchemy import select
+        from server.db.models import AuditEvent
+        from server.pm.digest import SENT_AUDIT_TYPE
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(AuditEvent.detail, AuditEvent.at)
+                .where(AuditEvent.type == SENT_AUDIT_TYPE)
+                .order_by(AuditEvent.at.desc()).limit(200))).all()
+        out: dict = {}
+        for detail, at in rows:  # newest first: the first row per slug wins
+            if isinstance(detail, dict) and detail.get("slug"):
+                out.setdefault(detail["slug"], at)
+        return out
+
+    async def _owner_digest_notify(self, title: str, body: str, *, slug: str, url: str) -> None:
+        await self._pm_decision_needed_notify(title, body, slug=slug, url=url,
+                                              automation="needs-you-hygiene")
+
+    async def _owner_digest_record_sent(self, slug: str, detail: dict) -> None:
+        from server.pm.digest import SENT_AUDIT_TYPE
+        async with db_session() as db:
+            await record_audit(db, SENT_AUDIT_TYPE, SYSTEM_IDENTITY, detail, via="automation")
+            await db.commit()
 
     def _hygiene_seams(self):
         """This orchestrator's issue-write seams under the public names the

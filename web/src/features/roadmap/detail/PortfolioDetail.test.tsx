@@ -8,6 +8,10 @@ import { ViewportProvider } from '@/shell/useViewport'
 
 // Every hook the tree under test reaches: `RankedList` calls `useQueue`, and
 // `NeedsYouList` mounts `IncidentQueue`, which calls the two incident hooks.
+vi.mock('@/api/digest', () => ({
+  useOwnerDigest: () => ({ data: undefined }),
+  useApplyDigest: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
+}))
 vi.mock('@/api/hooks', () => ({
   useHolds: () => ({ data: undefined }),
   useQueue: () => ({

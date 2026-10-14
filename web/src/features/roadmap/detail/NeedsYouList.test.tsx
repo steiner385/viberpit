@@ -13,6 +13,9 @@ vi.mock('@/api/hooks', () => ({
 vi.mock('./HeldIssueCard', () => ({ HeldIssueCard: ({ item, showProduct }: { item: { ref: string; product: string }; showProduct: boolean }) => (
   <li data-testid="held-issue">{item.ref} {item.product} {String(showProduct)}</li>
 ) }))
+vi.mock('./OwnerDigestCard', () => ({ OwnerDigestCard: ({ products: scope }: { products: ProductNode[] }) => (
+  <div data-testid="owner-digest">{scope.map((p) => p.slug).join(',')}</div>
+) }))
 vi.mock('./LeafList', () => ({ LeafList: ({ scope, attentionOnly, product }: { scope: { capability: string }; attentionOnly: boolean; product: ProductNode }) => (
   <div aria-label="Attention issue actions">{scope.capability} {String(attentionOnly)} {product.capabilities.map((c) => c.slug).join(",")}</div>
 ) }))
@@ -131,5 +134,19 @@ describe('NeedsYouList held issues — the escalation read model, not the map co
     h.held = []
     render(<MemoryRouter><NeedsYouList products={[product({ slug: 'quiet' })]} /></MemoryRouter>)
     expect(screen.getByText('Nothing needs you')).toBeInTheDocument()
+  })
+})
+
+
+describe('NeedsYouList owner digest — leads the tab (design 2026-10-14 §5)', () => {
+  it('renders the digest for the scope on the tab, never on the overview or in a capability', () => {
+    const { unmount } = render(<MemoryRouter><NeedsYouList products={products} /></MemoryRouter>)
+    expect(screen.getByTestId('owner-digest')).toHaveTextContent('p')
+    unmount()
+    const overview = render(<MemoryRouter><NeedsYouList products={products} overview /></MemoryRouter>)
+    expect(screen.queryByTestId('owner-digest')).not.toBeInTheDocument()
+    overview.unmount()
+    render(<MemoryRouter><NeedsYouList products={products} capability={child} /></MemoryRouter>)
+    expect(screen.queryByTestId('owner-digest')).not.toBeInTheDocument()
   })
 })

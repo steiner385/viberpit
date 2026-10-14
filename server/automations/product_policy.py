@@ -227,6 +227,17 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                      "decides how (balanced or bold apply; cautious leaves a "
                      "recommendation for you to approve). dry_run: only record what it "
                      "would do. off: leave this product alone."),
+    # Design 2026-10-14 §4: the parked review runs weekly, and sooner (at most daily)
+    # while more than this many issues are parked. Read through
+    # ``server/pm/parked_review.py:run_due``.
+    ConfigField(key="parked_review_threshold", label="Parked review threshold", type="int",
+                default=20, min=0,
+                help="The Needs-you Hygiene automation reviews this product's parked issues "
+                     "weekly, and daily while more than this many are parked: a helper model "
+                     "reads each one and the merged PRs that reference it and may recommend "
+                     "closing it (already fixed, or obsolete) or unparking it. Only ever a "
+                     "recommendation for you to approve — a parked label is never removed "
+                     "without you. 0: weekly only."),
     # ``min=0``: 0 pauses new artifact sessions for the product without losing its
     # other settings; gate resolutions are never capped (they finish work).
     ConfigField(key="max_initiatives_in_flight", label="Max initiatives in flight", type="int",

@@ -59,6 +59,7 @@ from server.api.dispatch import router as dispatch_router
 from server.api.sdlc import router as sdlc_router
 from server.api.pm import router as pm_router
 from server.api.pm_tree import router as pm_tree_router
+from server.api.pm_digest import router as pm_digest_router
 from server.api.pm_hygiene import router as pm_hygiene_router
 from server.assistant.api import router as assistant_router
 
@@ -1036,6 +1037,7 @@ def create_app(
     app.include_router(pm_router)
     app.include_router(pm_tree_router)
     app.include_router(pm_hygiene_router)
+    app.include_router(pm_digest_router)
     app.include_router(assistant_router)
 
     # WebSocket bridge

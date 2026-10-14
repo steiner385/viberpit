@@ -139,6 +139,7 @@ export const QK = {
   leaves: (scope: string) => ['pm', 'leaves', scope] as const,
   queue: ['pm', 'queue'] as const,
   holds: ['pm', 'holds'] as const,
+  digest: ['pm', 'digest'] as const,
   workItemIssue: (id: string) => ['pm', 'issue', id] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
   policySchema: ['pm', 'policy-schema'] as const,
@@ -1759,7 +1760,7 @@ export function useRevokePermissionRule() {
  *  (via `extractMutationErrorMessage` from queryClient, which already unwraps
  *  the `{detail: {error, message}}` body shape these endpoints return). Before
  *  this every failure produced two toasts — the hook's own and the global one. */
-const PM_MUTATION_META = { suppressErrorToast: true } as const
+export const PM_MUTATION_META = { suppressErrorToast: true } as const
 
 /** The human-gate tap. On success, refresh the map (every list of initiatives
  *  the roadmap renders comes from it) and this initiative's own detail. */

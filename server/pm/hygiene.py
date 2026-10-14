@@ -19,6 +19,10 @@ rules never write.
    body has decided → close, release the hold, or rewrite its reason to the checklist
    of what only a person can do. The assessment itself (a helper model call) is the
    loop's, before ``plan``; this rule only reads its stored outcome.
+6. ``parked_review`` (§4) — a ``parked`` issue whose stored review (``parked_review``,
+   the loop's helper call) says it is fixed or obsolete → close; still relevant and
+   actionable → unpark. ALWAYS a recommendation (``RECOMMEND_ONLY_RULES``), whatever
+   the product's ``risk_tolerance``: a person's park ends only with the owner's yes.
 
 Triage-accepted items missing from the board (§2 rule 5) need no rule here: the
 reconciler adds every open issue to its product's board (``reconcile_diff.membership``)
@@ -35,11 +39,13 @@ from datetime import datetime, timedelta, timezone
 from server.automations.product_policy import (NEEDS_YOU_AUTOMATION_MODES, effective_policy,
                                                skip_labels)
 from server.pm import closeout_assess as ca
+from server.pm import parked_review as pr
 from server.pm.desired_state import HELD_KINDS, STATUS_BLOCKED, STATUS_DONE
 from server.pm.holds import actor_class
 from server.pm.outcomes import body_fingerprint
 from server.pm.policy_skip import stale_system_holds
-from server.pm.queue import QueueRow, is_bot_noise, is_self_closing_tracker
+from server.pm.queue import (PARKED, PARKED_LABELS, QueueRow, is_bot_noise,
+                             is_self_closing_tracker)
 from server.pm.stale_deps import DEP_PRUNE_MAX, StaleEdge
 
 RULE_DONE_BUT_OPEN = "done_but_open"
@@ -47,23 +53,28 @@ RULE_BOARD_BLOCKED = "board_blocked_no_blockers"
 RULE_STALE_HOLDS = "stale_holds"
 RULE_RESOLVED_EDGES = "resolved_edges"
 RULE_CLOSEOUT_ASSESS = "closeout_assess"
+RULE_PARKED_REVIEW = "parked_review"
 RULES: tuple[str, ...] = (RULE_DONE_BUT_OPEN, RULE_BOARD_BLOCKED, RULE_STALE_HOLDS,
-                          RULE_RESOLVED_EDGES, RULE_CLOSEOUT_ASSESS)
+                          RULE_RESOLVED_EDGES, RULE_CLOSEOUT_ASSESS, RULE_PARKED_REVIEW)
+#: Rules whose findings are only ever owner recommendations — never applied by the
+#: loop, whatever ``risk_tolerance`` says (design §4: no automatic unpark, ever).
+RECOMMEND_ONLY_RULES = frozenset({RULE_PARKED_REVIEW})
 
 ACTION_CLOSE = "close"
 ACTION_SET_STATUS = "set_status"
 ACTION_RELEASE_HOLD = "release_hold"
 ACTION_PRUNE_EDGE = "prune_edge"
 ACTION_REWRITE_HOLD = "rewrite_hold"
+ACTION_UNPARK = "unpark"
 ACTIONS: tuple[str, ...] = (ACTION_CLOSE, ACTION_SET_STATUS, ACTION_RELEASE_HOLD,
-                            ACTION_PRUNE_EDGE, ACTION_REWRITE_HOLD)
+                            ACTION_PRUNE_EDGE, ACTION_REWRITE_HOLD, ACTION_UNPARK)
 
 #: Writes per product per tick, by action: each close and status move is a GitHub
 #: write, and an unexpected flood (a board migration, a sync glitch) must trickle,
 #: not land at once. Prune uses the route's own batch cap.
 ACTION_CAPS: Mapping[str, int] = {ACTION_CLOSE: 10, ACTION_SET_STATUS: 20,
                                   ACTION_RELEASE_HOLD: 20, ACTION_PRUNE_EDGE: DEP_PRUNE_MAX,
-                                  ACTION_REWRITE_HOLD: 20}
+                                  ACTION_REWRITE_HOLD: 20, ACTION_UNPARK: 20}
 
 #: Close-out assessments (one helper model call each) per tick, fleet-wide.
 ASSESSMENTS_PER_TICK = 3
@@ -117,6 +128,11 @@ class ProductInputs:
     stale_edges: list[StaleEdge]
     #: Issue ref → its stored close-out assessment (``closeout_assess.assessment_state``).
     closeout_states: Mapping[str, Mapping] = field(default_factory=dict)
+    #: Parked issue ref → its last review (``parked_review.review_state``).
+    parked_states: Mapping[str, Mapping] = field(default_factory=dict)
+    #: The product's review run (``parked_review.run_target``): ``startedAt`` and
+    #: the refs still ``pending`` in it.
+    parked_run: Mapping = field(default_factory=dict)
 
 
 def _aware(dt: datetime) -> datetime:
@@ -272,6 +288,53 @@ def closeout_assess(rows: Iterable[QueueRow],
     return out
 
 
+def _parked_comment(row: QueueRow, state: Mapping) -> str:
+    evidence = str(state.get("evidence") or "").strip()
+    if state.get("verdict") == pr.VERDICT_CLOSE_FIXED:
+        number = state.get("pr")
+        head = (f"Merged PR #{number} ({pr.pr_url(row.repo, int(number))}) already does what "
+                "this parked issue asked." if isinstance(number, int)
+                else "A merged PR already does what this parked issue asked.")
+        return f"{head}\n\n{evidence}".strip()
+    return f"This parked issue no longer applies.\n\n{evidence}".strip()
+
+
+def parked_review(rows: Iterable[QueueRow],
+                  states: Mapping[str, Mapping]) -> list[HygieneAction]:
+    """Rule 6 (§4): each parked row whose stored review judged its CURRENT body, said
+    something other than ``keep`` and has not been applied → close (``completed``
+    for fixed, ``not_planned`` for obsolete) or unpark. Recommend-only
+    (``RECOMMEND_ONLY_RULES``); the merged PRs it read ride along as evidence links."""
+    out: list[HygieneAction] = []
+    for row in pr.parked_rows(rows):
+        state = states.get(row.ref)
+        if (not state or state.get("appliedAt")
+                or state.get("fingerprint") != body_fingerprint(row.title, row.body)):
+            continue
+        verdict = state.get("verdict")
+        detail: dict = {"title": row.title, "verdict": verdict,
+                        "summary": state.get("summary") or "",
+                        "prs": list(state.get("prs") or [])}
+        if verdict in (pr.VERDICT_CLOSE_FIXED, pr.VERDICT_CLOSE_OBSOLETE):
+            fixed = verdict == pr.VERDICT_CLOSE_FIXED
+            detail["closeReason"] = "completed" if fixed else "not_planned"
+            detail["comment"] = _parked_comment(row, state)
+            action = ACTION_CLOSE
+            evidence = (f"{row.ref} is parked, but a merged PR already does it"
+                        if fixed else f"{row.ref} is parked, but it no longer applies")
+        elif verdict == pr.VERDICT_UNPARK:
+            detail["label"] = next((str(lbl) for lbl in row.labels
+                                    if str(lbl).strip().lower() in PARKED_LABELS), PARKED)
+            action = ACTION_UNPARK
+            evidence = f"{row.ref} is parked, but it is still relevant and an agent could do it now"
+        else:
+            continue
+        reason = str(state.get("evidence") or "").strip()
+        out.append(HygieneAction(RULE_PARKED_REVIEW, row.product, row.ref, row.work_item_id,
+                                 action, detail, f"{evidence}: {reason}" if reason else evidence))
+    return out
+
+
 def plan(inputs: ProductInputs, *, now: datetime) -> list[HygieneAction]:
     """Every rule over one product, uncapped (``capped`` limits what is WRITTEN; a
     recommendation for every finding is cheap and must not be superseded just
@@ -283,7 +346,8 @@ def plan(inputs: ProductInputs, *, now: datetime) -> list[HygieneAction]:
             *board_blocked_no_blockers(rows, policies),
             *stale_holds(rows, policies, now=now),
             *resolved_edges(inputs.slug, inputs.stale_edges, ids),
-            *closeout_assess(_closeout_rows(inputs, now=now), inputs.closeout_states)]
+            *closeout_assess(_closeout_rows(inputs, now=now), inputs.closeout_states),
+            *parked_review(rows, inputs.parked_states)]
 
 
 def capped(actions: Iterable[HygieneAction]) -> list[HygieneAction]:

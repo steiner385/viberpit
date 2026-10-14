@@ -109,10 +109,11 @@ assistant mutation does not make subsequent harness cleanup safe.
   (`VIBERPIT_ASSISTANT_IDLE_S`) ends it (spec §8).
 - **Operator tier (Pack O, opt-in)** — `VIBERPIT_ASSISTANT_OPERATOR_TOOLS` (default `false`) or
   `AppSettings.assistant_operator_tools` (Settings → General → AI assistant → Operator tools, same
-  env-then-Settings precedence as the kill switch above) registers six administration tools
-  (`start_deploy`, `upgrade_host`, `refresh_account`, `set_account_enabled`, `start_reauth`, and
+  env-then-Settings precedence as the kill switch above) registers seven administration tools
+  (`start_deploy`, `upgrade_host`, `refresh_account`, `set_account_enabled`, `start_reauth`,
   `update_product_policy` for a product's `skip_labels`, `queue_min_status`, `max_in_flight`,
-  `triage_auto_accept` and `risk_tolerance`) and appends `OPERATOR_TOOLS_ENABLED_LINE` to the system prompt instead of the
+  `triage_auto_accept` and `risk_tolerance`, and `apply_owner_digest` for the owner digest's
+  recommended actions) and appends `OPERATOR_TOOLS_ENABLED_LINE` to the system prompt instead of the
   disabled variant (`server/assistant/prompt.py`, Task 9.3). Off deployments get neither the tools
   nor the prompt text naming them, so a model on a non-operator deployment has no way to know the
   tier exists. Takes effect on a thread's next spawn — an already-running assistant keeps the
@@ -139,7 +140,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 110 tools are registered in `server/assistant/tools.py`; 104 are exposed by
+- **Tool surface (v2)** — 112 tools are registered in `server/assistant/tools.py`; 105 are exposed by
   default, Pack O's operator tools registering only once the operator tier is enabled. Packs X and
   U (external access, UX/feedback) add no new `TOOL_SPECS` rows — X reaches the existing table
   through a different transport (see "Use from other agents" below) and U instruments how the
@@ -151,13 +152,13 @@ assistant mutation does not make subsequent harness cleanup safe.
   |---|---|---|
   | Base (v1) | 28 | sessions, accounts, hosts, PRs, pipeline health, automations, deploy status |
   | F — fixes & foundations | 6 | repos/branches/stage-models listing, tool-result drill-in, session export, gap reporting |
-  | P — product & delivery | 19 | SDLC initiatives (incl. closing a finished one — refused unless its epic and every sub-issue are closed), PM products/queue/triage/onboarding, decision proposal accept/reject, held items and pending decisions listing, stale dependency edges: preview + prune (≤20 per card, each re-checked; hygiene only — a resolved blocker already blocks nothing); `list_queue_items` (the queue's skipped issues, each with its reason in its own terms and age, paged) and `release_hold` (≤20 issues per confirmed card: releases owner_action/evidence/stronger_model holds and removes the `parked` label; decision holds are refused, and a hold or label another person placed is refused by the same owner rule `dispatch_backlog` applies) |
+  | P — product & delivery | 20 | SDLC initiatives (incl. closing a finished one — refused unless its epic and every sub-issue are closed), PM products/queue/triage/onboarding, decision proposal accept/reject, held items and pending decisions listing, stale dependency edges: preview + prune (≤20 per card, each re-checked; hygiene only — a resolved blocker already blocks nothing); `list_queue_items` (the queue's skipped issues, each with its reason in its own terms and age, paged) and `release_hold` (≤20 issues per confirmed card: releases owner_action/evidence/stronger_model holds and removes the `parked` label; decision holds are refused, and a hold or label another person placed is refused by the same owner rule `dispatch_backlog` applies); `get_owner_digest` (today's owner digest: every needs-you item per product with its one recommended action, or none when only the owner can decide) |
   | A — automations control | 17 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools; the Session Feedback inbox (#2936): clusters + issue draft (read), and four destructive-class writes — file as one issue, dismiss (optionally as fixed by a PR), attach to an issue (one public comment) or to a live session (sent as a prompt) |
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
   | G — GitHub | 7 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session) and its changed files with patches (capped at 100 files / 24 kB of patch per call, every cut reported, framed as the PR author's untrusted text), plus the writes that leave ViberPit, each signed with an authorship trailer: PR comment, issue creation, issue comment (unmarked, so it counts as the operator's word), and the bulk (≤20 refs) triage writes — `set_board_status` (add to the owning product's Project and/or set Status, journaled, validated against the board's real options) and the destructive `close_issue` (completed / not planned / duplicate-of, a signed comment posted first) |
-  | O — operator tier | 6 | deploy/host/account administration and product automation policy edits (the card lists each field before → after; the write is refused with a 409 if the live policy no longer matches the "before"), flag-gated off by default |
+  | O — operator tier | 7 | deploy/host/account administration, product automation policy edits (the card lists each field before → after; the write is refused with a 409 if the live policy no longer matches the "before"), and `apply_owner_digest` (destructive class: the card names each digest item and what will happen; each runs through its own path — a model approval, a hygiene recommendation, a triage accept), flag-gated off by default |
 
   These counts are pinned by `test_feature_doc_tool_counts_match_the_registry` — a new tool fails
   CI until this table places it in a pack, because the numbers above went stale within a day of
@@ -259,7 +260,8 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
   Give a mutation-capable bridge a token whose scope is `act`, and prefer a client that confirms
   tool calls.
 - **Operator-tier tools are never served** — `start_deploy`, `upgrade_host`, `refresh_account`,
-  `set_account_enabled`, `start_reauth` and `update_product_policy` are withheld regardless of
+  `set_account_enabled`, `start_reauth`, `update_product_policy` and `apply_owner_digest` are
+  withheld regardless of
   flags, matching the
   middleware, which pins `operator=False` for every `ccas2:` request.
 - **Needs the `[server]` extra** (`pip install 'viberpit[server]'`) — the tool table lives in
