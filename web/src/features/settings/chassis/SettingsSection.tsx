@@ -1,6 +1,8 @@
 import * as React from 'react'
 import { ScopeBadge } from './ScopeBadge'
 import type { SettingsScope } from '../scope'
+import { SETTINGS_BY_ID, isSettingsSectionId } from '../settingsDefs'
+import { cn } from '@/lib/utils'
 
 export interface SettingsSectionProps {
   id: string
@@ -19,8 +21,12 @@ export interface SettingsSectionProps {
  */
 export function SettingsSection({ id, title, description, scope, badge, footer, children }: SettingsSectionProps) {
   const titleId = `settings-${id}-title`
+  // Width is the registry's call (`layout`), not each section's, so a table
+  // section cannot opt out by forgetting a prop.
+  const wide = isSettingsSectionId(id) && SETTINGS_BY_ID[id].layout === 'wide'
   return (
-    <section aria-labelledby={titleId} className="flex flex-col gap-5 max-w-3xl">
+    <section aria-labelledby={titleId} data-layout={wide ? 'wide' : 'form'}
+      className={cn('flex flex-col gap-5', !wide && 'max-w-3xl')}>
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2 flex-wrap">
           <h2 id={titleId} className="text-xl font-semibold text-ink">{title}</h2>

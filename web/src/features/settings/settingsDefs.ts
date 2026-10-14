@@ -55,6 +55,12 @@ interface SettingsDefShape {
   /** Mount the live capacity readout after the body, with this stack row marked current (spec 2026-09-20 D10). */
   readout?: 'hosts' | 'accounts'
   /**
+   * `wide`: the body is a table, list or log, so it takes the full content
+   * column. Omitted: a form, held to a readable measure (`max-w-3xl`) so a
+   * label never sits a screen-width away from its control.
+   */
+  layout?: 'wide'
+  /**
    * The component instantiates `SettingsSection` itself, so `SettingsPage`
    * renders it BARE. Everything else is wrapped in `HostedSection`, which builds
    * the chassis from this row. Set it on a section in the same change that
@@ -94,23 +100,23 @@ const DEFS = [
     description: 'Reusable prompt templates with {{variable}} placeholders.' },
   { id: 'profiles',      group: 'sessions',  label: 'Permission profiles', icon: ShieldCheck,       scope: 'server',  component: PermissionProfilesSection,
     description: 'Named tool-permission sets a session can adopt.' },
-  { id: 'always-allow', group: 'sessions',  label: 'Always-allow rules',  icon: ListChecks,        scope: 'server',  component: PermissionRulesSection,
+  { id: 'always-allow', group: 'sessions',  label: 'Always-allow rules',  icon: ListChecks,        scope: 'server',  component: PermissionRulesSection, layout: 'wide',
     description: 'Standing permission rules created from session cards, with who made each and how often it fired.', keywords: ['permission', 'allow', 'rule'] },
   // What the fleet can run (spec 2026-09-20 D1/D2): supply, not spend. Delivery →
   // Capacity is the other half — how automation spends it — and the two link.
   { id: 'capacity',      group: 'capacity',  label: 'Limits',              icon: Gauge,             scope: 'server',  component: LimitsSection, ownsChassis: true,
     description: 'The global cap as its two ceilings — what the hosts can run and how much you want running — plus the env-managed limits outside the stack.', keywords: ['global cap', 'attention', 'physical', 'max active sessions'] },
-  { id: 'fleet',         group: 'capacity',  label: 'Hosts',               icon: Server,            scope: 'server',  component: FleetSection, readout: 'hosts',
+  { id: 'fleet',         group: 'capacity',  label: 'Hosts',               icon: Server,            scope: 'server',  component: FleetSection, layout: 'wide', readout: 'hosts',
     description: 'Machines that can run sessions: each host’s cap, dispatch weight and health.' },
-  { id: 'accounts',      group: 'capacity',  label: 'Accounts',            icon: Users,             scope: 'server',  component: AccountsManager, badge: 'accountsAttention', readout: 'accounts',
+  { id: 'accounts',      group: 'capacity',  label: 'Accounts',            icon: Users,             scope: 'server',  component: AccountsManager, layout: 'wide', badge: 'accountsAttention', readout: 'accounts',
     description: 'Claude Max and Copilot accounts the rotation can pick from.' },
-  { id: 'plugins',       group: 'claude',    label: 'Plugins',             icon: Puzzle,            scope: 'server',  component: PluginsSection,
+  { id: 'plugins',       group: 'claude',    label: 'Plugins',             icon: Puzzle,            scope: 'server',  component: PluginsSection, layout: 'wide',
     description: 'Installed Claude Code plugins and what each one adds.' },
-  { id: 'skills',        group: 'claude',    label: 'Skills',              icon: Sparkles,          scope: 'server',  component: SkillsSection,
+  { id: 'skills',        group: 'claude',    label: 'Skills',              icon: Sparkles,          scope: 'server',  component: SkillsSection, layout: 'wide',
     description: 'Skills available to every session, with an AI draft helper.' },
-  { id: 'commands',      group: 'claude',    label: 'Commands',            icon: SquareTerminal,    scope: 'server',  component: CommandsSection,
+  { id: 'commands',      group: 'claude',    label: 'Commands',            icon: SquareTerminal,    scope: 'server',  component: CommandsSection, layout: 'wide',
     description: 'Slash commands available to every session.' },
-  { id: 'mcp',           group: 'claude',    label: 'MCP servers',         icon: Plug,              scope: 'server',  component: McpSection,
+  { id: 'mcp',           group: 'claude',    label: 'MCP servers',         icon: Plug,              scope: 'server',  component: McpSection, layout: 'wide',
     description: 'Model Context Protocol servers sessions can call, with OAuth where needed.' },
   { id: 'hooks',         group: 'claude',    label: 'Hooks',               icon: Webhook,           scope: 'server',  component: HooksSection,
     description: 'Shell commands Claude Code runs on lifecycle events. They run on this host.' },
@@ -120,7 +126,7 @@ const DEFS = [
   // ONLY deploy surface — `shell/useAppBanners` hides the deploy banner there —
   // so the badge is load-bearing rather than decorative: it is what tells a phone
   // user there is anything here to look at.
-  { id: 'deploy',        group: 'about',     label: 'Deploy',              icon: Rocket,            scope: 'server',  component: DeploySection, ownsChassis: true, badge: 'deployPending',
+  { id: 'deploy',        group: 'about',     label: 'Deploy',              icon: Rocket,            scope: 'server',  component: DeploySection, layout: 'wide', ownsChassis: true, badge: 'deployPending',
     description: 'Commits waiting to ship to this server, and how the last deploy went.', keywords: ['ship', 'release', 'pending', 'update'] },
   { id: 'about',         group: 'about',     label: 'About',               icon: Info,              scope: 'none',    component: AboutSection, ownsChassis: true,
     description: 'Version, host, and the server settings managed by environment variables.' },
