@@ -116,7 +116,8 @@ def test_an_open_finding_self_resolves_when_the_session_is_no_longer_premature(i
 
 
 class _Orch:
-    """Just the two seams the provider calls, backed by the real orchestrator methods."""
+    """Just the two seams the provider calls, backed by the real orchestrator methods,
+    plus the host-routed unarchive the decision reaches (#3097)."""
     def __init__(self, unarchive_result):
         from server.sessions.orchestrator import SessionOrchestrator
         self.unarchived: list[str] = []
@@ -126,7 +127,7 @@ class _Orch:
         self.archive_audit_decide_finding = (
             lambda fid, d: SessionOrchestrator.archive_audit_decide_finding(self, fid, d))
 
-    async def unarchive(self, sid):
+    async def _unarchive_on_owning_host(self, sid):
         self.unarchived.append(sid)
         return SimpleNamespace(id=sid) if self._result else None
 
