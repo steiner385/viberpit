@@ -93,3 +93,31 @@ describe('SessionSocket stall fields', () => {
     expect(row(qc).pausedUntil).toBeNull()
   })
 })
+
+describe('SessionSocket status frame for a session the list lacks (#831)', () => {
+  it('refetches the list once per unknown id, never for a known one', () => {
+    const { s, qc } = makeSocket(); seed(qc, { revAt: T1 })
+    let invalidations = 0
+    const orig = qc.invalidateQueries.bind(qc)
+    qc.invalidateQueries = ((...a: Parameters<typeof orig>) => { invalidations++; return orig(...a) }) as typeof qc.invalidateQueries
+
+    s._handleInbound({ type: 'status', sessionId: 's1', status: 'done', revAt: T2 })
+    expect(invalidations).toBe(0)                 // known row: patched in place
+
+    s._handleInbound({ type: 'status', sessionId: 'new', status: 'in_progress', revAt: T2 })
+    expect(invalidations).toBe(1)                 // created elsewhere: fetch it now
+
+    // Still absent after the refetch (e.g. an assistant thread the list filters out):
+    // every later frame for it must not refetch the list again.
+    s._handleInbound({ type: 'status', sessionId: 'new', status: 'done', revAt: T3 })
+    expect(invalidations).toBe(1)
+  })
+
+  it('does nothing before the list has loaded', () => {
+    const { s, qc } = makeSocket()
+    let invalidations = 0
+    qc.invalidateQueries = (() => { invalidations++; return Promise.resolve() }) as typeof qc.invalidateQueries
+    s._handleInbound({ type: 'status', sessionId: 'x', status: 'done', revAt: T1 })
+    expect(invalidations).toBe(0)
+  })
+})

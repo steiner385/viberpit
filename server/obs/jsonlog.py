@@ -181,6 +181,13 @@ def configure_logging(*, process: str = "edge") -> None:
     level_name = str(getattr(settings, "log_level", "INFO") or "INFO").upper()
     root = logging.getLogger()
     root.setLevel(getattr(logging, level_name, logging.INFO))
+    # #831: httpx logs one INFO line per request, and the edge's daemon RPC client
+    # polls every few seconds -- two thirds of the edge's journal volume was
+    # "HTTP Request: POST .../rpc/..." lines. Failures surface through the callers'
+    # own logging; LOG_LEVEL=DEBUG still shows the per-request lines.
+    if root.level > logging.DEBUG:
+        for noisy in ("httpx", "httpcore"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
     fmt = JSONFormatter()
     ctx = ContextFilter()

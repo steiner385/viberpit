@@ -113,6 +113,7 @@ async def test_start_runs_loop_and_stop_cancels_cleanly():
         return {"tick": calls}
 
     poller = PipelineStatePoller(builder, interval_s=0.01)
+    poller.note_demand()  # a reader is watching, so the loop builds
     await poller.start()
     await poller.start()  # idempotent — no second task
     try:
@@ -126,6 +127,85 @@ async def test_start_runs_loop_and_stop_cancels_cleanly():
     gen_at_stop = poller.generation
     await asyncio.sleep(0.05)
     assert poller.generation == gen_at_stop  # loop truly stopped
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+async def _settle(poller, *, until=lambda: False, rounds=50):
+    for _ in range(rounds):
+        if until():
+            return
+        await asyncio.sleep(0.005)
+
+
+@pytest.mark.asyncio
+async def test_loop_never_builds_without_a_reader():
+    """#831: nobody on the Pipeline page means zero builds — each build is five
+    daemon RPCs, and the loop used to run them every 10 s for the edge's lifetime."""
+    calls = 0
+
+    async def builder():
+        nonlocal calls
+        calls += 1
+        return {"tick": calls}
+
+    poller = PipelineStatePoller(builder, interval_s=0.005)
+    await poller.start()
+    try:
+        await _settle(poller, rounds=20)
+        assert calls == 0
+    finally:
+        await poller.stop()
+
+
+@pytest.mark.asyncio
+async def test_reader_wakes_the_loop_and_lapsed_demand_parks_it():
+    calls = 0
+    clock = _Clock()
+
+    async def builder():
+        nonlocal calls
+        calls += 1
+        return {"tick": calls}
+
+    poller = PipelineStatePoller(builder, interval_s=0.005, idle_after_s=60.0, clock=clock)
+    await poller.start()
+    try:
+        await poller.wait_for_frame(0, timeout=0.0)   # an SSE reader shows up
+        await _settle(poller, until=lambda: calls >= 2)
+        assert calls >= 2
+
+        clock.t += 61.0                               # reader gone past the window
+        await _settle(poller, rounds=4)
+        parked_at = calls
+        await _settle(poller, rounds=20)
+        assert calls == parked_at                     # loop parked: no more builds
+    finally:
+        await poller.stop()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_reports_a_frame_older_than_the_idle_window_as_absent():
+    """After the loop parks the cached frame ages; serving it would show minutes-old
+    PR state. Absent sends the endpoints down their inline-build cold path."""
+    clock = _Clock()
+
+    async def builder():
+        return {"frame": 1}
+
+    poller = PipelineStatePoller(builder, idle_after_s=60.0, clock=clock)
+    await poller.poll_once()
+    assert poller.snapshot() == {"frame": 1}
+    clock.t += 59.0
+    assert poller.snapshot() == {"frame": 1}
+    clock.t += 2.0
+    assert poller.snapshot() is None
 
 
 @pytest.mark.asyncio

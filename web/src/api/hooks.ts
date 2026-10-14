@@ -201,8 +201,12 @@ export function useSessions() {
   const query = useQuery<Session[]>({
     queryKey: QK.sessions,
     queryFn: () => api.get<Session[]>(isSessionsViewing() ? '/sessions?viewing=1' : '/sessions'),
-    staleTime: 3_000,
-    refetchInterval: 5_000,
+    // 15s, not 5s (#831): each poll is five daemon RPCs. Status, account rotation and
+    // stall changes arrive as WS frames that patch this cache (ws/client.ts), and a
+    // frame for a session the list lacks refetches at once; the poll only refreshes
+    // the slow fields (summaries, suggestions, PR chips, queue positions).
+    staleTime: 10_000,
+    refetchInterval: 15_000,
     // Version-guarded merge: a stale in-flight poll must not overwrite a session the WS
     // patched to a newer revAt. reconcileSessions keeps the newer of cache vs poll per id.
     structuralSharing: (prev, next) => reconcileSessions(prev as Session[] | undefined, next as Session[]),
@@ -1193,11 +1197,20 @@ export function useSessionTranscript(id: string, enabled: boolean, limit?: numbe
   })
 }
 
+/** Poll fast only while something is moving: a deploy in flight, or sessions still
+ *  recovering from one (the banner drains as they come back). Idle, the status only
+ *  changes when master advances, and each poll costs a daemon RPC (#831). */
+export function deployStatusRefetchInterval(data: DeployStatusResponse | undefined): number {
+  const deploy = data?.deploy
+  const recovering = (deploy?.restore?.failed?.length ?? 0) > 0
+  return deploy?.running || recovering ? 5_000 : 30_000
+}
+
 function useDeployStatusResponse() {
   return useQuery<DeployStatusResponse>({
     queryKey: ['deploy', 'status'],
     queryFn: fetchDeployStatus,
-    refetchInterval: 5_000,
+    refetchInterval: (query) => deployStatusRefetchInterval(query.state.data),
   })
 }
 
