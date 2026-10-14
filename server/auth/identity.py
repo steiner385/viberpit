@@ -235,6 +235,11 @@ def _peer_is_trusted(request: Request | WebSocket) -> bool:
 # both may carry a ``Tailscale-User-Login`` header. What differs is who owns the client
 # socket: tailscaled runs as root, an agent session runs as the operator's user.
 LOCAL_PROCESS_VIA = "local"
+# ``via`` for the same local caller when the operator opted in to trusting this host
+# (``VIBERPIT_RULES_TRUST_LOCAL_HOST``, spec 2026-10-14): ``require_human`` admits it, and
+# it is what the rule's ``created_via`` and the audit row record, so writes made under
+# the opt-in stay distinguishable from attested ones.
+LOCAL_TRUSTED_VIA = "local-trusted"
 _PROC_NET_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
 # The two front-ends deploy/ ships, by the account their client socket belongs to, and
 # the header each one stamps with the ORIGINAL client: tailscaled (`tailscale serve`,
@@ -409,12 +414,16 @@ def human_gate_via(conn: Request | WebSocket) -> str | None:
     """``via`` for a human-only gate (``session_actions.require_human``): the attribution
     the middleware already recorded, else ``LOCAL_PROCESS_VIA`` unless
     ``attested_front_end_hop`` vouches that a remote person is behind this request
-    (#2980). Reads ``/proc``, so call it only on the rare writes it guards.
+    (#2980). With ``rules_trust_local_host`` on, that unattested local caller is
+    ``LOCAL_TRUSTED_VIA`` instead; a recorded (token-borne) ``via`` is never upgraded.
+    Reads ``/proc``, so call it only on the rare writes it guards.
     """
     via = getattr(conn.state, "via", None)
     if via is not None:
         return via
-    return None if attested_front_end_hop(conn) else LOCAL_PROCESS_VIA
+    if attested_front_end_hop(conn):
+        return None
+    return LOCAL_TRUSTED_VIA if get_settings().rules_trust_local_host else LOCAL_PROCESS_VIA
 
 
 def attested_front_end_hop(conn: Request | WebSocket) -> bool:
