@@ -80,7 +80,121 @@ _STREAM_EDITORS = frozenset({"sed", "perl", "ruby"})
 _SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;&\n]")
 
 
+# Commands that only read or annotate: the words in their arguments (a commit
+# subject, an issue body, a file name) are *mentioned*, never *executed*. A
+# segment led by one of these skips the verb+target heuristic (issue #832).
+_MENTION_ONLY_BINS = frozenset({
+    "cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "ls",
+    "echo", "printf", "wc", "file", "stat", "diff", "nl", "journalctl",
+})
+_MENTION_ONLY_GIT = frozenset({
+    "log", "show", "diff", "status", "grep", "blame", "shortlog", "rev-parse",
+    "ls-files", "ls-tree", "describe", "branch", "commit", "tag", "notes",
+})
+_MENTION_ONLY_GH = frozenset({
+    ("issue", "view"), ("issue", "list"), ("issue", "create"), ("issue", "comment"),
+    ("issue", "edit"), ("pr", "view"), ("pr", "list"), ("pr", "create"),
+    ("pr", "comment"), ("pr", "edit"), ("pr", "diff"), ("pr", "checks"),
+})
+_WRAPPERS = frozenset({"sudo", "env", "command", "nohup", "time", "nice", "exec"})
+# A heredoc opener: `<<EOF`, `<<-'EOF'`, `<<"EOF"`. Group 1 = quote, 2 = delimiter.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_SUBSTITUTION = re.compile(r"\$\(|`")
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Drop heredoc bodies — inert prose — unless the shell would expand them.
+
+    An unquoted delimiter lets ``$(...)``/backticks in the body execute, so that
+    body stays in the text (fail closed); a quoted delimiter makes it literal.
+    """
+    lines = command.split("\n")
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        i += 1
+        match = _HEREDOC.search(line)
+        if not match:
+            continue
+        quoted, delim = bool(match.group(1)), match.group(2)
+        body: list[str] = []
+        while i < len(lines) and lines[i].strip() != delim:
+            body.append(lines[i])
+            i += 1
+        i += 1  # the terminator line
+        if not quoted and _SUBSTITUTION.search("\n".join(body)):
+            kept.extend(body)
+    return "\n".join(kept)
+
+
+def _segments(command: str) -> list[list[str]] | None:
+    """Quote-aware split into command segments (token lists); None if unparseable.
+
+    Unlike ``_SEGMENT_SPLIT`` this does not cut inside quotes, so a ``;`` in an
+    issue body doesn't turn prose into a fake command.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(ch in ";&|()" for ch in token):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return [s for s in segments if s]
+
+
+def _is_mention_only(tokens: list[str]) -> bool:
+    words = [t for t in tokens if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t)]
+    while words and Path(words[0]).name in _WRAPPERS:
+        words = [w for w in words[1:] if not w.startswith("-") and "=" not in w]
+    if not words:
+        return False
+    binary, rest = Path(words[0]).name, words[1:]
+    if binary in _MENTION_ONLY_BINS:
+        return True
+    if binary == "git":
+        args = iter(rest)
+        for arg in args:
+            if arg in ("-C", "-c"):
+                next(args, None)  # option value
+            elif not arg.startswith("-"):
+                return arg in _MENTION_ONLY_GIT
+        return False
+    if binary == "gh":
+        positional = [a for a in rest if not a.startswith("-")]
+        return tuple(positional[:2]) in _MENTION_ONLY_GH
+    return False
+
+
+def _executable_text(command: str) -> str:
+    """The part of ``command`` that can execute something, prose removed.
+
+    Heredoc bodies are dropped and each read/annotate segment (``cat``,
+    ``grep``, ``git log``, ``gh issue create`` …) is skipped — unless it embeds
+    a command substitution, which could run anything. Anything unparseable is
+    returned whole, so the gate never fails open.
+    """
+    stripped = _strip_heredoc_bodies(command)
+    segments = _segments(stripped)
+    if segments is None:
+        return stripped
+    parts = []
+    for tokens in segments:
+        if _is_mention_only(tokens) and not any(_SUBSTITUTION.search(t) for t in tokens):
+            continue
+        parts.append(" ".join(tokens))
+    return "\n".join(parts)
+
+
 def _is_prod_deploy(command: str) -> bool:
+    command = _executable_text(command)
     if os.environ.get("CCSWITCH_DEPLOY_ENV", "").lower() in ("prod", "production"):
         # An explicit deploy-env marker on a deploy command is authoritative.
         return bool(_DEPLOY_VERB.search(command))

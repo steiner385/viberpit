@@ -150,6 +150,37 @@ def test_hook_ignores_non_prod_deploy():
     assert _run_hook("./scripts/deploy.sh --staging", {}) is None
 
 
+# Mentioning the trigger words is not executing a rollout (#832).
+@pytest.mark.parametrize("command", [
+    "cat .claude/hooks/prod-deploy-gate.py",
+    "git log --grep='deploy' -- docs/production.md",
+    "journalctl -u viberpit | grep 'deploy to prod'",
+    "gh issue create --title t --body 'deploy index on prod postgres; see notes'",
+    "gh pr comment 5 --body 'rollout to production looks fine'",
+    "git commit -m 'fix: deploy gate on production words'",
+    "gh issue create --title t --body-file - <<'EOF'\nwe deploy to prod nightly\nEOF",
+    "sudo cat deploy-prod.log",
+])
+def test_hook_ignores_prose_mentioning_trigger_words(command):
+    assert _run_hook(command, {}) is None, f"prose was denied: {command}"
+
+
+# …but the precision fix must not open holes: anything that executes still gates.
+@pytest.mark.parametrize("command", [
+    "sudo ./scripts/deploy.sh --prod",
+    "bash -c 'deploy prod'",
+    "cat notes.txt && ./scripts/deploy.sh --prod",
+    "echo hi; deploy production",
+    "cat $(deploy prod)",
+    "cat <<EOF\n$(./deploy.sh --prod)\nEOF",
+    "grep 'unbalanced; deploy prod",
+])
+def test_hook_still_blocks_executed_prod_deploys(command):
+    decision = _run_hook(command, {})
+    assert decision is not None, f"executed rollout slipped through: {command}"
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_hook_blocks_codex_patch_to_constitution():
     decision = _run_hook_event(
         {
