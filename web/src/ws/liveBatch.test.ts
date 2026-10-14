@@ -1,7 +1,7 @@
 // @vitest-environment node
 // web/src/ws/liveBatch.test.ts
 import { describe, it, expect } from 'vitest'
-import { createGapState, resetSeq, handleLiveBatch } from './liveBatch'
+import { createGapState, resetSeq, handleLiveBatch, describeSrcSeqGap } from './liveBatch'
 import type { SessionEvent } from '@/session/events'
 
 const ev = (over: Record<string, unknown>): SessionEvent =>
@@ -158,9 +158,43 @@ describe('handleLiveBatch', () => {
     const state = createGapState()
     handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 10 })], { activeSessionId: 's1', state })
     const r = handleLiveBatch([ev({ seq: 1, sessionId: 's1', srcSeq: 12 })], { activeSessionId: 's1', state })
-    expect(r.srcSeqGaps).toEqual([{ sessionId: 's1', prev: 10, got: 12 }])
+    expect(r.srcSeqGaps).toEqual([{
+      sessionId: 's1', prev: 10, got: 12, seq: 1, prevSeq: 0, type: 'textDelta', skipped: [],
+    }])
     expect(r.needsHeal).toBe(false)   // srcSeq gap ALONE must not heal
     expect(r.dispatch).toHaveLength(1)   // frame is still delivered
+  })
+
+  it('names the frame a reused seq dropped in the gap record (two producers, #3094)', () => {
+    // Two producers stamp the same per-attach seq: the second frame (seq 1, srcSeq 11) is
+    // eaten by the seq === prev dedup, so the next frame opens a srcSeq hole with a
+    // CONTIGUOUS seq (no heal). The gap record must name the dropped frame.
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 9 }), ev({ seq: 1, sessionId: 's1', srcSeq: 10 })],
+      { activeSessionId: 's1', state })
+    const r = handleLiveBatch(
+      [ev({ seq: 1, sessionId: 's1', srcSeq: 11 }), ev({ seq: 2, sessionId: 's1', srcSeq: 12 })],
+      { activeSessionId: 's1', state },
+    )
+    expect(r.needsHeal).toBe(false)
+    expect(r.dispatch).toHaveLength(1)
+    expect(r.unseenSrcDedups).toEqual([
+      { reason: 'dedup', sessionId: 's1', type: 'textDelta', seq: 1, srcSeq: 11 },
+    ])
+    expect(r.srcSeqGaps).toEqual([{
+      sessionId: 's1', prev: 10, got: 12, seq: 2, prevSeq: 1, type: 'textDelta',
+      skipped: [{ reason: 'dedup', sessionId: 's1', type: 'textDelta', seq: 1, srcSeq: 11 }],
+    }])
+    expect(describeSrcSeqGap(r.srcSeqGaps[0])).toBe(
+      'type=textDelta seq=2 prevSeq=1 skipped=[dedup:textDelta@seq1/src11]')
+  })
+
+  it('does not flag a true re-send (repeated srcSeq) as an unseen-src dedup', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 10 })], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 10 })], { activeSessionId: 's1', state })
+    expect(r.unseenSrcDedups).toEqual([])
+    expect(r.srcSeqGaps).toEqual([])
   })
 
   it('reports no srcSeq gap for contiguous srcSeq', () => {

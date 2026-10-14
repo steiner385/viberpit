@@ -103,6 +103,11 @@ describe('SessionSocket gap healing', () => {
       expect.stringContaining('transcript.srcseq.gap'),
       expect.objectContaining({ sessionId: 's1' }),
     )
+    // The hole's context rides ONE quoted tail, so the sink's fingerprint stays stable (#3094).
+    expect(warn).toHaveBeenCalledWith(
+      'transcript.srcseq.gap prev=10 got=12 total=1 ctx="type=textDelta seq=1 prevSeq=0 skipped=[]"',
+      expect.anything(),
+    )
     // No heal from the srcSeq gap alone (client seq stayed contiguous 0→1).
     expect(sent.filter((m) => (m as { type: string }).type === 'detach')).toHaveLength(0)
     expect(sent.filter((m) => (m as { type: string }).type === 'attach')).toHaveLength(0)

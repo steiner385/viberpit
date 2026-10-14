@@ -14,7 +14,7 @@ import { SESSION_EVENT_TYPES } from '@/session/events'
 import type { PromptStage } from '@/session/promptStage'
 import { noteSent, noteStage, noteHeld, clearFlight, reconcileFlightRow } from '@/lib/promptFlight'
 import { clientLogger } from '@/obs/logger'
-import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
+import { createGapState, handleLiveBatch, describeSrcSeqGap, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
 import { revIsNewer, shouldApplyRev } from '@/session/reconcile'
 import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 
@@ -812,7 +812,7 @@ export class SessionSocket {
         // order — a pre-scan here would apply the reset before a stale
         // old-epoch event sharing the batch, letting its seq re-poison the
         // fresh baseline (see handleLiveBatch's stale-straddle note).
-        const { dispatch, needsHeal, srcSeqGaps } = handleLiveBatch(msg.events, {
+        const { dispatch, needsHeal, srcSeqGaps, unseenSrcDedups } = handleLiveBatch(msg.events, {
           activeSessionId: this._activeSessionId,
           state: this._gap,
         })
@@ -853,9 +853,18 @@ export class SessionSocket {
               || gapNow - lastLog >= SessionSocket.SRC_GAP_LOG_INTERVAL_MS) {
             this._srcGapLastLogAt.set(g.sessionId, gapNow)
             clientLogger.warn(
-              `transcript.srcseq.gap prev=${g.prev} got=${g.got} total=${total}`,
+              `transcript.srcseq.gap prev=${g.prev} got=${g.got} total=${total}`
+                + ` ctx="${describeSrcSeqGap(g)}"`,
               { sessionId: g.sessionId })
           }
+        }
+        // The seq-dedup dropped a frame whose srcSeq was never applied: two producers are
+        // stamping this session's per-attach seq (#3094). INFO, not WARN — it explains a
+        // srcseq.gap rather than being a second defect report.
+        for (const f of unseenSrcDedups) {
+          clientLogger.info(
+            `transcript.seq.dedup.unseen_src seq=${f.seq} srcSeq=${f.srcSeq} type="${f.type ?? '?'}"`,
+            { sessionId: f.sessionId })
         }
         if (needsHeal) this._healActiveSession()
         break
