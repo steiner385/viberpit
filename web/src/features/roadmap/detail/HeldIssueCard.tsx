@@ -15,12 +15,12 @@ import { useApproveEscalation, useReleaseHold } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
-import { attentionLabel, checklistItems, holdActorLabel, holdExplanation, ROADMAP } from '@/features/products/vocab'
+import { holdActorLabel, holdExplanation, ROADMAP } from '@/features/products/vocab'
 import { tierLabel } from '@/session/modelName'
 import { sessionPath } from '@/session/sessionNavState'
 import { inboxPath } from '../roadmapNavState'
 import { IssueDispositionContext } from './IssueDispositionContext'
-import { dispatchOutcomeText, heldFor } from './holdOutcome'
+import { attentionLabel, checklistItems, dispatchOutcomeText, heldFor } from './holdOutcome'
 
 export function HeldIssueCard({ item, showProduct = false }: { item: HeldItem; showProduct?: boolean }) {
   const reviewIssue = useContext(IssueDispositionContext)
