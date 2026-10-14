@@ -1690,3 +1690,50 @@ def test_reattach_reemit_defaults_always_allowed_to_false(ws_env):
         assert reemit is not None, [e.get("type") for e in events]
         assert reemit.get("permId") == "p-legacy"
         assert reemit.get("alwaysAllowed") is False
+
+
+# ---------------------------------------------------------------------------
+# A batch that cannot be sent is logged, never silently discarded (#3094)
+# ---------------------------------------------------------------------------
+
+def test_unserializable_batch_logs_instead_of_vanishing(ws_env, monkeypatch, caplog):
+    """`_send` used to wrap json.dumps + send_text in `except Exception: pass`, so a
+    batch that failed to serialize dropped its frames with no trace — a seq/srcSeq
+    hole the client could only report as an unexplained gap. It must now log a
+    WARNING naming the batch's frame types and seq range, and the socket lives on."""
+    import server.bridge.ws as wsmod
+
+    real_redact = wsmod._redact_buffer
+
+    def poisoned(buf):
+        return [*real_redact(buf), {"type": "poison", "seq": 41, "srcSeq": 7, "bad": object()}]
+
+    monkeypatch.setattr(wsmod, "_redact_buffer", poisoned)
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-send-loss")
+
+    with caplog.at_level(logging.WARNING, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": session.id}))
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline and not any(
+                    r.getMessage() == "ws.send.serialize_failed" for r in caplog.records):
+                time.sleep(0.05)
+            # Top-level frames still flow: the socket survived the lost batch.
+            ws.send_text(json.dumps({"type": "bogus", "sessionId": session.id}))
+            events = _drain_events(ws, until=lambda e: e.get("type") == "error", timeout=4.0)
+            assert any(e.get("code") == "UNKNOWN_TYPE" for e in events)
+
+    rec = next(r for r in caplog.records if r.getMessage() == "ws.send.serialize_failed")
+    assert rec.levelno == logging.WARNING
+    fields = rec.fields  # type: ignore[attr-defined]
+    assert fields["type"] == "batch"
+    assert fields["error"] == "TypeError"
+    assert "poison" in fields["frame_types"]
+    assert fields["seq_range"][1] >= 41
+    assert fields["src_seq_range"] == [7, 7]
+
+
+def test_wire_summary_describes_non_batch_frames():
+    import server.bridge.ws as wsmod
+    assert wsmod._wire_summary({"type": "error", "code": "X"}) == {"type": "error"}

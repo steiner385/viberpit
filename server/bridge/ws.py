@@ -88,6 +88,22 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+def _wire_summary(msg: dict) -> dict:
+    """Frame shape of an outbound message for a lost-send log: its type, plus — for a
+    batch — its frame count, distinct frame types and per-attach seq / srcSeq range."""
+    summary: dict = {"type": msg.get("type")}
+    events = msg.get("events")
+    if isinstance(events, list):
+        frames = [e for e in events if isinstance(e, dict)]
+        seqs = [e["seq"] for e in frames if isinstance(e.get("seq"), int)]
+        srcs = [e["srcSeq"] for e in frames if isinstance(e.get("srcSeq"), int)]
+        summary["frames"] = len(events)
+        summary["frame_types"] = sorted({str(e.get("type")) for e in frames})
+        summary["seq_range"] = [min(seqs), max(seqs)] if seqs else None
+        summary["src_seq_range"] = [min(srcs), max(srcs)] if srcs else None
+    return summary
+
 # Outbound batching cadence (seconds) — ~16ms matches a 60fps display refresh
 _BATCH_INTERVAL = 0.016
 # Minimum spacing between lifecycle-triggered auto re-attaches per session. Status
@@ -646,13 +662,32 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         send_lock = asyncio.Lock()
 
         async def _send(msg: dict) -> None:
-            """Send a JSON message; ignore send errors after disconnect."""
+            """Send a JSON message; ignore send errors after disconnect.
+
+            Any other loss is LOGGED, never swallowed (#3094): a batch that fails to
+            serialize, or a send that fails while the socket still reads CONNECTED,
+            drops its frames and leaves seq/srcSeq holes the client can only report as
+            an unexplained gap. The record names the frame types and seq range."""
+            if websocket.client_state != WebSocketState.CONNECTED:
+                return
             try:
-                if websocket.client_state == WebSocketState.CONNECTED:
-                    async with send_lock:
-                        await websocket.send_text(json.dumps(msg))
-            except Exception:
-                pass
+                text = json.dumps(msg)
+            except Exception as exc:
+                log_event(log, logging.WARNING, "ws.send.serialize_failed",
+                          error=type(exc).__name__, **_wire_summary(msg))
+                return
+            try:
+                async with send_lock:
+                    await websocket.send_text(text)
+            except Exception as exc:
+                # A send racing the disconnect — the peer's, or our own close (which
+                # flips only application_state) — is expected; a failure on a socket
+                # still CONNECTED both ways lost frames silently.
+                if (not isinstance(exc, WebSocketDisconnect)
+                        and websocket.client_state == WebSocketState.CONNECTED
+                        and websocket.application_state == WebSocketState.CONNECTED):
+                    log_event(log, logging.WARNING, "ws.send.failed",
+                              error=type(exc).__name__, **_wire_summary(msg))
 
         async def _close_unexpectedly() -> None:
             try:

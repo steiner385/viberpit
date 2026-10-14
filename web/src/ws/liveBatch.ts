@@ -90,9 +90,34 @@ export function catchUpEpoch(state: GapState, sessionId: string): string | null 
   return typeof e === 'string' ? e : null
 }
 
+/** A tagged frame `handleLiveBatch` filtered out instead of dispatching: `dedup` = its
+ *  per-attach `seq` was not above the last applied one, `owner` = it belongs to a session
+ *  other than the active one. Carried for telemetry only (#3094). */
+export interface SkippedFrame {
+  reason: 'dedup' | 'owner'
+  sessionId: string
+  type?: string
+  seq?: number
+  srcSeq?: number
+}
+
 /** A non-contiguous daemon source seq observed on the live stream — pure telemetry
- *  (audit W2.3), surfaced for the caller to log; it never affects dispatch/heal. */
-export interface SrcSeqGap { sessionId: string; prev: number; got: number }
+ *  (audit W2.3), surfaced for the caller to log; it never affects dispatch/heal.
+ *  `seq`/`prevSeq`/`type` describe the frame AT the hole (prevSeq = the per-attach seq
+ *  applied before it), and `skipped` lists the tagged frames this same batch filtered out
+ *  before the hole — so the log can name a frame lost to the filters (#3094). */
+export interface SrcSeqGap {
+  sessionId: string
+  prev: number
+  got: number
+  seq?: number
+  prevSeq?: number
+  type?: string
+  skipped: SkippedFrame[]
+}
+
+/** Cap on `SrcSeqGap.skipped`, which rides a log line. */
+export const MAX_SKIPPED_IN_GAP = 5
 
 // `seq` is the per-attach dedup/heal key; `srcSeq` is the daemon's additive
 // end-to-end source seq (loss telemetry only — see GapState).
@@ -132,10 +157,22 @@ export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; e
 export function handleLiveBatch(
   events: SessionEvent[],
   ctx: { activeSessionId: string | null; state: GapState },
-): { dispatch: SessionEvent[]; needsHeal: boolean; srcSeqGaps: SrcSeqGap[] } {
+): {
+  dispatch: SessionEvent[]
+  needsHeal: boolean
+  srcSeqGaps: SrcSeqGap[]
+  unseenSrcDedups: SkippedFrame[]
+} {
   const { activeSessionId, state } = ctx
   const dispatch: SessionEvent[] = []
   const srcSeqGaps: SrcSeqGap[] = []
+  // Frames the `seq === prev` dedup dropped although their srcSeq was never seen: two
+  // producers stamping one session's per-attach seq (#3094). Telemetry only.
+  const unseenSrcDedups: SkippedFrame[] = []
+  const skipped: SkippedFrame[] = []
+  const noteSkip = (f: SkippedFrame): void => {
+    if (skipped.length < MAX_SKIPPED_IN_GAP) skipped.push(f)
+  }
   let needsHeal = false
 
   for (const e of events) {
@@ -189,18 +226,32 @@ export function handleLiveBatch(
     // attach): nothing views them, and tracking them would record that session's
     // sampled frames as srcSeq gaps against a stale baseline (#2959). Legacy
     // untagged frames still fall through to the active view.
-    if (meta.sessionId && meta.sessionId !== activeSessionId) continue
+    if (meta.sessionId && meta.sessionId !== activeSessionId) {
+      noteSkip({ reason: 'owner', sessionId: meta.sessionId, type: etype, seq: meta.seq, srcSeq: meta.srcSeq })
+      continue
+    }
 
+    const prevSeq = meta.sessionId ? state.lastSeq.get(meta.sessionId) : undefined
     if (typeof meta.seq === 'number' && meta.sessionId) {
-      const prev = state.lastSeq.get(meta.sessionId)
-      if (prev !== undefined && meta.seq <= prev) {
+      if (prevSeq !== undefined && meta.seq <= prevSeq) {
         // Duplicate or stale retransmit — drop it. A regression (seq < prev)
         // means the stream is confused and still needs a heal; an exact
         // re-send (seq === prev) is a harmless duplicate, handled silently.
-        if (meta.seq < prev) needsHeal = true
+        if (meta.seq < prevSeq) needsHeal = true
+        const skip: SkippedFrame = {
+          reason: 'dedup', sessionId: meta.sessionId, type: etype, seq: meta.seq, srcSeq: meta.srcSeq,
+        }
+        noteSkip(skip)
+        // A true re-send repeats a srcSeq already applied; one AHEAD of the last applied
+        // srcSeq is a different frame wearing a reused seq — the "two producers" shape.
+        const lastSrc = state.lastSrcSeq.get(meta.sessionId)
+        if (meta.seq === prevSeq && typeof meta.srcSeq === 'number'
+            && lastSrc !== undefined && meta.srcSeq > lastSrc) {
+          unseenSrcDedups.push(skip)
+        }
         continue
       }
-      if (prev !== undefined && meta.seq !== prev + 1) needsHeal = true
+      if (prevSeq !== undefined && meta.seq !== prevSeq + 1) needsHeal = true
       state.lastSeq.set(meta.sessionId, meta.seq)
     }
 
@@ -211,7 +262,10 @@ export function handleLiveBatch(
     if (typeof meta.srcSeq === 'number' && meta.sessionId) {
       const prevSrc = state.lastSrcSeq.get(meta.sessionId)
       if (prevSrc !== undefined && meta.srcSeq !== prevSrc + 1) {
-        srcSeqGaps.push({ sessionId: meta.sessionId, prev: prevSrc, got: meta.srcSeq })
+        srcSeqGaps.push({
+          sessionId: meta.sessionId, prev: prevSrc, got: meta.srcSeq,
+          seq: meta.seq, prevSeq, type: etype, skipped: [...skipped],
+        })
         // A source-seq hole means events were lost between daemon and browser: the
         // cursor is no longer trustworthy, so forbid catch-up until a full replay (or a
         // fresh resumeOk) re-establishes contiguity. This is the browser-side guard that
@@ -223,5 +277,15 @@ export function handleLiveBatch(
     dispatch.push(e)
   }
 
-  return { dispatch, needsHeal, srcSeqGaps }
+  return { dispatch, needsHeal, srcSeqGaps, unseenSrcDedups }
+}
+
+/** The quoted context tail of a `transcript.srcseq.gap` log line. Everything variable
+ *  sits inside ONE quoted string so the error sink's normalizer folds it to `<str>` and
+ *  the fingerprint stays stable whatever the hole's shape. */
+export function describeSrcSeqGap(g: SrcSeqGap): string {
+  const frame = (f: { type?: string; seq?: number; srcSeq?: number }): string =>
+    `${f.type ?? '?'}@seq${f.seq ?? '?'}/src${f.srcSeq ?? '?'}`
+  const skipped = g.skipped.map((f) => `${f.reason}:${frame(f)}`).join(',')
+  return `type=${g.type ?? '?'} seq=${g.seq ?? '?'} prevSeq=${g.prevSeq ?? '?'} skipped=[${skipped}]`
 }
