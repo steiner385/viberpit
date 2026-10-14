@@ -183,6 +183,35 @@ def token_endpoint(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
     return _endpoint_from(bundle, _auth_metadata(bundle, fetch_json))
 
 
+# --- resource indicator (RFC 8707) ---------------------------------------------------------
+
+_resource_cache: dict[str, str] = {}
+
+
+def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
+    """The ``resource`` to send, chosen as the CLI's MCP SDK does: the protected-resource
+    metadata's ``resource`` when ``discoveryState.resourceMetadataUrl`` serves one, else the
+    server URL minus its fragment. The token endpoint rejects any other value: aws-oauth is
+    configured as ``…/mcp?oauth=initialize`` but its metadata names ``…/mcp``."""
+    server_url = bundle.get("serverUrl")
+    fallback = urllib.parse.urldefrag(server_url)[0] if isinstance(server_url, str) else ""
+    prm_url = _discovery_state(bundle).get("resourceMetadataUrl")
+    if not (isinstance(prm_url, str) and prm_url):
+        return fallback
+    if prm_url in _resource_cache:
+        return _resource_cache[prm_url]
+    try:
+        doc = (fetch_json or _default_fetch_json)(prm_url)
+    except Exception:
+        log.debug("mcp oauth resource metadata fetch failed url=%s", prm_url, exc_info=True)
+        doc = None
+    resource = doc.get("resource") if isinstance(doc, dict) else None
+    if isinstance(resource, str) and resource:
+        _resource_cache[prm_url] = resource
+        return resource
+    return fallback
+
+
 # --- the grant ----------------------------------------------------------------------------
 
 def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
@@ -202,9 +231,9 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
     client_id = bundle.get("clientId")
     if isinstance(client_id, str) and client_id:
         form["client_id"] = client_id
-    server_url = bundle.get("serverUrl")
-    if isinstance(server_url, str) and server_url:
-        form["resource"] = server_url
+    resource = resource_indicator(bundle, fetch_json=fetch_json)
+    if resource:
+        form["resource"] = resource
     headers: dict = {}
     secret = bundle.get("clientSecret")
     if isinstance(secret, str) and secret:
@@ -237,7 +266,8 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
             new["scope"] = payload["scope"]
         return new
     code = payload.get("error") if isinstance(payload.get("error"), str) else None
-    if status in (400, 401) and code in DEAD_GRANT_ERRORS:
+    # Case-insensitive: AWS sign-in answers in upper case (INVALID_GRANT, INVALID_TARGET).
+    if status in (400, 401) and code is not None and code.lower() in DEAD_GRANT_ERRORS:
         raise McpGrantDead(f"token endpoint returned {status} {code}")
     raise McpRefreshTransient(f"token endpoint returned {status}" + (f" {code}" if code else ""))
 
@@ -304,7 +334,9 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
         except Exception as exc:
             _backoff_until_ms[key] = now + TRANSIENT_BACKOFF_S * 1000
             summary["transient"].append(label)
-            log.debug("mcp oauth refresh transient server=%s key=%s: %s", label, key, exc)
+            # INFO, not DEBUG: an unrefreshed grant silently expires, so the status and error
+            # code (never a token) must be visible. Backoff caps this at one line per 5 min.
+            log.info("mcp oauth refresh not done, will retry server=%s key=%s: %s", label, key, exc)
             continue
         try:
             swapped = _swap_if_unchanged(key, used, replacement)

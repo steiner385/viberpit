@@ -20,9 +20,11 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     mor._metadata_cache.clear()
     mor._backoff_until_ms.clear()
+    mor._resource_cache.clear()
     yield
     mor._metadata_cache.clear()
     mor._backoff_until_ms.clear()
+    mor._resource_cache.clear()
 
 
 def _bundle(**over):
@@ -331,3 +333,47 @@ def test_transient_failure_backs_off_before_the_next_attempt():
     assert len(http.posts) == 1
     assert mor.run_once(now_ms=NOW + int(mor.TRANSIENT_BACKOFF_S * 1000) + 1, **kw)["transient"] == ["aws-oauth"]
     assert len(http.posts) == 2
+
+
+# --- resource indicator (RFC 8707) ----------------------------------------------------------
+
+PRM_URL = "https://mcp.example.com/.well-known/oauth-protected-resource"
+
+
+def test_resource_comes_from_protected_resource_metadata():
+    # aws-oauth is configured as ".../mcp?oauth=initialize" but its metadata names ".../mcp";
+    # the token endpoint rejects any other resource, which left the grant unrefreshed.
+    bundle = _bundle(serverUrl=SERVER_URL + "?oauth=initialize",
+                     discoveryState={"authorizationServerUrl": AS_URL, "resourceMetadataUrl": PRM_URL})
+    http = FakeHttp(metadata={**_meta(), PRM_URL: {"resource": SERVER_URL}}, responses=[_ok()])
+    mor.refresh_bundle(bundle, post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    assert http.posts[0][1]["resource"] == SERVER_URL
+
+
+def test_resource_falls_back_to_server_url_without_fragment():
+    bundle = _bundle(serverUrl=SERVER_URL + "?x=1#frag",
+                     discoveryState={"authorizationServerUrl": AS_URL, "resourceMetadataUrl": PRM_URL})
+    http = FakeHttp(metadata=_meta(), responses=[_ok()])  # metadata document unavailable
+    mor.refresh_bundle(bundle, post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    assert http.posts[0][1]["resource"] == SERVER_URL + "?x=1"
+
+
+def test_transient_failure_is_logged_at_info_with_status_and_code_only(caplog):
+    caplog.set_level(logging.INFO)
+    _seed({"aws|1": _bundle()}, {})
+    http = FakeHttp(metadata=_meta(), responses=[(400, {"error": "invalid_target"})])
+    mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("aws-oauth" in m and "400" in m and "invalid_target" in m for m in msgs)
+    _assert_no_secret_logged(caplog)
+
+
+def test_dead_grant_codes_match_case_insensitively():
+    # AWS sign-in returns upper-case codes; INVALID_TARGET is what it said to the old resource.
+    http = FakeHttp(metadata=_meta(), responses=[(400, {"error": "INVALID_GRANT"}),
+                                                 (400, {"error": "INVALID_TARGET"})])
+    kw = dict(post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    with pytest.raises(mor.McpGrantDead):
+        mor.refresh_bundle(_bundle(), **kw)
+    with pytest.raises(mor.McpRefreshTransient):
+        mor.refresh_bundle(_bundle(), **kw)
