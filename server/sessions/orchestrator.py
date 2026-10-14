@@ -7991,7 +7991,7 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
 
         from server.automations.product_policy import (
-            is_on, policies_by_slug, skip_labels, skips_self_closing_trackers, trusted_authors)
+            is_on, policies_by_slug, rank_kwargs)
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
         from server.pm.queue import rank, rank_key, to_candidate
@@ -8048,16 +8048,7 @@ class SessionOrchestrator:
             if not is_on(policy):
                 continue
             rows_p = by_product.get(slug, [])
-            entries_p, skipped_p = rank(
-                rows_p,
-                min_status=policy["queue_min_status"],
-                respect_dependencies=bool(policy["respect_dependencies"]),
-                now=now,
-                # D8: THE bounce threshold, from this product's own policy.
-                give_up_after_bounces=int(policy["give_up_after_bounces"]),
-                extra_skip_labels=skip_labels(policy),
-                trusted_authors=trusted_authors(policy),
-                skip_trackers=skips_self_closing_trackers(policy))
+            entries_p, skipped_p = rank(rows_p, now=now, **rank_kwargs(policy))
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n

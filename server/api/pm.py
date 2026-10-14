@@ -21,8 +21,7 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.product_policy import (
     PRODUCT_POLICY_SCHEMA, PolicyEditConflict, PolicyExpectationMismatch, effective_policy,
-    load_policies, patch_project_policy, policy_changes, skip_labels,
-    skips_self_closing_trackers, trusted_authors)
+    load_policies, patch_project_policy, policy_changes, rank_kwargs)
 from server.time_iso import iso_utc
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
@@ -1027,7 +1026,8 @@ async def _queue_inputs(db, now: datetime) -> tuple[list, dict[str, dict]]:
     """Rows + policies for the queue-shaped views, read in ONE sync session: which
     threshold a product's issues are judged against decides what a view shows, so
     a policy edit must not be able to land between the two reads. Shared by
-    ``queue()`` and ``holds()`` so the operator's two views of the pool cannot
+    ``queue()``, ``holds()`` and the map's waiting counters
+    (``pm_tree._waiting_by_product``) so the operator's views of the pool cannot
     disagree with each other or with the runner."""
     return await db.run_sync(lambda s: queue_inputs(s, now=now))
 
@@ -1144,19 +1144,11 @@ async def queue(
         # A product with no row of its own (an unmirrored slug) reads as the policy
         # SCHEMA's defaults, never as a hand-written 0.
         policy = policies.get(slug) or effective_policy(None)
+        # THE policy reading the runner's pool uses (D8 threshold included).
         entries_p, skipped_p = rank(
-            by_product[slug],
-            min_status=(min_status if min_status is not None
-                        else str(policy["queue_min_status"])),
-            respect_dependencies=(respect_dependencies if respect_dependencies is not None
-                                  else bool(policy["respect_dependencies"])),
-            now=now,
-            # D8: THE bounce threshold, from this product's own policy — the same
-            # reading the runner's pool uses.
-            give_up_after_bounces=int(policy["give_up_after_bounces"]),
-            extra_skip_labels=skip_labels(policy),
-            trusted_authors=trusted_authors(policy),
-            skip_trackers=skips_self_closing_trackers(policy),
+            by_product[slug], now=now,
+            **rank_kwargs(policy, min_status=min_status,
+                          respect_dependencies=respect_dependencies),
             skipped_out=skipped_rows if reasons is not None else None)
         entries.extend(entries_p)
         skipped_by_product[slug] = dict(skipped_p)

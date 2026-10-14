@@ -13,7 +13,7 @@ import { badgedName } from '@/ui/badgedName'
 import { CAPABILITY, PRODUCT } from '@/features/products/vocab'
 import { TIER_ACCENT, TIER_TONE, tierLabel } from '../roadmapTier'
 import type { TreeRow } from '../treeRows'
-import { needsYouCount } from '../detail/needsYou'
+import { needsYouCount, waitingSummary } from '../detail/needsYou'
 import { indentClass } from './indent'
 import { TierDot } from './TierDot'
 import { FoldChevron } from './FoldChevron'
@@ -86,6 +86,10 @@ export function TreeRowCard({ row, selected, idScope, focusable, onOpen, onToggl
     ? `${row.product.counts.capabilities} ${CAPABILITY.plural.toLowerCase()}`
     : `${row.capability.counts.openIssues} open`
   const attention = needsYouCount([row.product], isProduct ? undefined : row.capability)
+  // Waiting is said, never badged (design 2026-10-14 §1): stopped on other work,
+  // not on you. The product row only — the counters are per product.
+  const waiting = isProduct ? waitingSummary(row.product) : []
+  const waitingText = waiting.map(({ label, count }) => `${count} ${label}`)
 
   return (
     <div
@@ -153,6 +157,15 @@ export function TreeRowCard({ row, selected, idScope, focusable, onOpen, onToggl
         }
       >
         <span className="block truncate text-xs text-ink-muted">{meta} · {tierLabel(tier)}</span>
+        {waitingText.length > 0 && (
+          <span
+            data-testid="waiting-summary"
+            className="block truncate text-xs text-ink-muted"
+            title={`Waiting:\n${waitingText.join('\n')}`}
+          >
+            Waiting: {waitingText.join(' · ')}
+          </span>
+        )}
       </CardFrame>
     </div>
   )

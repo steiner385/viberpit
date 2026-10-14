@@ -509,3 +509,79 @@ def test_threshold_fallback_is_the_schema_default_for_both_handlers():
     default = next(f.default for f in PRODUCT_POLICY_SCHEMA
                    if f.key == "give_up_after_bounces")
     assert _threshold_for(None) == default
+
+
+def test_map_needs_you_definition_and_waiting_counters():
+    """Design 2026-10-14 §1: a bare board Held card is waiting (tier blocked), an
+    issue assigned to the product owner (a human ``trusted_authors`` login) needs
+    you, and ``counts.waiting`` buckets every queue skip by reason — the SAME
+    ``queue_inputs`` → ``rank`` composition ``GET /api/pm/queue`` uses. A product
+    without a board reads all-zero waiting."""
+    import asyncio
+
+    from server.db import db_session, init_db
+    from server.db.models import (Feature, GhProject, GhProjectItem, Project, ProjectRepo,
+                                  WorkItem, WorkItemDep)
+
+    async def _seed(db_url: str) -> str:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product",
+                           automation_policy={"trusted_authors": ["Tony", "app/renovate"]})
+            bare = Project(slug="no-board", name="No board")
+            db.add_all([prod, bare])
+            await db.flush()
+            db.add(ProjectRepo(project_id=prod.id, repo="o/r", is_primary=True))
+            feat = Feature(project_id=prod.id, slug="dictation", title="Dictation", state="live")
+            db.add(feat)
+            await db.flush()
+
+            def issue(n: int, **kw) -> WorkItem:
+                return WorkItem(repo="o/r", number=n, kind="issue", state="open", title=f"I{n}",
+                                body="b", author="tony", feature_id=feat.id,
+                                triage_state="classified", **kw)
+            board_held = issue(1)
+            mine = issue(2, assignees=["tony"])
+            parked = issue(3, labels=["parked"])
+            theirs = issue(4, assignees=["bob"])
+            dep_blocked = issue(5)
+            db.add_all([board_held, mine, parked, theirs, dep_blocked])
+            await db.flush()
+            db.add(WorkItemDep(src_work_item_id=dep_blocked.id, src_ref="o/r#5",
+                               dst_ref="o/r#99", source="native", active=True))
+            ghp = GhProject(project_id=prod.id, gh_project_number=1, title="example-product")
+            db.add(ghp)
+            await db.flush()
+            for w, st in ((board_held, "Held"), (mine, "Ready"), (parked, "Ready"),
+                          (theirs, "Ready"), (dep_blocked, "Ready")):
+                db.add(GhProjectItem(gh_project_id=ghp.id, work_item_id=w.id, status=st))
+            await db.commit()
+            return feat.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        cap_id = asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            r = c.get("/api/pm/map", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            products = {p["slug"]: p for p in r.json()["products"]}
+            prod = products["example-product"]
+            cap = prod["capabilities"][0]
+            # Only the owner-assigned issue needs you; board-Held + dep-blocked wait.
+            assert cap["counts"]["needsYou"] == 1
+            assert cap["counts"]["blocked"] == 2
+            waiting = prod["counts"]["waiting"]
+            assert waiting["boardHeld"] == 1
+            assert waiting["parked"] == 1
+            assert waiting["assigned"] == 1          # bob's; the owner's is needs-you
+            assert waiting["blocked"] == 1
+            assert sum(waiting.values()) == 4
+            assert set(products["no-board"]["counts"]["waiting"].values()) == {0}
+
+            leaves = c.get(f"/api/pm/leaves?capability={cap_id}", headers=IDENTITY_HEADERS)
+            assert leaves.status_code == 200, leaves.text
+            tiers = {leaf["number"]: leaf["tier"] for leaf in leaves.json()["items"]}
+            assert tiers[1] == "blocked"
+            assert tiers[2] == "needs-you"
+            assert tiers[4] != "needs-you"

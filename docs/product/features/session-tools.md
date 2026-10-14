@@ -452,7 +452,8 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
 ### Roadmap triage from a coding session
 
 `roadmap_needs_you(product, offset?, limit?)` reads a product's attention queue,
-including blocked items as the roadmap's **Needs you** view does. It returns
+including blocked items (which the roadmap's **Needs you** view lists apart, under
+Waiting, and does not count). It returns
 initiatives, deduplicated issue/PR leaves, unassigned owner-held items, and pending
 decision/classification proposals. Pages default to 20 rows (maximum 50); follow
 `next_offset`. Proposal rows can refer to listed issues, so `total` is a row count,

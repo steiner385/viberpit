@@ -8,19 +8,23 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, tuple_
 
+from server.api.pm import _queue_inputs
 from server.api.sdlc import _capabilities_batch, _descendants, _progress_rolled_up
 from server.auth.middleware import current_identity
-from server.automations.product_policy import effective_policy
+from server.automations.product_policy import effective_policy, rank_kwargs
 from server.db import get_db
 from server.db.models import (
     Feature, FeatureLink, GhProjectItem, Initiative, Persona, PersonaFeature, Project, ProjectRepo,
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
+from server.pm.attention import (WAITING_KEYS, assigned_to_owner, owner_logins,
+                                 waiting_reason_for_skip)
 from server.pm.desired_state import LIVE_SESSION_STATUSES
 from server.pm.drift import is_open_blocker
 from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.mirror_store import blocker_states, blocker_states_stmt
 from server.pm.outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                                 not_needed_suppression, rows_to_bounces, verdicts_by_ref)
+from server.pm.queue import QueueRow, rank
 from server.pm.score import rice_score
 from server.pm.triage_accept import _aware, awaiting_decision_clause
 from server.pm.tree import (
@@ -44,6 +48,40 @@ def _threshold_for(project: Project | None) -> int:
     fine on the other."""
     return int(effective_policy(project.automation_policy if project else None)
                ["give_up_after_bounces"])
+
+
+def _owners_for(project: Project | None) -> frozenset[str]:
+    """This product's owner logins (``attention.owner_logins``) — the ONE reading
+    both handlers use for ``issue_tier``'s ``assigned_to_owner``. No product: no
+    owner, so nothing is needs-you for being assigned."""
+    return owner_logins(effective_policy(project.automation_policy if project else None))
+
+
+async def _waiting_by_product(db, now: datetime) -> dict[str, dict[str, int]]:
+    """Per product key (slug, else project id — ``queue_store``'s keying), the
+    waiting counters (design 2026-10-14 §1): every row the queue skips, bucketed
+    by ``attention.waiting_reason_for_skip``. THE composition ``GET /api/pm/queue``
+    ranks through — ``queue_inputs`` in one sync pass, ``rank`` under
+    ``rank_kwargs(policy)`` per product — so the map and the queue cannot
+    disagree about why something is not moving. A product without a board has
+    no rows and is absent here."""
+    rows, policies = await _queue_inputs(db, now)
+    by_product: dict[str, list[QueueRow]] = {}
+    for r in rows:
+        by_product.setdefault(r.product, []).append(r)
+    out: dict[str, dict[str, int]] = {}
+    for key, prows in by_product.items():
+        policy = policies.get(key) or effective_policy(None)
+        skipped: list[tuple[QueueRow, str]] = []
+        rank(prows, now=now, **rank_kwargs(policy), skipped_out=skipped)
+        owners = owner_logins(policy)
+        counts = dict.fromkeys(WAITING_KEYS, 0)
+        for row, why in skipped:
+            bucket = waiting_reason_for_skip(why, row, owners=owners)
+            if bucket is not None:
+                counts[bucket] += 1
+        out[key] = counts
+    return out
 
 
 async def _issue_facts(db, items: list[WorkItem]) -> tuple[
@@ -147,16 +185,20 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
     # issues bounce against THAT product's `give_up_after_bounces`, never a global one.
     threshold_by_project = {p.id: _threshold_for(p) for p in projects}
     default_threshold = _threshold_for(None)   # once, not per item
+    # Owners per product, likewise: an issue assigned to ITS product's owner needs you.
+    owners_by_project = {p.id: _owners_for(p) for p in projects}
     tiers_by_feature: dict[str, list[str]] = {}
     for w in open_items:
         feat = feat_by_id.get(w.feature_id)
         threshold = (threshold_by_project.get(feat.project_id, default_threshold)
                     if feat else default_threshold)
+        owners = owners_by_project.get(feat.project_id, frozenset()) if feat else frozenset()
         reason = issue_reason(state=w.state, bounces=bounces[w.id],
                               give_up_after_bounces=threshold)
         tiers_by_feature.setdefault(w.feature_id, []).append(
             issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
-                      board_status[w.id], reason=reason, hold_kind=w.hold_kind))
+                      board_status[w.id], reason=reason, hold_kind=w.hold_kind,
+                      assigned_to_owner=assigned_to_owner(w.assignees, owners)))
 
     initiatives = (await db.execute(select(Initiative).where(
         Initiative.project_id.in_(pids)).order_by(Initiative.created_at))).scalars().all()
@@ -196,6 +238,8 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             TriageItem.repo.in_(all_repos)))).all()
         for repo, st in incidents:
             incidents_by_repo.setdefault(repo, []).append(st or "")
+
+    waiting_by_product = await _waiting_by_product(db, datetime.now(timezone.utc))
 
     products = []
     for p in projects:
@@ -238,6 +282,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             needs_home=sum(needs_home_by_repo.get(r, 0) for r in my_repos),
             incident_statuses=tuple(s for r in my_repos for s in incidents_by_repo.get(r, [])),
             map_changes=map_changes.get(p.id),
+            waiting=waiting_by_product.get(p.slug or p.id, {}),
         )))
     return {"products": products, "generatedAt": datetime.now(timezone.utc).isoformat()}
 
@@ -348,6 +393,7 @@ async def get_leaves(
     project = (await db.execute(select(Project).where(
         Project.id == project_id))).scalar_one_or_none() if project_id else None
     threshold = _threshold_for(project)
+    owners = _owners_for(project)
     parent_ids = {w.parent_work_item_id for w in items if w.parent_work_item_id}
     parents = {p.id: _ref(p) for p in (await db.execute(select(WorkItem).where(
         WorkItem.id.in_(parent_ids)))).scalars().all()} if parent_ids else {}
@@ -358,7 +404,8 @@ async def get_leaves(
                               give_up_after_bounces=threshold)
         leaves.append(_leaf(
             w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
-                         board_status[w.id], reason=reason, hold_kind=w.hold_kind),
+                         board_status[w.id], reason=reason, hold_kind=w.hold_kind,
+                         assigned_to_owner=assigned_to_owner(w.assignees, owners)),
             blockers[w.id], session[w.id], parents.get(w.parent_work_item_id),
             reason=reason, bounces=bounces[w.id],
             not_needed_until=suppressed.get(w.id)))

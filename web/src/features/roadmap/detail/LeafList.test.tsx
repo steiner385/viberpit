@@ -92,15 +92,15 @@ describe('LeafList', () => {
     expect(screen.getByRole('button', { name: 'Remove blocker o/r#2' })).toBeInTheDocument()
   })
 
-  it('filters attention to open needs-you and blocked issues', () => {
+  it('filters attention to open needs-you issues — a blocked one is waiting, not on you', () => {
     h.leaves = [
       leaf(1, 'open', { tier: 'needs-you' }), leaf(2, 'open', { tier: 'blocked' }),
       leaf(3, 'open'), leaf(4, 'closed', { tier: 'needs-you' }),
     ]
     render(<IssueDispositionProvider><div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} attentionOnly /></div></IssueDispositionProvider>)
-    expect(screen.getByText('Open · 2')).toBeInTheDocument()
+    expect(screen.getByText('Open · 1')).toBeInTheDocument()
     expect(screen.getByText('#1 Issue 1')).toBeInTheDocument()
-    expect(screen.getByText('#2 Issue 2')).toBeInTheDocument()
+    expect(screen.queryByText('#2 Issue 2')).not.toBeInTheDocument()
     expect(screen.queryByText('#3 Issue 3')).not.toBeInTheDocument()
     expect(screen.queryByText('#4 Issue 4')).not.toBeInTheDocument()
   })

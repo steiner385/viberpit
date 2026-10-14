@@ -20,8 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from server.automations.product_policy import (is_on, skip_labels, skips_self_closing_trackers,
-                                               trusted_authors)
+from server.automations.product_policy import is_on, rank_kwargs
 from server.pm.desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
                                      STATUS_HELD, STATUS_READY)
 from server.pm.drift import DepEdgeView, reverse_blockers
@@ -217,20 +216,9 @@ def product_escalation(slug: str, rows: Iterable[QueueRow], proposals_by_ref: Ma
     ``starving`` is false for a product whose dispatch is off — it is not waiting
     on anyone."""
     rows = list(rows)
-    ms = min_status if min_status is not None else str(policy["queue_min_status"])
-    rd = (respect_dependencies if respect_dependencies is not None
-          else bool(policy["respect_dependencies"]))
-    bounces = int(policy.get("give_up_after_bounces", 0))
-    labels = skip_labels(policy)
-    trusted = trusted_authors(policy)
-    trackers = skips_self_closing_trackers(policy)
-    entries, skipped = rank(rows, min_status=ms, respect_dependencies=rd, now=now,
-                            give_up_after_bounces=bounces, extra_skip_labels=labels,
-                            trusted_authors=trusted, skip_trackers=trackers)
-    held = tuple(rank_held(held_items(
-        rows, proposals_by_ref, now=now, min_status=ms, respect_dependencies=rd,
-        give_up_after_bounces=bounces, extra_skip_labels=labels,
-        trusted_authors=trusted, skip_trackers=trackers)))
+    kw = rank_kwargs(policy, min_status=min_status, respect_dependencies=respect_dependencies)
+    entries, skipped = rank(rows, now=now, **kw)
+    held = tuple(rank_held(held_items(rows, proposals_by_ref, now=now, **kw)))
     ages = [i.age_hours for i in held if i.age_hours is not None]
     return ProductEscalation(
         slug=slug, dispatchable=len(entries), skipped=skipped, held=held,
