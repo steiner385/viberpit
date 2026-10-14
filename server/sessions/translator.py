@@ -41,6 +41,7 @@ class Translator:
         self._turn_id: str = ""                       # mirror of main turn id (driver._turn compat)
         self._seen_tools: set[str] = set()
         self._turn_text: str = ""
+        self._turn_text_msg_id: str | None = None   # API message `_turn_text` belongs to
         self._turn_model: dict[str, str] = {}   # turn id -> last-emitted model (dedupe)
         # Signalling tool calls made by the TOP-LEVEL agent this turn: stem -> parsed
         # payload. Turn-scoped, NOT message-scoped like `_turn_text` — a session calls
@@ -79,6 +80,7 @@ class Translator:
         self._turn_id = ""
         self._seen_tools = set()
         self._turn_text = ""
+        self._turn_text_msg_id = None
         self._turn_model = {}
         self._turn_signals = {}
 
@@ -171,7 +173,7 @@ class Translator:
         return stem in self._turn_signals
 
     def message_prose(self) -> str:
-        """The text blocks of the LATEST top-level assistant message, as the user sees
+        """The text blocks of the LATEST top-level API message (all its SDK-split blocks), as the user sees
         them — never thinking. The consolidated AssistantMessage is queued ahead of the
         in-process MCP call it carries, so once `has_signal` answers True this is the
         prose of the message that made the call."""
@@ -247,7 +249,15 @@ class Translator:
             # marker for their own sub-objective — exclude them. Reset per top-level
             # message so only the FINAL top-level message's text is matched.
             if pid is None:
-                self._turn_text = ""
+                # The CLI emits ONE AssistantMessage per content block, all sharing the
+                # API `message_id`: [text] then [tool_use]. Resetting per SDK message
+                # would wipe the prose the moment the tool-use block arrived, so a
+                # hand_back reported "proseChars: 0" over a fully-rendered question.
+                # Reset only when the API message changes (no id → per-message, as before).
+                mid = getattr(msg, "message_id", None)
+                if mid is None or mid != self._turn_text_msg_id:
+                    self._turn_text = ""
+                self._turn_text_msg_id = mid
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         self._turn_text += b.text
