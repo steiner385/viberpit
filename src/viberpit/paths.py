@@ -1,5 +1,8 @@
 """Filesystem locations. All env-overridable for testing/isolation."""
+import errno
 import os
+import stat
+import time
 from pathlib import Path
 
 from . import brand
@@ -9,9 +12,44 @@ def root() -> Path:
     return Path(os.environ.get("VIBERPIT_HOME", str(Path.home() / ".claude-accounts")))
 
 
+#: errnos a flapping network mount (the sshfs account store on a worker host) returns
+#: on a perfectly healthy, owner-writable path. EPERM in particular is how the FUSE/SFTP
+#: layer reports a connection blip (#2291) — not a real permission problem — so these are
+#: worth a moment's retry; EACCES/ENOENT/EROFS are not.
+TRANSIENT_MOUNT_ERRNOS = frozenset(
+    {errno.EPERM, errno.EIO, errno.ESTALE, errno.ENOTCONN})
+#: Sleeps between attempts, so ``len + 1`` tries in total (~0.7s worst case).
+TRANSIENT_RETRY_DELAYS_S = (0.2, 0.5)
+
+
+def _mkdir_root(r: Path) -> None:
+    """``mkdir -p`` that sees through a mount blip.
+
+    ``Path.mkdir(exist_ok=True)`` re-raises ``FileExistsError`` whenever its follow-up
+    ``is_dir()`` is False, and ``is_dir()`` swallows ``OSError`` — so an EIO/ESTALE on
+    ``stat`` during an sshfs blip surfaces as "File exists" (#3057). On that error,
+    ``os.stat`` directly to recover the real errno; retry if it is transient.
+    """
+    for delay in TRANSIENT_RETRY_DELAYS_S:
+        try:
+            r.mkdir(parents=True, exist_ok=True)
+            return
+        except FileExistsError:
+            try:
+                if stat.S_ISDIR(os.stat(r).st_mode):
+                    return  # the blip cleared and the directory is fine
+            except OSError as e:
+                if e.errno not in TRANSIENT_MOUNT_ERRNOS:
+                    raise
+                time.sleep(delay)
+                continue
+            raise  # stat succeeded on a non-directory — surface it
+    r.mkdir(parents=True, exist_ok=True)
+
+
 def ensure_root() -> Path:
     r = root()
-    r.mkdir(parents=True, exist_ok=True)
+    _mkdir_root(r)
     os.chmod(r, 0o700)
     return r
 

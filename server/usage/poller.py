@@ -223,6 +223,10 @@ class UsagePoller:
         while True:
             try:
                 await self.all()
+            except OSError as e:
+                # A flapping account-store mount (sshfs on a worker host); the next
+                # sweep retries. INFO, not WARNING+: that would auto-file an issue (#3057).
+                log.info("account store unreadable (%s); retrying next sweep", e)
             except Exception:  # pragma: no cover
                 log.exception("UsagePoller: error during sweep")
             await asyncio.sleep(self._next_delay())
