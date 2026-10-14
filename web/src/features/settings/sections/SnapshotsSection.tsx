@@ -120,7 +120,7 @@ export function SnapshotsSection() {
   )
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6">
       {/* Header / actions */}
       <div className="space-y-3">
         <div className="flex flex-wrap items-end gap-2">

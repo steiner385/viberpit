@@ -154,7 +154,7 @@ export function HooksSection() {
   })
 
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-4">
       {dialog}
       {/* Danger banner */}
       <div

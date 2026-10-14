@@ -94,11 +94,11 @@ const DEFS = [
     // Names the three groups AND keeps the section's own "these are defaults, not
     // locks" caveat, which the registry sentence had dropped.
     description: 'What every new session starts with — tool approvals, model gating and transcript display — and a session can change any of them for itself once it is running.', keywords: ['permission', 'model', 'transcript'] },
-  { id: 'presets',       group: 'sessions',  label: 'Presets',             icon: Bookmark,          scope: 'server',  component: PresetsSection,
+  { id: 'presets',       group: 'sessions',  label: 'Presets',             icon: Bookmark,          scope: 'server',  component: PresetsSection, layout: 'wide',
     description: 'Saved launch configurations for the New session dialog.' },
-  { id: 'templates',     group: 'sessions',  label: 'Templates',           icon: FileText,          scope: 'server',  component: TemplatesSection,
+  { id: 'templates',     group: 'sessions',  label: 'Templates',           icon: FileText,          scope: 'server',  component: TemplatesSection, layout: 'wide',
     description: 'Reusable prompt templates with {{variable}} placeholders.' },
-  { id: 'profiles',      group: 'sessions',  label: 'Permission profiles', icon: ShieldCheck,       scope: 'server',  component: PermissionProfilesSection,
+  { id: 'profiles',      group: 'sessions',  label: 'Permission profiles', icon: ShieldCheck,       scope: 'server',  component: PermissionProfilesSection, layout: 'wide',
     description: 'Named tool-permission sets a session can adopt.' },
   { id: 'always-allow', group: 'sessions',  label: 'Always-allow rules',  icon: ListChecks,        scope: 'server',  component: PermissionRulesSection, layout: 'wide',
     description: 'Standing permission rules created from session cards, with who made each and how often it fired.', keywords: ['permission', 'allow', 'rule'] },
@@ -118,9 +118,9 @@ const DEFS = [
     description: 'Slash commands available to every session.' },
   { id: 'mcp',           group: 'claude',    label: 'MCP servers',         icon: Plug,              scope: 'server',  component: McpSection, layout: 'wide',
     description: 'Model Context Protocol servers sessions can call, with OAuth where needed.' },
-  { id: 'hooks',         group: 'claude',    label: 'Hooks',               icon: Webhook,           scope: 'server',  component: HooksSection,
+  { id: 'hooks',         group: 'claude',    label: 'Hooks',               icon: Webhook,           scope: 'server',  component: HooksSection, layout: 'wide',
     description: 'Shell commands Claude Code runs on lifecycle events. They run on this host.' },
-  { id: 'snapshots',     group: 'claude',    label: 'Snapshots',           icon: Camera,            scope: 'server',  component: SnapshotsSection,
+  { id: 'snapshots',     group: 'claude',    label: 'Snapshots',           icon: Camera,            scope: 'server',  component: SnapshotsSection, layout: 'wide',
     description: 'Point-in-time copies of the shared Claude config, with diff, restore, export and import.' },
   // Sits in the About group beside the version it changes. It is also the phone's
   // ONLY deploy surface — `shell/useAppBanners` hides the deploy banner there —
