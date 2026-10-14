@@ -28,6 +28,7 @@ def test_record_to_dict_includes_prs_when_given():
         "mergeable": "UNKNOWN", "merge_state_status": "", "auto_merge_enabled": False,
         "in_merge_queue": False, "touches_workflows": False,
         "docs_only": False,
+        "labels": [],
     }]
     assert "pr" not in d
 

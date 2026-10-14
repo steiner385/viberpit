@@ -242,7 +242,9 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
     mergeStateStatus flows into PrFact.merge_state_status, so a rollup that only a
     non-required check turned red (UNSTABLE) is judged as the live bar judges it (#3039).
     """
-    from server.github.pr_status import _classify_checks, _is_docs_only
+    from server.github.pr_status import (
+        _classify_checks, _is_docs_only, _label_names, has_human_hold,
+    )
     state = str(d.get("state", "")).lower()
     is_draft = bool(d.get("isDraft", False))
     if state == "open" and is_draft:
@@ -255,7 +257,8 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
                   url=str(d.get("url", "")),
                   checks=_classify_checks(rollup.get("state") if rollup else None),
                   is_docs_only=_is_docs_only(d),
-                  merge_state_status=str(d.get("mergeStateStatus") or ""))
+                  merge_state_status=str(d.get("mergeStateStatus") or ""),
+                  human_hold=has_human_hold(_label_names(d)))
 
 
 def build_pr_facts(
@@ -476,7 +479,7 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
         "query($o:String!,$n:String!,$br:String!){"
         "repository(owner:$o,name:$n){pullRequests(headRefName:$br,first:20,"
         "states:[OPEN,CLOSED,MERGED]){nodes{"
-        "number url state isDraft mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{state} "
+        "number url state isDraft mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{state} labels(first:20){nodes{name}} "
         "commits(last:1){nodes{commit{statusCheckRollup{state}}}} "
         "files(first:100){nodes{path}}}}}}"
     )
@@ -533,7 +536,7 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
     query = (
         "query($o:String!,$n:String!,$num:Int!){"
         "repository(owner:$o,name:$n){pullRequest(number:$num){"
-        "number url state isDraft mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{state} "
+        "number url state isDraft mergeStateStatus autoMergeRequest{enabledAt} mergeQueueEntry{state} labels(first:20){nodes{name}} "
         "commits(last:1){nodes{commit{statusCheckRollup{state}}}} "
         "files(first:100){nodes{path}}}}}"
     )

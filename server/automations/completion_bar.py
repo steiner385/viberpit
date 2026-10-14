@@ -118,6 +118,9 @@ class PrFact:
     # GitHub mergeStateStatus. With the rollup it tells a required red from one only
     # a non-required check earned (UNSTABLE, #3039); "" = unknown, read fail-safe.
     merge_state_status: str = ""
+    # The PR carries ``hold:human`` (``pr_status.HUMAN_HOLD_LABEL``): a human owns
+    # its merge, so the bar never asks a session to ready or arm it (#3072).
+    human_hold: bool = False
 
     @classmethod
     def from_info(cls, info) -> "PrFact":
@@ -127,7 +130,8 @@ class PrFact:
                    auto_merge_enabled=info.auto_merge_enabled,
                    in_merge_queue=info.in_merge_queue, url=info.url,
                    checks=info.checks, is_docs_only=info.docs_only,
-                   merge_state_status=info.merge_state_status)
+                   merge_state_status=info.merge_state_status,
+                   human_hold=bool(getattr(info, "human_hold", False)))
 
     @property
     def is_armed(self) -> bool:
@@ -177,7 +181,7 @@ class PrFacts:
             "prs": [{"number": p.number, "url": p.url, "state": p.state, "is_draft": p.is_draft,
                      "auto_merge_enabled": p.auto_merge_enabled,
                      "in_merge_queue": p.in_merge_queue, "checks": p.checks,
-                     "is_docs_only": p.is_docs_only}
+                     "is_docs_only": p.is_docs_only, "human_hold": p.human_hold}
                     for p in self.prs],
         }
 
@@ -314,6 +318,18 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
                 "checks pass", "high")
         return BarVerdict(True, f"PR #{armed.number} open with auto-merge armed", None, "high")
     unarmed = facts.open_unarmed_pr
+    if unarmed is not None and unarmed.human_hold:
+        # A held PR's merge belongs to a human whatever the dispatch says (#3072):
+        # the generic "ready it and arm auto-merge" nudge below re-armed
+        # cairnea/KinDash#19061 and sent it into the merge queue unreviewed.
+        if unarmed.ci_is_red:
+            return BarVerdict(
+                False, f"PR #{unarmed.number} is open but a required check is failing",
+                f"fix the failing CI on PR #{unarmed.number} (do not arm auto-merge or "
+                "mark it ready — it carries `hold:human`)", "high")
+        return BarVerdict(
+            True, f"PR #{unarmed.number} open and held for a human (`hold:human`); "
+            "its merge is theirs", None, "high")
     if unarmed is not None and has_no_arm_instruction(instructions):
         # The dispatch keeps the merge for a human: ready and green is finished —
         # or draft and green, when the draft state is the gate (#2925).

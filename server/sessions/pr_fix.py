@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from viberpit.engines import AgentEngine
 
-from server.github.pr_status import PullRequestInfo
+from server.github.pr_status import HUMAN_HOLD_LABEL, PullRequestInfo
 from server.sessions.completion import commit_trailer
 
 # The single source of truth for the pr-doctor mode vocabulary. The orchestrator
@@ -45,6 +45,34 @@ def _checkout_step(pr: PullRequestInfo) -> str:
     )
 
 
+def _merge_state_step(pr: PullRequestInfo) -> str:
+    """Leave the PR's merge state as the dispatch found it (#3072). A fix or
+    conflict session's own completion workflow says "arm auto-merge", so the
+    prompt must say otherwise: a session re-armed cairnea/KinDash#19061, held
+    with ``hold:human`` for owner review, and sent it into the merge queue. Only a
+    PR already armed stays armed — and a push leaves it armed on its own."""
+    if pr.human_hold:
+        return (
+            f"This PR carries the `{HUMAN_HOLD_LABEL}` label: a human owns its merge. "
+            f"Do NOT arm auto-merge, run `gh pr merge` in any form, mark it ready, or "
+            f"remove the label — this overrides any completion workflow that says to "
+            f"arm auto-merge. Pushing the fix is the whole deliverable."
+        )
+    if pr.auto_merge_enabled or pr.in_merge_queue:
+        return (
+            "Auto-merge was already armed when you were dispatched and stays armed "
+            "through your push — do not run `gh pr merge`. If it was disarmed while you "
+            "worked, re-arm it only if the PR still has no "
+            f"`{HUMAN_HOLD_LABEL}` label."
+        )
+    return (
+        "Auto-merge was NOT armed when you were dispatched — do not arm auto-merge "
+        "(`gh pr merge --auto`) and do not mark the PR ready; whoever owns the PR "
+        "decides when it merges. This overrides any completion workflow that says to "
+        "arm auto-merge."
+    )
+
+
 def build_pr_fix_prompt(
     repo: str, pr: PullRequestInfo, *,
     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
@@ -69,7 +97,8 @@ def build_pr_fix_prompt(
         f"(`git push origin HEAD:{_head_branch(pr)}`) so CI re-runs. End the commit "
         f"message with:\n"
         f"   `{commit_trailer(engine)}`\n"
-        f"4. Briefly report what was broken and what you changed.\n\n"
+        f"4. {_merge_state_step(pr)}\n"
+        f"5. Briefly report what was broken and what you changed.\n\n"
         f"PR: {pr.url}"
     )
 
@@ -104,7 +133,8 @@ def build_conflict_fix_prompt(
         f"plain `git push origin HEAD:{_head_branch(pr)}`) so the PR "
         f"becomes mergeable and CI re-runs. End the commit message with:\n"
         f"   `{commit_trailer(engine)}`\n"
-        f"6. Briefly report which files conflicted and how you reconciled them.\n\n"
+        f"6. {_merge_state_step(pr)}\n"
+        f"7. Briefly report which files conflicted and how you reconciled them.\n\n"
         f"PR: {pr.url}"
     )
 
@@ -121,6 +151,18 @@ def build_consolidation_prompt(
     nums = ", ".join(f"#{p.number}" for p in prs)
     listing = "\n".join(f"  - #{p.number} \"{p.title}\" ({p.url})" for p in prs)
     closes = " ".join(f"Closes #{p.number}" for p in prs)
+    held = [p for p in prs if p.human_hold]
+    if held:
+        # A held original's merge stays a human's (#3072): carry the label over
+        # instead of arming the PR that supersedes it.
+        held_nums = ", ".join(f"#{p.number}" for p in held)
+        finish = (
+            f"open the PR non-draft, add the `{HUMAN_HOLD_LABEL}` label "
+            f"(`gh pr edit <n> --add-label {HUMAN_HOLD_LABEL}`) because {held_nums} "
+            f"carried it, and do NOT arm auto-merge — a human owns that merge."
+        )
+    else:
+        finish = "open the PR non-draft and arm auto-merge (`gh pr merge --squash --auto`)."
     branch = f"consolidate/{'-'.join(str(p.number) for p in prs)}"
     return (
         f"Consolidate {len(prs)} open pull requests in {repo} into ONE new PR to "
@@ -139,7 +181,6 @@ def build_consolidation_prompt(
         f"4. Close each original PR with a linking comment — for each number run "
         f"`gh pr close <n> --comment \"Superseded by the consolidated PR.\"`.\n"
         f"5. Follow the project completion workflow: the branch is already off "
-        f"origin/{base}; open the PR non-draft and arm auto-merge "
-        f"(`gh pr merge --squash --auto`).\n"
+        f"origin/{base}; {finish}\n"
         f"6. Report the consolidated PR number and which originals you closed."
     )
