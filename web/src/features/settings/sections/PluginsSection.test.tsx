@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -88,6 +88,28 @@ describe('PluginsSection', () => {
     const sw = await screen.findByRole('switch', { name: 'Enable alpha' })
     await userEvent.click(sw)
     expect(api.patch).toHaveBeenCalledWith('/library/plugins/alpha%40m', { enabled: false })
+  })
+
+  it('shows the new state and a saving status at once while the save is slow (#3067)', async () => {
+    // The server snapshots the config before saving, which can take a minute.
+    vi.mocked(api.patch).mockImplementationOnce(() => new Promise(() => {}))
+    renderSection()
+    const sw = await screen.findByRole('switch', { name: 'Enable alpha' })
+    await userEvent.click(sw)
+    expect(sw).not.toBeChecked()
+    expect(sw).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent(/Saving/)
+    expect(screen.queryByText('On')).toBeNull()
+  })
+
+  it('rolls back and says why when the save fails (#3067)', async () => {
+    vi.mocked(api.patch).mockImplementationOnce(() => Promise.reject(new Error('disk full')))
+    renderSection()
+    const sw = await screen.findByRole('switch', { name: 'Enable alpha' })
+    await userEvent.click(sw)
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn.t save.*disk full/)
+    await waitFor(() => expect(sw).toBeChecked())
+    expect(sw).toBeEnabled()
   })
 
   it('expanding a row fetches plugin detail and shows a command', async () => {
