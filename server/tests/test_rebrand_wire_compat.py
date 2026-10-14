@@ -113,7 +113,15 @@ async def test_logout_revokes_the_session_held_under_the_cookie(isolated_db):
     seeded = await _seed_session()
 
     # The row is re-read INSIDE the client block: the app's lifespan disposes the
-    # session factory on exit, so a read after `with` has no DB to talk to.
+    # session factory on exit, so a read after `with` has no DB to talk to. It also
+    # runs on the client's portal loop: the app's engine pool belongs to that loop,
+    # and a checkout from the test's own loop that has to wait for a connection
+    # raises "Queue ... is bound to a different event loop".
+    async def _read_row():
+        async with db_session() as db:
+            return (await db.execute(
+                select(AppSession).where(AppSession.id == seeded))).scalar_one()
+
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         client.cookies.set(_COOKIE_NAME, _sign_session_id(seeded))
         r = client.post("/api/auth/logout", headers={"Tailscale-User-Login": IDENTITY})
@@ -121,9 +129,7 @@ async def test_logout_revokes_the_session_held_under_the_cookie(isolated_db):
         cleared = {c.split("=")[0].strip() for c in r.headers.get_list("set-cookie")}
         assert _COOKIE_NAME in cleared
 
-        async with db_session() as db:
-            row = (await db.execute(
-                select(AppSession).where(AppSession.id == seeded))).scalar_one()
+        row = client.portal.call(_read_row)
         assert row.revoked_at is not None, "logout did not revoke the row it was handed"
 
 
