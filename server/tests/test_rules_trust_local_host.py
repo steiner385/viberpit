@@ -22,12 +22,15 @@ from server.tests.test_permission_rules_api import (
     _ENV, _H, S1, _always, _card, _make_client, _rules, _seed_sessions,
 )
 from server.tests.test_ws import _IDENTITY_HEADERS, _drain_events, ws_env  # noqa: F401
+from viberpit import brand
+
+_LEGACY = f"{brand.LEGACY_ENV_PREFIX}RULES_TRUST_LOCAL_HOST"
 
 
 def test_rules_trust_local_host_defaults_off():
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("VIBERPIT_RULES_TRUST_LOCAL_HOST", None)
-        os.environ.pop("CCSWITCH_RULES_TRUST_LOCAL_HOST", None)
+        os.environ.pop(_LEGACY, None)
         assert get_settings().rules_trust_local_host is False
 
 
@@ -110,6 +113,9 @@ def test_host_browser_writes_rules_and_profiles_when_trusted(real_attestation):
         client.portal.call(_seed_sessions)
         lc = _local_client(client)
         with patch(_UIDS, return_value={_OPERATOR_UID}):
+            pr = lc.post("/api/permission-rules/preview", headers=_H, json={
+                "sessionId": S1, "permId": "p2", "pattern": "Bash(npm:*)", "scope": "global"})
+            assert pr.status_code == 200, pr.text
             r = _always(lc, S1, "p1", "Bash(npm test:*)", "session")
             assert r.status_code == 200, r.text
             rid = r.json()["rule"]["id"]
@@ -118,12 +124,44 @@ def test_host_browser_writes_rules_and_profiles_when_trusted(real_attestation):
                            json={"decision": "always"}, headers=_H).status_code == 200
             assert lc.patch(f"/api/permission-rules/{rid}",
                             json={"pattern": "Bash(npm run:*)"}, headers=_H).status_code == 200
-            assert lc.post("/api/permission-profiles", headers=_H,
-                           json={"name": "q", "patterns": ["Read"]}).status_code in (200, 201)
+            prof = lc.post("/api/permission-profiles", headers=_H,
+                           json={"name": "q", "patterns": ["Read"]})
+            assert prof.status_code in (200, 201), prof.text
+            pid = prof.json()["id"]
+            up = lc.patch(f"/api/permission-profiles/{pid}", headers=_H,
+                          json={"patterns": ["Read", "Bash(npm test:*)"]})
+            assert up.status_code == 200, up.text
             assert lc.delete(f"/api/permission-rules/{rid}", headers=_H).status_code == 204
         audits = client.portal.call(_audit_vias)
     assert audits.get("permission_rule.create") == LOCAL_TRUSTED_VIA
     assert audits.get("permission_rule.revoke") == LOCAL_TRUSTED_VIA
+    # Profile-pattern writes are attributed like rule writes.
+    assert audits.get("permission_profile.create") == LOCAL_TRUSTED_VIA
+    assert audits.get("permission_profile.update") == LOCAL_TRUSTED_VIA
+
+
+def test_profile_write_without_patterns_keeps_no_via(real_attestation):
+    # No patterns = no human gate, no /proc read, and the audit row carries no via.
+    client, _fake = _make_client(_ON)
+    with patch.dict(os.environ, {**_ENV, **_ON}), client:
+        lc = _local_client(client)
+        with patch(_UIDS, side_effect=AssertionError("must not read /proc")):
+            r = lc.post("/api/permission-profiles", headers=_H, json={"name": "plain"})
+            assert r.status_code in (200, 201), r.text
+        audits = client.portal.call(_audit_vias)
+    assert audits.get("permission_profile.create") is None
+
+
+def test_dotenv_cannot_turn_on_trust_local_host(tmp_path, monkeypatch, real_attestation):
+    # The edge's working dir (the deploy checkout) is writable by the operator's user,
+    # so an agent session could write this .env. It must not flip the gate (spec 2026-10-14).
+    (tmp_path / ".env").write_text("VIBERPIT_RULES_TRUST_LOCAL_HOST=true\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("VIBERPIT_RULES_TRUST_LOCAL_HOST", raising=False)
+    monkeypatch.delenv(_LEGACY, raising=False)
+    assert get_settings().rules_trust_local_host is False
+    with patch(_UIDS, return_value={_OPERATOR_UID}):
+        assert human_gate_via(_conn("127.0.0.1")) == LOCAL_PROCESS_VIA
 
 
 def test_host_browser_still_refused_when_not_trusted(real_attestation):

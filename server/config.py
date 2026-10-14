@@ -56,6 +56,22 @@ def opt_csv_items(raw: str | None) -> list[str] | None:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _rules_trust_local_host_from_process_env() -> bool:
+    """THE single reader of ``VIBERPIT_RULES_TRUST_LOCAL_HOST`` (spec 2026-10-14).
+
+    Reads the process environment only, never ``.env``: the pydantic ``env_file`` is
+    resolved against the edge's working directory (the deploy checkout), which the
+    operator's user, and so every agent session, can write. This flag switches off an
+    agent-facing security gate, so it must come from the root-owned EnvironmentFile
+    that systemd applies at start, which nothing can change while the process runs.
+    Both Settings classes expose it through a read-only property over this helper.
+    The legacy prefix is covered by ``mirror_legacy_env()``, which both
+    ``get_settings()`` branches run before constructing Settings.
+    """
+    raw = os.environ.get("VIBERPIT_RULES_TRUST_LOCAL_HOST", "false")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _reauth_chrome_profile_default() -> Path:
     """Dedicated reauth Chrome profile path, via the core's single definition."""
     from viberpit.paths import reauth_chrome_profile_dir
@@ -294,12 +310,8 @@ try:
         # consulted or suggested; every prompt cards as before.
         permission_rules_enabled: bool = Field(
             default=True, alias="VIBERPIT_PERMISSION_RULES_ENABLED")
-        # Opt-in trust of the edge host for human-only writes (spec 2026-10-14). On = a
-        # request from this host that human_gate_via cannot attest is admitted as the UI,
-        # so a browser on the host can write always-allow rules and profile patterns. So
-        # can any agent session there: the operator accepts that. Env only, never the UI.
-        rules_trust_local_host: bool = Field(
-            default=False, alias="VIBERPIT_RULES_TRUST_LOCAL_HOST")
+        # rules_trust_local_host is a property below, NOT a Field: a Field would also be
+        # read from the user-writable .env (see _rules_trust_local_host_from_process_env).
         # MCP live status (spec 2026-10-09): driver polling, persistence, probe, readout.
         mcp_status_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_STATUS_ENABLED")
         # Per-repo MCP server scope + live session toggles (spec 2026-10-09 repo-scope).
@@ -368,6 +380,19 @@ try:
             default=20, alias="VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
+
+        @property
+        def rules_trust_local_host(self) -> bool:
+            """Opt-in trust of the edge host for human-only writes (spec 2026-10-14).
+
+            On = a request from this host that human_gate_via cannot attest is admitted
+            as the UI, so a browser on the host can write always-allow rules and profile
+            patterns. So can any agent session there: the operator accepts that.
+            Deliberately bypasses ``.env``: the edge's working directory is writable by
+            the operator's user, so a session could otherwise turn this gate off for
+            itself, live, on its next write. Process environment only.
+            """
+            return _rules_trust_local_host_from_process_env()
 
         @property
         def tailnet_allowlist_items(self) -> list[str]:
@@ -634,9 +659,6 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         permission_rules_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_PERMISSION_RULES_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
-        rules_trust_local_host: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("VIBERPIT_RULES_TRUST_LOCAL_HOST", "false").lower() in ("1", "true", "yes", "on")
-        )
         mcp_status_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_MCP_STATUS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
@@ -694,6 +716,11 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         assistant_watch_max_per_identity: int = dataclasses.field(
             default_factory=lambda: int(os.environ.get("VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY", "20"))
         )
+
+        @property
+        def rules_trust_local_host(self) -> bool:
+            # Process environment only, never .env; see the pydantic Settings property.
+            return _rules_trust_local_host_from_process_env()
 
         @property
         def tailnet_allowlist_items(self) -> list[str]:

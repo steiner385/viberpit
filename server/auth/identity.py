@@ -458,7 +458,7 @@ def attested_front_end_hop(conn: Request | WebSocket) -> bool:
     if _peer_looks_rewritten(conn, host, port):
         log_throttled(
             logger, _REWRITTEN_PEER_LOG, "rewritten", logging.WARNING,
-            "refusing a human-only write: the transport peer came from X-Forwarded-For, "
+            "cannot attest a human-only write: the transport peer came from X-Forwarded-For, "
             "so uvicorn is still rewriting it; run the edge with --no-proxy-headers (#2980)")
         return False
     server = conn.scope.get("server")
