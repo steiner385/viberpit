@@ -17,6 +17,18 @@ from server.pipeline.stage import derive_merged_stage, derive_open_stage
 if TYPE_CHECKING:
     from server.pipeline.track import NodeStatus
 
+# The label a repo puts on a PR whose merge a human owns (#3072). No ViberPit
+# surface may arm auto-merge on it or tell a session to: cairnea/KinDash#19061
+# (draft legal documents under owner review) was re-armed twice by a dispatched
+# fix session and entered the merge queue unreviewed.
+HUMAN_HOLD_LABEL = "hold:human"
+
+
+def has_human_hold(labels) -> bool:
+    """True when *labels* (label names) carry ``HUMAN_HOLD_LABEL``. GitHub label
+    names compare case-insensitively."""
+    return any(str(n).strip().lower() == HUMAN_HOLD_LABEL for n in labels or ())
+
 
 @dataclass(frozen=True)
 class CheckDetail:
@@ -138,6 +150,12 @@ class PullRequestInfo:
     # (files page-1, first 100) is under docs/ — a spec/plan-only PR merging does
     # not mean the implementation landed (#1756).
     docs_only: bool = False
+    labels: tuple[str, ...] = ()        # label names (first 20)
+
+    @property
+    def human_hold(self) -> bool:
+        """True when the PR carries ``HUMAN_HOLD_LABEL`` — never arm it (#3072)."""
+        return has_human_hold(self.labels)
 
     def to_dict(self) -> dict:
         return {
@@ -173,6 +191,7 @@ class PullRequestInfo:
             "in_merge_queue": self.in_merge_queue,
             "touches_workflows": self.touches_workflows,
             "docs_only": self.docs_only,
+            "labels": list(self.labels),
         }
 
     @classmethod
@@ -211,6 +230,7 @@ class PullRequestInfo:
             in_merge_queue=d.get("in_merge_queue", False),
             touches_workflows=d.get("touches_workflows", False),
             docs_only=d.get("docs_only", False),
+            labels=tuple(d.get("labels") or ()),
         )
 
 
@@ -270,6 +290,7 @@ _PR_NODE_FIELDS = (
     "      mergeCommit { oid }\n"
     "      autoMergeRequest { enabledAt }\n"
     "      mergeQueueEntry { state }\n"
+    "      labels(first: 20) { nodes { name } }\n"
     "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
     "        contexts(first: 100) { nodes {\n"
     "          __typename\n"
@@ -707,6 +728,13 @@ def _is_docs_only(pr: dict) -> bool:
     return bool(paths) and all(p.startswith("docs/") for p in paths)
 
 
+def _label_names(pr: dict) -> tuple[str, ...]:
+    """Label names from a ``labels(first: 20) { nodes { name } }`` selection."""
+    nodes = ((pr.get("labels") or {}).get("nodes")) or []
+    return tuple(n["name"] for n in nodes
+                 if isinstance(n, dict) and isinstance(n.get("name"), str))
+
+
 def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
     state = _classify_state(pr.get("state", ""), bool(pr.get("isDraft")))
     checks = _classify_checks(_rollup_state(pr))
@@ -740,6 +768,7 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         in_merge_queue=pr.get("mergeQueueEntry") is not None,
         touches_workflows=_touches_workflows(pr),
         docs_only=_is_docs_only(pr),
+        labels=_label_names(pr),
     )
 
 
