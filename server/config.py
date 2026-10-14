@@ -294,6 +294,12 @@ try:
         # consulted or suggested; every prompt cards as before.
         permission_rules_enabled: bool = Field(
             default=True, alias="VIBERPIT_PERMISSION_RULES_ENABLED")
+        # Opt-in trust of the edge host for human-only writes (spec 2026-10-14). On = a
+        # request from this host that human_gate_via cannot attest is admitted as the UI,
+        # so a browser on the host can write always-allow rules and profile patterns. So
+        # can any agent session there: the operator accepts that. Env only, never the UI.
+        rules_trust_local_host: bool = Field(
+            default=False, alias="VIBERPIT_RULES_TRUST_LOCAL_HOST")
         # MCP live status (spec 2026-10-09): driver polling, persistence, probe, readout.
         mcp_status_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_STATUS_ENABLED")
         # Per-repo MCP server scope + live session toggles (spec 2026-10-09 repo-scope).
@@ -627,6 +633,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         permission_rules_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_PERMISSION_RULES_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        rules_trust_local_host: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_RULES_TRUST_LOCAL_HOST", "false").lower() in ("1", "true", "yes", "on")
         )
         mcp_status_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_MCP_STATUS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
