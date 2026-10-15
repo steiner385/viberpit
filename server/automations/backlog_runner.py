@@ -17,6 +17,7 @@ from server.aio import caused_by_cancellation, current_task_cancelling
 from server.db.models import DECISION_PROPOSED_CAUSE, NOT_NEEDED_CAUSE
 from server.db.transient import is_transient_db_failure
 from server.github.pr_status import PullRequestInfo
+from server.time_iso import parse_iso_utc
 
 from .backlog_github import closeout_hold_reason, escalation_detail
 from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
@@ -2137,8 +2138,15 @@ class BacklogRunnerLoop:
             try:
                 async with owned(st["ownership_token"]) as tx:
                     sid = tx.operation.session_id or tx.operation.reserved_session_id
-                    if tx.operation.phase in {"claimed", "completed"} and sid is None:
-                        return True  # successor has not started any external effect
+                    # No session was ever reserved, so no native actor can still be
+                    # running: ``claimed``/``completed`` never started one, and an
+                    # ``uncertain`` operation (an outcome-unknown PR effect, #3109:
+                    # KinDash#15735) has finished acting — only its RESULT is unknown,
+                    # and the PR read that follows is what settles it. Same answer
+                    # ``stopped_work_attested`` gives the store's release check.
+                    if (tx.operation.phase in {"claimed", "completed", "uncertain"}
+                            and sid is None):
+                        return True
             except StaleOwnership:
                 return False
         if not sid:
@@ -2415,9 +2423,14 @@ class BacklogRunnerLoop:
         forever. A row that no longer exists cannot be running, so absence (not
         mere terminality — a ``done`` row can be resumed) is the stopped proof.
         The operation is released with the same ``WORK_STOPPED`` proof so
-        ``acquire`` does not refuse the next claim. Returns whether it released."""
-        sid = st.get("session_id")
-        if not sid or self._session_absent is None or st.get("gave_up"):
+        ``acquire`` does not refuse the next claim. Returns whether it released.
+
+        A row with no ``session_id`` is probed through its unconfirmed launch
+        (``_unconfirmed_launch_session``, #3109)."""
+        if self._session_absent is None or st.get("gave_up"):
+            return False
+        sid = st.get("session_id") or await self._unconfirmed_launch_session(st)
+        if not sid:
             return False
         try:
             if not await self._session_absent(sid):
@@ -2460,12 +2473,40 @@ class BacklogRunnerLoop:
                     "issues": st.get("issues")})
         return True
 
+    async def _unconfirmed_launch_session(self, st: dict) -> "str | None":
+        """The reserved session of a launch whose outcome never came back, once the
+        claim is older than ``stale_claim_days``; else None.
+
+        KinDash#18812: ``reserve_session`` committed, session creation "did not
+        return a confirmed result", the operation went ``uncertain`` and the row
+        never learned a ``session_id`` — so the orphan release had nothing to probe
+        and the claim held the issue forever. The reserved id IS the Session
+        primary key, so its absence is the same evidence the release already
+        trusts. The age gate keeps it off a launch whose creation may still be
+        answering; a ``handed_off`` row is excluded because its operation's
+        session is PR Doctor's, settled from PR state instead."""
+        token = st.get("ownership_token")
+        if (not token or st.get("handed_off")
+                or not self._older_than_stale_ttl(st, st.get("claimed_at"))):
+            return None
+        from .ownership import StaleOwnership, owned
+        try:
+            async with owned(token) as tx:
+                op = tx.operation
+                if op.phase != "uncertain" or op.session_id is not None:
+                    return None
+                return op.reserved_session_id
+        except StaleOwnership:
+            return None
+
     async def _handed_off_legacy_is_over(self, target: str, st: dict,
                                          sid: "str | None") -> bool:
         """Durable evidence that a token-less ``handed_off`` row (#1891) carries
         nothing: the PR it handed off is ``merged`` or ``closed``, or its session
-        row is gone AND the issue is closed on GitHub. Anything unknown keeps the
-        row — PR Doctor may still carry the PR."""
+        row is gone AND either the issue is closed on GitHub or the PR has sat
+        idle past ``stale_claim_days`` (#3109 — KinDash#15256's draft #15268, which
+        PR Doctor never works, held the issue for 41 days). Anything unknown keeps
+        the row — PR Doctor may still carry the PR."""
         if self._session_gone is None:
             return False
         try:
@@ -2474,12 +2515,46 @@ class BacklogRunnerLoop:
                 return True
             if sid and not await self._session_gone(sid):
                 return False
+            if info is not None and self._handoff_pr_idle(st, info):
+                return True
             state = await self._investigation_state(target, sid)
         except Exception:  # pragma: no cover — a probe failure must not stall the sweep
             log.warning("backlog_runner.legacy_handed_off_probe_failed target=%s",
                         target, exc_info=True)
             return False
         return state.get("issue_state") == "closed"
+
+    def _older_than_stale_ttl(self, st: dict, stamp: "str | None") -> bool:
+        """THE ``stale_claim_days`` comparison (#3109): is *stamp* (ISO-8601) older
+        than the claim's product allows? An unknown or unparseable stamp is never
+        stale, and 0 days disables expiry. Policy only — every caller has already
+        established the ownership store's own stopped-work evidence."""
+        days = int(self._policy_for(st.get("product")).get("stale_claim_days") or 0)
+        at = parse_iso_utc(stamp)
+        return days > 0 and at is not None and self._wall_clock() - at >= timedelta(days=days)
+
+    def _handoff_pr_idle(self, st: dict, info: PullRequestInfo) -> bool:
+        """An open or draft handed-off PR with no activity past the TTL. PR Doctor
+        never works a draft, and any push or comment it does make moves
+        ``updated_at``, so a PR this quiet has nobody carrying it."""
+        return info.state in ("open", "draft") and self._older_than_stale_ttl(st, info.updated_at)
+
+    async def _release_idle_handoff(self, target: str, st: dict, info: PullRequestInfo) -> None:
+        """Return a token-bearing hand-off's issue to the pool once its PR went idle
+        (#3109). ``_write_state`` routes the release through the store's own proof,
+        and no outcome is recorded — like ``_release_legacy_claim``, nothing here
+        says the attempt failed, so no bounce is charged. The PR stays open for the
+        next session to find."""
+        if not await self._write_state(target, st, None):
+            return
+        await self._ctx.emit(
+            "warn",
+            f"released stale claim {target}: handed-off PR #{info.number} idle since "
+            f"{info.updated_at or 'unknown'} — back in the pool",
+            kind="stale_claim_released", target=target,
+            detail={"pr_number": info.number, "pr_url": info.url, "pr_state": info.state,
+                    "pr_updated_at": info.updated_at, "claimed_at": st.get("claimed_at"),
+                    "issues": st.get("issues")})
 
     async def _dial_stops_the_ladder(self, target: str, policy: dict) -> "str | None":
         """The operator's ``give_up_after_bounces`` hand-off reason for the bounce
@@ -2699,6 +2774,8 @@ class BacklogRunnerLoop:
                 if await self._handoff(target, st, info):
                     await self._ctx.emit("info", f"{target} handed off to PR Doctor",
                                          kind="handoff", target=target)
+            elif st.get("handed_off") and self._handoff_pr_idle(st, info):
+                await self._release_idle_handoff(target, st, info)
             return
         if st.get("handed_off") or await self._session_alive(st):
             return

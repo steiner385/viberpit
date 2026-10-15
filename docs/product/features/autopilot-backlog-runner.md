@@ -139,7 +139,15 @@ PR linkage, never on labels alone.
   own cap across all of them combined. Which rows count is one predicate, `backlog_runner.counts_toward_pipeline`, shared with the per-product **pipeline cap** (`max_pipeline_prs`, spec 2026-09-20 D13) that refuses a new claim once a product's open, unmerged PRs reach it. Every cap is read literally, `0` included: `0` is the
   PAUSED setting (the product takes no claim but keeps the rest of its policy), not an
   "unlimited" sentinel, and the schema's `min: 0` keeps a negative value — which `_refill` would
-  read as an unreachable ceiling — out of the store in the first place. The
+  read as an unreachable ceiling — out of the store in the first place.
+  **Stale claims (#3109).** A claim nothing can move lapses back to the pool once it is older
+  than the product's `stale_claim_days` (default 7; `0` keeps such claims until a person clears
+  them). Two shapes: a handed-off PR (often a draft, which PR Doctor never works) with no activity
+  for that long after its session ended, and a launch that went `uncertain` with its reserved
+  session never created. The age is policy, never proof: the sweep releases only where the
+  ownership store's own stopped-work evidence already allows it, so a live session or a PR touched
+  inside the window always keeps its claim. Each release leaves a `stale_claim_released`,
+  `legacy_claim_released` or `orphaned_claim_released` activity event. The
   runner's own `mode` is just `off | on` now — whether it runs at all; dispatch mode (`propose`
   announces a batch without spawning, `auto` spawns) is a PER-PRODUCT decision
   (`policy["dispatch"]`), so one enabled runner can announce for a product still being trusted and
