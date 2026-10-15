@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Literal
 
 from viberpit import brand, gitrepos
 from server.github.host_failures import is_transient_github_edge_failure, log_gh_failure
@@ -118,6 +118,54 @@ def escalation_detail(outcome: str | None) -> str | None:
     if outcome and outcome.startswith(prefix):
         return outcome[len(prefix):].strip()
     return None
+
+
+#: The close-out's "every linked issue closed or was left open on purpose, and at
+#: least one was DEFERRED" outcome (#3107): no hold, but the runner records the
+#: merged dispatch with ``LEFT_OPEN_DEFERRED_CAUSE`` so the queue's not-needed
+#: suppression keeps the issue out of the pool until it changes or a backoff ends.
+DEFERRED = "deferred"
+
+
+def is_deferred(outcome: str | None) -> bool:
+    """Whether *outcome* is the close-out's :data:`DEFERRED` — the reader half."""
+    return outcome == DEFERRED
+
+
+#: Why a session left an issue open with a non-closing keyword (#3107), declared in
+#: the PR body as ``Refs #<n> (left-open: <reason>)``. THE vocabulary: the implement
+#: prompt renders it (with these glosses) and :func:`declared_left_open_reason`
+#: accepts only these tokens. Each reason's disposition is
+#: :func:`left_open_disposition`'s, nowhere else.
+LEFT_OPEN_REASONS: dict[str, str] = {
+    "epic": "the issue is a container epic its owner closes",
+    "remaining_work": "agent-doable work on the issue remains for a later session",
+    "awaiting_deploy_or_condition": "done, but only checkable after a deploy or other "
+                                    "condition a later session can re-check",
+    "needs_physical_verification": "a person must verify it by hand (a real device, "
+                                   "the physical world)",
+    "needs_owner_record": "the owner must record something only they can "
+                          "(a decision, an account fact, a credential)",
+}
+
+LeftOpenDisposition = Literal["defer", "requeue", "hold"]
+
+
+def left_open_disposition(reason: str | None) -> LeftOpenDisposition:
+    """THE left-open reason → close-out disposition rule (#3107):
+
+    - ``defer`` — no hold; the issue stays open and the queue looks at it again
+      only after it materially changes or the not-needed backoff window ends;
+    - ``requeue`` — no hold and no window; the runner re-claims it on a refill;
+    - ``hold`` — an ``owner_action`` close-out hold, as before #3107. Also the
+      answer for no / an unknown reason. (#3113 will route the two declared
+      hold reasons to their own hold kind: one edit, here.)
+    """
+    if reason in ("epic", "awaiting_deploy_or_condition"):
+        return "defer"
+    if reason == "remaining_work":
+        return "requeue"
+    return "hold"
 
 
 #: The runner's close-out hold reason before #2681 — generic, naming nothing. Still
@@ -649,12 +697,24 @@ _NON_CLOSING_KEYWORDS = r"(?:refs?|references|part\s+of|relates?\s+to|related\s+
 _CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
 
 
+def _issue_target(repo: str, number: int) -> str:
+    """The pattern for ``#N``, ``owner/repo#N`` or a same-repo ``…/issues/N`` URL
+    (not a longer number) — THE issue-reference shape every PR-text reader shares."""
+    return (rf"(?:(?:{re.escape(repo)})?#{number}"
+            rf"|https?://github\.com/{re.escape(repo)}/issues/{number})(?!\d)")
+
+
+def _keyword_target(keywords: str, repo: str, number: int) -> str:
+    """The pattern for one of *keywords* in front of ``#N``, ``owner/repo#N`` or a
+    same-repo ``…/issues/N`` URL — shared by the keyword test and the left-open
+    declaration parser so the two cannot disagree about what references an issue."""
+    return rf"\b{keywords}\b:?\s+{_issue_target(repo, number)}"
+
+
 def _keyword_references_issue(text: str, keywords: str, repo: str, number: int) -> bool:
     """True when *text* (code spans stripped) puts one of *keywords* in front of
     ``#N``, ``owner/repo#N`` or a same-repo ``…/issues/N`` URL."""
-    target = (rf"(?:(?:{re.escape(repo)})?#{number}"
-              rf"|https?://github\.com/{re.escape(repo)}/issues/{number})(?!\d)")
-    return re.search(rf"\b{keywords}\b:?\s+{target}", _CODE_RE.sub(" ", text),
+    return re.search(_keyword_target(keywords, repo, number), _CODE_RE.sub(" ", text),
                      re.IGNORECASE) is not None
 
 
@@ -668,10 +728,25 @@ _DEFERRAL_RE = re.compile(
 def _text_defers_issue(text: str, repo: str, number: int) -> bool:
     """True when a line of *text* (code spans stripped) mentions ``#N`` together
     with a deferral phrase — the PR says it left the issue undone (#3099)."""
-    ref = (rf"(?:(?:{re.escape(repo)})?#{number}"
-           rf"|https?://github\.com/{re.escape(repo)}/issues/{number})(?!\d)")
+    ref = _issue_target(repo, number)
     return any(re.search(ref, line) and _DEFERRAL_RE.search(line)
                for line in _CODE_RE.sub(" ", text).splitlines())
+
+
+def declared_left_open_reason(text: str, repo: str, number: int) -> str | None:
+    """The reason a PR declared for leaving ``repo#number`` open (#3107), or
+    ``None``. The grammar, right after a non-closing reference::
+
+        Refs #123 (left-open: remaining_work)
+        Refs #123 — left-open: awaiting_deploy_or_condition
+
+    Case-insensitive, code spans ignored (a PR quoting the grammar declares
+    nothing), and an unknown token is no declaration at all."""
+    pattern = (_keyword_target(_NON_CLOSING_KEYWORDS, repo, number)
+               + r"\s*(?:\(\s*|[-—–:]\s*)?left[\s-]open:\s*(?P<reason>[a-z_]+)")
+    m = re.search(pattern, _CODE_RE.sub(" ", text), re.IGNORECASE)
+    reason = m.group("reason").lower() if m else None
+    return reason if reason in LEFT_OPEN_REASONS else None
 
 
 def _pr_declines_to_close(ref: str, linkage: dict | None) -> bool:
@@ -692,6 +767,14 @@ def _pr_declines_to_close(ref: str, linkage: dict | None) -> bool:
     return ((_keyword_references_issue(text, _NON_CLOSING_KEYWORDS, repo, number)
              or _text_defers_issue(text, repo, number))
             and not _keyword_references_issue(text, _CLOSING_KEYWORDS, repo, number))
+
+
+def _pr_left_open_reason(ref: str, linkage: dict | None) -> str | None:
+    """:func:`declared_left_open_reason` for *ref* over the PR's body + commits."""
+    repo, number_s = _split_ref(ref)
+    if linkage is None or not number_s.isdigit():
+        return None
+    return declared_left_open_reason(linkage.get("text") or "", repo, int(number_s))
 
 
 def _pr_issue_linked(ref: str, pr_number: int, linkage: dict | None, *,
@@ -813,6 +896,19 @@ def _keep_open_gate(signals: dict) -> str | None:
     return None
 
 
+def _epic_label_defers(signals: dict | None) -> bool:
+    """Whether the keep-open gate fires ONLY because of the ``epic`` label (#3107):
+    a container epic is deferred, never a hold — nothing about it needs a person
+    at merge time. A permanent singleton (label or body phrase) keeps its hold."""
+    if signals is None:
+        return False
+    labels = [str(lbl) for lbl in (signals.get("labels") or ())]
+    if "epic" not in {lbl.strip().lower() for lbl in labels}:
+        return False
+    others = [lbl for lbl in labels if lbl.strip().lower() != "epic"]
+    return _keep_open_gate({**signals, "labels": others}) is None
+
+
 def unchecked_items(body: str | None) -> list[str]:
     """The text of every unchecked task-list item in *body*, in order."""
     return [m.group("text").strip() for m in _UNCHECKED_ITEM_RE.finditer(body or "")]
@@ -867,6 +963,23 @@ def _release_tracking_issue(ref: str, open_children: int, pr_link: str, *,
         gh_run=gh_run)
 
 
+def _leave_open(ref: str, why: str, disposition: LeftOpenDisposition, pr_link: str, *,
+                gh_run: GhRun) -> None:
+    """Say on an issue a merged PR deliberately left open what happens next
+    (#3107). Never a hand-off — a ``hold`` goes through :func:`_escalate_issue`,
+    the one comment that says "Handed to a human". Best-effort."""
+    next_step = (
+        "returned it to the backlog pool (left open, no hold) for a later session"
+        if disposition == "requeue" else
+        "left it open with no hold; it is looked at again only after the issue "
+        "changes or a backoff window passes")
+    _issue_comment(
+        ref,
+        f"PR {pr_link} merged; this issue stays open: {why}. "
+        f"{brand.NAME} Backlog Runner {next_step}.",
+        gh_run=gh_run)
+
+
 def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     """Close the batch's issues after its PR merged — FAIL CLOSED on linkage.
 
@@ -890,6 +1003,12 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
       closes succeeded, but at least one issue still needs the explicit human
       gate. Keep the durable human handoff even when other members of this batch
       closed successfully; the detail becomes the hold's reason (#2681).
+    - :data:`DEFERRED` — nothing escalated, and at least one issue was left open
+      with a ``defer`` disposition (#3107): the PR declared ``Refs #N (left-open:
+      epic|awaiting_deploy_or_condition)``, or the issue carries the ``epic``
+      label. No hold; the runner records a suppression window instead. A
+      ``remaining_work`` declaration is ``requeue``: left open with no hold and
+      no window, so on its own the batch still reads ``"closed"``.
     - ``"unlinked"`` — every issue is verified-unlinked: a misattributed PR.
       Nothing is closed; the caller must ignore/denylist the PR.
     - ``"retry"`` — at least one linkage or intended close outcome is unknown
@@ -919,6 +1038,7 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     # one whose own acceptance list is unfinished (#784, #2681): gate each linked
     # issue on its own signals, and keep what is left for the runner's hold.
     gates: list[str] = []
+    deferred = False
     incomplete = any(verdict is None for verdict in verdicts.values())
     for ref in linked:
         signals = _issue_signals(ref, gh_run=gh_run)
@@ -928,12 +1048,32 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
                      ref, pr_number, open_children)
             _release_tracking_issue(ref, open_children, pr_link, gh_run=gh_run)
             continue
+        # An `epic`-labelled issue is deferred whatever the PR declared (#3107):
+        # nothing about a container epic needs a person at merge time.
+        declines = _pr_declines_to_close(ref, linkage)
+        epic_label = _epic_label_defers(signals)
+        declared = ("epic" if epic_label else
+                    _pr_left_open_reason(ref, linkage) if declines else None)
+        disposition = left_open_disposition(declared)
+        if declared and disposition != "hold":
+            log.info("backlog_github.close_batch_left_open ref=%s pr=%s reason=%s "
+                     "disposition=%s", ref, pr_number, declared, disposition)
+            why = (f"it is labelled 'epic' — {LEFT_OPEN_REASONS[declared]}" if epic_label
+                   else f"the session declared it — {LEFT_OPEN_REASONS[declared]}")
+            _leave_open(ref, why, disposition, pr_link, gh_run=gh_run)
+            deferred = deferred or disposition == "defer"
+            continue
         # The session's own "this does not finish it" outranks the issue's gates:
         # the close-out exists for PRs that FORGOT a closing keyword (#2984).
-        reason = ("the PR references it with a non-closing keyword (e.g. `Refs`) or "
-                  "lists it as deferred/blocked, not `Fixes`: the session left it "
-                  "open on purpose"
-                  if _pr_declines_to_close(ref, linkage) else _human_gate_reason(signals))
+        if declared:
+            reason: str | None = (f"{declared.replace('_', ' ')} "
+                                  "(declared by the session)")
+        elif declines:
+            reason = ("the PR references it with a non-closing keyword (e.g. `Refs`) or "
+                      "lists it as deferred/blocked, not `Fixes`: the session left it "
+                      "open on purpose")
+        else:
+            reason = _human_gate_reason(signals)
         if reason:
             log.info("backlog_github.close_batch_escalate ref=%s pr=%s reason=%s",
                      ref, pr_number, reason)
@@ -955,4 +1095,6 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     # can later establish that every intended target reached a terminal result.
     if incomplete:
         return "retry"
-    return escalated_outcome(gates) if gates else "closed"
+    if gates:
+        return escalated_outcome(gates)
+    return DEFERRED if deferred else "closed"

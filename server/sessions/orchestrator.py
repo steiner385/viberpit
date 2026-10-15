@@ -8815,7 +8815,7 @@ class SessionOrchestrator:
         the merged PR — the PR body may have lacked ``Fixes #N``, and nothing else
         would ever close the issues it implemented. Fails CLOSED on PR↔issue
         linkage (#642): the returned outcome (``"closed"`` / ``"escalated"`` /
-        ``"unlinked"`` / ``"retry"``) tells the sweep whether the PR really was the
+        ``"deferred"`` / ``"unlinked"`` / ``"retry"``) tells the sweep whether the PR really was the
         batch's implementation and whether a human still has to finish it, so a
         shared-clone branch misattribution can never close unrelated issues.
         Best-effort, off the event loop."""

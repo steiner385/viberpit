@@ -15,7 +15,8 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.sql import Select
 
 from server.db.models import (
-    DECISION_PROPOSED_CAUSE, DISPATCH_OUTCOMES, NOT_NEEDED_CAUSE, DispatchOutcome, Project, WorkItem)
+    DECISION_PROPOSED_CAUSE, DISPATCH_OUTCOMES, LEFT_OPEN_DEFERRED_CAUSE, NOT_NEEDED_CAUSE,
+    DispatchOutcome, Project, WorkItem)
 from server.pm.refs import split_ref
 from server.sessions.model_catalog import TIER_ORDER, model_tier, tier_rank
 
@@ -167,6 +168,14 @@ def never_ran_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
 # looked at again only after a day, then 4, 16 and 30. A body/title edit, a label
 # change, or a comment by a person after the verdict lifts it at once.
 #
+# The same rule covers a second verdict (#3107): a merged dispatch whose close-out
+# DEFERRED an issue it left open on purpose (``merged`` / ``LEFT_OPEN_DEFERRED_CAUSE``
+# — a container epic, or work awaiting a deploy or other condition). Nothing about
+# such an issue needs a person, so it gets this window instead of a hold. Known
+# limitation: the outcome row is per batch TARGET, so a deferred batch SIBLING is
+# left open without a window and simply re-queued — acceptable, batches are mostly
+# single-issue.
+#
 # Board Status is deliberately NOT part of the identity: the reconciler rewrites it
 # from claims and holds (In progress while claimed, Held while held), so the mirror
 # cannot tell a person's card move from its own stamp — every release would read as
@@ -195,7 +204,8 @@ def not_needed_backoff(verdicts: int) -> timedelta:
 
 @dataclass(frozen=True)
 class NotNeededVerdict:
-    """One finalised ``no_pr`` / ``NOT_NEEDED_CAUSE`` row, as suppression reads it.
+    """One finalised suppressing row (``no_pr`` / ``NOT_NEEDED_CAUSE``, or ``merged`` /
+    ``LEFT_OPEN_DEFERRED_CAUSE``), as suppression reads it.
     ``started_at`` is the dispatch's start — the material baseline (#2683 review);
     ``None`` on a §13 recovery insert, which then falls back to ``ended_at``."""
 
@@ -206,14 +216,17 @@ class NotNeededVerdict:
 
 
 def not_needed_stmt(refs: Iterable[str]) -> Select:
-    """Every not-needed verdict for *refs*: ``(target_ref, started_at, ended_at,
+    """Every suppressing verdict for *refs* — a not-needed ``no_pr`` row or a
+    left-open-deferred ``merged`` one (#3107): ``(target_ref, started_at, ended_at,
     material_fingerprint, body_fingerprint)``. Implement dispatches only, like every
     other attempt read. Rows go through :func:`verdicts_by_ref`."""
     return (select(DispatchOutcome.target_ref, DispatchOutcome.started_at,
                    DispatchOutcome.ended_at,
                    DispatchOutcome.material_fingerprint, DispatchOutcome.body_fingerprint)
-            .where(DispatchOutcome.outcome == "no_pr",
-                   DispatchOutcome.cause == NOT_NEEDED_CAUSE,
+            .where(or_(and_(DispatchOutcome.outcome == "no_pr",
+                            DispatchOutcome.cause == NOT_NEEDED_CAUSE),
+                       and_(DispatchOutcome.outcome == "merged",
+                            DispatchOutcome.cause == LEFT_OPEN_DEFERRED_CAUSE)),
                    _implement_only(),
                    DispatchOutcome.target_ref.in_(list(refs))))
 

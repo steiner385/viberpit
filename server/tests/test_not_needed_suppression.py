@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from server.db.models import (NOT_NEEDED_CAUSE, Base, DispatchOutcome, GhProject,
+from server.db.models import (LEFT_OPEN_DEFERRED_CAUSE, NOT_NEEDED_CAUSE, Base, DispatchOutcome, GhProject,
                               GhProjectItem, Project, ProjectRepo, WorkItem)
 from server.pm.outcomes import (NOT_NEEDED_BACKOFF, NotNeededVerdict, body_fingerprint,
                                 material_fingerprint, not_needed_backoff,
@@ -184,10 +184,7 @@ def _db():
     return Session(e)
 
 
-def test_viberpit_2924_the_loader_suppresses_from_the_finalised_outcome_rows():
-    """Durable across restarts: suppression is read off ``dispatch_outcomes`` and the
-    mirror, nothing in memory. #2924 was re-claimed an hour after its no-PR marker."""
-    db = _db()
+def _seed_issue(db) -> WorkItem:
     project = Project(slug="kindash", name="kindash")
     db.add(project)
     db.flush()
@@ -201,11 +198,23 @@ def test_viberpit_2924_the_loader_suppresses_from_the_finalised_outcome_rows():
     db.flush()
     db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wi.id, gh_item_node_id="PVTI_1",
                          status="Ready"))
+    return wi
+
+
+def _add_verdict(db, outcome: str, cause: str | None) -> None:
     db.add(DispatchOutcome(automation_id="backlog-runner", target_ref="o/r#1",
-                           outcome="no_pr", cause=NOT_NEEDED_CAUSE, ended_at=T0,
+                           outcome=outcome, cause=cause, ended_at=T0,
                            body_fingerprint=body_fingerprint(TITLE, BODY),
                            material_fingerprint=material_fingerprint(TITLE, BODY, LABELS)))
     db.commit()
+
+
+def test_viberpit_2924_the_loader_suppresses_from_the_finalised_outcome_rows():
+    """Durable across restarts: suppression is read off ``dispatch_outcomes`` and the
+    mirror, nothing in memory. #2924 was re-claimed an hour after its no-PR marker."""
+    db = _db()
+    wi = _seed_issue(db)
+    _add_verdict(db, "no_pr", NOT_NEEDED_CAUSE)
 
     row, = load_queue_rows(db, now=T0 + timedelta(hours=1))
     assert row.not_needed_standing and row.not_needed_until == T0 + timedelta(days=1)
@@ -214,5 +223,34 @@ def test_viberpit_2924_the_loader_suppresses_from_the_finalised_outcome_rows():
     # A person comments after the verdict: eligible on the next read.
     wi.last_human_comment_at = T0 + timedelta(minutes=30)
     db.commit()
+    row, = load_queue_rows(db, now=T0 + timedelta(hours=1))
+    assert row.not_needed_until is None and not row.not_needed_standing
+
+
+def test_a_left_open_deferred_merge_suppresses_like_a_not_needed_verdict():
+    """#3107: a merged dispatch whose close-out DEFERRED the issue (an epic, or work
+    awaiting a deploy) is skipped as ``not_needed`` while the issue is unchanged, and
+    eligible again the moment its body is edited."""
+    db = _db()
+    wi = _seed_issue(db)
+    _add_verdict(db, "merged", LEFT_OPEN_DEFERRED_CAUSE)
+    at = T0 + timedelta(hours=1)
+
+    row, = load_queue_rows(db, now=at)
+    assert row.not_needed_standing and row.not_needed_until == T0 + timedelta(days=1)
+    assert skip_reason(row, now=at, **KW) == "not_needed"
+
+    wi.body = BODY + "\n\nDeployed; please re-check."
+    db.commit()
+    row, = load_queue_rows(db, now=at)
+    assert row.not_needed_until is None and not row.not_needed_standing
+    assert skip_reason(row, now=at, **KW) is None
+
+
+def test_a_plain_merge_is_never_a_suppressing_verdict():
+    db = _db()
+    _seed_issue(db)
+    _add_verdict(db, "merged", None)
+
     row, = load_queue_rows(db, now=T0 + timedelta(hours=1))
     assert row.not_needed_until is None and not row.not_needed_standing

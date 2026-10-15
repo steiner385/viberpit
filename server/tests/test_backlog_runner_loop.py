@@ -4019,6 +4019,40 @@ def test_merged_pr_finalises_merged_with_first_pass_from_pr_doctor(tmp_path):
     asyncio.run(run())
 
 
+def test_a_deferred_close_out_is_a_merge_with_the_left_open_cause_and_no_hold(tmp_path):
+    """#3107: a close-out that left an issue open with a ``defer`` disposition is
+    NOT a hand-off — no ``_give_up``, no hold — but a merged row carrying
+    ``LEFT_OPEN_DEFERRED_CAUSE``, which the queue's not-needed suppression reads."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_deferred.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        from server.automations.backlog_github import DEFERRED
+        from server.db.models import LEFT_OPEN_DEFERRED_CAUSE
+        from server.github.pr_status import PullRequestInfo
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        merged = PullRequestInfo(number=12, url="https://example/pr/12",
+                                 state="merged", checks="none", title="", merged=True)
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={"o/r#1": merged},
+            spawn_result=SimpleNamespace(id="sess-1"), close_out_result=DEFERRED)
+
+        await loop.tick()
+
+        assert [t for t, _info in rec.close_outs] == ["o/r#1"]
+        assert rec.needs_humans == []
+        assert not await ctx.get_target_state("o/r#1"), "released like any merge"
+        rows = await _outcomes("o/r#1")
+        assert [(r.outcome, r.cause) for r in rows] == [("merged", LEFT_OPEN_DEFERRED_CAUSE)]
+        assert rows[0].material_fingerprint is not None
+
+    asyncio.run(run())
+
+
 def test_a_doctor_row_without_counters_still_reads_as_a_first_pass_merge(tmp_path):
     """The composition the fake map cannot check (R3-7): the REAL seam over PR
     Doctor's own state row. ``record_attempt`` only ever writes ``total_attempts``
