@@ -10,7 +10,7 @@ from server.automations.product_policy import (
 def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "capacity_mode", "max_pipeline_prs",
-                    "ladder_top", "give_up_after_bounces", "default_model",
+                    "ladder_top", "give_up_after_bounces", "stale_claim_days", "default_model",
                     "respect_dependencies", "skip_labels", "skip_self_closing_trackers",
                     "trusted_authors", "auto_escalate_match",
                     "auto_escalate_budget", "triage_auto_accept", "triage_auto_accept_dispatch_off",
@@ -23,7 +23,8 @@ def test_schema_keys_and_defaults():
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
         "capacity_mode": "auto",
-        "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
+        "ladder_top": "fable", "give_up_after_bounces": 0, "stale_claim_days": 7,
+        "default_model": "auto",
         "respect_dependencies": True, "skip_labels": [], "skip_self_closing_trackers": True,
         "trusted_authors": [],
         "auto_escalate_match": [],

@@ -120,6 +120,21 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                      "after this many finalised non-merged outcomes on the same body "
                      "(the queue then skips it as needs_spec). 0 (the default) lets the "
                      "ladder run its full length. Editing the issue body restarts the count."),
+    # #3109: the age past which the runner stops waiting on a claim nothing can
+    # move. Policy, never proof: it is consulted only once the ownership store's
+    # own stopped-work evidence already allows a release (``ownership.py`` — an
+    # elapsed timer is not a ReleaseProof). Two shapes read it: a handed-off PR
+    # with no activity this long (PR Doctor never works a draft, so a draft whose
+    # session is gone sits forever — KinDash#15256 behind #15268 for 41 days), and
+    # a launch whose outcome stayed unknown and whose reserved session never
+    # appeared. 7 days is deliberately long: a slow, live PR touched within the
+    # window is never re-dispatched. 0 waits forever (the pre-#3109 behaviour).
+    ConfigField(key="stale_claim_days", label="Release stale claims after (days)", type="int",
+                default=7, min=0,
+                help="Return an issue to the queue when its claim cannot progress: the "
+                     "session is gone and its pull request (often a draft PR Doctor will not "
+                     "touch) has had no activity for this many days, or its session never "
+                     "started. 0 keeps such claims until a person clears them."),
     ConfigField(key="default_model", label="Session model", type="enum", default="auto",
                 choices=AUTOMATION_MODEL_CHOICES,
                 help="Model for this product's sessions; 'auto' assesses each job."),
