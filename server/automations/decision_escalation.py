@@ -306,7 +306,7 @@ class DecisionEscalationActionProvider:
         from server.db import db_session
         from server.pm import decisions, holds
         now = datetime.now(timezone.utc)
-        announce: dict[str, Any] | None = None
+        accepted = False
         try:
             async with db_session() as db:
                 wi = await holds.work_item_for_ref(db, item.ref)
@@ -328,10 +328,9 @@ class DecisionEscalationActionProvider:
                     key = proposal.recommended_key
                     await decisions.accept(db, proposal, chosen_key=key, actor=identity,
                                            now=now)
-                    chosen = decisions.chosen_option(proposal) or {}
-                    announce = {"label": str(chosen.get("label") or key),
-                                "detail": chosen.get("detail")}
-                    await db.commit()
+                    await decisions.commit_and_announce_accept(db, proposal, ref=item.ref,
+                                                               actor=identity)
+                    accepted = True
                     result = TriggerResult(status="accepted", level="ok",
                                            message=f"Accepted {key} on {item.ref}")
                 else:
@@ -347,7 +346,6 @@ class DecisionEscalationActionProvider:
             # HoldPermissionError, DecisionHoldError, DecisionError and an unmirrored
             # ref (work_item_for_ref) are all ValueErrors: the service's own words.
             return TriggerResult(status="refused", level="warn", message=str(e))
-        if announce is not None:
+        if accepted:
             self._loop._held = [i for i in self._loop._held if i.ref != item.ref]
-            await decisions.announce_accept_best_effort(item.ref, actor=identity, **announce)
         return result

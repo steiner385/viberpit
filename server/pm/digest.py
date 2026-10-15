@@ -12,12 +12,23 @@ shapes them and picks the recommendation:
 * a model-approval hold → approve the escalation at the requested tier;
 * a pending owner recommendation → apply it (close, unpark, release, …);
 * a HIGH-confidence triage proposal onto a capability → accept it;
-* everything else (a checklist, a decision, an initiative gate, a hand-off) →
-  none: only a person can choose. A gate is never advanced from here
-  (governance keeps the human as the gate); its item links to the gate.
+* a pending decision whose recommended key is one of its options → accept that
+  option (#3112);
+* an initiative gate waiting on a person whose stage carries its completion
+  evidence (``sdlc.engine.stage_complete``: the artifact merged, or the build
+  epic fully closed) → advance the gate one stage (#3112);
+* a SYSTEM-written hand-off on an issue the product's policy now skips
+  (``policy_skip.stale_system_holds``, the hygiene pass's own verdict) → release
+  the hold (#3112);
+* everything else (a checklist, a person's park, a gate with no evidence, a
+  decision with no valid recommendation) → none: only a person can choose.
 
-Every applicable action is re-derived from current state when applied
-(``POST /api/pm/digest/apply``) — the id names the item, never the action.
+Nothing here acts on its own: a recommendation is applied only by a person's
+confirmed tap (``confirm: true``), so a gate is still never advanced without the
+human (governance keeps the human as the gate; ``tree.initiative_reason``'s "no
+auto-advance" stands). Every applicable action is re-derived from current state
+when applied (``POST /api/pm/digest/apply``) — the id names the item, never the
+action.
 
 Pure: no I/O.
 """
@@ -48,8 +59,12 @@ KINDS: tuple[str, ...] = (KIND_MODEL_APPROVAL, KIND_RECOMMENDATION, KIND_TRIAGE,
 ACTION_APPROVE_ESCALATION = "approve_escalation"
 ACTION_APPLY_RECOMMENDATION = "apply_recommendation"
 ACTION_ACCEPT_TRIAGE = "accept_triage"
+ACTION_ACCEPT_DECISION = "accept_decision"
+ACTION_ADVANCE_GATE = "advance_gate"
+ACTION_RELEASE_HOLD = "release_hold"
 APPLY_ACTIONS: tuple[str, ...] = (ACTION_APPROVE_ESCALATION, ACTION_APPLY_RECOMMENDATION,
-                                  ACTION_ACCEPT_TRIAGE)
+                                  ACTION_ACCEPT_TRIAGE, ACTION_ACCEPT_DECISION,
+                                  ACTION_ADVANCE_GATE, ACTION_RELEASE_HOLD)
 
 #: Item-id prefixes; ``parse_id`` reads them back.
 ID_HOLD = "hold"
@@ -133,15 +148,46 @@ def _why(text: str | None) -> str:
     return cut_text(str(text or ""), _WHY_MAX)
 
 
-def from_held(item: HeldItem) -> DigestItem:
-    """A held issue (the holds read model): a model approval recommends approving
-    the climb it asked for; a checklist, a decision or a hand-off recommends
-    nothing — only a person can do or choose it."""
+def decision_recommendation(proposal_id: str | None, options: Iterable[Any],
+                            recommended_key: str | None) -> Recommendation | None:
+    """Accept a pending decision's recommended option — only when that key is one of
+    its options (a stale or malformed recommendation leaves the choice to a person).
+    THE rule the listing and the apply re-derive share."""
+    if not proposal_id or not recommended_key:
+        return None
+    for opt in options or ():
+        if isinstance(opt, Mapping) and str(opt.get("key") or "") == recommended_key:
+            label = str(opt.get("label") or recommended_key)
+            return Recommendation(ACTION_ACCEPT_DECISION, f"Accept: {label}",
+                                  {"proposalId": proposal_id, "key": recommended_key})
+    return None
+
+
+#: The held-issue kinds a policy-skipped system hold may be released from: a plain
+#: hand-off or a climb the approve tap would refuse anyway. Never a checklist (the
+#: close-out assessment owns those) nor a decision (only an accept ends one).
+_RELEASABLE_KINDS = (KIND_OWNER_ACTION, KIND_MODEL_APPROVAL)
+
+
+def from_held(item: HeldItem, *, releasable: bool = False) -> DigestItem:
+    """A held issue (the holds read model). *releasable*: the loader found the hold
+    among the SYSTEM-written hand-offs the product's policy now skips
+    (``policy_skip.stale_system_holds``) — release it; that wins over approving a
+    climb, which the approve tap refuses for a skipped issue. Otherwise a model
+    approval recommends approving the climb it asked for, a decision with a valid
+    recommended option recommends accepting it, and a checklist or a hand-off
+    recommends nothing — only a person can do it."""
     rec = None
-    if item.escalation is not None and item.work_item_id:
+    if (releasable and item.work_item_id and item.hold_kind == "owner_action"
+            and item.attention_kind in _RELEASABLE_KINDS):
+        rec = Recommendation(ACTION_RELEASE_HOLD, _REC_LABEL["release_hold"],
+                             {"workItemId": item.work_item_id})
+    elif item.escalation is not None and item.work_item_id:
         tier = item.escalation.needs_approval
         rec = Recommendation(ACTION_APPROVE_ESCALATION, f"Approve {tier}",
                              {"workItemId": item.work_item_id, "model": tier})
+    elif item.attention_kind == KIND_DECISION:
+        rec = decision_recommendation(item.proposal_id, item.options, item.recommended_key)
     why = item.hold_reason
     if item.attention_kind == KIND_DECISION:
         why = item.hold_reason or "A decision is waiting for you to pick an option."
@@ -152,12 +198,16 @@ def from_held(item: HeldItem) -> DigestItem:
 
 
 def from_decision(*, proposal_id: str, product: str, ref: str | None, title: str | None,
-                  url: str | None, rationale: str | None) -> DigestItem:
-    """A pending decision proposal not already listed as a held issue."""
+                  url: str | None, rationale: str | None, options: Iterable[Any] = (),
+                  recommended_key: str | None = None) -> DigestItem:
+    """A pending decision proposal not already listed as a held issue: accept its
+    recommended option (``decision_recommendation``)."""
     return DigestItem(id=item_id(ID_DECISION, proposal_id), kind=KIND_DECISION,
                       product=product, title=title or ref or "Decision",
                       why=_why(rationale or "A decision is waiting for you to pick an option."),
-                      url=url, ref=ref)
+                      url=url, ref=ref,
+                      recommendation=decision_recommendation(proposal_id, options,
+                                                             recommended_key))
 
 
 def from_triage(*, proposal_id: str, product: str, ref: str | None, title: str | None,
@@ -181,18 +231,41 @@ _GATE_WHY = {"advance": "Its build epic is done; the stage gate is waiting for y
              "awaiting_human": "Waiting for your review at its stage gate."}
 
 
-def from_initiative(product: str, node: Mapping) -> DigestItem:
-    """An initiative whose OWN tier needs you: a gate only a person moves. Never a
-    recommendation (no auto-advance, ever); the item links to the gate."""
+def gate_advance_recommended(*, status: str | None, reason: str | None,
+                             stage_complete: bool) -> bool:
+    """Whether the digest recommends advancing an initiative's gate: the GATE is
+    what waits on a person (``awaiting_human``, or ``tree.initiative_reason``'s
+    ``advance`` — the build epic done, the gate not moved) AND its stage carries the
+    completion evidence (``sdlc.engine.stage_complete``). THE rule the listing and
+    the apply re-derive share.
+
+    The action is the one-stage advance (``POST /api/sdlc/initiatives/{slug}/advance``),
+    never ``close``: ``stage_complete`` is exactly the evidence an advance names,
+    while ``close`` jumps to the terminal stage and needs proof the item does not
+    carry (the epic ISSUE itself closed). An initiative that needs you only for
+    its epic's held issues is not a gate ask — those issues are listed themselves."""
+    return stage_complete and (status == "awaiting_human" or reason == "advance")
+
+
+def from_initiative(product: str, node: Mapping, *, stage_complete: bool = False) -> DigestItem:
+    """An initiative whose OWN tier needs you: a gate only a person moves. When the
+    gate waits on its stage's completed evidence (``gate_advance_recommended``;
+    *stage_complete* is the loader's ``sdlc.engine.stage_complete``), recommend the
+    advance — applied only by a person's confirmed tap. Otherwise nothing; the item
+    links to the gate."""
     slug = str(node.get("slug") or "")
     held = int((node.get("epic") or {}).get("held") or 0)
     why = (_GATE_WHY.get(str(node.get("reason") or ""))
            or _GATE_WHY.get(str(node.get("status") or ""))
            or (f"{held} issue(s) in its epic are held for you." if held else
                "Waiting for you at its stage gate."))
+    rec = None
+    if slug and gate_advance_recommended(status=node.get("status"), reason=node.get("reason"),
+                                         stage_complete=stage_complete):
+        rec = Recommendation(ACTION_ADVANCE_GATE, "Advance the stage gate", {"slug": slug})
     return DigestItem(id=item_id(ID_GATE, slug), kind=KIND_GATE, product=product,
                       title=str(node.get("title") or slug), why=why,
-                      url=f"/initiatives/{slug}", slug=slug)
+                      url=f"/initiatives/{slug}", slug=slug, recommendation=rec)
 
 
 #: A needs-you issue's "why" when it carries no hold (``tree.issue_tier``).
@@ -243,13 +316,15 @@ def assemble(items: Iterable[DigestItem], *, products: Iterable[str],
              now: datetime) -> dict:
     """The wire digest: ``{generatedAt, products: [{slug, items}], total,
     withRecommendation}``. One item per thing: when an owner recommendation targets
-    an issue the digest already lists without a recommendation (a held issue, a
-    needs-you issue), the recommendation stands in for it. Within a product, items
-    with a recommendation come first."""
+    an issue the digest already lists (a held issue, a needs-you issue), the
+    recommendation stands in for it — even when the item carries a recommendation
+    of its own (a hygiene pass that left a ``release_hold`` recommendation and the
+    held item's own release are one action, not two). Within a product, items with
+    a recommendation come first."""
     items = list(items)
     rec_refs = {i.ref for i in items if i.kind == KIND_RECOMMENDATION and i.ref}
-    kept = [i for i in items if i.kind == KIND_RECOMMENDATION or i.recommendation is not None
-            or not i.ref or i.ref not in rec_refs]
+    kept = [i for i in items if i.kind == KIND_RECOMMENDATION or not i.ref
+            or i.ref not in rec_refs]
     by_product: dict[str, list[DigestItem]] = {slug: [] for slug in products}
     for i in kept:
         by_product.setdefault(i.product, []).append(i)

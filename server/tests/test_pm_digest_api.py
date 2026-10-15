@@ -94,14 +94,17 @@ def test_digest_lists_what_needs_you_with_one_recommendation_each():
         assert items[f"triage:{ids['medium']}"]["recommendation"] is None
         rec = items[f"rec:{ids['rec']}"]
         assert rec["recommendation"]["label"] == "Move to Ready" and rec["ref"] == "o/r#4"
-        # The recommendation stands in for #4's hold; the decision hold has no default.
+        # The recommendation stands in for #4's hold; the decision recommends its
+        # proposal's recommended option (#3112).
         assert not [i for i in items.values() if i["ref"] == "o/r#4" and i["kind"] != "recommendation"]
         decision = [i for i in items.values() if i["ref"] == "o/r#1"]
-        assert [(i["kind"], i["recommendation"]) for i in decision] == [("decision", None)]
+        assert [(i["kind"], i["recommendation"]["action"], i["recommendation"]["label"])
+                for i in decision] == [("decision", "accept_decision", "Accept: Move to B")]
+        # A gate with no merged artifact carries no evidence: linked, not recommended.
         gate = items["gate:gate-1"]
         assert gate["recommendation"] is None and gate["url"] == "/initiatives/gate-1"
         assert body["total"] == len(items)
-        assert body["withRecommendation"] == 3
+        assert body["withRecommendation"] == 4
 
         one = c.get("/api/pm/digest?product=kindash", headers=IDENTITY_HEADERS).json()
         assert [p["slug"] for p in one["products"]] == ["kindash"]
@@ -166,3 +169,256 @@ def test_apply_requires_confirm_and_dispatches_each_id_to_its_own_path():
         after = _by_id(c.get("/api/pm/digest", headers=IDENTITY_HEADERS).json())
         assert f"rec:{ids['rec']}" not in after and f"triage:{ids['high']}" not in after
         assert f"hold:{ids['#6']}" not in after
+
+
+def _stub_announce(monkeypatch) -> list[tuple]:
+    calls: list[tuple] = []
+
+    def _fake(ref, *, label, detail, chosen_by):
+        calls.append((ref, label, detail, chosen_by))
+    monkeypatch.setattr("server.automations.backlog_github.announce_decision", _fake)
+    return calls
+
+
+def _apply(c, ids: list[str]) -> dict[str, tuple]:
+    out = c.post("/api/pm/digest/apply", headers=IDENTITY_HEADERS,
+                 json={"ids": ids, "confirm": True}).json()
+    return {r["id"]: (r["ok"], r["step"]) for r in out["results"]}
+
+
+def _decision_ids(c) -> tuple[str, str]:
+    """(work item id of o/r#1, its pending proposal id)."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import DecisionProposal, WorkItem
+
+    async def _run():
+        async with db_session() as db:
+            wi = (await db.execute(select(WorkItem).where(WorkItem.number == 1))).scalar_one()
+            prop = (await db.execute(select(DecisionProposal).where(
+                DecisionProposal.work_item_id == wi.id))).scalar_one()
+            return wi.id, prop.id
+    return _call(c, _run)
+
+
+def test_apply_accepts_a_decision_through_the_accept_routes_sequence(monkeypatch):
+    calls = _stub_announce(monkeypatch)
+    with _client() as c:
+        _seed(c)
+        wid, pid = _decision_ids(c)
+        assert _apply(c, [f"hold:{wid}"]) == {f"hold:{wid}": (True, None)}
+
+        from sqlalchemy import select
+
+        from server.db import db_session
+        from server.db.models import AuditEvent, DecisionProposal, WorkItem
+
+        async def _read():
+            async with db_session() as db:
+                prop = await db.get(DecisionProposal, pid)
+                wi = await db.get(WorkItem, wid)
+                audits = [(a.type, a.via, a.identity) for a in (await db.execute(
+                    select(AuditEvent).where(AuditEvent.type.in_(
+                        ("pm.decision.accept", "pm.hold.release"))))).scalars().all()]
+                return prop.status, prop.chosen_key, prop.resolved_by, wi.hold_kind, audits
+        status, chosen, by, hold, audits = _call(c, _read)
+        assert (status, chosen, by, hold) == ("accepted", "b", "testuser@example.com", None)
+        assert sorted(audits) == [("pm.decision.accept", "digest", "testuser@example.com"),
+                                  ("pm.hold.release", "digest", "testuser@example.com")]
+        # Said on the issue after the commit, through the accept route's own tail.
+        assert calls == [("o/r#1", "Move to B", "b is better", "testuser@example.com")]
+        # Already accepted: nothing to apply any more, by either id.
+        assert _apply(c, [f"hold:{wid}", f"decision:{pid}"]) == {
+            f"hold:{wid}": (False, "no_recommendation"),
+            f"decision:{pid}": (False, "not_pending")}
+
+
+def test_a_decision_whose_recommended_key_was_removed_is_refused(monkeypatch):
+    _stub_announce(monkeypatch)
+    with _client() as c:
+        _seed(c)
+        wid, pid = _decision_ids(c)
+        from server.db import db_session
+        from server.db.models import DecisionProposal
+
+        async def _drop_b():
+            async with db_session() as db:
+                prop = await db.get(DecisionProposal, pid)
+                prop.options = [o for o in prop.options if o["key"] != "b"] + [
+                    {"key": "c", "label": "C", "detail": None}]
+                await db.commit()
+        _call(c, _drop_b)
+        assert _apply(c, [f"hold:{wid}", f"decision:{pid}"]) == {
+            f"hold:{wid}": (False, "no_recommendation"),
+            f"decision:{pid}": (False, "no_recommendation")}
+
+        async def _status():
+            async with db_session() as db:
+                return (await db.get(DecisionProposal, pid)).status
+        assert _call(c, _status) == "pending"
+
+
+def _seed_gates(c) -> None:
+    """viberpit initiatives: ``spec-done`` awaiting the human at design with its spec
+    merged (evidence), ``spec-open`` awaiting at design with the spec PR still open,
+    ``built`` active at build with its epic fully closed (``advance``)."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Initiative, InitiativeArtifact, Project, WorkItem
+
+    async def _run():
+        async with db_session() as db:
+            p = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+            done = Initiative(project_id=p.id, slug="spec-done", title="Spec done",
+                              status="awaiting_human", stage="design")
+            open_ = Initiative(project_id=p.id, slug="spec-open", title="Spec open",
+                               status="awaiting_human", stage="design")
+            built = Initiative(project_id=p.id, slug="built", title="Built", status="active",
+                               stage="build", epic_repo="o/r", epic_number=50)
+            db.add_all([done, open_, built])
+            await db.flush()
+            db.add_all([InitiativeArtifact(initiative_id=done.id, kind="spec", commit_sha="abc",
+                                           pr_number=11),
+                        InitiativeArtifact(initiative_id=open_.id, kind="spec", pr_number=12)])
+            epic = WorkItem(repo="o/r", number=50, kind="issue", title="epic", state="open",
+                            body="b", url="https://x/50", author="tony")
+            db.add(epic)
+            await db.flush()
+            db.add_all([WorkItem(repo="o/r", number=n, kind="issue", title=f"sub {n}",
+                                 state="closed", body="b", url=f"https://x/{n}", author="tony",
+                                 parent_work_item_id=epic.id) for n in (51, 52)])
+            await db.commit()
+    _call(c, _run)
+
+
+def test_a_gate_with_its_stage_evidence_recommends_and_applies_the_advance():
+    with _client() as c:
+        _seed(c)
+        _seed_gates(c)
+        items = _by_id(c.get("/api/pm/digest", headers=IDENTITY_HEADERS).json())
+        assert items["gate:spec-done"]["recommendation"] == {
+            "action": "advance_gate", "label": "Advance the stage gate",
+            "params": {"slug": "spec-done"}}
+        assert items["gate:built"]["recommendation"]["action"] == "advance_gate"
+        assert items["gate:spec-open"]["recommendation"] is None
+
+        assert _apply(c, ["gate:spec-done", "gate:built", "gate:spec-open", "gate:nope"]) == {
+            "gate:spec-done": (True, None), "gate:built": (True, None),
+            "gate:spec-open": (False, "no_recommendation"),
+            "gate:nope": (False, "not_found")}
+
+        from sqlalchemy import select
+
+        from server.db import db_session
+        from server.db.models import AuditEvent, Initiative
+
+        async def _read():
+            async with db_session() as db:
+                stages = {i.slug: (i.stage, i.status) for i in (await db.execute(
+                    select(Initiative))).scalars().all()}
+                audits = [(a.detail["slug"], a.via) for a in (await db.execute(
+                    select(AuditEvent).where(AuditEvent.type == "sdlc.initiative.advance")
+                )).scalars().all()]
+                return stages, audits
+        stages, audits = _call(c, _read)
+        assert stages["spec-done"] == ("plan", "active")
+        assert stages["built"] == ("deploy", "active")
+        assert stages["spec-open"] == ("design", "awaiting_human")
+        assert sorted(audits) == [("built", "digest"), ("spec-done", "digest")]
+        # Moved on: the gate no longer waits at the reason it was recommended for.
+        assert _apply(c, ["gate:spec-done", "gate:built"]) == {
+            "gate:spec-done": (False, "no_recommendation"),
+            "gate:built": (False, "no_recommendation")}
+
+
+def test_a_blocked_gate_is_refused_by_the_advance_routes_own_check():
+    with _client() as c:
+        _seed(c)
+        _seed_gates(c)
+        from sqlalchemy import select
+
+        from server.db import db_session
+        from server.db.models import Initiative
+
+        async def _block():
+            async with db_session() as db:
+                ini = (await db.execute(select(Initiative).where(
+                    Initiative.slug == "built"))).scalar_one()
+                ini.status = "blocked"
+                await db.commit()
+        _call(c, _block)
+        # ``blocked`` is neither awaiting_human nor the build "advance" reason.
+        assert _apply(c, ["gate:built"]) == {"gate:built": (False, "no_recommendation")}
+
+
+def _seed_noise_holds(c) -> dict[str, str]:
+    """viberpit now skips ``forced-deploy-audit``: #12 and #14 carry a runner hold on
+    such an issue, #13 a person's hold on one."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import GhProject, GhProjectItem, Project, WorkItem
+
+    async def _run():
+        async with db_session() as db:
+            now = datetime.now(timezone.utc)
+            p = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+            p.automation_policy = {**(p.automation_policy or {}),
+                                   "skip_labels": ["forced-deploy-audit"]}
+            gh = (await db.execute(select(GhProject).where(
+                GhProject.project_id == p.id))).scalar_one()
+            ids = {}
+            for n, by in ((12, "runner"), (13, "tony@example.com"), (14, "runner")):
+                wi = WorkItem(repo="o/r", number=n, kind="issue", title=f"audit {n}",
+                              state="open", body="b", url=f"https://x/{n}", author="tony",
+                              labels=["forced-deploy-audit"], hold_kind="owner_action",
+                              hold_by=by, hold_reason="owner call", hold_set_at=now)
+                db.add(wi)
+                await db.flush()
+                db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wi.id, status="Ready",
+                                     score=None))
+                ids[f"#{n}"] = wi.id
+            await db.commit()
+            return ids
+    return _call(c, _run)
+
+
+def test_a_system_hold_the_policy_now_skips_recommends_and_applies_its_release():
+    with _client() as c:
+        _seed(c)
+        ids = _seed_noise_holds(c)
+        items = _by_id(c.get("/api/pm/digest", headers=IDENTITY_HEADERS).json())
+        assert items[f"hold:{ids['#12']}"]["recommendation"] == {
+            "action": "release_hold", "label": "Release the hold",
+            "params": {"workItemId": ids["#12"]}}
+        # A person's park on the same kind of issue is theirs.
+        assert items[f"hold:{ids['#13']}"]["recommendation"] is None
+
+        from server.db import db_session
+        from server.db.models import AuditEvent, WorkItem
+
+        async def _repark_12():
+            async with db_session() as db:
+                (await db.get(WorkItem, ids["#12"])).hold_by = "tony@example.com"
+                await db.commit()
+        _call(c, _repark_12)   # a person parks #12 between the read and the apply
+        assert _apply(c, [f"hold:{ids['#12']}", f"hold:{ids['#13']}",
+                          f"hold:{ids['#14']}"]) == {
+            f"hold:{ids['#12']}": (False, "no_recommendation"),
+            f"hold:{ids['#13']}": (False, "no_recommendation"),
+            f"hold:{ids['#14']}": (True, None)}
+
+        from sqlalchemy import select
+
+        async def _read():
+            async with db_session() as db:
+                holds = {n: (await db.get(WorkItem, ids[n])).hold_by for n in ids}
+                rel = [(a.detail.get("signal"), a.via, a.identity) for a in (await db.execute(
+                    select(AuditEvent).where(AuditEvent.type == "pm.hold.release")
+                )).scalars().all()]
+                return holds, rel
+        holds, rel = _call(c, _read)
+        assert holds == {"#12": "tony@example.com", "#13": "tony@example.com", "#14": None}
+        assert rel == [("policy_skip", "digest", "testuser@example.com")]

@@ -2894,13 +2894,7 @@ async def accept_decision(
     # async session expires its instances on commit, and touching one afterwards
     # would be lazy IO in a place that cannot await it.
     out = _decision_to_dict(prop, wi, await _owning_slug(db, wi))
-    chosen = decisions.chosen_option(prop) or {}
-    ref = out["ref"]
-    await db.commit()
-    if ref:
-        await decisions.announce_accept_best_effort(
-            ref, label=str(chosen.get("label") or out["chosenKey"] or ""),
-            detail=chosen.get("detail"), actor=actor)
+    await decisions.commit_and_announce_accept(db, prop, ref=out["ref"], actor=actor)
     return out
 
 

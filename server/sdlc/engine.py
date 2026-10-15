@@ -240,6 +240,36 @@ def step_back_stage(stage: str) -> str | None:
     return STAGE_SEQUENCE[idx - 1] if idx > 0 else None
 
 
+def _adopted_epic_under_way(initiative: InitiativeView) -> bool:
+    """An adopted epic whose sub-issues are already being closed is past the
+    ``design``/``plan`` document gate (#3108): the work it would plan is under way."""
+    return (initiative.stage in ("design", "plan") and initiative.epic is not None
+            and initiative.epic_done > 0)
+
+
+def stage_complete(initiative: InitiativeView, artifacts: list[ArtifactView]) -> bool:
+    """Whether *initiative*'s current stage carries the completion evidence an
+    ``Advance`` names: its artifact merged (at ``plan``, the epic exists too —
+    until then the stage's next move is ``Materialize``), or at ``build`` the epic
+    fully closed, or at ``design``/``plan`` an adopted epic already under way
+    (:func:`_adopted_epic_under_way`, #3108). Every other stage (``deploy``,
+    ``maintain``, ``done``) carries none. THE predicate ``_decide`` advances on, and what the owner digest reads
+    before recommending a gate's advance (#3112) — whether anything acts on it is
+    the tolerance's question (here) or a person's tap (there), never this one's."""
+    stage = initiative.stage
+    if stage == "build":
+        return initiative.epic_total > 0 and initiative.epic_done >= initiative.epic_total
+    if _adopted_epic_under_way(initiative):
+        return True
+    kind = STAGE_ARTIFACT.get(stage)
+    if kind is None:
+        return False
+    art = _find_artifact(artifacts, kind)
+    if art is None or art.commit_sha is None:
+        return False
+    return not (stage == "plan" and initiative.epic is None)
+
+
 def _enter_stage(stage: str, initiative: InitiativeView) -> StageAction:
     """The action to take on *first entering* ``stage`` with no artifact yet.
     Used both for the current stage and (auto-advance) for the next one."""
@@ -310,8 +340,7 @@ def _decide(
     # Non-artifact stages: a fully built epic may advance to deploy under the
     # `stage.advance_built` gate; otherwise hand off (build) or defer to existing flows.
     if stage not in STAGE_ARTIFACT:
-        if (stage == "build" and initiative.epic_total > 0
-                and initiative.epic_done >= initiative.epic_total
+        if (stage == "build" and stage_complete(initiative, artifacts)
                 and auto_resolves("stage.advance_built", tolerance)):
             return Advance(advance_stage(stage))
         return _enter_stage(stage, initiative)
@@ -319,8 +348,7 @@ def _decide(
     # An adopted epic whose sub-issues are already being closed is past this
     # stage's document gate (#3108): the work it would plan is under way, so it
     # advances instead of waiting on (or proposing) a spec or plan.
-    if (stage in ("design", "plan") and initiative.epic is not None
-            and initiative.epic_done > 0 and auto_resolves("stage.advance", tolerance)):
+    if _adopted_epic_under_way(initiative) and auto_resolves("stage.advance", tolerance):
         return Advance(advance_stage(stage))
 
     kind = STAGE_ARTIFACT[stage]
@@ -342,8 +370,9 @@ def _decide(
     if stage == "plan" and initiative.epic is None:
         return Materialize()
 
-    # Artifact merged: advance under the `stage.advance` gate, else await the tap.
-    if auto_resolves("stage.advance", tolerance):
+    # Artifact merged (``stage_complete``): advance under the `stage.advance` gate,
+    # else await the tap.
+    if stage_complete(initiative, artifacts) and auto_resolves("stage.advance", tolerance):
         return Advance(advance_stage(stage))
     return AwaitApproval(kind)
 

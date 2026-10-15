@@ -13,13 +13,20 @@ from server.pm.outcomes import Escalation
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 
 
+OPTIONS = ({"key": "a", "label": "Option A", "detail": None},
+           {"key": "b", "label": "Option B", "detail": "the other"})
+
+
 def _held(ref: str = "o/r#1", *, kind: str = "owner_action", reason: str = "owner call",
           escalation: Escalation | None = None, attention: str = "owner_action",
-          wid: str | None = "wi1") -> HeldItem:
-    return HeldItem(ref=ref, repo="o/r", number=int(ref.split("#")[1]), product="p",
+          wid: str | None = "wi1", proposal_id: str | None = None,
+          options: tuple[dict, ...] = (), recommended_key: str | None = None,
+          product: str = "p") -> HeldItem:
+    return HeldItem(ref=ref, repo="o/r", number=int(ref.split("#")[1]), product=product,
                     title=f"issue {ref}", url=f"https://github.com/{ref.replace('#', '/issues/')}",
                     hold_kind=kind, hold_reason=reason, hold_by="runner", hold_set_at=None,
-                    age_hours=None, proposal_id=None, options=(), recommended_key=None,
+                    age_hours=None, proposal_id=proposal_id, options=options,
+                    recommended_key=recommended_key,
                     downstream=0, downstream_dispatchable=0, downstream_refs=(),
                     dispatchable_on_release=True, released_by="", work_item_id=wid,
                     escalation=escalation, attention_kind=attention)
@@ -60,11 +67,114 @@ def test_triage_is_accepted_only_when_confident_and_onto_a_capability(level, fea
         assert item.recommendation.label == "Accept into sessions"
 
 
-def test_a_gate_is_never_advanced_from_the_digest_only_linked():
+def test_a_gate_without_its_stage_evidence_is_only_linked():
     item = dg.from_initiative("p", {"slug": "ini-1", "title": "Ship it", "reason": "advance",
                                     "status": "active"})
     assert (item.kind, item.recommendation, item.url) == ("gate", None, "/initiatives/ini-1")
     assert "gate" in item.why
+
+
+@pytest.mark.parametrize("node", [{"reason": "advance", "status": "active"},
+                                  {"reason": None, "status": "awaiting_human"}])
+def test_a_gate_whose_stage_is_complete_recommends_advancing_it(node):
+    item = dg.from_initiative("p", {"slug": "ini-1", "title": "Ship it", **node},
+                              stage_complete=True)
+    assert item.recommendation is not None
+    assert item.recommendation.to_wire() == {"action": "advance_gate",
+                                             "label": "Advance the stage gate",
+                                             "params": {"slug": "ini-1"}}
+
+
+@pytest.mark.parametrize("status,reason,complete,expected", [
+    ("awaiting_human", None, True, True),
+    ("active", "advance", True, True),
+    # Needs-you only because its epic has held issues: the gate is not the ask.
+    ("active", None, True, False),
+    ("awaiting_human", None, False, False),
+    ("active", "advance", False, False),
+    ("blocked", None, True, False),
+])
+def test_gate_advance_is_recommended_only_for_a_waiting_gate_with_its_evidence(
+        status, reason, complete, expected):
+    assert dg.gate_advance_recommended(status=status, reason=reason,
+                                       stage_complete=complete) is expected
+
+
+def test_a_pending_decision_recommends_accepting_its_recommended_option():
+    held = dg.from_held(_held(kind="decision", attention="decision", proposal_id="dp1",
+                              options=OPTIONS, recommended_key="b"))
+    assert held.recommendation is not None
+    assert held.recommendation.to_wire() == {"action": "accept_decision",
+                                             "label": "Accept: Option B",
+                                             "params": {"proposalId": "dp1", "key": "b"}}
+    loose = dg.from_decision(proposal_id="dp2", product="p", ref="o/r#2", title="t", url=None,
+                             rationale="r", options=OPTIONS, recommended_key="a")
+    assert loose.recommendation is not None
+    assert (loose.recommendation.label, dict(loose.recommendation.params)) == (
+        "Accept: Option A", {"proposalId": "dp2", "key": "a"})
+
+
+@pytest.mark.parametrize("proposal_id,options,key", [
+    ("dp1", OPTIONS, "z"),            # the recommended key is not one of the options
+    ("dp1", OPTIONS, None),           # no recommendation at all
+    (None, OPTIONS, "b"),             # no proposal to accept
+    ("dp1", ({"label": "keyless"},), "b"),
+])
+def test_a_decision_without_a_valid_recommended_option_recommends_nothing(
+        proposal_id, options, key):
+    assert dg.decision_recommendation(proposal_id, options, key) is None
+    held = dg.from_held(_held(kind="decision", attention="decision", proposal_id=proposal_id,
+                              options=options, recommended_key=key))
+    assert held.recommendation is None
+    if proposal_id is not None:
+        assert dg.from_decision(proposal_id=proposal_id, product="p", ref=None, title=None,
+                                url=None, rationale=None, options=options,
+                                recommended_key=key).recommendation is None
+
+
+def test_a_releasable_system_hold_recommends_releasing_it():
+    item = dg.from_held(_held(), releasable=True)
+    assert item.recommendation is not None
+    assert item.recommendation.to_wire() == {"action": "release_hold",
+                                             "label": "Release the hold",
+                                             "params": {"workItemId": "wi1"}}
+    # A climb the approve tap would refuse (the queue skips the issue) is released.
+    climb = dg.from_held(_held(escalation=Escalation("opus", "fable"),
+                               attention="model_approval"), releasable=True)
+    assert climb.recommendation is not None and climb.recommendation.action == "release_hold"
+
+
+@pytest.mark.parametrize("attention,kind", [("checklist", "owner_action"),
+                                            ("decision", "decision")])
+def test_a_checklist_or_decision_is_never_released_from_the_digest(attention, kind):
+    item = dg.from_held(_held(kind=kind, attention=attention,
+                              reason="Left for you:\n- [ ] physical check"), releasable=True)
+    assert item.recommendation is None or item.recommendation.action != "release_hold"
+
+
+def test_a_digest_shaped_like_2026_10_15_mostly_carries_a_recommendation():
+    """#3112's acceptance: 2 decisions with a recommended key, gates whose stage is
+    complete, system hand-offs on trackers the policy now skips — beside what only a
+    person can do (a checklist, a person's park, a gate with no evidence)."""
+    items = [
+        dg.from_held(_held("o/r#1", kind="decision", attention="decision", wid="w1",
+                           proposal_id="dp1", options=OPTIONS, recommended_key="a")),
+        dg.from_decision(proposal_id="dp2", product="p", ref="o/r#2", title="t", url=None,
+                         rationale="r", options=OPTIONS, recommended_key="b"),
+        *(dg.from_held(_held(f"o/r#{n}", wid=f"w{n}"), releasable=True)
+          for n in range(10, 22)),
+        *(dg.from_held(_held(f"o/r#{n}", wid=f"w{n}", attention="checklist",
+                             reason="Left for you:\n- [ ] check the hardware"))
+          for n in range(30, 34)),
+        *(dg.from_held(_held(f"o/r#{n}", wid=f"w{n}")) for n in range(40, 43)),
+        *(dg.from_initiative("p", {"slug": f"g{n}", "title": "G", "status": "awaiting_human"},
+                             stage_complete=True) for n in range(5)),
+        *(dg.from_initiative("p", {"slug": f"h{n}", "title": "H", "status": "awaiting_human"})
+          for n in range(4)),
+    ]
+    out = dg.assemble(items, products=["p"], now=NOW)
+    assert out["total"] == 30
+    assert out["withRecommendation"] > out["total"] / 2
 
 
 def test_a_recommendation_carries_its_action_and_evidence_links():
@@ -114,3 +224,15 @@ def test_digest_due_once_a_day_and_the_summary_line():
     assert dg.summary_text("p", 5, 3) == ("p: today's digest",
                                           "5 items need you — 3 have a recommendation")
     assert dg.summary_text("p", 1, 1)[1] == "1 item needs you — 1 has a recommendation"
+
+
+def test_an_owner_recommendation_stands_in_even_for_an_item_with_its_own_action():
+    """The hygiene pass's ``release_hold`` recommendation and the held item's own
+    release are one action on one thing: the digest lists it once (#3112)."""
+    held = dg.from_held(_held("o/r#4", wid="wi4"), releasable=True)
+    assert held.recommendation is not None
+    rec = dg.from_recommendation({"id": "r1", "product": "p", "rule": "stale_holds",
+                                  "ref": "o/r#4", "action": "release_hold", "evidence": "e",
+                                  "detail": {}})
+    out = dg.assemble([held, rec], products=["p"], now=NOW)
+    assert [i["id"] for i in out["products"][0]["items"]] == ["rec:r1"]
