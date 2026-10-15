@@ -2202,6 +2202,55 @@ class SessionOrchestrator:
             self._pr_linkage_cursors = cursors
         return window is not None
 
+    async def _session_created_prs(self, session_id: str) -> set[tuple[str, int]] | None:
+        """``(repo, number)`` of every PR this session's own successful ``gh pr create``
+        produced (``artifacts.created_pr_refs``), or None when the replay failed.
+
+        Only creation counts: unlike ``authored_branches`` this never includes a PR the
+        session was dispatched to fix, shared, or checked out. Read on demand (the
+        draft-PR guard asks mid-turn, before any background linkage has run) with the
+        same turn cursor as ``_recover_session_pr_links``: one full replay, then the
+        unprocessed tail, re-reading the last turn because it may still be in progress.
+        """
+        from server.sessions.artifacts import created_pr_refs
+        seen = getattr(self, "_created_pr_cache", {})
+        cursor, refs = seen.get(session_id, (None, frozenset()))
+        window = await self.transcript_window(
+            session_id, limit=None if cursor is None else 1, background=True,
+            timeout_s=TRANSCRIPT_EXPORT_CEILING_S if cursor is None else None)
+        if window is None:
+            return None
+        needed = 1 if cursor is None else max(0, window.total_turns - cursor + 1)
+        if needed > 1:
+            window = await self.transcript_window(session_id, limit=needed, background=True)
+            if window is None:
+                return None
+        refs = frozenset(refs | created_pr_refs(window.events))
+        seen[session_id] = (window.total_turns, refs)
+        self._created_pr_cache = seen
+        return set(refs)
+
+    async def _session_opened_pr(self, session_id: str, repo: str, number: int,
+                                 head_ref: str) -> bool:
+        """Did this session open ``repo#number``? The draft-PR guard's ownership check
+        (``draft_hold_guard``): only the session that opened a draft may mark it ready.
+
+        Evidence, strongest first: a successful ``gh pr create`` for that PR in the
+        session's transcript; else the PR's head is the session's own worktree branch
+        in its own repo — covering a create the strict replay parser cannot attribute
+        (piped through ``tee``, captured in ``$(…)``). A PR Doctor session gets no
+        branch fallback: it is spawned ONTO the PR's existing branch, which is exactly
+        the PR it was dispatched to fix and does not own (#3072)."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return False
+        created = await self._session_created_prs(session_id)
+        if created and (repo.lower(), number) in created:
+            return True
+        branch = rec.branch or ""
+        return (rec.origin != "pr-doctor" and branch not in ("", "main", "master")
+                and head_ref == branch and repo.lower() == (rec.repo or "").lower())
+
     async def _signal_message_prose(self, session_id: str, stem: str) -> str | None:
         """The prose of the top-level message that carried this turn's ``stem`` call,
         from the live driver; None when no driver (or engine) can answer. Bound into
@@ -2256,11 +2305,21 @@ class SessionOrchestrator:
         or a coding session with the flag on), so a factory that never sees one (flag off,
         Codex) keeps its current signature, and fakes that do must accept
         ``options_overlay=None``.
+
+        ``owns_pr`` (this session's ``_session_opened_pr``, for the draft-PR guard) is
+        passed only to a factory that declares it — the real one — so fakes keep theirs.
         """
+        import inspect
         base = self._sdk_factory
+        try:
+            takes_owns_pr = "owns_pr" in inspect.signature(base).parameters
+        except (TypeError, ValueError):
+            takes_owns_pr = False
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
             extra = {**self._display_env(session_id), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
+            if takes_owns_pr:
+                kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             overlay = getattr(self, "_overlays", {}).get(session_id)
             # `dict` and not merely "not None": every kind's overlay lands in the same
             # registry, and a Codex session's is a different type entirely

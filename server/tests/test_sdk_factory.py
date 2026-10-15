@@ -74,6 +74,29 @@ async def test_factory_without_precompact_callback_still_guards_human_hold():
     assert "PreCompact" not in hooks
     (matcher,) = hooks["PreToolUse"]
     assert matcher.matcher == "Bash" and human_hold_pre_tool_use in matcher.hooks
+    # …and so is the draft-PR guard; with no ownership check, no draft is the session's.
+    draft_guard = matcher.hooks[1]
+    assert draft_guard.__name__ == "draft_ready_pre_tool_use"
+    out = await draft_guard({"tool_input": {"command": "gh pr ready 1 --undo"}})
+    assert out == {}
+
+
+@pytest.mark.asyncio
+async def test_factory_hands_the_ownership_check_to_the_draft_guard(monkeypatch):
+    """The session's ``owns_pr`` is the draft guard's ownership check."""
+    from server.sessions import draft_hold_guard
+    asked = []
+
+    async def owns_pr(repo, number, head_ref):
+        asked.append((repo, number, head_ref))
+        return True
+    monkeypatch.setattr(draft_hold_guard, "resolve_pr", lambda call, cwd:
+                        draft_hold_guard.TargetPr("o/r", 5, "feat/x", True))
+    client = await real_sdk_factory("/tmp", "/tmp/cfg", None, "default", None,
+                                    owns_pr=owns_pr)
+    (matcher,) = client.options.hooks["PreToolUse"]
+    assert await matcher.hooks[1]({"tool_input": {"command": "gh pr ready 5"}}) == {}
+    assert asked == [("o/r", 5, "feat/x")]
 
 
 @pytest.mark.asyncio
