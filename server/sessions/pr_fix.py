@@ -147,22 +147,19 @@ def build_consolidation_prompt(
     several open PRs into ONE new PR (saving CI). Pure (no I/O).
 
     Mirrors build_pr_fix_prompt/build_conflict_fix_prompt: explicit, branch-aware,
-    and self-contained because no human will attach to steer the session."""
+    and self-contained because no human will attach to steer the session.
+
+    Never given a ``hold:human`` PR: closing a held original is a human's call,
+    so ``_pr_doctor_consolidate`` refuses the set before a prompt is built, and
+    no session is ever told to apply a hold label (a repo such as cairnea/KinDash
+    makes it a hard merge gate only its owner can lift)."""
+    held = [p.number for p in prs if p.human_hold]
+    if held:
+        raise ValueError(f"cannot consolidate {HUMAN_HOLD_LABEL} PRs: {held}")
     nums = ", ".join(f"#{p.number}" for p in prs)
     listing = "\n".join(f"  - #{p.number} \"{p.title}\" ({p.url})" for p in prs)
     closes = " ".join(f"Closes #{p.number}" for p in prs)
-    held = [p for p in prs if p.human_hold]
-    if held:
-        # A held original's merge stays a human's (#3072): carry the label over
-        # instead of arming the PR that supersedes it.
-        held_nums = ", ".join(f"#{p.number}" for p in held)
-        finish = (
-            f"open the PR non-draft, add the `{HUMAN_HOLD_LABEL}` label "
-            f"(`gh pr edit <n> --add-label {HUMAN_HOLD_LABEL}`) because {held_nums} "
-            f"carried it, and do NOT arm auto-merge — a human owns that merge."
-        )
-    else:
-        finish = "open the PR non-draft and arm auto-merge (`gh pr merge --squash --auto`)."
+    finish = "open the PR non-draft and arm auto-merge (`gh pr merge --squash --auto`)."
     branch = f"consolidate/{'-'.join(str(p.number) for p in prs)}"
     return (
         f"Consolidate {len(prs)} open pull requests in {repo} into ONE new PR to "

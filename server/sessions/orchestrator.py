@@ -16560,7 +16560,7 @@ class SessionOrchestrator:
                     number=p.number, title=p.title, url=p.url, checks=p.checks,
                     mergeable=p.mergeable, updated_at=p.updated_at,
                     scope=derive_scope(p.title))
-                for p in prs if p.state == "open" and not p.is_draft
+                for p in prs if p.state == "open" and not p.is_draft and not p.human_hold
             ]
             if not cands:
                 continue
@@ -16598,6 +16598,9 @@ class SessionOrchestrator:
                and not by_number[n].is_draft]
         if len(prs) != len(want):
             return "not_actionable", None
+        if any(p.human_hold for p in prs):
+            # Superseding a held PR closes it — a human owns that merge (#3072).
+            return "human_hold", None
         if await self._pr_doctor_untrusted_prs(
                 repo, want, target=consolidation_target(repo, want)):
             return "untrusted_author", None

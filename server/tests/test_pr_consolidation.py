@@ -36,10 +36,10 @@ def consolidation_github(monkeypatch, github_identity):
 
 
 def _pr(n, *, title="fix(deploy): x", state="open", is_draft=False,
-        checks="passing", mergeable="MERGEABLE"):
+        checks="passing", mergeable="MERGEABLE", labels=()):
     return PullRequestInfo(number=n, url=f"https://x/pull/{n}", state=state,
                            checks=checks, title=title, is_draft=is_draft,
-                           mergeable=mergeable, head_ref=f"feat/{n}")
+                           mergeable=mergeable, head_ref=f"feat/{n}", labels=labels)
 
 
 class _Population:
@@ -276,3 +276,19 @@ async def test_consolidate_background_failure_releases_inflight(tmp_path, monkey
     retry, _ = await orch._pr_doctor_consolidate("o/r", [1, 2])
     assert retry == "spawning"                       # definitely never started
     await _drain_consolidations(orch)
+
+
+@pytest.mark.asyncio
+async def test_held_pr_is_never_a_candidate_and_never_consolidated(tmp_path):
+    """Superseding a ``hold:human`` PR closes it — a human owns that merge — and
+    no session is told to re-apply the label on the replacement (KinDash#19259)."""
+    from server.github.pr_status import HUMAN_HOLD_LABEL
+    await _init_db(tmp_path)
+    orch = _build_orch([_pr(1), _pr(2), _pr(3, labels=(HUMAN_HOLD_LABEL,))])
+    out = await orch.consolidation_candidates()
+    assert {c["number"] for c in out["repos"]["o/r"]["candidates"]} == {1, 2}
+    spawns = []
+    _install_spawn_recorder(orch, spawns)
+    status, _ = await orch._pr_doctor_consolidate("o/r", [1, 3])
+    assert status == "human_hold"
+    assert spawns == [] and not orch._consolidation_tasks

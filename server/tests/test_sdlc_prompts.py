@@ -43,6 +43,17 @@ def test_instructs_non_draft_pr(prompt):
 
 
 @pytest.mark.parametrize("prompt", _all_prompts())
+def test_forbids_hold_labels_and_names_the_viberpit_gate(prompt):
+    """KinDash stage PRs #16600/#16602 cited "the SDLC stage contract" for adding
+    `hold:human`, which that repo made a hard merge gate (#19259). The contract's
+    human gate is the stage advance; a session never adds a hold label."""
+    assert "Do NOT add `hold:human` or any other hold label" in prompt
+    assert "stage advance" in prompt
+    assert "hand_back" in prompt
+    assert "--add-label" not in prompt
+
+
+@pytest.mark.parametrize("prompt", _all_prompts())
 def test_instructs_never_edit_upstream(prompt):
     lower = prompt.lower()
     assert "upstream" in lower and ("never" in lower or "do not" in lower or "don't" in lower)
