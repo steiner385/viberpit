@@ -13,6 +13,7 @@ export type DigestItemKind = HeldAttentionKind | 'recommendation' | 'triage' | '
 /** The ONE action the digest recommends for an item; `label` is the button text. */
 export interface DigestRecommendation {
   action: 'approve_escalation' | 'apply_recommendation' | 'accept_triage'
+    | 'accept_decision' | 'advance_gate' | 'release_hold'
   label: string
   params: Record<string, unknown>
 }

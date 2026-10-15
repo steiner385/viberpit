@@ -187,13 +187,18 @@ merged PRs show (removed or replaced code), and the model is told to answer `kee
 `OwnerRecommendation`s, one recommended action each (`server/pm/digest.py`, composed by
 `server/api/pm_digest.py:load_digest`): approve model (a `model_approval` hold), apply a
 recommendation (close, unpark, release hold, …), accept triage (only a `high`-confidence
-proposal onto a capability). A checklist, a decision, a hand-off and an initiative gate carry
-none — a gate is never advanced from here; its item links to the gate. An owner recommendation
-targeting an item the digest already lists stands in for it. `POST /api/pm/digest/apply` takes
-`{ids, confirm: true}` ("approve all" passes every id with a recommendation), re-derives each
-action from current state and runs it through the existing path (`approve_escalation`,
-`pm_hygiene.apply_pending`, `apply_accept`), each with its own audit plus one `pm.digest.apply`
-row per call. Once a day per product, when the digest is non-empty and `needs_you_automation`
+proposal onto a capability). Since #3112 also: accept a decision's recommended option (when
+that key is one of its options), advance an initiative gate whose stage carries its completion
+evidence (`sdlc.engine.stage_complete`: the stage artifact merged, the build epic fully closed,
+or an adopted epic already under way), and release a system hand-off the product's policy now
+skips (`policy_skip.stale_system_holds`). A checklist, a person's hand-off, a gate with no
+evidence and an owner-only ask carry none; a gate still never moves without a person's
+confirmed tap. An owner recommendation targeting an item the digest already lists stands in
+for it. `POST /api/pm/digest/apply` takes `{ids, confirm: true}` ("approve all" passes every
+id with a recommendation), re-derives each action from current state and runs it through the
+existing path (`approve_escalation`, `pm_hygiene.apply_pending`, `apply_accept`,
+`decisions.accept`, `sdlc.advance_loaded`, `holds.release_policy_skipped_holds`), each with its
+own audit plus one `pm.digest.apply` row per call. Once a day per product, when the digest is non-empty and `needs_you_automation`
 is not off and outside quiet hours, the hygiene tick sends a single `decision_needed` push
 ("N items need you — M have a recommendation"), deduped on its `pm.digest.sent` audit row. The
 assistant gets `get_owner_digest` (read) and `apply_owner_digest` (operator-tier, destructive

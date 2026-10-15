@@ -342,6 +342,22 @@ async def announce_accept_best_effort(ref: str, *, label: str, detail: str | Non
         log.warning("pm.decision.accept_comment_failed ref=%s", ref, exc_info=True)
 
 
+async def commit_and_announce_accept(db, proposal: DecisionProposal, *, ref: str | None,
+                                     actor: str) -> None:
+    """Commit an :func:`accept` the caller just made, THEN say on issue *ref* which
+    option was picked (``announce_accept_best_effort``) — THE tail every accept tap
+    shares (the inbox route, the escalation automation's tap, the owner digest). The
+    chosen option is read before the commit (an async session expires instances on
+    commit) and announced only after it, so a rollback can never publish a decision
+    it erased."""
+    chosen = chosen_option(proposal) or {}
+    label = str(chosen.get("label") or proposal.chosen_key or "")
+    detail = chosen.get("detail")
+    await db.commit()
+    if ref:
+        await announce_accept_best_effort(ref, label=label, detail=detail, actor=actor)
+
+
 async def pending_list(db) -> list[tuple[DecisionProposal, WorkItem | None]]:
     """Every pending proposal, newest first, paired with its work item — what the
     inbox lists beside the classification proposals.

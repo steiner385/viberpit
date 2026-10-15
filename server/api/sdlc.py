@@ -549,6 +549,31 @@ async def framework_observations(
     return await _initiative_detail(slug, db, observe=True, diagnostic=body)
 
 
+def initiative_view(ini: Initiative, progress: dict | None) -> InitiativeView:
+    """The engine's view of *ini* with its epic *progress* (``_progress_rolled_up``'s
+    entry) — the detail route's ``nextAction`` and the owner digest's gate evidence
+    (#3112) read the same projection."""
+    return InitiativeView(
+        slug=ini.slug or "",
+        stage=ini.stage or "",
+        status=ini.status or "",
+        repo=ini.repo or "",
+        issue=ini.origin_ref,
+        # Same fold as the synthesizer's projection: an epic pointer means the
+        # plan has already been materialized (spec 003 §7b). NOT the wire `epic`
+        # key, which is the epic *progress* object.
+        epic=f"{ini.epic_repo}#{ini.epic_number}" if ini.epic_number else None,
+        epic_total=int((progress or {}).get("total") or 0),
+        epic_done=int((progress or {}).get("done") or 0),
+    )
+
+
+def artifact_views_of(artifacts) -> list[ArtifactView]:
+    """The engine's views of *artifacts* (``InitiativeArtifact`` rows)."""
+    return [ArtifactView(kind=a.kind or "", commit_sha=a.commit_sha, pr_number=a.pr_number,
+                         pr_url=a.pr_url) for a in artifacts]
+
+
 async def _initiative_detail(
     slug: str, db, *, observe: bool = False,
     diagnostic: FrameworkObservationBody | None = None,
@@ -580,23 +605,8 @@ async def _initiative_detail(
     mode, _config = await read_synth_mode()
     progress = (await _progress_rolled_up(db, [ini], include_children=True))[ini.id]
 
-    state = InitiativeView(
-        slug=ini.slug or "",
-        stage=ini.stage,
-        status=ini.status,
-        repo=ini.repo or "",
-        issue=ini.origin_ref,
-        # Same fold as the synthesizer's projection: an epic pointer means the
-        # plan has already been materialized (spec 003 §7b). NOT the wire `epic`
-        # key below, which is the epic *progress* object.
-        epic=f"{ini.epic_repo}#{ini.epic_number}" if ini.epic_number else None,
-        epic_total=int((progress or {}).get("total") or 0),
-        epic_done=int((progress or {}).get("done") or 0),
-    )
-    artifact_views = [
-        ArtifactView(kind=a.kind or "", commit_sha=a.commit_sha, pr_number=a.pr_number, pr_url=a.pr_url)
-        for a in artifacts
-    ]
+    state = initiative_view(ini, progress)
+    artifact_views = artifact_views_of(artifacts)
     # Display-only "on": nextAction is the human's next step even while the
     # synthesizer row is off; the guidance below carries the real mode.
     action = next_action(state, artifact_views, "on", tolerance)
@@ -763,6 +773,19 @@ async def advance_initiative(
     blocked — a blocked row is cleared on purpose (``unblock``), never by
     moving the gate over it."""
     ini = await _load_initiative(db, slug)
+    await advance_loaded(db, ini, identity=identity)
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
+
+
+async def advance_loaded(db, ini: Initiative, *, identity: str,
+                         via: str | None = None) -> None:
+    """THE human advance of *ini*'s gate by one stage — the advance route's sequence,
+    which the owner digest's ``advance_gate`` also runs (#3112). Raises the route's
+    409 ``HTTPException`` (``has_children`` / ``already_done`` / ``blocked``);
+    flushes and audits, leaving the commit to the caller."""
+    slug = ini.slug
     if (await db.execute(select(Initiative.id).where(
             Initiative.parent_initiative_id == ini.id))).first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
@@ -788,10 +811,8 @@ async def advance_initiative(
         type="sdlc.initiative.advance",
         identity=identity,
         detail={"slug": slug, "stage": ini.stage},
+        via=via,
     )
-    d = _initiative_to_dict(ini)
-    await _decorate(db, [ini], [d])
-    return d
 
 
 @router.post("/initiatives/{slug}/close")

@@ -26,6 +26,7 @@ from server.sdlc.engine import (
     advance_stage,
     next_action,
     program_action,
+    stage_complete,
 )
 
 
@@ -329,3 +330,40 @@ def test_a_program_whose_phases_are_all_done_rolls_up():
 ])
 def test_a_program_still_running_or_held_is_left_alone(kw, mode, tolerance):
     assert program_action(_program(**kw), mode, tolerance) is None
+
+
+# --------------------------------------------------------------------------- #
+# stage_complete — the evidence ``Advance`` names (#3112: the digest's advance) #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("view,artifacts,expected", [
+    # An artifact stage is complete once its own artifact merged…
+    (dict(stage="design"), [_art("spec", sha="abc")], True),
+    (dict(stage="design"), [_art("spec", pr=4)], False),          # PR still open
+    (dict(stage="design"), [_art("intent", sha="abc")], False),   # another stage's
+    (dict(stage="intake"), [], False),
+    # …at plan, only once the plan is decomposed into an epic (Materialize first).
+    (dict(stage="plan"), [_art("plan", sha="abc")], False),
+    (dict(stage="plan", epic="o/r#9"), [_art("plan", sha="abc")], True),
+    # build: the epic fully closed; deploy/maintain/done carry no evidence here.
+    # …or with no artifact at all, once an adopted epic's sub-issues are closing (#3108).
+    (dict(stage="design", epic="o/r#9", epic_total=3, epic_done=1), [], True),
+    (dict(stage="design", epic="o/r#9", epic_total=3, epic_done=0), [], False),
+    (dict(stage="build", epic_total=3, epic_done=3), [], True),
+    (dict(stage="build", epic_total=3, epic_done=2), [], False),
+    (dict(stage="build", epic_total=0, epic_done=0), [], False),
+    (dict(stage="deploy"), [], False),
+    (dict(stage="done"), [], False),
+])
+def test_stage_complete_is_the_evidence_an_advance_names(view, artifacts, expected):
+    assert stage_complete(_init(**view), artifacts) is expected
+
+
+def test_next_action_advances_exactly_when_the_stage_is_complete():
+    """``_decide``'s Advance branches and ``stage_complete`` are one predicate."""
+    for stage in STAGE_SEQUENCE:
+        for arts in ([], [_art(STAGE_ARTIFACT.get(stage, "x"), sha="s")]):
+            for epic in (None, "o/r#9"):
+                view = _init(stage=stage, epic=epic, epic_total=2, epic_done=2)
+                advanced = isinstance(next_action(view, arts, "on", "bold"), Advance)
+                assert advanced is stage_complete(view, arts), (stage, arts, epic)
