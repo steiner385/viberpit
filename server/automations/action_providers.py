@@ -158,6 +158,7 @@ _CONSOLIDATE_STATUS_MAP = {
     "too_few": ("warn", "Select at least 2 PRs"),
     "not_actionable": ("warn", "One or more PRs are no longer open"),
     "untrusted_author": ("warn", "Not consolidating: a PR's author is not a trusted author"),
+    "human_hold": ("warn", "Not consolidating: a PR carries hold:human — its merge is a human's"),
 }
 
 

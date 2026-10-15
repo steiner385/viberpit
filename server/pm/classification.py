@@ -152,8 +152,9 @@ def build_map_synthesis_prompt(
     Auto-merge (and draft state) differs by scope, deliberately:
 
     * ``scope="diff"`` ARMS auto-merge. Full automation is the default; human
-      takeover is the exception, signalled by the agent adding a ``hold:human``
-      label when its own confidence is low. The former "do not arm — the merge
+      takeover is the exception: when its own confidence is low the agent
+      returns the PR to draft and calls ``hand_back`` — never a ``hold:human``
+      label, which cairnea/KinDash made a merge gate only its owner lifts. The former "do not arm — the merge
       is the human curation gate" instruction described a gate that did not
       exist in the target repo (``main`` requiring zero reviews, plus a sweep
       that arms every open non-draft PR), so it only produced false claims in
@@ -244,8 +245,11 @@ def build_map_synthesis_prompt(
             + "5. Human takeover is the exception, and you decide when to invoke "
             "it: if your own confidence in this mapping is LOW — the capability "
             "may not be real, or the cluster may belong to a doc that already "
-            "exists — add the `hold:human` label so a maintainer can take it "
-            "over before it lands.\n"
+            "exists — turn the PR back into a draft (`gh pr ready <n> --undo`), "
+            "disable auto-merge (`gh pr merge <n> --disable-auto`), say why in the "
+            "PR body, and call `hand_back` with that reason so the owner decides "
+            "before it lands. Never add a hold label (`hold:human` or similar): "
+            "some repos make it a merge gate only the owner can lift.\n"
             "6. End every commit message with:\n"
             f"   `{commit_trailer(engine)}`\n"
         )

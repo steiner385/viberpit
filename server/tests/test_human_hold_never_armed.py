@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from server.automations import archive_audit as aa
 from server.automations.completion_bar import PrFact, PrFacts, met_bar
 from server.github.pr_status import (
@@ -147,12 +149,12 @@ def test_armed_pr_prompts_say_it_stays_armed():
         assert "do not run `gh pr merge`" in text
 
 
-def test_consolidation_of_a_held_pr_carries_the_hold_instead_of_arming():
+def test_consolidation_prompt_refuses_a_held_pr():
+    """Superseding a held PR would close it, and the prompt must never tell a
+    session to apply a hold label — the orchestrator refuses the set first."""
     held = _info(number=1, labels=(HUMAN_HOLD_LABEL,))
-    text = build_consolidation_prompt("o/r", "master", [held, _info(number=2)])
-    assert "--squash --auto" not in text
-    assert f"--add-label {HUMAN_HOLD_LABEL}" in text
-    assert "do NOT arm auto-merge" in text
+    with pytest.raises(ValueError):
+        build_consolidation_prompt("o/r", "master", [held, _info(number=2)])
 
 
 def test_consolidation_without_holds_still_arms():

@@ -250,8 +250,9 @@ def test_diff_prompt_arms_auto_merge_with_hold_human_takeover():
     reviews after the session deliberately did not arm it). The instruction
     bought nothing and made agents write a false claim into PR bodies.
 
-    Human takeover is now the exception, expressed as a `hold:human` label the
-    agent applies when its own confidence is low.
+    Human takeover is now the exception: on low confidence the agent returns the
+    PR to draft and calls `hand_back`. It never adds a `hold:human` label, which
+    cairnea/KinDash made a hard merge gate (#19259) only the owner can lift.
     """
     p = build_map_synthesis_prompt(
         slug="acme", repo="acme/app", default_branch="main",
@@ -261,9 +262,12 @@ def test_diff_prompt_arms_auto_merge_with_hold_human_takeover():
     assert "arm auto-merge" in pl
     assert "do not arm auto-merge" not in pl
     assert "human curation gate" not in pl
-    # The takeover lever, and when to reach for it.
-    assert "hold:human" in p
+    # The takeover lever is ViberPit's own hand-back, never a hold label.
+    assert "hand_back" in p
+    assert "--undo" in p
     assert "confidence" in pl
+    assert "add the `hold:human` label" not in p
+    assert "--add-label" not in p
 
 
 def test_diff_prompt_keeps_its_other_propose_guarantees():
