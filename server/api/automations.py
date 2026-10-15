@@ -35,7 +35,7 @@ from server.pm.holds import (
     actor_for_request,
     release_via_api,
 )
-from server.pm.dispatch_trust import untrusted_refs
+from server.pm.dispatch_trust import ignored_refs, untrusted_refs
 from server.pm.refs import split_ref
 from server.sessions.global_cap import read_global_cap
 
@@ -555,6 +555,14 @@ async def backlog_runner_dispatch(body: DispatchBody, request: Request,
             "message": f"{', '.join(refused)}: the issue is not mirrored or its author is "
                        "not trusted, so the runner will not dispatch it (add the author to "
                        "the product's trusted_authors to allow it)"})
+    # #3111: the operator's "never dispatch this" label holds on this path too — it
+    # skips the ranked pool, and the hold release below would commit with no spawn.
+    ignored = await ignored_refs(db, body.refs)
+    if ignored:
+        raise HTTPException(status_code=422, detail={
+            "error": "ignored",
+            "message": f"{', '.join(ignored)}: labelled viberpit-ignore, so the runner "
+                       "will not dispatch it (remove the label to allow it)"})
     actor = actor_for_request(request)
     for ref in body.refs:
         parts = split_ref(ref)

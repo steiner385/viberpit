@@ -37,7 +37,8 @@ from .outcomes import bounced_out
 # operator's own "never dispatch this" label, honoured for EVERY product (#2683):
 # a product used to have to list it in its ``skip_labels``, and a typo there
 # silently let every tagged issue through (cairnea/KinDash#17427).
-SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate", "viberpit-ignore"})
+IGNORE_LABEL = "viberpit-ignore"
+SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate", IGNORE_LABEL})
 SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 
 # A person's own "not now" on the issue itself (#2683, steiner385/viberpit#1432:
