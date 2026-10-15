@@ -78,6 +78,12 @@ _KEEP_DRAFT_RE = re.compile(
     r"\bdo\s+not\s+mark\s+(?:it|the\s+(?:pr|pull\s+request))\s+ready\b", re.IGNORECASE)
 
 
+# The draft-PR guard (``server/sessions/draft_hold_guard.py``) refuses `gh pr ready`
+# on a draft the session did not open; a nudge to ready one must say the same.
+_OWN_DRAFT_ONLY = (" — only if this session opened it: a draft opened by someone else "
+                   "is a hold, so leave it and hand back instead")
+
+
 def has_keep_draft_instruction(text: str | None) -> bool:
     """True when *text* (the session's initial dispatch prompt) forbids marking its
     PR ready for review — "do NOT mark the PR ready for review"."""
@@ -339,7 +345,8 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             return BarVerdict(
                 False, f"PR #{unarmed.number} is still a draft",
                 f"mark it ready for review: `gh pr ready {unarmed.number}` "
-                "(do not arm auto-merge — the dispatch forbids it)", "high")
+                "(do not arm auto-merge — the dispatch forbids it)" + _OWN_DRAFT_ONLY,
+                "high")
         if unarmed.ci_is_red:
             return BarVerdict(
                 False, f"PR #{unarmed.number} is open but a required check is failing",
@@ -356,7 +363,7 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
         return BarVerdict(
             False, f"PR #{unarmed.number} is open but not armed",
             f"ready the PR and arm auto-merge: `gh pr ready {unarmed.number}` then "
-            f"`gh pr merge {unarmed.number} --squash --auto`", "high")
+            f"`gh pr merge {unarmed.number} --squash --auto`" + _OWN_DRAFT_ONLY, "high")
     if instructions and has_no_pr_dispatch(instructions):
         return BarVerdict(
             True, "dispatch instructions explicitly forbid opening a PR "

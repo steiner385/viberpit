@@ -69,7 +69,9 @@ def _merge_state_step(pr: PullRequestInfo) -> str:
         "Auto-merge was NOT armed when you were dispatched — do not arm auto-merge "
         "(`gh pr merge --auto`) and do not mark the PR ready; whoever owns the PR "
         "decides when it merges. This overrides any completion workflow that says to "
-        "arm auto-merge."
+        "arm auto-merge. If it is a draft, it stays one: a session may mark ready only "
+        "a draft it opened itself, and the tool layer refuses `gh pr ready` on any "
+        "other — ask the owner to click Ready instead."
     )
 
 
