@@ -86,6 +86,20 @@ describe('FleetSection', () => {
   it('shows capacity as used-of-limit when a limit is set', async () => {
     wrap(<FleetSection />)
     await waitFor(() => expect(screen.getByText('0 / 4')).toBeInTheDocument())
+    expect(screen.queryByText('full')).not.toBeInTheDocument()
+    expect(screen.queryByText('over cap')).not.toBeInTheDocument()
+  })
+
+  it('badges a host at its cap as full and one past it as over cap (#1517)', async () => {
+    listed = [
+      { ...hosts[0], maxSessions: 6, activeSessions: 6 },
+      { ...hosts[1], maxSessions: 6, activeSessions: 11 },
+    ]
+    wrap(<FleetSection />)
+    await waitFor(() => expect(screen.getByText('6 / 6')).toBeInTheDocument())
+    expect(screen.getByText('full')).toHaveClass('text-warning')
+    expect(screen.getByText('11 / 6')).toBeInTheDocument()
+    expect(screen.getByText('over cap')).toHaveClass('text-danger')
   })
 
   it('distinguishes never-probed from unhealthy', async () => {

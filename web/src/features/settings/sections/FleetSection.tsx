@@ -52,6 +52,29 @@ function capacityLabel(h: FleetHost): string {
 }
 
 /**
+ * Sessions cell, badged when the host can take no new work (#1517). At cap is
+ * routine — launches go elsewhere or queue — so it reads as a warning; over cap
+ * means the published count exceeds what the daemon's own gate admits (the
+ * 2026-09-09 phantom 11/6), so it reads as an error. Same verdict as the
+ * server's capacity alarm (`server/sessions/fleet_capacity_alarm.py`).
+ */
+function CapacityCell({ host }: { host: FleetHost }) {
+  const active = host.activeSessions ?? 0
+  const cap = host.maxSessions
+  return (
+    <>
+      {capacityLabel(host)}
+      {cap != null && cap > 0 && active > cap && (
+        <div className="text-xs text-danger">over cap</div>
+      )}
+      {cap != null && cap > 0 && active === cap && (
+        <div className="text-xs text-warning">full</div>
+      )}
+    </>
+  )
+}
+
+/**
  * The Codex cell: what the RUNNER says, and what this EDGE will do about it.
  *
  * Tri-state on the same principle as `healthLabel`: absent (a runner that
@@ -254,7 +277,7 @@ export function FleetSection() {
                   </Cell>
                   <Cell label="Status">{healthLabel(h)}</Cell>
                   <Cell label="Codex"><CodexCell host={h} /></Cell>
-                  <Cell label="Sessions">{capacityLabel(h)}</Cell>
+                  <Cell label="Sessions"><CapacityCell host={h} /></Cell>
                   <Cell label="Load">{h.loadAvg?.toFixed(2) ?? '—'}</Cell>
                   <Cell label="Free mem">
                     {h.memAvailableMb ? `${Math.round(h.memAvailableMb / 1024)} GB` : '—'}

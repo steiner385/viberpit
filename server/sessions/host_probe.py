@@ -18,6 +18,7 @@ from server.db import db_session
 from server.db.models import Host
 from server.deploy.state import DeployState, read_deploy_state
 from server.obs.logdedupe import LogThrottle, log_event_throttled, log_throttled
+from server.sessions.fleet_capacity_alarm import CapacityAlarm
 from server.sessions.version_skew import IsAncestor, detect_skew, edge_is_ancestor
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,8 @@ UNREACHABLE_ESCALATE_AFTER = 3
 # exception's class, so a timeout run that ends in refusals escalates at 3 total.
 UNREACHABLE_TIMEOUT_ESCALATE_AFTER = 10
 _CONSECUTIVE_UNREACHABLE: dict[str, int] = {}
+# Edge-triggered over-cap / no-dispatchable-host alarms, fed once per probe_all tick.
+CAPACITY_ALARM = CapacityAlarm()
 
 Fetch = Callable[[str], Awaitable[dict]]
 
@@ -234,7 +237,26 @@ async def probe_all(*, fetch: Fetch | None = None,
             sa_select(Host.name, Host.endpoint).where(Host.enabled.is_(True)))).all()
     for name, endpoint in rows:
         await probe_host(name, endpoint, fetch=use, state=state, is_ancestor=is_ancestor)
+    await _observe_capacity()
     return len(rows)
+
+
+async def _observe_capacity() -> None:
+    """Feed this tick's registry to the capacity alarm (#1517). Never raises: an
+    alarm read that fails must not cost the tick its probes."""
+    from server.sessions.fleet import HostCandidate
+
+    try:
+        async with db_session() as db:
+            hosts = (await db.execute(sa_select(Host))).scalars().all()
+        CAPACITY_ALARM.observe(
+            HostCandidate(name=h.name, enabled=h.enabled, healthy=h.healthy,
+                          weight=h.weight, active_sessions=h.active_sessions or 0,
+                          max_sessions=h.max_sessions, load_avg=h.load_avg,
+                          mem_available_mb=h.mem_available_mb)
+            for h in hosts)
+    except Exception:
+        log.debug("fleet.capacity: alarm check failed", exc_info=True)
 
 
 async def probe_loop(interval_s: float = 30.0, *, fetch: Fetch | None = None,
