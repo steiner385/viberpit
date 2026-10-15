@@ -9628,18 +9628,21 @@ class SessionOrchestrator:
             # its authors since the claim: do it now, fail-closed. The whole batch is
             # refused (not trimmed): the claim row owns every one of its refs, so a
             # smaller batch could not re-take it.
-            from server.pm.dispatch_trust import untrusted_refs
+            from server.pm.dispatch_trust import ignored_refs, untrusted_refs
             async with db_session() as db:
                 untrusted = await untrusted_refs(db, pending_issues)
-            if untrusted:
+                # #3111: a person may tag a member viberpit-ignore after the claim.
+                ignored = [] if untrusted else await ignored_refs(db, pending_issues)
+            if untrusted or ignored:
                 # Same event shape as the runner's own admission refusals, so the
                 # tap's "see the feed" toast has a feed entry saying why.
+                why = ("not mirrored or author not trusted" if untrusted
+                       else "labelled viberpit-ignore")
                 await self._backlog_ctx.emit(
-                    "info", f"skipped {primary}: {', '.join(untrusted)} not mirrored "
-                            "or author not trusted",
+                    "info", f"skipped {primary}: {', '.join(untrusted or ignored)} {why}",
                     kind="implementation_refused", target=primary,
-                    detail={"reason_codes": ["untrusted_author"], "refs": untrusted,
-                            "product": st.get("product")})
+                    detail={"reason_codes": ["untrusted_author" if untrusted else "ignored"],
+                            "refs": untrusted or ignored, "product": st.get("product")})
                 return "refused"
         candidate = by_ref.get(primary, {})
         titles = dict(st.get("titles") or {})
@@ -9711,13 +9714,19 @@ class SessionOrchestrator:
         # Fail-closed author trust, enforced here as well as on the HTTP endpoint: this
         # method is reachable without it (the session daemon proxies it), and it does
         # not re-rank, so nothing else has judged these refs' authors.
-        from server.pm.dispatch_trust import untrusted_refs
+        from server.pm.dispatch_trust import ignored_refs, untrusted_refs
         async with db_session() as db:
             untrusted = await untrusted_refs(db, refs)
+            ignored = [] if untrusted else await ignored_refs(db, refs)
         if untrusted:
             return {"status": "refused", "session_id": None, "session_name": None,
                     "reason_codes": ["untrusted_author"],
                     "reason": f"{', '.join(untrusted)}: not mirrored or author not trusted"}
+        if ignored:
+            # #3111: the operator's "never dispatch this" label, on every path.
+            return {"status": "refused", "session_id": None, "session_name": None,
+                    "reason_codes": ["ignored"],
+                    "reason": f"{', '.join(ignored)}: labelled viberpit-ignore"}
         primary = refs[0]
         _mode, config = await self._backlog_read_config()
         candidates = await self._backlog_query_queue(config)

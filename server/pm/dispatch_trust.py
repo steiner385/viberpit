@@ -7,6 +7,10 @@ public repo lets anyone open an issue, so each must judge the MIRRORED author ag
 the owning product's ``trusted_authors`` itself. Fail-closed: an unparsable ref, a ref
 with no mirrored issue, or an issue with no author is untrusted.
 
+The operator's ``viberpit-ignore`` label is the other verdict those paths must
+re-apply themselves (#3111): the ranked pool honours it for every product, but a
+ref handed straight to a dispatch path never meets that skip (``ignored_refs``).
+
 The same rule gates every other automation that puts a mirrored issue's or PR's text
 in front of an agent (PM Triage classification, epic adoption's spec seed, PR Doctor):
 ``trusted_authors_by_repo`` + ``author_trusted`` judge already-loaded rows in bulk.
@@ -20,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.automations.product_policy import load_policies, policy_for_repo, trusted_authors
 from server.db.models import WorkItem
-from server.pm.queue import is_trusted_author
+from server.pm.queue import IGNORE_LABEL, is_trusted_author
 from server.pm.refs import split_ref
 
 
@@ -43,6 +47,24 @@ async def untrusted_refs(db: AsyncSession, refs: Iterable[str]) -> list[str]:
         if repo not in policies:
             policies[repo] = trusted_authors(await policy_for_repo(db, repo))
         if not is_trusted_author(wi.author or "", policies[repo]):
+            out.append(ref)
+    return out
+
+
+async def ignored_refs(db: AsyncSession, refs: Iterable[str]) -> list[str]:
+    """The refs among *refs* whose mirrored issue carries ``IGNORE_LABEL`` (any
+    case), in the order given. An unmirrored ref is not ignored here: it has no
+    labels to read, and ``untrusted_refs`` already refuses it fail-closed."""
+    out: list[str] = []
+    for ref in refs:
+        parts = split_ref(ref)
+        if parts is None:
+            continue
+        repo, number = parts
+        labels = (await db.execute(select(WorkItem.labels).where(
+            WorkItem.repo == repo, WorkItem.number == number,
+            WorkItem.kind == "issue"))).scalar_one_or_none()
+        if any(str(label).strip().lower() == IGNORE_LABEL for label in labels or ()):
             out.append(ref)
     return out
 

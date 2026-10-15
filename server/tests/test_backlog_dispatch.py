@@ -1010,3 +1010,76 @@ async def test_orchestrator_dispatch_refuses_an_untrusted_or_unmirrored_ref_itse
     assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
     # A trusted ref still dispatches.
     assert (await dispatch_orch.backlog_runner_dispatch(["o/r#7"]))["status"] == "spawned"
+
+
+# --------------------------------------------------------------------------- #
+# #3111: ``viberpit-ignore`` is never dispatched, on any path                  #
+# --------------------------------------------------------------------------- #
+
+async def _label(number: int, *labels: str) -> None:
+    from sqlalchemy import update
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+    async with db_session() as db:
+        await db.execute(update(WorkItem).where(WorkItem.number == number)
+                         .values(labels=list(labels)))
+
+
+def test_dispatch_api_refuses_an_ignored_issue_before_touching_its_holds():
+    """The ranked pool skips ``viberpit-ignore`` for every product (#2683); the
+    manual/assistant path does not re-rank, so it must refuse it itself — before
+    the owner_action hold release, which would otherwise commit with no spawn."""
+    spawn = AsyncMock()
+
+    def patch_orch(orch):
+        orch._backlog_spawn = spawn
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+
+    with _api_client(patch_orch) as c:
+        _seed(c)
+        c.portal.call(lambda: _seed_items(7, 8))
+        c.portal.call(lambda: _label(8, "technical-debt", "Viberpit-Ignore"))
+        with patch("server.api.automations.release_via_api", AsyncMock()) as release:
+            r = c.post("/api/automations/backlog-runner/dispatch",
+                       json={"refs": ["o/r#7", "o/r#8"]}, headers=H)
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"] == "ignored"
+        assert "o/r#8" in r.json()["detail"]["message"]
+        assert "o/r#7" not in r.json()["detail"]["message"]
+        release.assert_not_awaited()
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dispatch_refuses_an_ignored_ref_itself(dispatch_orch):
+    """The session daemon proxies the method directly, so the gate lives there too."""
+    await _label(8, "viberpit-ignore")
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#7", "o/r#8"])
+    assert r["status"] == "refused" and r["reason_codes"] == ["ignored"]
+    assert "o/r#8" in r["reason"]
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+    assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
+    # Removing the label is the way back in.
+    await _label(8)
+    assert (await dispatch_orch.backlog_runner_dispatch(["o/r#7", "o/r#8"]))["status"] == "spawned"
+
+
+@pytest.mark.asyncio
+async def test_pending_claim_is_refused_once_a_member_is_ignored(dispatch_orch):
+    """A pending claim left the ranked pool at claim time; a person tagging one of
+    its issues afterwards must still stop the tap, with the reason on the feed."""
+    ctx = dispatch_orch._backlog_ctx
+    await ctx.claim_target_state("o/r#7", {
+        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "product": "test-product",
+        "claimed": True, "proposed": True, "titles": {"o/r#7": "Seven", "o/r#8": "Eight"},
+        "attempts": 1}, expected={}, source="automatic")
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    await _label(8, "viberpit-ignore")
+    ctx.emit = AsyncMock()
+    assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "refused"
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+    kwargs = ctx.emit.await_args.kwargs
+    assert kwargs["kind"] == "implementation_refused"
+    assert kwargs["detail"]["reason_codes"] == ["ignored"]
+    assert kwargs["detail"]["refs"] == ["o/r#8"]
