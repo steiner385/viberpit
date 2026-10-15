@@ -18,6 +18,7 @@ import functools
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -1628,6 +1629,11 @@ class SessionOrchestrator:
             live_sessions=self._sdlc_live_artifact_sessions,
             advance_stage=self._sdlc_advance_stage,
             arm_auto_merge=self._sdlc_arm_auto_merge,
+            # The lifecycle sweep (#3108): close finished epics, initiatives
+            # and programs under each product's tolerance.
+            list_programs=self._sdlc_list_programs,
+            close_epic=self._sdlc_close_epic,
+            close_initiative=self._sdlc_close_initiative,
             # Required framework evidence holds artifact merges/advances; the
             # policy comes from each repo's default branch, never the PR.
             read_framework_gate=read_framework_gate,
@@ -12960,11 +12966,52 @@ class SessionOrchestrator:
                         "priority": entry.get("priority"),
                         "epic_total": int(entry.get("total") or 0),
                         "epic_done": int(entry.get("done") or 0),
+                        "epic_state": entry.get("state"),
                         "_created_at": r.created_at})
         # Highest priority first, unscored last, oldest first on ties (D6/D7).
         out.sort(key=lambda d: (d["priority"] is None, -(d["priority"] or 0.0), d["_created_at"]))
         for d in out:
             d.pop("_created_at", None)
+        return out
+
+    async def _sdlc_list_programs(self) -> list[dict]:
+        """Every non-done PROGRAM (an initiative with phases) for the lifecycle
+        sweep (#3108): the keys `_sdlc_list_initiatives` gives a leaf, with the
+        epic counts over the program's OWN epic's direct sub-issues (not rolled
+        up — a program's epic lists its phases' epics) plus how many of its
+        phases exist and how many are done."""
+        from sqlalchemy import select
+        from server.api.sdlc import _epic_progress_batch
+        from server.db.models import Initiative, Project
+        async with db_session() as db:
+            phases = (await db.execute(select(Initiative).where(
+                Initiative.parent_initiative_id.isnot(None)))).scalars().all()
+            by_parent: dict[str, list[Initiative]] = {}
+            for p in phases:
+                by_parent.setdefault(str(p.parent_initiative_id), []).append(p)
+            if not by_parent:
+                return []
+            programs = list((await db.execute(select(Initiative).where(
+                Initiative.id.in_(list(by_parent)), Initiative.status != "done",
+                Initiative.stage != "done"))).scalars().all())
+            project_ids = {r.project_id for r in programs if r.project_id}
+            slug_by_project = {p.id: p.slug for p in (await db.execute(
+                select(Project).where(Project.id.in_(project_ids)))).scalars().all()} if project_ids else {}
+            progress = await _epic_progress_batch(db, programs, include_children=False)
+        out: list[dict[str, Any]] = []
+        for r in programs:
+            entry = progress.get(r.id) or {}
+            kids = by_parent.get(r.id, [])
+            out.append({"id": r.id, "slug": r.slug, "repo": r.repo, "stage": r.stage,
+                        "status": r.status, "epic_repo": r.epic_repo,
+                        "epic_number": r.epic_number,
+                        "project_slug": slug_by_project.get(r.project_id) if r.project_id else None,
+                        "epic_total": int(entry.get("total") or 0),
+                        "epic_done": int(entry.get("done") or 0),
+                        "epic_state": entry.get("state"),
+                        "phases_total": len(kids),
+                        "phases_done": sum(1 for k in kids
+                                           if k.status == "done" or k.stage == "done")})
         return out
 
     async def _sdlc_list_artifacts(self, initiative_id: str) -> list[dict]:
@@ -13038,6 +13085,81 @@ class SessionOrchestrator:
                             "from": from_stage, "to": to_stage})
             await db.commit()
         return advanced
+
+    async def _sdlc_close_initiative(self, initiative_id: str, from_stage: str,
+                                     gate: dict) -> bool:
+        """The lifecycle sweep's ``CloseInitiative`` write (#3108): move the row to
+        done/done and record the gate, in ONE compare-and-set like
+        ``_sdlc_advance_stage`` — a human's step back, block or close in between
+        wins and the caller sees ``False``. The machine's counterpart of
+        ``POST /initiatives/{slug}/close``'s ``sdlc.initiative.close`` audit row."""
+        from sqlalchemy import update
+        from server.audit import record_audit
+        from server.db.models import Initiative
+        async with db_session() as db:
+            result = await db.execute(
+                update(Initiative)
+                .where(Initiative.id == initiative_id,
+                       Initiative.stage == from_stage,
+                       Initiative.status.notin_(("blocked", "done")))
+                .values(stage="done", status="done", last_auto_gate=gate))
+            closed = int(getattr(result, "rowcount", 0) or 0) == 1
+            if closed:
+                await record_audit(
+                    db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
+                    detail={"initiativeId": initiative_id, "gate": gate.get("gate"),
+                            "tolerance": gate.get("tolerance"),
+                            "from": from_stage, "to": "done"})
+            await db.commit()
+        return closed
+
+    async def _sdlc_close_epic(self, initiative_id: str, epic_ref: str, gate: dict) -> dict:
+        """The lifecycle sweep's ``CloseEpic`` write (#3108): re-check from the
+        mirror that the epic is open and every sub-issue closed, comment, then close
+        it through ``_pm_issue_close`` — the journaled close the hygiene loop and
+        the assistant use — and record the gate on the initiative either way."""
+        from sqlalchemy import select, update
+        from server.audit import record_audit
+        from server.db.models import Initiative, WorkItem
+        from server.github import ci_issues
+        from server.pm.refs import split_ref
+
+        parts = split_ref(epic_ref)
+        if parts is None:
+            return {"closed": False, "error": f"not an issue ref: {epic_ref}"}
+        async with db_session() as db:
+            epic = (await db.execute(select(WorkItem).where(
+                WorkItem.repo == parts[0], WorkItem.number == parts[1],
+                WorkItem.kind == "issue"))).scalar_one_or_none()
+            subs = [] if epic is None else (await db.execute(select(WorkItem.state).where(
+                WorkItem.parent_work_item_id == epic.id))).scalars().all()
+        if epic is None or epic.state != "open":
+            out = {"closed": False, "error": f"{epic_ref} is not an open mirrored issue"}
+        elif not subs or any(st != "closed" for st in subs):
+            out = {"closed": False, "error": f"{epic_ref} has open sub-issues"}
+        else:
+            body = (f"Every sub-issue of this epic is closed ({len(subs)} of {len(subs)}), "
+                    f"so ViberPit closed it under the product's {gate.get('tolerance')} "
+                    "risk tolerance. Reopen it if work remains.")
+            url = await asyncio.to_thread(ci_issues.comment_on_issue, parts[0], parts[1],
+                                           body, automation=True)
+            if url is None:
+                out = {"closed": False, "error": "GitHub rejected the comment; not closed"}
+            else:
+                res = await self._pm_issue_close(epic.id, {"reason": "completed"})
+                out = {"closed": bool(res.get("ok")), "error": str(res.get("error") or "")}
+        record = dict(gate) if out["closed"] else {**gate, "outcome": "refused"}
+        async with db_session() as db:
+            await db.execute(update(Initiative).where(
+                Initiative.id == initiative_id).values(last_auto_gate=record))
+            if out["closed"]:
+                await record_audit(
+                    db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
+                    detail={"initiativeId": initiative_id, "gate": "epic.close",
+                            "tolerance": gate.get("tolerance"), "epic": epic_ref,
+                            "subIssues": len(subs)})
+            await db.commit()
+        return out
 
     async def _sdlc_arm_auto_merge(self, artifact_id: str, repo: str, pr_number: int,
                                    initiative_id: str, gate: dict) -> dict:
@@ -13903,12 +14025,46 @@ class SessionOrchestrator:
         Resolves the artifact's ``session_id`` to its repo + branch(es) and reads
         the PR-poller cache — the SAME session→PR source of truth
         ``_backlog_pr_status_for`` uses (live record first, then the DB row's
-        ``branch``/``authored_branches``). No network client: an artifact whose PR
-        the poller has not cached yet simply returns None and enriches next tick.
-        state ``merged`` carries the merge-commit sha (the enrich writer's key)."""
+        ``branch``/``authored_branches``). When that cache has no merge to report,
+        the PR is read live by number (``_sdlc_pr_lookup_live``, throttled), so an
+        archived session's merged PR still advances its stage (#3108). state
+        ``merged`` carries the merge-commit sha (the enrich writer's key)."""
         sid = art.get("session_id")
-        if not sid:
+        found = await self._sdlc_pr_lookup_by_session(sid) if sid else None
+        if found is not None and found["state"] == "merged":
+            return found
+        live = await self._sdlc_pr_lookup_live(art)
+        return live if live is not None else found
+
+    #: How often one artifact's PR may be read live when the poller cache cannot
+    #: answer (#3108) — a merge is noticed within this, at one ``gh`` call per PR.
+    _SDLC_LIVE_PR_INTERVAL_S = 600.0
+
+    async def _sdlc_pr_lookup_live(self, art: dict) -> dict | None:
+        """The artifact's PR read live by number, at most once per
+        ``_SDLC_LIVE_PR_INTERVAL_S``. The PR-poller only caches branches of
+        sessions it is watching, so once an artifact session is archived its PR's
+        merge is never seen there and the stage waits forever (#3108). The repo
+        comes from the recorded ``pr_url``."""
+        number = art.get("pr_number")
+        match = re.match(r"https://github\.com/([^/]+/[^/]+)/pull/\d+", str(art.get("pr_url") or ""))
+        if not number or match is None:
             return None
+        checked: dict = self.__dict__.setdefault("_sdlc_live_pr_checked", {})
+        now = time.monotonic()
+        last = checked.get(art.get("id"))
+        if last is not None and now - last < self._SDLC_LIVE_PR_INTERVAL_S:
+            return None
+        checked[art.get("id")] = now
+        info = await self._live_pr(match.group(1), int(number))
+        if info is None:
+            return None
+        state = "merged" if info.merged else info.state
+        return {"number": info.number, "url": info.url, "state": state,
+                "sha": (info.merge_commit_sha or None) if state == "merged" else None}
+
+    async def _sdlc_pr_lookup_by_session(self, sid: str) -> dict | None:
+        """The artifact session's PR from the PR-poller cache, or None."""
         from sqlalchemy import select as sa_select
         repo: str | None = None
         branches: list[str] = []

@@ -19,8 +19,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from server.sdlc.engine import (
-    STAGE_ARTIFACT, Advance, ArtifactView, AwaitApproval, InitiativeView, Materialize,
-    MergeArtifact, NeedsHuman, Propose, next_action)
+    STAGE_ARTIFACT, Advance, ArtifactView, AwaitApproval, CloseEpic, CloseInitiative,
+    InitiativeView, Materialize, MergeArtifact, NeedsHuman, ProgramView, Propose, next_action,
+    program_action)
 from server.sdlc.gates import FRAMEWORK_EVIDENCE_UNREADABLE, auto_gate_record, effective_tolerance
 from server.sdlc.prompts import artifact_path
 from server.pm.materialize import MaterializedDirectly
@@ -51,6 +52,15 @@ MATERIALIZE_MAX_ATTEMPTS = 3
 #: `gate_refused` event per slug per hour, not per 60s tick) while keeping a
 #: settings fix effective without anyone having to restart the daemon.
 ARM_REFUSED_RETRY_S = 3600.0
+
+#: Epic issues the lifecycle sweep (#3108) closes per tick, fleet-wide: each is a
+#: comment plus a close on GitHub, and a backlog of finished epics (the first tick
+#: after this shipped, or a sync glitch reading every epic as done) must trickle.
+EPIC_CLOSES_PER_TICK = 3
+
+#: How long a refused epic close is not retried — the same external-fact reasoning
+#: as ``ARM_REFUSED_RETRY_S``: someone can reopen a sub-issue or fix access.
+EPIC_CLOSE_REFUSED_RETRY_S = 3600.0
 
 
 @dataclass(frozen=True)
@@ -142,6 +152,16 @@ AdvanceStage = Callable[[str, str, str, dict], Awaitable[bool]]
 #: on success (§6), and persists `gate` (an `auto_gate_record` built by the
 #: caller) to `Initiative.last_auto_gate` on EITHER outcome (§8).
 ArmAutoMerge = Callable[[str, str, int, str, dict], Awaitable[dict]]
+#: Every non-done PROGRAM (an initiative with phases) as a plain dict: the
+#: initiative keys plus `phases_total`/`phases_done`, with `epic_total`/`epic_done`
+#: counting its own epic's direct sub-issues (#3108).
+ListPrograms = Callable[[], Awaitable[list[dict]]]
+#: (initiative_id, epic ref, last_auto_gate record) → {"closed": bool, "error": str}.
+#: Comments on and closes the epic issue, and persists `record` (#3108).
+CloseEpicSeam = Callable[[str, str, dict], Awaitable[dict]]
+#: (initiative_id, from_stage, last_auto_gate record) → closed? A compare-and-set
+#: like `AdvanceStage`: False means a human moved or blocked the row first.
+CloseInitiativeSeam = Callable[[str, str, dict], Awaitable[bool]]
 #: The process-wide kill switch (spec D9), read per tick.
 AutoresolveEnabled = Callable[[], bool]
 #: (repo, pr_number) → the framework gate's joined block reasons, or None when
@@ -160,15 +180,29 @@ def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[Ar
                        status=str(ini.get("status") or ""),
                        repo=str(ini.get("repo") or ""),
                        issue=ini.get("origin_ref"),
-                       epic=(f"{ini['epic_repo']}#{ini['epic_number']}"
-                             if ini.get("epic_number") else None),
+                       epic=_epic_ref(ini),
                        epic_total=int(ini.get("epic_total") or 0),
-                       epic_done=int(ini.get("epic_done") or 0)),
+                       epic_done=int(ini.get("epic_done") or 0),
+                       epic_closed=ini.get("epic_state") == "closed"),
         [ArtifactView(kind=str(a.get("kind") or ""),
                       commit_sha=a.get("commit_sha"),
                       pr_number=a.get("pr_number"),
                       pr_url=a.get("pr_url")) for a in artifacts],
     )
+
+
+def _epic_ref(ini: dict) -> str | None:
+    return f"{ini['epic_repo']}#{ini['epic_number']}" if ini.get("epic_number") else None
+
+
+def _to_program_view(ini: dict) -> ProgramView:
+    return ProgramView(slug=str(ini.get("slug") or ""), status=str(ini.get("status") or ""),
+                       stage=str(ini.get("stage") or ""), epic=_epic_ref(ini),
+                       epic_closed=ini.get("epic_state") == "closed",
+                       epic_total=int(ini.get("epic_total") or 0),
+                       epic_done=int(ini.get("epic_done") or 0),
+                       phases_total=int(ini.get("phases_total") or 0),
+                       phases_done=int(ini.get("phases_done") or 0))
 
 
 def is_producing(stage: str | None, artifacts: list[dict], live: Collection[str]) -> bool:
@@ -270,6 +304,9 @@ class SdlcSynthesizerLoop:
         autoresolve_enabled: AutoresolveEnabled | None = None,
         arm_auto_merge: ArmAutoMerge | None = None,
         read_framework_gate: ReadFrameworkGate | None = None,
+        list_programs: ListPrograms | None = None,
+        close_epic: CloseEpicSeam | None = None,
+        close_initiative: CloseInitiativeSeam | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -325,6 +362,13 @@ class SdlcSynthesizerLoop:
         #: dropped when its gate comes back clear, so the set stays bounded and
         #: a later hold with the same reason is reported again.
         self._framework_blocked: set[tuple[str, int, str]] = set()
+        #: The lifecycle sweep's seams (#3108). Unwired = the close is a human's,
+        #: exactly as before: the row is counted awaiting, nothing is written.
+        self._list_programs = list_programs
+        self._close_epic = close_epic
+        self._close_initiative = close_initiative
+        #: epic ref -> `clock()` at its last refused close (see EPIC_CLOSE_REFUSED_RETRY_S).
+        self._close_refused: dict[str, float] = {}
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -365,6 +409,8 @@ class SdlcSynthesizerLoop:
         #: products already told about their ceiling this tick — five queued rows
         #: are one operator-visible fact, not five.
         warned: set[str | None] = set()
+        #: GitHub epic closes left this tick (shared by leaves and programs).
+        budget = [EPIC_CLOSES_PER_TICK]
         for ini in initiatives:
             artifacts = artifacts_by_id[ini["id"]]
             state, arts = _to_views(ini, artifacts)
@@ -404,6 +450,9 @@ class SdlcSynthesizerLoop:
                     counts["auto_resolved"] += 1
                 else:
                     counts["awaiting"] += 1
+            if isinstance(action, (CloseEpic, CloseInitiative)):
+                closing = await self._close(ini, state.stage, action, tolerance, budget)
+                counts["auto_resolved" if closing else "awaiting"] += 1
             if isinstance(action, Propose) and action.kind in ("spec", "plan"):
                 cap = int(policy["max_initiatives_in_flight"])
                 if producing.get(key, 0) >= cap:
@@ -434,7 +483,71 @@ class SdlcSynthesizerLoop:
                 if outcome is not None:
                     counts[outcome] += 1
             await self._enrich(artifacts)
+        await self._sweep_programs(mode, policies, enabled, counts, budget)
         publish_observation(self._ctx, "sdlc_synthesizer_counts", counts)
+
+    async def _sweep_programs(self, mode: str, policies: dict, enabled: bool,
+                              counts: dict, budget: list[int]) -> None:
+        """Roll programs up (#3108): a program is never driven through the stage
+        engine, so once its phases are all done this closes its epic and then the
+        program itself under the product's tolerance."""
+        if self._list_programs is None:
+            return
+        for ini in await self._list_programs():
+            key = ini.get("project_slug")
+            policy = effective_policy(policies.get(key) if key else None)
+            tolerance = effective_tolerance(policy.get("risk_tolerance"), enabled=enabled)
+            action = program_action(_to_program_view(ini), mode, tolerance)
+            if action is not None:
+                closing = await self._close(ini, str(ini.get("stage") or ""), action,
+                                            tolerance, budget)
+                counts["auto_resolved" if closing else "awaiting"] += 1
+
+    async def _close(self, ini: dict, stage: str, action: CloseEpic | CloseInitiative,
+                     tolerance: str, budget: list[int]) -> bool:
+        """Execute a lifecycle close (#3108): the epic issue on GitHub (comment +
+        close, at most ``EPIC_CLOSES_PER_TICK`` a tick, a refusal not retried for
+        ``EPIC_CLOSE_REFUSED_RETRY_S``), or the initiative row (a compare-and-set
+        like ``_advance``). Returns whether a gate was resolved this tick; False
+        degrades to today's behaviour — a human closes it."""
+        slug = str(ini.get("slug") or "")
+        now = datetime.now(timezone.utc)
+        if isinstance(action, CloseInitiative):
+            if self._close_initiative is None:
+                return False
+            record = auto_gate_record("initiative.close", tolerance, now,
+                                      detail={"from": stage, "epic": _epic_ref(ini)})
+            if not await self._close_initiative(ini["id"], stage, record):
+                log.info("sdlc_synthesizer.close_stale slug=%s from=%s", slug, stage)
+                return False
+            await self._emit("info", f"{slug}: closed — its epic and every sub-issue are "
+                             f"done (under {tolerance}; Step back reverses it)",
+                             kind="auto_resolved", target=slug,
+                             detail={"gate": "initiative.close", "tolerance": tolerance,
+                                     "from": stage})
+            return True
+        if self._close_epic is None or budget[0] <= 0:
+            return False
+        refused_at = self._close_refused.get(action.epic)
+        if refused_at is not None and self._clock() - refused_at < EPIC_CLOSE_REFUSED_RETRY_S:
+            return False
+        budget[0] -= 1
+        record = auto_gate_record("epic.close", tolerance, now,
+                                  detail={"epic": action.epic,
+                                          "subIssues": int(ini.get("epic_total") or 0)})
+        out = await self._close_epic(ini["id"], action.epic, record)
+        if not out.get("closed"):
+            self._close_refused[action.epic] = self._clock()
+            await self._emit("warn", f"{slug}: could not close finished epic {action.epic} — "
+                             "close it by hand", kind="gate_refused", target=slug,
+                             detail={"gate": "epic.close", "tolerance": tolerance,
+                                     "epic": action.epic, "error": str(out.get("error") or "")})
+            return False
+        await self._emit("info", f"{slug}: closed epic {action.epic} — every sub-issue is "
+                         f"closed (under {tolerance})", kind="auto_resolved", target=slug,
+                         detail={"gate": "epic.close", "tolerance": tolerance,
+                                 "epic": action.epic})
+        return True
 
     async def _framework_block(self, ini: dict, state: InitiativeView, action: Any,
                                artifacts: list[dict]) -> tuple[int, str | None] | None:
@@ -635,9 +748,10 @@ class SdlcSynthesizerLoop:
     async def _enrich(self, artifacts: list[dict]) -> None:
         """Fill pr_number/pr_url once the artifact session's PR exists, and
         commit_sha once it merges. Owns enrichment for ALL kinds (incl. intent)
-        so there is exactly one writer (constitution VI)."""
+        so there is exactly one writer (constitution VI). A row with a known PR
+        but no session (recorded by hand) is looked up by that PR (#3108)."""
         for art in artifacts:
-            if not art.get("session_id") or art.get("commit_sha"):
+            if not (art.get("session_id") or art.get("pr_number")) or art.get("commit_sha"):
                 continue
             info = await self._pr_lookup(art)
             if info is None:

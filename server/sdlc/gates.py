@@ -40,6 +40,12 @@ GATES: tuple[GateSpec, ...] = (
              "Advance the initiative to the next stage.", "Step back"),
     GateSpec("stage.advance_built", "Advance build to deploy once the epic is closed", "low",
              "Advance the initiative from build to deploy.", "Step back"),
+    GateSpec("epic.close", "Close an epic once every sub-issue is closed", "low",
+             "Close the shipped initiative's epic issue, with a comment saying why.",
+             "Reopen the epic"),
+    GateSpec("initiative.close", "Close an initiative once its epic is closed", "low",
+             "Move a shipped initiative, or a program whose phases are all done, to done.",
+             "Step back"),
     GateSpec("materialization.accept", "Accept a plan decomposition", "medium",
              "Create the epic and sub-issues the decompose session proposed.",
              "Close the created issues"),
@@ -112,6 +118,10 @@ def _summary(record: dict) -> str:
         return f"merged {detail['kind']}"
     if gate == "materialization.accept":
         return "accepted decomposition"
+    if gate == "epic.close":
+        return "closed epic"
+    if gate == "initiative.close":
+        return "closed"
     spec = GATE_BY_ID.get(str(gate))
     return spec.label.lower() if spec is not None else str(gate)
 

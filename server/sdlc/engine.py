@@ -74,6 +74,30 @@ class InitiativeView:
     # ``stage.advance_built`` gate); 0/0 when there is no epic.
     epic_total: int = 0
     epic_done: int = 0
+    # Whether the epic issue itself is closed on GitHub (its mirrored state).
+    epic_closed: bool = False
+
+    @property
+    def epic_finished(self) -> bool:
+        """Every sub-issue of the epic is closed (and there is at least one)."""
+        return self.epic is not None and 0 < self.epic_total <= self.epic_done
+
+
+@dataclass(frozen=True)
+class ProgramView:
+    """A program (an initiative with phases) for the lifecycle sweep (#3108). Its
+    stage is derived from its phases, so the only decision is whether it is over:
+    ``epic_total``/``epic_done`` count its OWN epic's direct sub-issues, and
+    ``phases_total``/``phases_done`` its phase initiatives."""
+    slug: str
+    status: str
+    stage: str
+    epic: str | None = None
+    epic_closed: bool = False
+    epic_total: int = 0
+    epic_done: int = 0
+    phases_total: int = 0
+    phases_done: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +144,21 @@ class Advance:
 
 
 @dataclass(frozen=True)
+class CloseEpic:
+    """Every sub-issue of the epic is closed but the epic issue is still open, and
+    the tolerance covers ``epic.close``: close it on GitHub (with a comment). The
+    NEXT tick, seeing it closed, closes the initiative."""
+    epic: str
+
+
+@dataclass(frozen=True)
+class CloseInitiative:
+    """The work is over — the epic and every sub-issue are closed (for a program,
+    every phase is done too) — and the tolerance covers ``initiative.close``: move
+    the row to the terminal stage and status, as the human Close does."""
+
+
+@dataclass(frozen=True)
 class HandoffToBuild:
     """Front chain is complete — hand the underlying issue to backlog_runner."""
     issue: str
@@ -137,7 +176,12 @@ class NeedsHuman:
     reason: str = ""
 
 
-StageAction = Propose | AwaitApproval | MergeArtifact | Advance | Materialize | HandoffToBuild | Done | NeedsHuman
+StageAction = (Propose | AwaitApproval | MergeArtifact | Advance | Materialize | CloseEpic
+               | CloseInitiative | HandoffToBuild | Done | NeedsHuman)
+
+#: Stages past build, where the lifecycle sweep (#3108) closes a shipped epic and
+#: then the initiative. Build itself first advances under ``stage.advance_built``.
+_CLOSING_STAGES = ("deploy", "maintain")
 
 
 # --------------------------------------------------------------------------- #
@@ -246,6 +290,13 @@ def _decide(
 
     stage = initiative.stage
 
+    # Past build, a finished epic is closed and then the initiative (#3108); a
+    # tolerance that covers neither leaves it to the existing flows below.
+    if stage in _CLOSING_STAGES and initiative.epic_finished:
+        closing = _close_action(initiative.epic, initiative.epic_closed, tolerance)
+        if closing is not None:
+            return closing
+
     # Non-artifact stages: a fully built epic may advance to deploy under the
     # `stage.advance_built` gate; otherwise hand off (build) or defer to existing flows.
     if stage not in STAGE_ARTIFACT:
@@ -254,6 +305,13 @@ def _decide(
                 and auto_resolves("stage.advance_built", tolerance)):
             return Advance(advance_stage(stage))
         return _enter_stage(stage, initiative)
+
+    # An adopted epic whose sub-issues are already being closed is past this
+    # stage's document gate (#3108): the work it would plan is under way, so it
+    # advances instead of waiting on (or proposing) a spec or plan.
+    if (stage in ("design", "plan") and initiative.epic is not None
+            and initiative.epic_done > 0 and auto_resolves("stage.advance", tolerance)):
+        return Advance(advance_stage(stage))
 
     kind = STAGE_ARTIFACT[stage]
     art = _find_artifact(artifacts, kind)
@@ -278,3 +336,28 @@ def _decide(
     if auto_resolves("stage.advance", tolerance):
         return Advance(advance_stage(stage))
     return AwaitApproval(kind)
+
+
+def _close_action(epic: str | None, epic_closed: bool,
+                  tolerance: str) -> CloseEpic | CloseInitiative | None:
+    """THE close sequence for finished work (#3108), shared by leaves and programs:
+    close the epic first, then the initiative; None when the tolerance does not
+    cover the next step. ``epic`` None (a program without one) skips straight to
+    the initiative."""
+    if epic is not None and not epic_closed:
+        return CloseEpic(epic) if auto_resolves("epic.close", tolerance) else None
+    return CloseInitiative() if auto_resolves("initiative.close", tolerance) else None
+
+
+def program_action(program: ProgramView, mode: str, tolerance: str) -> CloseEpic | CloseInitiative | None:
+    """The lifecycle sweep's decision for a program (#3108): once every phase is
+    done (and its own epic, if any, has no open sub-issue), close that epic and
+    then the program. None for anything still running, blocked or parked —
+    a program is otherwise never driven directly. Pure + total."""
+    if mode == "off" or program.status in ("done", "blocked") or program.stage == "done":
+        return None
+    if program.phases_total == 0 or program.phases_done < program.phases_total:
+        return None
+    if program.epic is not None and program.epic_done < program.epic_total:
+        return None
+    return _close_action(program.epic, program.epic_closed, tolerance)

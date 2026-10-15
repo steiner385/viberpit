@@ -19,6 +19,8 @@ def test_registry_lists_every_spec_gate_with_its_risk():
         "artifact.merge": "low",
         "stage.advance": "low",
         "stage.advance_built": "low",
+        "epic.close": "low",
+        "initiative.close": "low",
         "materialization.accept": "medium",
         "model.upgrade": "medium",
         "dispatch": None,

@@ -445,3 +445,171 @@ def test_sdlc_list_artifacts_carries_auto_merge_armed_at():
     # tzinfo even though the column is declared DateTime(timezone=True).
     assert by_pr[8]["auto_merge_armed_at"].replace(tzinfo=timezone.utc) == \
         datetime(2026, 9, 16, tzinfo=timezone.utc)
+
+
+def _run_with_orch(fn):
+    """Run ``fn(orch)`` on a fresh orchestrator over a file SQLite DB."""
+    from server.app import create_app
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, _sqlite_env(tmp)
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            return client.portal.call(fn, orch)
+
+
+def test_synthesizer_loop_receives_the_lifecycle_sweep_seams():
+    with temp_env(), patch.dict(os.environ, _sqlite_env()):
+        orch = _make_orch()
+        loop = orch._sdlc_synthesizer_loop
+        assert loop._list_programs == orch._sdlc_list_programs
+        assert loop._close_epic == orch._sdlc_close_epic
+        assert loop._close_initiative == orch._sdlc_close_initiative
+
+
+def test_sdlc_list_programs_counts_phases_and_the_programs_own_epic():
+    """#3108: a program row carries its phases' done count and its OWN epic's
+    direct sub-issues (not rolled up), and leaves / done programs are absent."""
+    from server.db import db_session
+    from server.db.models import Initiative, WorkItem
+
+    async def _run(orch):
+        async with db_session() as db:
+            epic = WorkItem(repo="o/r", number=1, kind="issue", state="open", is_epic=True)
+            db.add(epic)
+            await db.flush()
+            db.add_all([WorkItem(repo="o/r", number=n, kind="issue", state="closed",
+                                 parent_work_item_id=epic.id) for n in (2, 3)])
+            db.add(Initiative(id="prog", slug="prog", repo="o/r", stage="deploy",
+                              status="active", epic_repo="o/r", epic_number=1))
+            db.add(Initiative(id="old", slug="old", repo="o/r", stage="done", status="done"))
+            db.add_all([
+                Initiative(id="ph1", slug="ph1", repo="o/r", stage="done", status="done",
+                           parent_initiative_id="prog"),
+                Initiative(id="ph2", slug="ph2", repo="o/r", stage="deploy", status="active",
+                           parent_initiative_id="prog"),
+                Initiative(id="ph3", slug="ph3", repo="o/r", stage="done", status="done",
+                           parent_initiative_id="old"),
+            ])
+            await db.commit()
+        return await orch._sdlc_list_programs()
+
+    rows = _run_with_orch(_run)
+    assert [r["slug"] for r in rows] == ["prog"]
+    row = rows[0]
+    assert (row["phases_total"], row["phases_done"]) == (2, 1)
+    assert (row["epic_total"], row["epic_done"], row["epic_state"]) == (2, 2, "open")
+
+
+def test_sdlc_close_initiative_is_a_compare_and_set_that_records_the_gate():
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import AuditEvent, Initiative
+    from server.sdlc.gates import auto_gate_record
+
+    async def _run(orch):
+        async with db_session() as db:
+            db.add(Initiative(id="i-c", slug="c", repo="o/r", stage="deploy", status="active"))
+            db.add(Initiative(id="i-b", slug="b", repo="o/r", stage="deploy", status="blocked"))
+            await db.commit()
+        gate = auto_gate_record("initiative.close", "bold", datetime.now(timezone.utc))
+        first = await orch._sdlc_close_initiative("i-c", "deploy", gate)
+        again = await orch._sdlc_close_initiative("i-c", "deploy", gate)
+        blocked = await orch._sdlc_close_initiative("i-b", "deploy", gate)
+        async with db_session() as db:
+            rows = {r.id: r for r in (await db.execute(select(Initiative))).scalars().all()}
+            audits = (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "sdlc.gate.auto_resolve"))).scalars().all()
+        return first, again, blocked, rows, audits
+
+    first, again, blocked, rows, audits = _run_with_orch(_run)
+    assert (first, again, blocked) == (True, False, False)
+    assert (rows["i-c"].stage, rows["i-c"].status) == ("done", "done")
+    assert rows["i-c"].last_auto_gate["gate"] == "initiative.close"
+    assert (rows["i-b"].stage, rows["i-b"].status) == ("deploy", "blocked")
+    assert len(audits) == 1 and audits[0].detail["to"] == "done"
+
+
+def test_sdlc_close_epic_rechecks_the_mirror_then_comments_and_closes():
+    """The CloseEpic write re-reads the mirror (an epic with an open sub-issue is
+    refused without a GitHub call), comments before closing, and records the gate
+    on either outcome."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Initiative, WorkItem
+    from server.github import ci_issues
+    from server.sdlc.gates import auto_gate_record
+
+    comments: list[tuple[str, int, str]] = []
+    closes: list[tuple[str, dict]] = []
+
+    def _comment(repo, number, body, *, automation=True):
+        comments.append((repo, number, body))
+        return "https://github.com/o/r/issues/1#c"
+
+    async def _run(orch):
+        async def _close(wid, req):
+            closes.append((wid, req))
+            return {"ok": True}
+        orch._pm_issue_close = _close
+        async with db_session() as db:
+            done = WorkItem(id="w-done", repo="o/r", number=1, kind="issue", state="open")
+            open_ = WorkItem(id="w-open", repo="o/r", number=4, kind="issue", state="open")
+            db.add_all([done, open_])
+            await db.flush()
+            db.add_all([
+                WorkItem(repo="o/r", number=2, kind="issue", state="closed",
+                         parent_work_item_id="w-done"),
+                WorkItem(repo="o/r", number=5, kind="issue", state="closed",
+                         parent_work_item_id="w-open"),
+                WorkItem(repo="o/r", number=6, kind="issue", state="open",
+                         parent_work_item_id="w-open"),
+                Initiative(id="i-1", slug="one", repo="o/r", stage="deploy", status="active"),
+                Initiative(id="i-2", slug="two", repo="o/r", stage="deploy", status="active"),
+            ])
+            await db.commit()
+        gate = auto_gate_record("epic.close", "bold", datetime.now(timezone.utc))
+        ok = await orch._sdlc_close_epic("i-1", "o/r#1", gate)
+        refused = await orch._sdlc_close_epic("i-2", "o/r#4", gate)
+        async with db_session() as db:
+            rows = {r.id: r for r in (await db.execute(select(Initiative))).scalars().all()}
+        return ok, refused, rows
+
+    with patch.object(ci_issues, "comment_on_issue", _comment):
+        ok, refused, rows = _run_with_orch(_run)
+    assert ok == {"closed": True, "error": ""}
+    assert refused["closed"] is False and "open sub-issues" in refused["error"]
+    assert [(r, n) for r, n, _ in comments] == [("o/r", 1)]
+    assert "1 of 1" in comments[0][2]
+    assert closes == [("w-done", {"reason": "completed"})]
+    assert rows["i-1"].last_auto_gate["outcome"] == "resolved"
+    assert rows["i-2"].last_auto_gate["outcome"] == "refused"
+
+
+def test_sdlc_pr_lookup_reads_a_merged_pr_live_when_the_poller_cannot():
+    """#3108: an artifact whose session the PR poller no longer watches is read
+    live by its PR number (repo from pr_url), at most once per interval."""
+    import asyncio
+    from types import SimpleNamespace
+
+    reads: list[tuple[str, int]] = []
+    with temp_env(), patch.dict(os.environ, _sqlite_env()):
+        orch = _make_orch()
+
+        async def _live(repo, number):
+            reads.append((repo, number))
+            return SimpleNamespace(number=number, url="u", merged=True, state="closed",
+                                   merge_commit_sha="sha1")
+        orch._live_pr = _live
+        art = {"id": "a1", "session_id": None, "pr_number": 9,
+               "pr_url": "https://github.com/o/r/pull/9"}
+        first = asyncio.run(orch._sdlc_pr_lookup(art))
+        second = asyncio.run(orch._sdlc_pr_lookup(art))
+        no_url = asyncio.run(orch._sdlc_pr_lookup({"id": "a2", "pr_number": 3}))
+    assert first == {"number": 9, "url": "u", "state": "merged", "sha": "sha1"}
+    assert second is None and no_url is None
+    assert reads == [("o/r", 9)]

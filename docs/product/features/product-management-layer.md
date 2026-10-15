@@ -449,7 +449,12 @@ below). Three more landed with roadmap auto-execution phase 1 (spec
 `docs/superpowers/specs/2026-09-14-roadmap-auto-execution-design.md`), governing the SDLC front
 chain rather than the Backlog Runner: `risk_tolerance` (`cautious | balanced | bold`, default
 `cautious` — how far the front chain may resolve its own stage gates; `cautious` parks every gate
-for a human exactly as before), `max_initiatives_in_flight` (default 2, minimum 0 — this product's
+for a human exactly as before. Under `balanced`/`bold` the synthesizer's lifecycle sweep (#3108)
+also advances an adopted epic already closing sub-issues past its spec/plan gate, closes a
+deploy/maintain initiative's epic once every sub-issue is closed (`epic.close`, a comment then a
+journaled close, ≤3 per tick), then the initiative (`initiative.close`), and rolls a program up
+once every phase is done. A merged artifact PR is read live by number when the PR poller no longer
+watches its session), `max_initiatives_in_flight` (default 2, minimum 0 — this product's
 concurrent spec/plan artifact sessions, counted as LIVE design/plan artifact sessions only, so
 intake, a `blocked` initiative, a dead session and a PR awaiting a human merge each hold no slot;
 `0` PAUSES new artifact sessions without stopping materialization) and `unattended_model_floor`

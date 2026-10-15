@@ -257,6 +257,9 @@ async def _epic_progress_batch(
         entry = {
             "ref": f"{repo}#{number}",
             "url": f"https://github.com/{repo}/issues/{number}",
+            # The epic issue's own mirrored state (None until mirrored): the
+            # lifecycle sweep closes a finished epic, then its initiative (#3108).
+            "state": epic_wi.state if epic_wi is not None else None,
             "total": len(children),
             "done": sum(1 for c in children if c.state == "closed"),
             "blocked": sum(1 for c in children if status_by_child.get(c.id) == STATUS_BLOCKED),
