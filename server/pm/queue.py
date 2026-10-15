@@ -216,6 +216,10 @@ class QueueRow:
     # hold-hygiene pass reads that, whatever the window).
     not_needed_until: datetime | None = None
     not_needed_standing: bool = False
+    # The newest comment by a USER on the issue (``WorkItem.last_human_comment_at``,
+    # aware UTC), threaded for the needs-you hygiene's ``evidence_posted`` rule
+    # (#3113): a human comment after an ``owner_evidence`` hold is the owner's reply.
+    last_human_comment_at: datetime | None = None
 
 
 @dataclass(frozen=True)

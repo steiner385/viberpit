@@ -317,6 +317,78 @@ def test_an_approved_unpark_explains_then_removes_the_label_as_spelled(isolated_
         "tony@example.com", "api", "unpark", True)
 
 
+async def _seed_evidence(number: int, *, hold_kind: str = "owner_evidence",
+                         reason: str = "Verify on the tablet.", replied: bool = True) -> str:
+    from server.db import db_session
+    from server.db.models import WorkItem
+    asked = NOW
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=number, kind="issue", title=f"issue {number}",
+                      state="open", body="b", url=f"https://x/{number}", author="tony",
+                      hold_kind=hold_kind, hold_by="session:s1", hold_reason=reason,
+                      hold_set_at=asked,
+                      last_human_comment_at=asked.replace(hour=13) if replied else None)
+        db.add(wi)
+        await db.commit()
+        return wi.id
+
+
+def _evidence_action(number: int, wid: str, *, reason: str = "Verify on the tablet.") -> HygieneAction:
+    return HygieneAction("evidence_posted", "p", f"o/r#{number}", wid, "close",
+                         {"title": "t", "holdReason": reason, "closeReason": "completed",
+                          "comment": "The evidence asked for on 2026-10-14 was posted here."},
+                         f"o/r#{number} waited for evidence")
+
+
+def test_an_approved_evidence_close_comments_then_closes(isolated_db, monkeypatch):
+    """#3113: the owner's tap closes the issue through the ordinary close path —
+    the comment names the ask, the close is ``completed``."""
+    calls = _fake_gh(monkeypatch)
+    seams = _Seams()
+
+    async def run():
+        wid = await _seed_evidence(31)
+        return await nyh.apply_action(_evidence_action(31, wid), seams=seams,
+                                      identity="tony@example.com", actor="tony@example.com",
+                                      via="api"), wid
+    out, wid = asyncio.run(run())
+    assert out["ok"] is True
+    assert [c[:3] for c in calls] == [("comment", "o/r", 31)]
+    assert "was posted here" in calls[0][3] and "Closing as completed" in calls[0][3]
+    assert seams.calls == [("close", wid, {"reason": "completed"})]
+
+
+def test_the_loop_can_never_apply_an_evidence_close(isolated_db, monkeypatch):
+    """Recommend-only (#3113): the mirror does not know WHO commented."""
+    calls = _fake_gh(monkeypatch)
+    seams = _Seams()
+
+    async def run():
+        wid = await _seed_evidence(32)
+        return await nyh.apply_action(_evidence_action(32, wid), seams=seams,
+                                      identity="system", actor=nyh.HYGIENE_ACTOR,
+                                      via="automation")
+    out = asyncio.run(run())
+    assert (out["ok"], out["step"]) == (False, "recommend_only")
+    assert calls == [] and seams.calls == []
+
+
+@pytest.mark.parametrize("over", [{"reason": "A different ask."}, {"replied": False},
+                                  {"hold_kind": "owner_action"}])
+def test_an_evidence_close_never_touches_an_ask_that_changed(isolated_db, monkeypatch, over):
+    calls = _fake_gh(monkeypatch)
+    seams = _Seams()
+
+    async def run():
+        wid = await _seed_evidence(33, **over)
+        return await nyh.apply_action(_evidence_action(33, wid), seams=seams,
+                                      identity="tony@example.com", actor="tony@example.com",
+                                      via="api")
+    out = asyncio.run(run())
+    assert (out["ok"], out["step"]) == (False, "evidence_hold_moved")
+    assert calls == [] and seams.calls == []
+
+
 def test_the_loop_can_never_apply_a_parked_review(isolated_db, monkeypatch):
     """Recommend-only (design §4: no automatic unpark, ever) — even if a caller
     hands the loop's executor a parked-review action."""

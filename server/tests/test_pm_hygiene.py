@@ -89,6 +89,43 @@ def test_stale_holds_releases_system_holds_the_queue_already_skips():
         ("stale_holds", "o/r#1", "release_hold", "runner")]
 
 
+# --- rule 7: evidence_posted (#3113) ----------------------------------------------------
+
+def test_evidence_posted_closes_an_owner_evidence_ask_a_human_answered():
+    """A human comment AFTER an ``owner_evidence`` hold → close as completed, carrying
+    the ask so the write re-checks it; a comment before the ask, a missing timestamp,
+    another hold kind, or an item somebody is on → nothing. Recommend-only."""
+    asked = NOW - timedelta(hours=5)
+    rows = [_row(1, hold_kind="owner_evidence", hold_by="session:s1", hold_set_at=asked,
+                 hold_reason="Verify the kitchen tablet shows the new layout.",
+                 last_human_comment_at=NOW),
+            _row(2, hold_kind="owner_evidence", hold_by="session:s1", hold_set_at=asked,
+                 last_human_comment_at=asked - timedelta(minutes=1)),
+            _row(3, hold_kind="owner_evidence", hold_by="session:s1", hold_set_at=asked,
+                 last_human_comment_at=None),
+            _row(4, hold_kind="owner_evidence", hold_by="session:s1", hold_set_at=None,
+                 last_human_comment_at=NOW),
+            _row(5, hold_kind="owner_action", hold_by="runner", hold_set_at=asked,
+                 last_human_comment_at=NOW),
+            _row(6, hold_kind="owner_evidence", hold_by="session:s1", hold_set_at=asked,
+                 last_human_comment_at=NOW, live_session=True)]
+    out = h.evidence_posted(rows)
+    assert [(a.rule, a.ref, a.action, a.work_item_id) for a in out] == [
+        ("evidence_posted", "o/r#1", "close", "wi1")]
+    [a] = out
+    assert a.detail["closeReason"] == "completed"
+    assert a.detail["holdReason"] == "Verify the kitchen tablet shows the new layout."
+    assert a.detail["comment"].startswith("The evidence asked for on 2026-10-14 was posted here")
+    assert "Asked: Verify the kitchen tablet" in a.detail["comment"]
+    assert "2026-10-14 12:00 UTC" in a.evidence
+    assert h.RULE_EVIDENCE_POSTED in h.RECOMMEND_ONLY_RULES and h.RULE_EVIDENCE_POSTED in h.RULES
+    # The same rows through ``plan`` reach the same finding.
+    assert [x.ref for x in h.plan(_inputs(rows), now=NOW) if x.rule == "evidence_posted"] == ["o/r#1"]
+    # A naive timestamp (SQLite hands them back tz-less) compares like an aware one.
+    assert h.evidence_replied(asked.replace(tzinfo=None), NOW)
+    assert not h.evidence_replied(NOW, asked.replace(tzinfo=None))
+
+
 # --- rule 4: resolved_edges -------------------------------------------------------------
 
 def test_resolved_edges_lists_only_prunable_edges_one_target_per_edge():

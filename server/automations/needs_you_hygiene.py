@@ -35,6 +35,7 @@ from server.automations.product_policy import NEEDS_YOU_AUTOMATION_MODES
 from server.pm import digest as dg
 from server.pm import hygiene as h
 from server.pm import parked_review as pr
+from server.pm.holds import OWNER_EVIDENCE
 from server.pm.hygiene import HygieneAction
 from server.pm.queue import QueueRow
 
@@ -117,6 +118,8 @@ async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
         return _HOLD_MOVED
     if action.rule == h.RULE_PARKED_REVIEW and not await _still_parked(action):
         return _NOT_PARKED
+    if action.rule == h.RULE_EVIDENCE_POSTED and not await _evidence_still_posted(action):
+        return _EVIDENCE_GONE
     # Comment first, then close — ``POST /api/pm/issues/close``'s order: an issue is
     # never closed without its explanation.
     url = await asyncio.to_thread(ci_issues.comment_on_issue, parts[0], parts[1],
@@ -131,6 +134,27 @@ async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
 #: A parked review's write found the issue no longer parked (or gone).
 _NOT_PARKED = {"ok": False, "step": "not_parked",
                "error": "the issue is no longer parked (or no longer mirrored)"}
+
+#: An evidence-posted close found the ask, or the reply, gone (#3113).
+_EVIDENCE_GONE = {"ok": False, "step": "evidence_hold_moved",
+                  "error": "the evidence ask changed, was released, or the reply is gone"}
+
+
+async def _evidence_still_posted(action: HygieneAction) -> bool:
+    """Whether the mirror still shows *action*'s issue open, under the SAME
+    ``owner_evidence`` ask it judged (reason word for word), with a human comment
+    after it (``hygiene.evidence_replied``) — a re-ask or a release in between is
+    never closed over (#3113)."""
+    from server.db import db_session
+    from server.db.models import WorkItem
+    if not action.work_item_id:
+        return False
+    expected = str(action.detail.get("holdReason") or "").strip()
+    async with db_session() as db:
+        wi = await db.get(WorkItem, action.work_item_id)
+        return (wi is not None and wi.state == "open" and wi.hold_kind == OWNER_EVIDENCE
+                and (wi.hold_reason or "").strip() == expected
+                and h.evidence_replied(wi.hold_set_at, wi.last_human_comment_at))
 
 
 async def _still_parked(action: HygieneAction) -> bool:

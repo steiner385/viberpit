@@ -34,6 +34,7 @@ export const ATTENTION_LABEL: Record<string, string> = {
   model_approval: 'Model approval',
   checklist: 'Checklist for you',
   decision: HOLD_LABEL.decision,
+  evidence: HOLD_LABEL.owner_evidence,
   owner_action: HOLD_LABEL.owner_action,
 }
 

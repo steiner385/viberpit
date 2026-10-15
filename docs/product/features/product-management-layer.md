@@ -57,11 +57,11 @@ not one per tick. The engine is pure/propose-only and never mutates onboarding s
 
 THE single description of the hold ladder (spec `docs/superpowers/specs/2026-09-18-hold-ladder-design.md`,
 landed items 1–6). A work item may carry one hold: `hold_kind` (`evidence`, `stronger_model`,
-`decision`, `owner_action`), `hold_reason` (mandatory), `hold_by` (the actor string: a person's
+`decision`, `owner_action`, `owner_evidence`), `hold_reason` (mandatory), `hold_by` (the actor string: a person's
 login, `session:<id>`, `assistant:<login>`, `lan@local`, `runner`, `automation:<id>`, `migration`),
 `hold_set_at`, and `hold_fingerprint` (the body fingerprint at hold time). A person may set or clear
-any kind; a session, the assistant, or a loopback caller may set or clear only `evidence` and
-`stronger_model` (`server/pm/holds.py:AGENT_SETTABLE`), plus `decision` through the one proposal
+any kind; a session, the assistant, or a loopback caller may set or clear only `evidence`,
+`stronger_model` and `owner_evidence` (`server/pm/holds.py:AGENT_SETTABLE`), plus `decision` through the one proposal
 route below; the runner and the automations write whichever kind their own flow owns but are never
 counted as "human" (`server/pm/holds.py:actor_class`). No actor may OVERWRITE a hold it could not
 itself clear — replacing a kind releases the old one first. Rejecting a classification proposal
@@ -73,10 +73,20 @@ rows on the live DB. Those conversion holds (`hold_by = migration`) record no de
 reconcile pass releases each once it is older than `MIGRATION_HOLD_TTL` (7 days), audited with
 signal `expired` (#2682) — the one hold time ends. Every overlay write still records its actor in `classified_by`.
 
-Only `owner_action` and a pending `decision` derive the board's "Held" status and the roadmap's
+Only `owner_action`, a pending `decision` and `owner_evidence` derive the board's "Held" status and the roadmap's
 needs-you tier; `evidence` and `stronger_model` are agent-settable AND queue-eligible, so an item
 under either one still reads `Ready`/`Backlog` and rides the Backlog Runner's ordinary queue until
 it is actually dispatched — a card is never shown "Held" for work nothing is parked on.
+
+**`owner_evidence`** (#3113) is the ask a session makes when the work is done as far as any agent
+can take it and only the OWNER can supply what is left — verify on the real kitchen tablet, confirm
+push delivery on a device, record a DPA acceptance date. The session sets it with `set_hold`
+(reason: exactly what evidence is needed, posted as a comment on the issue); it parks the card and
+reads as needs-you, the holds read model labels it `attentionKind: "evidence"`, and the owner digest
+lists it in its own group with no recommendation. The reply closes it through the needs-you
+hygiene's `evidence_posted` rule (below): a human comment after the hold becomes a
+recommend-only "Close — evidence posted" in the digest, one tap. Retry releases it without the
+evidence; a person's `owner_evidence` park refuses a decision proposal like any other person's hold.
 
 **Decision escalation.** The `decision-escalation` automation (default off) watches held items per product and sends one `decision_needed` digest when decisions are starving dispatch, ageing, or blocking a lot of work; it never resolves a decision itself. See `docs/product/features/decision-escalation.md`.
 
@@ -276,7 +286,10 @@ close-out hold ("merged PR left the issue open") is assessed by a stateless help
 (`server/automations/closeout_assessor.py`, ≤ 3 per tick, one per issue body) and becomes a close
 (every item done, with evidence), a release (signal `assessment`: an agent can finish it) or a
 rewrite of the hold reason to "Left for you: - [ ] …" (only what a person must do; the hold keeps
-its age). Each write re-checks the hold it judged (`holds.assessed_system_hold`). Triage-accepted issues missing from the board need no
+its age). Each write re-checks the hold it judged (`holds.assessed_system_hold`). `evidence_posted`
+(#3113): an `owner_evidence` hold with a human comment after it → close as completed, quoting the
+ask — recommend-only whatever the `risk_tolerance` (the mirror does not know WHO commented), and
+the write re-checks the same ask and reply are still there. Triage-accepted issues missing from the board need no
 rule: the reconciler adds every open issue (`reconcile_diff.membership`) and places a classified
 one at Ready. The product's `needs_you_automation` policy key (`off | dry_run | on`, default `on`)
 lowers the automation's mode for that product; `risk_tolerance` `balanced`/`bold` applies each

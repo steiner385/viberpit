@@ -49,7 +49,7 @@ eleven tools (plus the roadmap tools):
 | `mark_complete` | SIGNAL | none | Declares the session's objective is fully done. |
 | `mark_no_pr` | SIGNAL | resolution (`not-needed` \| `cancelled` \| `awaiting-decision`), note? | Declares the work is finished but no PR is appropriate — or, with `awaiting-decision`, that it stopped on a `propose_decision` the person must answer. |
 | `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `handed_back` (#2321). |
-| `set_hold` | SIGNAL | kind (`evidence`\|`stronger_model`\|null), reason, ref? | Holds (or releases) the issue this session was dispatched for, on the roadmap ladder (spec 2026-09-18 §8). Limited to the two agent-settable kinds — see below. |
+| `set_hold` | SIGNAL | kind (`evidence`\|`stronger_model`\|`owner_evidence`\|null), reason, ref? | Holds (or releases) the issue this session was dispatched for, on the roadmap ladder (spec 2026-09-18 §8). Limited to the three agent-settable kinds — see below. |
 | `propose_decision` | SIGNAL | options (2–6 × {key, label, detail?}), recommended_key, rationale | Parks this session's issue on a PRODUCT DECISION only a person can take: draft the options, name the one you recommend, say why. The person picks one in the Inbox (spec 2026-09-18 §6). |
 | `share_artifact` | SIGNAL | kind (`url`\|`path`\|`image`), value, label, note? | Puts a deliverable in front of the user as an always-visible transcript card: an http(s) URL, an absolute path on the session host (copyable chip), or an image on the session host, which the handler ingests into the attachment store and the card renders inline. See below. |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
@@ -173,7 +173,7 @@ things distinguish it from `READ`:
   that is read-only would be false, even though it gets the same no-card treatment as `READ` for
   the unattended-completion reason above.
 
-### `set_hold`: the two kinds an agent may set itself
+### `set_hold`: the kinds an agent may set itself
 
 `set_hold` is SIGNAL for the same reason as `request_model`: it moves a roadmap chip (a hold badge
 on the work item, spec 2026-09-18 §3/§8), never something in the project, and an unattended runner
@@ -191,7 +191,15 @@ acts on. Both remain the auto-exiting kinds: nothing about them requires a human
 hold — a later run (agent or system) clears it once the evidence lands or a stronger model picks the
 item up.
 
-The two kinds that DO need a person are not this tool's, and they are not one job either.
+The third agent-settable kind, `owner_evidence` (#3113), is the one owner-facing park a session
+writes itself: the work is done as far as any agent can take it and only the owner can supply what
+is left — verify on a real device, record a legal date, confirm a physical fact. The reason must say
+exactly what evidence is needed and that it goes in a comment on the issue. Unlike the two above it
+parks the card and reads as needs-you; the owner digest lists it in its own group, and the reply
+closes it through the hygiene loop's recommend-only `evidence_posted` rule. It is an ASK for a fact,
+never a hand-off: a session that is out of moves still calls `hand_back`.
+
+The two kinds that DO need a person to decide are not this tool's, and they are not one job either.
 `owner_action` is `hand_back`'s: the session is out of moves and the item belongs to its owner.
 `decision` is `propose_decision`'s (below): the session knows exactly what it would do, it just may
 not choose between two defensible answers — so it drafts them and parks the item until somebody

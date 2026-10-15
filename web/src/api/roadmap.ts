@@ -245,7 +245,9 @@ export interface HoldEscalation {
   needsApproval: string
 }
 
-export type HeldAttentionKind = 'model_approval' | 'checklist' | 'decision' | 'owner_action'
+/** What a held card asks of a person (`server/pm/escalation.py:ATTENTION_KINDS`);
+ *  `evidence` is an `owner_evidence` hold (#3113): a fact only the owner can supply. */
+export type HeldAttentionKind = 'model_approval' | 'checklist' | 'decision' | 'evidence' | 'owner_action'
 
 export interface HeldItem {
   ref: string
@@ -254,7 +256,7 @@ export interface HeldItem {
   product: string
   title: string | null
   url: string | null
-  holdKind: 'owner_action' | 'decision'
+  holdKind: 'owner_action' | 'decision' | 'owner_evidence'
   holdReason: string
   holdBy: string
   holdSetAt: string | null

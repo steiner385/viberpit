@@ -79,7 +79,7 @@ export function HeldIssueCard({ item, showProduct = false }: { item: HeldItem; s
       ) : <p className="max-w-prose text-ink">{why}</p>}
       {next && <p className="max-w-prose text-ink-muted">{next}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        {item.holdKind === 'owner_action' && itemId && (
+        {(item.holdKind === 'owner_action' || item.holdKind === 'owner_evidence') && itemId && (
           <Button size="sm" loading={release.isPending} disabled={pending} onClick={() => void retry()}>Retry</Button>
         )}
         {item.escalation && itemId && (

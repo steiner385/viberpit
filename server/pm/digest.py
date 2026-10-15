@@ -312,6 +312,8 @@ def from_recommendation(rec: Mapping, *, url: str | None = None) -> DigestItem:
         label = f"Move to {detail['status']}"
     if action == "close" and detail.get("closeReason") == "not_planned":
         label = "Close as not planned"
+    if action == "close" and rec.get("rule") == "evidence_posted":
+        label = "Close — evidence posted"
     evidence = tuple({"title": f"#{p.get('number')} {p.get('title') or ''}".strip(),
                       "url": str(p.get("url"))}
                      for p in (detail.get("prs") or ()) if isinstance(p, Mapping) and p.get("url"))

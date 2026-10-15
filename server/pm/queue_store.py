@@ -184,5 +184,6 @@ def load_queue_rows(db: Session, *, now: datetime,
                 work_item_id=w.id,
                 not_needed_until=not_needed_until,
                 not_needed_standing=not_needed_standing,
+                last_human_comment_at=_aware(w.last_human_comment_at),
             ))
     return rows

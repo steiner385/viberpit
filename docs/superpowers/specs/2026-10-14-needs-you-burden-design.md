@@ -187,13 +187,20 @@ merged PRs show (removed or replaced code), and the model is told to answer `kee
 `OwnerRecommendation`s, one recommended action each (`server/pm/digest.py`, composed by
 `server/api/pm_digest.py:load_digest`): approve model (a `model_approval` hold), apply a
 recommendation (close, unpark, release hold, …), accept triage (only a `high`-confidence
-proposal onto a capability). A checklist, a decision, a hand-off and an initiative gate carry
-none — a gate is never advanced from here; its item links to the gate. An owner recommendation
+proposal onto a capability), and — since #3112 — accept a decision whose proposer named a
+recommended option, release a system hand-off the queue skips anyway
+(`policy_skip.stale_system_holds`, rule 3's own predicate, ahead of any approve button), and
+advance an initiative whose build epic is done (`tree.initiative_reason == "advance"`). A
+checklist, an `awaiting_human` gate (a plan or design to review), an `owner_evidence` ask
+(#3113: a fact only the owner can supply, listed in its own group after everything a person
+decides) and any other hand-off carry none. The human is still the gate: nothing moves until
+they approve the recommendation, and every gate item links to the gate. An owner recommendation
 targeting an item the digest already lists stands in for it. `POST /api/pm/digest/apply` takes
 `{ids, confirm: true}` ("approve all" passes every id with a recommendation), re-derives each
 action from current state and runs it through the existing path (`approve_escalation`,
-`pm_hygiene.apply_pending`, `apply_accept`), each with its own audit plus one `pm.digest.apply`
-row per call. Once a day per product, when the digest is non-empty and `needs_you_automation`
+`pm_hygiene.apply_pending`, `apply_accept`, `decisions.accept`,
+`holds.release_policy_skipped_holds`, `sdlc.advance_initiative_row`), each with its own audit
+plus one `pm.digest.apply` row per call. Once a day per product, when the digest is non-empty and `needs_you_automation`
 is not off and outside quiet hours, the hygiene tick sends a single `decision_needed` push
 ("N items need you — M have a recommendation"), deduped on its `pm.digest.sent` audit row. The
 assistant gets `get_owner_digest` (read) and `apply_owner_digest` (operator-tier, destructive
@@ -203,5 +210,9 @@ digest" card at the top of the Needs-you tab.
 ## Non-goals
 
 * No auto-advance of SDLC gates: governance keeps the human as the gate (constitution).
-  The digest only *recommends* "advance".
+  The digest only *recommends* "advance" (#3112: as a one-tap recommendation the person
+  approves, never applied by the loop).
 * No automatic unpark, ever.
+* No automatic close on an `owner_evidence` reply (#3113): the mirror records that a human
+  commented, not who — a session's own follow-up lands under the owner's login — so the
+  `evidence_posted` rule is recommend-only and the owner's tap is the proof.
