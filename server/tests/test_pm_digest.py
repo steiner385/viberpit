@@ -46,6 +46,22 @@ def test_a_checklist_decision_or_hand_off_recommends_nothing(attention, kind):
     assert item.why.startswith("Left for you:")
 
 
+def test_an_owner_evidence_ask_is_its_own_kind_and_recommends_nothing():
+    """#3113: evidence only the owner can supply (a device check, a legal record) is
+    grouped apart from decisions and hand-offs — after everything a person DECIDES —
+    and carries no recommendation: it is answered on the issue, not chosen here."""
+    item = dg.from_held(_held("o/r#7", wid="wi7", kind="owner_evidence", attention="evidence",
+                              reason="Verify the kitchen tablet shows the new layout; "
+                                     "reply here with what you see."))
+    assert item.id == "hold:wi7" and item.kind == "evidence"
+    assert item.recommendation is None
+    assert item.why.startswith("Verify the kitchen tablet")
+    assert dg.KINDS.index("evidence") > dg.KINDS.index("owner_action")
+    blank = dg.from_held(_held("o/r#8", wid="wi8", kind="owner_evidence", attention="evidence",
+                               reason=""))
+    assert blank.why == dg.WHY_EVIDENCE
+
+
 @pytest.mark.parametrize("level,feature,recommended", [
     ("high", "sessions", True), ("medium", "sessions", False), ("high", None, False)])
 def test_triage_is_accepted_only_when_confident_and_onto_a_capability(level, feature,

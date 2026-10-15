@@ -183,8 +183,13 @@ def test_held_items_say_what_they_ask_of_a_person():
                  hold_reason="Left for you:\n- [ ] check prod", work_item_id="w2"),
             _row(ref="o/r#4", number=4, hold_kind="owner_action", hold_by="runner",
                  hold_reason="needs the keyring", work_item_id="w4"),
+            _row(ref="o/r#5", number=5, hold_kind="owner_evidence", hold_by="session:s1",
+                 hold_reason="Left for you:\n- [ ] verify on the tablet", work_item_id="w5"),
             _held("o/r#3", "decision", work_item_id=None)]
     items = {i.ref: i.attention_kind for i in held_items(rows, {}, **KW)}
+    # #3113: an owner_evidence hold is "evidence" even when its reason is checklist-shaped.
     assert items == {"o/r#1": "model_approval", "o/r#2": "checklist",
-                     "o/r#4": "owner_action", "o/r#3": "decision"}
+                     "o/r#4": "owner_action", "o/r#3": "decision", "o/r#5": "evidence"}
     assert attention_kind("decision", "Left for you: x", None) == "decision"
+    assert {i.ref: i.released_by for i in held_items(rows, {}, **KW)}["o/r#5"] == (
+        "Post the evidence as a comment on the issue, or Retry")

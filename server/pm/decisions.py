@@ -180,10 +180,12 @@ async def propose(db, wi: WorkItem, *, options: "Iterable[Any]", recommended_key
     are both dead ends — and the caller commits them together.
 
     Refuses (``DecisionError``) when the item already has a pending proposal, and
-    when a PERSON has parked the item: their park wins, and a session that finds
-    one should report back rather than quietly overwriting it. A machine's park
-    (the runner's hand-off, an agent's evidence hold) is superseded — the
-    decision is the more specific answer to "why is this stopped".
+    when a PERSON has parked the item (any ``HELD_KINDS`` kind — a hand-off, or an
+    ``owner_evidence`` ask they wrote themselves): their park wins, and a session
+    that finds one should report back rather than quietly overwriting it. A
+    machine's park (the runner's hand-off, a session's ``owner_evidence`` ask, an
+    agent's evidence hold) is superseded — the decision is the more specific
+    answer to "why is this stopped".
     """
     from sqlalchemy import select
 

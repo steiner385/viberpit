@@ -122,7 +122,8 @@ def issue_tier(state: str | None, triage_state: str | None,
                reason: str | None = None, hold_kind: str | None = None,
                assigned_to_owner: bool = False) -> str:
     """needs-you only when a human alone can unblock it (design 2026-10-14 §1,
-    ``server/pm/attention.py``): a ``HELD_KINDS`` hold, a session waiting on a
+    ``server/pm/attention.py``): a ``HELD_KINDS`` hold (a hand-off, a pending
+    decision, or an ``owner_evidence`` ask — #3113), a session waiting on a
     person, a *reason* (``needs_spec``), or an issue assigned to the product
     owner. A bare board ``Held`` card is WAITING — ``blocked``, so the leaf still
     reads as stopped — like a board ``Blocked`` card or an open dependency."""

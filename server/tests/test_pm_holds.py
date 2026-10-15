@@ -23,9 +23,11 @@ def _park(wi, kind, *, actor="tony@example.com"):
 
 
 def test_vocabularies():
-    assert HOLD_KINDS == ("evidence", "stronger_model", "decision", "owner_action")
+    assert HOLD_KINDS == ("evidence", "stronger_model", "decision", "owner_action",
+                          "owner_evidence")
     assert "needs_human" not in WORK_ITEM_TRIAGE_STATES
-    assert AGENT_SETTABLE == frozenset({"evidence", "stronger_model"})
+    # #3113: a session may ASK the owner for evidence, but never hand off or decide.
+    assert AGENT_SETTABLE == frozenset({"evidence", "stronger_model", "owner_evidence"})
 
 
 @pytest.mark.parametrize("actor,cls", [
@@ -46,6 +48,7 @@ def test_may_set_by_class():
     for kind in HOLD_KINDS:
         assert may_set(person, kind)
     assert may_set(agent, "evidence") and may_set(agent, "stronger_model")
+    assert may_set(agent, "owner_evidence")
     assert not may_set(agent, "decision") and not may_set(agent, "owner_action")
     # system actors (runner, automations) are the ladder and the reject flows: any kind.
     for kind in HOLD_KINDS:

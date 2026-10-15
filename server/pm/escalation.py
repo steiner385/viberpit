@@ -34,6 +34,7 @@ from server.pm.queue import QueueRow, rank, skip_reason
 RELEASED_BY: dict[str, str] = {
     "decision": "Accept an option in the Inbox",
     "owner_action": "Retry, a board move to Ready/Backlog, or an issue-body edit",
+    "owner_evidence": "Post the evidence as a comment on the issue, or Retry",
 }
 #: The owner_action line when the hold is an approval-gated hand-off
 #: (``outcomes.escalation_for``): the fourth way out is approving the climb.
@@ -50,24 +51,30 @@ def released_by(hold_kind: str, escalation: Escalation | None) -> str:
 
 #: What a held item asks of a person (design 2026-10-14 §3), one word per card kind:
 #: approve a model climb, tick off a checklist the close-out assessment narrowed the
-#: hold to, pick a decision's option, or act on an owner_action hand-off.
+#: hold to, pick a decision's option, supply evidence only the owner has (#3113, an
+#: ``owner_evidence`` hold), or act on an owner_action hand-off.
 ATTENTION_MODEL_APPROVAL = "model_approval"
 ATTENTION_CHECKLIST = "checklist"
 ATTENTION_DECISION = "decision"
+ATTENTION_EVIDENCE = "evidence"
 ATTENTION_OWNER_ACTION = "owner_action"
 ATTENTION_KINDS: tuple[str, ...] = (ATTENTION_MODEL_APPROVAL, ATTENTION_CHECKLIST,
-                                    ATTENTION_DECISION, ATTENTION_OWNER_ACTION)
+                                    ATTENTION_DECISION, ATTENTION_EVIDENCE,
+                                    ATTENTION_OWNER_ACTION)
 
 
 def attention_kind(hold_kind: str, hold_reason: str | None,
                    escalation: Escalation | None) -> str:
     """THE attention kind of a hold (``ATTENTION_KINDS``): an approval-gated climb
     (``outcomes.escalation_for``), an assessed checklist
-    (``closeout_assess.is_checklist_reason``), a decision, else an owner action."""
+    (``closeout_assess.is_checklist_reason``), a decision, an owner-evidence ask,
+    else an owner action."""
     if escalation is not None:
         return ATTENTION_MODEL_APPROVAL
     if hold_kind == "decision":
         return ATTENTION_DECISION
+    if hold_kind == "owner_evidence":
+        return ATTENTION_EVIDENCE
     if is_checklist_reason(hold_reason):
         return ATTENTION_CHECKLIST
     return ATTENTION_OWNER_ACTION

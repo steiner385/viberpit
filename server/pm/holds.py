@@ -26,8 +26,19 @@ if TYPE_CHECKING:
 #: ``release_on_dispatch``'s reader/audit pair.
 STRONGER_MODEL = "stronger_model"
 
-#: Kinds a non-person (session, assistant, loopback caller) may set or clear.
-AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", STRONGER_MODEL})
+#: The owner-only evidence ask (#3113): a session that finished what it could but
+#: needs the OWNER to verify on a real device, record a legal date, or supply some
+#: other fact no agent can — distinct from ``evidence`` (an agent investigates) and
+#: from ``owner_action`` (the owner decides or acts). It parks the card
+#: (``desired_state.HELD_KINDS``), reads as needs-you, and the owner digest lists it
+#: in its own group with no recommendation: only the owner can answer it.
+OWNER_EVIDENCE = "owner_evidence"
+
+#: Kinds a non-person (session, assistant, loopback caller) may set or clear. A
+#: session may ask the owner for evidence (``OWNER_EVIDENCE``) — that is the one
+#: owner-facing park an agent writes itself — but never hand the item off wholesale
+#: (``owner_action``) nor shadow a decision (``decision``).
+AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", STRONGER_MODEL, OWNER_EVIDENCE})
 
 #: System actors: the runner and the automations. They ARE the ladder and the
 #: reject flows, so they may write any kind — but they are never "human".

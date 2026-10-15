@@ -37,9 +37,10 @@ FAILED_TURN_SESSION_STATUSES = frozenset({"needs_attention"})
 LIVE_SESSION_STATUSES = (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
                          | FAILED_TURN_SESSION_STATUSES)
 
-#: Hold kinds that park the card (spec 2026-09-18 §7). evidence / stronger_model exit
-#: on their own and never reach the board.
-HELD_KINDS: frozenset[str] = frozenset({"owner_action", "decision"})
+#: Hold kinds that park the card (spec 2026-09-18 §7): a hand-off, a pending decision,
+#: and an ``owner_evidence`` ask (#3113 — only the owner can supply what it waits for).
+#: evidence / stronger_model exit on their own and never reach the board.
+HELD_KINDS: frozenset[str] = frozenset({"owner_action", "decision", "owner_evidence"})
 
 
 @dataclass(frozen=True)

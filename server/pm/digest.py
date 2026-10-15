@@ -12,9 +12,10 @@ shapes them and picks the recommendation:
 * a model-approval hold → approve the escalation at the requested tier;
 * a pending owner recommendation → apply it (close, unpark, release, …);
 * a HIGH-confidence triage proposal onto a capability → accept it;
-* everything else (a checklist, a decision, an initiative gate, a hand-off) →
-  none: only a person can choose. A gate is never advanced from here
-  (governance keeps the human as the gate); its item links to the gate.
+* everything else (a checklist, a decision, an initiative gate, a hand-off, an
+  ``owner_evidence`` ask — #3113, its own group) → none: only a person can
+  choose or supply it. A gate is never advanced from here (governance keeps the
+  human as the gate); its item links to the gate.
 
 Every applicable action is re-derived from current state when applied
 (``POST /api/pm/digest/apply``) — the id names the item, never the action.
@@ -30,11 +31,16 @@ from typing import Any
 
 from server.pm.closeout_assess import cut_text
 from server.pm.escalation import (ATTENTION_CHECKLIST, ATTENTION_DECISION,
-                                  ATTENTION_MODEL_APPROVAL, ATTENTION_OWNER_ACTION, HeldItem)
+                                  ATTENTION_EVIDENCE, ATTENTION_MODEL_APPROVAL,
+                                  ATTENTION_OWNER_ACTION, HeldItem)
 
 KIND_MODEL_APPROVAL = ATTENTION_MODEL_APPROVAL
 KIND_CHECKLIST = ATTENTION_CHECKLIST
 KIND_DECISION = ATTENTION_DECISION
+#: An ``owner_evidence`` hold (#3113): the owner supplies a fact no agent can (a
+#: device check, a legal record). Its own group, after everything a person
+#: DECIDES — these are answered by posting on the issue, not by choosing.
+KIND_EVIDENCE = ATTENTION_EVIDENCE
 KIND_OWNER_ACTION = ATTENTION_OWNER_ACTION
 KIND_GATE = "gate"
 KIND_TRIAGE = "triage"
@@ -42,7 +48,7 @@ KIND_ISSUE = "issue"
 KIND_RECOMMENDATION = "recommendation"
 KINDS: tuple[str, ...] = (KIND_MODEL_APPROVAL, KIND_RECOMMENDATION, KIND_TRIAGE,
                           KIND_DECISION, KIND_CHECKLIST, KIND_OWNER_ACTION, KIND_GATE,
-                          KIND_ISSUE)
+                          KIND_ISSUE, KIND_EVIDENCE)
 
 #: The recommended actions ``POST /api/pm/digest/apply`` can carry out.
 ACTION_APPROVE_ESCALATION = "approve_escalation"
@@ -135,8 +141,8 @@ def _why(text: str | None) -> str:
 
 def from_held(item: HeldItem) -> DigestItem:
     """A held issue (the holds read model): a model approval recommends approving
-    the climb it asked for; a checklist, a decision or a hand-off recommends
-    nothing — only a person can do or choose it."""
+    the climb it asked for; a checklist, a decision, an owner-evidence ask or a
+    hand-off recommends nothing — only a person can do, choose or supply it."""
     rec = None
     if item.escalation is not None and item.work_item_id:
         tier = item.escalation.needs_approval
@@ -145,6 +151,8 @@ def from_held(item: HeldItem) -> DigestItem:
     why = item.hold_reason
     if item.attention_kind == KIND_DECISION:
         why = item.hold_reason or "A decision is waiting for you to pick an option."
+    elif item.attention_kind == KIND_EVIDENCE:
+        why = item.hold_reason or WHY_EVIDENCE
     return DigestItem(id=item_id(ID_HOLD, item.work_item_id or item.ref),
                       kind=item.attention_kind, product=item.product,
                       title=item.title or item.ref, why=_why(why), url=item.url or None,
@@ -194,6 +202,10 @@ def from_initiative(product: str, node: Mapping) -> DigestItem:
                       title=str(node.get("title") or slug), why=why,
                       url=f"/initiatives/{slug}", slug=slug)
 
+
+#: An ``owner_evidence`` hold whose reason is blank (the writer always gives one;
+#: this is the read-side fallback).
+WHY_EVIDENCE = "Evidence only you can supply is waiting — post it on the issue."
 
 #: A needs-you issue's "why" when it carries no hold (``tree.issue_tier``).
 WHY_NEEDS_SPEC = "Bounced out of the runner — it needs a better spec."

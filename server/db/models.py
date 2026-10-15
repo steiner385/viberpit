@@ -1889,9 +1889,12 @@ WORK_ITEM_KINDS: tuple[str, ...] = ("issue", "pr")
 # below, not a triage state.
 WORK_ITEM_TRIAGE_STATES: tuple[str, ...] = ("unclassified", "proposed", "classified")
 
-# Why a work item is held (spec 2026-09-18 §3). Only ``owner_action`` and a
-# pending ``decision`` render as "Needs you"; the other two exit on their own.
-HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_action")
+# Why a work item is held (spec 2026-09-18 §3). ``owner_action``, a pending
+# ``decision`` and ``owner_evidence`` (#3113: evidence only the owner can supply —
+# a device check, a legal record) render as "Needs you"; ``evidence`` and
+# ``stronger_model`` exit on their own.
+HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_action",
+                               "owner_evidence")
 
 # The accept/reject lifecycle every proposal kind shares: a MaterializationProposal
 # (spec 003 §7b) and a DecisionProposal (spec 2026-09-18 §6) live on exactly these

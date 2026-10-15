@@ -252,13 +252,18 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "or correlate before anyone builds; the hold is visible on the roadmap and "
                "the next pass over this issue reads it. kind 'stronger_model': record that "
                "you are under-powered for this issue; the next pass reads it when choosing "
-               "a model. kind null: release the hold you set (e.g. you found the cause and "
+               "a model. kind 'owner_evidence': the work is done as far as any agent can "
+               "take it and only the OWNER can supply what is left — verify on a real "
+               "device, record a legal date, confirm a physical fact; reason must say "
+               "exactly what evidence is needed and that it goes in a comment on the "
+               "issue. kind null: release the hold you set (e.g. you found the cause and "
                "wrote it into the issue). reason: one sentence, required. ref (optional): "
-               "owner/repo#N, default this session's issue. Only these two kinds are yours "
-               "to set; a hold that needs the owner is hand_back's job.",
+               "owner/repo#N, default this session's issue. Only these three kinds are "
+               "yours to set; a hold that needs the owner to DECIDE is hand_back's job.",
                {"type": "object",
                 "properties": {"kind": {"type": ["string", "null"],
-                                        "enum": ["evidence", "stronger_model", None]},
+                                        "enum": ["evidence", "stronger_model",
+                                                 "owner_evidence", None]},
                                "reason": {"type": "string"},
                                "ref": {"type": "string"}},
                 "required": ["kind", "reason"]})
