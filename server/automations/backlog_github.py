@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Callable, Iterable, Literal
 
 from viberpit import brand, gitrepos
@@ -134,7 +135,7 @@ def is_deferred(outcome: str | None) -> bool:
 
 #: Why a session left an issue open with a non-closing keyword (#3107), declared in
 #: the PR body as ``Refs #<n> (left-open: <reason>)``. THE vocabulary: the implement
-#: prompt renders it (with these glosses) and :func:`declared_left_open_reason`
+#: prompt renders it (with these glosses) and :func:`declared_left_open`
 #: accepts only these tokens. Each reason's disposition is
 #: :func:`left_open_disposition`'s, nowhere else.
 LEFT_OPEN_REASONS: dict[str, str] = {
@@ -148,24 +149,70 @@ LEFT_OPEN_REASONS: dict[str, str] = {
                           "(a decision, an account fact, a credential)",
 }
 
-LeftOpenDisposition = Literal["defer", "requeue", "hold"]
+LeftOpenDisposition = Literal["defer", "requeue", "evidence", "hold"]
+
+
+@dataclass(frozen=True)
+class LeftOpen:
+    """A PR's declaration that it left an issue open (#3107): the reason token
+    (one of :data:`LEFT_OPEN_REASONS`) and the free-text note after it, if any —
+    for an owner-evidence reason, exactly what the owner must supply (#3113)."""
+    reason: str
+    note: str = ""
 
 
 def left_open_disposition(reason: str | None) -> LeftOpenDisposition:
-    """THE left-open reason → close-out disposition rule (#3107):
+    """THE left-open reason → close-out disposition rule (#3107, #3113):
 
     - ``defer`` — no hold; the issue stays open and the queue looks at it again
       only after it materially changes or the not-needed backoff window ends;
     - ``requeue`` — no hold and no window; the runner re-claims it on a refill;
-    - ``hold`` — an ``owner_action`` close-out hold, as before #3107. Also the
-      answer for no / an unknown reason. (#3113 will route the two declared
-      hold reasons to their own hold kind: one edit, here.)
+    - ``evidence`` — an ``owner_evidence`` hold (#3113): only the owner can supply
+      the proof (a check by hand, a record), and the issue closes once they do;
+    - ``hold`` — an ``owner_action`` close-out hold, as before #3107: the answer
+      for no / an unknown reason.
     """
     if reason in ("epic", "awaiting_deploy_or_condition"):
         return "defer"
     if reason == "remaining_work":
         return "requeue"
+    if reason in ("needs_physical_verification", "needs_owner_record"):
+        return "evidence"
     return "hold"
+
+
+#: The close-out's "an owner must supply evidence" outcome (#3113), carrying the
+#: hold reason and the ``holds.EvidenceRequest`` wire after the colon as JSON —
+#: :func:`evidence_outcome` writes it, :func:`evidence_detail` reads it back.
+EVIDENCE = "evidence"
+
+
+def evidence_outcome(reason: str, request: dict) -> str:
+    return f"{EVIDENCE}: " + json.dumps({"reason": reason, "request": request},
+                                        sort_keys=True)
+
+
+def evidence_detail(outcome: str | None) -> dict | None:
+    """``{"reason", "request"}`` of an :func:`evidence_outcome`, else ``None``."""
+    prefix = f"{EVIDENCE}: "
+    if not outcome or not outcome.startswith(prefix):
+        return None
+    try:
+        detail = json.loads(outcome[len(prefix):])
+    except ValueError:
+        return None
+    if not isinstance(detail, dict) or not isinstance(detail.get("request"), dict):
+        return None
+    return {"reason": str(detail.get("reason") or ""), "request": detail["request"]}
+
+
+def evidence_request_for(declared: LeftOpen) -> dict:
+    """The ``holds.EvidenceRequest`` wire for an evidence-reason declaration: the
+    session's note when it gave one, else the reason's gloss as a request."""
+    from server.pm.holds import EvidenceRequest
+    text = declared.note or (f"{LEFT_OPEN_REASONS[declared.reason][0].upper()}"
+                             f"{LEFT_OPEN_REASONS[declared.reason][1:]}.")
+    return EvidenceRequest(request=text).to_wire()
 
 
 #: The runner's close-out hold reason before #2681 — generic, naming nothing. Still
@@ -733,20 +780,25 @@ def _text_defers_issue(text: str, repo: str, number: int) -> bool:
                for line in _CODE_RE.sub(" ", text).splitlines())
 
 
-def declared_left_open_reason(text: str, repo: str, number: int) -> str | None:
-    """The reason a PR declared for leaving ``repo#number`` open (#3107), or
-    ``None``. The grammar, right after a non-closing reference::
+def declared_left_open(text: str, repo: str, number: int) -> LeftOpen | None:
+    """What a PR declared for leaving ``repo#number`` open (#3107), or ``None``. The
+    grammar, right after a non-closing reference, with an optional note after the
+    reason (#3113 — for an owner-evidence reason, what exactly to supply)::
 
         Refs #123 (left-open: remaining_work)
         Refs #123 — left-open: awaiting_deploy_or_condition
+        Refs #123 (left-open: needs_owner_record — record the DPA acceptance dates)
 
     Case-insensitive, code spans ignored (a PR quoting the grammar declares
     nothing), and an unknown token is no declaration at all."""
     pattern = (_keyword_target(_NON_CLOSING_KEYWORDS, repo, number)
-               + r"\s*(?:\(\s*|[-—–:]\s*)?left[\s-]open:\s*(?P<reason>[a-z_]+)")
+               + r"\s*(?:\(\s*|[-—–:]\s*)?left[\s-]open:\s*(?P<reason>[a-z_]+)"
+               + r"(?:[ \t]*[-—–:][ \t]*(?P<note>[^)\n]*))?")
     m = re.search(pattern, _CODE_RE.sub(" ", text), re.IGNORECASE)
     reason = m.group("reason").lower() if m else None
-    return reason if reason in LEFT_OPEN_REASONS else None
+    if m is None or reason not in LEFT_OPEN_REASONS:
+        return None
+    return LeftOpen(reason=reason, note=(m.group("note") or "").strip())
 
 
 def _pr_declines_to_close(ref: str, linkage: dict | None) -> bool:
@@ -769,12 +821,12 @@ def _pr_declines_to_close(ref: str, linkage: dict | None) -> bool:
             and not _keyword_references_issue(text, _CLOSING_KEYWORDS, repo, number))
 
 
-def _pr_left_open_reason(ref: str, linkage: dict | None) -> str | None:
-    """:func:`declared_left_open_reason` for *ref* over the PR's body + commits."""
+def _pr_left_open(ref: str, linkage: dict | None) -> LeftOpen | None:
+    """:func:`declared_left_open` for *ref* over the PR's body + commits."""
     repo, number_s = _split_ref(ref)
     if linkage is None or not number_s.isdigit():
         return None
-    return declared_left_open_reason(linkage.get("text") or "", repo, int(number_s))
+    return declared_left_open(linkage.get("text") or "", repo, int(number_s))
 
 
 def _pr_issue_linked(ref: str, pr_number: int, linkage: dict | None, *,
@@ -963,6 +1015,17 @@ def _release_tracking_issue(ref: str, open_children: int, pr_link: str, *,
         gh_run=gh_run)
 
 
+def _request_evidence(ref: str, request: dict, pr_link: str, *, gh_run: GhRun) -> None:
+    """Say on an issue the merged PR left open for the OWNER's evidence (#3113)
+    exactly what to supply and where, and that it closes once they have. Best-effort."""
+    _issue_comment(
+        ref,
+        f"PR {pr_link} merged; this issue stays open for evidence only you can give: "
+        f"**{request.get('request')}** Post it as {request.get('where')} — "
+        f"{brand.NAME} closes the issue once it is there, and reminds you until then.",
+        gh_run=gh_run)
+
+
 def _leave_open(ref: str, why: str, disposition: LeftOpenDisposition, pr_link: str, *,
                 gh_run: GhRun) -> None:
     """Say on an issue a merged PR deliberately left open what happens next
@@ -1038,6 +1101,7 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     # one whose own acceptance list is unfinished (#784, #2681): gate each linked
     # issue on its own signals, and keep what is left for the runner's hold.
     gates: list[str] = []
+    evidence: list[tuple[str, dict]] = []
     deferred = False
     incomplete = any(verdict is None for verdict in verdicts.values())
     for ref in linked:
@@ -1052,23 +1116,33 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
         # nothing about a container epic needs a person at merge time.
         declines = _pr_declines_to_close(ref, linkage)
         epic_label = _epic_label_defers(signals)
-        declared = ("epic" if epic_label else
-                    _pr_left_open_reason(ref, linkage) if declines else None)
-        disposition = left_open_disposition(declared)
-        if declared and disposition != "hold":
+        declared = (LeftOpen("epic") if epic_label else
+                    _pr_left_open(ref, linkage) if declines else None)
+        disposition = left_open_disposition(declared.reason if declared else None)
+        if declared and disposition in ("defer", "requeue"):
             log.info("backlog_github.close_batch_left_open ref=%s pr=%s reason=%s "
-                     "disposition=%s", ref, pr_number, declared, disposition)
-            why = (f"it is labelled 'epic' — {LEFT_OPEN_REASONS[declared]}" if epic_label
-                   else f"the session declared it — {LEFT_OPEN_REASONS[declared]}")
+                     "disposition=%s", ref, pr_number, declared.reason, disposition)
+            gloss = LEFT_OPEN_REASONS[declared.reason]
+            why = (f"it is labelled 'epic' — {gloss}" if epic_label
+                   else f"the session declared it — {gloss}")
             _leave_open(ref, why, disposition, pr_link, gh_run=gh_run)
             deferred = deferred or disposition == "defer"
             continue
+        if declared and disposition == "evidence":
+            # #3113: the owner's evidence, asked for exactly — never "finish what is
+            # left". The hold reason still names the declared reason.
+            request = evidence_request_for(declared)
+            ev_reason = f"{declared.reason.replace('_', ' ')} (declared by the session)"
+            log.info("backlog_github.close_batch_evidence ref=%s pr=%s reason=%s",
+                     ref, pr_number, declared.reason)
+            _request_evidence(ref, request, pr_link, gh_run=gh_run)
+            evidence.append((f"{ref}: {ev_reason}" if len(batch.issues) > 1 else ev_reason,
+                             request))
+            continue
         # The session's own "this does not finish it" outranks the issue's gates:
         # the close-out exists for PRs that FORGOT a closing keyword (#2984).
-        if declared:
-            reason: str | None = (f"{declared.replace('_', ' ')} "
-                                  "(declared by the session)")
-        elif declines:
+        reason: str | None
+        if declines:
             reason = ("the PR references it with a non-closing keyword (e.g. `Refs`) or "
                       "lists it as deferred/blocked, not `Fixes`: the session left it "
                       "open on purpose")
@@ -1096,5 +1170,11 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     if incomplete:
         return "retry"
     if gates:
-        return escalated_outcome(gates)
+        # A hand-off outranks an evidence request in the same batch: the runner
+        # writes ONE hold over the batch, and owner_action is the wider ask.
+        return escalated_outcome([*gates, *(r for r, _req in evidence)])
+    if evidence:
+        reason = "; ".join(r for r, _req in evidence)
+        requests = [req["request"] for _r, req in evidence]
+        return evidence_outcome(reason, {**evidence[0][1], "request": " ".join(requests)})
     return DEFERRED if deferred else "closed"

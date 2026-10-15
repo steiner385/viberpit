@@ -45,6 +45,27 @@ const mount = (slugs = ['kindash']) =>
   render(<MemoryRouter><OwnerDigestCard products={slugs.map((slug) => product({ slug }))} /></MemoryRouter>)
 
 describe('OwnerDigestCard', () => {
+  it('lists owner-evidence asks in their own group, apart from what needs deciding (#3113)', () => {
+    const ask = item({ id: 'hold:w9', kind: 'evidence', ref: 'o/k#19230', title: 'Record DPA dates',
+                       why: 'Record the DPA acceptance dates. Post it as a comment on this issue.' })
+    h.digest = { generatedAt: '', total: 4, withRecommendation: 2,
+                 products: [{ slug: 'kindash', items: ITEMS, ownerEvidence: [ask] }] }
+    mount()
+    expect(screen.getByText(/3 items need you — 2 have a recommendation · 1 ask for evidence/)).toBeInTheDocument()
+    const group = screen.getByRole('list', { name: 'Evidence asks for kindash' })
+    expect(within(group).getByText('Record the DPA acceptance dates. Post it as a comment on this issue.')).toBeInTheDocument()
+    expect(within(group).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('list', { name: 'Digest for kindash' })).queryByText(/Record DPA dates/)).not.toBeInTheDocument()
+  })
+
+  it('shows a product whose only items are evidence asks', () => {
+    h.digest = { generatedAt: '', total: 1, withRecommendation: 0,
+                 products: [{ slug: 'kindash', items: [], ownerEvidence: [item({ id: 'hold:w9', kind: 'evidence' })] }] }
+    mount()
+    expect(screen.getByRole('list', { name: 'Evidence asks for kindash' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Approve all/ })).not.toBeInTheDocument()
+  })
+
   it('lists each item with its kind, why, evidence and one recommended action', () => {
     mount()
     expect(h.digestFor).toContain('kindash')

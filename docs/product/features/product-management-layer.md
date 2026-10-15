@@ -57,9 +57,10 @@ not one per tick. The engine is pure/propose-only and never mutates onboarding s
 
 THE single description of the hold ladder (spec `docs/superpowers/specs/2026-09-18-hold-ladder-design.md`,
 landed items 1–6). A work item may carry one hold: `hold_kind` (`evidence`, `stronger_model`,
-`decision`, `owner_action`), `hold_reason` (mandatory), `hold_by` (the actor string: a person's
+`decision`, `owner_action`, `owner_evidence`), `hold_reason` (mandatory), `hold_by` (the actor string: a person's
 login, `session:<id>`, `assistant:<login>`, `lan@local`, `runner`, `automation:<id>`, `migration`),
-`hold_set_at`, and `hold_fingerprint` (the body fingerprint at hold time). A person may set or clear
+`hold_set_at`, `hold_fingerprint` (the body fingerprint at hold time), and `hold_detail` (structured
+detail by kind — today only the `owner_evidence` request; cleared with the hold). A person may set or clear
 any kind; a session, the assistant, or a loopback caller may set or clear only `evidence` and
 `stronger_model` (`server/pm/holds.py:AGENT_SETTABLE`), plus `decision` through the one proposal
 route below; the runner and the automations write whichever kind their own flow owns but are never
@@ -73,10 +74,25 @@ rows on the live DB. Those conversion holds (`hold_by = migration`) record no de
 reconcile pass releases each once it is older than `MIGRATION_HOLD_TTL` (7 days), audited with
 signal `expired` (#2682) — the one hold time ends. Every overlay write still records its actor in `classified_by`.
 
-Only `owner_action` and a pending `decision` derive the board's "Held" status and the roadmap's
+Only `owner_action`, a pending `decision` and `owner_evidence` derive the board's "Held" status and the roadmap's
 needs-you tier; `evidence` and `stronger_model` are agent-settable AND queue-eligible, so an item
 under either one still reads `Ready`/`Backlog` and rides the Backlog Runner's ordinary queue until
 it is actually dispatched — a card is never shown "Held" for work nothing is parked on.
+
+**`owner_evidence`** (#3113) parks an item on proof only the OWNER can supply — verify on the real
+kitchen tablet, confirm push delivery on a device, record a DPA acceptance date. Its request lives in
+`hold_detail` (`server/pm/holds.py:EvidenceRequest`): what evidence, where to post it (a comment on
+the issue), an optional precondition (`notBefore`, `afterPr` — a PR that must be merged first) and a
+reminder schedule (`remindEveryDays`, default 3; `lastRemindedAt`). It is NOT agent-settable: a
+session asks for it on the merged PR — `Refs #N (left-open: needs_physical_verification|needs_owner_record
+— <what to supply>)` (#3107) — and the runner's close-out writes the hold; a person may set one through
+the overlay (the reason is the request). It parks the card and reads as needs-you; the holds read
+model labels it `attentionKind: "evidence"`. Until its precondition is met the digest leaves it out
+and nothing reminds. Then the needs-you hygiene loop reminds the owner on schedule (one push naming
+the request, never in quiet hours), the owner digest lists it in its own `ownerEvidence` group, and a
+human comment after the ask becomes the recommend-only `evidence_posted` close (below). Closing on it
+ends the hold (signal `evidence_supplied`). Retry or a board move to Ready/Backlog release it without
+the evidence; an issue-body edit does not (the owner may paste the evidence there).
 
 **Decision escalation.** The `decision-escalation` automation (default off) watches held items per product and sends one `decision_needed` digest when decisions are starving dispatch, ageing, or blocking a lot of work; it never resolves a decision itself. See `docs/product/features/decision-escalation.md`.
 
@@ -276,7 +292,10 @@ close-out hold ("merged PR left the issue open") is assessed by a stateless help
 (`server/automations/closeout_assessor.py`, ≤ 3 per tick, one per issue body) and becomes a close
 (every item done, with evidence), a release (signal `assessment`: an agent can finish it) or a
 rewrite of the hold reason to "Left for you: - [ ] …" (only what a person must do; the hold keeps
-its age). Each write re-checks the hold it judged (`holds.assessed_system_hold`). Triage-accepted issues missing from the board need no
+its age). Each write re-checks the hold it judged (`holds.assessed_system_hold`). `evidence_posted`
+(#3113, after #3128): an `owner_evidence` hold whose precondition is met, with a human comment after
+it → close as completed, quoting the ask — recommend-only whatever the `risk_tolerance` (the mirror
+does not know WHO commented), and the write re-checks the same ask (`hold_set_at`) and reply. Triage-accepted issues missing from the board need no
 rule: the reconciler adds every open issue (`reconcile_diff.membership`) and places a classified
 one at Ready. The product's `needs_you_automation` policy key (`off | dry_run | on`, default `on`)
 lowers the automation's mode for that product; `risk_tolerance` `balanced`/`bold` applies each

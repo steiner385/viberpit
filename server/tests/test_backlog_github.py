@@ -783,11 +783,23 @@ def test_keep_open_phrases_ignore_an_ordinary_do_not_close_ui_bug():
     "Part of o/r#8 (left-open: {r})",
     "Related to https://github.com/o/r/issues/8 (left-open: {r})",
 ])
-def test_declared_left_open_reason_parses_every_reason_and_spelling(reason, template):
-    from server.automations.backlog_github import LEFT_OPEN_REASONS, declared_left_open_reason
+def test_declared_left_open_parses_every_reason_and_spelling(reason, template):
+    from server.automations.backlog_github import LEFT_OPEN_REASONS, LeftOpen, declared_left_open
     assert reason in LEFT_OPEN_REASONS
     text = "Some summary.\n\n" + template.format(r=reason) + "\n"
-    assert declared_left_open_reason(text, "o/r", 8) == reason
+    assert declared_left_open(text, "o/r", 8) == LeftOpen(reason)
+
+
+@pytest.mark.parametrize("line", [
+    "Refs #8 (left-open: needs_owner_record — record the DPA acceptance dates)",
+    "Refs #8 (left-open: needs_owner_record: record the DPA acceptance dates)",
+    "Refs #8 — left-open: needs_owner_record - record the DPA acceptance dates",
+])
+def test_declared_left_open_reads_the_note_after_the_reason(line):
+    """#3113: the note says exactly what evidence the owner must supply."""
+    from server.automations.backlog_github import LeftOpen, declared_left_open
+    assert declared_left_open(line + "\nFixes #9", "o/r", 8) == LeftOpen(
+        "needs_owner_record", "record the DPA acceptance dates")
 
 
 @pytest.mark.parametrize("text", [
@@ -799,9 +811,9 @@ def test_declared_left_open_reason_parses_every_reason_and_spelling(reason, temp
     "Refs other/repo#8 (left-open: epic)",           # another repo's #8
     "Fixes #8 (left-open: epic)",                    # not a non-closing keyword
 ])
-def test_declared_left_open_reason_ignores_what_is_not_a_declaration(text):
-    from server.automations.backlog_github import declared_left_open_reason
-    assert declared_left_open_reason(text, "o/r", 8) is None
+def test_declared_left_open_ignores_what_is_not_a_declaration(text):
+    from server.automations.backlog_github import declared_left_open
+    assert declared_left_open(text, "o/r", 8) is None
 
 
 def test_left_open_disposition_maps_every_reason():
@@ -809,7 +821,7 @@ def test_left_open_disposition_maps_every_reason():
     assert {r: left_open_disposition(r) for r in LEFT_OPEN_REASONS} == {
         "epic": "defer", "awaiting_deploy_or_condition": "defer",
         "remaining_work": "requeue",
-        "needs_physical_verification": "hold", "needs_owner_record": "hold"}
+        "needs_physical_verification": "evidence", "needs_owner_record": "evidence"}
     assert left_open_disposition(None) == "hold"
     assert left_open_disposition("nonsense") == "hold"
 
@@ -848,18 +860,42 @@ def test_close_batch_issues_declared_remaining_work_is_requeued():
     ("needs_physical_verification", "needs physical verification"),
     ("needs_owner_record", "needs owner record"),
 ])
-def test_close_batch_issues_declared_hold_reason_names_the_reason(reason, words):
+def test_close_batch_issues_declared_evidence_reason_asks_the_owner_for_it(reason, words):
+    """#3113: an owner-only reason becomes an evidence request, never a generic
+    hand-off — the comment says what to supply and that the issue then closes."""
     from server.automations.backlog_github import (
-        CLOSEOUT_HOLD_PREFIX, close_batch_issues, closeout_hold_reason, escalation_detail)
+        LEFT_OPEN_REASONS, close_batch_issues, escalation_detail, evidence_detail)
     gh = GateGh(pr=_proc(stdout=_linkage_stdout(body=f"Refs #8 (left-open: {reason})")))
 
     outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
 
-    detail = escalation_detail(outcome)
-    assert detail == f"{words} (declared by the session)"
-    assert closeout_hold_reason(detail).startswith(CLOSEOUT_HOLD_PREFIX)
+    assert escalation_detail(outcome) is None
+    detail = evidence_detail(outcome)
+    assert detail["reason"] == f"{words} (declared by the session)"
+    gloss = LEFT_OPEN_REASONS[reason]
+    assert detail["request"]["request"] == gloss[0].upper() + gloss[1:] + "."
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
     body, = _comment_bodies(gh)
-    assert "Handed to a human" in body
+    assert "Handed to a human" not in body and "evidence only you can give" in body
+
+
+def test_close_batch_issues_evidence_request_is_the_sessions_note():
+    from server.automations.backlog_github import close_batch_issues, evidence_detail
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(
+        body="Refs #8 (left-open: needs_physical_verification — check the wall on the "
+             "kitchen tablet)")))
+    detail = evidence_detail(close_batch_issues(_batch8(), _merged_info(), gh_run=gh))
+    assert detail["request"]["request"] == "check the wall on the kitchen tablet"
+    assert "check the wall on the kitchen tablet" in _comment_bodies(gh)[0]
+
+
+def test_evidence_outcome_round_trips_and_rejects_garbage():
+    from server.automations.backlog_github import evidence_detail, evidence_outcome
+    out = evidence_outcome("r", {"request": "x", "where": "w"})
+    assert evidence_detail(out) == {"reason": "r", "request": {"request": "x", "where": "w"}}
+    assert evidence_detail("evidence: {not json") is None
+    assert evidence_detail('evidence: {"reason": "r"}') is None
+    assert evidence_detail("closed") is None and evidence_detail(None) is None
 
 
 def test_close_batch_issues_epic_label_without_a_reason_is_deferred():
@@ -882,16 +918,30 @@ def test_close_batch_issues_undeclared_refs_still_escalates():
     assert outcome.startswith("escalated: ") and "`Refs`" in outcome
 
 
-def test_close_batch_issues_hold_outranks_a_deferred_sibling():
-    from server.automations.backlog_github import close_batch_issues, escalation_detail
+def test_close_batch_issues_evidence_outranks_a_deferred_sibling():
+    from server.automations.backlog_github import close_batch_issues, evidence_detail
     gh = GateGh(pr=_proc(stdout=_linkage_stdout(
         body="Refs #8 (left-open: awaiting_deploy_or_condition)\n"
              "Refs #9 (left-open: needs_owner_record)")))
 
     outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
 
-    assert escalation_detail(outcome) == "o/r#9: needs owner record (declared by the session)"
+    assert evidence_detail(outcome)["reason"] == (
+        "o/r#9: needs owner record (declared by the session)")
     assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+
+
+def test_close_batch_issues_hand_off_outranks_an_evidence_sibling():
+    """The runner writes one hold over the batch, so the wider ask wins — and the
+    hold reason still names the evidence member's reason."""
+    from server.automations.backlog_github import close_batch_issues, escalation_detail
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(
+        body="Refs #8\nRefs #9 (left-open: needs_owner_record)")))
+
+    detail = escalation_detail(close_batch_issues(_batch89(), _merged_info(), gh_run=gh))
+
+    assert detail.startswith("o/r#8: the PR references it")
+    assert detail.endswith("o/r#9: needs owner record (declared by the session)")
 
 
 def test_close_batch_issues_deferred_member_beside_a_closed_one_is_deferred():

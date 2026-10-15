@@ -1895,9 +1895,13 @@ WORK_ITEM_KINDS: tuple[str, ...] = ("issue", "pr")
 # below, not a triage state.
 WORK_ITEM_TRIAGE_STATES: tuple[str, ...] = ("unclassified", "proposed", "classified")
 
-# Why a work item is held (spec 2026-09-18 §3). Only ``owner_action`` and a
-# pending ``decision`` render as "Needs you"; the other two exit on their own.
-HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_action")
+# Why a work item is held (spec 2026-09-18 §3). ``owner_action``, a pending
+# ``decision`` and ``owner_evidence`` render as "Needs you"; ``evidence`` (an agent's
+# investigate-first park) and ``stronger_model`` exit on their own.
+# ``owner_evidence`` (#3113): only the owner can supply proof the work is done (a
+# check on a real device, a legal record); its request lives in ``hold_detail``.
+HOLD_KINDS: tuple[str, ...] = ("evidence", "stronger_model", "decision", "owner_action",
+                               "owner_evidence")
 
 # The accept/reject lifecycle every proposal kind shares: a MaterializationProposal
 # (spec 003 §7b) and a DecisionProposal (spec 2026-09-18 §6) live on exactly these
@@ -2166,6 +2170,10 @@ class WorkItem(Base):
     # body_fingerprint at hold time; a differing current fingerprint is the
     # "issue body edit" release signal for an owner_action hold (spec §7).
     hold_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Structured detail of the hold, by kind — today only ``owner_evidence`` (#3113):
+    # ``holds.EvidenceRequest``'s wire shape (what evidence, where, precondition,
+    # reminder schedule). NULL for every other kind; cleared with the hold.
+    hold_detail: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

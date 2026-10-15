@@ -913,7 +913,10 @@ def _holds(now: datetime) -> dict[str, Any]:
     ]
     # No approval-gated climb and no assessed checklist here: each row's
     # ``attentionKind`` (``escalation.attention_kind``) is its hold kind.
-    held = [{**row, "attentionKind": row["holdKind"]} for row in held]
+    # ``evidence`` / ``evidenceWaiting`` (#3113) are an owner_evidence ask's request
+    # and precondition — none of these fixture holds is one.
+    held = [{**row, "attentionKind": row["holdKind"], "evidence": None,
+             "evidenceWaiting": False} for row in held]
     products = [
         {"slug": "acme-billing", "dispatchable": 3, "skipped": {"held": 1}, "heldCount": 1,
          "starving": False, "oldestHoldHours": 3.0},

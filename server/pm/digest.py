@@ -41,19 +41,25 @@ from typing import Any
 
 from server.pm.closeout_assess import cut_text
 from server.pm.escalation import (ATTENTION_CHECKLIST, ATTENTION_DECISION,
-                                  ATTENTION_MODEL_APPROVAL, ATTENTION_OWNER_ACTION, HeldItem)
+                                  ATTENTION_EVIDENCE, ATTENTION_MODEL_APPROVAL,
+                                  ATTENTION_OWNER_ACTION, HeldItem)
+from server.pm.holds import EvidenceRequest
 
 KIND_MODEL_APPROVAL = ATTENTION_MODEL_APPROVAL
 KIND_CHECKLIST = ATTENTION_CHECKLIST
 KIND_DECISION = ATTENTION_DECISION
 KIND_OWNER_ACTION = ATTENTION_OWNER_ACTION
+#: An ``owner_evidence`` hold (#3113): proof only the owner can supply (a device
+#: check, a legal record). Answered by posting on the issue, not by choosing, so it
+#: is listed in its own group (``ownerEvidence``), after everything to decide.
+KIND_EVIDENCE = ATTENTION_EVIDENCE
 KIND_GATE = "gate"
 KIND_TRIAGE = "triage"
 KIND_ISSUE = "issue"
 KIND_RECOMMENDATION = "recommendation"
 KINDS: tuple[str, ...] = (KIND_MODEL_APPROVAL, KIND_RECOMMENDATION, KIND_TRIAGE,
                           KIND_DECISION, KIND_CHECKLIST, KIND_OWNER_ACTION, KIND_GATE,
-                          KIND_ISSUE)
+                          KIND_ISSUE, KIND_EVIDENCE)
 
 #: The recommended actions ``POST /api/pm/digest/apply`` can carry out.
 ACTION_APPROVE_ESCALATION = "approve_escalation"
@@ -191,10 +197,25 @@ def from_held(item: HeldItem, *, releasable: bool = False) -> DigestItem:
     why = item.hold_reason
     if item.attention_kind == KIND_DECISION:
         why = item.hold_reason or "A decision is waiting for you to pick an option."
+    elif item.attention_kind == KIND_EVIDENCE:
+        why = evidence_why(item.evidence, item.hold_reason)
     return DigestItem(id=item_id(ID_HOLD, item.work_item_id or item.ref),
                       kind=item.attention_kind, product=item.product,
                       title=item.title or item.ref, why=_why(why), url=item.url or None,
                       ref=item.ref, recommendation=rec)
+
+
+#: An ``owner_evidence`` hold with no readable request (the writer always gives one;
+#: this is the read-side fallback).
+WHY_EVIDENCE = "Evidence only you can supply is waiting — post it on the issue."
+
+
+def evidence_why(evidence: Mapping | None, hold_reason: str | None) -> str:
+    """What an ``owner_evidence`` ask wants, and where to give it (#3113)."""
+    req = EvidenceRequest.from_wire(evidence, fallback_request=hold_reason or "")
+    if not req.request:
+        return WHY_EVIDENCE
+    return f"{req.request.rstrip('.')}. Post it as {req.where}."
 
 
 def from_decision(*, proposal_id: str, product: str, ref: str | None, title: str | None,
@@ -292,6 +313,8 @@ def from_recommendation(rec: Mapping, *, url: str | None = None) -> DigestItem:
         label = f"Move to {detail['status']}"
     if action == "close" and detail.get("closeReason") == "not_planned":
         label = "Close as not planned"
+    if action == "close" and rec.get("rule") == EVIDENCE_POSTED_RULE:
+        label = "Close — evidence posted"
     evidence = tuple({"title": f"#{p.get('number')} {p.get('title') or ''}".strip(),
                       "url": str(p.get("url"))}
                      for p in (detail.get("prs") or ()) if isinstance(p, Mapping) and p.get("url"))
@@ -307,6 +330,11 @@ def from_recommendation(rec: Mapping, *, url: str | None = None) -> DigestItem:
                       evidence=evidence)
 
 
+#: The needs-you hygiene rule whose close follows an owner's evidence reply
+#: (``hygiene.RULE_EVIDENCE_POSTED``; spelled here to keep this module pure of it).
+EVIDENCE_POSTED_RULE = "evidence_posted"
+
+
 def _sort_key(item: DigestItem) -> tuple:
     return (item.recommendation is None, KINDS.index(item.kind) if item.kind in KINDS
             else len(KINDS), item.ref or item.slug or "", item.id)
@@ -314,8 +342,10 @@ def _sort_key(item: DigestItem) -> tuple:
 
 def assemble(items: Iterable[DigestItem], *, products: Iterable[str],
              now: datetime) -> dict:
-    """The wire digest: ``{generatedAt, products: [{slug, items}], total,
-    withRecommendation}``. One item per thing: when an owner recommendation targets
+    """The wire digest: ``{generatedAt, products: [{slug, items, ownerEvidence}],
+    total, withRecommendation}``. An ``owner_evidence`` ask with no recommendation
+    goes in its product's ``ownerEvidence`` group, apart from what needs deciding
+    (#3113); ``total`` counts both groups. One item per thing: when an owner recommendation targets
     an issue the digest already lists (a held issue, a needs-you issue), the
     recommendation stands in for it — even when the item carries a recommendation
     of its own (a hygiene pass that left a ``release_hold`` recommendation and the
@@ -329,12 +359,20 @@ def assemble(items: Iterable[DigestItem], *, products: Iterable[str],
     for i in kept:
         by_product.setdefault(i.product, []).append(i)
     out: list[dict[str, Any]] = [
-        {"slug": slug, "items": [i.to_wire() for i in sorted(group, key=_sort_key)]}
-           for slug, group in sorted(by_product.items()) if group]
-    total = sum(len(p["items"]) for p in out)
+        {"slug": slug,
+         "items": [i.to_wire() for i in sorted(group, key=_sort_key) if not _is_ask(i)],
+         "ownerEvidence": [i.to_wire() for i in sorted(group, key=_sort_key) if _is_ask(i)]}
+        for slug, group in sorted(by_product.items()) if group]
+    total = sum(len(p["items"]) + len(p["ownerEvidence"]) for p in out)
     with_rec = sum(1 for p in out for i in p["items"] if i["recommendation"])
     return {"generatedAt": now.isoformat(), "products": out, "total": total,
             "withRecommendation": with_rec}
+
+
+def _is_ask(item: DigestItem) -> bool:
+    """An ``owner_evidence`` ask still waiting on the owner's reply (no close
+    recommendation yet) — the ``ownerEvidence`` group's members."""
+    return item.kind == KIND_EVIDENCE and item.recommendation is None
 
 
 def digest_due(last_sent: datetime | None, now: datetime) -> bool:

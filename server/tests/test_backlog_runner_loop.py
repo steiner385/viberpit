@@ -165,6 +165,7 @@ def build_loop(*, mode="on", config=None, clock=None,
             self.spawns: list = []
             self.announced: list = []
             self.needs_humans: list = []
+            self.needs_human_kwargs: list = []
             # (target, issues) for every claim comment the loop took down (#3000).
             self.retracted: list = []
             # The give-up seam's failure is a per-tick fact, not a per-loop one:
@@ -228,8 +229,10 @@ def build_loop(*, mode="on", config=None, clock=None,
     async def pr_doctor_active_fn(_repo):
         return pr_doctor_active
 
-    async def needs_human(target, reason):
+    async def needs_human(target, reason, **kw):
         rec.needs_humans.append((target, reason))
+        if kw:
+            rec.needs_human_kwargs.append((target, kw))
         if rec.needs_human_raises:
             raise RuntimeError("gh comment failed (injected)")
 
@@ -4049,6 +4052,43 @@ def test_a_deferred_close_out_is_a_merge_with_the_left_open_cause_and_no_hold(tm
         rows = await _outcomes("o/r#1")
         assert [(r.outcome, r.cause) for r in rows] == [("merged", LEFT_OPEN_DEFERRED_CAUSE)]
         assert rows[0].material_fingerprint is not None
+
+    asyncio.run(run())
+
+
+def test_an_evidence_close_out_gives_up_with_the_owners_request(tmp_path):
+    """#3113: a close-out that left an issue for the OWNER's evidence hands it off
+    as an ``owner_evidence`` ask — the request rides on the parked row (so a retried
+    announce writes the same hold) and reaches the seam as ``evidence=``."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_evidence.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        from server.automations.backlog_github import CLOSEOUT_HOLD_PREFIX, evidence_outcome
+        from server.github.pr_status import PullRequestInfo
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        merged = PullRequestInfo(number=12, url="https://example/pr/12",
+                                 state="merged", checks="none", title="", merged=True)
+        request = {"request": "Check the wall on the kitchen tablet", "where": "a comment"}
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={"o/r#1": merged},
+            spawn_result=SimpleNamespace(id="sess-1"),
+            close_out_result=evidence_outcome(
+                "needs physical verification (declared by the session)", request))
+
+        await loop.tick()
+
+        st = await ctx.get_target_state("o/r#1")
+        assert st["gave_up"] is True and st["held"] is True
+        assert st["reason"].startswith(CLOSEOUT_HOLD_PREFIX)
+        assert st["evidence"] == request
+        assert rec.needs_human_kwargs == [("o/r#1", {"evidence": request})]
+        rows = await _outcomes("o/r#1")
+        assert [r.outcome for r in rows] == ["needs_human"]
 
     asyncio.run(run())
 

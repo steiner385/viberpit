@@ -242,7 +242,7 @@ def _overlay_snapshot(wi: WorkItem) -> dict:
         "classifiedAt": at.isoformat() if at else None,
         "holdKind": wi.hold_kind, "holdReason": wi.hold_reason, "holdBy": wi.hold_by,
         "holdSetAt": held_at.isoformat() if held_at else None,
-        "holdFingerprint": wi.hold_fingerprint,
+        "holdFingerprint": wi.hold_fingerprint, "holdDetail": wi.hold_detail,
     }
 
 
@@ -270,6 +270,7 @@ def _restore_overlay(wi: WorkItem, snap: dict) -> None:
         held = snap.get("holdSetAt")
         wi.hold_set_at = _aware(datetime.fromisoformat(held)) if held else None
         wi.hold_fingerprint = snap.get("holdFingerprint")
+        wi.hold_detail = snap.get("holdDetail")
 
 
 async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,

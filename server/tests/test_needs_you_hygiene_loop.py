@@ -455,3 +455,67 @@ async def test_a_failed_push_records_nothing_and_retries(caplog):
     with caplog.at_level(logging.WARNING):
         await t.loop.tick()
     assert digest.recorded == [] and "digest_send_failed" in caplog.text
+
+
+# --- owner_evidence reminders (#3113) ----------------------------------------------------------
+
+def _stub_stamp(monkeypatch) -> list:
+    """The reminder's narrowed ``lastRemindedAt`` write, recorded instead of run (the
+    harness has no database; ``holds.stamp_evidence_reminded`` has its own tests)."""
+    import contextlib
+
+    import server.db
+    from server.pm import holds
+    stamped: list = []
+
+    class _Db:
+        async def run_sync(self, fn):
+            return fn(None)
+
+    @contextlib.asynccontextmanager
+    async def fake_session():
+        yield _Db()
+    monkeypatch.setattr(server.db, "db_session", fake_session)
+    def stamp(_s, ref, *, hold_set_at, now):
+        stamped.append((ref, now))
+        return True
+    monkeypatch.setattr(holds, "stamp_evidence_reminded", stamp)
+    return stamped
+
+
+def _ask(number: int, **over: Any) -> QueueRow:
+    base = dict(hold_kind="owner_evidence", hold_by="runner", url=f"https://x/{number}",
+                hold_set_at=NOW - timedelta(days=4), hold_reason="needs owner record",
+                hold_detail={"request": "Record the DPA acceptance dates"})
+    base.update(over)
+    return _row(number, **base)
+
+
+@pytest.mark.asyncio
+async def test_a_due_evidence_ask_is_reminded_once_and_stamped(monkeypatch):
+    stamped = _stub_stamp(monkeypatch)
+    t = _Harness([_product([_ask(1), _ask(2, hold_set_at=NOW - timedelta(hours=1))])])
+    digest = _Digest(_view(p=[]))
+    t.loop._digest = digest
+    await t.loop.tick()
+    assert digest.sent == [("p: evidence needed on o/r#1",
+                            "Record the DPA acceptance dates. Post it as a comment on this issue.",
+                            "p", "https://x/1")]
+    assert stamped == [("o/r#1", NOW)]
+    assert "hygiene_evidence_reminded" in _kinds(t.ctx)
+
+
+@pytest.mark.asyncio
+async def test_evidence_reminders_wait_out_quiet_hours_and_respect_the_product_switch(monkeypatch):
+    stamped = _stub_stamp(monkeypatch)
+    quiet = _Harness([_product([_ask(1)])])
+    quiet.loop._digest = _Digest(_view(p=[]), quiet=True)
+    await quiet.loop.tick()
+    off = _Harness([_product([_ask(1)], toggle="off")])
+    off.loop._digest = _Digest(_view(p=[]))
+    await off.loop.tick()
+    dry = _Harness([_product([_ask(1)])], mode="dry_run")
+    dry.loop._digest = digest = _Digest(_view(p=[]))
+    await dry.loop.tick()
+    assert stamped == [] and digest.sent == []
+    assert any("would remind — o/r#1" in e[1] for e in dry.ctx.events)

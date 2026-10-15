@@ -70,8 +70,11 @@ async def _held_items(db, now: datetime) -> tuple[list[dg.DigestItem], list, lis
     for slug in sorted(by_product):
         policy = policies.get(slug) or effective_policy(None)
         releasable = {r.ref for r in stale_system_holds(by_product[slug], policies, now=now)}
+        # An owner_evidence ask whose precondition is unmet (a not-before time, a
+        # PR still to merge) is not the owner's to act on yet (#3113).
         items.extend(dg.from_held(i, releasable=i.ref in releasable) for i in product_escalation(
-            slug, by_product[slug], proposals_by_ref, policy, now=now).held)
+            slug, by_product[slug], proposals_by_ref, policy, now=now).held
+            if not i.evidence_waiting)
     return items, rows, pending_decisions
 
 

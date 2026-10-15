@@ -216,6 +216,17 @@ class QueueRow:
     # hold-hygiene pass reads that, whatever the window).
     not_needed_until: datetime | None = None
     not_needed_standing: bool = False
+    # The newest comment by a USER on the issue (``WorkItem.last_human_comment_at``,
+    # aware UTC), threaded for the needs-you hygiene's ``evidence_posted`` rule
+    # (#3113, after #3128): a human comment after an ``owner_evidence`` hold is the
+    # owner's reply.
+    last_human_comment_at: datetime | None = None
+    # The hold's structured detail (``WorkItem.hold_detail``; #3113: an
+    # ``owner_evidence`` request), and whether that request's precondition is still
+    # unmet (``holds.evidence_surfaced`` is False): the digest and the reminders
+    # leave a waiting ask alone until it can be done.
+    hold_detail: dict | None = None
+    evidence_waiting: bool = False
 
 
 @dataclass(frozen=True)

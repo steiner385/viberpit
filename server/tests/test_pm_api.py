@@ -1265,6 +1265,27 @@ def test_overlay_patch_manual_classify():
 LAN_OPEN = {Settings.model_fields["allow_unauthenticated"].alias: "1"}
 
 
+def test_overlay_owner_evidence_hold_by_a_person_carries_the_reason_as_the_request():
+    """#3113: a person asks the owner for evidence through the overlay; the reason is
+    the request, and the hold reads back as an ``owner_evidence`` ask."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                    json={"holdKind": "owner_evidence",
+                          "holdReason": "Photograph the wall on the kitchen tablet"},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["holdKind"] == "owner_evidence"
+        from server.db import db_session
+        from server.db.models import WorkItem
+
+        async def _detail():
+            async with db_session() as db:
+                return (await db.get(WorkItem, wid)).hold_detail
+        assert c.portal.call(_detail)["request"] == "Photograph the wall on the kitchen tablet"
+
+
 def test_overlay_hold_by_person_any_kind_with_audit():
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
