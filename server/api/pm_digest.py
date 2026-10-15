@@ -2,9 +2,10 @@
 every item that truly needs you with its one recommended action
 (``server/pm/digest.py``), and ``POST /api/pm/digest/apply`` carries those actions
 out — each through the EXISTING path that owns it (``approve_escalation``, the
-hygiene executor via ``pm_hygiene.apply_pending``, ``triage_accept.apply_accept``),
-never a re-implementation. The recommendation is re-derived from current state on
-apply: an id names an item, never an action."""
+hygiene executor via ``pm_hygiene.apply_pending``, ``triage_accept.apply_accept``,
+``decisions.accept``, ``holds.release_policy_skipped_holds``,
+``sdlc.advance_initiative_row``), never a re-implementation. The recommendation is
+re-derived from current state on apply: an id names an item, never an action."""
 from __future__ import annotations
 
 import logging
@@ -56,6 +57,7 @@ async def load_digest(db, product: str | None = None, *, now: datetime | None = 
     from server.api.pm_tree import IssueAttention, product_nodes
     from server.pm import decisions
     from server.pm.escalation import product_escalation
+    from server.pm.policy_skip import stale_system_holds
     from server.pm.repo_project import owning_projects_by_repo
     from server.pm.triage_accept import awaiting_decision_clause
     now = now or datetime.now(timezone.utc)
@@ -67,10 +69,14 @@ async def load_digest(db, product: str | None = None, *, now: datetime | None = 
     for r in rows:
         by_product.setdefault(r.product, []).append(r)
     url_by_ref = {r.ref: r.url for r in rows}
+    # #3112: the system hand-offs the queue skips anyway — the hygiene loop's rule 3,
+    # read here so the digest recommends their release even for a product whose
+    # hygiene is off or cautious.
+    stale = {r.ref for r in stale_system_holds(rows, policies, now=now)}
     items: list[dg.DigestItem] = []
     for slug in sorted(by_product):
         policy = policies.get(slug) or effective_policy(None)
-        items.extend(dg.from_held(i) for i in product_escalation(
+        items.extend(dg.from_held(i, releasable=i.ref in stale) for i in product_escalation(
             slug, by_product[slug], proposals_by_ref, policy, now=now).held)
     listed = {i.ref for i in items if i.ref}
 
@@ -104,7 +110,9 @@ async def load_digest(db, product: str | None = None, *, now: datetime | None = 
         items.append(dg.from_decision(proposal_id=prop.id, product=owner, ref=dref,
                                       title=wi.title if wi is not None else None,
                                       url=wi.url if wi is not None else None,
-                                      rationale=prop.rationale))
+                                      rationale=prop.rationale,
+                                      recommended_key=prop.recommended_key,
+                                      options=prop.options or ()))
     feature_ids = {p.proposed_feature_id for p, _w in triage if p.proposed_feature_id}
     feature_slug = dict((await db.execute(select(Feature.id, Feature.slug).where(
         Feature.id.in_(feature_ids)))).all()) if feature_ids else {}
@@ -155,16 +163,139 @@ _NO_RECOMMENDATION = {"ok": False, "step": "no_recommendation",
                       "error": "nothing to apply: only a person can decide this one"}
 
 
+async def _stale_hold_refs(db, now: datetime) -> set[str]:
+    """The refs ``load_digest`` recommended releasing (``policy_skip.stale_system_holds``
+    over the queue's own rows), re-read now — the apply never trusts the id."""
+    from server.pm.policy_skip import stale_system_holds
+    rows, policies = await _queue_inputs(db, now)
+    return {r.ref for r in stale_system_holds(rows, policies, now=now)}
+
+
+async def _apply_release(db, request: Request, wi: WorkItem, identity: str) -> dict:
+    """Release a system hand-off the queue skips anyway (#3112), through the hygiene
+    loop's own write (``holds.release_policy_skipped_holds``, signal ``policy_skip``),
+    which re-checks the hold is still system-written before ending it."""
+    from server.pm import holds
+    from server.pm.holds import actor_for_request
+    ref = f"{wi.repo}#{wi.number}"
+    actor = actor_for_request(request)
+    released = await db.run_sync(lambda s: holds.release_policy_skipped_holds(
+        s, [ref], actor=actor, via="digest"))
+    if not released:
+        return {"ok": False, "step": "not_released",
+                "error": "the hold changed hands or is already released"}
+    # ``release_policy_skipped_holds`` wrote the ``pm.hold.release`` row itself
+    # (signal ``policy_skip``, via ``digest``); the call's own ``pm.digest.apply``
+    # row names *identity*. No third audit shape.
+    await db.commit()
+    return {"ok": True, "step": None, "error": None, "released": "owner_action"}
+
+
+async def _apply_decision(db, request: Request, proposal, identity: str) -> dict:
+    """Accept the option the proposer recommended (#3112) — ``decisions.accept``, the
+    ONE release of a decision hold, gated by ``decisions.may_resolve`` exactly as
+    the accept route is, then the same post-commit issue comment."""
+    from server.pm import decisions
+    from server.pm.holds import actor_for_request
+    actor = actor_for_request(request)
+    if not decisions.may_resolve(actor):
+        return {"ok": False, "step": "forbidden", "error": decisions.RESOLVE_DENIED_MESSAGE}
+    if proposal.status != decisions.STATUS_PENDING:
+        return {"ok": False, "step": "not_pending",
+                "error": f"this decision is already {proposal.status}"}
+    key = proposal.recommended_key
+    if not key or dg.option_label(proposal.options or (), key) is None:
+        return _NO_RECOMMENDATION
+    try:
+        await decisions.accept(db, proposal, chosen_key=key, actor=actor,
+                               now=datetime.now(timezone.utc))
+    except decisions.DecisionError as e:
+        await db.rollback()
+        return {"ok": False, "step": "decision_conflict", "error": str(e)}
+    wi = await db.get(WorkItem, proposal.work_item_id)
+    chosen = decisions.chosen_option(proposal) or {}
+    ref = f"{wi.repo}#{wi.number}" if wi is not None and wi.repo and wi.number else None
+    await db.commit()
+    if ref:
+        await decisions.announce_accept_best_effort(
+            ref, label=str(chosen.get("label") or key), detail=chosen.get("detail"),
+            actor=actor)
+    return {"ok": True, "step": None, "error": None, "chosenKey": key}
+
+
+async def _pending_proposal_for(db, work_item_id: str):
+    """The pending decision proposal parked on *work_item_id*, row-locked like the
+    accept route's own load (``server/api/pm.py:_load_decision``)."""
+    from server.db.models import DecisionProposal
+    from server.pm.decisions import STATUS_PENDING
+    return (await db.execute(select(DecisionProposal).where(
+        DecisionProposal.work_item_id == work_item_id,
+        DecisionProposal.status == STATUS_PENDING).with_for_update())).scalar_one_or_none()
+
+
+async def _apply_decision_id(db, request: Request, key: str, identity: str) -> dict:
+    """A ``decision:<proposal id>`` item (a pending proposal the holds read model did
+    not list): accept its recommended option."""
+    from server.db.models import DecisionProposal
+    proposal = (await db.execute(select(DecisionProposal).where(
+        DecisionProposal.id == key).with_for_update())).scalar_one_or_none()
+    if proposal is None:
+        return {"ok": False, "step": "not_found", "error": "no such proposal"}
+    return await _apply_decision(db, request, proposal, identity)
+
+
+async def _apply_gate(db, key: str, identity: str) -> dict:
+    """Advance an initiative whose build epic is done (#3112): re-derive
+    ``tree.initiative_reason`` from the row and its epic progress — the same facts
+    the map served — and only then run the advance route's own sequence
+    (``sdlc.advance_initiative_row``). An ``awaiting_human`` gate, a program, a
+    done or blocked row all answer a refusal rather than move."""
+    from server.api.sdlc import _epic_progress_batch, advance_initiative_row, has_phases
+    from server.db.models import Initiative
+    from server.pm.tree import initiative_reason
+    ini = (await db.execute(select(Initiative).where(
+        Initiative.slug == key).with_for_update())).scalar_one_or_none()
+    if ini is None:
+        return {"ok": False, "step": "not_found", "error": "no such initiative"}
+    progress = (await _epic_progress_batch(db, [ini], include_children=False))[ini.id] or {}
+    reason = initiative_reason(ini.status, ini.stage, int(progress.get("total", 0)),
+                               int(progress.get("done", 0)),
+                               has_children=await has_phases(db, ini))
+    if reason != dg.GATE_REASON_ADVANCE:
+        return _NO_RECOMMENDATION
+    try:
+        out = await advance_initiative_row(db, ini, identity=identity,
+                                           audit_detail={"via": "digest"})
+    except HTTPException as e:
+        await db.rollback()
+        detail: dict = e.detail if isinstance(e.detail, dict) else {}
+        return {"ok": False, "step": str(detail.get("error") or "refused"),
+                "error": str(detail.get("message") or e.detail)}
+    await db.commit()
+    return {"ok": True, "step": None, "error": None, "stage": out.get("stage")}
+
+
 async def _apply_hold(db, request: Request, key: str, identity: str) -> dict:
-    """Approve the escalation a model-approval hold asked for, at the tier it asked
-    for (``escalation_approval.approve_escalation`` — the approve-escalation route's
-    own sequence)."""
+    """A ``hold:<work item id>`` item, by what its hold IS now: a decision hold →
+    accept the recommended option; a system hand-off the queue skips → release it;
+    a model-approval hold → approve the escalation at the tier it asked for
+    (``escalation_approval.approve_escalation`` — the approve-escalation route's
+    own sequence). The release check comes first, as in ``digest.from_held``: an
+    approve on non-work would re-dispatch it."""
     from server.pm.escalation_approval import EscalationApprovalError, approve_escalation
     from server.pm.holds import actor_for_request
     from server.pm.outcomes import escalation_for
     wi = await db.get(WorkItem, key)
     if wi is None:
         return {"ok": False, "step": "not_found", "error": "no such work item"}
+    if wi.hold_kind == "decision":
+        proposal = await _pending_proposal_for(db, wi.id)
+        if proposal is None:
+            return _NO_RECOMMENDATION
+        return await _apply_decision(db, request, proposal, identity)
+    if wi.hold_kind == "owner_action" and wi.repo and wi.number and (
+            f"{wi.repo}#{wi.number}" in await _stale_hold_refs(db, datetime.now(timezone.utc))):
+        return await _apply_release(db, request, wi, identity)
     escalation = escalation_for(wi.hold_kind, wi.hold_reason)
     if escalation is None:
         return _NO_RECOMMENDATION
@@ -250,6 +381,10 @@ async def apply_digest(body: DigestApplyBody, request: Request,
                 result = await _apply_recommendation(db, request, parsed[1], identity)
             elif parsed[0] == dg.ID_TRIAGE:
                 result = await _apply_triage(db, parsed[1], identity)
+            elif parsed[0] == dg.ID_DECISION:
+                result = await _apply_decision_id(db, request, parsed[1], identity)
+            elif parsed[0] == dg.ID_GATE:
+                result = await _apply_gate(db, parsed[1], identity)
             else:
                 result = _NO_RECOMMENDATION
         except Exception:

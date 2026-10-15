@@ -13,13 +13,19 @@ from server.pm.outcomes import Escalation
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 
 
+OPTIONS = ({"key": "a", "label": "Keep A", "detail": None},
+           {"key": "b", "label": "Move to B", "detail": "b is better"})
+
+
 def _held(ref: str = "o/r#1", *, kind: str = "owner_action", reason: str = "owner call",
           escalation: Escalation | None = None, attention: str = "owner_action",
-          wid: str | None = "wi1") -> HeldItem:
+          wid: str | None = "wi1", proposal_id: str | None = None,
+          options: tuple = (), recommended_key: str | None = None) -> HeldItem:
     return HeldItem(ref=ref, repo="o/r", number=int(ref.split("#")[1]), product="p",
                     title=f"issue {ref}", url=f"https://github.com/{ref.replace('#', '/issues/')}",
                     hold_kind=kind, hold_reason=reason, hold_by="runner", hold_set_at=None,
-                    age_hours=None, proposal_id=None, options=(), recommended_key=None,
+                    age_hours=None, proposal_id=proposal_id, options=options,
+                    recommended_key=recommended_key,
                     downstream=0, downstream_dispatchable=0, downstream_refs=(),
                     dispatchable_on_release=True, released_by="", work_item_id=wid,
                     escalation=escalation, attention_kind=attention)
@@ -76,11 +82,59 @@ def test_triage_is_accepted_only_when_confident_and_onto_a_capability(level, fea
         assert item.recommendation.label == "Accept into sessions"
 
 
-def test_a_gate_is_never_advanced_from_the_digest_only_linked():
-    item = dg.from_initiative("p", {"slug": "ini-1", "title": "Ship it", "reason": "advance",
-                                    "status": "active"})
-    assert (item.kind, item.recommendation, item.url) == ("gate", None, "/initiatives/ini-1")
-    assert "gate" in item.why
+def test_a_decision_recommends_the_option_its_proposer_recommended():
+    """#3112: both ways a decision reaches the digest — as a held issue and on its
+    own — carry the SAME accept recommendation, naming the option's label; a
+    proposal with no (visible) recommended option carries none."""
+    held = dg.from_held(_held("o/r#1", kind="decision", attention="decision",
+                              proposal_id="dp1", options=OPTIONS, recommended_key="b"))
+    assert held.recommendation is not None
+    assert held.recommendation.to_wire() == {
+        "action": "accept_decision", "label": "Accept Move to B",
+        "params": {"proposalId": "dp1", "chosenKey": "b"}}
+    alone = dg.from_decision(proposal_id="dp1", product="p", ref="o/r#1", title="t", url=None,
+                             rationale="why", recommended_key="b", options=OPTIONS)
+    assert alone.id == "decision:dp1" and alone.recommendation == held.recommendation
+    assert dg.from_decision(proposal_id="dp2", product="p", ref=None, title=None, url=None,
+                            rationale=None, recommended_key="zz", options=OPTIONS
+                            ).recommendation is None
+    assert dg.from_held(_held(kind="decision", attention="decision", proposal_id="dp1",
+                              options=OPTIONS, recommended_key=None)).recommendation is None
+
+
+def test_a_hand_off_the_queue_skips_anyway_recommends_release_ahead_of_approval():
+    """#3112: a system hand-off ``policy_skip.stale_system_holds`` named is released,
+    even when its reason would otherwise offer an approve button (approving would
+    re-dispatch non-work — KinDash#16652)."""
+    plain = dg.from_held(_held("o/r#2", wid="wi2", reason="bounced; needs you"), releasable=True)
+    assert plain.recommendation is not None
+    assert plain.recommendation.to_wire() == {"action": "release_hold", "label": "Release the hold",
+                                              "params": {"workItemId": "wi2"}}
+    assert plain.why.endswith("the queue skips this issue anyway, so nothing waits on you.")
+    gated = dg.from_held(_held("o/r#3", wid="wi3", attention="model_approval",
+                               escalation=Escalation("opus", "fable")), releasable=True)
+    assert gated.recommendation is not None and gated.recommendation.action == "release_hold"
+    # Without a work item there is nothing to release: the hold stays recommendation-null.
+    assert dg.from_held(_held("o/r#4", wid=None), releasable=True).recommendation is None
+
+
+def test_a_gate_recommends_advance_only_when_its_build_epic_is_done():
+    """#3112: ``advance`` (``tree.initiative_reason``) recommends the next stage —
+    the person still approves it; an ``awaiting_human`` review and a corrupt stage
+    carry none. Either way the item links to the gate."""
+    ready = dg.from_initiative("p", {"slug": "ini-1", "title": "Ship it", "reason": "advance",
+                                     "status": "active", "stage": "build"})
+    assert (ready.kind, ready.url) == ("gate", "/initiatives/ini-1")
+    assert ready.recommendation is not None
+    assert ready.recommendation.to_wire() == {"action": "advance_initiative",
+                                              "label": "Advance to deploy",
+                                              "params": {"slug": "ini-1", "toStage": "deploy"}}
+    assert "gate" in ready.why
+    review = dg.from_initiative("p", {"slug": "ini-2", "title": "Plan", "status": "awaiting_human",
+                                      "stage": "plan"})
+    assert review.recommendation is None and "review" in review.why
+    assert dg.from_initiative("p", {"slug": "ini-3", "reason": "advance", "stage": "bogus"}
+                              ).recommendation is None
 
 
 def test_a_recommendation_carries_its_action_and_evidence_links():

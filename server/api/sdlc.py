@@ -760,8 +760,26 @@ async def advance_initiative(
     blocked — a blocked row is cleared on purpose (``unblock``), never by
     moving the gate over it."""
     ini = await _load_initiative(db, slug)
-    if (await db.execute(select(Initiative.id).where(
-            Initiative.parent_initiative_id == ini.id))).first() is not None:
+    return await advance_initiative_row(db, ini, identity=identity)
+
+
+async def has_phases(db, ini: Initiative) -> bool:
+    """Whether *ini* is a program (its stage is derived from its phases)."""
+    return (await db.execute(select(Initiative.id).where(
+        Initiative.parent_initiative_id == ini.id))).first() is not None
+
+
+async def advance_initiative_row(db, ini: Initiative, *, identity: str,
+                                 audit_detail: dict | None = None) -> dict:
+    """THE human-gate advance (roadmap spec §8): the sequence behind
+    ``POST /initiatives/{slug}/advance``, shared with the owner digest's
+    ``advance_initiative`` recommendation (#3112) so an advance approved from the
+    digest cannot skip a refusal the route makes. 409 (``HTTPException``) for a
+    program, a done row, or a blocked one — a block is cleared on purpose
+    (``unblock``), never by moving the gate over it. Audits
+    ``sdlc.initiative.advance`` with *audit_detail* merged in (the digest says
+    ``{"via": "digest"}``); the caller commits."""
+    if await has_phases(db, ini):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "has_children",
             "message": "a program's stage is derived from its phases; advance a phase instead"})
@@ -784,7 +802,7 @@ async def advance_initiative(
         db=db,
         type="sdlc.initiative.advance",
         identity=identity,
-        detail={"slug": slug, "stage": ini.stage},
+        detail={"slug": ini.slug, "stage": ini.stage, **(audit_detail or {})},
     )
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])

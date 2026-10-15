@@ -12,10 +12,19 @@ shapes them and picks the recommendation:
 * a model-approval hold → approve the escalation at the requested tier;
 * a pending owner recommendation → apply it (close, unpark, release, …);
 * a HIGH-confidence triage proposal onto a capability → accept it;
-* everything else (a checklist, a decision, an initiative gate, a hand-off, an
+* a decision whose proposer named a recommended option → accept that option
+  (#3112; the person still takes the decision — by approving the recommendation);
+* a system-written hand-off the queue skips anyway (``policy_skip.stale_system_holds``,
+  the hygiene loop's own rule 3) → release it (#3112) — ahead of the approve
+  button, which would re-dispatch an issue the product's policy no longer treats
+  as work;
+* an initiative gate whose build epic is done (``tree.initiative_reason`` says
+  ``advance``) → advance it (#3112). The human is still the gate: nothing moves
+  until they approve the recommendation, and ``awaiting_human`` rows (a plan or
+  design waiting for review) carry none;
+* everything else (a checklist, a hand-off that is still work, an
   ``owner_evidence`` ask — #3113, its own group) → none: only a person can
-  choose or supply it. A gate is never advanced from here (governance keeps the
-  human as the gate); its item links to the gate.
+  choose, do or supply it.
 
 Every applicable action is re-derived from current state when applied
 (``POST /api/pm/digest/apply``) — the id names the item, never the action.
@@ -33,6 +42,7 @@ from server.pm.closeout_assess import cut_text
 from server.pm.escalation import (ATTENTION_CHECKLIST, ATTENTION_DECISION,
                                   ATTENTION_EVIDENCE, ATTENTION_MODEL_APPROVAL,
                                   ATTENTION_OWNER_ACTION, HeldItem)
+from server.sdlc.engine import advance_stage
 
 KIND_MODEL_APPROVAL = ATTENTION_MODEL_APPROVAL
 KIND_CHECKLIST = ATTENTION_CHECKLIST
@@ -54,8 +64,17 @@ KINDS: tuple[str, ...] = (KIND_MODEL_APPROVAL, KIND_RECOMMENDATION, KIND_TRIAGE,
 ACTION_APPROVE_ESCALATION = "approve_escalation"
 ACTION_APPLY_RECOMMENDATION = "apply_recommendation"
 ACTION_ACCEPT_TRIAGE = "accept_triage"
+#: #3112: accept the option the proposer recommended (``decisions.accept``).
+ACTION_ACCEPT_DECISION = "accept_decision"
+#: #3112: release a system hand-off the queue skips anyway
+#: (``holds.release_policy_skipped_holds``, signal ``policy_skip``).
+ACTION_RELEASE_HOLD = "release_hold"
+#: #3112: advance an initiative whose build epic is done (the advance route's own
+#: sequence, ``server/api/sdlc.py:advance_initiative_row``).
+ACTION_ADVANCE_INITIATIVE = "advance_initiative"
 APPLY_ACTIONS: tuple[str, ...] = (ACTION_APPROVE_ESCALATION, ACTION_APPLY_RECOMMENDATION,
-                                  ACTION_ACCEPT_TRIAGE)
+                                  ACTION_ACCEPT_TRIAGE, ACTION_ACCEPT_DECISION,
+                                  ACTION_RELEASE_HOLD, ACTION_ADVANCE_INITIATIVE)
 
 #: Item-id prefixes; ``parse_id`` reads them back.
 ID_HOLD = "hold"
@@ -139,20 +158,61 @@ def _why(text: str | None) -> str:
     return cut_text(str(text or ""), _WHY_MAX)
 
 
-def from_held(item: HeldItem) -> DigestItem:
+def option_label(options: Iterable[Any], key: str | None) -> str | None:
+    """The label of the option *key* names among a proposal's *options* (the
+    ``{"key", "label", "detail"}`` rows ``decisions.normalize_options`` writes), or
+    ``None`` when no option carries it — a recommendation must name a choice the
+    person can actually see."""
+    for opt in options or ():
+        if isinstance(opt, Mapping) and str(opt.get("key") or "") == key:
+            return str(opt.get("label") or key)
+    return None
+
+
+def decision_recommendation(*, proposal_id: str | None, recommended_key: str | None,
+                            options: Iterable[Any]) -> Recommendation | None:
+    """#3112: accept the option the proposer recommended, or ``None`` when the
+    proposal names no (visible) recommended option. ONE builder for a decision
+    that reaches the digest as a held issue and for one that reaches it on its
+    own (``from_decision``)."""
+    if not proposal_id or not recommended_key:
+        return None
+    label = option_label(options, recommended_key)
+    if label is None:
+        return None
+    return Recommendation(ACTION_ACCEPT_DECISION, f"Accept {label}",
+                          {"proposalId": proposal_id, "chosenKey": recommended_key})
+
+
+def from_held(item: HeldItem, *, releasable: bool = False) -> DigestItem:
     """A held issue (the holds read model): a model approval recommends approving
-    the climb it asked for; a checklist, a decision, an owner-evidence ask or a
-    hand-off recommends nothing — only a person can do, choose or supply it."""
+    the climb it asked for; a decision with a recommended option recommends
+    accepting it (#3112); a hand-off the queue skips anyway (*releasable*:
+    ``policy_skip.stale_system_holds`` named it) recommends releasing it — ahead
+    of any approve button, which would re-dispatch non-work (#3112); a checklist,
+    an owner-evidence ask or any other hand-off recommends nothing — only a person
+    can do, choose or supply it."""
     rec = None
-    if item.escalation is not None and item.work_item_id:
+    if releasable and item.work_item_id:
+        rec = Recommendation(ACTION_RELEASE_HOLD, "Release the hold",
+                             {"workItemId": item.work_item_id})
+    elif item.escalation is not None and item.work_item_id:
         tier = item.escalation.needs_approval
         rec = Recommendation(ACTION_APPROVE_ESCALATION, f"Approve {tier}",
                              {"workItemId": item.work_item_id, "model": tier})
+    elif item.attention_kind == KIND_DECISION:
+        rec = decision_recommendation(proposal_id=item.proposal_id,
+                                      recommended_key=item.recommended_key,
+                                      options=item.options)
     why = item.hold_reason
     if item.attention_kind == KIND_DECISION:
         why = item.hold_reason or "A decision is waiting for you to pick an option."
     elif item.attention_kind == KIND_EVIDENCE:
         why = item.hold_reason or WHY_EVIDENCE
+    elif releasable:
+        why = (f"{item.hold_reason} — but the queue skips this issue anyway, so "
+               "nothing waits on you." if item.hold_reason else
+               "The queue skips this issue anyway, so nothing waits on you.")
     return DigestItem(id=item_id(ID_HOLD, item.work_item_id or item.ref),
                       kind=item.attention_kind, product=item.product,
                       title=item.title or item.ref, why=_why(why), url=item.url or None,
@@ -160,12 +220,17 @@ def from_held(item: HeldItem) -> DigestItem:
 
 
 def from_decision(*, proposal_id: str, product: str, ref: str | None, title: str | None,
-                  url: str | None, rationale: str | None) -> DigestItem:
-    """A pending decision proposal not already listed as a held issue."""
+                  url: str | None, rationale: str | None, recommended_key: str | None = None,
+                  options: Iterable[Any] = ()) -> DigestItem:
+    """A pending decision proposal not already listed as a held issue; recommends
+    the proposer's recommended option when it names one (#3112)."""
     return DigestItem(id=item_id(ID_DECISION, proposal_id), kind=KIND_DECISION,
                       product=product, title=title or ref or "Decision",
                       why=_why(rationale or "A decision is waiting for you to pick an option."),
-                      url=url, ref=ref)
+                      url=url, ref=ref,
+                      recommendation=decision_recommendation(
+                          proposal_id=proposal_id, recommended_key=recommended_key,
+                          options=options))
 
 
 def from_triage(*, proposal_id: str, product: str, ref: str | None, title: str | None,
@@ -188,19 +253,35 @@ def from_triage(*, proposal_id: str, product: str, ref: str | None, title: str |
 _GATE_WHY = {"advance": "Its build epic is done; the stage gate is waiting for you.",
              "awaiting_human": "Waiting for your review at its stage gate."}
 
+#: The one initiative reason the digest recommends acting on (``tree.initiative_reason``).
+GATE_REASON_ADVANCE = "advance"
+
 
 def from_initiative(product: str, node: Mapping) -> DigestItem:
-    """An initiative whose OWN tier needs you: a gate only a person moves. Never a
-    recommendation (no auto-advance, ever); the item links to the gate."""
+    """An initiative whose OWN tier needs you: a gate only a person moves. One
+    whose build epic is done (reason ``advance``) recommends advancing it to the
+    next stage (#3112) — the person is still the gate, the recommendation is what
+    they approve; an ``awaiting_human`` row (a plan or design to review) carries
+    none and links to the gate."""
     slug = str(node.get("slug") or "")
     held = int((node.get("epic") or {}).get("held") or 0)
-    why = (_GATE_WHY.get(str(node.get("reason") or ""))
+    reason = str(node.get("reason") or "")
+    why = (_GATE_WHY.get(reason)
            or _GATE_WHY.get(str(node.get("status") or ""))
            or (f"{held} issue(s) in its epic are held for you." if held else
                "Waiting for you at its stage gate."))
+    rec = None
+    if reason == GATE_REASON_ADVANCE and slug:
+        try:
+            nxt = advance_stage(str(node.get("stage") or ""))
+        except ValueError:
+            nxt = None
+        if nxt is not None:
+            rec = Recommendation(ACTION_ADVANCE_INITIATIVE, f"Advance to {nxt}",
+                                 {"slug": slug, "toStage": nxt})
     return DigestItem(id=item_id(ID_GATE, slug), kind=KIND_GATE, product=product,
                       title=str(node.get("title") or slug), why=why,
-                      url=f"/initiatives/{slug}", slug=slug)
+                      url=f"/initiatives/{slug}", slug=slug, recommendation=rec)
 
 
 #: An ``owner_evidence`` hold whose reason is blank (the writer always gives one;

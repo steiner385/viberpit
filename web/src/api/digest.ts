@@ -10,9 +10,18 @@ import { PM_MUTATION_META, QK } from './hooks'
  *  left, a triage proposal, an initiative gate, or another needs-you issue. */
 export type DigestItemKind = HeldAttentionKind | 'recommendation' | 'triage' | 'gate' | 'issue'
 
-/** The ONE action the digest recommends for an item; `label` is the button text. */
+/** The ONE action the digest recommends for an item (`server/pm/digest.py:APPLY_ACTIONS`);
+ *  `label` is the button text. `accept_decision`, `release_hold` and
+ *  `advance_initiative` landed with #3112: the proposer's recommended option, a
+ *  system hand-off the queue skips anyway, and a stage gate whose build epic is done. */
 export interface DigestRecommendation {
-  action: 'approve_escalation' | 'apply_recommendation' | 'accept_triage'
+  action:
+    | 'approve_escalation'
+    | 'apply_recommendation'
+    | 'accept_triage'
+    | 'accept_decision'
+    | 'release_hold'
+    | 'advance_initiative'
   label: string
   params: Record<string, unknown>
 }
