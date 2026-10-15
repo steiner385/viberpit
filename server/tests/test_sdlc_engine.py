@@ -141,6 +141,21 @@ def test_build_stage_without_issue_needs_human():
                       NeedsHuman)
 
 
+def test_build_stage_without_issue_hands_off_the_epic():
+    """#1545: a materialized initiative with no origin_ref (every control-band one
+    is unstamped) reaches build right after the accept that created its epic —
+    that epic is the handoff target, not a NeedsHuman dead end."""
+    act = next_action(_init(stage="build", issue=None, epic="owner/repo#101"), [],
+                      "propose", "cautious")
+    assert act == HandoffToBuild("owner/repo#101")
+
+
+def test_build_stage_prefers_the_origin_issue_over_the_epic():
+    act = next_action(_init(stage="build", issue="owner/repo#42", epic="owner/repo#101"), [],
+                      "propose", "cautious")
+    assert act == HandoffToBuild("owner/repo#42")
+
+
 # --------------------------------------------------------------------------- #
 # Out-of-scope / unknown stages                                                #
 # --------------------------------------------------------------------------- #
