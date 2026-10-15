@@ -3,11 +3,17 @@ from server.automations.ownership import OwnershipTransaction, stopped_work_atte
 from server.db.models import AutomationTargetState, Session
 
 
-async def account(tx: OwnershipTransaction, target: str) -> bool:
+async def account(tx: OwnershipTransaction, target: str, *,
+                  pr_terminal: bool = False) -> bool:
     """Commit admitted attempt from durable evidence, including a lost callback.
 
     The intent is stored before the external boundary. Accounting and release
     share the same target lock transaction, so an observer cannot discard it.
+
+    *pr_terminal*: the caller observed the PR merged or closed. A mechanical
+    attempt whose outcome never came back (``unknown``) then settles as counted
+    — whether it landed no longer matters for a PR nobody will work again, and
+    waiting for evidence that cannot arrive held the hand-off forever (#3119).
     """
     intent = tx.operation.provenance.get("pr_attempt")
     if not intent or intent.get("accounted"):
@@ -30,7 +36,8 @@ async def account(tx: OwnershipTransaction, target: str) -> bool:
         outcome = tx.operation.provenance.get("mechanical_outcome")
         if outcome == "rejected":
             accepted = False
-        elif outcome in ("accepted", "completed") or tx.operation.phase == "completed":
+        elif (outcome in ("accepted", "completed") or tx.operation.phase == "completed"
+              or pr_terminal):
             accepted = True
         else:
             return False
@@ -48,12 +55,13 @@ async def account(tx: OwnershipTransaction, target: str) -> bool:
     return True
 
 
-async def detach(tx: OwnershipTransaction) -> bool:
+async def detach(tx: OwnershipTransaction, *, pr_terminal: bool = False) -> bool:
     """Settle and detach a PR predecessor when a different workflow takes over.
 
     Target locks fence the operation; the PR row lock preserves the exact current
     history snapshot. A newer row's token is never cleared by an old operation.
-    The caller must transfer/release in this same transaction.
+    The caller must transfer/release in this same transaction. *pr_terminal* is
+    forwarded to ``account``.
     """
     from sqlalchemy import select
 
@@ -69,7 +77,7 @@ async def detach(tx: OwnershipTransaction) -> bool:
     if row is None or row.state.get("ownership_token") != tx.token:
         intent = tx.operation.provenance.get("pr_attempt")
         return not intent or bool(intent.get("accounted"))
-    if not await account(tx, target):
+    if not await account(tx, target, pr_terminal=pr_terminal):
         return False
     row.state = {key: value for key, value in row.state.items()
                  if key not in ("ownership_token", "session_id")}

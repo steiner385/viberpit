@@ -2575,6 +2575,33 @@ class BacklogRunnerLoop:
                     "pr_updated_at": info.updated_at, "claimed_at": st.get("claimed_at"),
                     "issues": st.get("issues")})
 
+    async def _release_closed_handoff(self, target: str, st: dict) -> None:
+        """Release a token-bearing hand-off whose PR the sweep cannot see once
+        every issue it carries is closed on GitHub (#3119).
+
+        KinDash#17284: both sessions were deleted, so no branch resolved, and
+        ``find_referencing_pr`` deliberately ignores a CLOSED-unmerged PR — the
+        sweep read "no PR" and ``handed_off`` kept the row claimed forever. The
+        caller already proved the work stopped; a closed issue is the token-bearing
+        twin of ``_handed_off_legacy_is_over``'s evidence. No outcome is recorded:
+        nothing here says the attempt failed. Unknown issue state keeps the row."""
+        issues = st.get("issues") or [target]
+        try:
+            for ref in issues:
+                state = await self._investigation_state(ref, st.get("implementation_session_id"))
+                if state.get("issue_state") != "closed":
+                    return
+        except Exception:  # pragma: no cover — a probe failure must not stall the sweep
+            log.warning("backlog_runner.closed_handoff_probe_failed target=%s", target,
+                        exc_info=True)
+            return
+        if not await self._write_state(target, st, None):
+            return
+        await self._ctx.emit(
+            "info", f"released hand-off {target}: its issue is closed and no PR is open",
+            kind="closed_handoff_released", target=target,
+            detail={"claimed_at": st.get("claimed_at"), "issues": issues})
+
     async def _dial_stops_the_ladder(self, target: str, policy: dict) -> "str | None":
         """The operator's ``give_up_after_bounces`` hand-off reason for the bounce
         being charged right now, or ``None`` to keep climbing.
@@ -2671,7 +2698,8 @@ class BacklogRunnerLoop:
             # A PR worker's old token cannot start/inject after this commit.
             closing = await self._ctx.reserve_target_action(
                 target, st, source="terminal-closeout", reason="merged PR close-out",
-                state={**st, "closing_pr": info.number, "closeout_started": True})
+                state={**st, "closing_pr": info.number, "closeout_started": True},
+                pr_terminal=True)
             if closing is None:
                 return
             st = closing
@@ -2817,7 +2845,10 @@ class BacklogRunnerLoop:
             elif st.get("handed_off") and self._handoff_pr_idle(st, info):
                 await self._release_idle_handoff(target, st, info)
             return
-        if st.get("handed_off") or await self._session_alive(st):
+        if st.get("handed_off"):
+            await self._release_closed_handoff(target, st)
+            return
+        if await self._session_alive(st):
             return
         # No attempt cap (spec 2026-09-18 §4): a no-PR bounce climbs one model
         # tier instead. ``attempts`` survives only on the outcome rows

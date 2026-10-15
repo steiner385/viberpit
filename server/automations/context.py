@@ -396,8 +396,12 @@ class AutomationContext:
         return result
 
     async def reserve_target_action(self, target: str, expected: dict, *,
-                                    source: str, reason: str, state: dict) -> dict | None:
-        """Fence the previous actor before a workflow's external terminal action."""
+                                    source: str, reason: str, state: dict,
+                                    pr_terminal: bool = False) -> dict | None:
+        """Fence the previous actor before a workflow's external terminal action.
+
+        *pr_terminal*: the caller observed the handed-off PR merged/closed, so a
+        PR Doctor predecessor's unknown mechanical outcome may settle (#3119)."""
         from .ownership import ReleaseProof, StaleOwnership, owned
 
         try:
@@ -407,7 +411,7 @@ class AutomationContext:
                     return None
                 if tx.operation.owner == "pr-doctor" and self.automation_id != "pr-doctor":
                     from .pr_accounting import detach
-                    if not await detach(tx):
+                    if not await detach(tx, pr_terminal=pr_terminal):
                         return None
                 proof = (ReleaseProof.NOT_STARTED if tx.operation.phase == "claimed"
                          else ReleaseProof.WORK_STOPPED)
