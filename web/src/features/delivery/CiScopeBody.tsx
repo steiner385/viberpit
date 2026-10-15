@@ -5,7 +5,7 @@
 import { useMemo, useState } from 'react'
 import { ListSearchInput } from '@/ui/list/ListSearchInput'
 import { useRovingRows } from '@/ui/list/useRovingRows'
-import { Banner } from '@/ui/Banner'
+import { QueryFailureBanner } from '@/ui/QueryFailureBanner'
 import { EmptyState } from '@/ui/EmptyState'
 import { Skeleton } from '@/ui/Skeleton'
 import { DELIVERY } from '@/features/products/vocab'
@@ -18,13 +18,15 @@ export interface CiScopeBodyProps {
   repos: readonly string[]
   isLoading: boolean
   isError: boolean
+  /** Refetches the repo list; offered as Retry on a failed read. */
+  onRetry?: () => void
   /** The CI/CD Doctor's flake thresholds, for every row's verdict (`ciHealth`). */
   thresholds: CiThresholds | null
   selectedKey: string | null
   onOpen: (repo: string) => void
 }
 
-export function CiScopeBody({ repos, isLoading, isError, thresholds, selectedKey, onOpen }: CiScopeBodyProps) {
+export function CiScopeBody({ repos, isLoading, isError, onRetry, thresholds, selectedKey, onOpen }: CiScopeBodyProps) {
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
   const visible = useMemo(
@@ -47,7 +49,7 @@ export function CiScopeBody({ repos, isLoading, isError, thresholds, selectedKey
         />
       }
     >
-      {isError && <Banner tone="danger" title={DELIVERY.ciError} />}
+      {isError && <QueryFailureBanner message={DELIVERY.ciError} hasData={repos.length > 0} onRetry={onRetry} />}
       {isLoading && repos.length === 0 && (
         <div role="status" aria-label={`Loading ${DELIVERY.ci.toLowerCase()}`} className="space-y-2">
           {Array.from({ length: 3 }, (_, i) => (
@@ -55,7 +57,7 @@ export function CiScopeBody({ repos, isLoading, isError, thresholds, selectedKey
           ))}
         </div>
       )}
-      {!isLoading && sorted.length === 0 && (
+      {!isLoading && !isError && sorted.length === 0 && (
         <EmptyState title={q ? 'No matches' : DELIVERY.emptyRepos} />
       )}
       {sorted.length > 0 && (

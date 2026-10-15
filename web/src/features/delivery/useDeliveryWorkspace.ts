@@ -52,6 +52,8 @@ export function useDeliveryWorkspace(active: boolean): { list: DeliveryListColum
       repos: repoList,
       reposLoading: repos.isLoading,
       reposError: repos.isError,
+      onRetryAutomations: () => { void automations.refetch() },
+      onRetryRepos: () => { void repos.refetch() },
       capacity: capacity.data,
       capacityLoading: capacity.isLoading,
       capacityError: capacity.isError,

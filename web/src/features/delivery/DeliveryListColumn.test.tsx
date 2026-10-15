@@ -187,3 +187,27 @@ describe('DeliveryListColumn', () => {
     document.body.removeChild(products)
   })
 })
+
+describe('DeliveryListColumn — failed reads (#1405)', () => {
+  it('a failed first load says it failed, not that nothing is registered, and offers Retry', () => {
+    const onRetryRepos = vi.fn()
+    mount({ scope: 'ci', repos: [], reposError: true, onRetryRepos })
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load CI health.')
+    expect(screen.queryByText(/No repositories with pipeline history/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetryRepos).toHaveBeenCalledTimes(1)
+  })
+  it('a failed refresh keeps the last-good rows and labels them stale', () => {
+    mount({ scope: 'ci', reposError: true, onRetryRepos: vi.fn() })
+    expect(screen.getByRole('alert')).toHaveTextContent(/may be out of date/)
+    expect(screen.getAllByRole('button', { name: /^Open/ }).length).toBeGreaterThan(0)
+  })
+  it('automations: failed first load hides the empty copy and retries', () => {
+    const onRetryAutomations = vi.fn()
+    mount({ automations: [], automationsError: true, onRetryAutomations })
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load automations.')
+    expect(screen.queryByText(/No automations/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetryAutomations).toHaveBeenCalledTimes(1)
+  })
+})
