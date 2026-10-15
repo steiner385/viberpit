@@ -237,6 +237,77 @@ def test_post_notice_returns_false_for_unknown_identity(tmp_path):
     asyncio.run(run())
 
 
+def _notice(i: int) -> dict:
+    return {"kind": "pr_broke", "title": f"n{i}", "body": "b", "url": None,
+            "watchId": f"rule-{i}"}
+
+
+def test_pending_notices_keep_only_the_newest_cap(tmp_path, monkeypatch):
+    """#1502: a watch firing at a never-opened drawer must not grow the queue
+    without limit — the oldest entries fall off once the cap is reached."""
+    from server.sessions import orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "_PENDING_NOTICE_CAP", 3)
+
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'cap.db'}",
+                                tmp_path=tmp_path)
+        try:
+            a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                          identity="u@x", kind=ASSISTANT_KIND,
+                                          owner_identity="u@x")
+            orch._drivers.pop(a.id, None)
+            for i in range(5):
+                assert await orch.post_notice("u@x", _notice(i)) is False
+            assert [n["title"] for n in orch.pop_pending_notices(a.id)] == ["n2", "n3", "n4"]
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_pending_notices_expire_on_pop_and_on_any_later_post(tmp_path):
+    """#1502: a notice older than the TTL is never delivered, and a thread nobody
+    opens is still swept — the write path expires every thread, not just its own.
+    Ages the stored queued-at stamps rather than patching time.monotonic, which the
+    event loop's own clock reads."""
+    from server.sessions import orchestrator as orch_mod
+    ttl = orch_mod._PENDING_NOTICE_TTL_S
+
+    def age(orch, session_id, by):
+        orch._pending_notices[session_id] = [
+            (ts - by, n) for ts, n in orch._pending_notices[session_id]]
+
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ttl.db'}",
+                                tmp_path=tmp_path)
+        try:
+            a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                          identity="u@x", kind=ASSISTANT_KIND,
+                                          owner_identity="u@x")
+            b = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                          identity="v@x", kind=ASSISTANT_KIND,
+                                          owner_identity="v@x")
+            orch._drivers.pop(a.id, None)
+            orch._drivers.pop(b.id, None)
+
+            await orch.post_notice("u@x", _notice(0))
+            age(orch, a.id, ttl + 1)                            # n0 is now stale
+            assert orch.pop_pending_notices(a.id) == []         # pop path sweeps
+            await orch.post_notice("u@x", _notice(1))
+            age(orch, a.id, ttl - 60)                           # old but within TTL
+            assert [n["title"] for n in orch.pop_pending_notices(a.id)] == ["n1"]
+
+            await orch.post_notice("u@x", _notice(2))           # never popped
+            age(orch, a.id, ttl + 1)
+            await orch.post_notice("v@x", _notice(3))           # sweeps u@x's thread
+            assert a.id not in orch._pending_notices
+            assert [n["title"] for n in orch.pop_pending_notices(b.id)] == ["n3"]
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # 3. Pending notices flush on WS attach                                       #
 # --------------------------------------------------------------------------- #
