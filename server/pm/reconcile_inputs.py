@@ -11,7 +11,8 @@ from server.db.models import (GhProject, GhProjectItem, GhWriteJournal, Initiati
                               Session as DbSession, WorkItem, WorkItemDep)
 
 from .desired_state import ItemFacts
-from .mirror_store import ProductSyncView, deps_in_repos
+from .drift import is_open_blocker
+from .mirror_store import ProductSyncView, blocker_states, blocker_states_stmt, deps_in_repos
 from .reconcile_diff import DepView, MirrorItem
 
 
@@ -77,11 +78,15 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
     deps = list(db.scalars(select(WorkItemDep).where(deps_in_repos(repos))).all())
     blockers: dict[str, list[str]] = {}
     blockers_at: dict[str, datetime | None] = {}
+    # THE queue's predicate (``drift.is_open_blocker`` over ``blocker_states``), so the
+    # board's Blocked and the queue's ``blocked`` skip cannot disagree (#3110): an open
+    # PR blocks, a blocker outside the product counts, an unmirrored one fails closed.
+    stmt = blocker_states_stmt({d.dst_ref for d in deps if d.active and d.dst_ref})
+    dst_state = blocker_states(db.execute(stmt).all()) if stmt is not None else {}
     for d in deps:
         if not d.active or not d.src_ref or not d.dst_ref:
             continue
-        dst = by_ref.get(d.dst_ref)
-        if dst is not None and (dst.state or "open") == "open":
+        if is_open_blocker(dst_state.get(d.dst_ref)):
             blockers.setdefault(d.src_ref, []).append(d.dst_ref)
             blockers_at[d.src_ref] = _max(blockers_at.get(d.src_ref), _aware(d.updated_at))
     initiatives = {f"{i.epic_repo}#{i.epic_number}": i for i in db.scalars(

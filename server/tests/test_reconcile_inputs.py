@@ -184,3 +184,25 @@ def test_deps_are_scoped_to_the_products_repos_in_sql():
     facts = load_product_facts(db, list_product_views(db)[0], now=T)
     assert [d.src_ref for d in facts.deps] == [f"{REPO}#5"]
     assert p.slug == "viberpit"
+
+
+def test_open_blockers_follow_the_queues_predicate():
+    """#3110: the board's Blocked and the queue's ``blocked`` skip judge one fact with
+    one predicate (``drift.is_open_blocker``): an open pull request blocks, a blocker
+    in a repo outside the product counts, and an unmirrored one fails closed — or the
+    reconciler would move a card to Ready that the queue still skips as blocked."""
+    db = _db(); _seed(db)
+    db.add_all([WorkItem(repo=REPO, number=60, kind="pr", state="open", labels=[]),
+                WorkItem(repo="other/repo", number=7, kind="issue", state="open", labels=[]),
+                WorkItem(repo="other/repo", number=8, kind="issue", state="closed", labels=[])])
+    for n, dst in ((4, f"{REPO}#60"), (9, "other/repo#7"), (3, "other/repo#8"),
+                   (5, "ghost/repo#1")):
+        db.add(WorkItemDep(src_ref=f"{REPO}#{n}", dst_ref=dst, source="native", active=True,
+                           updated_at=T))
+    db.commit()
+    by_ref = {f.ref: f.open_blocker_refs
+              for f in load_product_facts(db, list_product_views(db)[0], now=T).items}
+    assert by_ref[f"{REPO}#4"] == (f"{REPO}#60",)
+    assert by_ref[f"{REPO}#9"] == ("other/repo#7",)
+    assert by_ref[f"{REPO}#3"] == ()
+    assert by_ref[f"{REPO}#5"] == ("ghost/repo#1", f"{REPO}#3")

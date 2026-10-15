@@ -20,10 +20,10 @@ STATUS_DONE = "Done"
 STATUS_OPTIONS: tuple[str, ...] = (
     STATUS_BACKLOG, STATUS_READY, STATUS_IN_PROGRESS, STATUS_BLOCKED, STATUS_HELD, STATUS_DONE)
 #: Columns that only state a fact ``derive_status`` reads: Held ⇔ a parking hold or a
-#: hand-back. A card left in one after its fact is gone is not a decision the
-#: ownership rule protects (``reconcile_diff.diff_fields``) — a deliberate park is a
-#: recorded hold, never a bare column (#3106).
-FACT_STATUSES: frozenset[str] = frozenset({STATUS_HELD})
+#: hand-back, Blocked ⇔ an open dependency. A card left in one after its fact is gone
+#: is not a decision the ownership rule protects (``reconcile_diff.diff_fields``) — a
+#: deliberate park is a recorded hold, never a bare column (#3106, #3110).
+FACT_STATUSES: frozenset[str] = frozenset({STATUS_HELD, STATUS_BLOCKED})
 
 
 ACTIVE_SESSION_STATUSES = frozenset({"in_progress", "retrying", "condensing"})
