@@ -394,6 +394,59 @@ describe('DrawerHost', () => {
     expect(region()).toBe(before)
   })
 
+  // The Assistant is sticky: a navigation that drops `?drawer=` (opening a
+  // session, Back, any `navigate()` outside the nav rail) must not close it —
+  // only the user closing it does.
+  describe('the assistant drawer stays open until it is closed', () => {
+    it('survives a navigation that drops ?drawer=, as the same node', async () => {
+      enableAssistant()
+      const router = renderAt(['/sessions?drawer=assistant'])
+      const before = region()
+      expect(before).not.toBeNull()
+      await act(async () => {
+        await router.navigate('/sessions/archived')
+      })
+      expect(screen.getByTestId('url')).toHaveTextContent(/^\/sessions\/archived$/)
+      expect(region()).toBe(before)
+    })
+
+    it('reopens after a reload until it is closed, and closing unpins it', async () => {
+      enableAssistant()
+      const user = userEvent.setup()
+      renderAt(['/sessions?drawer=assistant'])
+      cleanup()
+
+      const router = renderAt(['/sessions'])
+      expect(screen.getByRole('dialog', { name: /assistant/i })).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Close Assistant' }))
+      expect(region()).toBeNull()
+
+      await act(async () => {
+        await router.navigate('/sessions/archived')
+      })
+      expect(region()).toBeNull()
+    })
+
+    it('Help opened over it closes back to the assistant', async () => {
+      enableAssistant()
+      const user = userEvent.setup()
+      renderAt(['/sessions?drawer=assistant'])
+      cleanup()
+
+      renderAt(['/sessions?drawer=help'])
+      await user.click(screen.getByRole('button', { name: 'Close Help & Shortcuts' }))
+      expect(screen.getByRole('dialog', { name: /assistant/i })).toBeInTheDocument()
+    })
+
+    it('Help is not sticky: a navigation that drops ?drawer= closes it', async () => {
+      const router = renderAt(['/sessions?drawer=help'])
+      await act(async () => {
+        await router.navigate('/sessions/archived')
+      })
+      expect(region()).toBeNull()
+    })
+  })
+
   it('is an overlay sheet below the push breakpoint', () => {
     renderAt(['/sessions?drawer=help'])
     expect(region()).toHaveAttribute('aria-modal', 'true')
