@@ -4,6 +4,9 @@ import { storageKey, migrateStorageKey, migrateStorageNamespace } from '@/lib/st
 export interface DraftAttachment { id: string; mime: string; name: string }
 export interface SessionDraft { text: string; attachments: DraftAttachment[]; replySource?: 'suggested' }
 
+/** Draft key for the dock's New session prompt, which has no session id yet. */
+export const NEW_SESSION_DRAFT_ID = 'new-session'
+
 const EMPTY: SessionDraft = { text: '', attachments: [] }
 const keyFor = (sessionId: string) => storageKey(`draft.${sessionId}`)
 /** Pre-namespace key (colon-separated). Migrated forward per session id on first read (row 7b). */

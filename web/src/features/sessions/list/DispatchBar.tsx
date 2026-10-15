@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSessionDraft, NEW_SESSION_DRAFT_ID } from '@/features/sessions/composer/useSessionDraft'
 import { Paperclip, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
@@ -145,7 +146,13 @@ export function DispatchBar({
   drivesList = true,
   repoCheckOptions,
 }: DispatchBarProps) {
-  const [text, setText] = useState('')
+  // The unsent prompt survives navigation/refresh via the same per-session draft
+  // store the Composer uses, under a fixed key. Text only: attachments are
+  // uploaded blobs with a server-side lifetime, so they are deliberately not
+  // persisted. Saving an empty text removes the entry, so a successful dispatch
+  // and Escape (the explicit discard) both clear it, and a failed dispatch keeps it.
+  const draft = useSessionDraft(NEW_SESSION_DRAFT_ID)
+  const [text, setText] = useState(draft.initial.text)
   const [repo, setRepo] = useState<string>(() => getLastRepo() ?? '')
   // '' = Auto-select (let the backend pick). 'default' = the account's own model.
   const [account, setAccount] = useState('')
@@ -178,6 +185,10 @@ export function DispatchBar({
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const { assess } = useAssessDispatch()
   const repoHint = useRepoSuggestion({ text, repo, enabled: !isPending, ...repoCheckOptions })
+
+  useEffect(() => {
+    draft.save({ text, attachments: [] })
+  }, [text, draft])
 
   // Auto-focus when autoFocusKey changes (or on mount)
   useEffect(() => {
