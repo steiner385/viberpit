@@ -8,6 +8,13 @@ from server.sessions.draft_hold_guard import (
     not_own_reason, scan_command)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_gh_repo(monkeypatch):
+    """A GH_REPO in the runner's environment would make every unqualified call
+    ambiguous (``env_repo_ambiguous``)."""
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+
 @pytest.mark.parametrize("command, call", [
     ("gh pr ready 17", ReadyCall("17", None, None)),
     ("gh pr ready '#17'", ReadyCall("17", None, None)),

@@ -9,6 +9,13 @@ from server.sessions.merge_hold_guard import (
     scan_command)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_gh_repo(monkeypatch):
+    """A GH_REPO in the runner's environment would make every unqualified call
+    ambiguous (``env_repo_ambiguous``)."""
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+
 @pytest.mark.parametrize("command, call", [
     ("gh pr merge 19061 --squash --auto", ReadyCall("19061", None, None)),
     ("gh pr merge '#17' --auto", ReadyCall("17", None, None)),
@@ -64,20 +71,48 @@ def test_graphql_merge_mutations_are_always_refused(mutation):
     "gh api graphql -F query=@arm.graphql -f id=PR_x",
     "gh api graphql --input body.json",
     "bash -c 'gh api graphql -F query=@q'",
+    'gh api graph""ql -F "query=@q"',
+    'gh api graphql -f query="$Q"',
+    "gh api graphql -f query=$(cat arm.graphql)",
+    "gh api graphql -Fquery=@q",
+    "gh api graphql --raw-field=query=`cat q`",
+    "gh api graphql --input=body.json",
 ])
 def test_a_graphql_query_the_guard_cannot_read_is_refused(command):
     assert scan_command(command).deny_reason == HIDDEN_QUERY_REASON
 
 
 @pytest.mark.parametrize("command", [
+    "gh api graphql -f query='query($n:Int!){viewer{login}}' -F n=1",
+    "gh api graphql -f query='{viewer{login}}'",
+])
+def test_an_inline_graphql_query_without_a_merge_mutation_passes(command):
+    scan = scan_command(command)
+    assert scan.deny_reason is None and scan.calls == ()
+
+
+def test_a_quote_split_mutation_name_is_still_refused():
+    command = "gh api graphql -f query='mutation{enable''PullRequestAutoMerge(input:{}){x}}'"
+    assert scan_command(command).deny_reason == MUTATION_REASON
+
+
+@pytest.mark.parametrize("command", [
     "GH_REPO=o/r gh pr merge 17 --auto",
     "export GH_REPO=o/r; gh pr merge 17 --auto",
     "env GH_REPO=o/r gh pr merge 17 --auto",
+    'GH_R""EPO=o/r gh pr merge 17 --auto',
 ])
 def test_gh_repo_without_an_explicit_repo_is_refused(command):
     """gh would merge in GH_REPO while the lookup reads the working directory's
     repo — two different PRs — so the call must name --repo."""
     assert scan_command(command).deny_reason == UNRESOLVED_REASON
+
+
+def test_gh_repo_inherited_from_the_session_environment_is_ambiguous(monkeypatch):
+    monkeypatch.setenv("GH_REPO", "o/r")
+    assert scan_command("gh pr merge 17 --auto").deny_reason == UNRESOLVED_REASON
+    assert scan_command("gh pr merge 17 --auto -R o/r").calls == (
+        ReadyCall("17", "o/r", None),)
 
 
 def test_unbalanced_quoting_fails_closed_unless_disarming():

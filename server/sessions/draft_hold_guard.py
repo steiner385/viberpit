@@ -202,15 +202,17 @@ def scan_tokens(tokens: list[str], match: Matcher, raw: re.Pattern[str],
     return calls
 
 
-_GH_REPO_ENV = re.compile(r"\bGH_REPO\b")
-
-
-def env_repo_ambiguous(command: str, calls) -> bool:
-    """True when ``GH_REPO`` appears in *command* and some call names no ``--repo``:
-    gh would then resolve the PR in ``GH_REPO`` while the guard resolves it in the
-    working directory — two different PRs. An explicit ``--repo`` wins over the
-    variable in gh, so only those calls are safe to judge."""
-    return bool(_GH_REPO_ENV.search(command)) and any(c.repo is None for c in calls)
+def env_repo_ambiguous(command: str, tokens: list[str], calls) -> bool:
+    """True when ``GH_REPO`` may be set for the command and some call names no
+    ``--repo``: gh would then resolve the PR in ``GH_REPO`` while the guard resolves
+    it in the working directory — two different PRs. An explicit ``--repo`` wins over
+    the variable in gh, so only those calls are safe to judge. Checked on the raw
+    text, on the tokens after quote removal (``GH_R""EPO=…``), and in the
+    environment a session inherits."""
+    if all(c.repo is not None for c in calls):
+        return False
+    return ("GH_REPO" in command or any("GH_REPO" in t for t in tokens)
+            or bool(os.environ.get("GH_REPO")))
 
 
 def scan_command(command: str) -> Scan:
@@ -225,8 +227,10 @@ def scan_command(command: str) -> Scan:
                for m in _RAW_READY.finditer(command)):
             return Scan(deny_reason=UNRESOLVED_REASON)
         return Scan()
+    if any(_MUTATION.search(t) for t in tokens):   # quote-split: markPull''Request…
+        return Scan(deny_reason=MUTATION_REASON)
     calls = tuple(scan_tokens(tokens, _match_ready, _RAW_READY))
-    if env_repo_ambiguous(command, calls):
+    if env_repo_ambiguous(command, tokens, calls):
         return Scan(deny_reason=UNRESOLVED_REASON)
     return Scan(calls=calls)
 

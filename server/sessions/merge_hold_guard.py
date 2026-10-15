@@ -119,6 +119,37 @@ def _match_merge(tokens: list[str], i: int, cwd: str | None) -> ReadyCall | None
     return None
 
 
+_FIELD_FLAGS = ("-f", "-F", "--field", "--raw-field")
+
+
+def _hides_graphql_query(tokens: list[str]) -> bool:
+    """True when a GraphQL call in *tokens* (after quote removal) takes its query
+    from somewhere the guard cannot read: ``--input``, a ``query=@file`` field, or a
+    query the shell builds at run time (``$VAR``, ``$(…)``, backticks)."""
+    if not any(t == "graphql" or t.endswith("/graphql") for t in tokens):
+        return False
+    it = iter(tokens)
+    for tok in it:
+        if tok == "--input" or tok.startswith("--input="):
+            return True
+        field = None
+        if tok in _FIELD_FLAGS:
+            field = next(it, "")
+        else:
+            for flag in _FIELD_FLAGS:   # attached: -Fquery=…, --field=query=…
+                glued = flag + ("=" if flag.startswith("--") else "")
+                if tok.startswith(glued) and len(tok) > len(glued):
+                    field = tok[len(glued):]
+                    break
+        if field is not None and field.startswith("query="):
+            value = field[len("query="):]
+            # GraphQL's own `$var`s sit inside a query; a value that IS an expansion
+            # starts with `$`, and GraphQL never uses `$(` or backticks.
+            if value.startswith(("@", "$")) or "$(" in value or "`" in value:
+                return True
+    return False
+
+
 def scan_command(command: str) -> Scan:
     """Every way the shell *command* would merge a PR or arm its auto-merge."""
     if _MUTATION.search(command):
@@ -128,13 +159,19 @@ def scan_command(command: str) -> Scan:
     try:
         tokens = _draft._tokens(command)
     except ValueError:
+        if _GRAPHQL.search(command):   # an unreadable query: fail closed
+            return Scan(deny_reason=HIDDEN_QUERY_REASON)
         # Unbalanced quoting: no reliable tokens, so judge the raw text (fail closed).
         if any("--disable-auto" not in command[m.end():].split("\n", 1)[0]
                for m in _RAW_MERGE.finditer(command)):
             return Scan(deny_reason=UNRESOLVED_REASON)
         return Scan()
+    if any(_MUTATION.search(t) for t in tokens):   # quote-split: enable''PullRequest…
+        return Scan(deny_reason=MUTATION_REASON)
+    if _hides_graphql_query(tokens):
+        return Scan(deny_reason=HIDDEN_QUERY_REASON)
     calls = tuple(_draft.scan_tokens(tokens, _match_merge, _RAW_MERGE))
-    if _draft.env_repo_ambiguous(command, calls):
+    if _draft.env_repo_ambiguous(command, tokens, calls):
         return Scan(deny_reason=UNRESOLVED_REASON)
     return Scan(calls=calls)
 
