@@ -24,6 +24,7 @@ from viberpit.engines import AgentEngine
 
 from server.sessions.completion import commit_trailer
 
+from .backlog_github import LEFT_OPEN_REASONS
 from .backlog_selection import Batch
 
 CONVERTED_NOTE_PREFIX = "converted to a fix"
@@ -90,6 +91,13 @@ def _decisions_block(batch: Batch) -> str:
     )
 
 
+def _left_open_reason_lines() -> str:
+    """One indented bullet per ``LEFT_OPEN_REASONS`` entry — the vocabulary the
+    close-out parses, rendered from the same constant so the two cannot drift."""
+    return "".join(f"   - `{reason}`: {gloss}\n"
+                   for reason, gloss in LEFT_OPEN_REASONS.items())
+
+
 def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
                            engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str:
     """Return the seed prompt for a session that implements ``batch``.
@@ -99,6 +107,10 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
     - Close each issue with a ``Fixes #<n>`` keyword in the PR body — except an
       issue that says a PR must not close it, which gets ``Refs #<n>`` (#2984;
       ``backlog_github.close_batch_issues`` keeps a ``Refs``-only issue open).
+    - Say on the same line WHY an issue is left open —
+      ``Refs #<n> (left-open: <reason>)``, the reasons rendered from
+      ``backlog_github.LEFT_OPEN_REASONS`` — so the close-out can defer, re-queue
+      or hold it rather than hand every one to a person (#3107).
     - Follow this repository's completion workflow: open the PR (non-draft),
       mark it ready for review, and arm auto-merge (``--squash --auto``).
 
@@ -133,6 +145,11 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
         "   (a permanent singleton, a container `epic`, \"reference it with\n"
         "   `Refs`\") gets `Refs #<n>` instead — never `Fixes`. The runner\n"
         "   honours `Refs` and leaves that issue open.\n"
+        "   Whenever you leave an issue open with `Refs` (for that reason or\n"
+        "   because you deliberately did not finish it), say why on the same\n"
+        "   line — `Refs #<n> (left-open: <reason>)` — with one of:\n"
+        f"{_left_open_reason_lines()}"
+        "   A `Refs` with no reason hands the issue to a person.\n"
         "4. If an issue's body has a `Covers: FR-…, AC-…` line naming stable\n"
         "   requirement/acceptance-criteria IDs, cite those same IDs in the PR\n"
         "   body (e.g. `Covers: FR-003, AC-012`) so requirement coverage traces\n"

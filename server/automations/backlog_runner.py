@@ -14,12 +14,13 @@ from typing import Any, Awaitable, Callable, Protocol, cast
 
 from viberpit.worktrees import DISK_EXHAUSTION_MARKERS
 from server.aio import caused_by_cancellation, current_task_cancelling
-from server.db.models import DECISION_PROPOSED_CAUSE, NOT_NEEDED_CAUSE
+from server.db.models import (
+    DECISION_PROPOSED_CAUSE, LEFT_OPEN_DEFERRED_CAUSE, NOT_NEEDED_CAUSE)
 from server.db.transient import is_transient_db_failure
 from server.github.pr_status import PullRequestInfo
 from server.time_iso import parse_iso_utc
 
-from .backlog_github import closeout_hold_reason, escalation_detail
+from .backlog_github import closeout_hold_reason, escalation_detail, is_deferred
 from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .claim_liveness import DEAD_HOLDER_KEY
@@ -2685,11 +2686,21 @@ class BacklogRunnerLoop:
                 return
             attempts = await self._pr_doctor_attempts(
                 f"{target.split('#', 1)[0]}#{info.number}")
-            if await self._write_state(target, st, None, action_completed=True, outcome={
-                    "outcome": "merged", "pr_number": info.number, "pr_url": info.url,
-                    "first_pass_merge": attempts == 0 if attempts is not None else None,
-                    "fallback": fallback}):
-                await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
+            merged_row: dict[str, Any] = {
+                "outcome": "merged", "pr_number": info.number, "pr_url": info.url,
+                "first_pass_merge": attempts == 0 if attempts is not None else None,
+                "fallback": fallback}
+            if is_deferred(outcome):
+                # #3107: the close-out left an issue open on purpose with a ``defer``
+                # disposition — no hold. Still a merge (never a bounce); the cause is
+                # what the queue's not-needed suppression reads back.
+                merged_row["cause"] = LEFT_OPEN_DEFERRED_CAUSE
+            if await self._write_state(target, st, None, action_completed=True,
+                                       outcome=merged_row):
+                await self._ctx.emit(
+                    "info", f"{target} merged" + (
+                        " (left open, deferred)" if is_deferred(outcome) else ""),
+                    kind="merged", target=target)
             return
         if target in gave_up_targets:
             # A stale PR-Doctor ``gave_up`` event from a PREVIOUS claim (#1960

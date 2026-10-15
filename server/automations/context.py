@@ -16,6 +16,7 @@ from server.db import db_session, dialect_insert
 from server.db.models import (
     DISPATCH_KINDS,
     DISPATCH_OUTCOMES,
+    LEFT_OPEN_DEFERRED_CAUSE,
     NOT_NEEDED_CAUSE,
     AutomationEvent,
     AutomationTargetState,
@@ -741,7 +742,8 @@ class AutomationContext:
                              target)
                     return
                 row.outcome, row.cause = outcome, cause
-                if row.material_fingerprint is None and cause == NOT_NEEDED_CAUSE:
+                if row.material_fingerprint is None and cause in (
+                        NOT_NEEDED_CAUSE, LEFT_OPEN_DEFERRED_CAUSE):
                     # A dispatch spawned before ``record_outcome`` took the material
                     # fingerprint: the finalise-time one is the best baseline left.
                     row.material_fingerprint = (await _fingerprints_for(db, target))[1]

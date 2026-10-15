@@ -743,7 +743,9 @@ def test_close_batch_issues_refs_does_not_hold_a_closed_or_forgotten_issue(pr):
 
 
 @pytest.mark.parametrize("signals,needle", [
-    ({"labels": ["Epic"]}, "'epic'"),
+    # An `epic` LABEL is deferred, not held (#3107) — see the left-open tests below.
+    ({"labels": ["permanent-singleton"]}, "'permanent-singleton'"),
+    ({"labels": ["Epic", "permanent-singleton"]}, "'epic'"),
     ({"body": "> ⚠️ **Permanent singleton — do not claim or close.**"},
      "'permanent singleton'"),
     ({"body": "Reference it with `Refs #16546`, never `Fixes`."}, "'never fixes'"),
@@ -765,6 +767,142 @@ def test_keep_open_phrases_ignore_an_ordinary_do_not_close_ui_bug():
     from server.automations.backlog_github import _human_gate_reason
     assert _human_gate_reason({"title": "Dialog", "labels": [],
                                "body": "Do not close the dialog on Escape."}) is None
+
+
+# --------------------------------------------------------------------------- #
+# close_batch_issues — the session's declared left-open reason (#3107)          #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("reason", [
+    "epic", "remaining_work", "awaiting_deploy_or_condition",
+    "needs_physical_verification", "needs_owner_record"])
+@pytest.mark.parametrize("template", [
+    "Refs #8 (left-open: {r})",
+    "Refs #8 — left-open: {r}",
+    "refs #8 - Left Open: {r}",
+    "Part of o/r#8 (left-open: {r})",
+    "Related to https://github.com/o/r/issues/8 (left-open: {r})",
+])
+def test_declared_left_open_reason_parses_every_reason_and_spelling(reason, template):
+    from server.automations.backlog_github import LEFT_OPEN_REASONS, declared_left_open_reason
+    assert reason in LEFT_OPEN_REASONS
+    text = "Some summary.\n\n" + template.format(r=reason) + "\n"
+    assert declared_left_open_reason(text, "o/r", 8) == reason
+
+
+@pytest.mark.parametrize("text", [
+    "`Refs #8 (left-open: epic)`",                  # quoted in a code span
+    "```\nRefs #8 (left-open: epic)\n```",           # quoted in a fence
+    "Refs #8 (left-open: because_reasons)",          # unknown token
+    "Refs #80 (left-open: epic)",                    # #8 is not #80
+    "Refs #8",                                       # no declaration
+    "Refs other/repo#8 (left-open: epic)",           # another repo's #8
+    "Fixes #8 (left-open: epic)",                    # not a non-closing keyword
+])
+def test_declared_left_open_reason_ignores_what_is_not_a_declaration(text):
+    from server.automations.backlog_github import declared_left_open_reason
+    assert declared_left_open_reason(text, "o/r", 8) is None
+
+
+def test_left_open_disposition_maps_every_reason():
+    from server.automations.backlog_github import LEFT_OPEN_REASONS, left_open_disposition
+    assert {r: left_open_disposition(r) for r in LEFT_OPEN_REASONS} == {
+        "epic": "defer", "awaiting_deploy_or_condition": "defer",
+        "remaining_work": "requeue",
+        "needs_physical_verification": "hold", "needs_owner_record": "hold"}
+    assert left_open_disposition(None) == "hold"
+    assert left_open_disposition("nonsense") == "hold"
+
+
+def _comment_bodies(gh) -> list[str]:
+    return [c[c.index("--body") + 1] for c in gh.calls if c[:2] == ["issue", "comment"]]
+
+
+@pytest.mark.parametrize("reason", ["epic", "awaiting_deploy_or_condition"])
+def test_close_batch_issues_declared_defer_reason_is_deferred_without_a_hold(reason):
+    from server.automations.backlog_github import DEFERRED, close_batch_issues
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(body=f"Refs #8 (left-open: {reason})")))
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == DEFERRED
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    body, = _comment_bodies(gh)
+    assert "Handed to a human" not in body and "no hold" in body
+
+
+def test_close_batch_issues_declared_remaining_work_is_requeued():
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(
+        body="Refs #8 (left-open: remaining_work)")))
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"   # no hold, no window: the pool takes it back
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    body, = _comment_bodies(gh)
+    assert "Handed to a human" not in body and "returned it to the backlog pool" in body
+
+
+@pytest.mark.parametrize("reason,words", [
+    ("needs_physical_verification", "needs physical verification"),
+    ("needs_owner_record", "needs owner record"),
+])
+def test_close_batch_issues_declared_hold_reason_names_the_reason(reason, words):
+    from server.automations.backlog_github import (
+        CLOSEOUT_HOLD_PREFIX, close_batch_issues, closeout_hold_reason, escalation_detail)
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(body=f"Refs #8 (left-open: {reason})")))
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    detail = escalation_detail(outcome)
+    assert detail == f"{words} (declared by the session)"
+    assert closeout_hold_reason(detail).startswith(CLOSEOUT_HOLD_PREFIX)
+    body, = _comment_bodies(gh)
+    assert "Handed to a human" in body
+
+
+def test_close_batch_issues_epic_label_without_a_reason_is_deferred():
+    """#3107 acceptance: the owner digest no longer shows epics. KinDash #19347 was
+    labelled `epic` and still held."""
+    from server.automations.backlog_github import DEFERRED, close_batch_issues
+    for pr in ({"closing": [8]}, {"body": "Refs #8"},
+               {"body": "Refs #8 (left-open: needs_owner_record)"}):
+        gh = GateGh(pr=_proc(stdout=_linkage_stdout(**pr)),
+                    signals={8: _proc(stdout=_signals_stdout(title="t", labels=["Epic"]))})
+        assert close_batch_issues(_batch8(), _merged_info(), gh_run=gh) == DEFERRED
+        assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+        assert all("Handed to a human" not in b for b in _comment_bodies(gh))
+
+
+def test_close_batch_issues_undeclared_refs_still_escalates():
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(body="Refs #8 (left-open: whatever)")))
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+    assert outcome.startswith("escalated: ") and "`Refs`" in outcome
+
+
+def test_close_batch_issues_hold_outranks_a_deferred_sibling():
+    from server.automations.backlog_github import close_batch_issues, escalation_detail
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(
+        body="Refs #8 (left-open: awaiting_deploy_or_condition)\n"
+             "Refs #9 (left-open: needs_owner_record)")))
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert escalation_detail(outcome) == "o/r#9: needs owner record (declared by the session)"
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+
+
+def test_close_batch_issues_deferred_member_beside_a_closed_one_is_deferred():
+    from server.automations.backlog_github import DEFERRED, close_batch_issues, is_deferred
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(
+        body="Refs #8 (left-open: awaiting_deploy_or_condition)\nFixes #9")))
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == DEFERRED and is_deferred(outcome) and not is_deferred("closed")
+    assert [c[2] for c in gh.calls if c[:2] == ["issue", "close"]] == ["9"]
 
 
 def test_escalation_outcome_round_trips():

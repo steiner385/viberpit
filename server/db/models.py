@@ -751,6 +751,12 @@ DECISION_PROPOSED_CAUSE = "decision_proposed"
 # ``_counts_as_attempt`` for the same reason as ``decision_proposed``: it is a finding,
 # not a failed attempt, so it must not charge a bounce.
 NOT_NEEDED_CAUSE = "no_pr_needed"
+# ``left_open_deferred`` (#3107): a ``merged`` row whose close-out left an issue open
+# with a ``defer`` disposition (an epic, or awaiting a deploy/condition). Read back by
+# ``server/pm/outcomes.py:not_needed_stmt`` — the queue suppresses the issue under the
+# same material/backoff rule as a not-needed verdict. Still a merge: it stays an
+# attempt (never a bounce) in ``_counts_as_attempt``.
+LEFT_OPEN_DEFERRED_CAUSE = "left_open_deferred"
 # ``decision_proposed`` sits on a ``no_pr`` row whose session ended with
 # ``mark_no_pr("awaiting-decision")`` after proposing a decision (spec 2026-09-18
 # §6). Deliberately a cause and not a new outcome: nothing about the dispatch

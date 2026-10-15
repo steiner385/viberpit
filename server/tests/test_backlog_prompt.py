@@ -127,6 +127,16 @@ def test_instructs_refs_for_an_issue_that_forbids_closing():
     assert "`Refs #<n>` instead — never `Fixes`" in result
 
 
+def test_instructs_a_left_open_reason_for_every_refs_from_the_vocabulary():
+    """#3107: the reasons the close-out parses are the reasons the prompt offers —
+    rendered from ``backlog_github.LEFT_OPEN_REASONS``, never re-typed."""
+    from server.automations.backlog_github import LEFT_OPEN_REASONS
+    result = build_implement_prompt(SINGLE_BATCH)
+    assert "`Refs #<n> (left-open: <reason>)`" in result
+    for reason, gloss in LEFT_OPEN_REASONS.items():
+        assert f"`{reason}`: {gloss}" in result
+
+
 @pytest.mark.parametrize("issues,expected_fixes", [
     (["a/b#1"], ["Fixes #1"]),
     (["x/y#99", "x/y#100"], ["Fixes #99", "Fixes #100"]),
@@ -161,6 +171,18 @@ UNDECIDED_PROMPT = (
     "   (a permanent singleton, a container `epic`, \"reference it with\n"
     "   `Refs`\") gets `Refs #<n>` instead — never `Fixes`. The runner\n"
     "   honours `Refs` and leaves that issue open.\n"
+    "   Whenever you leave an issue open with `Refs` (for that reason or\n"
+    "   because you deliberately did not finish it), say why on the same\n"
+    "   line — `Refs #<n> (left-open: <reason>)` — with one of:\n"
+    "   - `epic`: the issue is a container epic its owner closes\n"
+    "   - `remaining_work`: agent-doable work on the issue remains for a later session\n"
+    "   - `awaiting_deploy_or_condition`: done, but only checkable after a deploy or "
+    "other condition a later session can re-check\n"
+    "   - `needs_physical_verification`: a person must verify it by hand (a real "
+    "device, the physical world)\n"
+    "   - `needs_owner_record`: the owner must record something only they can "
+    "(a decision, an account fact, a credential)\n"
+    "   A `Refs` with no reason hands the issue to a person.\n"
     "4. If an issue's body has a `Covers: FR-…, AC-…` line naming stable\n"
     "   requirement/acceptance-criteria IDs, cite those same IDs in the PR\n"
     "   body (e.g. `Covers: FR-003, AC-012`) so requirement coverage traces\n"
