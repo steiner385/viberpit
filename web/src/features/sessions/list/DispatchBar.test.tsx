@@ -539,3 +539,30 @@ describe('DispatchBar prompt row on a narrow strip', () => {
     expect(ta).toHaveAttribute('placeholder', 'New session… (? for shortcuts)')
   })
 })
+
+describe('DispatchBar unsent draft (#1404)', () => {
+  it('restores unsent text after a remount and keeps it when creation fails', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockRejectedValue(new DispatchError('nope'))
+    const first = render(<DispatchBar {...makeProps({ onDispatch })} />)
+    await user.type(screen.getByRole('textbox'), 'sentinel-1404')
+    first.unmount()
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(box.value).toBe('sentinel-1404')
+    await user.type(box, '{Enter}')
+    await waitFor(() => expect(onDispatch).toHaveBeenCalled())
+    expect(localStorage.getItem('viberpit.draft.new-session')).toContain('sentinel-1404')
+  })
+
+  it('clears only the new-session draft on success and on Escape', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('viberpit.draft.other', '{"text":"keep","attachments":[]}')
+    render(<DispatchBar {...makeProps()} />)
+    await user.type(screen.getByRole('textbox'), 'sent{Enter}')
+    await waitFor(() => expect(localStorage.getItem('viberpit.draft.new-session')).toBeNull())
+    await user.type(screen.getByRole('textbox'), 'abc{Escape}')
+    expect(localStorage.getItem('viberpit.draft.new-session')).toBeNull()
+    expect(localStorage.getItem('viberpit.draft.other')).not.toBeNull()
+  })
+})

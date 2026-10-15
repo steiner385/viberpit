@@ -90,7 +90,7 @@ export interface PromptDockProps {
  * branch, so removing it from either child fails in the region that would look
  * broken.
  *
- * ## Drafts do not survive a session switch
+ * ## Drafts do not survive a session switch (composer; the new-session bar persists its text, #1404)
  *
  * `app.main` is keyed on the session id (each session gets a clean reducer and
  * attach/detach cycle), so switching sessions remounts the dock and drops an
