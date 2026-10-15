@@ -197,3 +197,127 @@ def test_bad_requests_are_rejected_whole(body):
     with _client() as c:
         r = c.post("/api/pm/holds/release", json=body, headers=IDENTITY_HEADERS)
         assert r.status_code == 422, r.text
+
+
+# --- #3106: a released hold also moves its card out of Held ------------------------
+CACHE = {"Status": {"field_id": "F", "options": {
+    "Backlog": "a", "Ready": "b", "In progress": "c", "Blocked": "d", "Held": "e", "Done": "f"}}}
+
+
+def _seed_board(c, *items: dict, policy: dict | None = None) -> None:
+    """A live product owning o/r with a mirrored board; each item's ``board`` is the
+    card's mirrored Status, and ``blocked_by`` an open issue it depends on."""
+    from server.db import db_session
+    from server.db.models import (GhProject, GhProjectItem, Project, ProjectRepo, WorkItem,
+                                  WorkItemDep)
+
+    async def _go() -> None:
+        async with db_session() as db:
+            p = Project(slug="billing", name="billing", onboarding_state="live",
+                        automation_policy=policy)
+            db.add(p)
+            await db.flush()
+            db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))
+            gh = GhProject(project_id=p.id, gh_node_id="PVT_1", field_cache=CACHE)
+            db.add(gh)
+            await db.flush()
+            for it in items:
+                it = dict(it)
+                board, blocker = it.pop("board", None), it.pop("blocked_by", None)
+                wi = WorkItem(repo="o/r", kind="issue", state="open", title=f"t{it['number']}",
+                              body="b", gh_node_id=f"I_{it['number']}",
+                              hold_reason="r" if it.get("hold_kind") else None, **it)
+                db.add(wi)
+                await db.flush()
+                if board is not None:
+                    db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wi.id,
+                                         gh_item_node_id=f"PVTI_{it['number']}", status=board))
+                if blocker is not None:
+                    db.add(WorkItem(repo="o/r", kind="issue", state="open", number=blocker,
+                                    title="blocker", body="b"))
+                    db.add(WorkItemDep(src_ref=f"o/r#{it['number']}", dst_ref=f"o/r#{blocker}",
+                                       source="native", active=True))
+            await db.commit()
+    c.portal.call(_go)
+
+
+def _board_seam(c, *, ok: bool = True) -> list:
+    """Stub the orchestrator's board-status seam; record each call and the hold the
+    item carries AT the call (the seam reads its own session, so the release must
+    already be committed or ``board_status.refusal`` would refuse a still-held item)."""
+    from server.db import db_session
+    from server.db.models import WorkItem
+    calls: list = []
+
+    async def seam(work_item_id: str, request: dict) -> dict:
+        async with db_session() as db:
+            wi = await db.get(WorkItem, work_item_id)
+            assert wi is not None
+            hold = wi.hold_kind
+        calls.append((work_item_id, request, hold))
+        if not ok:
+            return {"ok": False, "step": "mutate", "error": "GitHub said no"}
+        return {"ok": True, "status": request["status"], "previous": "Held",
+                "added": False, "changed": True}
+    c.app.state.sessions.pm_board_status = seam
+    return calls
+
+
+def test_releasing_a_held_card_moves_it_to_the_queue_min_status(gh):
+    with _client() as c:
+        _seed_board(c, {"number": 1, "hold_kind": "owner_action", "hold_by": "runner",
+                        "board": "Held"})
+        calls = _board_seam(c)
+        r = _assistant(c).post("/api/pm/holds/release", json={"refs": ["o/r#1"], "reason": "go"})
+        out = r.json()["results"][0]
+        assert out["released"] == ["owner_action"]
+        assert out["board"] == {"from": "Held", "to": "Ready", "moved": True, "error": None}
+        assert [(req["status"], hold) for _, req, hold in calls] == [("Ready", None)]
+
+
+def test_the_target_column_is_the_products_queue_min_status(gh):
+    with _client() as c:
+        _seed_board(c, {"number": 1, "hold_kind": "owner_action", "hold_by": "runner",
+                        "board": "Held"}, policy={"queue_min_status": "Backlog"})
+        calls = _board_seam(c)
+        r = _assistant(c).post("/api/pm/holds/release", json={"refs": ["o/r#1"], "reason": "go"})
+        assert r.json()["results"][0]["board"]["to"] == "Backlog"
+        assert [req["status"] for _, req, _ in calls] == ["Backlog"]
+
+
+def test_a_released_card_with_an_open_blocker_moves_to_blocked(gh):
+    """Ready would be a lie the reconciler could not correct: our write is stamped now,
+    newer than the dependency edge that derives Blocked."""
+    with _client() as c:
+        _seed_board(c, {"number": 1, "hold_kind": "owner_action", "hold_by": "runner",
+                        "board": "Held", "blocked_by": 50})
+        calls = _board_seam(c)
+        r = _assistant(c).post("/api/pm/holds/release", json={"refs": ["o/r#1"], "reason": "go"})
+        assert r.json()["results"][0]["board"]["to"] == "Blocked"
+        assert [req["status"] for _, req, _ in calls] == ["Blocked"]
+
+
+def test_a_card_not_in_held_is_left_where_it_is(gh):
+    with _client() as c:
+        _seed_board(c, {"number": 1, "hold_kind": "evidence", "hold_by": "runner",
+                        "board": "Ready"},
+                    {"number": 2, "hold_kind": "owner_action", "hold_by": "runner"})
+        calls = _board_seam(c)
+        r = _assistant(c).post("/api/pm/holds/release",
+                               json={"refs": ["o/r#1", "o/r#2"], "reason": "go"})
+        assert [x["released"] for x in r.json()["results"]] == [["evidence"], ["owner_action"]]
+        assert all("board" not in x for x in r.json()["results"])
+        assert calls == []
+
+
+def test_a_failed_board_move_is_reported_and_the_release_stands(gh):
+    with _client() as c:
+        _seed_board(c, {"number": 1, "hold_kind": "owner_action", "hold_by": "runner",
+                        "board": "Held"})
+        _board_seam(c, ok=False)
+        r = _assistant(c).post("/api/pm/holds/release", json={"refs": ["o/r#1"], "reason": "go"})
+        out = r.json()["results"][0]
+        assert out["released"] == ["owner_action"] and out["refused"] is None
+        assert out["board"] == {"from": "Held", "to": "Ready", "moved": False,
+                                "error": "GitHub said no"}
+        assert _rows(c, 1)[0].hold_kind is None

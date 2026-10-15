@@ -1293,9 +1293,51 @@ async def release_holds(
             if released:
                 result["released"].insert(0, released)
 
+    freed = [(result, wi) for result, wi, *_ in plans if result["released"]]
+    if freed:
+        # The board seam reads its own session: commit the release first, or
+        # ``board_status.refusal`` still sees the hold and refuses the move.
+        await db.commit()
+        await _move_released_out_of_held(request, db, freed, identity=identity, via=via)
+
     released_n = sum(1 for r in results if r["released"])
     return {"results": results, "releasedCount": released_n,
             "refusedCount": sum(1 for r in results if r["refused"])}
+
+
+async def _move_released_out_of_held(request: Request, db, freed: list[tuple[dict, WorkItem]],
+                                     *, identity: str, via: str) -> None:
+    """Move each just-released card the board still shows in Held to where the queue
+    can reach it (#3106), and report it on the ref's result as ``board``.
+
+    The queue skips a Held card as ``status`` whatever the hold says, and the
+    reconciler is no guarantee: it runs on a cadence, can be fenced, and cannot
+    override a Held value it does not recognise as its own write. So the release
+    moves the card itself, through the same journaled seam as ``set_board_status``.
+    The target is the product's ``queue_min_status``, or Blocked while an open
+    dependency still blocks the issue — this write is stamped now, newer than the
+    edge that derives Blocked, so Ready would stick. A card a live session owns is
+    left alone: a hand-back derives Held from the session, not the hold. A failed
+    move never undoes the release; it is reported as ``board.error``."""
+    from server.automations.product_policy import policy_for_product
+    from server.pm.desired_state import HELD_KINDS, STATUS_BLOCKED, STATUS_HELD
+    rows, policies = await _queue_inputs(db, datetime.now(timezone.utc))
+    by_ref = {r.ref: r for r in rows}
+    for result, wi in freed:
+        row = by_ref.get(f"{wi.repo}#{wi.number}")
+        if (row is None or row.status != STATUS_HELD or wi.hold_kind in HELD_KINDS
+                or row.live_session):
+            continue
+        target = (STATUS_BLOCKED if row.open_blockers else
+                  str(policy_for_product(policies, row.product)["queue_min_status"]))
+        out = await request.app.state.sessions.pm_board_status(
+            wi.id, {"status": target, "add_if_missing": False})
+        result["board"] = {"from": STATUS_HELD, "to": target, "moved": bool(out.get("ok")),
+                           "error": out.get("error")}
+        await record_audit(db=db, type="pm.workitem.board_status", identity=identity, via=via,
+                           detail={"ref": row.ref, "workItemId": wi.id, "status": target,
+                                   "ok": bool(out.get("ok")), "step": out.get("step"),
+                                   "added": out.get("added"), "cause": "hold_release"})
 
 
 @router.delete("/projects/{slug}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
