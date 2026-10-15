@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping, Set
 from dataclasses import dataclass
 from datetime import datetime
 
-from .desired_state import DesiredItem
+from .desired_state import FACT_STATUSES, DesiredItem
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,12 @@ def diff_fields(desired: DesiredItem, mirror: MirrorItem,
     and can never be pushed again). So a mirrored value that still equals our own
     last write is treated as UNSET for the ownership check. Nothing else changes:
     a value a human has since altered no longer matches, and the initial-fill rule
-    in ``should_push`` is untouched."""
+    in ``should_push`` is untouched.
+
+    A Status in ``FACT_STATUSES`` the desired state no longer derives is treated as
+    unset too, whoever wrote it (#3106): its fact is gone, and a write of ours that
+    GitHub applied behind a 5xx is journaled failed, so ``own_values`` cannot vouch
+    for it. Journaled as ``unstick:<ref>`` so the move reads as what it is."""
     out: list[Mutation] = []
     for field, decision, current, tag in (
             ("Status", desired.status, mirror.status, "status"),
@@ -84,10 +89,12 @@ def diff_fields(desired: DesiredItem, mirror: MirrorItem,
             continue
         own = own_values.get((mirror.item_node_id, field))
         mirrored = None if (own is not None and _same(current, own, field=field)) else current
-        if not should_push(decision.decided_at, mirror.gh_updated_at, mirrored):
+        stale_fact = field == "Status" and current in FACT_STATUSES
+        if not stale_fact and not should_push(decision.decided_at, mirror.gh_updated_at,
+                                              mirrored):
             continue
-        out.append(Mutation("set_field", mirror.item_node_id, field, current,
-                            decision.value, f"{tag}:{desired.ref}"))
+        out.append(Mutation("set_field", mirror.item_node_id, field, current, decision.value,
+                            f"unstick:{desired.ref}" if stale_fact else f"{tag}:{desired.ref}"))
     return out
 
 

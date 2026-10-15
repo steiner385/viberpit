@@ -102,3 +102,18 @@ def test_own_past_write_is_not_sticky_but_a_human_edit_still_is():
     m2 = _mirror(score=480, gh_updated_at=T2)
     assert diff_fields(scored, m2) == []
     assert [m.new_value for m in diff_fields(scored, m2, {("PVTI_5", "Score"): 480.0})] == [500.0]
+
+
+def test_a_held_card_nothing_holds_is_not_a_sticky_human_decision():
+    """#3106: Held only states a fact (a parking hold, or a hand-back). Once that fact
+    is gone the column is not a choice the ownership rule protects — whoever put it
+    there, and however new: a reconciler write GitHub applied behind a 504 is
+    journaled failed, so it never reads back as our own and stuck the card forever."""
+    from server.pm.desired_state import STATUS_HELD
+    desired = DesiredItem("o/r#5", Decision("Ready", T1), Decision(None, None),
+                          Decision(None, None))
+    muts = diff_fields(desired, _mirror(status=STATUS_HELD, gh_updated_at=T2))
+    assert [(m.field, m.old_value, m.new_value, m.initiated_by) for m in muts] == [
+        ("Status", STATUS_HELD, "Ready", "unstick:o/r#5")]
+    # Every other column keeps the ownership rule: a person's newer Ready still wins.
+    assert diff_fields(desired, _mirror(status="Backlog", gh_updated_at=T2)) == []
