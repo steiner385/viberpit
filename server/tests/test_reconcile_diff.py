@@ -117,3 +117,15 @@ def test_a_held_card_nothing_holds_is_not_a_sticky_human_decision():
         ("Status", STATUS_HELD, "Ready", "unstick:o/r#5")]
     # Every other column keeps the ownership rule: a person's newer Ready still wins.
     assert diff_fields(desired, _mirror(status="Backlog", gh_updated_at=T2)) == []
+
+
+def test_a_blocked_card_nothing_blocks_is_reconciled():
+    """#3110: Blocked states an open dependency. With none, the card goes to what the
+    item derives (Ready when classified), however recently it was moved to Blocked
+    and by whom — an external reason belongs in a recorded hold, not a bare column."""
+    from server.pm.desired_state import STATUS_BLOCKED
+    desired = DesiredItem("o/r#5", Decision("Ready", T1), Decision(None, None),
+                          Decision(None, None))
+    muts = diff_fields(desired, _mirror(status=STATUS_BLOCKED, gh_updated_at=T2))
+    assert [(m.field, m.old_value, m.new_value, m.initiated_by) for m in muts] == [
+        ("Status", STATUS_BLOCKED, "Ready", "unstick:o/r#5")]

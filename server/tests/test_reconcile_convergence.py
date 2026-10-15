@@ -165,7 +165,7 @@ def test_a_real_human_edit_is_detected_and_wins():
     facts = load_product_facts(db, product, now=T)
     human_time = T + timedelta(minutes=3)
     views = [GhProjectItemView(item_node_id="PVTI_5", repo=REPO, number=5, kind="issue",
-                               status="Blocked", score=480.0, stage=None,
+                               status="Backlog", score=480.0, stage=None,
                                updated_at=human_time.isoformat()),
              GhProjectItemView(item_node_id="PVTI_9", repo=REPO, number=9, kind="issue",
                                status=None, score=None, stage=None,
@@ -175,8 +175,10 @@ def test_a_real_human_edit_is_detected_and_wins():
         own_writes=journal.recent_own_writes(db, T - timedelta(hours=24)))
     db.flush()
     assert [(e.ref, e.field, e.old, e.new) for e in edits] == [
-        (f"{REPO}#5", "Status", "In progress", "Blocked")]
+        (f"{REPO}#5", "Status", "In progress", "Backlog")]
 
+    # (Backlog, not Blocked or Held: those only state a fact, so a bare one is
+    # reconciled whoever set it — ``FACT_STATUSES``, #3110.)
     # The session is still live, so we'd like "In progress" back — but the human's edit is
     # newer than our decision, so the ownership rule suppresses it.
     _facts, muts = _plan(db, product, human_time)
