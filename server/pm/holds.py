@@ -6,8 +6,9 @@ the set/clear operations every route and tool must go through.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from server.db.models import HOLD_KINDS, WorkItem
 from server.pm.outcomes import body_fingerprint
@@ -25,6 +26,11 @@ if TYPE_CHECKING:
 #: ``AGENT_SETTABLE``, ``set_runner_stronger_hold``'s writer and
 #: ``release_on_dispatch``'s reader/audit pair.
 STRONGER_MODEL = "stronger_model"
+#: Proof only the owner can supply (#3113) — a check on a real device, a legal
+#: record. Parks the card (``desired_state.HELD_KINDS``); its request is the row's
+#: ``hold_detail`` (:class:`EvidenceRequest`), written only by
+#: :func:`set_owner_evidence_hold`.
+OWNER_EVIDENCE = "owner_evidence"
 
 #: Kinds a non-person (session, assistant, loopback caller) may set or clear.
 AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", STRONGER_MODEL})
@@ -91,7 +97,20 @@ def may_set(actor: str, kind: str) -> bool:
     return actor_class(actor) != "agent" or kind in AGENT_SETTABLE
 
 
-def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime) -> None:
+def _stamp_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime,
+                detail: dict | None = None) -> None:
+    """THE write of a hold's columns — every setter goes through it, so a new column
+    (``hold_detail``, #3113) is never left behind from the hold it replaces."""
+    wi.hold_kind = kind
+    wi.hold_reason = reason.strip()
+    wi.hold_by = actor
+    wi.hold_set_at = now
+    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+    wi.hold_detail = detail
+
+
+def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime,
+             detail: dict | None = None) -> None:
     if kind not in HOLD_KINDS:
         raise ValueError(f"hold_kind must be one of {HOLD_KINDS}")
     # Refused for EVERY actor class, ahead of the class gate: a ``decision`` hold
@@ -103,6 +122,10 @@ def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime)
         raise DecisionHoldError(DECISION_SET_MESSAGE)
     if not (reason or "").strip():
         raise ValueError("hold_reason is required")
+    # An owner_evidence hold with no request parks the item with nothing to ask for:
+    # :func:`set_owner_evidence_hold` is its one writer.
+    if kind == OWNER_EVIDENCE and not detail:
+        raise ValueError("an owner_evidence hold needs its request (set_owner_evidence_hold)")
     if not may_set(actor, kind):
         raise HoldPermissionError(f"{actor_class(actor)} actors may not set {kind!r}")
     # Overwriting a DIFFERENT kind releases the one already there, so the same gate
@@ -114,11 +137,8 @@ def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime)
             and not may_set(actor, wi.hold_kind)):
         raise HoldPermissionError(
             f"{actor_class(actor)} actors may not replace a {wi.hold_kind!r} hold")
-    wi.hold_kind = kind
-    wi.hold_reason = reason.strip()
-    wi.hold_by = actor
-    wi.hold_set_at = now
-    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+    _stamp_hold(wi, kind=kind, reason=reason, actor=actor, now=now,
+                detail=detail if kind == OWNER_EVIDENCE else None)
 
 
 #: The one spelling of why a rejected classification parks its item, shared by the
@@ -137,11 +157,7 @@ def set_reject_hold(wi: WorkItem, *, actor: str, now: datetime) -> None:
     the alternative, passing a person's login as the actor, is the provenance lie §8
     exists to remove. ``actor`` is therefore recorded as-is, truthfully.
     """
-    wi.hold_kind = "owner_action"
-    wi.hold_reason = REJECT_HOLD_REASON
-    wi.hold_by = actor
-    wi.hold_set_at = now
-    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+    _stamp_hold(wi, kind="owner_action", reason=REJECT_HOLD_REASON, actor=actor, now=now)
 
 
 #: The one spelling of why a REJECTED decision proposal parks its item — the
@@ -171,11 +187,7 @@ def set_decision_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -
     """
     if not (reason or "").strip():
         raise ValueError("hold_reason is required")
-    wi.hold_kind = "decision"
-    wi.hold_reason = reason.strip()
-    wi.hold_by = actor
-    wi.hold_set_at = now
-    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+    _stamp_hold(wi, kind="decision", reason=reason, actor=actor, now=now)
 
 
 def clear_decision_hold(wi: WorkItem, *, actor: str) -> bool:
@@ -194,11 +206,7 @@ def clear_decision_hold(wi: WorkItem, *, actor: str) -> bool:
     """
     if wi.hold_kind != "decision":
         return False
-    wi.hold_kind = None
-    wi.hold_reason = None
-    wi.hold_by = None
-    wi.hold_set_at = None
-    wi.hold_fingerprint = None
+    _blank_hold(wi)
     return True
 
 
@@ -209,11 +217,7 @@ def set_reject_decision_hold(wi: WorkItem, *, actor: str, now: datetime) -> None
     own — the proposal being rejected — so there is nothing of anyone else's to
     protect, and like ``set_reject_hold`` the rejection is the authority, not the
     caller's class."""
-    wi.hold_kind = "owner_action"
-    wi.hold_reason = DECISION_REJECT_REASON
-    wi.hold_by = actor
-    wi.hold_set_at = now
-    wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+    _stamp_hold(wi, kind="owner_action", reason=DECISION_REJECT_REASON, actor=actor, now=now)
 
 
 RUNNER_ACTOR = "runner"
@@ -263,7 +267,11 @@ RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay
                                     # assessment found an agent can finish
                                     # (``release_assessed_closeout_hold``, design
                                     # 2026-10-14 §3).
-                                    "assessment")
+                                    "assessment",
+                                    # The owner posted the evidence an owner_evidence
+                                    # hold asked for and the issue was closed on it
+                                    # (``release_on_evidence_supplied``, #3113).
+                                    "evidence_supplied")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -303,6 +311,144 @@ def set_evidence_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -
     a session parking its own work, a person. Goes through ``set_hold``, so the
     permission gate and the fingerprint stay identical for all of them."""
     set_hold(wi, kind="evidence", reason=reason, actor=actor, now=now)
+
+
+def _iso_or_none(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _utc(value)
+    try:
+        return _utc(datetime.fromisoformat(str(value))) if value else None
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class EvidenceRequest:
+    """What an ``owner_evidence`` hold asks of the owner (#3113) — the row's
+    ``hold_detail``, read and written only through :meth:`from_wire` / :meth:`to_wire`.
+
+    ``request`` says exactly what evidence is needed and ``where`` where to give it.
+    The precondition — ``not_before`` and/or ``after_pr`` (an ``owner/repo#N`` that
+    must be merged, e.g. the deploy-carrying PR) — keeps the item out of the owner's
+    view until it can be done (:func:`evidence_surfaced`). Reminders come every
+    ``remind_every_days`` (0 = never) from the hold or the last one
+    (:func:`evidence_reminder_due`)."""
+
+    DEFAULT_WHERE: ClassVar[str] = "a comment on this issue"
+    DEFAULT_REMIND_EVERY_DAYS: ClassVar[int] = 3
+
+    request: str
+    where: str = DEFAULT_WHERE
+    not_before: datetime | None = None
+    after_pr: str | None = None
+    remind_every_days: int = DEFAULT_REMIND_EVERY_DAYS
+    last_reminded_at: datetime | None = None
+
+    def to_wire(self) -> dict:
+        return {"request": self.request, "where": self.where,
+                "notBefore": self.not_before.isoformat() if self.not_before else None,
+                "afterPr": self.after_pr, "remindEveryDays": self.remind_every_days,
+                "lastRemindedAt": (self.last_reminded_at.isoformat()
+                                   if self.last_reminded_at else None)}
+
+    @classmethod
+    def from_wire(cls, raw: Any, *, fallback_request: str = "") -> "EvidenceRequest":
+        """Tolerant: a missing or damaged field reads as its default, and a missing
+        request as *fallback_request* (the hold reason) — a hand-edited row never
+        breaks the reader."""
+        d = raw if isinstance(raw, dict) else {}
+        try:
+            every = int(d.get("remindEveryDays", cls.DEFAULT_REMIND_EVERY_DAYS))
+        except (TypeError, ValueError):
+            every = cls.DEFAULT_REMIND_EVERY_DAYS
+        if every < 0:
+            every = cls.DEFAULT_REMIND_EVERY_DAYS
+        return cls(request=str(d.get("request") or fallback_request).strip(),
+                   where=str(d.get("where") or cls.DEFAULT_WHERE),
+                   not_before=_iso_or_none(d.get("notBefore")),
+                   after_pr=str(d["afterPr"]) if d.get("afterPr") else None,
+                   remind_every_days=every,
+                   last_reminded_at=_iso_or_none(d.get("lastRemindedAt")))
+
+
+def evidence_surfaced(request: EvidenceRequest, *, now: datetime,
+                      merged_refs: "set[str] | frozenset[str]") -> bool:
+    """Whether the request's precondition is met, so it is the owner's to act on: past
+    ``not_before`` and ``after_pr`` (if any) among *merged_refs*."""
+    if request.not_before is not None and _utc(now) < request.not_before:
+        return False
+    return request.after_pr is None or request.after_pr in merged_refs
+
+
+def evidence_reminder_due(request: EvidenceRequest, *, hold_set_at: datetime | None,
+                          now: datetime) -> bool:
+    """Whether a reminder is due: a schedule is set and ``remind_every_days`` have passed
+    since the last reminder, or since the hold when none was sent yet."""
+    if request.remind_every_days <= 0:
+        return False
+    since = request.last_reminded_at or (_utc(hold_set_at) if hold_set_at else None)
+    return since is not None and _utc(now) - since >= timedelta(days=request.remind_every_days)
+
+
+def set_owner_evidence_hold(wi: WorkItem, *, request: EvidenceRequest, reason: str,
+                            actor: str, now: datetime) -> None:
+    """THE writer of an ``owner_evidence`` hold (#3113): ``set_hold``'s gate (a person
+    or the system — never an agent) with its request as ``hold_detail``."""
+    if not request.request:
+        raise ValueError("an owner_evidence hold needs a non-empty request")
+    set_hold(wi, kind=OWNER_EVIDENCE, reason=reason, actor=actor, now=now,
+             detail=request.to_wire())
+
+
+def stamp_evidence_reminded(db: "Session", ref: str, *, hold_set_at: datetime | None,
+                            now: datetime) -> bool:
+    """Record that the owner was just reminded of the ``owner_evidence`` ask on *ref*
+    (#3113): ``lastRemindedAt`` in its ``hold_detail``. Narrowed like every judged
+    write — the same ask (kind and ``hold_set_at``) or nothing. Sync."""
+    from sqlalchemy import select
+
+    from server.pm.refs import split_ref
+    parts = split_ref(ref)
+    if parts is None:
+        return False
+    wi = db.scalars(select(WorkItem).where(
+        WorkItem.kind == "issue", WorkItem.repo == parts[0], WorkItem.number == parts[1],
+        WorkItem.hold_kind == OWNER_EVIDENCE)).first()
+    if wi is None or wi.hold_set_at is None or hold_set_at is None or (
+            _utc(wi.hold_set_at) != _utc(hold_set_at)):
+        return False
+    req = EvidenceRequest.from_wire(wi.hold_detail, fallback_request=wi.hold_reason or "")
+    # A new dict, not an in-place edit: a mutated JSON value is not change-tracked.
+    wi.hold_detail = {**(wi.hold_detail or {}), **req.to_wire(),
+                      "lastRemindedAt": _utc(now).isoformat()}
+    db.flush()
+    return True
+
+
+def release_on_evidence_supplied(db: "Session", ref: str, *, actor: str, via: str,
+                                 hold_set_at: datetime | None = None) -> bool:
+    """End the ``owner_evidence`` hold on *ref* because the owner posted the evidence
+    it asked for (#3113), audited ``evidence_supplied``. Narrowed at write time to the
+    hold the check judged — same kind and, when given, same *hold_set_at* — so a hold
+    re-placed in between is kept. Answers whether one was released. Sync."""
+    from sqlalchemy import select
+
+    from server.pm.refs import split_ref
+    parts = split_ref(ref)
+    if parts is None:
+        return False
+    wi = db.scalars(select(WorkItem).where(
+        WorkItem.kind == "issue", WorkItem.repo == parts[0], WorkItem.number == parts[1],
+        WorkItem.hold_kind == OWNER_EVIDENCE)).first()
+    if wi is None:
+        return False
+    if hold_set_at is not None and (wi.hold_set_at is None
+                                    or _utc(wi.hold_set_at) != _utc(hold_set_at)):
+        return False
+    _blank_hold(wi)
+    _audit_release(db, wi, kind=OWNER_EVIDENCE, signal="evidence_supplied", actor=actor, via=via)
+    db.flush()
+    return True
 
 
 def held_refs(db: "Session") -> dict[str, str]:
@@ -357,7 +503,8 @@ def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
                        now: datetime) -> list[Released]:
     """THE release rule for owner_action holds (spec §7), run once per reconcile
     pass: a human board edit to Ready/Backlog, or an issue body that no longer
-    matches the fingerprint taken when the hold was set. The Retry endpoint is the
+    matches the fingerprint taken when the hold was set. An ``owner_evidence`` hold
+    (#3113) ends on the board edit only. The Retry endpoint is the
     third signal and calls ``clear_hold`` directly with the person's actor.
     Idempotent: a released item has no hold to release again.
 
@@ -370,19 +517,24 @@ def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
     board_refs = {e.ref for e in human_edits
                   if e.field == "Status" and str(e.new) in RELEASING_BOARD_STATUSES}
     held = db.scalars(select(WorkItem).where(
-        WorkItem.kind == "issue", WorkItem.hold_kind == "owner_action")).all()
+        WorkItem.kind == "issue",
+        WorkItem.hold_kind.in_(("owner_action", OWNER_EVIDENCE)))).all()
     for wi in held:
         ref = f"{wi.repo}#{wi.number}"
+        kind = str(wi.hold_kind)
         signal: str | None = None
         if ref in board_refs:
             signal = "board_edit"
-        elif (wi.hold_fingerprint and wi.hold_fingerprint != body_fingerprint(wi.title, wi.body)
+        # Not for owner_evidence (#3113): the owner may paste the evidence into the
+        # body, and that is what the evidence check reads — not a hand-back.
+        elif (kind == "owner_action" and wi.hold_fingerprint
+              and wi.hold_fingerprint != body_fingerprint(wi.title, wi.body)
               and not _edit_predates_hold(wi)):
             signal = "body_edit"
         if signal is None:
             continue
         clear_hold(wi, actor=RECONCILER_ACTOR)
-        _audit_release(db, wi, kind="owner_action", signal=signal, actor=RECONCILER_ACTOR)
+        _audit_release(db, wi, kind=kind, signal=signal, actor=RECONCILER_ACTOR)
         released.append((wi, signal))
     db.flush()
     return released
@@ -594,6 +746,7 @@ def _blank_hold(wi: WorkItem) -> None:
     wi.hold_by = None
     wi.hold_set_at = None
     wi.hold_fingerprint = None
+    wi.hold_detail = None
 
 
 def clear_hold(wi: WorkItem, *, actor: str) -> None:

@@ -20,7 +20,8 @@ from server.db.transient import is_transient_db_failure
 from server.github.pr_status import PullRequestInfo
 from server.time_iso import parse_iso_utc
 
-from .backlog_github import closeout_hold_reason, escalation_detail, is_deferred
+from .backlog_github import (closeout_hold_reason, escalation_detail, evidence_detail,
+                             is_deferred)
 from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .claim_liveness import DEAD_HOLDER_KEY
@@ -545,7 +546,9 @@ SeedPolicies = Callable[[], Awaitable[int]]
 # the PR unmerged) and the merged-but-unclosed human gate. The SIGNAL itself is
 # the durable ``gave_up`` row ``_give_up`` writes — this seam only tells the
 # outside world about it.
-NeedsHuman = Callable[[str, str], Awaitable[None]]
+# ``evidence=`` (#3113, optional keyword, passed only when set): the
+# ``holds.EvidenceRequest`` wire — write an ``owner_evidence`` hold, not ``owner_action``.
+NeedsHuman = Callable[..., Awaitable[None]]
 # THE model-ladder path (spec 2026-09-18 §4): ``escalate(target, reason, rung)``.
 # ``rung`` is ALWAYS a tier — the next attempt's pin, written as a
 # ``stronger_model`` hold (agent-settable, queue-eligible) so the next refill
@@ -660,7 +663,7 @@ def _releases_live_claim(st: dict, state: "dict | None", outcome: "dict | None")
     return (outcome or {}).get("outcome") != "merged"
 
 
-async def _stub_needs_human(_target: str, _reason: str) -> None:
+async def _stub_needs_human(_target: str, _reason: str, **_kw: Any) -> None:
     # GIVE-UP fallback: announce nothing; the durable row still carries the handoff.
     return None
 
@@ -1937,7 +1940,8 @@ class BacklogRunnerLoop:
                 return
             if not backed:
                 try:
-                    await self._needs_human(target, st.get("reason") or "")
+                    await self._announce_needs_human(target, st.get("reason") or "",
+                                                     st.get("evidence"))
                 except Exception:
                     log.warning("backlog_runner.needs_human_retry_failed target=%s",
                                 target, exc_info=True)
@@ -2264,8 +2268,18 @@ class BacklogRunnerLoop:
             await self._retract(target, st)
         return written
 
+    async def _announce_needs_human(self, target: str, reason: str,
+                                    evidence: dict | None) -> None:
+        """The ``needs_human`` seam, with the evidence request only when there is one
+        (#3113) — so a seam that predates it keeps its two-argument shape."""
+        if evidence:
+            await self._needs_human(target, reason, evidence=evidence)
+        else:
+            await self._needs_human(target, reason)
+
     async def _give_up(self, target: str, st: dict, reason: str, *,
-                       outcome: dict | None = None, action_completed: bool = False) -> bool:
+                       outcome: dict | None = None, action_completed: bool = False,
+                       evidence: dict | None = None) -> bool:
         # Returns whether the hand-off actually STARTED — i.e. whether the parked row
         # landed. A lost fence means nothing happened at all and the next sweep
         # retries the whole branch; the investigation settle reads this so it does
@@ -2287,13 +2301,17 @@ class BacklogRunnerLoop:
         # keys go, or `_release_give_ups` would keep treating it as a wait.
         base = {k: v for k, v in st.items() if k not in _QUOTA_WAIT_KEYS}
         parked = {**base, "claimed": False, "gave_up": True, "reason": reason, "held": False}
+        if evidence:
+            # #3113: the owner's evidence request rides on the row, so a retried
+            # announce (``held`` still False) writes the same owner_evidence hold.
+            parked["evidence"] = evidence
         if not await self._write_state(target, st, parked, outcome=outcome,
                                        action_completed=action_completed):
             return False
         await self._ctx.emit("warn", f"{target}: {reason} — needs human",
                              kind="gave_up", target=target)
         try:
-            await self._needs_human(target, reason)
+            await self._announce_needs_human(target, reason, evidence)
         except Exception:
             log.warning("backlog_runner.needs_human_announce_failed target=%s", target,
                         exc_info=True)
@@ -2667,6 +2685,17 @@ class BacklogRunnerLoop:
                 await self._ctx.compare_target_state(target, st, {
                     **st, "ownership_wait_reason": "close-out incomplete; review required"})
                 return  # keep the operation; never replay an uncertain external effect
+            evidence = evidence_detail(outcome)
+            if evidence is not None:
+                # #3113: only the owner can supply what is left (a check by hand, a
+                # record) — an owner_evidence hold carrying the request, never a
+                # generic hand-off. Same row, outcome and announce path otherwise.
+                reason = closeout_hold_reason(evidence["reason"])
+                await self._give_up(target, st, reason, action_completed=True, outcome={
+                    "outcome": "needs_human", "cause": reason,
+                    "pr_number": info.number, "pr_url": info.url, "fallback": fallback},
+                    evidence=evidence["request"])
+                return
             gate = escalation_detail(outcome)
             if gate is not None:
                 # The hold names what is left (#2681): a close-out hold says

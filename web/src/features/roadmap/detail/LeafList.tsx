@@ -102,7 +102,7 @@ function LeafRow({ leaf, capabilities, onReview }: { leaf: Leaf; capabilities: {
           </Badge>
         )}
         {leaf.state === 'open' && leaf.holdKind && (
-          <Badge tone={leaf.holdKind === 'owner_action' || leaf.holdKind === 'decision' ? 'warning' : 'info'} data-testid="leaf-hold">
+          <Badge tone={leaf.holdKind === 'owner_action' || leaf.holdKind === 'decision' || leaf.holdKind === 'owner_evidence' ? 'warning' : 'info'} data-testid="leaf-hold">
             {holdLabel(leaf.holdKind)}
           </Badge>
         )}

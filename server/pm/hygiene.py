@@ -23,6 +23,12 @@ rules never write.
    the loop's helper call) says it is fixed or obsolete → close; still relevant and
    actionable → unpark. ALWAYS a recommendation (``RECOMMEND_ONLY_RULES``), whatever
    the product's ``risk_tolerance``: a person's park ends only with the owner's yes.
+7. ``evidence_posted`` (#3113, after #3128) — an ``owner_evidence`` hold (evidence only
+   the owner can supply) whose precondition is met, with a human comment on the issue
+   AFTER the hold was set → close as completed, quoting what was asked. ALWAYS a
+   recommendation: the mirror knows a human commented, not WHO — a session's own
+   follow-up comment lands under the owner's GitHub login too — so the owner's one
+   tap in the digest is the proof.
 
 Triage-accepted items missing from the board (§2 rule 5) need no rule here: the
 reconciler adds every open issue to its product's board (``reconcile_diff.membership``)
@@ -41,7 +47,8 @@ from server.automations.product_policy import (NEEDS_YOU_AUTOMATION_MODES, effec
 from server.pm import closeout_assess as ca
 from server.pm import parked_review as pr
 from server.pm.desired_state import HELD_KINDS, STATUS_BLOCKED, STATUS_DONE
-from server.pm.holds import actor_class
+from server.pm.holds import (OWNER_EVIDENCE, EvidenceRequest, actor_class,
+                             evidence_reminder_due)
 from server.pm.outcomes import body_fingerprint
 from server.pm.policy_skip import stale_system_holds
 from server.pm.queue import (PARKED, PARKED_LABELS, QueueRow, is_bot_noise,
@@ -54,11 +61,14 @@ RULE_STALE_HOLDS = "stale_holds"
 RULE_RESOLVED_EDGES = "resolved_edges"
 RULE_CLOSEOUT_ASSESS = "closeout_assess"
 RULE_PARKED_REVIEW = "parked_review"
+RULE_EVIDENCE_POSTED = "evidence_posted"
 RULES: tuple[str, ...] = (RULE_DONE_BUT_OPEN, RULE_BOARD_BLOCKED, RULE_STALE_HOLDS,
-                          RULE_RESOLVED_EDGES, RULE_CLOSEOUT_ASSESS, RULE_PARKED_REVIEW)
+                          RULE_RESOLVED_EDGES, RULE_CLOSEOUT_ASSESS, RULE_PARKED_REVIEW,
+                          RULE_EVIDENCE_POSTED)
 #: Rules whose findings are only ever owner recommendations — never applied by the
-#: loop, whatever ``risk_tolerance`` says (design §4: no automatic unpark, ever).
-RECOMMEND_ONLY_RULES = frozenset({RULE_PARKED_REVIEW})
+#: loop, whatever ``risk_tolerance`` says (design §4: no automatic unpark, ever;
+#: #3113: a comment's author is not in the mirror, so the owner confirms the reply).
+RECOMMEND_ONLY_RULES = frozenset({RULE_PARKED_REVIEW, RULE_EVIDENCE_POSTED})
 
 ACTION_CLOSE = "close"
 ACTION_SET_STATUS = "set_status"
@@ -335,6 +345,57 @@ def parked_review(rows: Iterable[QueueRow],
     return out
 
 
+def evidence_replied(hold_set_at: datetime | None,
+                     last_human_comment_at: datetime | None) -> bool:
+    """THE "the owner replied" test (#3113): a human comment strictly after the
+    hold was set. Unknown on either side is no reply."""
+    if hold_set_at is None or last_human_comment_at is None:
+        return False
+    return _aware(last_human_comment_at) > _aware(hold_set_at)
+
+
+def evidence_posted(rows: Iterable[QueueRow]) -> list[HygieneAction]:
+    """Rule 7 (#3113): every ``owner_evidence`` hold whose precondition is met and
+    whose issue has a human comment after the hold → close as completed, with a
+    comment quoting the ask. ``detail`` carries the hold's ``holdSetAt`` so the write
+    re-checks the very ask it judged. Recommend-only (``RECOMMEND_ONLY_RULES``). An
+    item somebody is on is left alone."""
+    out: list[HygieneAction] = []
+    for row in rows:
+        if (row.hold_kind != OWNER_EVIDENCE or row.evidence_waiting or row.live_session
+                or row.claimed or not evidence_replied(row.hold_set_at,
+                                                       row.last_human_comment_at)):
+            continue
+        assert row.hold_set_at is not None and row.last_human_comment_at is not None
+        asked, replied = _aware(row.hold_set_at), _aware(row.last_human_comment_at)
+        ask = EvidenceRequest.from_wire(row.hold_detail,
+                                        fallback_request=row.hold_reason or "").request
+        out.append(HygieneAction(
+            RULE_EVIDENCE_POSTED, row.product, row.ref, row.work_item_id, ACTION_CLOSE,
+            {"title": row.title, "closeReason": "completed",
+             "holdSetAt": asked.isoformat(), "repliedAt": replied.isoformat(),
+             "comment": (f"The evidence asked for on {asked:%Y-%m-%d} was posted here on "
+                         f"{replied:%Y-%m-%d}." + (f"\n\nAsked: {ask}" if ask else ""))},
+            f"{row.ref} waited for evidence only you can supply, and a comment was "
+            f"posted after the ask ({replied:%Y-%m-%d %H:%M} UTC)"))
+    return out
+
+
+def evidence_reminders_due(rows: Iterable[QueueRow], *, now: datetime) -> list[QueueRow]:
+    """The ``owner_evidence`` asks a reminder is due for (#3113): precondition met, no
+    reply yet (a reply is rule 7's, not a nudge's), and the request's schedule
+    (``holds.evidence_reminder_due``) says it is time. Pure."""
+    out: list[QueueRow] = []
+    for row in rows:
+        if (row.hold_kind != OWNER_EVIDENCE or row.evidence_waiting
+                or evidence_replied(row.hold_set_at, row.last_human_comment_at)):
+            continue
+        req = EvidenceRequest.from_wire(row.hold_detail, fallback_request=row.hold_reason or "")
+        if evidence_reminder_due(req, hold_set_at=row.hold_set_at, now=now):
+            out.append(row)
+    return out
+
+
 def plan(inputs: ProductInputs, *, now: datetime) -> list[HygieneAction]:
     """Every rule over one product, uncapped (``capped`` limits what is WRITTEN; a
     recommendation for every finding is cheap and must not be superseded just
@@ -347,7 +408,8 @@ def plan(inputs: ProductInputs, *, now: datetime) -> list[HygieneAction]:
             *stale_holds(rows, policies, now=now),
             *resolved_edges(inputs.slug, inputs.stale_edges, ids),
             *closeout_assess(_closeout_rows(inputs, now=now), inputs.closeout_states),
-            *parked_review(rows, inputs.parked_states)]
+            *parked_review(rows, inputs.parked_states),
+            *evidence_posted(rows)]
 
 
 def capped(actions: Iterable[HygieneAction]) -> list[HygieneAction]:

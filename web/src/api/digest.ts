@@ -39,7 +39,9 @@ export interface DigestItem {
  *  product, each with at most one recommended action. */
 export interface OwnerDigest {
   generatedAt: string
-  products: { slug: string; items: DigestItem[] }[]
+  /** `ownerEvidence` (#3113): the product's `owner_evidence` asks — evidence only
+   *  the owner can supply, answered on the issue — apart from what needs deciding. */
+  products: { slug: string; items: DigestItem[]; ownerEvidence?: DigestItem[] }[]
   total: number
   withRecommendation: number
 }

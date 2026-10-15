@@ -23,7 +23,8 @@ def _park(wi, kind, *, actor="tony@example.com"):
 
 
 def test_vocabularies():
-    assert HOLD_KINDS == ("evidence", "stronger_model", "decision", "owner_action")
+    assert HOLD_KINDS == ("evidence", "stronger_model", "decision", "owner_action",
+                          "owner_evidence")
     assert "needs_human" not in WORK_ITEM_TRIAGE_STATES
     assert AGENT_SETTABLE == frozenset({"evidence", "stronger_model"})
 
@@ -47,6 +48,7 @@ def test_may_set_by_class():
         assert may_set(person, kind)
     assert may_set(agent, "evidence") and may_set(agent, "stronger_model")
     assert not may_set(agent, "decision") and not may_set(agent, "owner_action")
+    assert not may_set(agent, "owner_evidence")
     # system actors (runner, automations) are the ladder and the reject flows: any kind.
     for kind in HOLD_KINDS:
         assert may_set(system, kind)
@@ -308,7 +310,8 @@ def test_release_by_signals_board_edit_and_body_edit():
     # agent can finish (design 2026-10-14 §3).
     assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
                                     "implement", "dispatch", "investigation", "decision",
-                                    "escalation", "expired", "policy_skip", "assessment"}
+                                    "escalation", "expired", "policy_skip", "assessment",
+                                    "evidence_supplied"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]

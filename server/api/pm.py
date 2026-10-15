@@ -1105,6 +1105,9 @@ def _held_to_dict(item) -> dict:
         "escalation": escalation_to_wire(item.escalation),
         # What the card asks of a person (``escalation.attention_kind``).
         "attentionKind": item.attention_kind,
+        # #3113: an owner_evidence hold's request, and whether its precondition
+        # (a not-before time, a PR to merge) is still unmet.
+        "evidence": item.evidence, "evidenceWaiting": item.evidence_waiting,
     }
 
 
@@ -2400,8 +2403,9 @@ async def patch_overlay(
     setting one is refused by ``set_hold`` (only a proposal may park an item on a
     question) and clearing one is refused by ``refuse_decision_release`` — the same
     guard the Retry route gets, so the overlay is not a way around it."""
-    from server.pm.holds import (HoldPermissionError, actor_class, actor_for_request,
-                                 clear_hold, refuse_decision_release, set_hold)
+    from server.pm.holds import (OWNER_EVIDENCE, EvidenceRequest, HoldPermissionError,
+                                 actor_class, actor_for_request, clear_hold,
+                                 refuse_decision_release, set_hold, set_owner_evidence_hold)
     if body.triageState is not None and body.triageState not in WORK_ITEM_TRIAGE_STATES:
         raise HTTPException(
             status_code=422,
@@ -2455,7 +2459,17 @@ async def patch_overlay(
         wi.triage_state = body.triageState
         applied.append("triageState")
     try:
-        if body.holdKind is not None:
+        if body.holdKind == OWNER_EVIDENCE:
+            # #3113: a person (or the system) asks the owner for evidence; the reason
+            # is the request until a richer form exists.
+            set_owner_evidence_hold(wi, request=EvidenceRequest(
+                request=(body.holdReason or "").strip()), reason=body.holdReason or "",
+                actor=actor, now=now)
+            applied.append("holdKind")
+            await record_audit(db=db, type="pm.hold.set", identity=identity, detail={
+                "workItemId": item_id, "kind": body.holdKind, "reason": wi.hold_reason,
+                "actorClass": actor_class(actor)})
+        elif body.holdKind is not None:
             set_hold(wi, kind=body.holdKind, reason=body.holdReason or "", actor=actor, now=now)
             applied.append("holdKind")
             await record_audit(db=db, type="pm.hold.set", identity=identity, detail={

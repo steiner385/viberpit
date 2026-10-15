@@ -20,6 +20,7 @@ from server.db.models import (AutomationTargetState, GhProjectItem, Session as D
                               WorkItem, WorkItemDep)
 from .desired_state import LIVE_SESSION_STATUSES
 from .drift import is_open_blocker
+from .holds import OWNER_EVIDENCE, EvidenceRequest, evidence_surfaced
 from .mirror_store import blocker_states, blocker_states_stmt, deps_in_repos, list_product_views
 from .outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                        not_needed_suppression, rows_to_bounces, verdicts_by_ref)
@@ -159,6 +160,7 @@ def load_queue_rows(db: Session, *, now: datetime,
         nodes = _ownership_nodes(db, [w for _, w in items])
 
         product_slug = product.slug or product.project_id
+        merged_prs = _merged_pr_refs(db, [w for _it, w in items])
         for it, w in items:
             ref = f"{w.repo}#{w.number}"
             not_needed_until, not_needed_standing = not_needed_suppression(
@@ -184,5 +186,27 @@ def load_queue_rows(db: Session, *, now: datetime,
                 work_item_id=w.id,
                 not_needed_until=not_needed_until,
                 not_needed_standing=not_needed_standing,
+                last_human_comment_at=_aware(w.last_human_comment_at),
+                hold_detail=w.hold_detail if w.hold_kind == OWNER_EVIDENCE else None,
+                evidence_waiting=(w.hold_kind == OWNER_EVIDENCE and not evidence_surfaced(
+                    EvidenceRequest.from_wire(w.hold_detail, fallback_request=w.hold_reason or ""),
+                    now=now, merged_refs=merged_prs)),
             ))
     return rows
+
+
+def _merged_pr_refs(db: Session, items) -> frozenset[str]:
+    """The ``owner/repo#N`` PRs named as an ``owner_evidence`` precondition
+    (``afterPr``, #3113) that the mirror shows merged — ONE read per product."""
+    from sqlalchemy import tuple_
+
+    from .refs import split_ref
+    wanted = {str((w.hold_detail or {}).get("afterPr") or "") for w in items
+              if w.hold_kind == OWNER_EVIDENCE and isinstance(w.hold_detail, dict)}
+    parts = [p for p in (split_ref(r) for r in wanted if r) if p is not None]
+    if not parts:
+        return frozenset()
+    rows = db.execute(select(WorkItem.repo, WorkItem.number).where(
+        WorkItem.kind == "pr", WorkItem.state == "merged",
+        tuple_(WorkItem.repo, WorkItem.number).in_(parts))).all()
+    return frozenset(f"{repo}#{number}" for repo, number in rows)

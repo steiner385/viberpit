@@ -1705,6 +1705,44 @@ async def test_backlog_needs_human_threads_batch_and_reason(db_env):
 
 
 @pytest.mark.asyncio
+async def test_backlog_needs_human_with_evidence_writes_an_owner_evidence_hold(db_env):
+    """#3113: an evidence give-up writes ``owner_evidence`` carrying the request,
+    announces nothing more (the close-out already asked on the issue), and a retry
+    over the runner's own owner_action hand-off may re-stamp it."""
+    from sqlalchemy import select
+
+    from server.automations.context import AutomationContext
+    from server.db.models import Automation, AuditEvent, WorkItem
+    from server.pm.holds import EvidenceRequest
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        db.add(WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B",
+                        hold_kind="owner_action", hold_by="runner", hold_reason="older"))
+    await orch._backlog_ctx.set_target_state(
+        "o/r#1", {"repo": "o/r", "issues": ["o/r#1"], "gave_up": True})
+    announced: list = []
+    request = EvidenceRequest(request="Record the DPA acceptance dates").to_wire()
+
+    with patch("server.automations.backlog_github.announce_needs_human",
+               lambda *a, **k: announced.append(a)):
+        await orch._backlog_needs_human("o/r#1", "needs owner record", evidence=request)
+
+    assert announced == []
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(WorkItem.number == 1))).scalar_one()
+        assert (wi.hold_kind, wi.hold_by, wi.hold_reason) == (
+            "owner_evidence", "runner", "needs owner record")
+        assert wi.hold_detail["request"] == "Record the DPA acceptance dates"
+        ev, = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert ev.detail["kind"] == "owner_evidence"
+
+
+@pytest.mark.asyncio
 async def test_backlog_needs_human_writes_the_hold_and_audit_row(db_env):
     """Spec 2026-09-18 §3: the hold IS the handoff. It must be written and
     audited even when the best-effort GitHub comment fails (monkeypatched to

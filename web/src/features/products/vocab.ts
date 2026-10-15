@@ -150,6 +150,8 @@ export const HOLD_LABEL: Record<string, string> = {
   decision: 'Awaiting your decision',
   evidence: 'Held for evidence',
   stronger_model: 'Held for a stronger model',
+  // #3113: evidence only the owner can supply (a device check, a legal record).
+  owner_evidence: 'Evidence needed from you',
 }
 
 export const holdLabel = (kind: string | null | undefined): string =>
@@ -203,6 +205,11 @@ export function holdExplanation(hold: {
       return {
         why: `This report is parked until it is investigated${reason ? `: ${reason}` : ''}.`,
         next: 'The runner investigates it on its own schedule; Investigate now starts that immediately.',
+      }
+    case 'owner_evidence':
+      return {
+        why: `${who} needs evidence only you can supply${reason ? `: ${reason}` : ''}.`,
+        next: 'Post it as a comment on the issue; the digest then offers to close the issue. Retry releases the hold without it.',
       }
     case 'stronger_model':
       return {

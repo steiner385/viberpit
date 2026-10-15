@@ -180,6 +180,29 @@ def test_load_queue_rows_reads_hold_kind_off_the_item():
     assert by_ref["steiner385/viberpit#6"].hold_kind is None
 
 
+def test_load_queue_rows_threads_an_owner_evidence_ask_and_its_precondition():
+    """#3113: the request rides on the row, and an ask whose ``afterPr`` is not merged
+    in the mirror (or whose ``notBefore`` is ahead) is waiting, not the owner's yet."""
+    from datetime import timedelta
+    db = _db()
+    _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
+    asks = {n: _item(db, "steiner385/viberpit", n, status="Ready") for n in (5, 6, 7, 8)}
+    details = {5: {"request": "r"},
+               6: {"request": "r", "afterPr": "steiner385/viberpit#90"},
+               7: {"request": "r", "afterPr": "steiner385/viberpit#91"},
+               8: {"request": "r", "notBefore": (NOW + timedelta(days=1)).isoformat()}}
+    for n, w in asks.items():
+        w.hold_kind, w.hold_by, w.hold_reason = "owner_evidence", "runner", "needs owner record"
+        w.hold_detail = details[n]
+    db.add_all([WorkItem(repo="steiner385/viberpit", number=90, kind="pr", state="merged"),
+                WorkItem(repo="steiner385/viberpit", number=91, kind="pr", state="open")])
+    db.commit()
+    by_ref = {r.ref: r for r in load_queue_rows(db, now=NOW)}
+    assert by_ref["steiner385/viberpit#5"].hold_detail == {"request": "r"}
+    assert {n: by_ref[f"steiner385/viberpit#{n}"].evidence_waiting for n in asks} == {
+        5: False, 6: False, 7: True, 8: True}
+
+
 def test_load_queue_rows_computes_per_product_bounces_from_finalised_outcomes():
     """D8: only FINALISED (non-``running``/``merged``) outcomes at the CURRENT
     body fingerprint count. #1 has two ``no_pr`` rows at the current fingerprint,

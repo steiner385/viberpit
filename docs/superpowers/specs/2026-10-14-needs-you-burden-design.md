@@ -210,3 +210,7 @@ digest" card at the top of the Needs-you tab.
 * No auto-advance of SDLC gates: governance keeps the human as the gate (constitution).
   The digest only *recommends* "advance".
 * No automatic unpark, ever.
+* No automatic close on an `owner_evidence` reply (#3113): the mirror records that a human
+  commented, not who — a session's own follow-up lands under the owner's login — so the
+  `evidence_posted` rule is recommend-only and the owner's tap is the proof. The digest lists
+  open asks in their own `ownerEvidence` group; the hygiene loop reminds on each ask's schedule.

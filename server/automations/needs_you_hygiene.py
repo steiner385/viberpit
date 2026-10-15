@@ -35,6 +35,7 @@ from server.automations.product_policy import NEEDS_YOU_AUTOMATION_MODES
 from server.pm import digest as dg
 from server.pm import hygiene as h
 from server.pm import parked_review as pr
+from server.pm.holds import OWNER_EVIDENCE
 from server.pm.hygiene import HygieneAction
 from server.pm.queue import QueueRow
 
@@ -107,7 +108,8 @@ def unpark_comment(action: HygieneAction) -> str:
             "pick it up. Re-add it to park it again.")
 
 
-async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
+async def _close(action: HygieneAction, seams: IssueSeams, *, actor: str = "",
+                 via: str = "") -> dict:
     from server.github import ci_issues
     from server.pm.refs import split_ref
     parts = split_ref(action.ref)
@@ -117,6 +119,8 @@ async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
         return _HOLD_MOVED
     if action.rule == h.RULE_PARKED_REVIEW and not await _still_parked(action):
         return _NOT_PARKED
+    if action.rule == h.RULE_EVIDENCE_POSTED and not await _evidence_still_posted(action):
+        return _EVIDENCE_GONE
     # Comment first, then close — ``POST /api/pm/issues/close``'s order: an issue is
     # never closed without its explanation.
     url = await asyncio.to_thread(ci_issues.comment_on_issue, parts[0], parts[1],
@@ -125,7 +129,59 @@ async def _close(action: HygieneAction, seams: IssueSeams) -> dict:
         return {"ok": False, "step": "comment",
                 "error": "GitHub rejected the comment; the issue was not closed"}
     result = await seams.pm_issue_close(action.work_item_id, {"reason": _close_reason(action)})
+    if action.rule == h.RULE_EVIDENCE_POSTED and result.get("ok", True):
+        await _end_evidence_hold(action, actor=actor, via=via)
     return {**result, "commentUrl": url}
+
+
+#: An evidence-posted close found the ask, or the reply, gone (#3113).
+_EVIDENCE_GONE = {"ok": False, "step": "evidence_hold_moved",
+                  "error": "the evidence ask changed, was released, or the reply is gone"}
+
+
+def _utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _detail_time(action: HygieneAction, key: str) -> datetime | None:
+    try:
+        raw = action.detail.get(key)
+        return datetime.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+async def _evidence_still_posted(action: HygieneAction) -> bool:
+    """Whether the mirror still shows *action*'s issue open under the SAME
+    ``owner_evidence`` ask it judged (same ``hold_set_at``), with a human comment
+    after it (``hygiene.evidence_replied``) — a re-ask or a release in between is
+    never closed over (#3113)."""
+    from server.db import db_session
+    from server.db.models import WorkItem
+    asked = _detail_time(action, "holdSetAt")
+    if not action.work_item_id or asked is None:
+        return False
+    async with db_session() as db:
+        wi = await db.get(WorkItem, action.work_item_id)
+        return (wi is not None and wi.state == "open" and wi.hold_kind == OWNER_EVIDENCE
+                and wi.hold_set_at is not None and _utc(wi.hold_set_at) == _utc(asked)
+                and h.evidence_replied(wi.hold_set_at, wi.last_human_comment_at))
+
+
+async def _end_evidence_hold(action: HygieneAction, *, actor: str, via: str) -> None:
+    """The issue closed on the owner's evidence: end the ask it answered, audited
+    ``evidence_supplied`` (#3113). Best-effort — the close itself is the outcome."""
+    from server.db import db_session
+    from server.pm import holds
+    asked = _detail_time(action, "holdSetAt")
+    try:
+        async with db_session() as db:
+            await db.run_sync(lambda s: holds.release_on_evidence_supplied(
+                s, action.ref, actor=actor or HYGIENE_ACTOR, via=via or "automation",
+                hold_set_at=asked))
+    except Exception:
+        log.warning("needs_you_hygiene.evidence_release_failed ref=%s", action.ref,
+                    exc_info=True)
 
 
 #: A parked review's write found the issue no longer parked (or gone).
@@ -278,7 +334,7 @@ async def apply_action(action: HygieneAction, *, seams: IssueSeams, identity: st
         result = {"ok": False, "step": "recommend_only",
                   "error": f"{action.rule} findings are applied only on the owner's approval"}
     elif action.action == h.ACTION_CLOSE:
-        result = await _close(action, seams)
+        result = await _close(action, seams, actor=actor, via=via)
     elif action.action == h.ACTION_SET_STATUS:
         result = await seams.pm_board_status(str(action.work_item_id), {
             "status": str(action.detail.get("status")), "add_if_missing": False})
@@ -484,6 +540,10 @@ class NeedsYouHygieneLoop:
             await self._send_digests(products, mode, now)
         except Exception:
             log.warning("needs_you_hygiene.digest_failed", exc_info=True)
+        try:
+            await self._remind_evidence(products, mode, now)
+        except Exception:
+            log.warning("needs_you_hygiene.evidence_reminders_failed", exc_info=True)
         publish_observation(self._ctx, "needs_you_hygiene_counts", counts)
 
     async def _assess_closeouts(self, products: list[h.ProductInputs], mode: str,
@@ -613,6 +673,42 @@ class NeedsYouHygieneLoop:
             await self._ctx.emit("info", f"{slug}: sent the owner digest — {body}",
                                  kind="hygiene_digest_sent", target=slug,
                                  detail={"total": len(items), "withRecommendation": with_rec})
+
+    async def _remind_evidence(self, products: list[h.ProductInputs], mode: str,
+                               now: datetime) -> None:
+        """Remind the owner of each ``owner_evidence`` ask that is due (#3113,
+        ``hygiene.evidence_reminders_due``): one ``decision_needed`` push naming the
+        request, through the digest's notify seam, never in quiet hours (deferred,
+        not dropped — the schedule is only stamped once a push went out), and only
+        for a product whose ``needs_you_automation`` is on (dry run: announced)."""
+        if self._digest is None or await self._digest.in_quiet_hours(now):
+            return
+        from server.db import db_session
+        from server.pm import holds
+        for p in products:
+            eff = h.effective_mode(mode, str(p.policy.get("needs_you_automation", "off")))
+            if eff == "off":
+                continue
+            for row in h.evidence_reminders_due(
+                    [r for r in p.rows if r.product == p.slug], now=now):
+                why = dg.evidence_why(row.hold_detail, row.hold_reason)
+                if eff == "dry_run":
+                    await self._ctx.emit("info", f"{p.slug}: would remind — {row.ref}: {why}",
+                                         kind="hygiene_dry_run", target=row.ref)
+                    continue
+                try:
+                    await self._digest.notify(f"{p.slug}: evidence needed on {row.ref}",
+                                              why, slug=p.slug, url=row.url or dg.digest_path(p.slug))
+                except Exception:
+                    log.warning("needs_you_hygiene.evidence_remind_failed ref=%s", row.ref,
+                                exc_info=True)
+                    continue
+                ref, asked = row.ref, row.hold_set_at
+                async with db_session() as db:
+                    await db.run_sync(lambda s: holds.stamp_evidence_reminded(
+                        s, ref, hold_set_at=asked, now=now))
+                await self._ctx.emit("info", f"{p.slug}: reminded the owner — {row.ref}",
+                                     kind="hygiene_evidence_reminded", target=row.ref)
 
     async def _product(self, p: h.ProductInputs, mode: str, now: datetime,
                        counts: dict) -> None:

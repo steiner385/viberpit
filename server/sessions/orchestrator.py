@@ -8572,7 +8572,7 @@ class SessionOrchestrator:
                      repo=target.split("#", 1)[0], product=st.get("product"))
 
     async def _backlog_write_runner_hold(self, target: str, *, kind: str, reason: str,
-                                         log_key: str):
+                                         log_key: str, evidence: dict | None = None):
         """THE shared runner-hold writer (review R1 I5) behind both
         ``_backlog_needs_human`` (``kind="owner_action"``) and
         ``_backlog_escalate`` (``kind="stronger_model"``): resolves the batch,
@@ -8611,9 +8611,12 @@ class SessionOrchestrator:
         from server.db.models import WorkItem
         from server.pm.desired_state import HELD_KINDS
         from server.pm.holds import (
-            RUNNER_ACTOR, actor_class, set_runner_hold, set_runner_stronger_hold,
+            OWNER_EVIDENCE, RUNNER_ACTOR, EvidenceRequest, actor_class, set_owner_evidence_hold,
+            set_runner_hold, set_runner_stronger_hold,
         )
         from server.pm.refs import split_ref
+        # The runner's own hand-off kinds: a retried give-up may re-stamp either.
+        handoff_kinds = ("owner_action", OWNER_EVIDENCE)
         batch = await self._backlog_batch_for(target)
         parts = [p for p in (split_ref(r) for r in batch.issues) if p is not None]
         now = datetime.now(timezone.utc)
@@ -8629,7 +8632,8 @@ class SessionOrchestrator:
                     # which is queue-eligible precisely because the item is
                     # dispatched while it holds, as an investigation (spec §5).
                     if (wi.hold_kind in HELD_KINDS and not (
-                            kind == "owner_action" and wi.hold_by == RUNNER_ACTOR)) or (
+                            kind in handoff_kinds and wi.hold_kind in handoff_kinds
+                            and wi.hold_by == RUNNER_ACTOR)) or (
                             kind == "stronger_model" and wi.hold_kind == "evidence"):
                         log.info("backlog_runner.hold_kept target=%s#%s kind=%s by=%s",
                                  wi.repo, wi.number, wi.hold_kind, wi.hold_by)
@@ -8637,7 +8641,11 @@ class SessionOrchestrator:
                     if (wi.hold_kind == kind and wi.hold_by == RUNNER_ACTOR
                             and wi.hold_reason == reason):
                         continue  # identical retry: nothing changed, nothing to re-stamp
-                    if kind == "owner_action":
+                    if kind == OWNER_EVIDENCE:
+                        set_owner_evidence_hold(
+                            wi, request=EvidenceRequest.from_wire(evidence, fallback_request=reason),
+                            reason=reason, actor=RUNNER_ACTOR, now=now)
+                    elif kind == "owner_action":
                         set_runner_hold(wi, reason=reason, now=now)
                     else:
                         set_runner_stronger_hold(wi, reason=reason, now=now)
@@ -8649,13 +8657,24 @@ class SessionOrchestrator:
                     log.warning("backlog_runner.%s_unmirrored refs=%s", log_key, sorted(missing))
         return batch
 
-    async def _backlog_needs_human(self, target: str, reason: str) -> None:
+    async def _backlog_needs_human(self, target: str, reason: str, *,
+                                   evidence: dict | None = None) -> None:
         """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
         issue of the batch — the hold IS the handoff — then comment it (best-effort).
         The runner's ``gave_up`` row survives for slot accounting only and is
-        dropped by ``_release_give_ups`` once the hold is gone."""
+        dropped by ``_release_give_ups`` once the hold is gone.
+
+        With *evidence* (#3113, a ``holds.EvidenceRequest`` wire) the hold is
+        ``owner_evidence`` carrying that request, and nothing more is announced: the
+        close-out already told the issue exactly what to post and where."""
         from server.automations import backlog_github
+        from server.pm.holds import OWNER_EVIDENCE
         from server.pm.outcomes import escalation_for
+        if evidence:
+            await self._backlog_write_runner_hold(
+                target, kind=OWNER_EVIDENCE, reason=reason, log_key="give_up",
+                evidence=evidence)
+            return
         batch = await self._backlog_write_runner_hold(
             target, kind="owner_action", reason=reason, log_key="give_up")
         if escalation_for("owner_action", reason) is not None:
