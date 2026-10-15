@@ -8,6 +8,13 @@ from server.sessions.draft_hold_guard import (
     not_own_reason, scan_command)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_gh_repo(monkeypatch):
+    """A GH_REPO in the runner's environment would make every unqualified call
+    ambiguous (``env_repo_ambiguous``)."""
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+
 @pytest.mark.parametrize("command, call", [
     ("gh pr ready 17", ReadyCall("17", None, None)),
     ("gh pr ready '#17'", ReadyCall("17", None, None)),
@@ -62,6 +69,12 @@ def test_non_ready_commands_pass(command):
 ])
 def test_graphql_mutation_is_always_refused(command):
     assert scan_command(command).deny_reason == MUTATION_REASON
+
+
+def test_gh_repo_without_an_explicit_repo_is_refused():
+    assert scan_command("GH_REPO=o/r gh pr ready 17").deny_reason == UNRESOLVED_REASON
+    assert scan_command("GH_REPO=x/y gh pr ready 17 -R o/r").calls == (
+        ReadyCall("17", "o/r", None),)
 
 
 def test_unbalanced_quoting_fails_closed_unless_undo():
