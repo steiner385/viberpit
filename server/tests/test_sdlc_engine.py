@@ -11,16 +11,21 @@ from server.sdlc.engine import (
     Advance,
     ArtifactView,
     AwaitApproval,
+    CloseEpic,
+    CloseInitiative,
     Done,
     HandoffToBuild,
     InitiativeView,
     Materialize,
     MergeArtifact,
     NeedsHuman,
+    ProgramView,
     Propose,
     STAGE_ARTIFACT,
     STAGE_SEQUENCE,
+    advance_stage,
     next_action,
+    program_action,
 )
 
 
@@ -244,3 +249,83 @@ def test_legacy_modes_are_simply_not_off():
     arts = [_art("intent", sha="cafe", pr=1)]
     assert next_action(_init(stage="intake"), arts, "propose", "balanced") == Advance("design")
     assert next_action(_init(stage="intake"), arts, "auto", "cautious") == AwaitApproval("intent")
+
+
+# --------------------------------------------------------------------------- #
+# Lifecycle sweep (#3108): finished work closes, in-progress epics skip gates  #
+# --------------------------------------------------------------------------- #
+
+def _shipped(stage: str, *, closed: bool, done: int = 3, **kw) -> InitiativeView:
+    return _init(stage=stage, issue="owner/repo#9", epic="owner/repo#5",
+                 epic_total=3, epic_done=done, epic_closed=closed, **kw)
+
+
+@pytest.mark.parametrize("stage", ["deploy", "maintain"])
+def test_a_finished_epic_past_build_is_closed_then_the_initiative(stage):
+    assert next_action(_shipped(stage, closed=False), [], "on", "balanced") == \
+        CloseEpic("owner/repo#5")
+    assert next_action(_shipped(stage, closed=True), [], "on", "balanced") == CloseInitiative()
+    assert next_action(_shipped(stage, closed=True), [], "on", "bold") == CloseInitiative()
+
+
+def test_closing_needs_the_tolerance_every_sub_issue_and_an_unblocked_row():
+    # cautious: today's behaviour — the existing flows (a human) close it.
+    assert isinstance(next_action(_shipped("deploy", closed=True), [], "on", "cautious"), NeedsHuman)
+    # one sub-issue still open: nothing closes.
+    assert isinstance(next_action(_shipped("deploy", closed=False, done=2), [], "on", "bold"),
+                      NeedsHuman)
+    # a blocked row is a human's, whatever the epic says.
+    assert isinstance(next_action(_shipped("deploy", closed=True, status="blocked"), [], "on",
+                                  "bold"), NeedsHuman)
+    # an epic with no sub-issues proves nothing.
+    empty = _init(stage="deploy", epic="owner/repo#5", epic_total=0, epic_done=0, epic_closed=True)
+    assert isinstance(next_action(empty, [], "on", "bold"), NeedsHuman)
+
+
+def test_a_finished_build_still_advances_to_deploy_first():
+    """Build keeps its own gate: the close sequence starts past it."""
+    assert next_action(_shipped("build", closed=True), [], "on", "balanced") == Advance("deploy")
+
+
+@pytest.mark.parametrize("stage,arts", [
+    ("plan", []),                                       # would propose a plan
+    ("plan", [_art("plan", pr=7)]),                     # would wait on the plan PR
+    ("design", [_art("spec")]),                         # would wait on the spec session
+])
+def test_an_adopted_epic_already_in_progress_skips_the_document_gate(stage, arts):
+    ini = _init(stage=stage, epic="owner/repo#5", epic_total=4, epic_done=1)
+    assert next_action(ini, arts, "on", "balanced") == Advance(advance_stage(stage))
+
+
+def test_an_epic_with_nothing_closed_yet_still_takes_the_document_gate():
+    ini = _init(stage="plan", epic="owner/repo#5", epic_total=4, epic_done=0)
+    assert next_action(ini, [], "on", "balanced") == Propose("plan")
+    started = _init(stage="plan", epic="owner/repo#5", epic_total=4, epic_done=2)
+    assert next_action(started, [], "on", "cautious") == Propose("plan")
+
+
+def _program(**kw) -> ProgramView:
+    base = dict(slug="prog", status="active", stage="deploy", epic="owner/repo#1",
+                epic_closed=False, epic_total=2, epic_done=2, phases_total=2, phases_done=2)
+    base.update(kw)
+    return ProgramView(**base)  # type: ignore[arg-type]
+
+
+def test_a_program_whose_phases_are_all_done_rolls_up():
+    assert program_action(_program(), "on", "balanced") == CloseEpic("owner/repo#1")
+    assert program_action(_program(epic_closed=True), "on", "balanced") == CloseInitiative()
+    assert program_action(_program(epic=None, epic_total=0, epic_done=0), "on", "bold") == \
+        CloseInitiative()
+
+
+@pytest.mark.parametrize("kw,mode,tolerance", [
+    ({"phases_done": 1}, "on", "bold"),                 # a phase is still running
+    ({"phases_total": 0, "phases_done": 0}, "on", "bold"),
+    ({"epic_done": 1}, "on", "bold"),                   # the epic tracks other open work
+    ({"status": "blocked"}, "on", "bold"),
+    ({"status": "done"}, "on", "bold"),
+    ({}, "off", "bold"),
+    ({}, "on", "cautious"),
+])
+def test_a_program_still_running_or_held_is_left_alone(kw, mode, tolerance):
+    assert program_action(_program(**kw), mode, tolerance) is None
