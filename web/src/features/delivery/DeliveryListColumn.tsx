@@ -23,6 +23,8 @@ export interface DeliveryListColumnProps {
   repos: readonly string[]
   reposLoading: boolean
   reposError: boolean
+  onRetryAutomations?: () => void
+  onRetryRepos?: () => void
   capacity: CapacityReadout | undefined
   capacityLoading: boolean
   capacityError: boolean
@@ -34,7 +36,7 @@ export interface DeliveryListColumnProps {
 
 export function DeliveryListColumn({
   scope, automations, automationsLoading, automationsError,
-  repos, reposLoading, reposError,
+  repos, reposLoading, reposError, onRetryAutomations, onRetryRepos,
   capacity, capacityLoading, capacityError,
   selectedKey, onOpenAutomation, onOpenRepo,
 }: DeliveryListColumnProps) {
@@ -53,6 +55,7 @@ export function DeliveryListColumn({
           automations={automations}
           isLoading={automationsLoading}
           isError={automationsError}
+          onRetry={onRetryAutomations}
           selectedKey={selectedKey}
           onOpen={onOpenAutomation}
         />
@@ -62,6 +65,7 @@ export function DeliveryListColumn({
           repos={repos}
           isLoading={reposLoading}
           isError={reposError}
+          onRetry={onRetryRepos}
           // The CI/CD Doctor's thresholds come off the automations list this
           // column already holds — no second fetch for a verdict.
           thresholds={ciThresholds(automations)}

@@ -8,7 +8,7 @@ import { useMemo, useState } from 'react'
 import type { Automation } from '@/api/automations'
 import { ListSearchInput } from '@/ui/list/ListSearchInput'
 import { useRovingRows } from '@/ui/list/useRovingRows'
-import { Banner } from '@/ui/Banner'
+import { QueryFailureBanner } from '@/ui/QueryFailureBanner'
 import { EmptyState } from '@/ui/EmptyState'
 import { Skeleton } from '@/ui/Skeleton'
 import { DELIVERY } from '@/features/products/vocab'
@@ -21,6 +21,8 @@ export interface AutomationsScopeBodyProps {
   automations: readonly Automation[]
   isLoading: boolean
   isError: boolean
+  /** Refetches the list; offered as Retry on a failed read. */
+  onRetry?: () => void
   selectedKey: string | null
   onOpen: (id: string) => void
 }
@@ -28,7 +30,7 @@ export interface AutomationsScopeBodyProps {
 const haystack = (a: Automation) => `${a.name} ${a.id}`.toLowerCase()
 
 export function AutomationsScopeBody({
-  automations, isLoading, isError, selectedKey, onOpen,
+  automations, isLoading, isError, onRetry, selectedKey, onOpen,
 }: AutomationsScopeBodyProps) {
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
@@ -60,7 +62,7 @@ export function AutomationsScopeBody({
         />
       }
     >
-      {isError && <Banner tone="danger" title={DELIVERY.automationsError} />}
+      {isError && <QueryFailureBanner message={DELIVERY.automationsError} hasData={automations.length > 0} onRetry={onRetry} />}
       {isLoading && automations.length === 0 && (
         <div role="status" aria-label={`Loading ${DELIVERY.automations.toLowerCase()}`} className="space-y-2">
           {Array.from({ length: 3 }, (_, i) => (
@@ -68,7 +70,7 @@ export function AutomationsScopeBody({
           ))}
         </div>
       )}
-      {!isLoading && sorted.length === 0 && (
+      {!isLoading && !isError && sorted.length === 0 && (
         <EmptyState title={q ? 'No matches' : DELIVERY.emptyAutomations} />
       )}
       {sorted.length > 0 && (
