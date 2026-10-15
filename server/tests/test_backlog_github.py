@@ -704,6 +704,28 @@ def test_close_batch_issues_refs_keeps_only_the_refs_issue_open(text):
     assert [c[2] for c in gh.calls if c[:2] == ["issue", "close"]] == ["9"]
 
 
+def test_close_batch_issues_deferred_follow_up_is_kept_open_and_escalated():
+    """#3099 (cairnea/KinDash#19385): the merged PR listed the issue under deferred
+    follow-ups ("blocked by Train 6") and the runner closed it "Implemented by"."""
+    from server.automations.backlog_github import close_batch_issues
+    body = ("Ships the time sheet.\n\n## Deferred\n"
+            "- #8: the Android slice (chip, cards). It is blocked by Train 6.")
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(body=body)))
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome.startswith("escalated: ") and "deferred/blocked" in outcome
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+
+
+def test_close_batch_issues_deferral_does_not_override_a_closing_keyword():
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(pr=_proc(stdout=_linkage_stdout(
+        body="Fixes #8\n\nFollow-up for #8 docs is deferred.")))
+
+    assert close_batch_issues(_batch8(), _merged_info(), gh_run=gh) == "closed"
+
+
 @pytest.mark.parametrize("pr", [
     {"closing": [8], "body": "Refs #8"},                        # GitHub closes it
     {"body": "Refs #8", "messages": ["fix: guard (fixes #8)"]},  # a commit closes it

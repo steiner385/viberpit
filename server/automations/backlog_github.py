@@ -658,12 +658,30 @@ def _keyword_references_issue(text: str, keywords: str, repo: str, number: int) 
                      re.IGNORECASE) is not None
 
 
+#: A PR line that names an issue as work it did NOT do: "- #N: … It is blocked by
+#: Train 6." under a deferred-follow-ups list (#3099).
+_DEFERRAL_RE = re.compile(
+    r"\b(?:defer(?:red|s)?|blocked|follow[- ]?ups?|not\s+(?:included|implemented|built"
+    r"|addressed|done)|out\s+of\s+scope|postponed|left\s+for)\b", re.IGNORECASE)
+
+
+def _text_defers_issue(text: str, repo: str, number: int) -> bool:
+    """True when a line of *text* (code spans stripped) mentions ``#N`` together
+    with a deferral phrase — the PR says it left the issue undone (#3099)."""
+    ref = (rf"(?:(?:{re.escape(repo)})?#{number}"
+           rf"|https?://github\.com/{re.escape(repo)}/issues/{number})(?!\d)")
+    return any(re.search(ref, line) and _DEFERRAL_RE.search(line)
+               for line in _CODE_RE.sub(" ", text).splitlines())
+
+
 def _pr_declines_to_close(ref: str, linkage: dict | None) -> bool:
     """Whether the merged PR referenced *ref* ONLY with a non-closing keyword
-    (``Refs #N``) — a session's deliberate "this does not finish the issue" (#2984:
-    a tracker referenced with ``Refs`` per the repo's rules was closed 50 s later).
-    ``False`` when GitHub itself will close it (``closingIssuesReferences``), when
-    any body/commit text carries a closing keyword for it, or on unknown linkage."""
+    (``Refs #N``) or listed it as deferred/blocked — a session's deliberate "this
+    does not finish the issue" (#2984: a tracker referenced with ``Refs`` per the
+    repo's rules was closed 50 s later; #3099: a deferred follow-up was closed as
+    "Implemented by"). ``False`` when GitHub itself will close it
+    (``closingIssuesReferences``), when any body/commit text carries a closing
+    keyword for it, or on unknown linkage."""
     repo, number_s = _split_ref(ref)
     if linkage is None or not number_s.isdigit():
         return False
@@ -671,7 +689,8 @@ def _pr_declines_to_close(ref: str, linkage: dict | None) -> bool:
     if number in (linkage.get("closing") or ()):
         return False
     text = linkage.get("text") or ""
-    return (_keyword_references_issue(text, _NON_CLOSING_KEYWORDS, repo, number)
+    return ((_keyword_references_issue(text, _NON_CLOSING_KEYWORDS, repo, number)
+             or _text_defers_issue(text, repo, number))
             and not _keyword_references_issue(text, _CLOSING_KEYWORDS, repo, number))
 
 
@@ -911,8 +930,9 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
             continue
         # The session's own "this does not finish it" outranks the issue's gates:
         # the close-out exists for PRs that FORGOT a closing keyword (#2984).
-        reason = ("the PR references it with a non-closing keyword (e.g. `Refs`), "
-                  "not `Fixes`: the session left it open on purpose"
+        reason = ("the PR references it with a non-closing keyword (e.g. `Refs`) or "
+                  "lists it as deferred/blocked, not `Fixes`: the session left it "
+                  "open on purpose"
                   if _pr_declines_to_close(ref, linkage) else _human_gate_reason(signals))
         if reason:
             log.info("backlog_github.close_batch_escalate ref=%s pr=%s reason=%s",
