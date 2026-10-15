@@ -166,9 +166,11 @@ def scan_command(command: str) -> Scan:
                for m in _RAW_MERGE.finditer(command)):
             return Scan(deny_reason=UNRESOLVED_REASON)
         return Scan()
-    if any(_MUTATION.search(t) for t in tokens):   # quote-split: enable''PullRequest…
+    nested = _draft.token_lists(tokens)
+    # quote-split, top level or nested: enable''PullRequest…
+    if any(_MUTATION.search(t) for toks in nested for t in toks):
         return Scan(deny_reason=MUTATION_REASON)
-    if _hides_graphql_query(tokens):
+    if any(_hides_graphql_query(toks) for toks in nested):
         return Scan(deny_reason=HIDDEN_QUERY_REASON)
     calls = tuple(_draft.scan_tokens(tokens, _match_merge, _RAW_MERGE))
     if _draft.env_repo_ambiguous(command, tokens, calls):

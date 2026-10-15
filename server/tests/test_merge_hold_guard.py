@@ -91,9 +91,26 @@ def test_an_inline_graphql_query_without_a_merge_mutation_passes(command):
     assert scan.deny_reason is None and scan.calls == ()
 
 
-def test_a_quote_split_mutation_name_is_still_refused():
-    command = "gh api graphql -f query='mutation{enable''PullRequestAutoMerge(input:{}){x}}'"
+@pytest.mark.parametrize("command", [
+    "gh api graphql -f query='mutation{enable''PullRequestAutoMerge(input:{}){x}}'",
+    # …and inside a command string a shell will run.
+    """bash -c "gh api graphql -f query='mutation{enable''PullRequestAutoMerge{x}}'" """,
+])
+def test_a_quote_split_mutation_name_is_still_refused(command):
     assert scan_command(command).deny_reason == MUTATION_REASON
+
+
+@pytest.mark.parametrize("command", [
+    """bash -c "gh api https://api.github.com/graphql -f query='$Q'" """,
+    """eval "gh api graphql -F 'query=@q'" """,
+])
+def test_a_nested_hidden_graphql_query_is_refused(command):
+    assert scan_command(command).deny_reason == HIDDEN_QUERY_REASON
+
+
+def test_a_nested_quote_split_gh_repo_is_ambiguous():
+    command = """bash -c 'GH_R""EPO=o/r gh pr merge 17 --auto'"""
+    assert scan_command(command).deny_reason == UNRESOLVED_REASON
 
 
 @pytest.mark.parametrize("command", [

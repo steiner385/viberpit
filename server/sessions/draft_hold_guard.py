@@ -202,6 +202,22 @@ def scan_tokens(tokens: list[str], match: Matcher, raw: re.Pattern[str],
     return calls
 
 
+def token_lists(tokens: list[str], depth: int = 0) -> list[list[str]]:
+    """*tokens* plus the tokens of every ``bash -c``/``eval`` command string inside
+    it (as ``scan_tokens`` follows them), so a token-level check sees nested
+    commands after their own quote removal too. An unparseable nested string is
+    kept as one raw token."""
+    out = [tokens]
+    for i, tok in enumerate(tokens):
+        if depth < 3 and i > 0 and tokens[i - 1] in ("-c", "eval") \
+                and any(c.isspace() for c in tok):
+            try:
+                out += token_lists(_tokens(tok), depth + 1)
+            except ValueError:
+                out.append([tok])
+    return out
+
+
 def env_repo_ambiguous(command: str, tokens: list[str], calls) -> bool:
     """True when ``GH_REPO`` may be set for the command and some call names no
     ``--repo``: gh would then resolve the PR in ``GH_REPO`` while the guard resolves
@@ -211,8 +227,8 @@ def env_repo_ambiguous(command: str, tokens: list[str], calls) -> bool:
     environment a session inherits."""
     if all(c.repo is not None for c in calls):
         return False
-    return ("GH_REPO" in command or any("GH_REPO" in t for t in tokens)
-            or bool(os.environ.get("GH_REPO")))
+    return ("GH_REPO" in command or bool(os.environ.get("GH_REPO"))
+            or any("GH_REPO" in t for toks in token_lists(tokens) for t in toks))
 
 
 def scan_command(command: str) -> Scan:
@@ -227,7 +243,8 @@ def scan_command(command: str) -> Scan:
                for m in _RAW_READY.finditer(command)):
             return Scan(deny_reason=UNRESOLVED_REASON)
         return Scan()
-    if any(_MUTATION.search(t) for t in tokens):   # quote-split: markPull''Request…
+    # quote-split, top level or nested: markPull''Request…
+    if any(_MUTATION.search(t) for toks in token_lists(tokens) for t in toks):
         return Scan(deny_reason=MUTATION_REASON)
     calls = tuple(scan_tokens(tokens, _match_ready, _RAW_READY))
     if env_repo_ambiguous(command, tokens, calls):
