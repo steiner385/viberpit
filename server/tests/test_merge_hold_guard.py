@@ -5,7 +5,8 @@ import pytest
 
 from server.sessions.draft_hold_guard import ReadyCall, TargetPr
 from server.sessions.merge_hold_guard import (
-    MUTATION_REASON, UNRESOLVED_REASON, held_reason, merge_hold_guard, scan_command)
+    HIDDEN_QUERY_REASON, MUTATION_REASON, UNRESOLVED_REASON, held_reason, merge_hold_guard,
+    scan_command)
 
 
 @pytest.mark.parametrize("command, call", [
@@ -25,6 +26,12 @@ from server.sessions.merge_hold_guard import (
     ("bash -c 'gh pr merge 17 --auto --repo o/r'", ReadyCall("17", "o/r", None)),
     ("gh api -X PUT repos/o/r/pulls/17/merge -f merge_method=squash",
      ReadyCall("17", "o/r", None)),
+    ("gh api -X PUT 'repos/o/r/pulls/17/merge?merge_method=squash'",
+     ReadyCall("17", "o/r", None)),
+    ("gh api -X PUT https://api.github.com/repos/o/r/pulls/17/merge",
+     ReadyCall("17", "o/r", None)),
+    # An explicit --repo beats GH_REPO in gh, so the call is still judged.
+    ("GH_REPO=x/y gh pr merge 17 --auto --repo o/r", ReadyCall("17", "o/r", None)),
 ])
 def test_merge_shapes_are_detected(command, call):
     scan = scan_command(command)
@@ -51,6 +58,26 @@ def test_non_merge_commands_pass(command):
 def test_graphql_merge_mutations_are_always_refused(mutation):
     command = f"gh api graphql -f query='mutation{{{mutation}(input:{{}}){{clientMutationId}}}}'"
     assert scan_command(command).deny_reason == MUTATION_REASON
+
+
+@pytest.mark.parametrize("command", [
+    "gh api graphql -F query=@arm.graphql -f id=PR_x",
+    "gh api graphql --input body.json",
+    "bash -c 'gh api graphql -F query=@q'",
+])
+def test_a_graphql_query_the_guard_cannot_read_is_refused(command):
+    assert scan_command(command).deny_reason == HIDDEN_QUERY_REASON
+
+
+@pytest.mark.parametrize("command", [
+    "GH_REPO=o/r gh pr merge 17 --auto",
+    "export GH_REPO=o/r; gh pr merge 17 --auto",
+    "env GH_REPO=o/r gh pr merge 17 --auto",
+])
+def test_gh_repo_without_an_explicit_repo_is_refused(command):
+    """gh would merge in GH_REPO while the lookup reads the working directory's
+    repo — two different PRs — so the call must name --repo."""
+    assert scan_command(command).deny_reason == UNRESOLVED_REASON
 
 
 def test_unbalanced_quoting_fails_closed_unless_disarming():

@@ -15,8 +15,11 @@ Command shapes: ``gh pr merge [<number>|<url>|<branch>] [-R repo]`` in any form
 ``gh api …/pulls/N/merge`` call, and the GraphQL ``enablePullRequestAutoMerge`` /
 ``mergePullRequest`` / ``enqueuePullRequest`` mutations. The mutations name a node
 ID the guard cannot map back to a PR, so they are always denied — ``gh pr merge N``
-is the path for an unheld PR. ``gh pr merge --disable-auto`` is the safe direction
-and always passes. The scanner and PR lookup are ``draft_hold_guard``'s.
+is the path for an unheld PR — and so is any ``gh api graphql`` call whose query the
+guard cannot read (``query=@file``, ``--input``). A ``GH_REPO`` the guard would have
+to evaluate the shell to apply denies a call that names no ``--repo``.
+``gh pr merge --disable-auto`` is the safe direction and always passes. The scanner
+and PR lookup are ``draft_hold_guard``'s.
 """
 from __future__ import annotations
 
@@ -33,7 +36,12 @@ _MUTATION = re.compile(
     r"\b(?:enablePullRequestAutoMerge|mergePullRequest|enqueuePullRequest)\b",
     re.IGNORECASE)
 _RAW_MERGE = re.compile(r"\bgh\s+pr\s+merge\b")
-_MERGE_PATH = re.compile(r"^/?repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge/?$")
+# A GraphQL query the guard cannot read: from a file or stdin (raw text, fail closed).
+_GRAPHQL = re.compile(r"\bgraphql\b")
+_HIDDEN_QUERY = re.compile(r"\bquery=@|--input\b")
+# Relative or absolute (``https://api.github.com/…``), with or without a query string.
+_MERGE_PATH = re.compile(
+    r"^(?:https?://[^/\s]+)?/?repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge/?(?:\?\S*)?$")
 # `gh pr merge` flags that take a value, so the value is never read as the selector.
 _VALUE_FLAGS = frozenset(("-b", "--body", "-F", "--body-file", "-t", "--subject",
                           "--match-head-commit", "-A", "--author-email"))
@@ -54,6 +62,13 @@ MUTATION_REASON = (
     "Blocked: a GraphQL merge / auto-merge mutation names a PR by node ID, so this guard "
     f"cannot tell whether it carries `{HUMAN_HOLD_LABEL}`. Use `gh pr merge <number>` "
     "instead. " + _HAND_BACK + " " + _PROSE_ADVICE)
+
+HIDDEN_QUERY_REASON = (
+    "Blocked: this `gh api graphql` call reads its query from a file or stdin "
+    "(`query=@…` / `--input`), so this guard cannot tell whether it merges a PR or "
+    f"arms auto-merge on a `{HUMAN_HOLD_LABEL}` PR. Pass the query inline "
+    "(`-f query='…'`), or use `gh pr merge <number>` to merge an unheld PR. "
+    + _HAND_BACK)
 
 UNRESOLVED_REASON = (
     f"Blocked: merging or arming auto-merge on a `{HUMAN_HOLD_LABEL}` PR is reserved for "
@@ -108,6 +123,8 @@ def scan_command(command: str) -> Scan:
     """Every way the shell *command* would merge a PR or arm its auto-merge."""
     if _MUTATION.search(command):
         return Scan(deny_reason=MUTATION_REASON)
+    if _GRAPHQL.search(command) and _HIDDEN_QUERY.search(command):
+        return Scan(deny_reason=HIDDEN_QUERY_REASON)
     try:
         tokens = _draft._tokens(command)
     except ValueError:
@@ -116,7 +133,10 @@ def scan_command(command: str) -> Scan:
                for m in _RAW_MERGE.finditer(command)):
             return Scan(deny_reason=UNRESOLVED_REASON)
         return Scan()
-    return Scan(calls=tuple(_draft.scan_tokens(tokens, _match_merge, _RAW_MERGE)))
+    calls = tuple(_draft.scan_tokens(tokens, _match_merge, _RAW_MERGE))
+    if _draft.env_repo_ambiguous(command, calls):
+        return Scan(deny_reason=UNRESOLVED_REASON)
+    return Scan(calls=calls)
 
 
 def merge_hold_guard(resolve: Callable[[ReadyCall, str | None], TargetPr | None] | None = None):

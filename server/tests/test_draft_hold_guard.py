@@ -64,6 +64,12 @@ def test_graphql_mutation_is_always_refused(command):
     assert scan_command(command).deny_reason == MUTATION_REASON
 
 
+def test_gh_repo_without_an_explicit_repo_is_refused():
+    assert scan_command("GH_REPO=o/r gh pr ready 17").deny_reason == UNRESOLVED_REASON
+    assert scan_command("GH_REPO=x/y gh pr ready 17 -R o/r").calls == (
+        ReadyCall("17", "o/r", None),)
+
+
 def test_unbalanced_quoting_fails_closed_unless_undo():
     assert scan_command("gh pr ready 17 'oops").deny_reason == UNRESOLVED_REASON
     assert scan_command("gh pr ready 17 --undo 'oops").deny_reason is None

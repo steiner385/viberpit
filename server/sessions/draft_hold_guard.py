@@ -202,6 +202,17 @@ def scan_tokens(tokens: list[str], match: Matcher, raw: re.Pattern[str],
     return calls
 
 
+_GH_REPO_ENV = re.compile(r"\bGH_REPO\b")
+
+
+def env_repo_ambiguous(command: str, calls) -> bool:
+    """True when ``GH_REPO`` appears in *command* and some call names no ``--repo``:
+    gh would then resolve the PR in ``GH_REPO`` while the guard resolves it in the
+    working directory — two different PRs. An explicit ``--repo`` wins over the
+    variable in gh, so only those calls are safe to judge."""
+    return bool(_GH_REPO_ENV.search(command)) and any(c.repo is None for c in calls)
+
+
 def scan_command(command: str) -> Scan:
     """Every way the shell *command* would mark a PR ready."""
     if _MUTATION.search(command):
@@ -214,7 +225,10 @@ def scan_command(command: str) -> Scan:
                for m in _RAW_READY.finditer(command)):
             return Scan(deny_reason=UNRESOLVED_REASON)
         return Scan()
-    return Scan(calls=tuple(scan_tokens(tokens, _match_ready, _RAW_READY)))
+    calls = tuple(scan_tokens(tokens, _match_ready, _RAW_READY))
+    if env_repo_ambiguous(command, calls):
+        return Scan(deny_reason=UNRESOLVED_REASON)
+    return Scan(calls=calls)
 
 
 @dataclass(frozen=True)
