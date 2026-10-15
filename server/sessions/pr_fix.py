@@ -62,8 +62,9 @@ def _merge_state_step(pr: PullRequestInfo) -> str:
         return (
             "Auto-merge was already armed when you were dispatched and stays armed "
             "through your push — do not run `gh pr merge`. If it was disarmed while you "
-            "worked, re-arm it only if the PR still has no "
-            f"`{HUMAN_HOLD_LABEL}` label."
+            "worked, re-arm it only if the PR is still not a draft and still has no "
+            f"`{HUMAN_HOLD_LABEL}` label (the tool layer refuses `gh pr merge` on a "
+            "held PR)."
         )
     return (
         "Auto-merge was NOT armed when you were dispatched — do not arm auto-merge "

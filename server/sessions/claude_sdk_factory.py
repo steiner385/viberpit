@@ -8,6 +8,7 @@ from .account_auth import account_store_io, helper_env
 from .claude_bin import cli_path_kwargs as _cli_path_kwargs
 from .draft_hold_guard import draft_ready_guard
 from .human_hold_guard import human_hold_pre_tool_use
+from .merge_hold_guard import merge_hold_guard
 from .permissions import to_sdk_permission_mode
 
 
@@ -124,10 +125,11 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     if extra_env:
         env.update(extra_env)
     from claude_agent_sdk import HookMatcher
-    # Always on: no mode or allow rule may let a session strip `hold:human` (#3088) or
-    # mark ready a draft it did not open. Without *owns_pr* no draft is its own.
+    # Always on: no mode or allow rule may let a session strip `hold:human` (#3088),
+    # merge or arm a `hold:human` PR (#3101), or mark ready a draft it did not open.
+    # Without *owns_pr* no draft is its own.
     hooks: dict = {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[
-        human_hold_pre_tool_use, draft_ready_guard(owns_pr)])]}
+        human_hold_pre_tool_use, draft_ready_guard(owns_pr), merge_hold_guard()])]}
     if on_pre_compact is not None:
         hooks["PreCompact"] = [HookMatcher(hooks=[on_pre_compact])]
     kwargs = dict(

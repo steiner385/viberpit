@@ -79,6 +79,10 @@ async def test_factory_without_precompact_callback_still_guards_human_hold():
     assert draft_guard.__name__ == "draft_ready_pre_tool_use"
     out = await draft_guard({"tool_input": {"command": "gh pr ready 1 --undo"}})
     assert out == {}
+    # …and the merge guard (#3101): disarming is the safe direction and never looks up.
+    merge_guard = matcher.hooks[2]
+    assert merge_guard.__name__ == "merge_hold_pre_tool_use"
+    assert await merge_guard({"tool_input": {"command": "gh pr merge 1 --disable-auto"}}) == {}
 
 
 @pytest.mark.asyncio

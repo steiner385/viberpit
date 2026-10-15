@@ -43,6 +43,7 @@ from typing import Awaitable, Callable
 
 from viberpit import gitrepos
 
+from server.github.pr_status import has_human_hold
 from server.sessions.artifacts import github_pr_ref
 
 # (repo, number, head_ref) -> is this PR one the session opened?
@@ -155,7 +156,26 @@ def _parse_api(args: list[str], cwd: str | None) -> ReadyCall | None:
     return ReadyCall(path.group(2), path.group(1), cwd)
 
 
-def _scan_tokens(tokens: list[str], cwd: str | None, depth: int) -> list[ReadyCall]:
+# (tokens, index of the token, cwd) -> the PR call a command starting there makes.
+Matcher = Callable[[list[str], int, "str | None"], "ReadyCall | None"]
+
+
+def _match_ready(tokens: list[str], i: int, cwd: str | None) -> ReadyCall | None:
+    if not _is_gh(tokens[i]):
+        return None
+    if tokens[i + 1:i + 3] == ["pr", "ready"]:
+        return _parse_pr_ready(_args(tokens, i + 3), cwd)
+    if tokens[i + 1:i + 2] == ["api"]:
+        return _parse_api(_args(tokens, i + 2), cwd)
+    return None
+
+
+def scan_tokens(tokens: list[str], match: Matcher, raw: re.Pattern[str],
+                cwd: str | None = None, depth: int = 0) -> list[ReadyCall]:
+    """Every PR call *match* finds in the shell *tokens*, following ``cd`` and the
+    command strings of ``bash -c``/``eval``. An unparseable nested string that
+    *raw* matches is an unresolvable call (fail closed). Shared with
+    ``merge_hold_guard`` so both guards read a command the same way."""
     calls: list[ReadyCall] = []
     at_start = True
     for i, tok in enumerate(tokens):
@@ -167,21 +187,16 @@ def _scan_tokens(tokens: list[str], cwd: str | None, depth: int) -> list[ReadyCa
             target = os.path.expanduser(tokens[i + 1])
             cwd = target if cwd is None else os.path.join(cwd, target)
         at_start = False
-        if _is_gh(tok) and tokens[i + 1:i + 3] == ["pr", "ready"]:
-            call = _parse_pr_ready(_args(tokens, i + 3), cwd)
-        elif _is_gh(tok) and tokens[i + 1:i + 2] == ["api"]:
-            call = _parse_api(_args(tokens, i + 2), cwd)
-        elif depth < 3 and i > 0 and tokens[i - 1] in ("-c", "eval") \
+        if depth < 3 and i > 0 and tokens[i - 1] in ("-c", "eval") \
                 and any(c.isspace() for c in tok):
             # A command string a shell will run: `bash -c "…"`, `eval "…"`.
             try:
-                calls += _scan_tokens(_tokens(tok), cwd, depth + 1)
+                calls += scan_tokens(_tokens(tok), match, raw, cwd, depth + 1)
             except ValueError:
-                if _RAW_READY.search(tok):
+                if raw.search(tok):
                     calls.append(ReadyCall(None, None, cwd))
             continue
-        else:
-            continue
+        call = match(tokens, i, cwd)
         if call is not None:
             calls.append(call)
     return calls
@@ -199,7 +214,7 @@ def scan_command(command: str) -> Scan:
                for m in _RAW_READY.finditer(command)):
             return Scan(deny_reason=UNRESOLVED_REASON)
         return Scan()
-    return Scan(calls=tuple(_scan_tokens(tokens, None, 0)))
+    return Scan(calls=tuple(scan_tokens(tokens, _match_ready, _RAW_READY)))
 
 
 @dataclass(frozen=True)
@@ -208,6 +223,7 @@ class TargetPr:
     number: int
     head_ref: str
     is_draft: bool
+    human_hold: bool = False   # carries ``hold:human`` (``pr_status.has_human_hold``)
 
 
 def resolve_pr(call: ReadyCall, cwd: str | None) -> TargetPr | None:
@@ -217,7 +233,7 @@ def resolve_pr(call: ReadyCall, cwd: str | None) -> TargetPr | None:
     args = ["gh", "pr", "view"] + ([call.selector] if call.selector else [])
     if call.repo:
         args += ["-R", call.repo]
-    args += ["--json", "url,number,headRefName,isDraft"]
+    args += ["--json", "url,number,headRefName,isDraft,labels"]
     env = gitrepos._gh_env()
     token = gitrepos.app_token_for_owner(call.repo.partition("/")[0]) if call.repo else None
     if token:
@@ -236,7 +252,9 @@ def resolve_pr(call: ReadyCall, cwd: str | None) -> TargetPr | None:
     ref = github_pr_ref(data.get("url") or "")
     if ref is None:
         return None
-    return TargetPr(ref[0], ref[1], data.get("headRefName") or "", bool(data.get("isDraft")))
+    labels = [lbl.get("name") for lbl in data.get("labels") or () if isinstance(lbl, dict)]
+    return TargetPr(ref[0], ref[1], data.get("headRefName") or "", bool(data.get("isDraft")),
+                    has_human_hold(labels))
 
 
 def _deny(reason: str) -> dict:
