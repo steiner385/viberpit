@@ -1121,20 +1121,26 @@ def _materialization_to_dict(p: MaterializationProposal) -> dict:
 async def _latest_materialization(
     db, slug: str,
 ) -> tuple[Initiative, MaterializationProposal]:
-    """The initiative and its newest proposal, whatever its status.
+    """The initiative and its newest REVIEWABLE proposal, whatever its status.
 
     Newest-of-any-status rather than the pending one: a rejected proposal is
     still what the human last saw, and hiding it would make the page go blank
-    between a rejection and the next decompose session's ingest."""
+    between a rejection and the next decompose session's ingest.
+
+    Reviewable excludes a parse failure (#1545): the ingest records one as a
+    task-less ``rejected`` row so it spends an attempt, but no human ever saw or
+    decided it — the ``materialization_parse_failed`` activity event is where it
+    surfaces. Counting it as "latest" would blank the card AND, when it lands
+    after a still-pending proposal, make accept/reject 409 on the wrong row."""
     ini = (await db.execute(select(Initiative).where(
         Initiative.slug == slug))).scalar_one_or_none()
     if ini is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
-    prop = (await db.execute(
+    prop = next((p for p in (await db.execute(
         select(MaterializationProposal)
         .where(MaterializationProposal.initiative_id == ini.id)
         .order_by(MaterializationProposal.created_at.desc())
-    )).scalars().first()
+    )).scalars() if "parse_error" not in (p.payload or {})), None)
     if prop is None:
         raise HTTPException(status_code=404, detail={
             "error": "no_proposal",
@@ -1179,7 +1185,7 @@ async def accept_materialization(
     accept IS the stage's human gate: the apply advances the initiative and this
     writes the SAME ``sdlc.initiative.advance`` audit row the Advance route
     writes, marked with the reason, so the stage history reads the same either
-    way."""
+    way — when, and only when, the apply moved the stage."""
     _ini, prop = await _latest_materialization(db, slug)
     _require_pending(prop)
     result = await request.app.state.sessions.sdlc_materialize_apply(prop.id)
@@ -1208,12 +1214,16 @@ async def accept_materialization(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={
             "error": "materialize_failed", "step": result.get("step"),
             "message": str(result.get("error") or "materialization failed")})
-    await record_audit(
-        db=db,
-        type="sdlc.initiative.advance",
-        identity=identity,
-        detail={"slug": slug, "stage": result.get("stage"), "reason": "materialize"},
-    )
+    if result.get("advanced"):
+        # Only an advance the apply caused: one applied after a human already moved
+        # the initiative past ``plan`` leaves the stage alone, and the trail must
+        # not claim otherwise (#1545).
+        await record_audit(
+            db=db,
+            type="sdlc.initiative.advance",
+            identity=identity,
+            detail={"slug": slug, "stage": result.get("stage"), "reason": "materialize"},
+        )
     return result
 
 

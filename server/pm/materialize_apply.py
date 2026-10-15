@@ -317,8 +317,9 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     # is nothing left for the plan stage to decide. The successor comes from the
     # engine's own sequence (one definition of "what follows plan"), and a proposal
     # applied from any other stage leaves the stage alone rather than skipping one.
+    advanced = False
     if ini.stage == "plan":
-        ini.stage = advance_stage(ini.stage)
+        ini.stage, advanced = advance_stage(ini.stage), True
     ini.status = "active"
     # Written as an upsert on (repo, number, kind), the table's own identity: a
     # resumed run — or a pm-sync pass that mirrored the new issues between the
@@ -366,11 +367,13 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     log.info("materialize.apply slug=%s epic=%s tasks=%d edges=%d parked=%d",
              slug, epic.get("number"), len(decomposition.tasks), len(edges),
              len(parked))
-    # ``stage`` travels in the result so the route can audit the advance it just
-    # caused without re-reading a row another session committed.
+    # ``stage`` and ``advanced`` travel in the result so the route can audit the
+    # advance it just caused — and only one it caused: a human may have advanced
+    # the initiative past ``plan`` while the proposal was pending (#1545) —
+    # without re-reading a row another session committed.
     return {"ok": True, "epic": epic, "tasks": len(decomposition.tasks),
             "edges": len(edges), "parkedEdges": len(parked),
-            "stage": ini.stage, "syncRequested": sync_requested}
+            "stage": ini.stage, "advanced": advanced, "syncRequested": sync_requested}
 
 
 async def _request_sync(db: AsyncSession, project_id: str | None, repo: str,

@@ -303,6 +303,20 @@ async def test_a_failed_apply_leaves_the_stage_where_it_was(db_env):
 
 
 @pytest.mark.asyncio
+async def test_an_apply_after_a_human_advance_reports_no_advance(db_env):
+    """#1545: a human advanced the initiative while the proposal was pending, so
+    the apply leaves the stage alone — and says so, for the route's audit gate."""
+    ini_id, prop_id = await _seed(db_env)
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        ini.stage = "build"
+        await db.commit()
+    out = await _apply(prop_id, FakeGh())
+    assert out["ok"] is True and out["stage"] == "build" and out["advanced"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_resumed_apply_advances_a_stage_left_behind(db_env):
     """The overlay runs on the run that finishes, whichever one that is."""
     ini_id, prop_id = await _seed(db_env)
@@ -310,7 +324,7 @@ async def test_a_resumed_apply_advances_a_stage_left_behind(db_env):
     gh2 = FakeGh()
     gh2._n = 2  # Dark mode + Tokens already exist
     out = await _apply(prop_id, gh2)
-    assert out["ok"] is True and out["stage"] == "build"
+    assert out["ok"] is True and out["stage"] == "build" and out["advanced"] is True
     async with db_session() as db:
         ini = (await db.execute(select(Initiative).where(
             Initiative.id == ini_id))).scalar_one()

@@ -333,6 +333,9 @@ export interface MaterializationApplied {
    *  (spec §7b). The detail query refetches after the mutation, so nothing here
    *  reads it; it is part of the response the audit trail is written from. */
   stage?: string
+  /** Whether the apply moved the stage — false when a human had already advanced
+   *  past `plan` while the proposal was pending, so no advance is audited. */
+  advanced?: boolean
   syncRequested?: boolean
 }
 

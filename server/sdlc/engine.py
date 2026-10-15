@@ -59,7 +59,8 @@ class ArtifactView:
 @dataclass(frozen=True)
 class InitiativeView:
     """The state the engine needs to decide the next action. ``issue`` is the
-    underlying GitHub issue ref handed to ``backlog_runner`` at the Build stage."""
+    underlying GitHub issue ref handed to ``backlog_runner`` at the Build stage;
+    with none set, the Build stage falls back to ``epic`` (see ``build_issue``)."""
     slug: str
     stage: str
     status: str  # "proposed" | "active" | "awaiting_human" | "blocked" | "done"
@@ -76,6 +77,15 @@ class InitiativeView:
     epic_done: int = 0
     # Whether the epic issue itself is closed on GitHub (its mirrored state).
     epic_closed: bool = False
+
+    @property
+    def build_issue(self) -> str | None:
+        """The issue the Build stage hands off: the origin issue, else the epic
+        (#1545). A materialized initiative with no ``origin_ref`` — every
+        control-band-originated one is deliberately unstamped — reaches ``build``
+        right after the accept that created its epic, and that epic is the natural
+        handoff target; without the fallback it would land on NeedsHuman."""
+        return self.issue or self.epic
 
     @property
     def epic_finished(self) -> bool:
@@ -236,8 +246,8 @@ def _enter_stage(stage: str, initiative: InitiativeView) -> StageAction:
     if stage == "done":
         return Done()
     if stage == "build":
-        if initiative.issue:
-            return HandoffToBuild(initiative.issue)
+        if initiative.build_issue:
+            return HandoffToBuild(initiative.build_issue)
         return NeedsHuman(reason="build stage reached but no underlying issue is set")
     kind = STAGE_ARTIFACT.get(stage)
     if kind is None:

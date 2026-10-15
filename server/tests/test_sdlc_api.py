@@ -1076,7 +1076,7 @@ def _materialization_client(*, proposals=(("pending", None),),
                 yield c, orch
 
 
-def _accept_seam(orch, *, ok: bool = True):
+def _accept_seam(orch, *, ok: bool = True, advanced: bool = True):
     """Stand-in for ``_sdlc_materialize_apply`` that records its calls and moves
     the proposal the way the real seam's apply does."""
     from server.db import db_session
@@ -1100,7 +1100,7 @@ def _accept_seam(orch, *, ok: bool = True):
             ini.stage, ini.status = "build", "active"
             await db.commit()
         return {"ok": True, "epic": {"number": 101}, "tasks": 2, "edges": 1,
-                "stage": "build"}
+                "stage": "build", "advanced": advanced}
 
     orch._sdlc_materialize_apply = fake
     return calls
@@ -1129,6 +1129,60 @@ def test_materialization_get_returns_the_latest_proposal_of_any_status():
         assert body["tasks"][1]["dependsOn"] == [0]
         assert body["sessionId"] == "sess-1"
         assert body["rationale"] == "because 1"
+
+
+def _add_parse_failure(c) -> None:
+    """A parse-failure row exactly as the ingest writes it, newer than every seed."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Initiative, MaterializationProposal
+
+    async def _go():
+        async with db_session() as db:
+            ini = (await db.execute(select(Initiative).where(
+                Initiative.slug == "dark-mode"))).scalar_one()
+            db.add(MaterializationProposal(
+                initiative_id=ini.id, status="rejected", session_id="sess-bad",
+                payload={"source_session": "sess-bad", "parse_error": "no JSON"},
+                rationale="parse failed: no JSON",
+                created_at=datetime(2026, 9, 12, tzinfo=timezone.utc)))
+            await db.commit()
+
+    c.portal.call(_go)
+
+
+def test_materialization_get_skips_a_parse_failure():
+    """#1545: a parse failure is a task-less rejected row no human ever reviewed;
+    the latest REVIEWABLE proposal is what the card shows."""
+    with _materialization_client(proposals=(("rejected", None),)) as (c, _orch):
+        _add_parse_failure(c)
+        r = c.get("/api/sdlc/initiatives/dark-mode/materialization",
+                  headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["sessionId"] == "sess-0"
+
+
+def test_materialization_get_404s_when_only_parse_failures_exist():
+    with _materialization_client(proposals=()) as (c, _orch):
+        _add_parse_failure(c)
+        r = c.get("/api/sdlc/initiatives/dark-mode/materialization",
+                  headers=IDENTITY_HEADERS)
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"]["error"] == "no_proposal"
+
+
+def test_a_parse_failure_after_a_pending_proposal_does_not_hide_it_from_accept():
+    """The ingest writes a parse failure before its duplicate check, so one can
+    land after a still-pending proposal; accept must still reach the pending one."""
+    with _materialization_client() as (c, orch):
+        calls = _accept_seam(orch)
+        _add_parse_failure(c)
+        r = c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert len(calls) == 1
 
 
 def test_materialization_accept_runs_the_seam_and_409s_on_a_second_tap():
@@ -1217,6 +1271,18 @@ def test_materialization_accept_advances_the_initiative_to_build():
 
         assert _audits(c, "sdlc.initiative.advance") == [
             {"slug": "dark-mode", "stage": "build", "reason": "materialize"}]
+
+
+def test_an_accept_that_did_not_move_the_stage_writes_no_advance():
+    """#1545: a human already advanced the initiative while the proposal was
+    pending, so the apply left the stage alone — the trail must not claim an
+    advance it did not make. The accept itself is still recorded."""
+    with _materialization_client() as (c, orch):
+        _accept_seam(orch, advanced=False)
+        assert c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                      headers=IDENTITY_HEADERS).status_code == 200
+        assert _audits(c, "sdlc.initiative.advance") == []
+        assert [a["ok"] for a in _audits(c, "sdlc.materialization.accept")] == [True]
 
 
 def test_a_failed_accept_writes_no_advance():
