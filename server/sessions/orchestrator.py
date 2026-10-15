@@ -753,6 +753,13 @@ _PAUSE_LOG = LogThrottle()
 # legitimately takes up to ~10s (interrupt flush + subprocess terminate).
 _STOP_TASK_TIMEOUT_S = 5.0
 _STOP_DRIVER_CLOSE_TIMEOUT_S = 10.0
+# Bounds on _pending_notices (#1502). A queued drawer notice is delivered ONLY when
+# someone opens that drawer, so without bounds a watch firing at a never-opened
+# drawer grows the map forever and a weeks-old "PR broke" surfaces as news. The
+# web push already went out when the notice fired, so dropping the drawer copy loses
+# nothing the person was not told. Keep the newest N per thread; expire after a day.
+_PENDING_NOTICE_CAP = 20
+_PENDING_NOTICE_TTL_S = 24 * 3600.0
 
 # The export path (/export.md) replays the FULL transcript with limit=None, so a
 # legitimately huge session can exceed the interactive ceiling above. Exporting is a
@@ -1194,8 +1201,9 @@ class SessionOrchestrator:
         # by the WS bridge's attach handler via pop_pending_notices — same in-memory,
         # orchestrator-level, session_id-keyed shape as _pending_initial_prompt above
         # (SessionRecord stays a plain mirror-the-DB-row dataclass; this is transient
-        # process state, not a session field).
-        self._pending_notices: dict[str, list[dict]] = {}
+        # process state, not a session field). Each entry is (monotonic queued-at,
+        # notice); bounded by _PENDING_NOTICE_CAP / _PENDING_NOTICE_TTL_S (#1502).
+        self._pending_notices: dict[str, list[tuple[float, dict]]] = {}
         # session_id → options overlay for ANY kind (see register_overlay): the
         # assistant's full overlay (a ClaudeAgentOptions dict for Claude, a
         # CodexAssistantOverlay for Codex) or a coding session's
@@ -5751,6 +5759,8 @@ class SessionOrchestrator:
                 initial_prompt, attachment_ids)
             if defer_for_bridge and initial_prompt:
                 self._pending_initial_prompt[session_id] = initial_prompt
+                log.info("session.initial_prompt_parked session=%s reason=slash_command",
+                         session_id)
 
             if preexisting_row:
                 # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
@@ -18224,6 +18234,13 @@ class SessionOrchestrator:
         queued (pop_pending_notices flushes it on the next WS attach, mirroring
         pop_pending_initial_prompt).
 
+        The queue has no trigger but that attach, and that is deliberate (#1502):
+        the web push fired alongside this call already told the person, so the
+        drawer copy is a convenience for whoever opens the drawer, not the
+        delivery. What it must not do is grow without limit or resurface stale
+        news, so it is bounded — newest _PENDING_NOTICE_CAP per thread, nothing
+        older than _PENDING_NOTICE_TTL_S — and every drop is logged.
+
         Returns whether delivery was live. Never raises: push.notify_event's
         assistant-channel branch already wraps this in try/except and fails open
         to the web push it sends unconditionally, but an unreachable identity
@@ -18241,8 +18258,35 @@ class SessionOrchestrator:
                 url=notice.get("url"), watch_id=notice.get("watchId"),
             ))
             return True
-        self._pending_notices.setdefault(rec.id, []).append(notice)
+        now = time.monotonic()
+        self._expire_pending_notices(now)
+        queue = self._pending_notices.setdefault(rec.id, [])
+        queue.append((now, notice))
+        overflow = len(queue) - _PENDING_NOTICE_CAP
+        if overflow > 0:
+            del queue[:overflow]
+            log.info("assistant.notice_dropped session=%s count=%d reason=cap",
+                     rec.id, overflow)
+        log.info("assistant.notice_queued session=%s watch=%s pending=%d",
+                 rec.id, notice.get("watchId"), len(queue))
         return False
+
+    def _expire_pending_notices(self, now: float) -> None:
+        """Drop queued notices older than _PENDING_NOTICE_TTL_S across EVERY thread
+        (#1502) — a drawer nobody opens never reaches pop_pending_notices, so the
+        sweep has to run on the write path too or its entries would never go."""
+        cutoff = now - _PENDING_NOTICE_TTL_S
+        for session_id in list(self._pending_notices):
+            queue = self._pending_notices[session_id]
+            kept = [entry for entry in queue if entry[0] >= cutoff]
+            if len(kept) == len(queue):
+                continue
+            log.info("assistant.notice_dropped session=%s count=%d reason=expired",
+                     session_id, len(queue) - len(kept))
+            if kept:
+                self._pending_notices[session_id] = kept
+            else:
+                del self._pending_notices[session_id]
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None
@@ -21184,7 +21228,17 @@ class SessionOrchestrator:
         the model as literal text. Everything else is sent immediately so the
         session starts working without anyone opening it. ``parse_command_line``
         is the same predicate the bridge applies when it pops the prompt, so the
-        two halves cannot disagree about what is a command."""
+        two halves cannot disagree about what is a command.
+
+        Indefinite deferral is an accepted residual, not an oversight (#1502). A
+        bare-``/command`` session nobody opens never runs it, and no timeout
+        could fix that: there is no socket to dispatch to, and sending the text to
+        the model is the #943 bug. Nothing is lost. The prompt is persisted on
+        the row (``initial_prompt``), re-parked after a restart
+        (``_recover_undelivered_prompts``), and the park is logged
+        (``session.initial_prompt_parked``). It runs the moment someone opens the
+        session. A command typed into a session nobody looks at has no effect
+        anyone could observe anyway."""
         if not prompt or attachment_ids:
             return False
         return cmd_catalog.parse_command_line(prompt) is not None
@@ -21212,8 +21266,10 @@ class SessionOrchestrator:
         """Return and clear the queued proactive watch notices for session_id
         (Task 8.4). Called by the WS bridge on attach, alongside
         pop_pending_initial_prompt, so a notice queued by post_notice while the
-        drawer had no live driver is delivered on the next open rather than lost."""
-        return self._pending_notices.pop(session_id, [])
+        drawer had no live driver is delivered on the next open rather than lost.
+        Expired entries are swept first, so a stale notice is never delivered."""
+        self._expire_pending_notices(time.monotonic())
+        return [notice for _, notice in self._pending_notices.pop(session_id, [])]
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
                           interrupt: bool = False,

@@ -102,6 +102,22 @@ client is watching":
 `_pending_notices` is the only other pop-on-attach state, and it is drawer UI content, so
 deferring it is correct.
 
+Re-sweep (2026-10-15, #1502): still exactly two pop-on-attach maps. `_pending_prompt_preambles`
+is consumed by the next `send_prompt`, and `_pending_approvals` by the approve path, so
+neither waits on a WS attach. Decisions:
+
+- `_pending_notices` stays deferred, because the web push sent with every assistant notice
+  is what actually delivers it. It is now **bounded**: the newest `_PENDING_NOTICE_CAP` per
+  thread, a `_PENDING_NOTICE_TTL_S` expiry swept on both write and pop, and an
+  `assistant.notice_queued` / `assistant.notice_dropped` log line for each. A never-opened
+  drawer can no longer grow the map forever or show a day-old notice as news.
+- The bare-slash-command park is an accepted residual. It is persisted, re-parked after a
+  restart, and logged as `session.initial_prompt_parked`. A timeout has nothing to fall back
+  to, because sending the text to the model is the #943 bug. The rationale is in
+  `_initial_prompt_waits_for_attach`'s docstring.
+- No shared helper yet: two instances with different semantics (a single prompt that must
+  survive a restart vs. bounded, droppable UI content) don't justify a common abstraction.
+
 **Rule going forward:** "wait for a human to open it" is never a reason to hold *work*. Park
 something for the bridge only when the bridge is the only component that can execute it.
 
