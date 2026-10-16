@@ -15,6 +15,7 @@ import { MetroTrack } from '@/features/pipeline/charts/MetroTrack';
 import { CheckGantt } from '@/features/pipeline/charts/CheckGantt';
 import { Waterfall, waterfallSegments } from '@/features/pipeline/charts/Waterfall';
 import { DEFS, defTitle, subLineTitle } from './definitions';
+import { prAnchorId } from './prAnchor';
 
 /** The expanded panel's section caption ("merge group build", …). */
 const PANEL_LABEL = 'px-3.5 pt-2 text-2xs font-semibold uppercase tracking-wider text-ink-muted';
@@ -209,7 +210,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
   // useMemo: subLine scans pr.checks and reads queueCulprit — re-run only when either changes
   const sub = useMemo(() => subLine(pr, queueCulprit), [pr, queueCulprit]);
   return (
-    <div id={`pr-${pr.number}`} className={cn('mb-1.5 rounded-lg border border-edge bg-surface',
+    <div id={prAnchorId(pr.repo, pr.number)} className={cn('mb-1.5 rounded-lg border border-edge bg-surface',
       parked && (s.substate === 'ci-failed' ? 'border-l-4 border-l-danger' : 'opacity-75'))}>
       {/* Keyboard-operable expand toggle (UX-H1). role="button" rather than a
           real <button> because the row nests interactive children (title link,

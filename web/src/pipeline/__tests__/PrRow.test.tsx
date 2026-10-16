@@ -50,9 +50,9 @@ describe('PrRow', () => {
     expect(chip.getAttribute('title')).toMatch(/estimate — ETA last updated/);
   });
 
-  it('has id="pr-{number}" on the row root (anchor target for the queue train)', () => {
+  it('has the repo-scoped id on the row root (anchor target for the queue train)', () => {
     const { container } = render(<PrRow pr={pr({})} hasDeploy />);
-    expect(container.querySelector('#pr-8962')).not.toBeNull();
+    expect(container.querySelector('[id="pr-acme:widgets-8962"]')).not.toBeNull();
   });
 
   it('shows the stage percent in the muted sub line for a running CI stage', () => {
