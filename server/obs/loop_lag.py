@@ -66,10 +66,30 @@ stayed low. ``PsiReader`` therefore also reads this process's own cgroup
 ``memory.pressure`` / ``io.pressure`` ``full`` counters (``cgroup_*_full_s``) and
 the largest of all the deltas is what must cover the lag. Every delta rides on
 the WARNING too, so an unexplained stall shows how much pressure *did* explain.
+
+The PSI reads must not sit inside the window they measure (#3130). On a swapping
+host a procfs/kernfs ``read()`` can block for seconds; done synchronously on the
+loop, that stalled the loop, was counted as lag, and — when the "before" read was
+the slow one — already had the stall in its totals, so the delta subtracted it
+out. Half of dobby's stack dumps showed the loop thread inside
+``_psi_full_total_s``. So reads run on a dedicated one-thread executor with a
+timeout, a read still wedged in the kernel is never queued behind, and the read's
+own duration is taken off the measured lag. A loop block *during* a read still
+counts: the await's overshoot beyond the read is lag.
+
+PSI cannot see everything that freezes the loop — synchronous zram swap-in is not
+memstall, and the loop running our own code is not pressure at all. So a WARNING
+also carries the tick's ``getrusage(RUSAGE_SELF)`` deltas and GC time
+(``utime_s``, ``stime_s``, ``majflt``, ``nivcsw``, ``gc_s``): utime ≈ lag is the
+loop on CPU in our code, high ``majflt`` is faulting heap back from swap, high
+``nivcsw`` with utime ≈ 0 is descheduling, and ``gc_s`` is a collector pause.
 """
 import asyncio
+import concurrent.futures
+import gc
 import logging
 import os
+import resource
 import sys
 import threading
 import time
@@ -261,6 +281,49 @@ class PsiReader:
         return totals or None
 
 
+def _rusage_totals() -> dict[str, float]:
+    """Cumulative CPU time, major faults and involuntary switches of this process."""
+    r = resource.getrusage(resource.RUSAGE_SELF)
+    return {"utime_s": r.ru_utime, "stime_s": r.ru_stime,
+            "majflt": r.ru_majflt, "nivcsw": r.ru_nivcsw}
+
+
+class GcTimer:
+    """Cumulative seconds spent in the cyclic garbage collector, via ``gc.callbacks``."""
+
+    def __init__(self) -> None:
+        self.total_s = 0.0
+        self._started: float | None = None
+
+    def _callback(self, phase: str, _info: dict) -> None:
+        if phase == "start":
+            self._started = time.perf_counter()
+        elif self._started is not None:
+            self.total_s += time.perf_counter() - self._started
+            self._started = None
+
+    def install(self) -> None:
+        if self._callback not in gc.callbacks:
+            gc.callbacks.append(self._callback)
+
+    def remove(self) -> None:
+        if self._callback in gc.callbacks:
+            gc.callbacks.remove(self._callback)
+
+
+def usage_since(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
+    """Per-tick deltas of cumulative usage counters; seconds rounded, counts exact."""
+    out: dict[str, float] = {}
+    for k in before.keys() & after.keys():
+        delta = after[k] - before[k]
+        out[k] = round(delta, 2) if k.endswith("_s") else int(delta)
+    return out
+
+
+# A PSI read is microseconds when the kernel is healthy; one slower than this is
+# abandoned for the tick (the tick goes unattributed) rather than waited on.
+PSI_READ_TIMEOUT_S = 1.0
+
 # Share of a stall that full stall time (host-wide or this unit's) must cover for
 # the stall to be attributed to memory/io pressure rather than to this process's
 # own code (#2866, #2882).
@@ -287,8 +350,10 @@ class LoopLagWatchdog:
         dump_path: str | None = None,
         _log=None,
         _clock=None,
+        psi_timeout: float = PSI_READ_TIMEOUT_S,
         _tracer=None,
         _psi=None,
+        _usage=None,
     ) -> None:
         self.interval = interval
         self.warn_after = warn_after
@@ -311,6 +376,14 @@ class LoopLagWatchdog:
         # PSI reader (#2866, #2882); returns cumulative full-stall seconds per
         # ``<scope>_<resource>``, or None when nothing exposes PSI.
         self._psi = _psi if _psi is not None else PsiReader()
+        # Off-loop PSI reads (#3130): one dedicated worker, so a read wedged in
+        # the kernel can never starve the shared default executor.
+        self.psi_timeout = psi_timeout
+        self._psi_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._psi_inflight: asyncio.Future | None = None
+        # Cumulative usage counters diffed per tick for the WARNING (#3130).
+        self._gc = GcTimer()
+        self._usage = _usage if _usage is not None else self._usage_totals
         # Routine overshoot, host-explained stalls and real stalls throttle
         # independently: neither INFO class may spend the window a WARNING needs.
         self._throttles = {"routine": _Throttle(), "host": _Throttle(), "alert": _Throttle()}
@@ -333,24 +406,70 @@ class LoopLagWatchdog:
         except Exception:  # a diagnostic read must never kill the watchdog
             return None
 
-    def _pressure_since(self, psi_before: dict[str, float] | None) -> dict[str, float] | None:
-        """Full-stall seconds per ``<scope>_<resource>`` since ``psi_before``, or None."""
-        if psi_before is None:
-            return None
-        psi_after = self._read_psi()
-        if psi_after is None:
+    def _timed_read_psi(self) -> tuple[dict[str, float] | None, float]:
+        """One PSI snapshot and how long the read took; runs on the PSI worker."""
+        t0 = self._clock()
+        totals = self._read_psi()
+        return totals, self._clock() - t0
+
+    async def _read_psi_off_loop(self) -> tuple[dict[str, float] | None, float]:
+        """A PSI snapshot read off the loop, and the seconds not to count as lag.
+
+        A slow kernfs read can then neither stall the loop nor be measured as
+        a stall. A read that outlives ``psi_timeout`` is abandoned for this tick
+        (its whole wait is excused), and while it is still stuck no new read is
+        queued behind it.
+        """
+        if self._psi_inflight is not None and not self._psi_inflight.done():
+            return None, 0.0
+        if self._psi_executor is None:
+            self._psi_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="loop-lag-psi")
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(self._psi_executor, self._timed_read_psi)
+        self._psi_inflight = fut
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), self.psi_timeout)
+        except asyncio.TimeoutError:
+            return None, self.psi_timeout
+
+    def _shutdown_psi_executor(self) -> None:
+        executor, self._psi_executor = self._psi_executor, None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _usage_totals(self) -> dict[str, float]:
+        return {**_rusage_totals(), "gc_s": self._gc.total_s}
+
+    def _is_alert(self, lag: float) -> bool:
+        """Whether ``lag`` is reported at the WARNING tier (pressure-attributed)."""
+        return lag >= self.warn_after and (self.alert_after is None or lag >= self.alert_after)
+
+    @staticmethod
+    def _pressure_since(
+        psi_before: dict[str, float] | None, psi_after: dict[str, float] | None,
+    ) -> dict[str, float] | None:
+        """Full-stall seconds per ``<scope>_<resource>`` between two snapshots, or None."""
+        if psi_before is None or psi_after is None:
             return None
         return {
             r: max(0.0, psi_after[r] - psi_before[r])
             for r in psi_before.keys() & psi_after.keys()
         }
 
-    def _note_lag(self, lag: float, psi_before: dict[str, float] | None = None) -> None:
+    def _note_lag(
+        self,
+        lag: float,
+        psi_before: dict[str, float] | None = None,
+        psi_after: dict[str, float] | None = None,
+        usage: dict[str, float] | None = None,
+    ) -> None:
         """Record one measured overshoot and warn about it, rate-limited.
 
         Split out of ``run`` so the throttle is testable without real sleeps.
-        ``psi_before`` is the PSI snapshot taken at the start of the tick; with
-        it, a stall that host or cgroup pressure explains is not a WARNING.
+        ``psi_before``/``psi_after`` are the PSI snapshots around the tick; with
+        both, a stall that host or cgroup pressure explains is not a WARNING.
+        ``usage`` is the tick's resource-usage delta, attached at that tier.
         """
         if lag > self.peak_lag_s:
             self.peak_lag_s = lag
@@ -359,11 +478,11 @@ class LoopLagWatchdog:
 
         event = "loop_lag.stall"
         extra: dict[str, float] = {}
-        if self.alert_after is not None and lag < self.alert_after:
+        if not self._is_alert(lag):
             kind, level = "routine", logging.INFO
         else:
             kind, level = "alert", logging.WARNING
-            pressure = self._pressure_since(psi_before)
+            pressure = self._pressure_since(psi_before, psi_after)
             if pressure:
                 # Attached to the WARNING too, so an unexplained stall still shows
                 # how much of it pressure did explain (#2882).
@@ -373,6 +492,8 @@ class LoopLagWatchdog:
                 # single counter, never a sum, is pressure's share.
                 if max(pressure.values()) >= HOST_STALL_SHARE * lag:
                     kind, level, event = "host", logging.INFO, "loop_lag.host_stall"
+            if usage:
+                extra.update(usage)
         t = self._throttles[kind]
         now = self._clock()
         if t.last_at is not None and (now - t.last_at) < self.warn_every:
@@ -404,13 +525,22 @@ class LoopLagWatchdog:
 
     async def run(self) -> None:
         self._arm_tracer()
+        self._gc.install()
         try:
             while True:
                 started = self._clock()
-                psi_before = self._read_psi()
+                usage_before = self._usage()
+                psi_before, excused = await self._read_psi_off_loop()
                 await asyncio.sleep(self.interval)
-                lag = (self._clock() - started) - self.interval
-                self._note_lag(lag, psi_before)
+                # The read's own time is the kernel's, not the loop's (#3130);
+                # whatever the await overshot beyond it is still lag.
+                lag = (self._clock() - started) - self.interval - excused
+                usage = usage_since(usage_before, self._usage())
+                psi_after = None
+                if psi_before is not None and self._is_alert(lag):
+                    # Read after the window closes, so it is never measured.
+                    psi_after, _ = await self._read_psi_off_loop()
+                self._note_lag(lag, psi_before, psi_after, usage)
                 # Re-arm the deadman switch: this tick proves the loop is alive,
                 # so push the dump deadline out. If the *next* sleep is swallowed
                 # by a block longer than ``dump_after``, the tracer thread fires
@@ -419,6 +549,8 @@ class LoopLagWatchdog:
                 self._arm_tracer()
         finally:
             self._disarm_tracer()
+            self._gc.remove()
+            self._shutdown_psi_executor()
 
 
 # On by default (#1913). Opt-in meant it never ran: dobby logged stalls of up to
