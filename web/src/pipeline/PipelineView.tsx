@@ -169,7 +169,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                 ?? (r.deploy ? { awaitingQa: r.deploy.awaitingQa, awaitingProd: r.deploy.awaitingProd, awaitingAdmin: 0 } : null);
               return (
                 <>
-                  <QueueTrain queue={r.queue} />
+                  <QueueTrain repo={r.repo} queue={r.queue} />
                   {backlog && (backlog.awaitingQa > 0 || backlog.awaitingProd > 0 || backlog.awaitingAdmin > 0) && (
                     <p className={NOTE} role="region" aria-label="Deploy backlog">
                       📦 Deploy backlog:{' '}

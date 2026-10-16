@@ -218,4 +218,31 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     render(<PipelineView state={st} focusedRepo={null} />);
     expect(screen.queryByRole('region', { name: /deploy chain/i })).not.toBeInTheDocument();
   });
+
+  // #1406 (G08): PR numbers are only unique per repo — row ids and queue jump
+  // links must be repo-scoped so a jump lands on the intended repo's row.
+  it('scopes row ids and queue jump links by repo when two repos share a PR number', () => {
+    const queue = (n: number) => ({
+      groups: [{ oid: `g${n}`, prNumbers: [n], percent: 10, etaSeconds: null, failed: false }],
+      waiting: [], unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6,
+    });
+    const st = state({
+      repos: [
+        { repo: 'acme/alpha', hasDeploy: false, prs: [pr('acme/alpha', 7, 'alpha seven')], queue: queue(7) },
+        { repo: 'acme/beta', hasDeploy: false, prs: [pr('acme/beta', 7, 'beta seven')], queue: queue(7) },
+      ],
+    } as unknown as Partial<DashboardState>);
+    const { container } = render(<PipelineView state={st} focusedRepo={null} />);
+    const ids = [...container.querySelectorAll('[id^="pr-"]')].map((e) => e.id);
+    expect(ids).toEqual(['pr-acme:alpha-7', 'pr-acme:beta-7']);
+    const scrolled: string[] = [];
+    for (const el of container.querySelectorAll<HTMLElement>('[id^="pr-"]')) {
+      el.scrollIntoView = () => { scrolled.push(el.id); };
+    }
+    const links = screen.getAllByRole('link', { name: '#7' });
+    expect(links.map((l) => l.getAttribute('href'))).toEqual(['#pr-acme:alpha-7', '#pr-acme:beta-7']);
+    fireEvent.click(links[1]!);
+    fireEvent.click(links[0]!);
+    expect(scrolled).toEqual(['pr-acme:beta-7', 'pr-acme:alpha-7']);
+  });
 });

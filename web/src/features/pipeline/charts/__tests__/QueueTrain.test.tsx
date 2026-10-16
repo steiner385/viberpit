@@ -15,13 +15,13 @@ const group = (over: Partial<QueueGroupView>): QueueGroupView => ({
 
 describe('QueueTrain', () => {
   it('renders nothing when queue is null', () => {
-    const { container } = render(<QueueTrain queue={null} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={null} />);
     expect(container.firstChild).toBeNull();
   });
 
   it('renders nothing when queue has no groups and no waiting entries', () => {
     const queue: RepoQueueView = { groups: [], waiting: [], unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6 };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.firstChild).toBeNull();
   });
 
@@ -35,7 +35,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     // Two building cars
     const cars = container.querySelectorAll('.car.building');
     expect(cars).toHaveLength(2);
@@ -53,11 +53,11 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const links = container.querySelectorAll('.car.building a');
     expect(links).toHaveLength(2);
-    expect((links[0] as HTMLAnchorElement).href).toContain('#pr-8943');
-    expect((links[1] as HTMLAnchorElement).href).toContain('#pr-8941');
+    expect((links[0] as HTMLAnchorElement).href).toContain('#pr-o:r-8943');
+    expect((links[1] as HTMLAnchorElement).href).toContain('#pr-o:r-8941');
     expect(links[0].textContent).toBe('#8943');
     expect(links[1].textContent).toBe('#8941');
   });
@@ -69,7 +69,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const failCar = container.querySelector('.car.building.failed');
     expect(failCar).not.toBeNull();
     expect(failCar!.textContent).toContain('✗ failing');
@@ -82,7 +82,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.car.building')).not.toBeNull();
     // No percent text rendered
     expect(screen.queryByText(/%/)).not.toBeInTheDocument();
@@ -91,7 +91,7 @@ describe('QueueTrain', () => {
   it('waiting: 7 entries with batchSize 6 → next-batch car (6 numbers) + then car (1)', () => {
     const waiting = Array.from({ length: 7 }, (_, i) => ({ prNumber: 8960 - i, position: i + 1 }));
     const queue: RepoQueueView = { groups: [], waiting, unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6 };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const dashed = container.querySelectorAll('.car.queued');
     expect(dashed).toHaveLength(2);
     // First = next batch
@@ -106,7 +106,7 @@ describe('QueueTrain', () => {
     // 10 waiting, batchSize 4 → first car shows 4, rest in "then" (6)
     const waiting = Array.from({ length: 10 }, (_, i) => ({ prNumber: 8900 + i, position: i + 1 }));
     const queue: RepoQueueView = { groups: [], waiting, unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 4 };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const dashed = container.querySelectorAll('.car.queued');
     expect(dashed).toHaveLength(2);
     // next batch shows exactly 4 numbers as links, no overflow in this case since batchSize=4
@@ -121,7 +121,7 @@ describe('QueueTrain', () => {
     // "then" car shows 2 more (10 - 8 = 2 remaining)
     const waiting = Array.from({ length: 10 }, (_, i) => ({ prNumber: 9000 + i, position: i + 1 }));
     const queue: RepoQueueView = { groups: [], waiting, unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 8 };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const dashed = container.querySelectorAll('.car.queued');
     expect(dashed).toHaveLength(2);
     // next-batch car: PrLinks shows max 6 links out of 8 entries, renders "+2" overflow
@@ -139,7 +139,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const dashed = container.querySelectorAll('.car.queued');
     expect(dashed).toHaveLength(1);
     expect(dashed[0].textContent).toContain('next batch');
@@ -152,7 +152,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const car = container.querySelector('.car.building')!;
     const title = car.getAttribute('title');
     expect(title).toContain('#8943');
@@ -167,7 +167,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const car = container.querySelector('.car.building')!;
     // Max 6 links visible
     const links = car.querySelectorAll('a');
@@ -188,11 +188,11 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    render(<QueueTrain queue={queue} />);
+    render(<QueueTrain repo="o/r" queue={queue} />);
     const link = screen.getByText('#8943');
     fireEvent.click(link);
 
-    expect(mockGetElementById).toHaveBeenCalledWith('pr-8943');
+    expect(mockGetElementById).toHaveBeenCalledWith('pr-o:r-8943');
     expect(mockScrollIntoView).toHaveBeenCalledOnce();
 
     mockGetElementById.mockRestore();
@@ -205,7 +205,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const train = container.querySelector('.queue-train');
     expect(train).not.toBeNull();
   });
@@ -220,7 +220,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.car.building')).not.toBeNull();
     expect(container.querySelector('.car.queued')).not.toBeNull();
   });
@@ -234,12 +234,12 @@ describe('QueueTrain', () => {
       unmergeable: [8878], queueBlocked: [], unmergeableCulprit: 8878,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const car = container.querySelector('.car.unmergeable');
     expect(car).not.toBeNull();
     expect(car!.textContent).toContain('✗ unmergeable');
     const link = car!.querySelector('a') as HTMLAnchorElement;
-    expect(link.href).toContain('#pr-8878');
+    expect(link.href).toContain('#pr-o:r-8878');
     expect(link.textContent).toBe('#8878');
     // not folded into the building car
     expect(container.querySelector('.car.building')!.textContent).not.toContain('#8878');
@@ -253,7 +253,7 @@ describe('QueueTrain', () => {
       queueBlocked: [], unmergeableCulprit: 9000,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const car = container.querySelector('.car.unmergeable')!;
     expect(car.querySelectorAll('a')).toHaveLength(6);
     expect(car.textContent).toContain('+2');
@@ -267,7 +267,7 @@ describe('QueueTrain', () => {
       unmergeable: [8878], queueBlocked: [], unmergeableCulprit: 8878,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.queue-train')).not.toBeNull();
     expect(container.querySelector('.car.unmergeable')).not.toBeNull();
   });
@@ -279,7 +279,7 @@ describe('QueueTrain', () => {
       unmergeable: [], queueBlocked: [], unmergeableCulprit: null,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.car.unmergeable')).toBeNull();
   });
 
@@ -295,7 +295,7 @@ describe('QueueTrain', () => {
       unmergeableCulprit: 8878,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const genuine = container.querySelector('.car.unmergeable')!;
     expect(genuine.textContent).toContain('✗ unmergeable');
     expect(genuine.textContent).toContain('#8878');
@@ -317,10 +317,10 @@ describe('QueueTrain', () => {
       unmergeableCulprit: 8878,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const blocked = container.querySelector('.car.queue-blocked')!;
     const link = blocked.querySelector('a') as HTMLAnchorElement;
-    expect(link.href).toContain('#pr-9335');
+    expect(link.href).toContain('#pr-o:r-9335');
     expect(blocked.getAttribute('title')).toContain('#8878');
   });
 
@@ -331,7 +331,7 @@ describe('QueueTrain', () => {
       unmergeable: [8878], queueBlocked: [], unmergeableCulprit: 8878,
       batchSize: 6,
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.car.queue-blocked')).toBeNull();
   });
 
@@ -342,7 +342,7 @@ describe('QueueTrain', () => {
       unmergeable: [8878],
       batchSize: 6,
     } as unknown as RepoQueueView;
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.car.unmergeable')).not.toBeNull();
     expect(container.querySelector('.car.queue-blocked')).toBeNull();
   });
@@ -355,7 +355,7 @@ describe('QueueTrain', () => {
         groups: [group({ prNumbers: [9338] })], waiting: [],
         unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6,
       };
-      const { container } = render(<QueueTrain queue={queue} />);
+      const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
       const title = container.querySelector('.car.building')!.getAttribute('title')!;
       expect(title).toContain('merge group building');
       expect(title).toContain('#9338');
@@ -366,7 +366,7 @@ describe('QueueTrain', () => {
         groups: [group({ prNumbers: [9338], failed: true })], waiting: [],
         unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6,
       };
-      const { container } = render(<QueueTrain queue={queue} />);
+      const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
       expect(container.querySelector('.car.building.failed')!.getAttribute('title'))
         .toContain('merge group build failed');
     });
@@ -376,7 +376,7 @@ describe('QueueTrain', () => {
         groups: [], waiting: Array.from({ length: 8 }, (_, i) => ({ prNumber: 9000 + i, position: i + 1 })),
         unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6,
       };
-      const { container } = render(<QueueTrain queue={queue} />);
+      const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
       const cars = container.querySelectorAll('.car.queued');
       expect(cars[0]!.getAttribute('title')).toContain('next batch');
       expect(cars[1]!.getAttribute('title')).toContain('further back');
@@ -387,7 +387,7 @@ describe('QueueTrain', () => {
         groups: [], waiting: [],
         unmergeable: [8878], queueBlocked: [9335], unmergeableCulprit: 8878, batchSize: 6,
       };
-      const { container } = render(<QueueTrain queue={queue} />);
+      const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
       const red = container.querySelector('.car.unmergeable')!.getAttribute('title')!;
       expect(red).toContain('needs a rebase');
       expect(red).toContain('#8878');
@@ -419,7 +419,7 @@ describe('QueueTrain ops strip (issue #39)', () => {
   };
 
   it('healthy: green badge with no visible remediation text (tooltip only)', () => {
-    const { container } = render(<QueueTrain queue={baseQueue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={baseQueue} />);
     const badge = container.querySelector('.ops-health')!;
     expect(badge).toHaveClass('healthy');
     expect(badge).toHaveTextContent('healthy');
@@ -428,7 +428,7 @@ describe('QueueTrain ops strip (issue #39)', () => {
   });
 
   it('shows depth, trains/hr, batch success, ejects, and oldest wait', () => {
-    render(<QueueTrain queue={baseQueue} />);
+    render(<QueueTrain repo="o/r" queue={baseQueue} />);
     expect(screen.getByText('depth 3')).toBeInTheDocument();
     expect(screen.getByText('1.5 trains/hr')).toBeInTheDocument();
     expect(screen.getByText('80% batch success')).toBeInTheDocument();
@@ -440,7 +440,7 @@ describe('QueueTrain ops strip (issue #39)', () => {
     const detail = 'cap-backlog: demand exceeds runner cap — wait or raise cap';
     const queue = { ...baseQueue,
       health: { state: 'cap-backlog' as const, detail, since: '2026-06-12T10:00:00Z' } };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const badge = container.querySelector('.ops-health')!;
     expect(badge).toHaveClass('cap-backlog');
     expect(badge).toHaveTextContent('cap backlog');
@@ -452,7 +452,7 @@ describe('QueueTrain ops strip (issue #39)', () => {
     const detail = 'dispatch-stall: queue recovery needed — do NOT admin-merge';
     const queue = { ...baseQueue,
       health: { state: 'dispatch-stall' as const, detail, since: '2026-06-12T10:00:00Z' } };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     const badge = container.querySelector('.ops-health')!;
     expect(badge).toHaveClass('dispatch-stall');
     expect(badge).toHaveTextContent('DISPATCH STALL');
@@ -462,14 +462,14 @@ describe('QueueTrain ops strip (issue #39)', () => {
   it('pre-upgrade payload without health renders no ops strip (train unaffected)', () => {
     const queue: RepoQueueView = { groups: [group({})], waiting: [], unmergeable: [],
       queueBlocked: [], unmergeableCulprit: null, batchSize: 6 };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.queue-ops')).toBeNull();
     expect(container.querySelectorAll('.car.building')).toHaveLength(1);
   });
 
   it('omits ejects when zero and hides null success rate', () => {
     const queue = { ...baseQueue, ejects24h: 0, batchSuccessRatePct: null };
-    render(<QueueTrain queue={queue} />);
+    render(<QueueTrain repo="o/r" queue={queue} />);
     expect(screen.queryByText(/ejects 24h/)).toBeNull();
     expect(screen.queryByText(/batch success/)).toBeNull();
   });
@@ -491,7 +491,7 @@ describe('QueueTrain waiting-car merge ETA (issue #40)', () => {
           sim: { p50Secs: 1920, p90Secs: 3360, trainsAhead: 3, assumesEjects: true } },
       ],
     };
-    render(<QueueTrain queue={queue} />);
+    render(<QueueTrain repo="o/r" queue={queue} />);
     const nextEta = screen.getByText('~22m / ~41m p90');
     expect(nextEta).toBeInTheDocument();
     expect(nextEta).toHaveAttribute('title',
@@ -505,7 +505,7 @@ describe('QueueTrain waiting-car merge ETA (issue #40)', () => {
       groups: [], unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6,
       waiting: [{ prNumber: 9006, position: 1 }],
     };
-    const { container } = render(<QueueTrain queue={queue} />);
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
     expect(container.querySelector('.car.queued .car-progress')).toBeNull();
   });
 });

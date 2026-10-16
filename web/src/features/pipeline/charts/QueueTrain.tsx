@@ -3,6 +3,7 @@ import type { RepoQueueView, QueueGroupView, MergeEtaSimulation, QueueHealthStat
 import { formatDur } from '@/pipeline/format';
 import { scrollBehavior } from '@/pipeline/motion';
 import { DEFS, defTitle } from '@/pipeline/definitions';
+import { prAnchorId } from '@/pipeline/prAnchor';
 
 const MAX_NUMBERS_PER_CAR = 6;
 
@@ -10,13 +11,13 @@ function prLabel(n: number) {
   return `#${n}`;
 }
 
-function handlePrLinkClick(e: React.MouseEvent<HTMLAnchorElement>, n: number) {
+function handlePrLinkClick(e: React.MouseEvent<HTMLAnchorElement>, repo: string, n: number) {
   e.preventDefault();
-  document.getElementById(`pr-${n}`)?.scrollIntoView({ behavior: scrollBehavior() });
+  document.getElementById(prAnchorId(repo, n))?.scrollIntoView({ behavior: scrollBehavior() });
 }
 
 /** Render up to MAX_NUMBERS_PER_CAR links with +N overflow. */
-function PrLinks({ numbers, className }: { numbers: number[]; className?: string }) {
+function PrLinks({ repo, numbers, className }: { repo: string; numbers: number[]; className?: string }) {
   const shown = numbers.slice(0, MAX_NUMBERS_PER_CAR);
   const overflow = numbers.length - shown.length;
   return (
@@ -24,7 +25,7 @@ function PrLinks({ numbers, className }: { numbers: number[]; className?: string
       {shown.map((n, i) => (
         <span key={n}>
           {i > 0 && ' '}
-          <a href={`#pr-${n}`} onClick={(e) => handlePrLinkClick(e, n)}>{prLabel(n)}</a>
+          <a href={`#${prAnchorId(repo, n)}`} onClick={(e) => handlePrLinkClick(e, repo, n)}>{prLabel(n)}</a>
         </span>
       ))}
       {overflow > 0 && ` +${overflow}`}
@@ -32,7 +33,7 @@ function PrLinks({ numbers, className }: { numbers: number[]; className?: string
   );
 }
 
-function BuildingCar({ g }: { g: QueueGroupView }) {
+function BuildingCar({ repo, g }: { repo: string; g: QueueGroupView }) {
   const pct = g.percent;
   // g.etaSeconds is the REMAINING time (p50 − elapsed, max over required checks),
   // not the train's total duration — label it "left" so it can't read as a total.
@@ -48,7 +49,7 @@ function BuildingCar({ g }: { g: QueueGroupView }) {
       title={tooltip}
     >
       <div className="car-header">{g.failed ? '✗ failing' : '▶ group'}</div>
-      <PrLinks numbers={g.prNumbers} className="car-numbers" />
+      <PrLinks repo={repo} numbers={g.prNumbers} className="car-numbers" />
       {!g.failed && pct != null && (
         <div className="car-pct">
           <i style={{ width: `${pct}%` }} />
@@ -73,7 +74,7 @@ function simTooltip(sim: MergeEtaSimulation): string {
   return `merges in ~${formatDur(sim.p50Secs)} (p50) / ~${formatDur(sim.p90Secs)} (p90${ejects}); ${trains}`;
 }
 
-function WaitingCars({ waiting, batchSize }: { waiting: { prNumber: number; position: number; sim?: MergeEtaSimulation | null }[]; batchSize: number }) {
+function WaitingCars({ repo, waiting, batchSize }: { repo: string; waiting: { prNumber: number; position: number; sim?: MergeEtaSimulation | null }[]; batchSize: number }) {
   if (waiting.length === 0) return null;
 
   // First car: "next batch" — up to batchSize entries
@@ -90,7 +91,7 @@ function WaitingCars({ waiting, batchSize }: { waiting: { prNumber: number; posi
       <div className="car queued"
         title={`waiting — next batch to start building when a slot frees: ${nextBatch.map((w) => prLabel(w.prNumber)).join(' ')}`}>
         <div className="car-header">next batch</div>
-        <PrLinks numbers={nextBatch.map((w) => w.prNumber)} className="car-numbers" />
+        <PrLinks repo={repo} numbers={nextBatch.map((w) => w.prNumber)} className="car-numbers" />
         {nextSim && (
           <div className="car-progress" title={simTooltip(nextBatch[0]!.sim!)}>{nextSim}</div>
         )}
@@ -157,13 +158,13 @@ function OpsStrip({ queue }: { queue: RepoQueueView }) {
 /** GENUINELY conflicting UNMERGEABLE entries (DIRTY against the base, facing
  *  ejection) get a distinct red car — never folded into a group's car or the
  *  waiting line. Cascade victims render in the amber QueueBlockedCar instead. */
-function UnmergeableCar({ numbers }: { numbers: number[] }) {
+function UnmergeableCar({ repo, numbers }: { repo: string; numbers: number[] }) {
   if (numbers.length === 0) return null;
   return (
     <div className="car unmergeable"
       title={`conflicts with the base branch — needs a rebase, facing ejection from the queue: ${numbers.map(prLabel).join(' ')}`}>
       <div className="car-header">✗ unmergeable</div>
-      <PrLinks numbers={numbers} className="car-numbers" />
+      <PrLinks repo={repo} numbers={numbers} className="car-numbers" />
     </div>
   );
 }
@@ -172,19 +173,20 @@ function UnmergeableCar({ numbers }: { numbers: number[] }) {
  *  positionally, so one genuine conflict poisons every entry behind it. These
  *  don't conflict with the base themselves — amber, not red, and no rebase
  *  advice; they revalidate once the culprit is ejected. */
-function QueueBlockedCar({ numbers, culprit }: { numbers: number[]; culprit: number | null }) {
+function QueueBlockedCar({ repo, numbers, culprit }: { repo: string; numbers: number[]; culprit: number | null }) {
   if (numbers.length === 0) return null;
   const blockedOn = culprit != null ? ` (${prLabel(culprit)})` : '';
   return (
     <div className="car queue-blocked"
       title={`blocked behind a conflicting entry ahead${blockedOn} — not conflicting themselves; they revalidate once it is ejected: ${numbers.map(prLabel).join(' ')}`}>
       <div className="car-header">⊘ blocked behind conflict</div>
-      <PrLinks numbers={numbers} className="car-numbers" />
+      <PrLinks repo={repo} numbers={numbers} className="car-numbers" />
     </div>
   );
 }
 
-export function QueueTrain({ queue }: { queue: RepoQueueView | null }) {
+/** @param repo `owner/repo` the queue belongs to — scopes every jump link. */
+export function QueueTrain({ repo, queue }: { repo: string; queue: RepoQueueView | null }) {
   if (!queue) return null;
   // tolerate a pre-upgrade server payload
   const unmergeable = queue.unmergeable ?? [];
@@ -197,11 +199,11 @@ export function QueueTrain({ queue }: { queue: RepoQueueView | null }) {
       <OpsStrip queue={queue} />
       <div className="queue-train">
         {queue.groups.map((g) => (
-          <BuildingCar key={g.oid} g={g} />
+          <BuildingCar key={g.oid} repo={repo} g={g} />
         ))}
-        <WaitingCars waiting={queue.waiting} batchSize={queue.batchSize} />
-        <UnmergeableCar numbers={unmergeable} />
-        <QueueBlockedCar numbers={queueBlocked} culprit={queue.unmergeableCulprit ?? null} />
+        <WaitingCars repo={repo} waiting={queue.waiting} batchSize={queue.batchSize} />
+        <UnmergeableCar repo={repo} numbers={unmergeable} />
+        <QueueBlockedCar repo={repo} numbers={queueBlocked} culprit={queue.unmergeableCulprit ?? null} />
       </div>
     </div>
   );
