@@ -256,8 +256,10 @@ class _FakePsi:
         self.totals: dict[str, float] | None = {"host_memory": 100.0, "host_io": 50.0}
         if cgroup:
             self.totals |= {"cgroup_memory": 20.0, "cgroup_io": 10.0}
+        self.calls = 0
 
     def __call__(self):
+        self.calls += 1
         return None if self.totals is None else dict(self.totals)
 
     def stall(self, memory: float = 0.0, io: float = 0.0, *,
@@ -281,7 +283,7 @@ def test_a_stall_the_host_pressure_explains_is_info():
     wd = _alerting_watchdog(log, psi)
     before = psi()
     psi.stall(memory=5.0, io=4.1)
-    wd._note_lag(6.88, before)
+    wd._note_lag(6.88, before, psi())
 
     assert log.levels == [logging.INFO]
     event, fields = log.events[0]
@@ -297,7 +299,7 @@ def test_a_stall_the_host_pressure_does_not_explain_stays_a_warning():
     wd = _alerting_watchdog(log, psi)
     before = psi()
     psi.stall(memory=0.4, io=0.2)       # a little reclaim, nowhere near the lag
-    wd._note_lag(6.0, before)
+    wd._note_lag(6.0, before, psi())
 
     assert log.levels == [logging.WARNING]
     event, fields = log.events[0]
@@ -329,7 +331,7 @@ def test_psi_fields_on_a_warning_do_not_split_its_fingerprint():
         before = psi()
         psi.stall(memory=0.4, cgroup_memory=1.3)
         LoopLagWatchdog(interval=1.0, alert_after=5.0, _clock=_FakeClock(),
-                        _psi=psi)._note_lag(7.2, before)
+                        _psi=psi)._note_lag(7.2, before, psi())
     finally:
         log.removeHandler(handler)
 
@@ -349,7 +351,7 @@ def test_a_stall_the_cgroup_pressure_explains_is_info():
     wd = _alerting_watchdog(log, psi)
     before = psi()
     psi.stall(memory=0.3, cgroup_memory=6.1, cgroup_io=2.0)
-    wd._note_lag(6.94, before)
+    wd._note_lag(6.94, before, psi())
 
     assert log.levels == [logging.INFO]
     event, fields = log.events[0]
@@ -365,10 +367,10 @@ def test_without_a_cgroup_counter_the_host_alone_decides():
     wd = _alerting_watchdog(log, psi)
     before = psi()
     psi.stall(memory=0.4)
-    wd._note_lag(6.0, before)
+    wd._note_lag(6.0, before, psi())
     before = psi()
     psi.stall(memory=5.0)
-    wd._note_lag(6.0, before)
+    wd._note_lag(6.0, before, psi())
 
     assert log.levels == [logging.WARNING, logging.INFO]
     assert not any(k.startswith("cgroup_") for _, f in log.events for k in f)
@@ -379,7 +381,7 @@ def test_unavailable_psi_keeps_a_stall_a_warning():
     psi = _FakePsi()
     psi.totals = None                    # kernel without PSI
     wd = _alerting_watchdog(log, psi)
-    wd._note_lag(6.0, psi())
+    wd._note_lag(6.0, psi(), psi())
     assert log.levels == [logging.WARNING]
 
 
@@ -389,7 +391,8 @@ def test_a_failing_psi_reader_keeps_a_stall_a_warning():
 
     log = _LevelLog()
     wd = _alerting_watchdog(log, _boom)
-    wd._note_lag(6.0, {"host_memory": 1.0, "host_io": 1.0})
+    assert wd._read_psi() is None
+    wd._note_lag(6.0, {"host_memory": 1.0, "host_io": 1.0}, wd._read_psi())
     assert log.levels == [logging.WARNING]
 
 
@@ -399,8 +402,9 @@ def test_a_host_stall_does_not_spend_the_warning_window():
     wd = _alerting_watchdog(log, psi)
     before = psi()
     psi.stall(memory=9.0)
-    wd._note_lag(9.5, before)            # host-explained
-    wd._note_lag(9.5, psi())             # same window, host quiet → a real stall
+    wd._note_lag(9.5, before, psi())            # host-explained
+    now = psi()
+    wd._note_lag(9.5, now, now)          # same window, host quiet → a real stall
     assert log.levels == [logging.INFO, logging.WARNING]
 
 
@@ -413,7 +417,11 @@ async def test_run_snapshots_psi_around_each_tick():
     wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, alert_after=0.2,
                          _log=log, _psi=psi)
     task = asyncio.create_task(wd.run())
-    await asyncio.sleep(0.05)
+    # The snapshot is read off-loop (#3130); resume mid-sleep of a tick whose
+    # "before" read has landed, so the stall falls inside that tick's window.
+    while psi.calls < 1:
+        await asyncio.sleep(0.001)
+    await asyncio.sleep(0.02)
 
     psi.stall(memory=1.0)                # the host froze for longer than the block
     time.sleep(0.4)
@@ -481,3 +489,166 @@ def test_psi_reader_drops_only_the_unreadable_files(tmp_path):
     for p in (proc / "pressure" / "memory", unit / "memory.pressure"):
         p.unlink()
     assert PsiReader(str(proc), str(cg))() is None
+
+
+# --- the watchdog must not measure its own PSI reads (#3130) ------------------
+# On a swapping host a procfs/kernfs read can block for seconds. Read on the loop
+# inside the measured window, it stalled the loop *and* was filed as an
+# unexplained stall — and a "before" read that blocked already had the stall in
+# its totals, so the delta subtracted it out. The reads run off-loop, and their
+# own duration is not lag.
+
+class _SlowPsi(_FakePsi):
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+
+    def __call__(self):
+        time.sleep(self.delay)
+        return super().__call__()
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_a_slow_psi_read_is_not_a_stall():
+    log = _LevelLog()
+    psi = _SlowPsi(0.3)
+    wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, _log=log, _psi=psi)
+    task = asyncio.create_task(wd.run())
+    loop_ticks = 0
+    for _ in range(40):                 # the loop itself stays schedulable
+        await asyncio.sleep(0.025)
+        loop_ticks += 1
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert psi.calls >= 2, "the watchdog must keep ticking through slow reads"
+    assert log.events == [], f"the watchdog filed its own PSI read: {log.events!r}"
+    assert wd.peak_lag_s < 0.2
+    assert loop_ticks == 40
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_a_wedged_psi_read_times_out_and_is_not_requeued():
+    import threading
+
+    release = threading.Event()
+    calls = []
+
+    def _wedged():
+        calls.append(1)
+        release.wait(5.0)
+        return {"host_memory": 1.0}
+
+    log = _LevelLog()
+    wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, psi_timeout=0.05,
+                         _log=log, _psi=_wedged)
+    task = asyncio.create_task(wd.run())
+    await asyncio.sleep(0.5)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    release.set()
+
+    assert len(calls) == 1, "a read still stuck in the kernel must not be queued again"
+    assert log.events == [], f"a timed-out read was filed as a stall: {log.events!r}"
+
+
+# --- a WARNING says what the process was doing (#3130) ------------------------
+# utime ≈ lag: the loop ran our own code; majflt high: faulting heap back from
+# swap (zram swap-in is not memstall, so PSI misses it); nivcsw high with utime
+# ≈ 0: descheduled; gc_s: a collector pause.
+
+def test_a_warning_carries_the_ticks_resource_usage():
+    log = _LevelLog()
+    wd = _alerting_watchdog(log, _FakePsi())
+    usage = {"utime_s": 5.91, "stime_s": 0.12, "majflt": 3, "nivcsw": 40, "gc_s": 0.0}
+    wd._note_lag(6.0, None, None, usage)
+
+    assert log.levels == [logging.WARNING]
+    _, fields = log.events[0]
+    assert {k: fields[k] for k in usage} == usage
+
+
+def test_routine_overshoot_does_not_carry_usage():
+    log = _LevelLog()
+    wd = _alerting_watchdog(log, _FakePsi())
+    wd._note_lag(1.0, None, None, {"utime_s": 1.0, "stime_s": 0.0, "majflt": 0,
+                                   "nivcsw": 0, "gc_s": 0.0})
+    assert "utime_s" not in log.events[0][1]
+
+
+def test_usage_fields_do_not_split_the_fingerprint():
+    from server.obs.error_signature import signature_of
+
+    captured: list[logging.LogRecord] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    log = logging.getLogger("server.obs.loop_lag")
+    handler = _Sink()
+    log.addHandler(handler)
+    try:
+        for utime, majflt in ((5.9, 0), (0.1, 41234)):
+            LoopLagWatchdog(interval=1.0, alert_after=5.0, _clock=_FakeClock(),
+                            _psi=lambda: None)._note_lag(
+                6.0, None, None,
+                {"utime_s": utime, "stime_s": 0.0, "majflt": majflt, "nivcsw": 2, "gc_s": 0.0})
+    finally:
+        log.removeHandler(handler)
+
+    sigs = [signature_of(r, source="edge", host="dobby") for r in captured]
+    assert len(sigs) == 2 and sigs[0].fingerprint == sigs[1].fingerprint
+
+
+def test_usage_since_diffs_cumulative_counters():
+    from server.obs.loop_lag import usage_since
+
+    before = {"utime_s": 1.0, "stime_s": 0.5, "majflt": 10, "nivcsw": 7, "gc_s": 0.25}
+    after = {"utime_s": 4.256, "stime_s": 0.5, "majflt": 910, "nivcsw": 9, "gc_s": 1.0}
+    assert usage_since(before, after) == {
+        "utime_s": 3.26, "stime_s": 0.0, "majflt": 900, "nivcsw": 2, "gc_s": 0.75}
+
+
+def test_gc_timer_accumulates_collection_time():
+    import gc
+
+    from server.obs.loop_lag import GcTimer
+
+    timer = GcTimer()
+    timer.install()
+    try:
+        assert timer.total_s == 0.0
+        gc.collect()
+        assert timer.total_s > 0.0
+    finally:
+        timer.remove()
+    assert timer._callback not in gc.callbacks
+    snapshot = timer.total_s
+    gc.collect()
+    assert timer.total_s == snapshot, "a removed timer must stop counting"
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_run_attaches_usage_to_a_real_stall():
+    log = _LevelLog()
+    wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, _log=log, _psi=lambda: None)
+    task = asyncio.create_task(wd.run())
+    await asyncio.sleep(0.07)
+    deadline = time.monotonic() + 0.4
+    while time.monotonic() < deadline:   # on-CPU block, like a large json.loads
+        pass
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert [e for e, _ in log.events] == ["loop_lag.stall"]
+    fields = log.events[0][1]
+    assert fields["utime_s"] + fields["stime_s"] >= 0.2, fields
+    assert {"majflt", "nivcsw", "gc_s"} <= fields.keys()
