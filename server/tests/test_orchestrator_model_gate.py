@@ -440,9 +440,9 @@ def test_approve_launch_rebuilds_after_restart(tmp_path):
 
 def test_approve_launch_spawn_failure_keeps_session_recoverable(tmp_path):
     """If the spawn raises during an approve+launch (worktree/branch checkout,
-    driver.start(), credentials, …), the session must NOT vanish: the placeholder
-    row was deleted before the spawn, so on failure we restore the pending_approval
-    hold (row + in-memory record + spawn kwargs) and re-raise. Mirrors
+    driver.start(), credentials, …), the session must NOT vanish: on failure we
+    restore the pending_approval hold (row + in-memory record + spawn kwargs) and
+    re-raise. Mirrors
     _maybe_start_queued's spawn-failure durability."""
     env, comp, trust, sel, h = _harness(tmp_path)
     with env, comp, trust, sel:
@@ -495,6 +495,134 @@ def test_approve_launch_spawn_failure_keeps_session_recoverable(tmp_path):
     assert row.status == "pending_approval"
     assert row.pending_model == "fable"
     assert row.model is None
+
+
+def test_approve_launch_never_leaves_the_session_row_absent(tmp_path):
+    """The Backlog Runner's orphan sweep (``_release_orphaned_claim``) releases a
+    claim the moment its session's ROW is missing, and it runs on the primary
+    while the spawn may run on a worker — so a row absent for the spawn's
+    worktree/driver setup (~10 s) let the sweep release the issue mid-approve.
+    The first prompt then died on StaleOwnership (KinDash#19500, #3139/#3140).
+    The row must exist at every point of the approve."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model="fable")
+                seen: list[str | None] = []
+                real_spawn = orch._spawn_session
+
+                async def _probing_spawn(session_id, **kw):
+                    async with db_session() as db:
+                        seen.append((await db.execute(select(DbSession.status).where(
+                            DbSession.id == session_id))).scalar_one_or_none())
+                    return await real_spawn(session_id, **kw)
+                orch._spawn_session = _probing_spawn  # type: ignore[method-assign]
+
+                out = await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == out.id))).scalar_one()
+                return seen, out, row
+            finally:
+                await orch.stop()
+
+        seen, out, row = asyncio.run(_run())
+
+    assert seen == ["pending_approval"], "the session row vanished during the approve"
+    assert out.status != "pending_approval"
+    assert row.status != "pending_approval"
+    assert row.model == "fable"
+    assert row.pending_model is None
+    assert row.pending_model_requested_by is None
+
+
+def test_approve_launch_at_capacity_swaps_the_row_without_a_gap(tmp_path):
+    """The at-capacity branch enqueues instead: the placeholder is replaced by the
+    queued row inside one transaction, so the row is never missing there either."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model="fable")
+                orch._active_session_count = lambda: 10_000  # type: ignore[method-assign]
+                seen: list[str | None] = []
+                real_enqueue = orch._enqueue_session
+
+                async def _probing_enqueue(session_id, **kw):
+                    async with db_session() as db:
+                        seen.append((await db.execute(select(DbSession.status).where(
+                            DbSession.id == session_id))).scalar_one_or_none())
+                    return await real_enqueue(session_id, **kw)
+                orch._enqueue_session = _probing_enqueue  # type: ignore[method-assign]
+
+                out = await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == out.id))).scalar_one()
+                return seen, out, row
+            finally:
+                await orch.stop()
+
+        seen, out, row = asyncio.run(_run())
+
+    assert seen == ["pending_approval"]
+    assert out.status == "queued"
+    assert row.status == "queued"
+    assert row.model == "fable"
+    assert row.pending_model is None
+
+
+def test_approve_launch_first_prompt_failure_does_not_reopen_the_hold(tmp_path):
+    """A failure AFTER the spawn made the session durable (its first prompt
+    raising) means the session launched: it has a live driver and a worktree.
+    Re-parking it as pending_approval left both behind, and every later Approve
+    collided with the leaked worktree ("... already exists", #3139)."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(
+                    name="s", account=None, model="fable", initial_prompt="go")
+
+                async def _send_prompt_boom(*a, **k):
+                    raise RuntimeError("operation no longer owns its targets")
+                orch.send_prompt = _send_prompt_boom  # type: ignore[method-assign]
+
+                raised = None
+                try:
+                    await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+                except RuntimeError as exc:
+                    raised = exc
+                has_driver = rec.id in orch._drivers
+                in_pending = rec.id in orch._pending_approvals
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == rec.id))).scalar_one()
+                return raised, has_driver, in_pending, orch._records[rec.id].status, row
+            finally:
+                await orch.stop()
+
+        raised, has_driver, in_pending, mem_status, row = asyncio.run(_run())
+
+    assert isinstance(raised, RuntimeError)
+    assert has_driver is True
+    assert in_pending is False
+    assert mem_status != "pending_approval"
+    assert row.status != "pending_approval"
+    assert row.model == "fable"
 
 
 def test_approve_launch_spawn_failure_logs_rate_limit_at_info(tmp_path, caplog):
