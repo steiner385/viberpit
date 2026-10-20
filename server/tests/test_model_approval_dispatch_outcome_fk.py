@@ -1,19 +1,21 @@
 """A launch-time approval must not be refused by dispatch-outcome history.
 
 The Backlog Runner writes its ``dispatch_outcomes`` row (``session_id`` set) at
-dispatch time, BEFORE a model-approval hold is resolved. Approving the hold
-deletes the ``pending_approval`` placeholder row so the spawn tail can re-INSERT
-under the same id — and on Postgres that DELETE raised ForeignKeyViolationError
-because the FK had no ON DELETE clause (the archive purge hit the same wall in
-#2074). SQLite never caught it: FK enforcement is off there by default, so these
-tests turn it on the way Postgres enforces it.
+dispatch time, BEFORE a model-approval hold is resolved. Approving the hold used
+to delete the ``pending_approval`` placeholder row so the spawn tail could
+re-INSERT under the same id — and on Postgres that DELETE raised
+ForeignKeyViolationError because the FK had no ON DELETE clause (the archive
+purge hit the same wall in #2074). SQLite never caught it: FK enforcement is off
+there by default, so these tests turn it on the way Postgres enforces it. The
+spawn now UPDATEs the placeholder in place (#3139), but the enqueue swap and the
+restore-after-failure path still replace the row.
 
 Two properties are pinned:
 1. the FK is ``ON DELETE SET NULL`` (declared on the model, so create_all emits
-   it on both dialects) — the delete itself can no longer fail;
-2. the approve path RE-ATTACHES the history rows to the re-created session, on
-   the happy path and on the restore-after-failed-spawn path, so an approved
-   dispatch does not lose its session link.
+   it on both dialects) — a row replacement can never fail on it;
+2. the approve path keeps the history rows attached to the session, on the happy
+   path and on the restore-after-failed-spawn path, so an approved dispatch does
+   not lose its session link.
 """
 from __future__ import annotations
 
@@ -91,11 +93,13 @@ def test_approve_keeps_dispatch_outcome_attached_to_the_spawned_session(tmp_path
     async def run():
         await _seed(db_url)
 
-        async def _spawn_session(session_id, *, model=None, **kw):
-            # Mirror the real tail: it INSERTs its own row under the same id.
+        async def _spawn_session(session_id, *, model=None, preexisting_row=False, **kw):
+            # Mirror the real tail: it UPDATEs the approved placeholder in place.
+            assert preexisting_row is True
             async with db_session() as db:
-                db.add(DbSession(id=session_id, name="n", account_name="acct", cwd="/tmp",
-                                 status="in_progress", model=model))
+                row = await db.get(DbSession, session_id)
+                row.status = "in_progress"
+                row.model = model
             rec.status = "in_progress"
             rec.model = model
             return rec

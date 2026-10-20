@@ -4122,7 +4122,14 @@ class SessionOrchestrator:
                                autopilot_paused: bool = False,
                                auto_archive_opt_out_reason: str | None = None,
                                queue_reason: str = "global_cap",
+                               replace_row: bool = False,
                                ) -> SessionRecord:
+        """Persist a 'queued' row + queue entry for a session that cannot start yet.
+
+        *replace_row* swaps out an existing row under the same id (the approved
+        'pending_approval' placeholder) in the SAME transaction as the INSERT, so no
+        reader ever observes the session row missing (see resolve_model_approval).
+        """
         from datetime import datetime
         from server.sessions import session_queue as sq
         now = datetime.utcnow()
@@ -4137,16 +4144,19 @@ class SessionOrchestrator:
         # Same _prior precedence as _spawn_session: an approve-at-capacity re-enqueue
         # (resolve_model_approval's approve branch, when the fleet is back at the cap)
         # calls this with the SAME session_id a _hold_for_approval already decided —
-        # its placeholder row is gone by the time we get here (the approve path
-        # deletes it before calling _enqueue_session/_spawn_session to avoid a
-        # duplicate-PK insert), but the in-memory record survives on purpose (see
-        # resolve_model_approval's comment on why), so its persisted display_mode
-        # must win over a fresh re-resolution with client_node=None.
+        # the in-memory record survives on purpose (see resolve_model_approval's
+        # comment on why), so its persisted display_mode must win over a fresh
+        # re-resolution with client_node=None.
         _prior = self._records.get(session_id)
         await self._refresh_native()
         display_mode, display_fallback_reason = self._display_decision(
             _prior, display, client_node)
         async with db_session() as db:
+            if replace_row:
+                existing = await db.get(DbSession, session_id)
+                if existing is not None:
+                    await db.delete(existing)
+                    await db.flush()
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
                 parent_session_id=parent_session_id,
@@ -4396,31 +4406,33 @@ class SessionOrchestrator:
                 rec.pending_model_reason = None
                 log.info("session.model_approval_denied id=%s (launch)", session_id)
                 return rec
-            # approve: drop the placeholder ROW, then run the normal spawn/enqueue
-            # tail with the parked model, reusing the same session_id.
-            # _spawn_session/_enqueue_session INSERT their own row, so the placeholder
-            # must go first to avoid a duplicate-PK insert. The in-memory RECORD stays:
-            # both tails overwrite it, and popping it here opened a gap (worktree
-            # checkout, config compose, X display — hundreds of ms) in which the
-            # session VANISHED from get_session/list_sessions. A session-list poll in
-            # that gap dropped it, and the view's status-transition re-attach keys off
-            # a transition it then never observed (incident 2026-09-04). The hold is
+            # approve: run the normal spawn/enqueue tail with the parked model, reusing
+            # the same session_id. The placeholder ROW is never absent: the spawn
+            # UPDATEs it in place (preexisting_row=True) and the enqueue swaps it in a
+            # single transaction (replace_row=True). Deleting it up front and letting
+            # the tail re-INSERT left the session without a row for the whole spawn
+            # (worktree checkout, driver start — ~10 s on a worker), and the Backlog
+            # Runner's orphan sweep, which runs on the primary and reads only the row,
+            # released the dispatch's claim in that gap — the first prompt then died
+            # on StaleOwnership (KinDash#19500, #3139/#3140).
+            #
+            # The in-memory RECORD stays too: both tails overwrite it, and popping it
+            # here opened a gap in which the session VANISHED from
+            # get_session/list_sessions (incident 2026-09-04). The hold is
             # capacity-exempt, so keeping it does not skew the cap check below, and
             # _spawn_session keeps its created_at/host. If the spawn then raises
-            # (BranchSwitchError from worktree checkout, driver.start() failure, a
-            # credential error, …) the session would otherwise vanish completely —
-            # deleted row, popped record, popped kwargs. Mirror _maybe_start_queued's
-            # durability philosophy: on failure, RESTORE the pending_approval hold so
-            # the human can retry the approval, then re-raise so the API surfaces the
-            # error. We snapshot the provenance the row needs to be rebuilt first.
+            # before the session is live (BranchSwitchError from worktree checkout,
+            # driver.start() failure, a credential error, …) the spawn has rolled its
+            # own resources back; RESTORE the pending_approval hold so the human can
+            # retry the approval, then re-raise so the API surfaces the error. We
+            # snapshot the provenance the row needs to be rebuilt first.
             #
             # The Backlog Runner's dispatch_outcomes row already points at this id
             # (written at dispatch time, before the hold). Its FK is ON DELETE SET
-            # NULL, so the placeholder delete detaches it rather than failing — but
-            # the session is about to exist again under the SAME id, so the history
-            # must be re-attached once the spawn/enqueue (or the restore) has
-            # re-INSERTed the row. Snapshot the ids first; the FK has blanked the
-            # session_id by the time we could otherwise look them up.
+            # NULL, so the enqueue's row swap (or the restore's) detaches it — the
+            # history must be re-attached once the row exists again. Snapshot the ids
+            # first; the FK has blanked the session_id by the time we could otherwise
+            # look them up.
             requested_by = None
             requested_at = None
             outcome_ids: list[str] = []
@@ -4430,7 +4442,6 @@ class SessionOrchestrator:
                     requested_by = row.pending_model_requested_by
                     requested_at = row.pending_model_requested_at
                     outcome_ids = await _dispatch_outcome_ids_for(db, session_id)
-                    await db.delete(row)
             spawn_kwargs = dict(kwargs)
             spawn_kwargs.pop("model", None)
             log.info("session.model_approval_approved id=%s model=%s (launch)",
@@ -4438,15 +4449,30 @@ class SessionOrchestrator:
             try:
                 if self._active_session_count() >= await self._max_active_sessions():
                     launched = await self._enqueue_session(
-                        session_id, model=approved_model, **spawn_kwargs)
+                        session_id, model=approved_model, replace_row=row is not None,
+                        **spawn_kwargs)
                 else:
                     launched = await self._spawn_session(
-                        session_id, model=approved_model, **spawn_kwargs)
+                        session_id, model=approved_model, preexisting_row=row is not None,
+                        **spawn_kwargs)
             except Exception as exc:
-                # Spawn/enqueue failed after the placeholder was already deleted.
-                # Restore the pending_approval hold (row + in-memory record + the
-                # in-memory spawn kwargs) so the approval can be retried instead of
-                # the session being silently lost, then re-raise.
+                if session_id in self._drivers:
+                    # The spawn got as far as a durable row and a live driver before
+                    # something later (its first send_prompt) raised: the session
+                    # LAUNCHED. Re-parking it would strand that driver and its
+                    # worktree behind a fresh hold, and every later Approve would
+                    # collide with the leaked worktree ("... already exists", #3139).
+                    # Leave the live session as it is and surface the error.
+                    log.warning(
+                        "session.model_approval_launched_with_error id=%s model=%s — "
+                        "session is live; not restoring the hold", session_id,
+                        approved_model, exc_info=True)
+                    await _reattach_dispatch_outcomes(session_id, outcome_ids)
+                    raise
+                # Spawn/enqueue failed before the session went live. Restore the
+                # pending_approval hold (row + in-memory record + the in-memory spawn
+                # kwargs) so the approval can be retried instead of the session being
+                # silently lost, then re-raise.
                 #
                 # A rate-limit/overload failure here is an ordinary external condition
                 # that this restore-and-retry path already handles by design — the
@@ -4591,10 +4617,11 @@ class SessionOrchestrator:
     async def _restore_hold_after_failed_approve(
             self, session_id: str, *, model, kwargs: dict,
             requested_by, requested_at) -> None:
-        """Re-park a launch-time approval whose spawn/enqueue raised after the
-        placeholder row was already deleted, so the session is never silently lost.
+        """Re-park a launch-time approval whose spawn/enqueue raised before the
+        session went live, so the session is never silently lost.
 
-        Re-INSERTs the driverless 'pending_approval' row (model=None,
+        Replaces whatever row the failed attempt left (in one transaction) with the
+        driverless 'pending_approval' row (model=None,
         pending_model=<model>, provenance restored), re-seeds the in-memory
         SessionRecord, and restores the self._pending_approvals spawn kwargs so a
         second approval can retry cleanly. Mirrors _hold_for_approval's persistence
@@ -5483,10 +5510,11 @@ class SessionOrchestrator:
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
-        When preexisting_row=True the session already has a DB row (status='queued')
-        from _enqueue_session; this method UPDATEs that row (status→'idle',
-        account_name, cwd, branch, model) instead of INSERT-ing a new one.
-        Task 4 (_maybe_start_queued) calls this path.
+        When preexisting_row=True the session already has a DB row — 'queued' from
+        _enqueue_session (_maybe_start_queued) or 'pending_approval' from
+        _hold_for_approval (resolve_model_approval); this method UPDATEs that row
+        (status→'idle', account_name, cwd, branch, model) instead of INSERT-ing a
+        new one, so the row never goes missing while the spawn builds.
 
         *resume* is the ``engine_session_id`` to resume, when one exists — the
         queue-drain call site threads the row's own id through here so a
@@ -5763,7 +5791,9 @@ class SessionOrchestrator:
                          session_id)
 
             if preexisting_row:
-                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
+                # UPDATE the existing queued (or approved pending_approval) row → idle
+                # with resolved account/cwd/branch/model; the pending_model columns are
+                # cleared because an approved hold's parked model is now `model`.
                 # display_mode only overwrites a NULL (legacy/pre-decision row) — a row
                 # that already carries a persisted decision (native or virtual) keeps it,
                 # matching the in-memory `display_mode` resolved above from `_prior`.
@@ -5776,6 +5806,9 @@ class SessionOrchestrator:
                         .values(status="idle", account_name=account,
                                 engine=selected_engine.value, cwd=cwd,
                                 branch=branch_name, model=model,
+                                pending_model=None, pending_model_reason=None,
+                                pending_model_requested_by=None,
+                                pending_model_requested_at=None,
                                 reasoning_effort=reasoning_effort,
                                 display_mode=sa_func.coalesce(DbSession.display_mode, display_mode),
                                 display_fallback_reason=sa_func.coalesce(
