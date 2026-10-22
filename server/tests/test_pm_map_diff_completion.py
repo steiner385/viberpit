@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.tests.test_completion_releases_driver import _build_orch, _drain, _FakeDriver
 from server.tests.autopilot_authority import decision_context, seed_authority
 
@@ -154,11 +155,11 @@ async def test_real_archive_delete_and_fresh_triage_preserve_disposition(tmp_pat
     orch._enforce_archive_limit = AsyncMock()
     orch._delete_legacy_archive_dir = AsyncMock(return_value=True)
     async with db_session() as db:
-        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": ["tony"]})
+        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))
-        item = WorkItem(author="tony", repo="steiner385/viberpit", kind="issue", number=100,
+        item = WorkItem(author="tony", author_id=TONY_ID, repo="steiner385/viberpit", kind="issue", number=100,
                         title="Offline", state="open", triage_state="classified")
         db.add(item)
         await db.flush()
@@ -198,11 +199,11 @@ async def test_classifier_map_disposition_survives_cleanup_and_respects_dispatch
     before = datetime.now(timezone.utc) - timedelta(minutes=5)
     dispatch = before + timedelta(minutes=2)
     async with db_session() as db:
-        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": ["tony"]})
+        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))
-        item = WorkItem(author="tony", repo="steiner385/viberpit", kind="issue", number=100,
+        item = WorkItem(author="tony", author_id=TONY_ID, repo="steiner385/viberpit", kind="issue", number=100,
                         title="Offline", body="old scope", state="open", triage_state="classified",
                         gh_updated_at=before)
         db.add(item)
@@ -310,13 +311,13 @@ async def test_triage_recovers_retained_done_map_diff_without_a_new_turn(tmp_pat
     orch._effective_repo_root = AsyncMock(return_value=root)
     orch._sdlc_default_branch = AsyncMock(return_value="main")
     async with db_session() as db:
-        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": ["tony"]})
+        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))
         if indexed:
             db.add(Feature(project_id=project.id, slug="offline-mode", title="Offline"))
-        item = WorkItem(author="tony", repo="steiner385/viberpit", number=100, kind="issue", title="Offline",
+        item = WorkItem(author="tony", author_id=TONY_ID, repo="steiner385/viberpit", number=100, kind="issue", title="Offline",
                         state="open", triage_state="classified")
         db.add(item)
         await db.flush()
@@ -364,7 +365,7 @@ async def test_triage_recovery_preserves_remote_and_waiting_sessions(tmp_path, h
 
     orch = await _map_orch(tmp_path)
     async with db_session() as db:
-        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": ["tony"]})
+        project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo="steiner385/viberpit", is_primary=True))

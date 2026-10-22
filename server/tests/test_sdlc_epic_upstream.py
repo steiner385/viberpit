@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.sessions.engine import AgentEngine
 
 
@@ -30,20 +31,21 @@ async def _seed_epic(*, children: bool = True, epic_author: str = "tony",
     from server.db.models import Project, ProjectRepo, WorkItem
 
     async with db_session() as db:
-        p = Project(slug="prod", name="prod", automation_policy={"trusted_authors": ["tony"]})
+        p = Project(slug="prod", name="prod", automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))
-        epic = WorkItem(author=epic_author, repo="o/r", number=42, kind="issue",
+        epic = WorkItem(author=epic_author,
+                        author_id=TONY_ID if epic_author == "tony" else None, repo="o/r", number=42, kind="issue",
                         title="Recovery epic", body="Epic body describing the goal.",
                         is_epic=True, state="open")
         db.add(epic)
         await db.flush()
         if children:
-            db.add(WorkItem(author="tony", repo="o/r", number=43, kind="issue",
+            db.add(WorkItem(author="tony", author_id=TONY_ID, repo="o/r", number=43, kind="issue",
                             title="Child one", body="Child one body.",
                             parent_work_item_id=epic.id, state="open"))
-            db.add(WorkItem(author="tony", repo="o/r", number=44, kind="issue",
+            db.add(WorkItem(author="tony", author_id=TONY_ID, repo="o/r", number=44, kind="issue",
                             title="Child two", body="Child two body.",
                             parent_work_item_id=epic.id, state="open"))
         if extra_child_author is not None:

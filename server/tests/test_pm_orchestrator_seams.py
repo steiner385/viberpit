@@ -4,6 +4,7 @@ Bare-orchestrator + real-SQLite tests: the seams' DB reads/writes and the
 prompt/parse wiring, with spawn stubbed to a recorder."""
 from __future__ import annotations
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.tests.pm_ownership_fixtures import identity_repositories
 import pytest
 
@@ -43,7 +44,7 @@ async def _seed(db_url: str) -> str:
     await init_db(db_url)
     async with db_session() as db:
         p = Project(slug="viberpit", name="viberpit", onboarding_state="map_merged",
-                    automation_policy={"trusted_authors": ["tony"]})
+                    automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo="steiner385/viberpit",
@@ -51,7 +52,7 @@ async def _seed(db_url: str) -> str:
         db.add(Feature(project_id=p.id, slug="sessions", title="Sessions",
                        state="live", summary="Session manager."))
         for n in range(3):
-            db.add(WorkItem(author="tony", repo="steiner385/viberpit", number=100 + n,
+            db.add(WorkItem(author="tony", author_id=TONY_ID, repo="steiner385/viberpit", number=100 + n,
                             kind="issue", title=f"Bug {n}", state="open",
                             triage_state="unclassified"))
         return p.id
@@ -238,7 +239,7 @@ async def test_classify_run_self_select_skips_untrusted_authors(db_env):
 
 async def _add_bot_artifact_item() -> None:
     async with db_session() as db:
-        db.add(WorkItem(author="tony", repo="steiner385/viberpit", number=300, kind="pr",
+        db.add(WorkItem(author="tony", author_id=TONY_ID, repo="steiner385/viberpit", number=300, kind="pr",
                         title="docs(fix-patterns): regenerate index", body="BOT-BODY",
                         state="open", triage_state="unclassified"))
 

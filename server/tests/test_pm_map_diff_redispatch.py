@@ -34,6 +34,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.automations.context import AutomationContext
 from server.automations.pm_triage import PmTriageLoop
 from server.db import db_session, init_db
@@ -74,7 +75,7 @@ async def _seed(db_url: str) -> str:
     await init_db(db_url)
     async with db_session() as db:
         p = Project(slug=SLUG, name="KinDash", onboarding_state="map_merged",
-                    automation_policy={"trusted_authors": ["tony"]})
+                    automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo=REPO, is_primary=True,
@@ -85,7 +86,7 @@ async def _seed(db_url: str) -> str:
 async def _add_cluster(suggestion: str, numbers: list[int]) -> None:
     async with db_session() as db:
         for n in numbers:
-            w = WorkItem(author="tony", repo=REPO, number=n, kind="issue",
+            w = WorkItem(author="tony", author_id=TONY_ID, repo=REPO, number=n, kind="issue",
                          title=f"i{n}", state="open", triage_state="classified")
             db.add(w)
             await db.flush()

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from server.tests._trust_ids import TONY_ID, STEINER_ID
 from server.pm.desired_state import STATUS_OPTIONS, STATUS_READY
 from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, URGENT_LABELS, QueueRow,
                              is_trusted_author, rank_key, to_candidate)
@@ -18,12 +19,12 @@ NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 # vouched for; these wrappers declare it once. A test of the gate itself passes
 # ``trusted_authors=`` explicitly, which wins.
 def skip_reason(row, **kw):
-    kw.setdefault("trusted_authors", frozenset({"tony"}))
+    kw.setdefault("trusted_authors", frozenset({f"user:{TONY_ID}"}))
     return _skip_reason(row, **kw)
 
 
 def rank(rows, **kw):
-    kw.setdefault("trusted_authors", frozenset({"tony"}))
+    kw.setdefault("trusted_authors", frozenset({f"user:{TONY_ID}"}))
     return _rank(rows, **kw)
 
 
@@ -33,6 +34,8 @@ def _row(**over):
                 assignees=(), author="tony", labels=(), open_children=0, open_blockers=(),
                 live_session=False, claimed=False, hold_kind=None)
     base.update(over)
+    if "author_id" not in base:
+        base["author_id"] = {"tony": TONY_ID, "steiner385": STEINER_ID}.get(base["author"])
     return QueueRow(**base)
 
 
@@ -237,7 +240,7 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "epic_open": _row(open_children=1),
         "bot": _row(author="renovate[bot]"),
         "tracker": _row(labels=("red-watchdog",)),
-        "untrusted": _row(author="stranger"),
+        "untrusted": _row(author="stranger", author_id=99),
         "environment": _row(labels=("env: windows",)),
         "held": _row(hold_kind="owner_action"),
         "parked": _row(labels=("parked",)),
@@ -512,44 +515,69 @@ def test_viberpit_2921_forced_deploy_audit_is_not_dispatched_by_default():
     assert skip_reason(row, **KW) == "tracker"
 
 
-TRUSTED = frozenset({"steiner385", "app/viberpit"})
+TRUSTED = frozenset({f"user:{STEINER_ID}", "app/viberpit"})
 
 
 def test_untrusted_author_is_skipped_before_dispatch():
     kw = dict(min_status="Ready", respect_dependencies=True, now=NOW, trusted_authors=TRUSTED)
     assert skip_reason(_row(author="steiner385"), **kw) is None
-    assert skip_reason(_row(author="stranger"), **kw) == "untrusted"
+    assert skip_reason(_row(author="stranger", author_id=99), **kw) == "untrusted"
+
+
+def test_a_login_matching_a_trusted_entry_with_a_different_id_is_untrusted():
+    """The rename/squat case: someone registers the freed login of a trusted user."""
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW, trusted_authors=TRUSTED)
+    assert skip_reason(_row(author="steiner385", author_id=STEINER_ID + 1), **kw) == "untrusted"
+    assert not is_trusted_author("steiner385", TRUSTED, author_id=STEINER_ID + 1)
+
+
+def test_rank_drops_a_squatted_login_from_the_queue():
+    squat = _row(author="steiner385", author_id=STEINER_ID + 1)
+    entries, skipped = rank([squat, _row(ref="o/r#2", number=2, author="steiner385")],
+                            now=NOW, trusted_authors=TRUSTED)
+    assert [e.ref for e in entries] == ["o/r#2"]
+    assert skipped["untrusted"] == 1
+
+
+def test_a_user_with_no_recorded_id_is_untrusted():
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW, trusted_authors=TRUSTED)
+    assert skip_reason(_row(author="steiner385", author_id=None), **kw) == "untrusted"
+    assert not is_trusted_author("steiner385", TRUSTED, author_id=None)
+
+
+def test_a_bot_with_no_id_stays_trusted_by_its_app_entry():
+    assert is_trusted_author("app/viberpit", TRUSTED, author_id=None)
 
 
 def test_trust_is_case_insensitive_and_ignores_app_prefix_and_bot_suffix_forms():
-    assert is_trusted_author("Steiner385", TRUSTED)
-    assert is_trusted_author("app/viberpit", TRUSTED)
-    assert is_trusted_author("App/Viberpit", TRUSTED)
-    assert is_trusted_author("viberpit[bot]", TRUSTED)
+    assert is_trusted_author("Steiner385", TRUSTED, author_id=STEINER_ID)
+    assert is_trusted_author("app/viberpit", TRUSTED, author_id=None)
+    assert is_trusted_author("App/Viberpit", TRUSTED, author_id=None)
+    assert is_trusted_author("viberpit[bot]", TRUSTED, author_id=None)
 
 
 def test_a_user_squatting_an_app_login_is_untrusted():
     """The mirror stores a Bot as ``app/<slug>``; a bare login is a USER, and anyone can
     register the user ``viberpit`` or ``github-actions`` and open an issue."""
-    assert not is_trusted_author("viberpit", TRUSTED)
-    assert not is_trusted_author("github-actions", frozenset())
-    assert not is_trusted_author("github-actions", TRUSTED)
+    assert not is_trusted_author("viberpit", TRUSTED, author_id=42)
+    assert not is_trusted_author("github-actions", frozenset(), author_id=42)
+    assert not is_trusted_author("github-actions", TRUSTED, author_id=42)
 
 
-def test_a_user_is_trusted_only_by_a_bare_listing():
-    assert is_trusted_author("steiner385", TRUSTED)
-    assert not is_trusted_author("app/steiner385", TRUSTED)
-    assert not is_trusted_author("app/stranger", TRUSTED)
+def test_a_user_is_trusted_only_by_a_bound_id():
+    assert is_trusted_author("steiner385", TRUSTED, author_id=STEINER_ID)
+    assert not is_trusted_author("app/steiner385", TRUSTED, author_id=STEINER_ID)
+    assert not is_trusted_author("app/stranger", TRUSTED, author_id=None)
 
 
 def test_automation_logins_are_always_trusted():
-    assert is_trusted_author("app/github-actions", frozenset())
-    assert is_trusted_author("github-actions[bot]", frozenset())
+    assert is_trusted_author("app/github-actions", frozenset(), author_id=None)
+    assert is_trusted_author("github-actions[bot]", frozenset(), author_id=None)
 
 
 def test_ghost_author_is_untrusted():
-    assert not is_trusted_author("", TRUSTED)
-    assert not is_trusted_author("ghost", TRUSTED)
+    assert not is_trusted_author("", TRUSTED, author_id=STEINER_ID)
+    assert not is_trusted_author("ghost", TRUSTED, author_id=STEINER_ID)
 
 
 def test_empty_trusted_list_fails_closed_for_humans():

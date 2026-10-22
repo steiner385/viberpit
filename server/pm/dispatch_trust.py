@@ -3,8 +3,9 @@
 ``queue.skip_reason`` gates the ranked pool, but three paths dispatch a ref they were
 handed: the manual/assistant ``POST /backlog-runner/dispatch``, a pending (already
 claimed) batch retried through the propose-tap, and the approve-escalation tap. A
-public repo lets anyone open an issue, so each must judge the MIRRORED author against
-the owning product's ``trusted_authors`` itself. Fail-closed: an unparsable ref, a ref
+public repo lets anyone open an issue, so each must judge the MIRRORED author (a user by
+immutable GitHub id, ``WorkItem.author_id``, never by login) against the owning
+product's ``trusted_authors`` itself. Fail-closed: an unparsable ref, a ref
 with no mirrored issue, or an issue with no author is untrusted.
 
 The operator's ``viberpit-ignore`` label is the other verdict those paths must
@@ -46,7 +47,7 @@ async def untrusted_refs(db: AsyncSession, refs: Iterable[str]) -> list[str]:
             continue
         if repo not in policies:
             policies[repo] = trusted_authors(await policy_for_repo(db, repo))
-        if not is_trusted_author(wi.author or "", policies[repo]):
+        if not is_trusted_author(wi.author or "", policies[repo], author_id=wi.author_id):
             out.append(ref)
     return out
 
@@ -86,17 +87,20 @@ async def trusted_authors_by_repo(db: AsyncSession,
 
 
 def author_trusted(by_repo: Mapping[str, frozenset[str]], repo: str | None,
-                   author: str | None) -> bool:
-    """Whether *author* is trusted for *repo* under ``trusted_authors_by_repo``'s map."""
-    return is_trusted_author(author or "", by_repo.get(repo or "", frozenset()))
+                   author: str | None, *, author_id: int | None) -> bool:
+    """Whether *author* (a user matched by immutable *author_id*) is trusted for *repo*
+    under ``trusted_authors_by_repo``'s map."""
+    return is_trusted_author(author or "", by_repo.get(repo or "", frozenset()),
+                             author_id=author_id)
 
 
 async def untrusted_prs(db: AsyncSession, repo: str, numbers: Iterable[int]) -> list[int]:
     """The PR numbers among *numbers* whose MIRRORED author is not trusted for *repo*
     (fail-closed: a PR the mirror does not hold is untrusted), in the order given."""
     nums = [int(n) for n in numbers]
-    rows = (await db.execute(select(WorkItem.number, WorkItem.author).where(
+    rows = (await db.execute(select(WorkItem.number, WorkItem.author, WorkItem.author_id).where(
         WorkItem.repo == repo, WorkItem.number.in_(nums), WorkItem.kind == "pr"))).all()
-    authors = {n: a for n, a in rows}
+    authors = {n: (a, aid) for n, a, aid in rows}
     by_repo = await trusted_authors_by_repo(db, [repo])
-    return [n for n in nums if n not in authors or not author_trusted(by_repo, repo, authors[n])]
+    return [n for n in nums if n not in authors or not author_trusted(
+        by_repo, repo, authors[n][0], author_id=authors[n][1])]

@@ -8,6 +8,7 @@ GitHub call is involved — a real (SQLite) mirror is seeded and read.
 """
 from __future__ import annotations
 
+from server.tests._trust_ids import STEINER_ID, STEINER_ENTRY
 from server.automations.backlog_grouping import ParsedPlan
 
 import asyncio
@@ -41,7 +42,7 @@ async def _seed_product(slug: str, repo: str, *,
     whose policy says ``dispatch != off``, so the fixture opts in by default."""
     async with db_session() as db:
         project = Project(slug=slug, name=slug,
-                          automation_policy={"trusted_authors": ["steiner385"],
+                          automation_policy={"trusted_authors": [STEINER_ENTRY],
                                              **(policy or {"dispatch": "auto"})})
         db.add(project)
         await db.flush()
@@ -57,7 +58,7 @@ async def _set_policy(slug: str, policy: dict | None) -> None:
         project = (await db.execute(select(Project).where(
             Project.slug == slug))).scalar_one()
         project.automation_policy = (None if policy is None
-                                     else {"trusted_authors": ["steiner385"], **policy})
+                                     else {"trusted_authors": [STEINER_ENTRY], **policy})
 
 
 async def _seed_item(repo: str, number: int, *, status: str = "Ready",
@@ -69,7 +70,7 @@ async def _seed_item(repo: str, number: int, *, status: str = "Ready",
         item = WorkItem(repo=repo, number=number, kind="issue", state="open",
                         title=f"issue {number}", body="body",
                         url=f"https://github.com/{repo}/issues/{number}",
-                        author="steiner385", labels=labels or [], assignees=[])
+                        author="steiner385", author_id=STEINER_ID, labels=labels or [], assignees=[])
         if hold_kind is not None:
             item.hold_kind, item.hold_by, item.hold_reason = hold_kind, "tony@example.com", "max attempts"
         db.add(item)

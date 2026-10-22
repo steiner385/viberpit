@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from server.tests._trust_ids import TONY_ID
 from server.pm.escalation import (HeldItem, downstream, held_items, product_escalation,
                                   rank_held, reverse_index)
 from server.pm.queue import QueueRow
@@ -15,7 +16,7 @@ NOW = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=1)  # relative 
 def _row(**over) -> QueueRow:
     base: dict[str, Any] = dict(ref="o/r#1", repo="o/r", number=1, product="viberpit", title="t", body="",
                 url="u", status="Ready", score=1.0, gh_created_at=NOW - timedelta(days=2),
-                gh_updated_at=NOW, assignees=(), author="tony", labels=(), open_children=0,
+                gh_updated_at=NOW, assignees=(), author="tony", author_id=TONY_ID, labels=(), open_children=0,
                 open_blockers=(), live_session=False, claimed=False, hold_kind=None)
     base.update(over)
     return QueueRow(**base)
@@ -30,11 +31,11 @@ def _held(ref, kind="owner_action", *, set_at=None, **over) -> QueueRow:
 def _policy(dispatch="auto"):
     return {"dispatch": dispatch, "queue_min_status": "Ready", "respect_dependencies": True,
             "give_up_after_bounces": 0, "skip_labels": [],
-            "trusted_authors": ["tony"]}
+            "trusted_authors": [f"tony#{TONY_ID}"]}
 
 
 KW = dict(now=NOW, min_status="Ready", respect_dependencies=True,
-          trusted_authors=frozenset({"tony"}))
+          trusted_authors=frozenset({f"user:{TONY_ID}"}))
 
 
 def test_reverse_index_maps_blocker_to_dependents():

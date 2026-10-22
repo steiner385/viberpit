@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.config import Settings
 
 H = {"Tailscale-User-Login": "testuser@example.com"}
@@ -223,7 +224,8 @@ async def _seed_items(*numbers: int, author: str = "tony", repo: str = "o/r"):
     async with db_session() as db:
         for n in numbers:
             db.add(WorkItem(repo=repo, number=n, kind="issue", state="open",
-                            title=f"Fix {n}", author=author))
+                            title=f"Fix {n}", author=author,
+                            author_id=TONY_ID if author == "tony" else None))
 
 
 def test_dispatch_api_refuses_an_untrusted_author_and_an_unmirrored_ref():
@@ -269,13 +271,13 @@ async def test_pending_claim_is_refused_when_any_of_its_issues_is_untrusted(disp
     for number in (8, 7):                      # a member, then the primary
         async with db_session() as db:
             await db.execute(update(WorkItem).where(WorkItem.number == number)
-                             .values(author="stranger"))
+                             .values(author="stranger", author_id=None))
         assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "refused"
         dispatch_orch._backlog_spawn.assert_not_awaited()
     # An issue the mirror does not hold is untrusted too (fail-closed).
     async with db_session() as db:
         await db.execute(update(WorkItem).where(WorkItem.number.in_([7, 8]))
-                         .values(author="tony"))
+                         .values(author="tony", author_id=TONY_ID))
         await db.execute(update(WorkItem).where(WorkItem.number == 8).values(number=80))
     assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "refused"
 
@@ -294,7 +296,7 @@ async def test_pending_claim_trust_refusal_is_reported_on_the_feed(dispatch_orch
         "attempts": 1}, expected={}, source="automatic")
     dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
     async with db_session() as db:
-        await db.execute(update(WorkItem).where(WorkItem.number == 8).values(author="stranger"))
+        await db.execute(update(WorkItem).where(WorkItem.number == 8).values(author="stranger", author_id=None))
     ctx.emit = AsyncMock()
     assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "refused"
     ctx.emit.assert_awaited_once()
@@ -312,7 +314,7 @@ async def _seed_held_issue(hold_kind: str = "owner_action", *, number: int = 7, 
     from server.db.models import WorkItem
     async with db_session() as db:
         db.add(WorkItem(repo=repo, number=number, kind="issue", state="open",
-                        title=f"Fix {number}", author="tony", hold_kind=hold_kind, hold_by=hold_by,
+                        title=f"Fix {number}", author="tony", author_id=TONY_ID, hold_kind=hold_kind, hold_by=hold_by,
                         hold_reason="test"))
         await db.commit()
 
@@ -695,7 +697,7 @@ async def _seed_product():
     from server.db.models import Project, ProjectRepo
     async with db_session() as db:
         project = Project(slug="test-product", name="Test", automation_policy={"dispatch": "off",
-                                                      "trusted_authors": ["tony"]})
+                                                      "trusted_authors": [TONY_ENTRY]})
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo="o/r", is_primary=True))
@@ -725,7 +727,7 @@ async def test_manual_dispatch_zero_owner_cap_takes_no_claim(dispatch_orch):
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_in_flight": 0}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": [TONY_ENTRY], "max_in_flight": 0}))
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert result["status"] == "capacity"
     assert "product_capacity_full" in result["reason_codes"]
@@ -748,7 +750,7 @@ async def test_manual_dispatch_behind_a_plan_derived_zero_cap_queues(dispatch_or
     from server.db.models import Project
     async with db_session() as db:
         await db.execute(update(Project).values(
-            automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "capacity_mode": "auto", "max_in_flight": 3}))
+            automation_policy={"dispatch": "off", "trusted_authors": [TONY_ENTRY], "capacity_mode": "auto", "max_in_flight": 3}))
     plan = {"computedAt": datetime.now(timezone.utc).isoformat(), "applied": True,
             "fleetConcurrency": 1, "perProduct": {"test-product": 0},
             "budget": {"limiting": "account"}}
@@ -766,7 +768,7 @@ async def test_manual_dispatch_zero_pipeline_cap_takes_no_claim(dispatch_orch):
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_pipeline_prs": 0}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": [TONY_ENTRY], "max_pipeline_prs": 0}))
     result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert result["status"] == "capacity"
     assert "product_pipeline_full" in result["reason_codes"]
@@ -802,7 +804,7 @@ async def test_manual_dispatch_at_a_full_product_cap_queues_for_a_slot(dispatch_
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_in_flight": 1}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": [TONY_ENTRY], "max_in_flight": 1}))
     await dispatch_orch._backlog_ctx.claim_target_state("o/r#8", {
         "repo": "o/r", "product": "test-product", "issues": ["o/r#8"], "claimed": True},
         expected={}, source="automatic")
@@ -846,7 +848,7 @@ async def test_queued_claim_slot_free_excludes_its_own_claim(dispatch_orch):
     from server.db import db_session
     from server.db.models import Project
     async with db_session() as db:
-        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": ["tony"], "max_in_flight": 1}))
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "trusted_authors": [TONY_ENTRY], "max_in_flight": 1}))
     ctx = dispatch_orch._backlog_ctx
     own = {"repo": "o/r", "product": "test-product", "issues": ["o/r#7"], "claimed": True,
            "session_id": "sess-own"}
@@ -1001,7 +1003,7 @@ async def test_orchestrator_dispatch_refuses_an_untrusted_or_unmirrored_ref_itse
     from server.db import db_session
     from server.db.models import WorkItem
     async with db_session() as db:
-        await db.execute(update(WorkItem).where(WorkItem.number == 8).values(author="stranger"))
+        await db.execute(update(WorkItem).where(WorkItem.number == 8).values(author="stranger", author_id=None))
     for refs in (["o/r#8"], ["o/r#7", "o/r#8"], ["o/r#98"]):
         r = await dispatch_orch.backlog_runner_dispatch(refs)
         assert r["status"] == "refused" and r["reason_codes"] == ["untrusted_author"]

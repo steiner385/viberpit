@@ -10,6 +10,7 @@ A real (SQLite) mirror is seeded and read — no GitHub call is involved.
 """
 from __future__ import annotations
 
+from server.tests._trust_ids import STEINER_ID, STEINER_ENTRY
 from server.tests.test_backlog_runner_loop import (
     isolated_ownership_identity as isolated_ownership_identity,
 )
@@ -45,7 +46,7 @@ async def _seed_product(slug: str, repo: str, *, policy: dict | None = None,
                         board: bool = True, rank: int | None = None) -> None:
     async with db_session() as db:
         project = Project(slug=slug, name=slug, automation_policy=(policy if policy is None
-                                               else {"trusted_authors": ["steiner385"], **policy}),
+                                               else {"trusted_authors": [STEINER_ENTRY], **policy}),
                           priority_rank=rank)
         db.add(project)
         await db.flush()
@@ -63,7 +64,7 @@ async def _seed_item(repo: str, number: int, *, status: str = "Ready",
         item = WorkItem(repo=repo, number=number, kind="issue", state="open",
                         title=f"issue {number}", body="body",
                         url=f"https://github.com/{repo}/issues/{number}",
-                        author="steiner385", labels=[], assignees=[],
+                        author="steiner385", author_id=STEINER_ID, labels=[], assignees=[],
                         gh_created_at=created)
         db.add(item)
         await db.flush()
@@ -522,7 +523,7 @@ def test_a_hand_set_policy_survives_the_seed_without_blocking_the_others(tmp_pat
         assert await orch._backlog_seed_policies({"enabled_repos": ["o/a", "o/b"]},
                                                  "auto") == 1
         policies = await _policies()
-        assert policies["alpha"][0] == {"trusted_authors": ["steiner385"],
+        assert policies["alpha"][0] == {"trusted_authors": [STEINER_ENTRY],
                                         "dispatch": "off"}    # untouched
         assert policies["beta"][0]["dispatch"] == "auto"      # migrated
 

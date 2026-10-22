@@ -5,6 +5,7 @@ style of test_sdlc_api.py — reuse that module's fixtures.
 """
 from __future__ import annotations
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.tests.pm_ownership_fixtures import identity_repositories, ownership_snapshot
 import pytest
 
@@ -397,7 +398,7 @@ def test_policy_schema_and_project_policy_round_trip():
         # unreachable is a 502, never an unbound (untrusted) entry stored silently. The
         # conftest guard makes every real lookup fail like an outage.
         r = c.patch("/api/pm/projects/kindash/policy",
-                    json={"policy": {"trusted_authors": ["tony"]}}, headers=IDENTITY_HEADERS)
+                    json={"policy": {"trusted_authors": [TONY_ENTRY]}}, headers=IDENTITY_HEADERS)
         assert r.status_code == 502 and r.json()["detail"]["error"] == "github_unavailable"
 
         async def _fake_resolve(login: str) -> int | None:
@@ -1027,9 +1028,9 @@ def _seed_one_pending(c, *, feature_slug=None, no_fit_suggestion=None, repo="o/r
                 db.add(feat)
                 await db.flush()
             # The approve-escalation tap refuses an untrusted author (fail-closed).
-            p.automation_policy = {**(p.automation_policy or {}), "trusted_authors": ["tony"]}
+            p.automation_policy = {**(p.automation_policy or {}), "trusted_authors": [TONY_ENTRY]}
             w = WorkItem(repo=repo, number=number, kind="issue", title="Fix",
-                         state="open", triage_state="unclassified", author="tony")
+                         state="open", triage_state="unclassified", author="tony", author_id=TONY_ID)
             db.add(w)
             await db.flush()
             tp = TriageProposal(

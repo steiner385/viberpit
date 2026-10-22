@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.db import db_session, init_db
 from server.pm.queue import QueueRow
 from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
@@ -23,7 +24,7 @@ def _row(**over) -> QueueRow:
     base: dict[str, Any] = dict(
         ref="o/r#1", repo="o/r", number=1, product="kindash", title="t", body="", url="u",
         status="Held", score=None, gh_created_at=NOW, gh_updated_at=NOW, assignees=(),
-        author="tony", labels=(), open_children=0, open_blockers=(), live_session=False,
+        author="tony", author_id=TONY_ID, labels=(), open_children=0, open_blockers=(), live_session=False,
         claimed=False)
     base.update(over)
     if "ref" not in over:
@@ -74,7 +75,7 @@ def test_superseded_keeps_the_newest_per_repo_and_type():
 # A product that auto-escalates its flaky issues works its trackers (#2683): with the
 # default ``skip_self_closing_trackers`` the queue skips a ``flaky`` issue as
 # ``tracker``, and the approval tap refuses to dispatch what the queue skips.
-POLICY = {"dispatch": "auto", "trusted_authors": ["tony"],
+POLICY = {"dispatch": "auto", "trusted_authors": [TONY_ENTRY],
           "auto_escalate_match": ["flaky", "Unverified prod"],
           "auto_escalate_budget": 2, "skip_self_closing_trackers": False}
 
@@ -187,7 +188,7 @@ async def _seed_escalations(numbers, *, labels=("flaky",)):
             db.add(ProjectRepo(project_id=proj.id, repo="o/r", is_primary=True))
         for n in numbers:
             db.add(WorkItem(id=f"wi{n}", repo="o/r", number=n, kind="issue", state="open",
-                            title="t", body="", labels=list(labels), author="tony",
+                            title="t", body="", labels=list(labels), author="tony", author_id=TONY_ID,
                             hold_kind="owner_action", hold_reason=ESCALATION, hold_by="runner",
                             hold_set_at=(NOW - timedelta(days=n)).replace(tzinfo=None)))
 
