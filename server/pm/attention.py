@@ -19,10 +19,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from server.automations.product_policy import trusted_authors
+from server.automations.product_policy import trusted_user_logins
 from server.pm.desired_state import (HELD_KINDS, STATUS_DONE, STATUS_HELD,
                                      STATUS_IN_PROGRESS)
-from server.pm.queue import QueueRow, is_automation_author
+from server.pm.queue import QueueRow
 
 #: Every waiting bucket, in the stable order the map serves and the web shows.
 WAITING_KEYS: tuple[str, ...] = (
@@ -52,8 +52,9 @@ def owner_logins(policy: Mapping | None) -> frozenset[str]:
     """The product owner's logins: the HUMAN entries of the policy's
     ``trusted_authors`` (never an ``app/…`` or ``…[bot]`` login), lowercased.
     The policy has no separate owner field, and ``trusted_authors`` is the list
-    of people allowed to direct agents."""
-    return frozenset(a for a in trusted_authors(policy) if not is_automation_author(a))
+    of people allowed to direct agents. Assignee matching only — trust itself is
+    keyed on the GitHub user id (``product_policy.trusted_authors``, #3147)."""
+    return trusted_user_logins(policy)
 
 
 def assigned_to_owner(assignees: Iterable[str] | None, owners: frozenset[str]) -> bool:

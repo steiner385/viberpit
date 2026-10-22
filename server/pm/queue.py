@@ -193,6 +193,9 @@ class QueueRow:
     # the row (``skip_reason`` → "held"); ``evidence`` / ``stronger_model`` ride
     # through to the entry so the spawn can pick its prompt and rung.
     hold_kind: str | None = None
+    # The author's immutable GitHub user id (``WorkItem.author_id``; NULL for a Bot or an
+    # unsynced row): the key the trusted-author gate matches a user on, never the login.
+    author_id: int | None = None
     # D8: how many FINALISED (non-``running``/``merged``) dispatches this exact
     # body (by ``body_fingerprint``) has already had — the loader
     # (``queue_store.load_queue_rows``) computes it, ``skip_reason`` compares it
@@ -322,15 +325,15 @@ def needs_unavailable_environment(labels: Iterable[str],
     return gated
 
 
-def is_trusted_author(author: str, trusted: frozenset[str]) -> bool:
+def is_trusted_author(author: str, trusted: frozenset[str], *, author_id: int | None) -> bool:
     """Whether *author* may have their issue dispatched to an agent. A public repo lets
     anyone open an issue; a dispatched session writes code that auto-merges and deploys,
     so an untrusted author must never reach the runner. Fail-closed: empty/ghost is
-    untrusted. *trusted* is already lowercased (``product_policy.trusted_authors``); a
-    GitHub App is listed there as ``app/<slug>``, a user by bare login. Trust is keyed on
-    the CURRENT GitHub login (the mirror stores logins, which users can rename), so a
-    trusted account that renames must be removed from the list -- otherwise whoever
-    registers the freed login inherits its trust."""
+    untrusted. *trusted* is ``product_policy.trusted_authors``: a GitHub App is listed as
+    ``app/<slug>``, a user as ``user:<github id>``. A user is trusted only when their
+    immutable GitHub id (*author_id*, ``WorkItem.author_id``) is listed -- never by login,
+    which users can rename and others can then register. A NULL id (unsynced, or a Bot)
+    never earns user trust."""
     login = (author or "").strip().lower()
     if not login or login == "ghost":
         return False
@@ -341,7 +344,7 @@ def is_trusted_author(author: str, trusted: frozenset[str]) -> bool:
     if login.startswith("app/") or login.endswith("[bot]"):
         slug = login.removeprefix("app/").removesuffix("[bot]")
         return bool(slug) and (f"app/{slug}" in trusted or slug in TRUSTED_AUTOMATION_LOGINS)
-    return login in trusted
+    return author_id is not None and f"user:{author_id}" in trusted
 
 
 def _is_bot(row: QueueRow, extra_skip_labels: frozenset[str] = frozenset()) -> bool:
@@ -424,7 +427,7 @@ def skip_reason(
         return "bot"
     if skip_trackers and is_self_closing_tracker(row.labels, row.title, author=row.author):
         return "tracker"
-    if not is_trusted_author(row.author, trusted_authors):
+    if not is_trusted_author(row.author, trusted_authors, author_id=row.author_id):
         return "untrusted"
     if needs_unavailable_environment(row.labels):
         return "environment"

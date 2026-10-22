@@ -79,7 +79,9 @@ def test_every_skip_reason_is_mapped():
 
 
 def test_owner_logins_are_the_human_trusted_authors():
-    policy = {"trusted_authors": ["Tony", "app/renovate", "dependabot[bot]", " Alice "]}
+    # Bound (#3147) and not-yet-bound user entries alike: owner matching is display-only,
+    # never a trust decision.
+    policy = {"trusted_authors": ["Tony#1234", "app/renovate", "dependabot[bot]", " Alice "]}
     assert owner_logins(policy) == frozenset({"tony", "alice"})
     assert owner_logins(None) == frozenset()
 

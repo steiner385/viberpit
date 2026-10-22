@@ -2118,6 +2118,9 @@ class WorkItem(Base):
     state: Mapped[str | None] = mapped_column(String, nullable=True)  # open|closed|merged
     labels: Mapped[list | None] = mapped_column(JSON, nullable=True)
     author: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Immutable GitHub databaseId of a User author; NULL for Bots, ghost/deleted accounts
+    # and rows not yet re-synced. The trusted-author gate keys on it (a login is mutable).
+    author_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     url: Mapped[str | None] = mapped_column(String, nullable=True)
     # GitHub GraphQL node id (e.g. "I_kwDO..."), used by the reconciler for
     # addProjectV2ItemById content ids and addBlockedBy mutations (spec 003 Phase B).

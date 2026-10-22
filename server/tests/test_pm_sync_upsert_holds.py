@@ -115,3 +115,13 @@ async def test_non_auto_error_issue_and_closed_issue_get_no_hold(db_env):
     assert (await _fetch(103)).hold_kind is None
     assert (await _fetch(104)).hold_kind is None
     assert await _hold_audits() == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_stores_and_refreshes_the_author_id(db_env):
+    from dataclasses import replace
+    item = replace(_item(102, labels=()), author_id=4242)
+    await _orch()._pm_sync_upsert_items([item])
+    assert (await _fetch(102)).author_id == 4242
+    await _orch()._pm_sync_upsert_items([replace(item, author_id=None)])
+    assert (await _fetch(102)).author_id is None

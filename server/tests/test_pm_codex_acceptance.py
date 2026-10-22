@@ -36,6 +36,7 @@ from unittest.mock import patch
 import pytest
 
 from viberpit.engines import AgentEngine
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.automations.engine_policy import (
     ENGINE_CONFIG_KEY,
     EnginePolicy,
@@ -210,7 +211,7 @@ async def _seed(db_url: str) -> str:
     await init_db(db_url)
     async with db_session() as db:
         p = Project(slug="proj", name="proj", onboarding_state="map_merged",
-                    automation_policy={"trusted_authors": ["tony"]})
+                    automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True,
@@ -218,7 +219,7 @@ async def _seed(db_url: str) -> str:
         db.add(Feature(project_id=p.id, slug="sessions", title="Sessions",
                        state="live", summary="s"))
         for n in range(2):
-            db.add(WorkItem(author="tony", repo="o/r", number=100 + n, kind="issue",
+            db.add(WorkItem(author="tony", author_id=TONY_ID, repo="o/r", number=100 + n, kind="issue",
                             title=f"Bug {n}", state="open",
                             triage_state="unclassified"))
         return p.id

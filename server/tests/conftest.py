@@ -393,6 +393,22 @@ def _reset_gh_credential_health():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_github_user_lookups(monkeypatch):
+    # #3147: saving a policy binds each trusted user login to its GitHub id, and the
+    # edge lifespan re-saves stored policies that still hold bare logins. Left real,
+    # any test that seeds ``trusted_authors: ["tony"]`` and enters a TestClient would
+    # ask GitHub who "tony" is and rewrite its own fixture in the background. Every
+    # lookup fails like an outage instead; a test that wants a binding passes
+    # ``resolve_user_id=`` or patches this attribute itself.
+    from server.pm import github_identity
+
+    async def _refuse(login: str) -> int | None:
+        raise github_identity.GitHubLookupError(
+            f"GitHub user lookups are disabled in tests (asked for {login!r})")
+    monkeypatch.setattr(github_identity, "resolve_github_user_id", _refuse)
+
+
+@pytest.fixture(autouse=True)
 def _reset_self_tailscale_ips_cache():
     # Third instance of the same hazard: server.auth.identity memoises this node's
     # own tailnet addresses (#2134) for minutes to keep a `tailscale status` spawn

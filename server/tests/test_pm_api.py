@@ -5,6 +5,7 @@ style of test_sdlc_api.py — reuse that module's fixtures.
 """
 from __future__ import annotations
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.tests.pm_ownership_fixtures import identity_repositories, ownership_snapshot
 import pytest
 
@@ -393,6 +394,26 @@ def test_policy_schema_and_project_policy_round_trip():
                     json={"policy": {"trusted_authors": ["viberpit"]}}, headers=IDENTITY_HEADERS)
         assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
         assert "app/viberpit" in r.json()["detail"]["message"]
+        # #3147: a bare user login is bound to its GitHub user id on save; GitHub being
+        # unreachable is a 502, never an unbound (untrusted) entry stored silently. The
+        # conftest guard makes every real lookup fail like an outage.
+        r = c.patch("/api/pm/projects/kindash/policy",
+                    json={"policy": {"trusted_authors": [TONY_ENTRY]}}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 502 and r.json()["detail"]["error"] == "github_unavailable"
+
+        async def _fake_resolve(login: str) -> int | None:
+            return {"tony": 1234567}.get(login)
+        with patch("server.pm.github_identity.resolve_github_user_id", _fake_resolve):
+            r = c.patch("/api/pm/projects/kindash/policy",
+                        json={"policy": {"trusted_authors": ["Tony", "app/renovate"]}},
+                        headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            bound = r.json()["automationPolicy"]
+            assert bound["trusted_authors"] == ["tony#1234567", "app/renovate"]
+            r = c.patch("/api/pm/projects/kindash/policy",
+                        json={"policy": {"trusted_authors": ["nobody"]}}, headers=IDENTITY_HEADERS)
+            assert r.status_code == 422 and "GitHub user 'nobody' not found" in \
+                r.json()["detail"]["message"]
         # A below-minimum int is a server-side refusal, not a browser courtesy: a
         # stored ``-1`` cap reads as an unreachable ceiling in ``_refill``, i.e.
         # unlimited spawning for that product.
@@ -429,11 +450,11 @@ def test_policy_schema_and_project_policy_round_trip():
                 return (await db.execute(select(AuditEvent).where(
                     AuditEvent.type == "pm.project.policy"))).scalars().all()
         found = c.portal.call(_audits)
-        # Six accepted writes: the auto/2 policy, the deprecated-weight patch,
-        # the pipeline-cap set (6) and clear (None), the paused (0) one and the
-        # clear. The rejected ones (bad enum, unknown key, below-minimum ints,
+        # Seven accepted writes: the auto/2 policy, the deprecated-weight patch,
+        # the pipeline-cap set (6) and clear (None), the bound trusted authors, the
+        # paused (0) one and the clear. The rejected ones (bad enum, unknown key, below-minimum ints,
         # unknown slug) write nothing.
-        assert [a.detail["policy"] for a in found] == [pol, pol2, pol3, pol4, paused, None]
+        assert [a.detail["policy"] for a in found] == [pol, pol2, pol3, pol4, bound, paused, None]
         assert {a.detail["slug"] for a in found} == {"kindash"}
         assert {a.identity for a in found} == {IDENTITY_HEADERS["Tailscale-User-Login"]}
 
@@ -1007,9 +1028,9 @@ def _seed_one_pending(c, *, feature_slug=None, no_fit_suggestion=None, repo="o/r
                 db.add(feat)
                 await db.flush()
             # The approve-escalation tap refuses an untrusted author (fail-closed).
-            p.automation_policy = {**(p.automation_policy or {}), "trusted_authors": ["tony"]}
+            p.automation_policy = {**(p.automation_policy or {}), "trusted_authors": [TONY_ENTRY]}
             w = WorkItem(repo=repo, number=number, kind="issue", title="Fix",
-                         state="open", triage_state="unclassified", author="tony")
+                         state="open", triage_state="unclassified", author="tony", author_id=TONY_ID)
             db.add(w)
             await db.flush()
             tp = TriageProposal(

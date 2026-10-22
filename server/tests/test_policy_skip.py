@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from server.tests._trust_ids import TONY_ID, STEINER_ID
 from server.pm.policy_skip import skipped_by_policy, stale_system_holds
 from server.pm.queue import QueueRow
 
@@ -35,17 +36,17 @@ def _row(**over) -> QueueRow:
 
 def test_skipped_by_policy_reads_the_products_skip_labels_and_the_global_filter():
     policy = {"skip_labels": [" Forced-Deploy-Audit "]}        # normalised like the queue
-    assert skipped_by_policy(author="app/github-actions", labels=AUDIT,
+    assert skipped_by_policy(author="app/github-actions", author_id=None, labels=AUDIT,
                              title="⚠️ Unverified prod deploy b80aa1b03c — 2026-09-21",
                              policy=policy)
-    assert not skipped_by_policy(author="app/github-actions", labels=("ci-infrastructure",),
+    assert not skipped_by_policy(author="app/github-actions", author_id=None, labels=("ci-infrastructure",),
                                  title="t", policy=policy)
     # The built-in bot-noise filter (``queue.SKIP_ISSUE_LABELS`` & co.) counts with
     # no policy at all — this is ``skip_reason``'s own ``bot`` verdict, not a copy.
-    assert skipped_by_policy(author="renovate[bot]", labels=(), title="t", policy={})
-    assert skipped_by_policy(author="tony", labels=("dependencies",), title="t", policy=None)
-    assert not skipped_by_policy(author="tony", labels=("bug",), title="t",
-                                 policy={"trusted_authors": ["tony"]})
+    assert skipped_by_policy(author="renovate[bot]", author_id=None, labels=(), title="t", policy={})
+    assert skipped_by_policy(author="tony", author_id=TONY_ID, labels=("dependencies",), title="t", policy=None)
+    assert not skipped_by_policy(author="tony", author_id=TONY_ID, labels=("bug",), title="t",
+                                 policy={"trusted_authors": [f"tony#{TONY_ID}"]})
 
 
 def test_stale_system_holds_picks_only_system_owner_action_holds_on_skipped_rows():
@@ -105,19 +106,19 @@ def test_stale_system_holds_picks_only_system_owner_action_holds_on_skipped_rows
 
 
 def test_approval_tap_refuses_an_untrusted_author():
-    policy = {"trusted_authors": ["steiner385"]}
-    assert skipped_by_policy(author="stranger", labels=(), title="t", policy=policy)
-    assert not skipped_by_policy(author="steiner385", labels=(), title="t", policy=policy)
+    policy = {"trusted_authors": [f"steiner385#{STEINER_ID}"]}
+    assert skipped_by_policy(author="stranger", author_id=99, labels=(), title="t", policy=policy)
+    assert not skipped_by_policy(author="steiner385", author_id=STEINER_ID, labels=(), title="t", policy=policy)
 
 
 def test_trust_never_makes_a_runner_hold_stale():
     """Trust gates DISPATCH (and the approve tap), not the hold inbox: before a product's
     trusted_authors is seeded, every runner hold on a human-authored issue is
     'untrusted' and releasing them would silently drop the owner's queue."""
-    policies = {"kindash": {"trusted_authors": ["steiner385"]}}
+    policies = {"kindash": {"trusted_authors": [f"steiner385#{STEINER_ID}"]}}
     row = _row(number=1, hold_kind="owner_action", hold_by="runner", hold_reason=ESCALATION,
                author="stranger", labels=("bug",))
-    assert skipped_by_policy(author="stranger", labels=("bug",), title="t",
+    assert skipped_by_policy(author="stranger", author_id=99, labels=("bug",), title="t",
                              policy=policies["kindash"])
     assert stale_system_holds([row], policies, now=NOW) == []
     assert stale_system_holds([row], {}, now=NOW) == []
@@ -133,7 +134,7 @@ def test_a_self_closing_tracker_is_not_work_unless_the_product_works_trackers():
     assert not_work_by_policy(policy=None, **flaky)
     assert not_work_by_policy(policy={}, **flaky)
     assert not not_work_by_policy(policy={"skip_self_closing_trackers": False}, **flaky)
-    assert skipped_by_policy(policy={}, **flaky)
+    assert skipped_by_policy(policy={}, author_id=None, **flaky)
     # The ignore label is built in: no policy lists it, and the opt-out is irrelevant.
     ignored = dict(author="app/github-actions", labels=("viberpit-ignore",), title="t")
     assert not_work_by_policy(policy={"skip_self_closing_trackers": False}, **ignored)
@@ -144,8 +145,9 @@ def test_a_self_closing_tracker_is_not_work_unless_the_product_works_trackers():
     # refuses it (viberpit#1432), the not-work rule — which ends runner holds — does
     # not name it (#2683 review).
     parked = dict(author="tony", labels=("bug", "parked"), title="t")
-    assert not not_work_by_policy(policy={"trusted_authors": ["tony"]}, **parked)
-    assert skipped_by_policy(policy={"trusted_authors": ["tony"]}, **parked)
+    assert not not_work_by_policy(policy={"trusted_authors": [f"tony#{TONY_ID}"]}, **parked)
+    assert skipped_by_policy(policy={"trusted_authors": [f"tony#{TONY_ID}"]},
+                            author_id=TONY_ID, **parked)
 
 
 def test_a_parked_label_never_ends_the_runners_give_up_hold():
@@ -210,7 +212,7 @@ def test_approval_tap_refuses_an_issue_the_fleet_cannot_run():
     """#2983: the approve tap dispatches without re-ranking, so it must refuse an
     environment-gated issue exactly as the queue skips it."""
     for labels in (("env: windows",), ("real-target", "env: windows")):
-        assert skipped_by_policy(author="app/github-actions", labels=labels, title="t",
+        assert skipped_by_policy(author="app/github-actions", author_id=None, labels=labels, title="t",
                                  policy=None)
-    assert not skipped_by_policy(author="app/github-actions", labels=("env: linux",),
+    assert not skipped_by_policy(author="app/github-actions", author_id=None, labels=("env: linux",),
                                  title="t", policy=None)

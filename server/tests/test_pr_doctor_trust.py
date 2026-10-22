@@ -12,6 +12,7 @@ import asyncio
 
 import pytest
 
+from server.tests._trust_ids import TONY_ID, TONY_ENTRY
 from server.github.pr_status import PullRequestInfo
 
 
@@ -24,15 +25,15 @@ async def _seed() -> None:
     from server.db import db_session
     from server.db.models import Project, ProjectRepo, WorkItem
     async with db_session() as db:
-        p = Project(slug="prod", name="prod", automation_policy={"trusted_authors": ["tony"]})
+        p = Project(slug="prod", name="prod", automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))
-        db.add(WorkItem(author="tony", repo="o/r", number=7, kind="pr", state="open"))
+        db.add(WorkItem(author="tony", author_id=TONY_ID, repo="o/r", number=7, kind="pr", state="open"))
         db.add(WorkItem(author="stranger", repo="o/r", number=8, kind="pr", state="open"))
         # Same number as an issue by tony: the PR's own author is what counts.
-        db.add(WorkItem(author="tony", repo="o/r", number=8, kind="issue", state="open"))
-        db.add(WorkItem(author="tony", repo="x/unowned", number=1, kind="pr", state="open"))
+        db.add(WorkItem(author="tony", author_id=TONY_ID, repo="o/r", number=8, kind="issue", state="open"))
+        db.add(WorkItem(author="tony", author_id=TONY_ID, repo="x/unowned", number=1, kind="pr", state="open"))
 
 
 class _Sentinel(Exception):

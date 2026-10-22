@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from server.tests._trust_ids import TONY_ID
 from server.db.models import (LEFT_OPEN_DEFERRED_CAUSE, NOT_NEEDED_CAUSE, Base, DispatchOutcome, GhProject,
                               GhProjectItem, Project, ProjectRepo, WorkItem)
 from server.pm.outcomes import (NOT_NEEDED_BACKOFF, NotNeededVerdict, body_fingerprint,
@@ -28,7 +29,7 @@ from server.pm.queue_store import load_queue_rows
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 TITLE, BODY, LABELS = "Fix the thing", "It is broken", ("bug",)
 KW = dict(min_status="Backlog", respect_dependencies=True,
-          trusted_authors=frozenset({"tony"}))
+          trusted_authors=frozenset({f"user:{TONY_ID}"}))
 
 
 SESSION = timedelta(hours=2)   # how long each verdict's dispatch ran
@@ -137,7 +138,7 @@ def test_naive_verdict_times_read_as_utc():
 def _row(**over) -> QueueRow:
     base: dict[str, Any] = dict(ref="o/r#1", repo="o/r", number=1, product="p", title=TITLE, body=BODY,
                 url="u", status="Ready", score=1.0, gh_created_at=T0, gh_updated_at=T0,
-                assignees=(), author="tony", labels=LABELS, open_children=0,
+                assignees=(), author="tony", author_id=TONY_ID, labels=LABELS, open_children=0,
                 open_blockers=(), live_session=False, claimed=False)
     base.update(over)
     return QueueRow(**base)
@@ -193,7 +194,8 @@ def _seed_issue(db) -> WorkItem:
     db.add(gh)
     db.flush()
     wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title=TITLE, body=BODY,
-                  labels=list(LABELS), author="tony", gh_created_at=T0, gh_updated_at=T0)
+                  labels=list(LABELS), author="tony", author_id=TONY_ID,
+                  gh_created_at=T0, gh_updated_at=T0)
     db.add(wi)
     db.flush()
     db.add(GhProjectItem(gh_project_id=gh.id, work_item_id=wi.id, gh_item_node_id="PVTI_1",

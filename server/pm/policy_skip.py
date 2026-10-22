@@ -52,15 +52,15 @@ def not_work_by_policy(*, author: str, labels: Iterable[str], title: str,
             and is_self_closing_tracker(labels, title, author=author))
 
 
-def skipped_by_policy(*, author: str, labels: Iterable[str], title: str,
-                      policy: Mapping | None) -> bool:
+def skipped_by_policy(*, author: str, author_id: int | None, labels: Iterable[str],
+                      title: str, policy: Mapping | None) -> bool:
     """Whether the queue would skip this issue as ``bot``, ``tracker``, ``parked``,
     ``untrusted`` or ``environment`` under *policy* — ``not_work_by_policy``, a
-    person's ``parked`` label, an author outside its ``trusted_authors``, or an
+    person's ``parked`` label, an author (by GitHub id) outside its ``trusted_authors``, or an
     environment gate no fleet host meets (#2983): the approve-escalation tap's
     refusal. ``None`` (no policy for the product) applies the built-in filters and
     trusts only automation logins (fail-closed)."""
-    if not is_trusted_author(author, trusted_authors(policy)):
+    if not is_trusted_author(author, trusted_authors(policy), author_id=author_id):
         return True
     labels = tuple(labels)
     return (is_parked(labels) or needs_unavailable_environment(labels)

@@ -315,6 +315,31 @@ def _backfill_app_authors(sync_conn) -> None:
         name=_APP_AUTHOR_BACKFILL, applied_at=datetime.now(timezone.utc)))
 
 
+_AUTHOR_ID_BACKFILL = "work_item_author_ids"
+
+
+def _backfill_work_item_author_ids(sync_conn) -> None:
+    """ONE-SHOT: reset every repo's mirror backfill so the sync fills ``author_id`` (#3147).
+
+    ``work_items.author_id`` is new and NULL on every existing row; the trusted-author
+    gate keys on it (fail closed on NULL), so each repo is re-mirrored once. Authors and
+    work_items rows are NOT touched. The ``data_backfills`` marker is written in the same
+    transaction so it never repeats.
+    """
+    tables = set(sa_inspect(sync_conn).get_table_names())
+    if not {"project_repos", "data_backfills"} <= tables:
+        return
+    marker = cast(Table, DataBackfill.__table__)
+    if sync_conn.execute(sa_select(marker.c.name).where(
+            marker.c.name == _AUTHOR_ID_BACKFILL)).first() is not None:
+        return
+    repos = cast(Table, ProjectRepo.__table__)
+    sync_conn.execute(sa_update(repos).values(
+        backfill_done=False, backfill_cursor=None, backfill_phase="issues"))
+    sync_conn.execute(sa_insert(marker).values(
+        name=_AUTHOR_ID_BACKFILL, applied_at=datetime.now(timezone.utc)))
+
+
 def _assert_no_schema_drift(sync_conn) -> None:
     """After reconcile, verify every model column exists in its table.
 
@@ -371,6 +396,7 @@ async def init_db(db_url: str | None = None) -> None:
         await conn.run_sync(_backfill_session_engine)
         await conn.run_sync(_migrate_weighted_selection_strategy)
         await conn.run_sync(_backfill_app_authors)
+        await conn.run_sync(_backfill_work_item_author_ids)
         await conn.run_sync(_assert_no_schema_drift)
         if url.startswith("sqlite"):
             # SQLite-only: `pending_rearm = 'null'` compares a json column to text,

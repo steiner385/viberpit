@@ -10695,6 +10695,7 @@ class SessionOrchestrator:
                 existing.state = item.state
                 existing.labels = list(item.labels)
                 existing.author = item.author
+                existing.author_id = item.author_id
                 existing.url = item.url
                 existing.linked_issue_numbers = list(item.linked_issue_numbers)
                 existing.assignees = list(item.assignees)
@@ -11167,7 +11168,7 @@ class SessionOrchestrator:
                 product_slug=(o.slug if (o := owners.get(w.repo or "")) else None),
                 dismissed_before=w.id in dismissed_ids,
             ) for w in rows if w.id not in pending_ids
-                and author_trusted(trusted, w.repo, w.author)]
+                and author_trusted(trusted, w.repo, w.author, author_id=w.author_id)]
 
     async def _pm_triage_auto_link(self, item) -> bool:
         """Mechanical routing, no AI session (design §6.2): a PR whose closing
@@ -11449,7 +11450,8 @@ class SessionOrchestrator:
                 .outerjoin(WorkItem, WorkItem.id == TriageProposal.work_item_id)
                 .where(awaiting_decision_clause()))).scalar_one()
             open_unclassified = (await db.execute(
-                select(WorkItem.id, WorkItem.repo, WorkItem.author).where(
+                select(WorkItem.id, WorkItem.repo, WorkItem.author,
+                              WorkItem.author_id).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
                     self._classifiable_hold_clause())
@@ -11466,15 +11468,16 @@ class SessionOrchestrator:
                        TriageProposal.no_fit_suggestion.isnot(None))
             )).all()
             trusted = await trusted_authors_by_repo(
-                db, {r for _id, r, _a in open_unclassified}
+                db, {r for _id, r, _a, _i in open_unclassified}
                 | {item.repo for _p, item in accepted_nofit})
-            unclassified = sum(1 for wid, repo, author in open_unclassified
+            unclassified = sum(1 for wid, repo, author, aid in open_unclassified
                                if wid not in pending_ids
-                               and author_trusted(trusted, repo, author))
+                               and author_trusted(trusted, repo, author, author_id=aid))
             clusters: dict[tuple[str, str], list[int]] = {}
             from server.pm.map_resolution import map_resolution_inputs
             for proposal, item in accepted_nofit:
-                if not author_trusted(trusted, item.repo, item.author):
+                if not author_trusted(trusted, item.repo, item.author,
+                                          author_id=item.author_id):
                     continue
                 if (proposal.map_resolution or {}).get("inputs") == map_resolution_inputs(
                         proposal, item):
@@ -12246,7 +12249,8 @@ class SessionOrchestrator:
                     sa_tuple(WorkItem.repo, WorkItem.number).in_(keys)
                 ))).scalars().all()
                 trusted = await trusted_authors_by_repo(db, {w.repo for w in found})
-                chunk = [w for w in found if author_trusted(trusted, w.repo, w.author)]
+                chunk = [w for w in found if author_trusted(trusted, w.repo, w.author,
+                                                      author_id=w.author_id)]
                 if not chunk:
                     return 0
             else:
@@ -12259,13 +12263,14 @@ class SessionOrchestrator:
                 trusted = await trusted_authors_by_repo(db, repo_names)
                 policy = effective_policy(proj.automation_policy)
                 candidates = (await db.execute(select(
-                    WorkItem.id, WorkItem.repo, WorkItem.author, WorkItem.title).where(
+                    WorkItem.id, WorkItem.repo, WorkItem.author, WorkItem.author_id,
+                    WorkItem.title).where(
                     WorkItem.repo.in_(repo_names), WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified"
                 ).order_by(WorkItem.gh_updated_at.desc()))).all()
-                chunk_ids = [wid for wid, repo_, author, title in candidates
+                chunk_ids = [wid for wid, repo_, author, aid, title in candidates
                              if wid not in pending_ids
-                             and author_trusted(trusted, repo_, author)
+                             and author_trusted(trusted, repo_, author, author_id=aid)
                              and not sets_aside_bot_output(policy, title, author)
                              ][:CLASSIFY_CHUNK_SIZE]
                 if not chunk_ids:
@@ -13473,10 +13478,12 @@ class SessionOrchestrator:
             ).order_by(WorkItem.number))).scalars().all()
             trusted = await trusted_authors_by_repo(
                 db, {epic_repo} | {c.repo for c in children})
-            if not author_trusted(trusted, epic_repo, epic.author):
+            if not author_trusted(trusted, epic_repo, epic.author,
+                                  author_id=epic.author_id):
                 raise UntrustedEpic(ref)
             # Only trusted authors' sub-issues reach the prompt either.
-            kept = [c for c in children if author_trusted(trusted, c.repo, c.author)]
+            kept = [c for c in children if author_trusted(trusted, c.repo, c.author,
+                                                    author_id=c.author_id)]
             omitted = len(children) - len(kept)
             children = kept
         parts = [
