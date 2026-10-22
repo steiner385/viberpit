@@ -5,6 +5,7 @@ entry is stored as ``login#<id>`` (bound on write through ``GET /users/{login}``
 queue-shaped reading trusts users only by id (``user:<id>``)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 
@@ -14,6 +15,7 @@ from sqlalchemy import select
 from server.automations.product_policy import (
     bind_unbound_trusted_authors, merge_policy_patch, patch_project_policy, trusted_authors,
     trusted_user_logins)
+from server.automations.product_policy import bind_retry_delays, run_trusted_author_binder
 from server.db.models import Project
 from server.pm import github_identity
 from server.pm.github_identity import GitHubLookupError
@@ -210,8 +212,9 @@ async def test_startup_binder_binds_once_and_is_then_a_no_op(isolated_db, caplog
         async with db_session() as db:
             bound = await bind_unbound_trusted_authors(db, resolve_user_id=resolve)
     assert bound == ["a"]
-    assert [r for r in caplog.records if r.levelno == logging.WARNING
-            and "'b'" in r.getMessage() and "gone-user" in r.getMessage()]
+    unresolved = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert [r.getMessage() for r in unresolved] == ["product_policy.trusted_author_unresolved"]
+    assert unresolved[0].product == "b" and unresolved[0].logins == ["gone-user"]
     async with db_session() as db:
         rows = {p.slug: p.automation_policy for p in (await db.scalars(select(Project))).all()}
     # Inert entries (a bare app login, a REST bot login) contributed nothing on read; the
@@ -258,7 +261,9 @@ async def test_startup_binder_skips_a_product_on_a_transport_failure(isolated_db
     with caplog.at_level(logging.WARNING):
         async with db_session() as db:
             assert await bind_unbound_trusted_authors(db, resolve_user_id=down) == []
-    assert [r for r in caplog.records if r.levelno == logging.WARNING]
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert [r.getMessage() for r in warns] == ["product_policy.trusted_author_bind_failed"]
+    assert warns[0].product == "a" and warns[0].error_type == "GitHubLookupError"
     async with db_session() as db:
         assert (await db.get(Project, "a")).automation_policy == {"trusted_authors": ["tony"]}
 
@@ -318,3 +323,113 @@ async def test_patch_does_not_recheck_an_entry_already_stored(isolated_db):
         out = await patch_project_policy(
             db, p, {"trusted_authors": ["app/x", "tony#1"]}, resolve_user_id=resolve)
     assert out == {"trusted_authors": ["app/x", "tony#1"]}
+
+
+# --- retry, stable warnings, no spurious revision bump ------------------------------------
+
+@pytest.mark.asyncio
+async def test_binder_leaves_the_revision_alone_when_nothing_changes(isolated_db):
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="b", slug="b", name="b", automation_policy={
+            "trusted_authors": ["gone-user"]}))
+    async with db_session() as db:
+        before = (await db.get(Project, "b")).automation_policy_updated_at
+        assert await bind_unbound_trusted_authors(
+            db, resolve_user_id=_fake_resolver({})) == []
+    async with db_session() as db:
+        p = await db.get(Project, "b")
+        assert p.automation_policy_updated_at == before
+
+
+@pytest.mark.asyncio
+async def test_failed_pass_reports_the_slug_and_warns_once_per_product(isolated_db, caplog):
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="a", slug="a", name="a", automation_policy={"trusted_authors": ["tony"]}))
+
+    async def down(login):
+        raise GitHubLookupError(f"down {login} {id(login)}")
+    failed: list[str] = []
+    warned: set[str] = set()
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            async with db_session() as db:
+                await bind_unbound_trusted_authors(
+                    db, resolve_user_id=down, failed=failed, warned=warned)
+    assert failed == ["a", "a", "a"]
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+def test_bind_retry_delays_back_off_to_a_cap_and_stop_after_about_a_day():
+    d = list(bind_retry_delays())
+    assert d[:5] == [30, 60, 120, 240, 480] and d[5] == 900 and max(d) == 900
+    assert 86400 <= sum(d) < 86400 + 900
+
+
+@pytest.mark.asyncio
+async def test_runner_retries_a_transport_failure_until_it_binds(isolated_db):
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="a", slug="a", name="a", automation_policy={"trusted_authors": ["tony"]}))
+        db.add(Project(id="b", slug="b", name="b", automation_policy={"trusted_authors": ["ghost"]}))
+    attempts = 0
+
+    async def flaky(login):
+        nonlocal attempts
+        if login == "ghost":
+            return None
+        attempts += 1
+        if attempts == 1:
+            raise GitHubLookupError("down")
+        return 7
+    slept: list[float] = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+    await run_trusted_author_binder(resolve_user_id=flaky, delays=[1, 2, 3], sleep=fake_sleep)
+    assert slept == [1]  # one retry; the 404 login ("ghost") was never retried
+    async with db_session() as db:
+        assert (await db.get(Project, "a")).automation_policy == {"trusted_authors": ["tony#7"]}
+        assert (await db.get(Project, "b")).automation_policy == {"trusted_authors": ["ghost"]}
+
+
+@pytest.mark.asyncio
+async def test_runner_gives_up_when_the_delays_run_out(isolated_db, caplog):
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="a", slug="a", name="a", automation_policy={"trusted_authors": ["tony"]}))
+
+    async def down(login):
+        raise GitHubLookupError("down")
+    slept: list[float] = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+    with caplog.at_level(logging.WARNING):
+        await run_trusted_author_binder(resolve_user_id=down, delays=[1, 2], sleep=fake_sleep)
+    assert slept == [1, 2]
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "product_policy.trusted_author_bind_failed",
+        "product_policy.trusted_author_bind_gave_up"]
+
+
+@pytest.mark.asyncio
+async def test_runner_teardown_cancels_a_sleeping_retry(isolated_db):
+    from server.aio import cancel_and_reap
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="a", slug="a", name="a", automation_policy={"trusted_authors": ["tony"]}))
+
+    async def down(login):
+        raise GitHubLookupError("down")
+    sleeping = asyncio.Event()
+
+    async def block(s):
+        sleeping.set()
+        await asyncio.sleep(3600)
+    task = asyncio.create_task(run_trusted_author_binder(
+        resolve_user_id=down, delays=[30], sleep=block))
+    await asyncio.wait_for(sleeping.wait(), 5)
+    assert await cancel_and_reap(task, phase="test", timeout=5)
+    assert task.cancelled()

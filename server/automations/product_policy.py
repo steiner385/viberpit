@@ -18,6 +18,7 @@ take a product's dispatch decision down with it: every reader falls back to pure
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -27,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Mapping
+    from collections.abc import Awaitable, Callable, Collection, Iterable, Iterator, Mapping
 
     from server.pm.repo_project import RepoOwnership
 
@@ -534,6 +535,7 @@ async def patch_project_policy(
     expected_values: Mapping | None = None,
     resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
     unresolved: "list[str] | None" = None,
+    skip_noop: bool = False,
 ) -> dict | None:
     """Sparse policy write with an atomic revision check, shared with migration.
 
@@ -549,6 +551,9 @@ async def patch_project_policy(
     A ``trusted_authors`` patch has each bare user login bound to its GitHub user id
     (``bind_trusted_entries``; *resolve_user_id* defaults to the GitHub lookup) before
     the merge, so no unbound login is ever stored by a write (#3147).
+
+    ``skip_noop`` returns without writing when the merge changes nothing, so a background
+    caller does not bump the revision an open editor is holding.
     """
     observed = project.automation_policy_updated_at
     if check_expected and iso_utc(expected_updated_at) != iso_utc(observed):
@@ -561,6 +566,8 @@ async def patch_project_policy(
     merged = merge_policy_patch(project.automation_policy, patch)
     if expected_values:
         check_expected_values(project.automation_policy, expected_values)
+    if skip_noop and merged == project.automation_policy:
+        return merged
     revision = naive_utc_now().replace(tzinfo=timezone.utc)
     previous = parse_iso_utc(iso_utc(observed))
     if previous is not None:
@@ -654,18 +661,33 @@ def _has_unbound_user(policy: object) -> bool:
 async def bind_unbound_trusted_authors(
     db: AsyncSession, *,
     resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
+    failed: "list[str] | None" = None,
+    warned: "set[str] | None" = None,
 ) -> list[str]:
     """Re-save every product whose stored ``trusted_authors`` still holds a bare user
     login, binding it to its GitHub id (#3147); returns the slugs re-saved.
 
-    Run once at edge startup, best-effort and idempotent (a fully bound policy is
-    skipped without a lookup), so it needs no marker: a product GitHub could not resolve
-    is retried next start. A login GitHub has no user for stays bare in place (untrusted)
-    and is named in one WARNING; it never blocks the product's other logins. Entries no reader honours (a bare app login, a REST bot
-    login, a malformed id) are dropped from the re-save — they granted nothing, and
-    keeping them would fail the write. A lookup failure skips the product with one WARNING;
-    until it binds, that product's unbound users stay untrusted."""
+    Best-effort and idempotent (a fully bound policy is skipped without a lookup), so it
+    needs no marker. A login GitHub has no user for stays bare in place (untrusted) and
+    is reported in one WARNING; it never blocks the product's other logins, and a product
+    whose only unbound entries are such logins is not written at all (no revision bump).
+    Entries no reader honours (a bare app login, a REST bot login, a malformed id) are
+    dropped from the re-save — they granted nothing, and keeping them would fail the
+    write. A lookup failure skips the product with one WARNING and appends its slug to
+    *failed* so a caller can retry it; until it binds, its unbound users stay untrusted.
+
+    Warnings are a constant message with the product and error class in ``extra=`` (the
+    auto-error filer fingerprints the normalized message, so a varying slug or exception
+    text would file one issue per product). *warned* lets a retrying caller warn once per
+    product and kind instead of once per attempt."""
     from server.audit import record_audit
+
+    seen = warned if warned is not None else set()
+
+    def warn_once(key: str, msg: str, **extra: Any) -> None:
+        if key not in seen:
+            seen.add(key)
+            log.warning(msg, extra=extra, exc_info=msg.endswith("bind_failed"))
 
     bound: list[str] = []
     # The scan only NAMES candidates. The entries to bind are recomputed from the row
@@ -687,7 +709,7 @@ async def bind_unbound_trusted_authors(
             missing: list[str] = []
             policy = await patch_project_policy(
                 db, project, {"trusted_authors": keep}, resolve_user_id=resolve_user_id,
-                unresolved=missing)
+                unresolved=missing, skip_noop=True)
             if policy != stored:
                 await record_audit(db=db, type="pm.project.policy", identity="system",
                                    detail={"slug": slug, "policy": policy,
@@ -696,14 +718,69 @@ async def bind_unbound_trusted_authors(
             await db.commit()
         except Exception as exc:
             await db.rollback()
-            log.warning("product_policy.trusted_author_bind_failed product=%r: %s", slug, exc)
+            if failed is not None:
+                failed.append(slug)
+            warn_once(f"failed:{slug}", "product_policy.trusted_author_bind_failed",
+                      product=slug, error_type=type(exc).__name__)
             continue
         if missing:
-            log.warning("product_policy.trusted_author_unresolved product=%r logins=%s "
-                        "(left unbound, untrusted)", slug, sorted(missing))
+            warn_once(f"unresolved:{slug}", "product_policy.trusted_author_unresolved",
+                      product=slug, logins=sorted(missing))
         if len(missing) < sum(1 for e in keep if _is_unbound(e)):
             bound.append(slug)
     return bound
+
+
+def bind_retry_delays() -> "Iterator[float]":
+    """Backoff between binder passes: 30s doubling to a 15 min cap, until about a day
+    of waiting has been scheduled."""
+    total, delay = 0.0, 30.0
+    while total < _BIND_RETRY_WINDOW_S:
+        yield delay
+        total += delay
+        delay = min(delay * 2, _BIND_RETRY_CAP_S)
+
+
+_BIND_RETRY_CAP_S = 900.0
+_BIND_RETRY_WINDOW_S = 86400.0
+
+
+async def run_trusted_author_binder(
+    *,
+    resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
+    delays: "Iterable[float] | None" = None,
+    sleep: "Callable[[float], Awaitable[None]]" = asyncio.sleep,
+) -> None:
+    """The edge's startup task: bind every product's bare trusted logins (#3147), and
+    while a product was skipped for a transport failure (GitHub / ``gh`` unavailable),
+    sleep and try again on *delays*. A 404 login is a definite answer and is never
+    retried. Returns when a pass leaves nothing to retry or the delays run out; the
+    sleep is cancellable, so teardown through ``cancel_and_reap`` stays prompt."""
+    from server.db import db_session
+
+    pending = iter(bind_retry_delays() if delays is None else delays)
+    warned: set[str] = set()
+    while True:
+        failed: list[str] = []
+        try:
+            async with db_session() as db:
+                bound = await bind_unbound_trusted_authors(
+                    db, resolve_user_id=resolve_user_id, failed=failed, warned=warned)
+            if bound:
+                log.info("product_policy.trusted_authors_bound", extra={"products": bound})
+        except Exception:
+            if "pass" not in warned:
+                warned.add("pass")
+                log.warning("product_policy.trusted_author_bind_pass_failed", exc_info=True)
+            failed = ["*"]
+        if not failed:
+            return
+        delay = next(pending, None)
+        if delay is None:
+            log.warning("product_policy.trusted_author_bind_gave_up",
+                        extra={"products": sorted(set(failed))})
+            return
+        await sleep(delay)
 
 
 def rank_kwargs(policy: "Mapping", *, min_status: str | None = None,

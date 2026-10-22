@@ -561,25 +561,14 @@ async def _lifespan(app: FastAPI):
 
     # --- trusted-author binder (#3147) ----------------------------------------
     # A product policy stored before trust was keyed on GitHub user ids still holds
-    # bare logins, which now trust no one. Re-save them bound, once per start, in the
-    # background: GitHub lookups must never hold startup, and a product that cannot be
-    # bound is retried next start. Edge only — the session daemon never runs this.
-    async def _bind_trusted_authors_once() -> None:
-        from server.automations.product_policy import bind_unbound_trusted_authors
-        from server.db import db_session as _dbs
-
-        try:
-            async with _dbs() as _db:
-                _bound = await bind_unbound_trusted_authors(_db)
-            if _bound:
-                _logging.getLogger("server").info(
-                    "startup: bound trusted authors to GitHub ids for %s", _bound)
-        except Exception:
-            _logging.getLogger("server").warning(
-                "startup: trusted-author binding failed", exc_info=True)
+    # bare logins, which now trust no one. Re-save them bound in the background: GitHub
+    # lookups must never hold startup, and while GitHub / gh is unreachable the runner
+    # retries with backoff (a 404 login is a definite answer and is not retried). Edge
+    # only — the session daemon never runs this.
+    from server.automations.product_policy import run_trusted_author_binder
 
     app.state.trusted_author_bind_task = asyncio.create_task(
-        _bind_trusted_authors_once(), name="trusted-author-bind")
+        run_trusted_author_binder(), name="trusted-author-bind")
 
     yield
     # Shutdown. Every await below is bounded via bounded_wait (issue #846): a single
