@@ -99,6 +99,13 @@ def test_session_factory_binds_owns_pr_only_for_a_factory_that_declares_it():
     orch._session_factory("s1")("/tmp", "/cfg", None, "default", None)
     assert seen["owns_pr"].func == orch._session_opened_pr
     assert seen["owns_pr"].args == ("s1",)
+    def with_grants(cwd, cfg, cut, mode, resume, *, on_pre_compact=None, owns_pr=None,
+                    ready_grants=None):
+        seen["ready_grants"] = ready_grants
+
+    orch._sdk_factory = with_grants
+    orch._session_factory("s1")("/tmp", "/cfg", None, "default", None)
+    assert seen["ready_grants"].session_id == "s1"
     orch._sdk_factory = fake
     orch._session_factory("s1")("/tmp", "/cfg", None, "default", None)
     assert seen["fake"]

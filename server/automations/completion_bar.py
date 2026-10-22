@@ -79,9 +79,11 @@ _KEEP_DRAFT_RE = re.compile(
 
 
 # The draft-PR guard (``server/sessions/draft_hold_guard.py``) refuses `gh pr ready`
-# on a draft the session did not open; a nudge to ready one must say the same.
+# on a draft the session did not open unless the user approved it; a nudge to ready
+# one must say the same.
 _OWN_DRAFT_ONLY = (" — only if this session opened it: a draft opened by someone else "
-                   "is a hold, so leave it and hand back instead")
+                   "is a hold, so leave it and hand back instead (or, if the task needs it "
+                   "ready, ask the user with `request_draft_ready`)")
 
 
 def has_keep_draft_instruction(text: str | None) -> bool:

@@ -55,7 +55,8 @@ When a unit of work is complete and verified (tests + lint green), finish it wit
 4. ALWAYS mark the PR ready for review (never leave it a draft) and ALWAYS flip auto-merge on once work is complete: open non-draft (omit
    `--draft`; if one slipped through, run `gh pr ready <#>`), then `gh pr merge <#> --squash --auto`. Both are required on every completed
    PR — a ready PR with auto-merge armed is the finished state.
-   Only for a PR you opened: another's draft is a hold (`draft_hold_guard` refuses `gh pr ready` on it); leave it and hand back.
+   Only for a PR you opened: another's draft is a hold (`draft_hold_guard` refuses `gh pr ready` on it); leave it and hand back —
+   unless your task needs it ready, then ask with the `request_draft_ready` session tool (a card only the user can approve, per PR).
 Only hold off if the user said it's a prototype/WIP, or if verification is failing.
 
 `master` is protected: PRs need the `lint-and-test` and `frontend` CI checks green and the branch

@@ -507,12 +507,52 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                             ctx.session_id, exc_info=True)
         return parsed
 
+    @spec_tool("request_draft_ready",
+               "Ask the user to approve marking ONE draft pull request ready for review "
+               "when this session did not open it — the only way past the draft-PR guard "
+               "for someone else's draft. It raises a permission card the user must "
+               "approve themselves, in every session mode; your prompt or your own words "
+               "never count as that approval. Call it only when your task genuinely needs "
+               "that draft ready (e.g. the user asked you to get its CI running), never to "
+               "work around a draft the owner is holding. repo: owner/name. number: the PR "
+               "number. reason: one sentence the user reads on the card. If the result "
+               "says granted, run `gh pr ready <number> --repo <repo>` next: the grant "
+               "covers that one PR, once. If not granted, leave the PR a draft and hand "
+               "back.",
+               {"type": "object",
+                "properties": {"repo": {"type": "string"},
+                               "number": {"type": "integer"},
+                               "reason": {"type": "string"}},
+                "required": ["repo", "number", "reason"]})
+    @guarded
+    async def request_draft_ready(args: dict[str, Any]) -> Any:
+        from server.sessions.draft_hold_guard import parse_ready_request
+        target = parse_ready_request(args)
+        if target is None:
+            raise ToolArgError("repo must be owner/name and number a positive PR number")
+        if not str(args.get("reason") or "").strip():
+            raise ToolArgError("reason must not be empty")
+        repo, number = target
+        # This handler runs only after the card was allowed, but it never writes the
+        # grant: the registry did, from the human's decision. Reading it back here is
+        # what makes a mode that skipped the card (bypassPermissions) report honestly.
+        granted = bool(ctx.draft_ready_granted is not None
+                       and ctx.draft_ready_granted(repo, number))
+        if granted:
+            return {"granted": True, "repo": repo, "number": number,
+                    "next": f"gh pr ready {number} --repo {repo}"}
+        return {"granted": False, "repo": repo, "number": number,
+                "note": ("No user approval was recorded (this session mode may not show "
+                         "permission cards). Leave the PR a draft and hand back asking "
+                         "the user to approve it or click \"Ready for review\".")}
+
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
                "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
                "propose_decision": propose_decision, "dispatch_session": dispatch_session,
                "reply_to_child": reply_to_child,
-               "share_artifact": share_artifact}
+               "share_artifact": share_artifact,
+               "request_draft_ready": request_draft_ready}
     from .roadmap import build_roadmap_tools
     by_name.update(build_roadmap_tools(ctx, spec_tool, guarded))
     return [by_name[name] for name in mounted_tool_names(ctx)]

@@ -142,6 +142,10 @@ class PermissionRegistry:
         # entry; the last check out drops both, so neither grows with every session seen.
         self._deny_gen: dict[str, int] = {}
         self._gate_inflight: dict[str, int] = {}
+        # The user's approvals to mark one draft PR ready (``draft_hold_guard``),
+        # written ONLY by ``resolve`` below — the one place a human's Allow lands.
+        from server.sessions.draft_hold_guard import DraftReadyGrants
+        self.draft_ready_grants = DraftReadyGrants()
 
     def _pend(self, session_id, turn_id, tool, input, *, mode, identity, always_allowed,
               items, parent_tool_use_id=None) -> tuple[str, asyncio.Future]:
@@ -375,9 +379,25 @@ class PermissionRegistry:
             # nothing is cached in the registry, so a destructive tool or an unsafe
             # pattern simply asks again next time.
             decision = "allow"
+        if decision in ("allow", "always"):
+            self._record_draft_ready_grant(rec)
         if not rec["future"].done():
             rec["future"].set_result(decision if raw else decision == "allow")
         return True
+
+    def _record_draft_ready_grant(self, rec: dict) -> None:
+        """A human allowed a ``request_draft_ready`` card: grant that one PR to that
+        one session. Keyed on the card's own record, never on anything the session
+        says afterwards, so the model cannot write itself a grant."""
+        from viberpit.brand import mcp_tool_stem
+        from server.sessions.draft_hold_guard import REQUEST_TOOL, parse_ready_request
+        if mcp_tool_stem(rec["tool"]) != REQUEST_TOOL:
+            return
+        target = parse_ready_request(rec["input"])
+        if target is not None:
+            self.draft_ready_grants.grant(rec["session_id"], *target)
+            log.info("permission.draft_ready_grant session=%s pr=%s#%s",
+                     rec["session_id"], *target)
 
     def pending(self, session_id) -> list[dict]:
         return [{"permId": pid, "tool": r["tool"], "input": r["input"],

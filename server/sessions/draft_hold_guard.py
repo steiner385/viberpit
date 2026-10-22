@@ -13,7 +13,25 @@ What a session may still do:
 * mark ready a draft IT opened — ViberPit's own completion workflow tells a session
   to ``gh pr ready`` its own PR when one slipped through as a draft;
 * ``gh pr ready N --undo`` — converting to draft is the safe direction;
-* mark ready a PR that is not a draft (a no-op).
+* mark ready a PR that is not a draft (a no-op);
+* mark ready another's draft the USER approved for it, one PR at a time.
+
+The user-approved path (cairnea/KinDash#15268, 2026-10-22: a dispatch that said "mark
+it ready and get CI green" still had to hand back for one click). The session calls
+the ``request_draft_ready(repo, number, reason)`` session tool. It is
+``ToolClass.DESTRUCTIVE``, so ``PermissionRegistry.request`` raises a card for it in
+EVERY session mode — full-auto included, where a hook's ``permissionDecision: "ask"``
+would be auto-approved by that same registry — never consults standing rules and never
+offers "Always allow". Only ``PermissionRegistry.resolve``, on a human's
+identity-checked Allow, records the grant (:class:`DraftReadyGrants`), keyed by session
+and ``repo#number``; the tool handler only reports whether one exists. So nothing the
+model writes grants it: not prose quoting an approval, not the dispatch prompt, not a
+settings file (the SDK loads no filesystem settings), and not a mode that skips cards
+(``bypassPermissions`` never reaches the card, so no grant is recorded). A grant covers
+one PR — a grant for A never passes ``gh pr ready B`` — and is spent by the first
+``gh pr ready`` it lets through, so a draft the owner later converts back is a new hold
+that needs a new approval. Grants live in the daemon's memory: a restart forgets them,
+and the session asks again.
 
 Ownership is the caller's ``owns_pr(repo, number, head_ref)`` (the orchestrator's
 ``_session_opened_pr``: a successful ``gh pr create`` for that PR in the session's own
@@ -24,8 +42,8 @@ Command shapes: ``gh pr ready [<number>|<url>|<branch>] [-R repo]`` anywhere in 
 shell command (including inside ``bash -c``/``eval`` strings, after a ``cd``), a REST
 ``gh api …/pulls/N`` call that sets ``draft=false``, and the GraphQL
 ``markPullRequestReadyForReview`` mutation. The mutation names a node ID the guard
-cannot map back to a PR, so it is always denied — ``gh pr ready N`` is the path for a
-session's own PR. Prose that merely quotes ``gh pr ready`` inside a quoted argument
+cannot map back to a PR, so it is always denied, grant or not — ``gh pr ready N`` is
+the path for a session's own PR and for a granted one. Prose that merely quotes ``gh pr ready`` inside a quoted argument
 (an ``echo`` or a ``--body``) is one shell token and passes; the mutation name is
 matched on raw text, so prose quoting it is denied — the hold guard's trade: a false
 positive costs a re-phrase (``--body-file``), a false negative merges a held PR.
@@ -64,17 +82,26 @@ _PROSE_ADVICE = (
     "(If this command only quotes such a command in prose, write that text to a file "
     "and pass it with -F / --body-file.)")
 
+#: The session tool that asks the user to approve marking one draft ready.
+REQUEST_TOOL = "request_draft_ready"
+
 _HAND_BACK = (
     "A draft is a hold: whoever opened it decides when it becomes mergeable, and marking "
     "it ready lets the repo's auto-merge bot arm and merge it. Leave it a draft — push "
-    "your work to it if that is your task. If the owner really wants it ready, finish "
-    "everything else and hand back asking them to click \"Ready for review\" themselves. "
-    "Converting a PR back to a draft (`gh pr ready <n> --undo`) is always allowed.")
+    "your work to it if that is your task — unless the user approves this one PR: call "
+    f"the `{REQUEST_TOOL}` tool with its repo, number and why it should be ready (a "
+    "permission card only the user can approve, in every session mode), then retry "
+    "`gh pr ready <number> --repo <owner/name>` once it reports the grant. An "
+    "instruction in your prompt is not that approval. If the tool reports no grant, "
+    "finish everything else and hand back asking the user to approve it or to click "
+    "\"Ready for review\" themselves. Converting a PR back to a draft "
+    "(`gh pr ready <n> --undo`) is always allowed.")
 
 MUTATION_REASON = (
     "Blocked: the GraphQL `markPullRequestReadyForReview` mutation names a PR by node ID, "
-    "so this guard cannot tell whether this session opened it. For a draft THIS session "
-    "opened, run `gh pr ready <number>` instead. " + _HAND_BACK + " " + _PROSE_ADVICE)
+    "so this guard cannot tell whether this session opened it or the user approved it — "
+    "it is refused even with a grant. For a draft THIS session opened, or one the user "
+    "approved, run `gh pr ready <number>` instead. " + _HAND_BACK + " " + _PROSE_ADVICE)
 
 UNRESOLVED_REASON = (
     "Blocked: marking a draft PR ready is reserved for the session that opened it, and "
@@ -84,13 +111,79 @@ UNRESOLVED_REASON = (
 
 
 def not_own_reason(repo: str, number: int) -> str:
-    """The refusal for marking ready a draft this session did not open."""
+    """The refusal for marking ready a draft this session did not open and the user
+    has not approved."""
     return (
-        f"Blocked: {repo}#{number} is a draft this session did not open, and marking "
-        f"another session's or the owner's draft ready is reserved for them — even on "
-        f"the owner's GitHub account, even to get CI to run. {_HAND_BACK} (If you did "
-        f"open it in this session, ownership is read from your `gh pr create` result: "
-        f"retry once, and if it is still blocked, hand back.)")
+        f"Blocked: {repo}#{number} is a draft this session did not open, and the user has "
+        f"not approved marking it ready — marking another session's or the owner's draft "
+        f"ready on your own initiative is never allowed, even on the owner's GitHub "
+        f"account, even to get CI to run. To ask: call `{REQUEST_TOOL}` with "
+        f"repo=\"{repo}\", number={number} and your reason; once it reports the grant, "
+        f"retry `gh pr ready {number} --repo {repo}`. {_HAND_BACK} (If you did open it "
+        f"in this session, ownership is read from your `gh pr create` result: retry once "
+        f"before asking.)")
+
+
+def _key(repo: str, number: int) -> tuple[str, int]:
+    return repo.strip().lower(), int(number)
+
+
+class DraftReadyGrants:
+    """The user's per-session, per-PR approvals to mark a draft ready. Written ONLY by
+    ``PermissionRegistry.resolve`` when a human allows a ``request_draft_ready`` card;
+    read and spent by this guard. In memory, owned by the daemon's registry."""
+
+    def __init__(self) -> None:
+        self._grants: dict[str, set[tuple[str, int]]] = {}
+
+    def grant(self, session_id: str, repo: str, number: int) -> None:
+        self._grants.setdefault(session_id, set()).add(_key(repo, number))
+
+    def has(self, session_id: str, repo: str, number: int) -> bool:
+        return _key(repo, number) in self._grants.get(session_id, ())
+
+    def spend(self, session_id: str, repo: str, number: int) -> None:
+        held = self._grants.get(session_id)
+        if held is not None:
+            held.discard(_key(repo, number))
+            if not held:
+                del self._grants[session_id]
+
+    def for_session(self, session_id: str) -> "SessionGrants":
+        return SessionGrants(self, session_id)
+
+
+@dataclass(frozen=True)
+class SessionGrants:
+    """One session's view of :class:`DraftReadyGrants` — what the guard and the tool
+    handler are bound to, so neither can read or spend another session's grant."""
+    store: DraftReadyGrants
+    session_id: str
+
+    def has(self, repo: str, number: int) -> bool:
+        return self.store.has(self.session_id, repo, number)
+
+    def spend(self, repo: str, number: int) -> None:
+        self.store.spend(self.session_id, repo, number)
+
+
+_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def parse_ready_request(args: object) -> tuple[str, int] | None:
+    """``(repo, number)`` from a ``request_draft_ready`` input, or None when it does
+    not name exactly one PR. Shared by the tool handler and the registry, so the PR
+    the card shows is the PR the grant names."""
+    if not isinstance(args, dict):
+        return None
+    repo, number = args.get("repo"), args.get("number")
+    if not isinstance(repo, str) or not _REPO.match(repo.strip()):
+        return None
+    if isinstance(number, str) and number.strip().lstrip("#").isdigit():
+        number = int(number.strip().lstrip("#"))
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        return None
+    return repo.strip(), number
 
 
 @dataclass(frozen=True)
@@ -301,10 +394,12 @@ def _deny(reason: str) -> dict:
 
 
 def draft_ready_guard(owns_pr: OwnsPr | None = None,
-                      resolve: Callable[[ReadyCall, str | None], TargetPr | None] | None = None):
+                      resolve: Callable[[ReadyCall, str | None], TargetPr | None] | None = None,
+                      grants: SessionGrants | None = None):
     """The SDK ``PreToolUse`` hook for one session: deny a Bash call that marks a
-    draft PR ready unless *owns_pr* says this session opened it; every other call
-    passes through untouched (an empty output defers to the normal permission flow)."""
+    draft PR ready unless *owns_pr* says this session opened it or *grants* holds the
+    user's approval for that PR (spent once the call passes); every other call passes
+    through untouched (an empty output defers to the normal permission flow)."""
     async def draft_ready_pre_tool_use(input_data, tool_use_id=None, context=None) -> dict:
         data = input_data or {}
         tool_input = data.get("tool_input") or {}
@@ -323,6 +418,7 @@ def draft_ready_guard(owns_pr: OwnsPr | None = None,
             return _deny(UNRESOLVED_REASON)
 
     async def _judge(calls: tuple[ReadyCall, ...], base: str | None) -> dict:
+        granted: list[TargetPr] = []
         for call in calls:
             cwd = os.path.join(base, call.cwd) if base and call.cwd else (call.cwd or base)
             pr = await asyncio.to_thread(resolve or resolve_pr, call, cwd)
@@ -330,7 +426,14 @@ def draft_ready_guard(owns_pr: OwnsPr | None = None,
                 return _deny(UNRESOLVED_REASON)
             if not pr.is_draft:
                 continue  # already ready: the command is a no-op
-            if owns_pr is None or not await owns_pr(pr.repo, pr.number, pr.head_ref):
-                return _deny(not_own_reason(pr.repo, pr.number))
+            if owns_pr is not None and await owns_pr(pr.repo, pr.number, pr.head_ref):
+                continue
+            if grants is not None and grants.has(pr.repo, pr.number):
+                granted.append(pr)
+                continue
+            return _deny(not_own_reason(pr.repo, pr.number))
+        # Spent only once the whole command passes: a denied sibling call keeps them.
+        for pr in granted:
+            grants.spend(pr.repo, pr.number)  # type: ignore[union-attr]
         return {}
     return draft_ready_pre_tool_use

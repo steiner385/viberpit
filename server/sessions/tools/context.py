@@ -45,6 +45,11 @@ class SessionToolContext:
     #: shares via `share_artifact` counts as a PR fact for the
     #: completion bar (#2663). None when unwired (tests, Codex).
     note_shared_pr: Callable[[str, int], Awaitable[bool | None]] | None = None
+    #: ``draft_ready_granted(repo, number)``: whether the user approved marking that
+    #: draft ready for this session (``draft_hold_guard.SessionGrants.has``). Read
+    #: only — the grant is written by the registry when the card is allowed. None
+    #: when unwired (tests, Codex).
+    draft_ready_granted: Callable[[str, int], bool] | None = None
 
 
 def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:
