@@ -106,12 +106,14 @@ def session_tmpdir_env() -> dict[str, str]:
 
 
 async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
-                     on_pre_compact=None, options_overlay=None, owns_pr=None):
+                     on_pre_compact=None, options_overlay=None, owns_pr=None,
+                     ready_grants=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
     the draft-PR guard (``draft_hold_guard``); the orchestrator binds its
-    ``_session_opened_pr`` here.
+    ``_session_opened_pr`` here. *ready_grants*: that guard's view of the drafts the
+    user approved for this session (``DraftReadyGrants.for_session``).
 
     *options_overlay*: the assistant's overlay (see ``server/assistant/options.py``)
     replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
@@ -126,10 +128,11 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         env.update(extra_env)
     from claude_agent_sdk import HookMatcher
     # Always on: no mode or allow rule may let a session strip `hold:human` (#3088),
-    # merge or arm a `hold:human` PR (#3101), or mark ready a draft it did not open.
-    # Without *owns_pr* no draft is its own.
+    # merge or arm a `hold:human` PR (#3101), or mark ready a draft it did not open
+    # unless the user approved that PR. Without *owns_pr* no draft is its own.
     hooks: dict = {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[
-        human_hold_pre_tool_use, draft_ready_guard(owns_pr), merge_hold_guard()])]}
+        human_hold_pre_tool_use, draft_ready_guard(owns_pr, grants=ready_grants),
+        merge_hold_guard()])]}
     if on_pre_compact is not None:
         hooks["PreCompact"] = [HookMatcher(hooks=[on_pre_compact])]
     kwargs = dict(

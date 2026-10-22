@@ -55,6 +55,7 @@ eleven tools (plus the roadmap tools):
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
 | `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `VIBERPIT_CHILD_SESSIONS_ENABLED`, capped by `VIBERPIT_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |
 | `reply_to_child` | SIGNAL | child_session_id, message | Sends one of this session's children a message as its next prompt — answers a hand-back, resumes a restart-stranded child, stops or re-delegates it (#2911). Mounted with `dispatch_session`; refuses a non-child, an ended/archived child, or a refused delivery as the tool result. See [Child sessions](../guides/child-sessions.md#the-parent-answers-back). |
+| `request_draft_ready` | DESTRUCTIVE | repo, number, reason | Asks the user to approve marking ONE draft PR this session did not open ready for review — the only way past the draft-PR guard for someone else's draft. See below. |
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
 registry — read-only in effect, since neither changes anything the user can see. `mark_complete`,
@@ -262,6 +263,27 @@ and deliberately NOT in `TURN_SIGNAL_NAMES`: the card is the whole feature, so b
 builders render the call, live and on replay, and nothing new is persisted for the transcript —
 the CLI's own JSONL carries the call and its result, which is what makes the card survive a reload
 for free. On Codex the card is the `dynamicToolCall` item, rendered by its translator.
+
+### `request_draft_ready`: the user's approval to ready someone else's draft
+
+`server/sessions/draft_hold_guard.py` denies `gh pr ready` on a draft the session did not
+open: a draft is a hold, and repos like cairnea/KinDash auto-arm every ready PR. Before this
+tool the deny was absolute, so a session the user had explicitly told to "mark it ready and
+get CI green" (cairnea/KinDash#15268) still had to hand back for one click. Now the deny names
+this tool. The session calls `request_draft_ready(repo, number, reason)`; being the only
+`DESTRUCTIVE` session tool, it raises a permission card in **every** mode (full-auto
+included), never consults standing rules and never offers "Always allow". When the user
+allows the card, `PermissionRegistry.resolve`, not the handler, records a grant for that
+session and that `repo#number`; the handler only reports `granted: true|false`. The guard
+then lets ONE `gh pr ready <number>` on that PR through and spends the grant.
+
+Why a card and not a hook `ask`: in `auto`/`full-auto` the same registry auto-approves Bash,
+so an `ask` would be answered by the mode, not the user. Why not the dispatch prompt: prompt
+and repo text are model-visible and often written by automations, so a model could "quote"
+an approval. `bypassPermissions` never reaches the card, so it gets `granted: false` and the
+session hands back. The GraphQL ready mutation stays refused even with a grant, because it
+names a node ID the guard cannot map to the granted PR. Grants are in daemon memory; a
+restart forgets them and the session asks again.
 
 ## Where the signal is read — the Translator, not the handler
 

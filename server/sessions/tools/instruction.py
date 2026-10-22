@@ -79,6 +79,8 @@ _BLURBS: dict[str, str] = {
     "dispatch_session": "you need a linked child session the user can steer independently.",
     "reply_to_child": ("a child session handed back or stopped and you can answer, "
                        "resume or re-direct it yourself."),
+    "request_draft_ready": ("you need to mark ready a draft PR you did not open: asks "
+                            "the user to approve that one PR."),
 }
 
 #: The ONE cross-tool sentence the index may carry beyond naming tools: the

@@ -125,6 +125,7 @@ from server.sessions.model_policy import quota_model
 from server.sessions import orphan_cli as _orphan_cli
 from server.sessions.orphaned_asks import (CLOSE_REASON_RESTART, orphaned_answer_prompt,
                                            orphaned_ask_kind)
+from server.sessions.draft_hold_guard import DraftReadyGrants, SessionGrants
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
@@ -2098,7 +2099,10 @@ class SessionOrchestrator:
             # message that carried the call, read off the live driver (lazily — the
             # driver is built after this overlay). None when there is none to ask.
             signal_prose=functools.partial(self._signal_message_prose, session_id),
-            note_shared_pr=functools.partial(self._note_shared_pr, session_id))
+            note_shared_pr=functools.partial(self._note_shared_pr, session_id),
+            # Read-only view: `request_draft_ready` reports the grant the registry
+            # recorded when the user allowed its card (draft_hold_guard).
+            draft_ready_granted=self._ready_grants(session_id).has)
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
@@ -2265,6 +2269,15 @@ class SessionOrchestrator:
         return (rec.origin != "pr-doctor" and branch not in ("", "main", "master")
                 and head_ref == branch and repo.lower() == (rec.repo or "").lower())
 
+    def _ready_grants(self, session_id: str) -> SessionGrants:
+        """This session's view of the drafts the user approved marking ready — the
+        ONE binding the draft-PR guard and `request_draft_ready` share. The store is
+        the permission registry's, because only its ``resolve`` (a human's Allow)
+        writes a grant."""
+        reg = getattr(self, "_registry", None)
+        store = reg.draft_ready_grants if reg is not None else DraftReadyGrants()
+        return store.for_session(session_id)
+
     async def _signal_message_prose(self, session_id: str, stem: str) -> str | None:
         """The prose of the top-level message that carried this turn's ``stem`` call,
         from the live driver; None when no driver (or engine) can answer. Bound into
@@ -2320,20 +2333,23 @@ class SessionOrchestrator:
         Codex) keeps its current signature, and fakes that do must accept
         ``options_overlay=None``.
 
-        ``owns_pr`` (this session's ``_session_opened_pr``, for the draft-PR guard) is
-        passed only to a factory that declares it — the real one — so fakes keep theirs.
+        ``owns_pr`` (this session's ``_session_opened_pr``, for the draft-PR guard) and
+        ``ready_grants`` (this session's user-approved drafts, for the same guard) are
+        passed only to a factory that declares them — the real one — so fakes keep theirs.
         """
         import inspect
         base = self._sdk_factory
         try:
-            takes_owns_pr = "owns_pr" in inspect.signature(base).parameters
+            declared = set(inspect.signature(base).parameters)
         except (TypeError, ValueError):
-            takes_owns_pr = False
+            declared = set()
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
             extra = {**self._display_env(session_id), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
-            if takes_owns_pr:
+            if "owns_pr" in declared:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
+            if "ready_grants" in declared:
+                kw["ready_grants"] = self._ready_grants(session_id)
             overlay = getattr(self, "_overlays", {}).get(session_id)
             # `dict` and not merely "not None": every kind's overlay lands in the same
             # registry, and a Codex session's is a different type entirely

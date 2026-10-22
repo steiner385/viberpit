@@ -63,6 +63,13 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # ordinary ToolCall card is the parent transcript's record of what it said.
     # ``idempotent=False``: a second call sends a second message.
     ToolSpec("reply_to_child", ToolClass.SIGNAL, "Reply to a child session", idempotent=False),
+    # DESTRUCTIVE, the only session tool that is: its card IS the feature. The class
+    # makes PermissionRegistry.request raise a card in EVERY mode (full-auto included),
+    # skip standing rules and never offer "Always allow"; the registry records the
+    # grant when a human allows it, and `draft_hold_guard` honors it for that one PR
+    # (cairnea/KinDash#15268).
+    ToolSpec("request_draft_ready", ToolClass.DESTRUCTIVE,
+             "Ask the user to approve marking one draft PR ready", idempotent=False),
 ]}
 
 #: THE set of signalling tool names — the permission class: a SIGNAL tool moves
@@ -141,7 +148,7 @@ def mounted_names(*, signalling_tools: bool, self_model_switch: bool,
     # `dispatch_session` and its answer half `reply_to_child` ride only on a durable surface — there is no marker for a
     # dispatch — and only while the kill switch (``child_sessions``) is on.
     if signalling_tools:
-        names += ("roadmap_resolve", "roadmap_hold", "roadmap_advance")
+        names += ("roadmap_resolve", "roadmap_hold", "roadmap_advance", "request_draft_ready")
     if signalling_tools and child_sessions:
         names = names + ("dispatch_session", "reply_to_child")
     return names
