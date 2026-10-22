@@ -27,6 +27,7 @@ from server.automations.product_admission import (
 )
 from server.db import get_db
 from server.github import ci_issues
+from server.pm.github_identity import GitHubLookupError
 from server.db.models import (
     PROJECT_EDGE_KINDS,
     WORK_ITEM_TRIAGE_STATES,
@@ -686,6 +687,12 @@ async def update_project_policy(
         raise HTTPException(status_code=409, detail={
             "error": "policy_conflict",
             "message": "Automation settings changed. Refresh and try again.",
+        }) from e
+    except GitHubLookupError as e:
+        # Binding a trusted user to their GitHub id (#3147) needs GitHub; never store
+        # the login unbound (it would silently trust no one).
+        raise HTTPException(status_code=502, detail={
+            "error": "github_unavailable", "message": str(e),
         }) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail={

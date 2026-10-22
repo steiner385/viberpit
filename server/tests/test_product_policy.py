@@ -285,10 +285,11 @@ def test_session_assistance_defaults_on_and_only_takes_on_or_off():
 
 
 def test_trusted_authors_reader_normalises():
-    # A bare app login is dropped on read (it could only match a squatting user).
-    assert trusted_authors({"trusted_authors": [" Steiner385 ", "", "viberpit",
+    # A bare app login is dropped on read (it could only match a squatting user); a user
+    # is trusted only by the GitHub id it is bound to (#3147), never by an unbound login.
+    assert trusted_authors({"trusted_authors": [" Steiner385#1234 ", "", "viberpit", "tony",
                                                 "github-actions", "App/Viberpit"]}) == \
-        frozenset({"steiner385", "app/viberpit"})
+        frozenset({"user:1234", "app/viberpit"})
     assert trusted_authors(None) == frozenset()
 
 
@@ -304,8 +305,8 @@ def test_merge_policy_patch_rejects_a_bare_app_login_in_trusted_authors(entry):
 def test_merge_policy_patch_accepts_the_app_form_and_ordinary_users():
     from server.automations.product_policy import merge_policy_patch
     merged = merge_policy_patch(None, {"trusted_authors": ["app/viberpit", "app/github-actions",
-                                                           "steiner385"]})
-    assert merged == {"trusted_authors": ["app/viberpit", "app/github-actions", "steiner385"]}
+                                                           "steiner385#1234"]})
+    assert merged == {"trusted_authors": ["app/viberpit", "app/github-actions", "steiner385#1234"]}
 
 
 def test_rank_kwargs_is_the_one_policy_to_rank_reading():
@@ -315,11 +316,11 @@ def test_rank_kwargs_is_the_one_policy_to_rank_reading():
     from server.automations.product_policy import rank_kwargs
     policy = effective_policy({"dispatch": "auto", "queue_min_status": "Backlog",
                                "respect_dependencies": False, "give_up_after_bounces": 3,
-                               "skip_labels": [" On-Hold "], "trusted_authors": ["Tony"],
+                               "skip_labels": [" On-Hold "], "trusted_authors": ["Tony#7"],
                                "skip_self_closing_trackers": False})
     assert rank_kwargs(policy) == {
         "min_status": "Backlog", "respect_dependencies": False, "give_up_after_bounces": 3,
-        "extra_skip_labels": frozenset({"on-hold"}), "trusted_authors": frozenset({"tony"}),
+        "extra_skip_labels": frozenset({"on-hold"}), "trusted_authors": frozenset({"user:7"}),
         "skip_trackers": False}
     # A view's explicit overrides win over the policy's reach.
     kw = rank_kwargs(policy, min_status="Ready", respect_dependencies=True)

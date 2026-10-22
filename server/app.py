@@ -559,6 +559,28 @@ async def _lifespan(app: FastAPI):
             _mcp_oauth_refresh_loop(), name="mcp-oauth-refresh"
         )
 
+    # --- trusted-author binder (#3147) ----------------------------------------
+    # A product policy stored before trust was keyed on GitHub user ids still holds
+    # bare logins, which now trust no one. Re-save them bound, once per start, in the
+    # background: GitHub lookups must never hold startup, and a product that cannot be
+    # bound is retried next start. Edge only — the session daemon never runs this.
+    async def _bind_trusted_authors_once() -> None:
+        from server.automations.product_policy import bind_unbound_trusted_authors
+        from server.db import db_session as _dbs
+
+        try:
+            async with _dbs() as _db:
+                _bound = await bind_unbound_trusted_authors(_db)
+            if _bound:
+                _logging.getLogger("server").info(
+                    "startup: bound trusted authors to GitHub ids for %s", _bound)
+        except Exception:
+            _logging.getLogger("server").warning(
+                "startup: trusted-author binding failed", exc_info=True)
+
+    app.state.trusted_author_bind_task = asyncio.create_task(
+        _bind_trusted_authors_once(), name="trusted-author-bind")
+
     yield
     # Shutdown. Every await below is bounded via bounded_wait (issue #846): a single
     # wedged phase used to hang TestClient exits (CI red for the full job budget) and
@@ -583,6 +605,10 @@ async def _lifespan(app: FastAPI):
             _t.cancel()
             await bounded_wait(_t, timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
                                phase=f"shutdown:{_phase}")
+    from server.aio import cancel_and_reap
+    await cancel_and_reap(getattr(app.state, "trusted_author_bind_task", None),
+                          phase="shutdown:trusted-author-bind",
+                          timeout=_SHUTDOWN_PHASE_TIMEOUT_S)
     if _error_sink is not None:
         await bounded_wait(_error_sink.stop(), timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
                            phase="shutdown:error-sink")

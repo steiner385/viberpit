@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping
+    from collections.abc import Awaitable, Callable, Collection, Mapping
 
     from server.pm.repo_project import RepoOwnership
 
@@ -158,11 +158,12 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                      "reports. Turn off to have the runner work them."),
     ConfigField(key="trusted_authors", label="Trusted issue authors", type="string-list",
                 default=[],
-                help="GitHub logins whose issues the queue may dispatch. Anyone else's "
+                help="GitHub accounts whose issues the queue may dispatch. Anyone else's "
                      "issue is skipped as 'untrusted'. Write a GitHub App as app/<slug> "
-                     "and a user by bare login. The github-actions app is always trusted. "
-                     "Trust follows the current GitHub login, so remove a trusted "
-                     "account that renames (someone else can register its old name)."),
+                     "and a user by login. The github-actions app is always trusted. "
+                     "A user is bound to their GitHub account ID on save (shown as "
+                     "login#id), so renaming an account never moves its trust to "
+                     "whoever registers the old name."),
     # #2679: classes of issue whose approval-gated ladder climb ("bounced at opus;
     # fable needs approval") is approved by the runner itself, within a budget —
     # ``server/pm/auto_escalation.py``. Budget 0 (the default) keeps every such
@@ -342,13 +343,90 @@ def effective_policy(raw: dict | None) -> dict:
 BARE_APP_LOGINS = frozenset({"github-actions", "viberpit"})
 
 
-def _reject_bare_app_logins(entries: object) -> None:
+@dataclass(frozen=True)
+class TrustedEntry:
+    """One parsed ``trusted_authors`` entry (#3147). ``app`` is ``app/<slug>``; a user
+    is ``login`` with ``user_id`` once bound (written ``login#<id>``), ``None`` before."""
+    app: str | None = None
+    login: str | None = None
+    user_id: int | None = None
+
+
+def parse_trusted_entry(entry: object) -> TrustedEntry | None:
+    """THE reading of one ``trusted_authors`` entry: ``app/<slug>`` for an App,
+    ``login#<id>`` for a user bound to their immutable GitHub id, a bare ``login`` for a
+    user not bound yet. ``None`` for an empty entry. Lowercased and stripped.
+
+    Raises ``ValueError`` for anything else — a malformed id, a non-login, a REST-shaped
+    ``<slug>[bot]`` (Apps are ``app/<slug>``) or a ``BARE_APP_LOGINS`` name, which could
+    only ever match a user squatting that login. Writers reject such an entry; readers
+    skip it (it never granted trust)."""
+    from server.pm.github_identity import GITHUB_LOGIN_RE
+
+    text = str(entry).strip().lower()
+    if not text:
+        return None
+    if text.startswith("app/"):
+        return TrustedEntry(app=text)
+    login, sep, raw_id = text.partition("#")
+    if login in BARE_APP_LOGINS:
+        raise ValueError(
+            f"trusted_authors: {login!r} would trust a GitHub USER who registers that "
+            f"login, not the app; write the app as 'app/{login}'")
+    if login.endswith("[bot]"):
+        raise ValueError(f"trusted_authors: {text!r} is a bot; write it as "
+                         f"'app/{login.removesuffix('[bot]')}'")
+    if not GITHUB_LOGIN_RE.match(login):
+        raise ValueError(f"trusted_authors: {text!r} is not a GitHub login")
+    if not sep:
+        return TrustedEntry(login=login)
+    if not raw_id.isdecimal() or int(raw_id) <= 0:
+        raise ValueError(f"trusted_authors: {text!r} must be login#<GitHub user id>")
+    return TrustedEntry(login=login, user_id=int(raw_id))
+
+
+def _readable_trusted_entries(policy: "Mapping | None") -> list[TrustedEntry]:
+    """Every entry a reader honours: unparseable ones (written before write-time
+    validation) are skipped, never a reason to fail the whole policy."""
+    out: list[TrustedEntry] = []
+    for raw in (policy or {}).get("trusted_authors") or ():
+        try:
+            parsed = parse_trusted_entry(raw)
+        except ValueError:
+            continue
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
+def _validate_trusted_entries(entries: object) -> None:
     for entry in entries or ():  # type: ignore[attr-defined]
-        login = str(entry).strip().lower()
-        if login in BARE_APP_LOGINS:
-            raise ValueError(
-                f"trusted_authors: {login!r} would trust a GitHub USER who registers that "
-                f"login, not the app; write the app as 'app/{login}'")
+        parse_trusted_entry(entry)
+
+
+async def bind_trusted_entries(
+    entries: "list", *, resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
+) -> list:
+    """*entries* with every bare user login bound to ``login#<id>``. Validates every
+    entry first, so a malformed list fails before any GitHub request; makes none at all
+    when nothing needs binding. A login GitHub has no USER for (missing, an Organization
+    or a Bot) is a ``ValueError``; a lookup failure propagates."""
+    parsed = [parse_trusted_entry(e) for e in entries]
+    if not any(p is not None and p.login and p.user_id is None for p in parsed):
+        return entries
+    if resolve_user_id is None:
+        from server.pm import github_identity
+        resolve_user_id = github_identity.resolve_github_user_id  # per call: patchable
+    bound: list = []
+    for raw, p in zip(entries, parsed):
+        if p is None or p.login is None or p.user_id is not None:
+            bound.append(raw)
+            continue
+        uid = await resolve_user_id(p.login)
+        if uid is None:
+            raise ValueError(f"trusted_authors: GitHub user {p.login!r} not found")
+        bound.append(f"{p.login}#{uid}")
+    return bound
 
 
 def _reject_bad_patterns(entries: object) -> None:
@@ -380,7 +458,7 @@ def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
     current = {} if current is None else current
     validate_config(PRODUCT_POLICY_SCHEMA, current, retired=PRODUCT_POLICY_RETIRED_KEYS)
     validate_config(PRODUCT_POLICY_SCHEMA, patch, retired=PRODUCT_POLICY_RETIRED_KEYS)
-    _reject_bare_app_logins(patch.get("trusted_authors"))
+    _validate_trusted_entries(patch.get("trusted_authors"))
     _reject_bad_patterns(patch.get("triage_bot_artifact_patterns"))
     merged = {k: v for k, v in {**current, **patch}.items()
               if k not in PRODUCT_POLICY_RETIRED_KEYS}
@@ -433,6 +511,7 @@ async def patch_project_policy(
     db: AsyncSession, project: Project, patch: dict | None, *,
     expected_updated_at: datetime | None = None, check_expected: bool = False,
     expected_values: Mapping | None = None,
+    resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
 ) -> dict | None:
     """Sparse policy write with an atomic revision check, shared with migration.
 
@@ -444,10 +523,17 @@ async def patch_project_policy(
     still hold that effective value. It is checked against the same observed row the
     revision-guarded UPDATE below is conditioned on, so a write that lands between the
     check and the UPDATE fails the revision guard instead of slipping past the check.
+
+    A ``trusted_authors`` patch has each bare user login bound to its GitHub user id
+    (``bind_trusted_entries``; *resolve_user_id* defaults to the GitHub lookup) before
+    the merge, so no unbound login is ever stored by a write (#3147).
     """
     observed = project.automation_policy_updated_at
     if check_expected and iso_utc(expected_updated_at) != iso_utc(observed):
         raise PolicyEditConflict
+    if isinstance(patch, dict) and isinstance(patch.get("trusted_authors"), list):
+        patch = {**patch, "trusted_authors": await bind_trusted_entries(
+            patch["trusted_authors"], resolve_user_id=resolve_user_id)}
     merged = merge_policy_patch(project.automation_policy, patch)
     if expected_values:
         check_expected_values(project.automation_policy, expected_values)
@@ -499,12 +585,82 @@ def skips_self_closing_trackers(policy: "Mapping | None") -> bool:
 
 
 def trusted_authors(policy: "Mapping | None") -> frozenset[str]:
-    """THE queue-shaped reading of ``trusted_authors`` — lowercased, stripped, a set.
-    Same single-reader rule as ``skip_labels``."""
-    logins = (str(a).strip().lower() for a in (policy or {}).get("trusted_authors") or ())
-    # A bare app login (``BARE_APP_LOGINS``) is never honoured, even from a row written
-    # before write-time validation rejected it: it could only match a squatting user.
-    return frozenset(a for a in logins if a and a not in BARE_APP_LOGINS)
+    """THE queue-shaped reading of ``trusted_authors``: ``app/<slug>`` for each App and
+    ``user:<id>`` for each user bound to a GitHub id. Same single-reader rule as
+    ``skip_labels``.
+
+    A user is trusted by id alone (#3147): an UNBOUND bare login (a row stored before
+    binding) contributes nothing — fail closed — because a renamed account's old login
+    can be registered by anyone. A ``BARE_APP_LOGINS`` name is never honoured either."""
+    out: set[str] = set()
+    for e in _readable_trusted_entries(policy):
+        if e.app:
+            out.add(e.app)
+        elif e.user_id is not None:
+            out.add(f"user:{e.user_id}")
+    return frozenset(out)
+
+
+def trusted_user_logins(policy: "Mapping | None") -> frozenset[str]:
+    """The lowercased logins of the policy's user entries, bound or not — for display and
+    assignee matching only, NEVER a trust decision (that is ``trusted_authors``)."""
+    return frozenset(e.login for e in _readable_trusted_entries(policy) if e.login)
+
+
+async def bind_unbound_trusted_authors(
+    db: AsyncSession, *,
+    resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
+) -> list[str]:
+    """Re-save every product whose stored ``trusted_authors`` still holds a bare user
+    login, binding it to its GitHub id (#3147); returns the slugs re-saved.
+
+    Run once at edge startup, best-effort and idempotent (a fully bound policy is
+    skipped without a lookup), so it needs no marker: a product GitHub could not resolve
+    is retried next start. Entries no reader honours (a bare app login, a REST bot
+    login, a malformed id) are dropped from the re-save — they granted nothing, and
+    keeping them would fail the write. One WARNING per product that fails; until it
+    binds, that product's unbound users stay untrusted."""
+    from server.audit import record_audit
+
+    bound: list[str] = []
+    # Plain values, not ORM rows: a failed product's rollback expires every loaded row.
+    rows = (await db.execute(select(Project.id, Project.slug, Project.automation_policy)
+                             .order_by(Project.slug))).all()
+    for project_id, slug, stored in rows:
+        raw = stored.get("trusted_authors") if isinstance(stored, dict) else None
+        if not isinstance(raw, list):
+            continue
+        keep: list = []
+        unbound = False
+        for entry in raw:
+            try:
+                parsed = parse_trusted_entry(entry)
+            except ValueError:
+                continue
+            if parsed is None:
+                continue
+            unbound = unbound or (parsed.login is not None and parsed.user_id is None)
+            keep.append(entry)
+        if not unbound:
+            continue
+        try:
+            project = await db.get(Project, project_id)
+            if project is None:
+                continue
+            stored = project.automation_policy  # the row the guarded write compares
+            policy = await patch_project_policy(db, project, {"trusted_authors": keep},
+                                                resolve_user_id=resolve_user_id)
+            await record_audit(db=db, type="pm.project.policy", identity="system",
+                               detail={"slug": slug, "policy": policy,
+                                       "changes": policy_changes(stored, policy),
+                                       "bound_from": "unbound_trusted_logins"})
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            log.warning("product_policy.trusted_author_bind_failed product=%r: %s", slug, exc)
+            continue
+        bound.append(slug)
+    return bound
 
 
 def rank_kwargs(policy: "Mapping", *, min_status: str | None = None,
