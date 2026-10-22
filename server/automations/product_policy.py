@@ -406,26 +406,47 @@ def _validate_trusted_entries(entries: object) -> None:
 
 async def bind_trusted_entries(
     entries: "list", *, resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
+    stored: "Collection | None" = None, unresolved: "list[str] | None" = None,
 ) -> list:
     """*entries* with every bare user login bound to ``login#<id>``. Validates every
     entry first, so a malformed list fails before any GitHub request; makes none at all
-    when nothing needs binding. A login GitHub has no USER for (missing, an Organization
-    or a Bot) is a ``ValueError``; a lookup failure propagates."""
+    when nothing needs a lookup.
+
+    Two things need one: a bare login (bound to its id) and a client-supplied
+    ``login#<id>`` not already present verbatim in *stored* (the id must belong to that
+    login, or the list would display one account and trust another). A login GitHub has no
+    USER for (missing, an Organization or a Bot) and a mismatched id are a ``ValueError``;
+    a lookup failure propagates. With *unresolved* given, a BARE login with no user is
+    kept as-is (it stays untrusted) and its name appended there instead of raising."""
     parsed = [parse_trusted_entry(e) for e in entries]
-    if not any(p is not None and p.login and p.user_id is None for p in parsed):
+    have = {str(e).strip().lower() for e in stored or ()}
+
+    def _needs_lookup(raw: object, p: "TrustedEntry | None") -> bool:
+        return (p is not None and p.login is not None
+                and (p.user_id is None or str(raw).strip().lower() not in have))
+    if not any(_needs_lookup(raw, p) for raw, p in zip(entries, parsed)):
         return entries
     if resolve_user_id is None:
         from server.pm import github_identity
         resolve_user_id = github_identity.resolve_github_user_id  # per call: patchable
     bound: list = []
     for raw, p in zip(entries, parsed):
-        if p is None or p.login is None or p.user_id is not None:
+        if p is None or p.login is None or not _needs_lookup(raw, p):
             bound.append(raw)
             continue
         uid = await resolve_user_id(p.login)
-        if uid is None:
+        if p.user_id is not None:  # client-supplied binding: verify, never trust
+            if uid != p.user_id:
+                raise ValueError(f"trusted_authors: {p.login!r} is not GitHub user id "
+                                 f"{p.user_id}")
+            bound.append(raw)
+        elif uid is not None:
+            bound.append(f"{p.login}#{uid}")
+        elif unresolved is not None:
+            unresolved.append(p.login)
+            bound.append(raw)
+        else:
             raise ValueError(f"trusted_authors: GitHub user {p.login!r} not found")
-        bound.append(f"{p.login}#{uid}")
     return bound
 
 
@@ -512,6 +533,7 @@ async def patch_project_policy(
     expected_updated_at: datetime | None = None, check_expected: bool = False,
     expected_values: Mapping | None = None,
     resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
+    unresolved: "list[str] | None" = None,
 ) -> dict | None:
     """Sparse policy write with an atomic revision check, shared with migration.
 
@@ -533,7 +555,9 @@ async def patch_project_policy(
         raise PolicyEditConflict
     if isinstance(patch, dict) and isinstance(patch.get("trusted_authors"), list):
         patch = {**patch, "trusted_authors": await bind_trusted_entries(
-            patch["trusted_authors"], resolve_user_id=resolve_user_id)}
+            patch["trusted_authors"], resolve_user_id=resolve_user_id,
+            stored=(project.automation_policy or {}).get("trusted_authors"),
+            unresolved=unresolved)}
     merged = merge_policy_patch(project.automation_policy, patch)
     if expected_values:
         check_expected_values(project.automation_policy, expected_values)
@@ -607,6 +631,26 @@ def trusted_user_logins(policy: "Mapping | None") -> frozenset[str]:
     return frozenset(e.login for e in _readable_trusted_entries(policy) if e.login)
 
 
+def _is_readable_entry(entry: object) -> bool:
+    try:
+        return parse_trusted_entry(entry) is not None
+    except ValueError:
+        return False
+
+
+def _is_unbound(entry: object) -> bool:
+    try:
+        p = parse_trusted_entry(entry)
+    except ValueError:
+        return False
+    return p is not None and p.login is not None and p.user_id is None
+
+
+def _has_unbound_user(policy: object) -> bool:
+    raw = policy.get("trusted_authors") if isinstance(policy, dict) else None
+    return isinstance(raw, list) and any(_is_unbound(e) for e in raw)
+
+
 async def bind_unbound_trusted_authors(
     db: AsyncSession, *,
     resolve_user_id: "Callable[[str], Awaitable[int | None]] | None" = None,
@@ -616,50 +660,49 @@ async def bind_unbound_trusted_authors(
 
     Run once at edge startup, best-effort and idempotent (a fully bound policy is
     skipped without a lookup), so it needs no marker: a product GitHub could not resolve
-    is retried next start. Entries no reader honours (a bare app login, a REST bot
+    is retried next start. A login GitHub has no user for stays bare in place (untrusted)
+    and is named in one WARNING; it never blocks the product's other logins. Entries no reader honours (a bare app login, a REST bot
     login, a malformed id) are dropped from the re-save — they granted nothing, and
-    keeping them would fail the write. One WARNING per product that fails; until it
-    binds, that product's unbound users stay untrusted."""
+    keeping them would fail the write. A lookup failure skips the product with one WARNING;
+    until it binds, that product's unbound users stay untrusted."""
     from server.audit import record_audit
 
     bound: list[str] = []
-    # Plain values, not ORM rows: a failed product's rollback expires every loaded row.
+    # The scan only NAMES candidates. The entries to bind are recomputed from the row
+    # re-read below: an operator edit landing in between (say, removing a login) must win
+    # over this stale snapshot, or the binder would re-trust a revoked user.
     rows = (await db.execute(select(Project.id, Project.slug, Project.automation_policy)
                              .order_by(Project.slug))).all()
-    for project_id, slug, stored in rows:
-        raw = stored.get("trusted_authors") if isinstance(stored, dict) else None
-        if not isinstance(raw, list):
-            continue
-        keep: list = []
-        unbound = False
-        for entry in raw:
-            try:
-                parsed = parse_trusted_entry(entry)
-            except ValueError:
-                continue
-            if parsed is None:
-                continue
-            unbound = unbound or (parsed.login is not None and parsed.user_id is None)
-            keep.append(entry)
-        if not unbound:
-            continue
+    candidates = [(pid, slug) for pid, slug, stored in rows
+                  if _has_unbound_user(stored)]
+    for project_id, slug in candidates:
         try:
             project = await db.get(Project, project_id)
             if project is None:
                 continue
-            stored = project.automation_policy  # the row the guarded write compares
-            policy = await patch_project_policy(db, project, {"trusted_authors": keep},
-                                                resolve_user_id=resolve_user_id)
-            await record_audit(db=db, type="pm.project.policy", identity="system",
-                               detail={"slug": slug, "policy": policy,
-                                       "changes": policy_changes(stored, policy),
-                                       "bound_from": "unbound_trusted_logins"})
+            stored = project.automation_policy  # the row the write is made against
+            if not _has_unbound_user(stored):
+                continue
+            keep = [e for e in (stored or {})["trusted_authors"] if _is_readable_entry(e)]
+            missing: list[str] = []
+            policy = await patch_project_policy(
+                db, project, {"trusted_authors": keep}, resolve_user_id=resolve_user_id,
+                unresolved=missing)
+            if policy != stored:
+                await record_audit(db=db, type="pm.project.policy", identity="system",
+                                   detail={"slug": slug, "policy": policy,
+                                           "changes": policy_changes(stored, policy),
+                                           "bound_from": "unbound_trusted_logins"})
             await db.commit()
         except Exception as exc:
             await db.rollback()
             log.warning("product_policy.trusted_author_bind_failed product=%r: %s", slug, exc)
             continue
-        bound.append(slug)
+        if missing:
+            log.warning("product_policy.trusted_author_unresolved product=%r logins=%s "
+                        "(left unbound, untrusted)", slug, sorted(missing))
+        if len(missing) < sum(1 for e in keep if _is_unbound(e)):
+            bound.append(slug)
     return bound
 
 

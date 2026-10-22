@@ -130,14 +130,14 @@ async def _project(db, policy=None) -> Project:
 @pytest.mark.asyncio
 async def test_patch_binds_bare_logins_to_their_ids(isolated_db):
     from server.db import db_session
-    resolve = _fake_resolver({"tony": 1234567, "alice": 42})
+    resolve = _fake_resolver({"tony": 1234567, "alice": 42, "bob": 9})
     async with db_session() as db:
         p = await _project(db)
         merged = await patch_project_policy(
             db, p, {"trusted_authors": [" Tony ", "app/renovate", "bob#9", "alice"]},
             resolve_user_id=resolve)
     assert merged == {"trusted_authors": ["tony#1234567", "app/renovate", "bob#9", "alice#42"]}
-    assert resolve.calls == ["tony", "alice"]  # type: ignore[attr-defined]
+    assert resolve.calls == ["tony", "bob", "alice"]  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -175,8 +175,8 @@ async def test_patch_without_bare_users_never_calls_the_resolver(isolated_db):
         assert await patch_project_policy(db, p, {"dispatch": "auto"},
                                           resolve_user_id=resolve) == {"dispatch": "auto"}
         assert await patch_project_policy(
-            db, p, {"trusted_authors": ["tony#1", "app/x"]}, resolve_user_id=resolve) == {
-            "dispatch": "auto", "trusted_authors": ["tony#1", "app/x"]}
+            db, p, {"trusted_authors": ["app/x"]}, resolve_user_id=resolve) == {
+            "dispatch": "auto", "trusted_authors": ["app/x"]}
 
 
 @pytest.mark.asyncio
@@ -210,7 +210,8 @@ async def test_startup_binder_binds_once_and_is_then_a_no_op(isolated_db, caplog
         async with db_session() as db:
             bound = await bind_unbound_trusted_authors(db, resolve_user_id=resolve)
     assert bound == ["a"]
-    assert [r for r in caplog.records if r.levelno == logging.WARNING and "'b'" in r.getMessage()]
+    assert [r for r in caplog.records if r.levelno == logging.WARNING
+            and "'b'" in r.getMessage() and "gone-user" in r.getMessage()]
     async with db_session() as db:
         rows = {p.slug: p.automation_policy for p in (await db.scalars(select(Project))).all()}
     # Inert entries (a bare app login, a REST bot login) contributed nothing on read; the
@@ -226,3 +227,94 @@ async def test_startup_binder_binds_once_and_is_then_a_no_op(isolated_db, caplog
     async with db_session() as db:
         assert await bind_unbound_trusted_authors(db, resolve_user_id=resolve2) == []
     assert resolve2.calls == ["gone-user"]  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_startup_binder_binds_what_resolves_and_leaves_the_rest_bare(isolated_db, caplog):
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="a", slug="a", name="a", automation_policy={
+            "trusted_authors": ["tony", "ghost", "alice"]}))
+    resolve = _fake_resolver({"tony": 1, "alice": 2})
+    with caplog.at_level(logging.WARNING):
+        async with db_session() as db:
+            assert await bind_unbound_trusted_authors(db, resolve_user_id=resolve) == ["a"]
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+    async with db_session() as db:
+        p = await db.get(Project, "a")
+        assert p.automation_policy == {"trusted_authors": ["tony#1", "ghost", "alice#2"]}
+        assert trusted_authors(p.automation_policy) == frozenset({"user:1", "user:2"})
+
+
+@pytest.mark.asyncio
+async def test_startup_binder_skips_a_product_on_a_transport_failure(isolated_db, caplog):
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="a", slug="a", name="a", automation_policy={
+            "trusted_authors": ["tony"]}))
+
+    async def down(login):
+        raise GitHubLookupError("down")
+    with caplog.at_level(logging.WARNING):
+        async with db_session() as db:
+            assert await bind_unbound_trusted_authors(db, resolve_user_id=down) == []
+    assert [r for r in caplog.records if r.levelno == logging.WARNING]
+    async with db_session() as db:
+        assert (await db.get(Project, "a")).automation_policy == {"trusted_authors": ["tony"]}
+
+
+@pytest.mark.asyncio
+async def test_startup_binder_does_not_resurrect_an_operator_edit(isolated_db, monkeypatch):
+    """An edit landing between the candidate scan and the per-product write wins."""
+    from sqlalchemy import update
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from server.db import db_session
+    async with db_session() as db:
+        db.add(Project(id="a", slug="a", name="a", automation_policy={
+            "trusted_authors": ["tony", "revoked"]}))
+    real_get = AsyncSession.get
+
+    async def get_after_edit(self, *a, **kw):
+        await self.execute(update(Project).where(Project.id == "a").values(
+            automation_policy={"trusted_authors": ["tony"]}))
+        return await real_get(self, *a, **kw)
+    monkeypatch.setattr(AsyncSession, "get", get_after_edit)
+    resolve = _fake_resolver({"tony": 1, "revoked": 2})
+    async with db_session() as db:
+        await bind_unbound_trusted_authors(db, resolve_user_id=resolve)
+    monkeypatch.undo()
+    async with db_session() as db:
+        assert (await db.get(Project, "a")).automation_policy == {"trusted_authors": ["tony#1"]}
+    assert resolve.calls == ["tony"]  # type: ignore[attr-defined]
+
+
+# --- client-supplied bindings are verified -------------------------------------------
+
+@pytest.mark.asyncio
+async def test_patch_rejects_a_client_binding_whose_id_is_not_that_logins(isolated_db):
+    from server.db import db_session
+    async with db_session() as db:
+        p = await _project(db)
+        with pytest.raises(ValueError, match="not GitHub user id 999"):
+            await patch_project_policy(db, p, {"trusted_authors": ["tony#999"]},
+                                       resolve_user_id=_fake_resolver({"tony": 1}))
+        with pytest.raises(ValueError, match="not GitHub user id 5"):
+            await patch_project_policy(db, p, {"trusted_authors": ["ghost#5"]},
+                                       resolve_user_id=_fake_resolver({}))
+        out = await patch_project_policy(db, p, {"trusted_authors": ["Tony#1"]},
+                                         resolve_user_id=_fake_resolver({"tony": 1}))
+    assert out == {"trusted_authors": ["Tony#1"]}
+
+
+@pytest.mark.asyncio
+async def test_patch_does_not_recheck_an_entry_already_stored(isolated_db):
+    from server.db import db_session
+
+    async def resolve(login):
+        raise AssertionError("an unchanged stored entry needs no lookup")
+    async with db_session() as db:
+        p = await _project(db, {"trusted_authors": ["tony#1", "app/x"]})
+        out = await patch_project_policy(
+            db, p, {"trusted_authors": ["app/x", "tony#1"]}, resolve_user_id=resolve)
+    assert out == {"trusted_authors": ["app/x", "tony#1"]}
