@@ -17,7 +17,7 @@ _PAGE_PRS = 50
 
 _ITEM_FIELDS = """
       number title body state url createdAt updatedAt closedAt
-      author { __typename login }
+      author { __typename login ... on User { databaseId } }
       labels(first: 20) { nodes { name } }
       assignees(first: 10) { nodes { login } }"""
 
@@ -73,6 +73,9 @@ class WorkItemView:
     last_human_comment_at: datetime | None = None
     # The issue's newest reopen (#2683 review); None for a PR or a never-reopened issue.
     last_reopened_at: datetime | None = None
+    # Immutable GitHub databaseId of a User author (#3147); None for Bots/ghosts. A login
+    # is mutable, so the trusted-author gate keys on this.
+    author_id: int | None = None
 
 
 def _owner_name(repo: str) -> tuple[str, str]:
@@ -140,6 +143,15 @@ def _parse_dt(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _author_id(author) -> int | None:
+    """The immutable GitHub user id, only for a ``User`` author with an int
+    ``databaseId`` (``bool`` is not one); Bots, ghosts and anything malformed -> None."""
+    if not isinstance(author, dict) or author.get("__typename") != "User":
+        return None
+    db_id = author.get("databaseId")
+    return db_id if isinstance(db_id, int) and not isinstance(db_id, bool) else None
 
 
 def _author(author) -> str:
@@ -223,6 +235,7 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
                 lbl["name"] for lbl in ((node.get("labels") or {}).get("nodes") or [])
                 if isinstance(lbl, dict) and lbl.get("name")),
             author=_author(node.get("author")),
+            author_id=_author_id(node.get("author")),
             url=str(node.get("url") or ""),
             gh_created_at=_parse_dt(node.get("createdAt")),
             gh_updated_at=_parse_dt(node.get("updatedAt")),

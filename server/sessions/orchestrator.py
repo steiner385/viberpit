@@ -10695,6 +10695,7 @@ class SessionOrchestrator:
                 existing.state = item.state
                 existing.labels = list(item.labels)
                 existing.author = item.author
+                existing.author_id = item.author_id
                 existing.url = item.url
                 existing.linked_issue_numbers = list(item.linked_issue_numbers)
                 existing.assignees = list(item.assignees)

@@ -244,6 +244,28 @@ def test_bot_author_is_stored_as_app_slug_and_a_user_as_the_bare_login():
         assert item.author == expected
 
 
-def test_queries_select_the_author_typename():
-    assert "author { __typename login }" in build_issues_query("o/r", None, None)
-    assert "author { __typename login }" in build_prs_query("o/r", None)
+_AUTHOR_SELECTION = "author { __typename login ... on User { databaseId } }"
+
+
+def test_queries_select_the_author_typename_and_user_database_id():
+    assert _AUTHOR_SELECTION in build_issues_query("o/r", None, None)
+    assert _AUTHOR_SELECTION in build_prs_query("o/r", None)
+
+
+def test_author_id_is_the_user_database_id_only():
+    """Trust keys on the immutable id: only a User carries one; Bots, deleted accounts,
+    a missing author and a non-int id all yield None (fail closed)."""
+    cases = (
+        ({"__typename": "User", "login": "tony", "databaseId": 4242}, 4242),
+        ({"__typename": "Bot", "login": "viberpit", "databaseId": 99}, None),
+        ({"__typename": "User", "login": "tony"}, None),
+        ({"__typename": "User", "login": "tony", "databaseId": "4242"}, None),
+        ({"__typename": "User", "login": "tony", "databaseId": True}, None),
+        ({"login": "tony", "databaseId": 4242}, None),
+        (None, None),
+    )
+    for author, expected in cases:
+        payload = _issue_payload()
+        payload["data"]["repository"]["issues"]["nodes"][0]["author"] = author
+        (item,) = parse_page(payload, "o/r", "issue")[0]
+        assert item.author_id == expected, author
