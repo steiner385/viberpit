@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from server.tests._trust_ids import TONY_ID
 from server.tests.pm_ownership_fixtures import identity_repositories
 from server.tests.test_pm_holds_api import _seed
 from server.tests.test_pm_queue_api import IDENTITY_HEADERS, _client
@@ -49,6 +50,7 @@ def _seed_extras(c) -> dict[str, str]:
                                  "hold_set_at": now}), (8, {}), (9, {})):
                 wi = WorkItem(repo="o/r", number=n, kind="issue", title=f"issue {n}",
                               state="open", body="b", url=f"https://x/{n}", author="tony",
+                              author_id=TONY_ID,
                               **hold)
                 db.add(wi)
                 await db.flush()
@@ -283,11 +285,12 @@ def _seed_gates(c) -> None:
                                            pr_number=11),
                         InitiativeArtifact(initiative_id=open_.id, kind="spec", pr_number=12)])
             epic = WorkItem(repo="o/r", number=50, kind="issue", title="epic", state="open",
-                            body="b", url="https://x/50", author="tony")
+                            body="b", url="https://x/50", author="tony", author_id=TONY_ID)
             db.add(epic)
             await db.flush()
             db.add_all([WorkItem(repo="o/r", number=n, kind="issue", title=f"sub {n}",
                                  state="closed", body="b", url=f"https://x/{n}", author="tony",
+                                 author_id=TONY_ID,
                                  parent_work_item_id=epic.id) for n in (51, 52)])
             await db.commit()
     _call(c, _run)
@@ -373,6 +376,7 @@ def _seed_noise_holds(c) -> dict[str, str]:
             for n, by in ((12, "runner"), (13, "tony@example.com"), (14, "runner")):
                 wi = WorkItem(repo="o/r", number=n, kind="issue", title=f"audit {n}",
                               state="open", body="b", url=f"https://x/{n}", author="tony",
+                              author_id=TONY_ID,
                               labels=["forced-deploy-audit"], hold_kind="owner_action",
                               hold_by=by, hold_reason="owner call", hold_set_at=now)
                 db.add(wi)
