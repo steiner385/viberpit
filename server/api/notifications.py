@@ -17,9 +17,10 @@ from server.db.models import AppSettings, NotificationChannel, NotificationRule
 from server.sessions.notify_rules import (
     EVENT_CLASSES,
     Event,
-    RuleView,
+    is_watch_rule,
     plan,
-    select_rule,
+    plan_watches,
+    rule_view_from_row,
 )
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
@@ -54,27 +55,11 @@ def _rule_dict(r: NotificationRule) -> dict:
         "channelId": r.channel_id,
         "critical": r.critical,
         "priority": r.priority,
+        "scopeSessionId": r.scope_session_id,
+        "once": bool(r.once),
+        "expiresAt": r.expires_at.isoformat() if r.expires_at else None,
         "createdAt": r.created_at.isoformat() if r.created_at else None,
     }
-
-
-def _rule_view(r: NotificationRule) -> RuleView:
-    return RuleView(
-        id=r.id,
-        enabled=r.enabled,
-        event_class=r.event_class,
-        scope_repo=r.scope_repo,
-        scope_account=r.scope_account,
-        scope_automation=r.scope_automation,
-        action=r.action,
-        channel_id=r.channel_id,
-        critical=r.critical,
-        priority=r.priority,
-        created_at=r.created_at,
-        once=bool(r.once),
-        owner_session_id=r.owner_session_id,
-        expires_at=r.expires_at,
-    )
 
 
 async def _get_or_create_settings(db) -> AppSettings:
@@ -432,6 +417,7 @@ class TestBody(BaseModel):
     repo: str | None = None
     account: str | None = None
     automation: str | None = None
+    sessionId: str | None = None
 
 
 @router.post("/test")
@@ -450,22 +436,32 @@ async def test_routing(
         repo=body.repo,
         account=body.account,
         automation=body.automation,
+        session_id=body.sessionId,
     )
     rule_rows = (
         await db.execute(select(NotificationRule))
     ).scalars().all()
-    rules = [_rule_view(r) for r in rule_rows]
+    channels = {c.id: c for c in (
+        await db.execute(select(NotificationChannel))).scalars().all()}
+    rules = [rule_view_from_row(r, watch=is_watch_rule(r, channels)) for r in rule_rows]
     settings = await _get_or_create_settings(db)
     await db.commit()
     now_local = localize_now(datetime.now(timezone.utc), settings.quiet_hours_timezone)
     decision = plan(
         ev, rules, settings.quiet_hours_start, settings.quiet_hours_end, now_local
     )
-    matched = select_rule(rules, ev)
+    watches = plan_watches(
+        ev, rules, settings.quiet_hours_start, settings.quiet_hours_end, now_local
+    )
     return {
         "action": decision.action,
         "channelId": decision.channel_id,
         "deliver": decision.deliver,
         "suppressedByQuiet": decision.suppressed_by_quiet,
-        "matchedRuleId": matched.id if matched else None,
+        # The rule plan() actually chose — so this can never name a rule the
+        # decision skipped (an expired one, #3181).
+        "matchedRuleId": decision.rule_id,
+        # Assistant watches are additive to routing (notify_rules module docstring):
+        # every armed watch this event would ALSO fire.
+        "watchIds": [w.rule_id for w in watches if w.deliver],
     }

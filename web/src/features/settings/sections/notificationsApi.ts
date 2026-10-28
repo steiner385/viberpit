@@ -31,6 +31,10 @@ export interface Rule {
   channelId: string | null
   critical: boolean
   priority: number
+  // Set only on an assistant watch (a rule on an `assistant`-kind channel).
+  scopeSessionId?: string | null
+  once?: boolean
+  expiresAt?: string | null
   createdAt: string
 }
 
@@ -47,6 +51,8 @@ export interface TestDecision {
   deliver: boolean
   suppressedByQuiet: boolean
   matchedRuleId: string | null
+  // Assistant watches the event would ALSO fire — watches are additive to routing (#3181).
+  watchIds?: string[]
 }
 
 export const NOTIF_KEYS = {

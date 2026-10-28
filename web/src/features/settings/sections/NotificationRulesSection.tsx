@@ -273,6 +273,7 @@ function AddRuleForm({
           <div>Deliver: <span className="font-medium">{decision.deliver ? 'yes' : 'no'}</span></div>
           <div>Suppressed by quiet hours: <span className="font-medium">{decision.suppressedByQuiet ? 'yes' : 'no'}</span></div>
           <div>Matched rule: <span className="font-medium">{decision.matchedRuleId ?? 'none'}</span></div>
+          <div>Assistant watches also firing: <span className="font-medium">{decision.watchIds?.length ?? 0}</span></div>
         </div>
       )}
     </form>

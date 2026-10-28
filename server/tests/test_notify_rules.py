@@ -10,7 +10,11 @@ from server.sessions.notify_rules import (
     event_class_matches,
     in_quiet_hours,
     localize_now,
+    is_expired,
+    is_watch_rule,
     plan,
+    plan_watches,
+    rule_view_from_row,
     scope_matches,
     select_rule,
 )
@@ -33,6 +37,7 @@ def _rule(
     owner_session_id=None,
     expires_at=None,
     scope_session_id=None,
+    watch=False,
 ) -> RuleView:
     return RuleView(
         id=id,
@@ -50,6 +55,7 @@ def _rule(
         owner_session_id=owner_session_id,
         expires_at=expires_at,
         scope_session_id=scope_session_id,
+        watch=watch,
     )
 
 
@@ -282,3 +288,90 @@ def test_acceptance_scenario_without_catchall_is_still_silent():
     ]
     ended = plan(_ev("session_ended"), rules, None, None, NOW)
     assert ended.action == "ignore" and ended.deliver is False
+
+
+# --------------------------------------------------------------------------- #
+# Assistant watches are additive to routing (#3181)                          #
+# --------------------------------------------------------------------------- #
+def _watch(id="w", **kw) -> RuleView:
+    return _rule(id, watch=True, action="channel", channel_id="assistant-chan", **kw)
+
+
+def test_plan_with_only_watches_keeps_the_default_fanout():
+    """A watch is not a routing rule: arming one must not flip every other event
+    from the default fanout to silence."""
+    d = plan(_ev("needs_input"), [_watch(event_class="pr_broke")], None, None, NOW)
+    assert d.action == "default" and d.deliver is True
+
+
+def test_plan_spent_watches_do_not_mute_the_default_fanout():
+    spent = _watch("spent", event_class="session_ended", enabled=False, once=True)
+    expired = _watch("expired", event_class="session_ended",
+                     expires_at=NOW - timedelta(hours=1))
+    d = plan(_ev("needs_input"), [spent, expired], None, None, NOW)
+    assert d.action == "default" and d.deliver is True
+
+
+def test_plan_watch_never_preempts_a_users_own_rule():
+    users = _rule("mine", event_class="needs_input", action="push", priority=100)
+    w = _watch("w", event_class="needs_input", priority=1)
+    d = plan(_ev("needs_input"), [w, users], None, None, NOW)
+    assert d.action == "push" and d.rule_id == "mine"
+
+
+def test_plan_watches_returns_every_armed_match_only():
+    a = _watch("a", event_class="session_ended", scope_session_id="s1", once=True)
+    b = _watch("b", event_class="session_ended", scope_session_id="s1")
+    other_session = _watch("c", event_class="session_ended", scope_session_id="s2")
+    spent = _watch("d", event_class="session_ended", enabled=False)
+    expired = _watch("e", event_class="session_ended", expires_at=NOW - timedelta(hours=1))
+    routing = _rule("r", event_class="session_ended", action="push")
+    got = plan_watches(_ev("session_ended", session_id="s1"),
+                       [a, b, other_session, spent, expired, routing], None, None, NOW)
+    assert [d.rule_id for d in got] == ["a", "b"]
+    assert all(d.action == "channel" and d.deliver and d.channel_id == "assistant-chan"
+               for d in got)
+    assert got[0].once is True and got[1].once is False
+
+
+def test_plan_watches_quiet_hours_suppress_non_critical_watches():
+    quiet = datetime(2024, 1, 1, 23, 30)
+    soft = _watch("soft", event_class="needs_input")
+    loud = _watch("loud", event_class="needs_input", critical=True)
+    got = {d.rule_id: d for d in plan_watches(_ev(), [soft, loud], "23:00", "07:00", quiet)}
+    assert got["soft"].deliver is False and got["soft"].suppressed_by_quiet is True
+    assert got["loud"].deliver is True
+
+
+def test_rule_view_from_row_carries_every_scope():
+    """The one adapter: the routing preview's old private copy dropped
+    scope_session_id, so a session watch previewed as matching every session."""
+    from types import SimpleNamespace
+    row = SimpleNamespace(
+        id="x", enabled=True, event_class="session_ended", scope_repo="o/r",
+        scope_account="acct", scope_automation="auto", action="channel",
+        channel_id="c", critical=False, priority=5, created_at=NOW, once=True,
+        scope_session_id="s1", owner_session_id="a1", expires_at=NOW)
+    v = rule_view_from_row(row, watch=True)
+    assert (v.scope_session_id, v.owner_session_id, v.expires_at, v.once, v.watch) == \
+        ("s1", "a1", NOW, True, True)
+    assert not scope_matches(v, _ev("session_ended", session_id="s2"))
+
+
+def test_is_watch_rule_keys_off_the_channel_kind():
+    from types import SimpleNamespace
+    channels = {"a": SimpleNamespace(kind="assistant"), "h": SimpleNamespace(kind="webhook")}
+    assert is_watch_rule(SimpleNamespace(channel_id="a"), channels)
+    assert not is_watch_rule(SimpleNamespace(channel_id="h"), channels)
+    assert not is_watch_rule(SimpleNamespace(channel_id=None), channels)
+    assert not is_watch_rule(SimpleNamespace(channel_id="gone"), channels)
+
+
+def test_is_expired_tolerates_naive_and_aware_mixes():
+    """SQLite returns DateTime(timezone=True) naive; a raw `<` against an aware now
+    raised TypeError and failed the whole routing pass open."""
+    aware_now = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    assert is_expired(datetime(2024, 1, 1, 11, 0), aware_now)
+    assert not is_expired(datetime(2024, 1, 1, 13, 0), aware_now)
+    assert is_expired(datetime(2024, 1, 1, 11, 0, tzinfo=timezone.utc), datetime(2024, 1, 1, 12, 0))
+    assert not is_expired(None, aware_now)

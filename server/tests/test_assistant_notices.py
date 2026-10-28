@@ -150,6 +150,97 @@ def test_notify_event_assistant_channel_without_orch_fails_open_no_raise(tmp_pat
     asyncio.run(run())
 
 
+def _count_pushes(monkeypatch) -> list[dict]:
+    """Record every web push notify_event attempts (the sink, plus the legacy
+    fanout that wraps it)."""
+    from server.sessions import push as push_mod
+    sent: list[dict] = []
+
+    async def fake_sink(payload, **_kw):
+        sent.append(payload)
+
+    async def fake_notify(title, body, *, url=None):
+        sent.append({"title": title, "body": body, "via": "default"})
+
+    monkeypatch.setattr(push_mod, "_webpush_sink", fake_sink)
+    monkeypatch.setattr(push_mod, "notify", fake_notify)
+    return sent
+
+
+def test_a_lone_watch_keeps_the_default_fanout_for_its_event(tmp_path, monkeypatch):
+    """#3181: watches are additive. With only a watch configured, the event still
+    takes the no-rules default fanout AND fires the watch — pushed once, not twice."""
+    sent = _count_pushes(monkeypatch)
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'additive.db'}")
+        try:
+            await _make_assistant_channel_rule(once=True, owner_session_id="assistant-1")
+            fake_orch = _FakeAssistantOrch(owner_identity="u@x")
+            from server.sessions import push as push_mod
+            await push_mod.notify_event("needs_input", "t", "b", orch=fake_orch)
+            assert len(fake_orch.calls) == 1
+            assert [p.get("via") for p in sent] == ["default"]
+        finally:
+            await dispose_db()
+
+    asyncio.run(run())
+
+
+def test_a_watch_does_not_preempt_a_users_routing_rule(tmp_path, monkeypatch):
+    """A user's push rule and an assistant watch on the same event BOTH deliver,
+    whatever their priority order, with a single web push between them."""
+    sent = _count_pushes(monkeypatch)
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'both.db'}")
+        try:
+            _, watch_id = await _make_assistant_channel_rule(
+                once=True, owner_session_id="assistant-1")
+            from server.db import db_session
+            from server.db.models import NotificationRule
+            async with db_session() as db:
+                db.add(NotificationRule(enabled=True, event_class="needs_input",
+                                        action="push", priority=500))
+                await db.commit()
+            fake_orch = _FakeAssistantOrch(owner_identity="u@x")
+            from server.sessions import push as push_mod
+            await push_mod.notify_event("needs_input", "t", "b", orch=fake_orch)
+            assert [n["watchId"] for _, n in fake_orch.calls] == [watch_id]
+            assert len(sent) == 1 and sent[0].get("via") is None  # the user's push rule
+        finally:
+            await dispose_db()
+
+    asyncio.run(run())
+
+
+def test_every_armed_watch_on_an_event_fires(tmp_path, monkeypatch):
+    _count_pushes(monkeypatch)
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'many.db'}")
+        try:
+            from server.db import db_session
+            from server.db.models import NotificationRule
+            chan_id, first = await _make_assistant_channel_rule(
+                once=True, owner_session_id="assistant-1")
+            async with db_session() as db:
+                second = NotificationRule(enabled=True, event_class="needs_input",
+                                          action="channel", channel_id=chan_id,
+                                          once=True, owner_session_id="assistant-1")
+                db.add(second)
+                await db.commit()
+                second_id = second.id
+            fake_orch = _FakeAssistantOrch(owner_identity="u@x")
+            from server.sessions import push as push_mod
+            await push_mod.notify_event("needs_input", "t", "b", orch=fake_orch)
+            assert sorted(n["watchId"] for _, n in fake_orch.calls) == sorted([first, second_id])
+        finally:
+            await dispose_db()
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # 2. SessionOrchestrator.post_notice — live emit vs queue                     #
 # --------------------------------------------------------------------------- #

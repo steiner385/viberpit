@@ -525,7 +525,7 @@ def test_notification_state_serialization_and_preview():
         assert c.get('/api/notifications/rules').json()[0] == created
         assert c.post('/api/notifications/test', json={'repo': 'acme/billing'}).json() == {
             'action': 'channel', 'channelId': 'ch-slack', 'deliver': True,
-            'suppressedByQuiet': False, 'matchedRuleId': created['id']}
+            'suppressedByQuiet': False, 'matchedRuleId': created['id'], 'watchIds': []}
         assert c.post('/api/notifications/test', json={'repo': 'acme/other'}).json()['matchedRuleId'] == 'rule-1'
         assert c.post('/api/notifications/rules', json=body).json()['id'] != created['id']
         assert c.post('/api/notifications/rules', json={'priority': 'bad'}).status_code == 422
@@ -544,12 +544,12 @@ def test_notification_preview_negative_and_critical_controls():
     with client() as c:
         assert c.post('/api/notifications/test', json={'eventClass': 'pr_merged'}).json() == {
             'action': 'ignore', 'channelId': None, 'deliver': False,
-            'suppressedByQuiet': False, 'matchedRuleId': None}
+            'suppressedByQuiet': False, 'matchedRuleId': None, 'watchIds': []}
         for rid in ('rule-1', 'rule-42'):
             c.delete('/api/notifications/rules/' + rid)
         assert c.post('/api/notifications/test', json={}).json() == {
             'action': 'default', 'channelId': None, 'deliver': True,
-            'suppressedByQuiet': False, 'matchedRuleId': None}
+            'suppressedByQuiet': False, 'matchedRuleId': None, 'watchIds': []}
         c.put('/api/notifications/quiet-hours', json={'start': '11:00', 'end': '13:00'})
         c.post('/api/notifications/rules', json={'eventClass': '*', 'action': 'ignore', 'enabled': False})
         rule = c.post('/api/notifications/rules', json={
