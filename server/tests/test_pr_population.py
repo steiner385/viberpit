@@ -212,3 +212,30 @@ def test_timeline_capture_db_failure_log_level(monkeypatch, caplog, exc, level):
 
     recs = [r for r in caplog.records if "pr_population.timeline_capture_failed" in r.getMessage()]
     assert [r.levelno for r in recs] == [level]
+
+
+def _env_supplement_response():
+    return {"data": {"repo": {
+        "deployments": {"nodes": []},
+        "environments": {"nodes": [{"name": "admin-production"}]},
+    }}}
+
+
+@pytest.mark.parametrize("stderr,warns", [
+    ("gh: HTTP 502", False),                  # #3155: GitHub edge, retried next tick
+    ("gh: not found (HTTP 404)", True),
+])
+def test_env_supplement_edge_failure_demotes_to_info(caplog, monkeypatch, stderr, warns):
+    def fake_run_gh(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, "", stderr)
+
+    monkeypatch.setattr(pop.gitrepos, "_run_gh", fake_run_gh)
+
+    with caplog.at_level(logging.DEBUG):
+        pop._supplement_env_deployments(_env_supplement_response(), "o/r", None)
+
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert bool(warned) is warns
+    assert any(
+        "pr_population.env_supplement_failed" in r.getMessage() for r in caplog.records
+    )
