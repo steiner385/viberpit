@@ -10705,6 +10705,7 @@ class SessionOrchestrator:
                 existing.gh_closed_at = item.gh_closed_at
                 existing.last_human_comment_at = item.last_human_comment_at
                 existing.last_reopened_at = item.last_reopened_at
+                existing.comment_owner_ids = list(item.comment_owner_ids)
                 existing.last_synced_at = now
                 if (is_new and item.kind == "issue" and item.state == "open"
                         and AUTO_ERROR_LABEL in (item.labels or ())):

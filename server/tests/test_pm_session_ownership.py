@@ -124,3 +124,29 @@ async def test_session_context_hands_out_this_sessions_marker():
     data = json.loads((await tool.handler({}))["content"][0]["text"])["data"]
     assert data["issueOwnerMarker"] == owner_marker(SID)
     assert marker_owners(data["issueOwnerMarker"]) == {SID}
+
+
+def test_comment_borne_marker_claims_the_issue_for_a_live_session():
+    """#3152: a session that claims by comment, not body, still suppresses the runner."""
+    db = _db()
+    _, leaf = _plan(db)
+    leaf.comment_owner_ids = [SID]
+    _session(db, SID)
+    assert _leaf_row(db).live_session is True
+
+
+def test_comment_borne_marker_lapses_with_its_session():
+    db = _db()
+    _, leaf = _plan(db)
+    leaf.comment_owner_ids = [SID]
+    _session(db, SID, status="archived")
+    assert _leaf_row(db).live_session is False
+
+
+def test_sync_extracts_owner_markers_from_comments():
+    from server.pm.github_sync import _comment_owner_ids
+    node = {"comments": {"nodes": [
+        {"body": f"claim {owner_marker(SID)}"}, {"body": "no marker"}, None,
+        {"body": f"{owner_marker(SID)} {owner_marker('other-1')}"}]}}
+    assert _comment_owner_ids(node) == (SID, "other-1")
+    assert _comment_owner_ids({}) == ()
