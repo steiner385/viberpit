@@ -694,7 +694,7 @@ def test_rearm_prompt_tells_the_agent_to_read_an_existing_output_file(tmp_path):
     assert f"`{out}`" in p
     assert "exists: yes" in p and "last modified" in p
     assert "read it first and relaunch only if it is incomplete" in p
-    assert "Relaunch each one with exactly the parameters shown" not in p
+    assert "Judge each one against the current state" not in p
 
 
 def test_rearm_prompt_reports_a_missing_output_file(tmp_path):
@@ -750,3 +750,13 @@ def test_still_open_takes_the_output_path_from_the_fresh_scan():
                         output_path="/tmp/x.output")]
     [kept] = still_open([snap], fresh)
     assert kept.output_path == "/tmp/x.output"
+
+
+def test_still_open_drops_replayable_tasks_older_than_a_day():
+    """#3174: a days-old `killed` stub must not be re-offered on every restart."""
+    from datetime import datetime, timezone
+    from server.sessions.background_tasks import OpenBgTask, still_open
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+    old = OpenBgTask("old", "task", "Bash", {"command": "x"}, "", started_at="2026-10-24T12:00:00Z")
+    new = OpenBgTask("new", "task", "Bash", {"command": "y"}, "", started_at="2026-10-28T10:00:00Z")
+    assert [t.tool_use_id for t in still_open([old, new], [old, new], now=now)] == ["new"]

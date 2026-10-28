@@ -238,7 +238,7 @@ def test_a_lost_terminal_is_reported_never_relaunched():
     assert "were NOT restarted" in prompt
     # The instruction half of the prompt must not appear for a non-replayable entry:
     # that sentence is what would make an agent re-run the command line.
-    assert "Relaunch each one" not in prompt
+    assert "Judge each one" not in prompt
     assert "relaunch the" not in prompt
 
 
@@ -247,7 +247,7 @@ def test_claude_tasks_still_get_the_relaunch_instruction():
     task = OpenBgTask(tool_use_id="toolu_1", kind="monitor", name="Monitor",
                       input={"until": "done"}, description="watch CI")
     prompt = build_rearm_prompt([task])
-    assert "Relaunch each one with exactly the parameters shown." in prompt
+    assert "Judge each one against the current state before relaunching it" in prompt
     assert 'relaunch the Monitor tool with input {"until": "done"}' in prompt
     assert "were NOT restarted" not in prompt
 
@@ -258,7 +258,7 @@ def test_a_mixed_snapshot_keeps_the_two_halves_apart():
     claude = OpenBgTask(tool_use_id="toolu_1", kind="monitor", name="Monitor",
                         input={"until": "done"}, description="watch CI")
     prompt = build_rearm_prompt([claude, _codex_task()])
-    relaunch_at = prompt.index("Relaunch each one")
+    relaunch_at = prompt.index("Judge each one")
     report_at = prompt.index("were NOT restarted")
     assert relaunch_at < report_at
     # The command line lives strictly in the report half.
@@ -422,7 +422,7 @@ def test_a_drain_snapshots_codex_terminals_as_non_replayable(tmp_path):
     # And the turn built from it reports rather than instructs.
     prompt = build_rearm_prompt([OpenBgTask.from_dict(d) for d in snap])
     assert "were NOT restarted" in prompt
-    assert "Relaunch each one" not in prompt
+    assert "Judge each one" not in prompt
 
 
 def test_rearm_delivers_the_notice_once_and_clears_the_snapshot(tmp_path):
