@@ -16513,7 +16513,10 @@ class SessionOrchestrator:
             return False
         st = await self._pr_doctor_ctx.get_target_state(target)
         rearmed = engine.apply_rearm(st, info)
-        action = engine.plan_recovery(engine.classify(info), mode, config, rearmed)
+        failure_mode = engine.classify(info)
+        if failure_mode == "stuck_checks":
+            await self._pr_doctor_alert_stuck_checks(repo, info, rec)
+        action = engine.plan_recovery(failure_mode, mode, config, rearmed)
         if engine.acted_at_head(rearmed, action, info.head_sha):
             if isinstance(action, (engine.Mechanical, engine.SessionFix)):
                 await self._pr_doctor_report_skip(
@@ -16541,6 +16544,33 @@ class SessionOrchestrator:
             await self._pr_doctor_ctx.emit("warn", f"gave up auto-fixing {target}",
                                           kind="gave_up", target=target)
         return False
+
+    async def _pr_doctor_alert_stuck_checks(self, repo: str, info: PullRequestInfo, rec) -> None:
+        """Needs-human alert for a PR whose checks will never report (#3159).
+
+        ``ci_red_is_unproven`` suppresses every other alert while a check is
+        pending or cancelled, so a check that never completes (a refused job
+        during a billing outage) made the PR invisible for ~19 h. One feed event
+        and one push per (target, head); in-memory like ``_pr_doctor_report_skip``,
+        so a restart repeats a still-standing alert once."""
+        target = f"{repo}#{info.number}"
+        seen: set = self.__dict__.setdefault("_pr_doctor_stuck_seen", set())
+        key = (target, info.head_sha)
+        if key in seen:
+            return
+        seen.add(key)
+        stuck = [c.name for c in info.checks_detail
+                 if c.conclusion in ("pending", "cancelled")]
+        await self._pr_doctor_ctx.emit(
+            "warn", f"{target} has checks that will never finish: {', '.join(stuck)}",
+            kind="stuck_checks", target=target,
+            detail={"head_sha": info.head_sha, "checks": stuck})
+        await push_mod.notify_event(
+            "pr_broke", f"{brand.NAME} — PR stuck", f"{target}: checks stuck, re-run needed",
+            repo=repo, account=getattr(rec, "account", None),
+            automation=getattr(rec, "origin", None), session_id=getattr(rec, "id", None),
+            url=info.url or None, orch=self,
+        )
 
     async def _pr_doctor_dispatch_is_stale(self, repo: str, kind: str,
                                            info: PullRequestInfo) -> bool:

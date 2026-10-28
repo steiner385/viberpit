@@ -2,8 +2,8 @@
 
 classify(info) -> failure mode; plan_recovery(...) -> a RecoveryAction the
 orchestrator (Plan B) executes; plus per-target retry/re-arm/terminate helpers.
-v1 handles failing CI, out-of-date branch, and merge conflict (stuck/queued
-checks are deferred to v2).
+v1 handles failing CI, out-of-date branch, and merge conflict; checks that
+outlive ``STUCK_CHECK_AFTER`` classify as ``stuck_checks`` (alert only, #3159).
 
 ``ci_red_is_unproven`` (issue #2218) is the freshness half of ``failing_ci``: a
 rollup can read FAILURE because its checks were CANCELLED (a push superseded the
@@ -29,14 +29,15 @@ orchestrator's per-head one-shot guard — but no longer drives give-up."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from server.github.pr_status import PullRequestInfo
 from server.pipeline.stage import is_required_ci_red
 
 # First match wins — conflict before CI (never fight CI on an unmergeable branch).
 # ``comment_command`` is last: fires only when the PR is otherwise green.
-FAILURE_PRIORITY = ("blocked", "stuck_enqueue", "merge_conflict", "out_of_date",
-                    "failing_ci", "comment_command")
+FAILURE_PRIORITY = ("blocked", "stuck_checks", "stuck_enqueue", "merge_conflict",
+                    "out_of_date", "failing_ci", "comment_command")
 
 
 # Check-run conclusions that carry NO verdict about the branch: the check either
@@ -89,13 +90,59 @@ def ci_red_is_unproven(info: PullRequestInfo) -> bool:
     return any(c.conclusion in _NO_VERDICT for c in info.checks_detail)
 
 
-def classify(info: PullRequestInfo) -> str | None:
+# A check that has had no verdict this long will not get one on its own. Twice
+# the longest workflow timeout in use (60 min) — a GitHub billing outage left
+# KinDash#19920 BLOCKED for ~19 h behind a ``ci-gate`` run that never finished.
+STUCK_CHECK_AFTER = timedelta(minutes=120)
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def checks_are_stuck(info: PullRequestInfo, now: datetime | None = None) -> bool:
+    """True when the red/blocked rollup rests on checks that will never report (#3159).
+
+    ``ci_red_is_unproven`` defers to a pending or cancelled check forever; this is
+    its staleness cutoff. Stuck means either:
+
+    * a check still ``pending`` that STARTED more than ``STUCK_CHECK_AFTER`` ago
+      (a run whose job was refused or lost never completes), or
+    * no check is pending, none earned a ``failure``, and the cancelled ones were
+      all cancelled more than ``STUCK_CHECK_AFTER`` ago — nothing newer is coming
+      for this head sha, so waiting for a re-run is waiting for nobody.
+
+    Fails CLOSED like ``ci_red_is_unproven``: a check without timestamps is never
+    called stuck.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - STUCK_CHECK_AFTER
+    pending = [c for c in info.checks_detail if c.conclusion == "pending"]
+    if pending:
+        return any((t := _parse_ts(c.started_at)) is not None and t < cutoff
+                   for c in pending)
+    if any(c.conclusion == "failure" for c in info.checks_detail):
+        return False
+    cancelled = [c for c in info.checks_detail if c.conclusion == "cancelled"]
+    stamps = [_parse_ts(c.completed_at) for c in cancelled]
+    return bool(cancelled) and all(t is not None and t < cutoff for t in stamps)
+
+
+def classify(info: PullRequestInfo, now: datetime | None = None) -> str | None:
     """Return the v1 failure mode for *info*, or None (terminal/draft/healthy).
     Pure + total. Checks are evaluated in FAILURE_PRIORITY order (blocked →
     merge_conflict → out_of_date → failing_ci) — keep in sync with that constant.
 
     ``failing_ci`` additionally requires that some check-run actually EARNED the
-    red — see ``ci_red_is_unproven`` (#2218)."""
+    red — see ``ci_red_is_unproven`` (#2218). Unproven checks that have outlived
+    ``STUCK_CHECK_AFTER`` classify as ``stuck_checks`` instead of waiting forever
+    (#3159)."""
     if info.state in ("merged", "closed"):
         return None
     if info.merge_state_status == "DRAFT" or info.is_draft:
@@ -109,6 +156,8 @@ def classify(info: PullRequestInfo) -> str | None:
         #    enqueue the PR (e.g. a shadowed required check). A mechanical re-arm
         #    often unsticks it. This is NOT a human review gate.
         # 3. Everything else (review/approval required) → blocked: notify only.
+        if ci_red_is_unproven(info) and checks_are_stuck(info, now):
+            return "stuck_checks"
         if info.checks == "failing":
             # A red no check-run earned is not a repair job — and must not drop
             # through to the stuck_enqueue arm below either, or an armed PR whose
@@ -143,6 +192,8 @@ def classify(info: PullRequestInfo) -> str | None:
     # required-ness discriminator the poller always has; the rule itself is
     # stage.is_required_ci_red, shared with the completion bar and the board.)
     if is_required_ci_red(info.checks, info.merge_state_status):
+        if ci_red_is_unproven(info) and checks_are_stuck(info, now):
+            return "stuck_checks"
         return None if ci_red_is_unproven(info) else "failing_ci"
     return None
 
@@ -212,8 +263,11 @@ def plan_recovery(failure_mode: str | None, mode: str, config: dict,
     this is called — see Plan B — so `enabled_repos` is not consulted here.)"""
     if failure_mode is None:
         return Notify()
-    if failure_mode == "blocked":
-        return Notify()  # review required — never auto-act
+    if failure_mode in ("blocked", "stuck_checks"):
+        # blocked: review required — never auto-act. stuck_checks (#3159): a check
+        # that will never report; re-running it is a human call until a capped
+        # mechanical re-run exists. The orchestrator raises the alert.
+        return Notify()
     if mode == "off":
         return Notify()
     if state.get("gave_up"):
@@ -221,7 +275,7 @@ def plan_recovery(failure_mode: str | None, mode: str, config: dict,
     if mode == "propose":
         return Propose(kind=failure_mode)
     # mode == "auto": gate risky modes; fall back to propose when the flag is off.
-    # Use .get() so an unrecognised/future failure mode (e.g. "stuck_checks")
+    # Use .get() so an unrecognised/future failure mode
     # produces a safe Notify() rather than a KeyError.
     flag_key = _AUTO_FLAG.get(failure_mode)
     if flag_key is None:
