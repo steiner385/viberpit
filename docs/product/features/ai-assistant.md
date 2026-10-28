@@ -180,7 +180,15 @@ assistant mutation does not make subsequent harness cleanup safe.
   by injected content. The drawer renders it as a card (`NoticeCard.tsx`) with an "Ask about it"
   action that starts a normal, tool-backed turn. `watch()` / `list_watches()` / `delete_watch()`
   create, list and remove the underlying rule; `VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY` (default
-  20) caps live watches per identity so a runaway loop can't spam the notification table.
+  20) caps live watches per identity so a runaway loop can't spam the notification table. Only
+  armed watches (enabled, unexpired) are listed or counted; creating one prunes the identity's
+  spent and expired watches (#3182). Watches are **additive** to routing (#3181): the engine's
+  `plan()` never sees a watch rule, so arming or leaving one behind cannot mute the default fanout
+  or preempt a user's own rule; `plan_watches()` fires every armed match, with one web push per
+  event. `watch()` reports `pushEnabled` — with no VAPID key the drawer is the only delivery. For
+  `kind="session"`, `finishes` fires on a turn ending `done`/`complete`; a hand-back, question or
+  approval is `needs_you` (`needs_input`). `test_notification` takes `session_id` and `product` so
+  a preview can match the watch it is checking (#3184).
 - **`resolve_decision` (Pack P, spec 2026-09-18 §6)** — accepts or rejects ONE pending decision
   proposal from the Inbox on the person's behalf: `proposal_id`, `decision` (`accept` | `reject`),
   and for an accept a `chosen_key` among the proposal's own option keys. Like every tool here it is

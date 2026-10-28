@@ -19,6 +19,7 @@ from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.assistant.token import mint_user_token
 from server.audit import record_audit
 from server.auth.middleware import current_identity
+from server import config
 from server.config import get_settings
 from server.db import get_db
 from server.db.clock import db_utc_now
@@ -485,12 +486,11 @@ async def create_watch(body: WatchBody, request: Request,
         # Two scopes: the emitting automation (a slug there would never match) AND the
         # product's primary repo, which is what every decision_needed digest carries —
         # so a watch on product A does not fire (and, once, disarm) on B's digest.
-        from server.pm.repo_project import primary_repo_for_slug
-        repo = await primary_repo_for_slug(db, body.target)
-        if repo is None:
+        from server.automations.decision_escalation import product_digest_scope
+        digest_scope = await product_digest_scope(db, body.target)
+        if digest_scope is None:
             return _err("UNKNOWN_PRODUCT", f"no product {body.target!r} with a primary repo", 422)
-        scope_value = "decision-escalation"
-        extra_scope["scope_repo"] = repo
+        scope_value, extra_scope["scope_repo"] = digest_scope
     rule = NotificationRule(
         event_class=event_class, action="channel", channel_id=channel.id,
         once=body.once, owner_session_id=getattr(request.state, "assistant_session_id", None),
@@ -503,7 +503,9 @@ async def create_watch(body: WatchBody, request: Request,
                        {"id": rule.id, "kind": body.kind, "condition": body.condition,
                         "target": body.target, "once": body.once})
     await db.commit()
-    return _watch_dict(rule)
+    # Whether a fired watch also web-pushes — same test as GET /api/push/config. Off,
+    # the drawer is the only place the notice lands, and the caller should say so.
+    return {**_watch_dict(rule), "pushEnabled": bool(config.VAPID_PRIVATE_KEY)}
 
 
 @router.get("/watches")

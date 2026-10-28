@@ -842,6 +842,13 @@ async def test_test_notification_is_read_classed_but_calls_post():
     assert seen == {"method": "POST", "path": "/api/notifications/test",
                     "body": {"eventClass": "session.done", "repo": "o/r"}}
 
+    # #3184: the watch-shaped inputs pass straight through to the endpoint, which
+    # owns resolving a product to its digest scopes.
+    await _tool(build_tools(_api(handler)), "test_notification").handler(
+        {"event_class": "decision_needed", "product": "kindash", "session_id": "s1"})
+    assert seen["body"] == {"eventClass": "decision_needed", "product": "kindash",
+                            "sessionId": "s1"}
+
 
 @pytest.mark.asyncio
 async def test_envelope_carries_now_and_truncated():

@@ -1090,8 +1090,14 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "needing input, a PR going limited) WITHOUT a real event or session — this is "
                "a simulation, not a lookup. Dry-runs the notification routing engine for a "
                "hypothetical event_class (default 'needs_input') and shows which rule would "
-               "match and whether quiet hours would suppress it. Delivers nothing.",
-               _schema(event_class=str, repo=str, account=str, automation=str))
+               "match and whether quiet hours would suppress it, plus watchIds: the "
+               "assistant watches it would ALSO fire (watches never replace routing). "
+               "To check a watch, describe the event it waits for: session_id for a "
+               "kind='session' watch, product=<slug> for a kind='product' watch (fills in "
+               "the automation and repo its digest carries — without it the preview "
+               "cannot match that watch). Delivers nothing.",
+               _schema(event_class=str, repo=str, account=str, automation=str,
+                       session_id=str, product=str))
     @guarded
     async def test_notification(args: dict[str, Any]) -> Any:
         # `TestBody.eventClass` is a plain `str` with a server-side default of
@@ -1107,6 +1113,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             body["account"] = args["account"]
         if args.get("automation") is not None:
             body["automation"] = args["automation"]
+        if args.get("session_id") is not None:
+            body["sessionId"] = args["session_id"]
+        if args.get("product") is not None:
+            body["product"] = args["product"]
         return await api.post("/api/notifications/test", body)
     # The one tool with NO backing endpoint: the gap it records is precisely that no
     # endpoint exists. `test_every_tool_hits_an_allowed_route` exempts it by name.
@@ -1854,13 +1864,17 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.delete(f"/api/notifications/rules/{args['id']}") or {"ok": True}
 
     @spec_tool("watch",
-               "Get notified in the drawer (plus push) the next time something happens, "
-               "without starting a new model turn — good for 'let me know when X'. "
+               "Get a notice card in this assistant chat the next time something happens, "
+               "without starting a new model turn — good for 'let me know when X'. It also "
+               "web-pushes only when push is configured: the response's pushEnabled says "
+               "which, and when it is false say the notice will only appear here. "
                "kind='pr' with condition='breaks' watches target='owner/repo' for its CI "
                "going red; kind='automation' with condition='error' or 'warn' watches "
                "target=<automation id> for that severity; kind='session' with "
-               "condition='finishes' watches target=<session id> for that session handing "
-               "a turn back; kind='account' with condition='limited' watches "
+               "condition='finishes' watches target=<session id> for that session's turn "
+               "ending done or complete, and condition='needs_you' for it needing the user "
+               "(a hand_back, a question or an approval — 'finishes' does not fire on "
+               "those); kind='account' with condition='limited' watches "
                "target=<account name> (or 'any' for every account) hitting its usage "
                "ceiling; kind='deploy' with condition='fails' watches target='owner/repo' for "
                "one of its deploy environments failing; kind='product' with "

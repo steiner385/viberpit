@@ -50,8 +50,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "3e9a05c37e44bb69c6c8bd116f81a90c4ba9a7ce5d51eb0e10a02c1b7c3fe8f4"
-    assert len(rows) == 155
+    assert digest == "c68e80f9669045dd4431cc890ede28d8f94381d52f3b67ad7092fcc645bfdc09"
+    assert len(rows) == 156
     assert sum(bool(r.get("operator")) for r in rows) == 7
 
 
@@ -117,7 +117,8 @@ def test_watch_contract_state_and_validation():
         watch = response.json()
         assert watch["eventClass"] == "account_limited"
         assert watch["scopeAccount"] is None
-        assert set(watch) == {"id", "eventClass", "scopeRepo", "scopeAutomation", "scopeAccount", "scopeSessionId", "once", "ownerSessionId", "expiresAt", "createdAt"}
+        assert set(watch) == {"id", "eventClass", "scopeRepo", "scopeAutomation", "scopeAccount", "scopeSessionId", "once", "ownerSessionId", "expiresAt", "createdAt", "pushEnabled"}
+        assert watch["pushEnabled"] is False
         assert len(c.get("/api/assistant/watches").json()) == len(before) + 1
         assert c.delete("/api/assistant/watches/" + watch["id"]).json() == {"ok": True}
         assert c.get("/api/assistant/watches").json() == before

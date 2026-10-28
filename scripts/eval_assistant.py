@@ -1294,7 +1294,9 @@ class EvalFixture:
                     once=spec.once, owner_session_id="eval-session", created_at=self.now,
                     expires_at=self.now + timedelta(hours=spec.ttl_hours), **fields))
                 self.watches.append(row)
-                return httpx.Response(201, json=row)
+                # Mirrors create_watch's pushEnabled; the eval world, like an edge with
+                # no VAPID key, has no push — so the drawer is the only delivery.
+                return httpx.Response(201, json={**row, "pushEnabled": False})
         if method == "DELETE" and path.startswith("/api/assistant/watches/"):
             wid = path.rsplit("/", 1)[-1]
             watch_row = next((w for w in self.watches if w["id"] == wid), None)
