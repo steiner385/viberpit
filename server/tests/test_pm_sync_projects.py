@@ -387,6 +387,110 @@ async def test_deleted_board_halts_loudly_without_pruning():
         ["steiner385/viberpit"]
 
 
+def _paged_items_owner_fetch(pages: int, *, endless: bool = False):
+    """An owner fetch serving a board of ``pages`` 100-item pages (or one that
+    never stops saying hasNextPage). Records each items-query cursor."""
+    cursors: list[str | None] = []
+
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        if "fields" in query:
+            return _fields_payload()
+        cursor = query.split('after: "')[1].split('"')[0] if 'after: "' in query else None
+        cursors.append(cursor)
+        page = len(cursors) - 1
+        nodes = [{"id": f"PVTI_{page}_{i}", "updatedAt": "2026-09-02T09:00:00Z",
+                  "content": {"__typename": "Issue", "number": page * 100 + i,
+                              "repository": {"nameWithOwner": "steiner385/viberpit"}},
+                  "fieldValues": {"nodes": []}} for i in range(100)]
+        more = endless or page + 1 < pages
+        return {"data": {"node": {"items": {
+            "pageInfo": {"endCursor": f"c{page}", "hasNextPage": more},
+            "nodes": nodes}}}}
+
+    return owner_fetch, cursors
+
+
+@pytest.mark.asyncio
+async def test_board_larger_than_2000_items_is_read_to_the_end():
+    """The board read used the backfill's 20-page bound with no saved cursor, so a
+    board past 2,000 items silently lost its tail — and the save PRUNED those rows,
+    so the reconciler re-added the same newest items every tick (#988, KinDash
+    #27 at 2,119 items). The whole board must reach the save."""
+    ctx = Ctx()
+    owner_fetch, cursors = _paged_items_owner_fetch(25)
+    loop, calls = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                        repo_fetch=lambda q: _relations_payload())
+    await loop.tick()
+    assert len(cursors) == 25
+    (_, items), = calls["save_project_items"]
+    assert len(items) == 2500
+
+
+@pytest.mark.asyncio
+async def test_board_read_that_hits_the_page_bound_is_not_saved():
+    """A read cut off by the safety bound is an incomplete board: saving it would
+    prune every row past the bound and stamp the mirror fresh for the reconciler.
+    Leave the mirror as it was and say so, loudly."""
+    ctx = Ctx()
+    owner_fetch, cursors = _paged_items_owner_fetch(0, endless=True)
+    loop, calls = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                        repo_fetch=lambda q: _relations_payload())
+    await loop.tick()
+    assert calls["save_project_items"] == []
+    assert any(level == "error" and kw.get("kind") == "gh_project_truncated"
+               for level, _, kw in ctx.events)
+    # Relations are board-independent and still ran.
+    assert [repo for repo, _ in calls["save_relations"]] == ["steiner385/viberpit"]
+
+
+def _paged_relations_fetch(pages: int, *, endless: bool = False):
+    calls: list[str] = []
+
+    def repo_fetch(query):
+        calls.append(query)
+        page = len(calls) - 1
+        nodes = [{"number": page * 100 + i, "blockedBy": {"nodes": []}, "parent": None,
+                  "subIssues": {"nodes": []}} for i in range(100)]
+        return {"data": {"repository": {"nameWithOwner": "steiner385/viberpit", "issues": {
+            "pageInfo": {"endCursor": f"r{page}", "hasNextPage": endless or page + 1 < pages},
+            "nodes": nodes}}}}
+
+    return repo_fetch, calls
+
+
+def _no_board_owner_fetch(owner, query):
+    return {"data": {"repositoryOwner": {"projectsV2": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False}, "nodes": []}}}}
+
+
+@pytest.mark.asyncio
+async def test_relations_past_2000_open_issues_are_read_to_the_end():
+    """Same bound, same prune (an unseen issue's dep edges are deactivated): the
+    relations read must see every open issue too."""
+    ctx = Ctx()
+    repo_fetch, calls = _paged_relations_fetch(25)
+    loop, seams = _loop(ctx, products=[_product()], owner_fetch=_no_board_owner_fetch,
+                        repo_fetch=repo_fetch)
+    await loop.tick()
+    assert len(calls) == 25
+    (_, rels), = seams["save_relations"]
+    assert len(rels) == 2500
+
+
+@pytest.mark.asyncio
+async def test_relations_read_that_hits_the_page_bound_is_not_saved():
+    ctx = Ctx()
+    repo_fetch, _ = _paged_relations_fetch(0, endless=True)
+    loop, seams = _loop(ctx, products=[_product()], owner_fetch=_no_board_owner_fetch,
+                        repo_fetch=repo_fetch)
+    await loop.tick()
+    assert seams["save_relations"] == []
+    assert any(level == "error" and kw.get("kind") == "gh_relations_truncated"
+               for level, _, kw in ctx.events)
+
+
 # ---- Task 10: echo suppression + Stage back-sync — loop-level emit -----------
 
 

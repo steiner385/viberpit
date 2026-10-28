@@ -68,6 +68,13 @@ NowUtc = Callable[[], datetime]
 # (the saved cursor makes each continuation cheap).
 _MAX_PAGES_PER_TICK = 20
 
+# The board-items and issue-relations reads have no saved cursor, and their saves
+# PRUNE what they did not see (board rows deleted, dep edges deactivated), so each must
+# read EVERYTHING or save nothing. Bound them only as a runaway guard: a ProjectV2
+# holds at most 50,000 items, i.e. 500 pages of 100 (#988 — the backfill's 20-page
+# bound above silently cut KinDash's 2,119-item board at 2,000).
+_MAX_FULL_READ_PAGES = 500
+
 # The Projects v2 + relations pass is far pricier than the work-item mirror
 # (~high-hundreds of GraphQL points/hr if run every tick), so it is gated behind
 # its own interval (issue #973). A persistently failing owner is backed off this
@@ -484,7 +491,8 @@ class PmSyncLoop:
                 items: list[GhProjectItemView] = []
                 cursor: str | None = None
                 deleted = False
-                for _ in range(_MAX_PAGES_PER_TICK):
+                more = True
+                for _ in range(_MAX_FULL_READ_PAGES):
                     payload = await self._fetch_gh_projects(
                         owner, build_project_items_query(node_id, cursor))
                     if project_node_missing(payload):  # deleted mid-tick
@@ -497,6 +505,16 @@ class PmSyncLoop:
                 if deleted:
                     await self._emit_board_deleted(product, node_id)
                     linked = 0
+                elif more:
+                    # Cut off by the runaway guard: an incomplete board. Saving it
+                    # would prune the unread rows and stamp the mirror fresh.
+                    log.warning("pm_sync.board_truncated product=%s items=%d",
+                                product.slug, len(items))
+                    await self._ctx.emit(
+                        "error",
+                        f"board for {product.slug} has more than {len(items)} items; "
+                        "mirror left unchanged",
+                        kind="gh_project_truncated", target=product.project_id)
                 else:
                     # Tolerate a None return: every pre-existing canned test seam
                     # returns None, and only the real mirror_store.upsert_project_items
@@ -513,7 +531,8 @@ class PmSyncLoop:
             repo = stored
             rels: list[IssueRelView] = []
             cursor = None
-            for _ in range(_MAX_PAGES_PER_TICK):
+            more = True
+            for _ in range(_MAX_FULL_READ_PAGES):
                 payload = await self._fetch(
                     build_issue_relations_query(repo, cursor))
                 # Key the relations on GitHub's canonical name, renaming the
@@ -523,6 +542,14 @@ class PmSyncLoop:
                 rels.extend(page_r)
                 if not more:
                     break
+            if more:
+                log.warning("pm_sync.relations_truncated repo=%s issues=%d",
+                            repo, len(rels))
+                await self._ctx.emit(
+                    "error",
+                    f"{repo} has more than {len(rels)} open issues; relations left unchanged",
+                    kind="gh_relations_truncated", target=repo)
+                continue
             await self._save_relations(repo, rels)
         # Epic adoption (issue #991): only when the board itself is actually
         # linked. ``linked == 0`` also covers the board-deleted halt above — a
