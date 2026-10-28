@@ -452,6 +452,31 @@ ENRICH_FETCH_TIMEOUT = float(os.environ.get("VIBERPIT_ENRICH_FETCH_TIMEOUT", "3.
 _ENRICH_BATCH_FAIL_LOG = LogThrottle()
 
 
+_QUEUE_POSITIONS_FAIL_LOG = LogThrottle()
+
+
+async def _fetch_queue_positions(orch: Any, caller: str) -> dict[str, int]:
+    """Best-effort queue positions; any failure degrades to empty.
+
+    A refused/timed-out daemon connect is a transient blip, not a defect, so it logs at
+    INFO (throttled) — WARNING is what the error sink files as an issue (#3158).
+    """
+    fn = getattr(orch, "session_queue_positions", None)
+    if fn is None:
+        return {}
+    try:
+        res = fn()
+        if inspect.isawaitable(res):
+            res = await res
+        return res or {}
+    except Exception as exc:
+        level = logging.INFO if isinstance(exc, DaemonUnavailable) else logging.WARNING
+        log_event_throttled(log, _QUEUE_POSITIONS_FAIL_LOG, caller, level,
+                            "session_queue_positions.fetch_failed",
+                            caller=caller, exc_info=True)
+        return {}
+
+
 async def _enrich_batch(orch, records, viewing: bool, timeout: float):
     """Fetch every session's enrichment in three batched RPCs instead of three per session.
 
@@ -762,16 +787,7 @@ async def list_sessions(
     repos, suggs, prs, summaries = await _enrich_batch(
         orch, records, viewing, ENRICH_FETCH_TIMEOUT)
     defer_seconds = await _autopilot_defer_seconds()
-    positions: dict[str, int] = {}
-    _positions_fn = getattr(orch, "session_queue_positions", None)
-    if _positions_fn is not None:
-        try:
-            _pos_res = _positions_fn()
-            if inspect.isawaitable(_pos_res):
-                _pos_res = await _pos_res
-            positions = _pos_res or {}
-        except Exception:
-            log.warning("list_sessions: session_queue_positions fetch failed", exc_info=True)
+    positions = await _fetch_queue_positions(orch, "list_sessions")
     stall_reasons = await _queue_stall_reasons(records)
     heartbeats: Any = _SNAPSHOT_FAILED
     hb_now: datetime | None = None
@@ -1063,15 +1079,7 @@ async def create_session(
     # back it landed, same as list_sessions/get_session already surface.
     queue_position: int | None = None
     if record.status == "queued":
-        _positions_fn = getattr(orch, "session_queue_positions", None)
-        if _positions_fn is not None:
-            try:
-                _pos_res = _positions_fn()
-                if inspect.isawaitable(_pos_res):
-                    _pos_res = await _pos_res
-                queue_position = (_pos_res or {}).get(record.id)
-            except Exception:
-                log.warning("create_session: session_queue_positions fetch failed", exc_info=True)
+        queue_position = (await _fetch_queue_positions(orch, "create_session")).get(record.id)
 
     # Best-effort and grace-free: the caller learns WHY it queued in the same response.
     queue_stall_reason: dict[str, Any] | None = None
@@ -1435,15 +1443,7 @@ async def get_session(
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
     queue_position: int | None = None
-    _positions_fn = getattr(orch, "session_queue_positions", None)
-    if _positions_fn is not None:
-        try:
-            _pos_res = _positions_fn()
-            if inspect.isawaitable(_pos_res):
-                _pos_res = await _pos_res
-            queue_position = (_pos_res or {}).get(session_id)
-        except Exception:
-            log.warning("get_session: session_queue_positions fetch failed", exc_info=True)
+    queue_position = (await _fetch_queue_positions(orch, "get_session")).get(session_id)
     heartbeats: Any = _SNAPSHOT_FAILED
     hb_now: datetime | None = None
     try:
