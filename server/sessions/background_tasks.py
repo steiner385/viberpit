@@ -427,7 +427,7 @@ def _wakeup_from(entries, now: datetime | None) -> PendingWakeup | None:
     if armed_at is None:
         return PendingWakeup(fire_at=None)
     fire_at = armed_at + timedelta(seconds=delay)
-    cutoff = (now or datetime.now(timezone.utc)) - _REARM_MAX_AGE
+    now = now or datetime.now(timezone.utc)
     if now > fire_at + timedelta(seconds=_WAKEUP_GRACE_SEC):
         return None
     return PendingWakeup(fire_at=fire_at)
@@ -562,6 +562,7 @@ def still_open(snapshot: list[OpenBgTask], fresh: list[OpenBgTask], *,
     that are not replayable are reports of work that died with the engine (a Codex
     terminal) and are kept as they are: a rescan of a restarted engine cannot see them.
     """
+    cutoff = (now or datetime.now(timezone.utc)) - _REARM_MAX_AGE
     by_id = {t.tool_use_id: t for t in fresh}
     out: list[OpenBgTask] = []
     for t in snapshot:
