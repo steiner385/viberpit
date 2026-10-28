@@ -54,6 +54,12 @@ _AGENT_TOOLS = frozenset({"Agent", "Task", "SendMessage"})
 # wakeup that is about to fire (or that just fired, racing the new turn's write).
 _WAKEUP_GRACE_SEC = 300.0
 
+# A replayable task launched longer ago than this is not offered back after a restart.
+# Backgrounded work this old finished (or was abandoned) long before the restart; a
+# `killed` stub left in the transcript by an earlier restart kept it "open", so every
+# later restart re-offered it — including a prod deploy watcher (#3174).
+_REARM_MAX_AGE = timedelta(hours=24)
+
 RESTART_GUARD = ("This task was interrupted by a server restart and may have partially "
           "completed. Before redoing work, check current state (e.g. `git status`, "
           "what already exists) and continue from where it left off rather than "
@@ -544,7 +550,8 @@ def last_assistant_text(jsonl_path: str) -> str:
     return last
 
 
-def still_open(snapshot: list[OpenBgTask], fresh: list[OpenBgTask]) -> list[OpenBgTask]:
+def still_open(snapshot: list[OpenBgTask], fresh: list[OpenBgTask], *,
+               now: datetime | None = None) -> list[OpenBgTask]:
     """The drain-time *snapshot* narrowed to what a rescan taken NOW still finds open.
 
     The snapshot is taken when the drain starts — up to the whole drain window before
@@ -555,6 +562,7 @@ def still_open(snapshot: list[OpenBgTask], fresh: list[OpenBgTask]) -> list[Open
     that are not replayable are reports of work that died with the engine (a Codex
     terminal) and are kept as they are: a rescan of a restarted engine cannot see them.
     """
+    cutoff = (now or datetime.now(timezone.utc)) - _REARM_MAX_AGE
     by_id = {t.tool_use_id: t for t in fresh}
     out: list[OpenBgTask] = []
     for t in snapshot:
@@ -563,6 +571,9 @@ def still_open(snapshot: list[OpenBgTask], fresh: list[OpenBgTask]) -> list[Open
             continue
         cur = by_id.get(t.tool_use_id)
         if cur is None:
+            continue
+        started = _parse_ts(t.started_at)
+        if started is not None and started < cutoff:
             continue
         out.append(t if t.output_path or not cur.output_path
                    else replace(t, output_path=cur.output_path))
@@ -628,8 +639,11 @@ def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:
     lines: list[str] = []
     if relaunch:
         lines.append("The daemon was restarted (deploy) and these background tasks "
-                     "were stopped. Relaunch each one with exactly the parameters "
-                     "shown.")
+                     "were stopped. Judge each one against the current state before "
+                     "relaunching it: skip any whose work already finished or is no "
+                     "longer wanted, and never re-run a side-effecting command (a "
+                     "deploy, a credential or key change) unless you confirm it is "
+                     "still needed. To relaunch one, use exactly the parameters shown.")
         if any(t.kind != "monitor" for t in relaunch):
             lines.append(RESTART_GUARD)
         for t in relaunch:
