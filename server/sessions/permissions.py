@@ -78,8 +78,9 @@ async def resolve_permission_mode(db, *, explicit: str | None = None,
         return explicit
     if account:
         from viberpit import ledger as _ledger
-        with _ledger.locked_ledger() as led:
-            acct_mode = _ledger.get_account_defaults(led, account).get("defaultPermissionMode")
+        # Read-only, off-loop: no flock, no fsync'd write-back on the event loop (#3150).
+        led = await asyncio.to_thread(_ledger.read_ledger)
+        acct_mode = _ledger.get_account_defaults(led, account).get("defaultPermissionMode")
         if acct_mode:
             return acct_mode
     from sqlalchemy import select as _select

@@ -146,13 +146,13 @@ async def _fingerprint_for(db, target: str) -> str | None:
 def _account_defaults_for(account: str) -> dict:
     """This account's ledger defaults, or {} — the same read the human create path does.
 
-    Mirrors server/api/sessions.py's account-default resolution (same ledger call,
-    same lock) so the two cannot disagree about what an operator pinned.
+    Mirrors server/api/sessions.py's account-default resolution (same lock-free
+    ``read_ledger`` read) so the two cannot disagree about what an operator pinned.
+    A read takes no flock and does no fsync'd write-back (#3150).
     """
     from viberpit import ledger as _ledger
 
-    with _ledger.locked_ledger() as _led:
-        return _ledger.get_account_defaults(_led, account) or {}
+    return _ledger.get_account_defaults(_ledger.read_ledger(), account) or {}
 
 
 def resolve_permission_mode(create_kwargs: dict) -> str:
