@@ -311,6 +311,54 @@ def test_routing_preview_reports_watches_separately_from_routing():
         assert rule["scopeSessionId"] == "s1" and rule["once"] is True and rule["expiresAt"]
 
 
+def test_session_needs_you_watch_matches_needs_input_for_that_session():
+    """#3184: a hand_back ends the turn as `handed_back`, a needs-you status, so
+    'finishes' never fires on it — 'needs_you' is the condition that does."""
+    with _client() as c:
+        r = c.post("/api/assistant/watches",
+                   json={"kind": "session", "target": "sess-1", "condition": "needs_you"},
+                   headers=IDENTITY)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["eventClass"] == "needs_input" and body["scopeSessionId"] == "sess-1"
+        hit = c.post("/api/notifications/test",
+                     json={"eventClass": "needs_input", "sessionId": "sess-1"},
+                     headers=IDENTITY).json()
+        assert hit["watchIds"] == [body["id"]]
+
+
+def test_create_watch_reports_whether_push_is_configured():
+    with _client(env={"VIBERPIT_VAPID_PRIVATE_KEY": ""}) as c:
+        from server import config
+        with patch.object(config, "VAPID_PRIVATE_KEY", ""):
+            off = c.post("/api/assistant/watches",
+                         json={"kind": "pr", "target": "o/n", "condition": "breaks"},
+                         headers=IDENTITY).json()
+        with patch.object(config, "VAPID_PRIVATE_KEY", "pem"):
+            on = c.post("/api/assistant/watches",
+                        json={"kind": "pr", "target": "o/m", "condition": "breaks"},
+                        headers=IDENTITY).json()
+        assert off["pushEnabled"] is False and on["pushEnabled"] is True
+
+
+def test_routing_preview_product_fills_in_the_digest_scopes():
+    """#3184: a bare decision_needed preview cannot match a product watch (it is
+    scoped to the digest's automation + repo); product=<slug> supplies both."""
+    with _client() as c:
+        _seed_products(c, alpha="o/a", beta="o/b")
+        w = c.post("/api/assistant/watches",
+                   json={"kind": "product", "target": "alpha", "condition": "needs_decision"},
+                   headers=IDENTITY).json()
+
+        def preview(**extra):
+            return c.post("/api/notifications/test",
+                          json={"eventClass": "decision_needed", **extra}, headers=IDENTITY)
+        assert preview().json()["watchIds"] == []
+        assert preview(product="alpha").json()["watchIds"] == [w["id"]]
+        assert preview(product="beta").json()["watchIds"] == []
+        assert preview(product="nope").status_code == 422
+
+
 def test_watch_route_allowed_for_the_assistant_token():
     """The `/api/assistant/*` recursion guard blocks every route under that prefix for a
     `ccas1:` caller EXCEPT watches (spec v2 §4.7) — a watch belongs to the thread that

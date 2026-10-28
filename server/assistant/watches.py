@@ -41,6 +41,11 @@ CONDITION_MAP: dict[str, dict[str, tuple[str, str]]] = {
         # into scope_session_id — no transform needed, unlike the account wildcard
         # below).
         "finishes": ("session_ended", "scope_session_id"),
+        # Fires the next time that session needs the user — a hand-back, a question,
+        # an approval, a child escalation: every `needs_input` emit carries the
+        # session id. "finishes" deliberately excludes these (#3184): a hand_back
+        # ends the turn as `handed_back`, which is a needs-you status, not done.
+        "needs_you": ("needs_input", "scope_session_id"),
     },
     "account": {
         # target is an account name, or "any"/"*"/"all" for every account (the assistant

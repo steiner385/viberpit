@@ -418,6 +418,9 @@ class TestBody(BaseModel):
     account: str | None = None
     automation: str | None = None
     sessionId: str | None = None
+    # A product slug: fills in the automation + repo its decision_needed digest
+    # carries (the scopes a kind="product" watch stores), overriding both fields.
+    product: str | None = None
 
 
 @router.post("/test")
@@ -429,13 +432,20 @@ async def test_routing(
 
     from server.sessions.notify_rules import localize_now
 
+    repo, automation = body.repo, body.automation
+    if body.product:
+        from server.automations.decision_escalation import product_digest_scope
+        digest_scope = await product_digest_scope(db, body.product)
+        if digest_scope is None:
+            raise HTTPException(422, f"no product {body.product!r} with a primary repo")
+        automation, repo = digest_scope
     ev = Event(
         event_class=body.eventClass,
         title="Test notification",
         body="Routing preview",
-        repo=body.repo,
+        repo=repo,
         account=body.account,
-        automation=body.automation,
+        automation=automation,
         session_id=body.sessionId,
     )
     rule_rows = (

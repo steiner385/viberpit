@@ -29,6 +29,16 @@ from server.sessions.notify_rules import in_quiet_hours, localize_now
 log = logging.getLogger(__name__)
 
 AUTOMATION_ID = "decision-escalation"
+
+
+async def product_digest_scope(db, slug: str) -> tuple[str, str] | None:
+    """(automation, repo) a ``decision_needed`` digest for product *slug* carries,
+    or None for an unknown slug / one with no primary repo. The one recipe both a
+    kind="product" watch (server/assistant/api.py) and the routing preview
+    (/api/notifications/test) use, so the preview tests the scopes a watch stores."""
+    from server.pm.repo_project import primary_repo_for_slug
+    repo = await primary_repo_for_slug(db, slug)
+    return None if repo is None else (AUTOMATION_ID, repo)
 EVENT_CLASS = "decision_needed"
 #: The dedup record: one audit row per digest sent, read back on the next tick.
 DIGEST_AUDIT_TYPE = "pm.escalation.digest"
