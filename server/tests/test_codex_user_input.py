@@ -80,14 +80,22 @@ async def harness(tmp_path):
 
 async def _ask(harness: Harness, params: Any = None) -> int:
     """Have the app-server raise one `request_user_input` call and wait for its card."""
+    seen = len(harness.of(ev.Question))
     request_id = harness.server.request(
         REQUEST_USER_INPUT, params if params is not None else _params()
     )
-    for _ in range(200):
-        if harness.driver.pending_questions():
-            return request_id
-        await asyncio.sleep(0.005)
-    raise AssertionError("no question card was raised")
+    # The registry is populated synchronously, but the card reaches the
+    # harness's collector task through the driver's event queue a tick later:
+    # wait for the card itself, not just the pending entry.
+    try:
+        await harness.wait_until(
+            lambda: bool(harness.driver.pending_questions())
+            and len(harness.of(ev.Question)) > seen,
+            timeout=1.0,
+        )
+    except AssertionError:
+        raise AssertionError("no question card was raised") from None
+    return request_id
 
 
 def _qid(harness: Harness) -> str:
@@ -97,7 +105,11 @@ def _qid(harness: Harness) -> str:
 
 
 async def _reply(harness: Harness, request_id: int) -> dict[str, Any]:
-    return await harness.server.receive_reply(request_id)
+    reply = await harness.server.receive_reply(request_id)
+    # The QuestionResolved event is queued alongside the wire reply; let the
+    # collector drain it before the caller reads `harness.events`.
+    await harness.settle()
+    return reply
 
 
 # ---------------------------------------------------------------------------
