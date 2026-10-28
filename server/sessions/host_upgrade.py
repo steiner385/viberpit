@@ -23,14 +23,14 @@ from server.version import repo_root
 log = logging.getLogger(__name__)
 
 __all__ = ["start_upgrade", "run_upgrade", "upgrade_wire", "is_running", "default_target_sha",
-           "restart_expected", "restart_deliberate"]
+           "restart_expected", "restart_deliberate", "deploy_running"]
 
 _STATE: dict[str, dict[str, Any]] = {}
 
 
 def _reset_state_for_tests() -> None:
     _STATE.clear()
-    _controller_cache.update(at=0.0, hosts={})
+    _controller_cache.update(at=0.0, hosts={}, running=False)
 
 
 def is_running(name: str) -> bool:
@@ -63,7 +63,7 @@ def is_running(name: str) -> bool:
 # 5 s retry tick); a 1 s TTL still merges those into one fetch while cutting the
 # blind spot 5x versus the old 5 s value.
 _CONTROLLER_STATUS_TTL_S = 1.0
-_controller_cache: dict[str, Any] = {"at": 0.0, "hosts": {}}
+_controller_cache: dict[str, Any] = {"at": 0.0, "hosts": {}, "running": False}
 _controller_client: DeployControllerClient | None = None
 
 
@@ -74,21 +74,43 @@ async def _default_controller_status() -> dict:
     return await _controller_client.get_status()
 
 
-async def _controller_hosts(fetch: Callable[[], Awaitable[dict]]) -> dict[str, dict]:
+async def _controller_deploy(fetch: Callable[[], Awaitable[dict]]) -> dict[str, Any]:
+    """The cached ``{"hosts", "running"}`` view of the controller's current deploy."""
     now = time.monotonic()
     if now - _controller_cache["at"] < _CONTROLLER_STATUS_TTL_S:
-        return _controller_cache["hosts"]
+        return _controller_cache
     try:
         # The controller's /status is {"repo", "pending", "deploy": DeployStatus}; the
         # per-host fan-out lives under "deploy". Reading a top-level "hosts" key made every
         # controller-driven restart look like "no deploy" and re-filed #1614 as #2181.
-        hosts = ((await fetch()).get("deploy") or {}).get("hosts") or {}
+        deploy = (await fetch()).get("deploy") or {}
+        hosts, running = deploy.get("hosts") or {}, bool(deploy.get("running"))
     except Exception:  # noqa: BLE001 — a logging decision must never raise
         # No controller, or one that could not answer: no evidence of a deploy. Cached
         # like a real answer so an absent controller is not re-dialled per failure.
-        hosts = {}
-    _controller_cache.update(at=now, hosts=hosts)
-    return hosts
+        hosts, running = {}, False
+    _controller_cache.update(at=now, hosts=hosts, running=running)
+    return _controller_cache
+
+
+async def _controller_hosts(fetch: Callable[[], Awaitable[dict]]) -> dict[str, dict]:
+    return (await _controller_deploy(fetch)).get("hosts") or {}
+
+
+async def deploy_running(*, controller_status: Callable[[], Awaitable[dict]] | None = None,
+                         ) -> bool:
+    """True while ANY deliberate upgrade is in flight: a Fleet "Update" or a controller
+    deploy, including the windows between and after its per-host steps (#3173).
+
+    ``restart_expected`` is per host and only covers a host's own step; a fan-out also
+    leaves hosts skew-fenced while ``deploy_state`` still names the old commit (until the
+    edge restart records the new one), and that is the deploy doing its job too. Like
+    ``restart_expected`` this only ever decides a log level and never raises.
+    """
+    if any(st.get("state") == "running" for st in _STATE.values()):
+        return True
+    deploy = await _controller_deploy(controller_status or _default_controller_status)
+    return bool(deploy.get("running"))
 
 
 async def restart_expected(name: str, *,
