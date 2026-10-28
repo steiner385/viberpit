@@ -97,8 +97,10 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
     # to write a human's correction onto it (mirror_store.back_sync_stage).
     program_ids = {i.parent_initiative_id for i in initiatives.values() if i.parent_initiative_id}
     mirror: dict[str, MirrorItem] = {}
+    mirror_items = (db.scalars(select(GhProjectItem).where(
+        GhProjectItem.gh_project_id == gh.id)).all() if gh is not None else [])
     if gh is not None:
-        for it in db.scalars(select(GhProjectItem).where(GhProjectItem.gh_project_id == gh.id)).all():
+        for it in mirror_items:
             w = by_id.get(it.work_item_id or "")
             if w is not None and it.gh_item_node_id:
                 mirror[_ref(w)] = MirrorItem(_ref(w), it.gh_item_node_id, it.status, it.score,
@@ -120,8 +122,16 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
             initiative_stage=(ini.stage if ini and ini.id not in program_ids else None),
             initiative_stage_at=_aware(ini.updated_at) if ini else None,
             hold_kind=w.hold_kind, hold_set_at=_aware(w.hold_set_at)))
+    # Scoped to THIS board's nodes: the journal is global, and the gate guards against
+    # planning on a mirror older than our own write *to this board*. A global max let a
+    # busy higher-ranked product's writes mark every lower-ranked mirror stale (#3170).
+    board_nodes = {gh.gh_node_id} if gh is not None and gh.gh_node_id else set()
+    board_nodes.update(it.gh_item_node_id for it in mirror_items if it.gh_item_node_id)
+    board_nodes.update(w.gh_node_id for w in issues if w.gh_node_id)
     last_applied = _aware(db.scalar(select(GhWriteJournal.updated_at).where(
-        GhWriteJournal.applied.is_(True)).order_by(GhWriteJournal.updated_at.desc()).limit(1)))
+        GhWriteJournal.applied.is_(True),
+        GhWriteJournal.target_node_id.in_(board_nodes),
+    ).order_by(GhWriteJournal.updated_at.desc()).limit(1))) if board_nodes else None
     # The freshness gate refuses to write against a mirror older than this. It must
     # therefore cover every timestamp that can move a DECISION: triage (classified_at),
     # initiative stage, our own last write — and dep edges, whose updated_at is what flips

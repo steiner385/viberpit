@@ -206,3 +206,24 @@ def test_open_blockers_follow_the_queues_predicate():
     assert by_ref[f"{REPO}#9"] == ("other/repo#7",)
     assert by_ref[f"{REPO}#3"] == ()
     assert by_ref[f"{REPO}#5"] == ("ghost/repo#1", f"{REPO}#3")
+
+
+def test_last_applied_is_scoped_to_this_boards_nodes():
+    """#3170: another product's applied write must not make this mirror look stale."""
+    from datetime import timedelta
+    from server.db.models import GhWriteJournal
+    db = _db(); _seed(db)
+    later = T + timedelta(hours=1)
+    db.add(GhWriteJournal(target_node_id="PVTI_OTHER", field="Status", applied=True,
+                          created_at=later, updated_at=later))
+    db.commit()
+    product = list_product_views(db)[0]
+    facts = load_product_facts(db, product, now=later)
+    assert facts.last_applied_at is None and facts.newest_decision_at == T
+
+    mine = T + timedelta(minutes=30)
+    db.add(GhWriteJournal(target_node_id="PVTI_5", field="Status", applied=True,
+                          created_at=mine, updated_at=mine))
+    db.commit()
+    facts = load_product_facts(db, product, now=later)
+    assert facts.last_applied_at == mine and facts.newest_decision_at == mine
