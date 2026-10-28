@@ -18,6 +18,8 @@ required for ``engine=codex`` and meaningless for Claude.
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 
 from server.sessions import model_catalog
@@ -51,7 +53,9 @@ async def get_models(
     if selected is AgentEngine.CLAUDE_CODE:
         if refresh:
             model_catalog.refresh()
-        return model_catalog.catalog()
+        # Off-loop: a cold cache (first call after every edge start, or ?refresh=1)
+        # scans the ~250 MB claude binary, which stalled the loop 3.7-11.6 s (#3150).
+        return await asyncio.to_thread(model_catalog.catalog)
 
     if not account:
         raise HTTPException(

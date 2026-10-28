@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mmap
 import re
 
 from .claude_bin import resolve_claude_bin
@@ -68,6 +69,9 @@ _LABELS: dict[str, str] = {
 # Module-level cache populated on first catalog() call; cleared by refresh().
 _cache: list[str] | None = None
 
+_ALIAS_ARRAY_RE = re.compile(
+    rb'\["(?:default|sonnet|opus|haiku|fable|best)[^"]*"(?:,"[^"]+")*\]')
+
 
 def _label_for(alias: str) -> str:
     """Return the display label for *alias*, deriving it for aliases not in _LABELS.
@@ -96,38 +100,44 @@ def _discover_from_binary(binary_path: str) -> list[str] | None:
 
     Returns the alias list on success, or ``None`` if the binary cannot be read
     or the pattern is not found.
+
+    Scans a read-only ``mmap`` with a bytes regex rather than reading the ~250 MB
+    binary into memory and latin-1 decoding it into a str: under memory pressure
+    the read+decode took 11.6 s (#3150). Still blocking work — callers on the
+    event loop must go through ``asyncio.to_thread`` (see ``api/models.py``).
     """
     try:
-        with open(binary_path, "rb") as f:
-            data = f.read()
-    except OSError:
+        with open(binary_path, "rb") as f, \
+                mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            return _scan_aliases(data)
+    except (OSError, ValueError):  # ValueError: mmap of an empty file
         return None
-    try:
-        text = data.decode("latin-1", errors="ignore")
-        # Match JSON arrays whose first element is a known alias tier.
-        # "opusplan" is our discriminating anchor — it only appears in the
-        # picker alias array, not in the many other alias-like contexts.
-        for m in re.finditer(
-            r'\["(?:default|sonnet|opus|haiku|fable|best)[^"]*"(?:,"[^"]+")*\]',
-            text,
-        ):
-            raw = m.group()
-            if "opusplan" not in raw:
-                continue
-            try:
-                aliases: list = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(aliases, list) or not all(
-                isinstance(a, str) for a in aliases
-            ):
-                continue
-            # "default" is a special UI row not stored in the JS array itself.
-            if "default" not in aliases:
-                aliases = ["default"] + aliases
-            return aliases
     except Exception as exc:
         log.debug("model_catalog: binary probe error: %s", exc)
+    return None
+
+
+def _scan_aliases(data) -> list[str] | None:
+    """The picker alias array in ``data`` (bytes-like), or None."""
+    # Match JSON arrays whose first element is a known alias tier.
+    # "opusplan" is our discriminating anchor — it only appears in the
+    # picker alias array, not in the many other alias-like contexts.
+    for m in _ALIAS_ARRAY_RE.finditer(data):
+        raw = m.group().decode("latin-1")
+        if "opusplan" not in raw:
+            continue
+        try:
+            aliases: list = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(aliases, list) or not all(
+            isinstance(a, str) for a in aliases
+        ):
+            continue
+        # "default" is a special UI row not stored in the JS array itself.
+        if "default" not in aliases:
+            aliases = ["default"] + aliases
+        return aliases
     return None
 
 

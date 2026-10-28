@@ -132,17 +132,22 @@ def _local_cached_usage(name: str):
     Returns None (never raises) when the entry is missing or older than
     usage_cache_ttl_sec, so the caller falls back to the daemon and correctness
     is preserved — this is a latency optimisation, not a new source of truth.
+
+    A pure read, so ``read_ledger`` (no flock, no write-back) — never
+    ``locked_ledger``, whose contended ``LOCK_EX`` plus fsync'd republish stalled
+    the edge loop for 6-9 s per ``GET /api/accounts`` (#3150). Blocking file I/O
+    regardless: call it via ``asyncio.to_thread``, never on the loop.
     """
     from datetime import datetime, timezone
 
     from viberpit import ledger
     from viberpit.config import load_config
 
-    with ledger.locked_ledger() as led:
-        # Returns a viberpit.quota.QuotaSnapshot (or None) — the SAME type
-        # orch.usage() yields. _safe_usage's callers convert with _usage_to_dict
-        # downstream, so returning a raw dict here would break the accounts page.
-        return ledger.cached_usage(led, name, load_config(), datetime.now(timezone.utc))
+    led = ledger.read_ledger()
+    # Returns a viberpit.quota.QuotaSnapshot (or None) — the SAME type
+    # orch.usage() yields. _safe_usage's callers convert with _usage_to_dict
+    # downstream, so returning a raw dict here would break the accounts page.
+    return ledger.cached_usage(led, name, load_config(), datetime.now(timezone.utc))
 
 
 def _local_stale_usage(name: str):
@@ -151,13 +156,13 @@ def _local_stale_usage(name: str):
     Returns ``(QuotaSnapshot, fetched_at)`` when an entry younger than
     ``STALE_USAGE_MAX_AGE_SEC`` exists, else ``None``. Display fallback only —
     the fresh path (``_local_cached_usage``, then the daemon RPC) must already
-    have failed before this is consulted.
+    have failed before this is consulted. A pure read: ``read_ledger``, off-loop
+    (see ``_local_cached_usage``).
     """
     from viberpit import ledger
 
-    with ledger.locked_ledger() as led:
-        return ledger.stale_usage(led, name, datetime.now(timezone.utc),
-                                   max_age_sec=STALE_USAGE_MAX_AGE_SEC)
+    return ledger.stale_usage(ledger.read_ledger(), name, datetime.now(timezone.utc),
+                              max_age_sec=STALE_USAGE_MAX_AGE_SEC)
 
 
 def _stale_fallback(name: str):
@@ -193,9 +198,13 @@ async def _safe_usage(orch, name: str, timeout: float):
     None)`` means no ledger reading young enough to show either. Isolates a
     single slow/failing account so it can neither stall the other accounts'
     fetches nor turn GET /api/accounts into a 500.
+
+    Both ledger reads run in a worker thread: ``_gather_usages`` fans this out
+    per account, so a sync read here serialized N file reads on the event loop
+    before the first await (#3150).
     """
     try:
-        local = _local_cached_usage(name)
+        local = await asyncio.to_thread(_local_cached_usage, name)
         if local is not None:
             return local, None
     except Exception:  # noqa: BLE001 — a bad ledger must fall back, never 500
@@ -225,7 +234,7 @@ async def _safe_usage(orch, name: str, timeout: float):
         log_event_throttled(log, _USAGE_FALLBACK_LOG, f"{name}:error", logging.WARNING,
                              "account.usage_fetch_failed", account=name, reason="error",
                              exc_info=True)
-    return _stale_fallback(name)
+    return await asyncio.to_thread(_stale_fallback, name)
 
 
 async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, Any]:

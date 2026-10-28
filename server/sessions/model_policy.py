@@ -12,6 +12,7 @@ default), and that is the model the denylist has to see.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -148,8 +149,9 @@ async def resolve_model_policy(db, *, model: str | None, account: str | None = N
 
     if account:
         from viberpit import ledger as _ledger
-        with _ledger.locked_ledger() as led:
-            acct_action = _ledger.get_account_defaults(led, account).get("modelApprovalAction")
+        # Read-only, off-loop: no flock, no fsync'd write-back on the event loop (#3150).
+        led = await asyncio.to_thread(_ledger.read_ledger)
+        acct_action = _ledger.get_account_defaults(led, account).get("modelApprovalAction")
         if acct_action in VALID_ACTIONS:
             return acct_action
 

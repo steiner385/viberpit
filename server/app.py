@@ -450,6 +450,27 @@ async def _lifespan(app: FastAPI):
                 _logging.getLogger("server").warning("stt: warm failed: %s", exc)
         threading.Thread(target=_warm_stt, name="stt-warm", daemon=True).start()
 
+    # --- model catalog warm-up ---------------------------------------------
+    # The first catalog read scans the ~250 MB claude binary; warm it in a thread
+    # so neither GET /api/models nor a sync is_known_alias() caller on the loop
+    # pays it cold (#3150). Failure just leaves the cache cold for the endpoint.
+    def _warm_model_catalog() -> None:
+        try:
+            from server.sessions import model_catalog as _mc
+            _mc.catalog()
+        except Exception as exc:  # noqa: BLE001 — a warm-up must never fail startup
+            _logging.getLogger("server").info("model catalog warm failed: %s", exc)
+    threading.Thread(target=_warm_model_catalog, name="model-catalog-warm",
+                     daemon=True).start()
+
+    # --- freeze the startup heap out of the cyclic GC (#3150) ---------------
+    # Delayed past startup and the warm-ups above; VIBERPIT_GC_FREEZE_DELAY_S=0 off.
+    from server.obs.gc_freeze import freeze_after_startup
+    app.state.gc_freeze_task = _supervise(
+        asyncio.create_task(freeze_after_startup(), name="gc-freeze"),
+        name="gc-freeze",
+    )
+
     # --- pipeline dashboard populator --------------------------------------
     # Compute the expensive dashboard frame once per cycle into a shared cache,
     # so the /api/pipeline SSE fan-out and /snapshot serve a warm frame instead
@@ -583,6 +604,7 @@ async def _lifespan(app: FastAPI):
         await bounded_wait(_pipeline_state.stop(), timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
                            phase="shutdown:pipeline-state")
     for _attr, _phase in (("loop_lag_task", "loop-lag-watchdog"),
+                          ("gc_freeze_task", "gc-freeze"),
                           ("app_sessions_prune_task", "app-sessions-prune"),
                           ("codex_auth_sync_task", "codex-auth-sync"),
                           ("mcp_oauth_refresh_task", "mcp-oauth-refresh"),

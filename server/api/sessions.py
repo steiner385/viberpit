@@ -924,8 +924,9 @@ async def create_session(
     _resolved_model = body.model
     if body.account and not _resolved_model:
         from viberpit import ledger as _ledger
-        with _ledger.locked_ledger() as _led:
-            _resolved_model = _ledger.get_account_defaults(_led, body.account).get("defaultModel")
+        # Read-only, off-loop: no flock, no fsync'd write-back on the event loop (#3150).
+        _led = await asyncio.to_thread(_ledger.read_ledger)
+        _resolved_model = _ledger.get_account_defaults(_led, body.account).get("defaultModel")
     _resolved_effort = body.reasoningEffort
 
     # Resolve request -> account -> engine defaults as one pair, then dispatch
