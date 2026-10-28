@@ -195,6 +195,7 @@ def _supplement_env_deployments(response: dict, repo: str, token: str | None) ->
             log, str(exc),
             "pr_population.env_supplement_failed repo='%s' envs='%s'",
             repo, ",".join(missing), exc_info=True,
+            demote_edge_failures=True,
         )
         return
     merge_env_deployments(repo_node, env_data.get("r0") or {})
