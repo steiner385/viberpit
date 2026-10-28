@@ -12,7 +12,6 @@ from server.sessions import push_store
 # Same literal server/sessions/types.py defines for SessionRecord.kind — reused
 # here for NotificationChannel.kind rather than adding a second constant that
 # would carry the identical value.
-from server.sessions.types import ASSISTANT_KIND
 
 if TYPE_CHECKING:
     # Typing-only: importing SessionOrchestrator at runtime would cycle back here
@@ -161,23 +160,16 @@ async def notify_event(
     from sqlalchemy import select
 
     from server.db.models import AppSettings, NotificationChannel, NotificationRule
-    from server.sessions.notify_rules import Event, RuleView, localize_now, plan
+    from server.sessions.notify_rules import (
+        Event, is_watch_rule, localize_now, plan, plan_watches, rule_view_from_row,
+    )
 
     try:
         async with db_session() as db:
             rows = (await db.execute(select(NotificationRule))).scalars().all()
-            rules = [
-                RuleView(
-                    id=r.id, enabled=r.enabled, event_class=r.event_class,
-                    scope_repo=r.scope_repo, scope_account=r.scope_account,
-                    scope_automation=r.scope_automation, action=r.action,
-                    channel_id=r.channel_id, critical=r.critical,
-                    priority=r.priority, created_at=r.created_at,
-                    once=bool(r.once), owner_session_id=r.owner_session_id,
-                    expires_at=r.expires_at, scope_session_id=r.scope_session_id,
-                )
-                for r in rows
-            ]
+            channels = {c.id: c for c in (await db.execute(
+                select(NotificationChannel))).scalars().all()}
+            rules = [rule_view_from_row(r, watch=is_watch_rule(r, channels)) for r in rows]
             # owner_session_id lives on the RULE, not the channel (a watch's
             # NotificationChannel(kind="assistant") is one per IDENTITY, shared by
             # every watch that identity creates — see server/assistant/api.py's
@@ -190,43 +182,53 @@ async def notify_event(
             q_start = settings.quiet_hours_start if settings else None
             q_end = settings.quiet_hours_end if settings else None
             q_tz = settings.quiet_hours_timezone if settings else None
-            channels = {c.id: c for c in (await db.execute(
-                select(NotificationChannel))).scalars().all()}
         ev = Event(event_class=event_class, title=title, body=body,
                    repo=repo, account=account, automation=automation, url=url,
                    session_id=session_id)
         now_local = localize_now(datetime.now(timezone.utc), q_tz)
         decision = plan(ev, rules, q_start, q_end, now_local)
+        watch_decisions = plan_watches(ev, rules, q_start, q_end, now_local)
     except Exception:
         log.warning("notify_event.routing_failed", exc_info=True)
         await notify(title, body, url=url)  # fail open to legacy fanout
         return
 
+    # Watches are additive (#3181): routing delivers as if no watch existed, then
+    # every armed matching watch gets its drawer notice. One web push per event, not
+    # one per sink — a watch only pushes when routing did not already.
+    pushed = await _deliver_routed(decision, channels, title, body, url,
+                                   fanout_when_unconfigured)
+    for wd in watch_decisions:
+        if not wd.deliver:
+            continue
+        chan = channels.get(wd.channel_id) if wd.channel_id else None
+        if chan is None or not chan.enabled:
+            continue
+        owner_session_id = (owner_session_by_rule.get(wd.rule_id)
+                            if wd.rule_id is not None else None)
+        await _deliver_assistant_notice(
+            wd, event_class, title, body, url, orch, owner_session_id, push=not pushed)
+        pushed = True
+
+
+async def _deliver_routed(decision, channels: dict, title: str, body: str,
+                          url: str | None, fanout_when_unconfigured: bool) -> bool:
+    """Deliver the routing half of notify_event. Returns whether a web push was
+    attempted, so the watch half does not push the same event a second time."""
     if not decision.deliver:
-        return
+        return False
     if decision.action == "default":
         if fanout_when_unconfigured:
             await notify(title, body, url=url)  # no rules configured → legacy fanout
-        return
+            return True
+        return False
     if decision.action == "push":
-        payload = {"title": title, "body": body}
-        if url:
-            payload["url"] = url
-        try:
-            await _webpush_sink(payload)
-        except Exception:
-            log.warning("notify_event.webpush_failed", exc_info=True)
-        return
+        await _push_payload(title, body, url)
+        return True
     if decision.action == "channel" and decision.channel_id:
         chan = channels.get(decision.channel_id)
         if chan is None or not chan.enabled:
-            return
-        if chan.kind == ASSISTANT_KIND:
-            owner_session_id = (owner_session_by_rule.get(decision.rule_id)
-                               if decision.rule_id is not None else None)
-            await _deliver_assistant_notice(
-                decision, event_class, title, body, url, orch, owner_session_id)
-            return
+            return False
         payload = {"title": title, "message": body, "body": body}
         if url:
             payload["url"] = url
@@ -235,18 +237,10 @@ async def notify_event(
                 _deliver_channel, chan.url, chan.headers, payload, urllib.request.urlopen)
         except Exception:
             log.warning("notify_event.channel_failed", exc_info=True)
+    return False
 
 
-async def _deliver_assistant_notice(
-    decision, event_class: str, title: str, body: str, url: str | None,
-    orch: "SessionOrchestrator | None", owner_session_id: str | None,
-) -> None:
-    """The assistant-channel half of a "channel" decision (Task 8.4, spec v2
-    §4.7 Pack N): web push fires regardless (same payload the plain "push"
-    action sends — the spec's "Web push is sent regardless"), then the notice
-    is delivered into the owner's drawer via ``orch.post_notice``, then a
-    once-rule is disabled so it never fires again. Never raises — every step is
-    independently best-effort, matching the rest of this module."""
+async def _push_payload(title: str, body: str, url: str | None) -> None:
     payload = {"title": title, "body": body}
     if url:
         payload["url"] = url
@@ -254,6 +248,21 @@ async def _deliver_assistant_notice(
         await _webpush_sink(payload)
     except Exception:
         log.warning("notify_event.webpush_failed", exc_info=True)
+
+
+async def _deliver_assistant_notice(
+    decision, event_class: str, title: str, body: str, url: str | None,
+    orch: "SessionOrchestrator | None", owner_session_id: str | None,
+    *, push: bool = True,
+) -> None:
+    """Deliver one fired watch (Task 8.4, spec v2 §4.7 Pack N): web push unless
+    the event already pushed (``push=False``; the spec's "Web push is sent
+    regardless" — once per event), then the notice into the owner's drawer via
+    ``orch.post_notice``, then a once-rule is disabled so it never fires again.
+    Never raises — every step is independently best-effort, matching the rest of
+    this module."""
+    if push:
+        await _push_payload(title, body, url)
 
     if orch is not None and owner_session_id is not None:
         try:

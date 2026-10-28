@@ -27,6 +27,7 @@ from server.db.models import (AssistantToken, AuditEvent, NotificationChannel,
 from server.db.models import Session as DbSession
 from server.obs.metrics import assistant_feedback_total
 from server.sessions.model_policy import resolve_model_policy
+from server.sessions.notify_rules import is_expired
 from server.sessions.engine import AgentEngineUnavailable
 from server.sessions.types import ASSISTANT_KIND
 from server.time_iso import iso_utc
@@ -407,6 +408,21 @@ async def _get_or_create_assistant_channel(db, identity: str) -> NotificationCha
     return channel
 
 
+def _watch_armed(r: NotificationRule, now: datetime) -> bool:
+    """A watch can still fire: enabled (a fired once-watch is disabled by
+    push._deliver_assistant_notice) and inside its TTL. Only armed watches are
+    listed and counted against the cap (#3182) — the tool and the feature doc both
+    promise "active"/"live" watches."""
+    return bool(r.enabled) and not is_expired(r.expires_at, now)
+
+
+async def _channel_watches(db, channel_id: str) -> list[NotificationRule]:
+    return list((await db.execute(
+        select(NotificationRule).where(NotificationRule.channel_id == channel_id)
+        .order_by(NotificationRule.created_at)
+    )).scalars().all())
+
+
 def _watch_dict(r: NotificationRule) -> dict:
     return {
         "id": r.id,
@@ -446,11 +462,19 @@ async def create_watch(body: WatchBody, request: Request,
         return _err("INVALID_TTL", "ttl_hours must be positive", 422)
 
     channel = await _get_or_create_assistant_channel(db, identity)
-    existing = (await db.execute(
-        select(NotificationRule.id).where(NotificationRule.channel_id == channel.id)
-    )).scalars().all()
+    now = datetime.now(timezone.utc)
+    armed = 0
+    for existing in await _channel_watches(db, channel.id):
+        if _watch_armed(existing, now):
+            armed += 1
+        else:
+            # A spent (fired once) or expired watch can never fire again: prune it
+            # here, the one path that adds rows, so the table stays bounded without
+            # a sweep loop (#3182).
+            await db.delete(existing)
     cap = get_settings().assistant_watch_max_per_identity
-    if len(existing) >= cap:
+    if armed >= cap:
+        await db.commit()  # keep the prune even when this create is refused
         return _err("WATCH_CAP_EXCEEDED", f"at most {cap} watches per identity", 409)
 
     scope_value: str | None = body.target
@@ -470,7 +494,7 @@ async def create_watch(body: WatchBody, request: Request,
     rule = NotificationRule(
         event_class=event_class, action="channel", channel_id=channel.id,
         once=body.once, owner_session_id=getattr(request.state, "assistant_session_id", None),
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=body.ttl_hours),
+        expires_at=now + timedelta(hours=body.ttl_hours),
         **{scope_field: scope_value}, **extra_scope,
     )
     db.add(rule)
@@ -487,11 +511,9 @@ async def list_watches(identity: str = Depends(current_identity), db=Depends(get
     channel = await _find_assistant_channel(db, identity)
     if channel is None:
         return []
-    rows = (await db.execute(
-        select(NotificationRule).where(NotificationRule.channel_id == channel.id)
-        .order_by(NotificationRule.created_at)
-    )).scalars().all()
-    return [_watch_dict(r) for r in rows]
+    now = datetime.now(timezone.utc)
+    return [_watch_dict(r) for r in await _channel_watches(db, channel.id)
+            if _watch_armed(r, now)]
 
 
 @router.delete("/watches/{watch_id}")

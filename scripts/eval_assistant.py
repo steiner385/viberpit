@@ -1176,10 +1176,14 @@ class EvalFixture:
 
         from server.api.notifications import (
             EVENT_CLASSES, QuietHoursBody, RuleBody, TestBody, _VALID_ACTIONS,
-            _rule_dict, _rule_view, _valid_hhmm, _valid_timezone,
+            _rule_dict, _valid_hhmm, _valid_timezone,
         )
         from server.db.models import NotificationRule
-        from server.sessions.notify_rules import Event, localize_now, plan, select_rule
+        from types import SimpleNamespace
+
+        from server.sessions.notify_rules import (
+            Event, is_watch_rule, localize_now, plan, plan_watches, rule_view_from_row,
+        )
 
         try:
             if path == "/api/notifications/rules":
@@ -1232,15 +1236,19 @@ class EvalFixture:
                 preview = TestBody.model_validate(body)
                 event = Event(event_class=preview.eventClass, title="Test notification",
                               body="Routing preview", repo=preview.repo, account=preview.account,
-                              automation=preview.automation)
-                rules = [_rule_view(r) for r in self.notification_rules.values()]
+                              automation=preview.automation, session_id=preview.sessionId)
+                channels = {c["id"]: SimpleNamespace(**c) for c in _notification_channels()}
+                rules = [rule_view_from_row(r, watch=is_watch_rule(r, channels))
+                         for r in self.notification_rules.values()]
                 now_local = localize_now(self.now, self.quiet_hours.get("timezone"))
-                decision = plan(event, rules, self.quiet_hours["start"], self.quiet_hours["end"], now_local)
-                matched = select_rule(rules, event)
+                q_start, q_end = self.quiet_hours["start"], self.quiet_hours["end"]
+                decision = plan(event, rules, q_start, q_end, now_local)
+                watches = plan_watches(event, rules, q_start, q_end, now_local)
                 return httpx.Response(200, json={
                     "action": decision.action, "channelId": decision.channel_id,
                     "deliver": decision.deliver, "suppressedByQuiet": decision.suppressed_by_quiet,
-                    "matchedRuleId": matched.id if matched else None,
+                    "matchedRuleId": decision.rule_id,
+                    "watchIds": [w.rule_id for w in watches if w.deliver],
                 })
         except ValidationError:
             return httpx.Response(422, json={"detail": "invalid notification body"})

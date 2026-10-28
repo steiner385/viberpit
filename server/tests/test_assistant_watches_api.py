@@ -249,6 +249,68 @@ def test_watch_cap_is_per_identity():
         assert theirs.status_code == 201
 
 
+def _spend(c, watch_id):
+    """What firing a once-watch does to its row (push._deliver_assistant_notice)."""
+    r = c.put(f"/api/notifications/rules/{watch_id}", json={"enabled": False}, headers=IDENTITY)
+    assert r.status_code == 200, r.text
+
+
+def test_spent_watches_are_not_listed_and_do_not_count_toward_the_cap():
+    """#3182: the tool promises "active" watches and the doc caps "live" ones, so a
+    fired once-watch neither shows in list_watches nor blocks a new watch."""
+    with _client(env={"VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY": "2"}) as c:
+        ids = [c.post("/api/assistant/watches",
+                      json={"kind": "automation", "target": f"job-{i}", "condition": "error"},
+                      headers=IDENTITY).json()["id"] for i in range(2)]
+        _spend(c, ids[0])
+
+        listed = c.get("/api/assistant/watches", headers=IDENTITY).json()
+        assert [w["id"] for w in listed] == [ids[1]]
+
+        r = c.post("/api/assistant/watches",
+                   json={"kind": "automation", "target": "job-2", "condition": "error"},
+                   headers=IDENTITY)
+        assert r.status_code == 201, r.text
+        over = c.post("/api/assistant/watches",
+                      json={"kind": "automation", "target": "job-3", "condition": "error"},
+                      headers=IDENTITY)
+        assert over.status_code == 409
+
+
+def test_creating_a_watch_prunes_spent_ones():
+    with _client() as c:
+        spent = c.post("/api/assistant/watches",
+                       json={"kind": "pr", "target": "o/n", "condition": "breaks"},
+                       headers=IDENTITY).json()["id"]
+        _spend(c, spent)
+        c.post("/api/assistant/watches",
+               json={"kind": "pr", "target": "o/m", "condition": "breaks"}, headers=IDENTITY)
+        rule_ids = [r["id"] for r in c.get("/api/notifications/rules", headers=IDENTITY).json()]
+        assert spent not in rule_ids
+
+
+def test_routing_preview_reports_watches_separately_from_routing():
+    """#3181: a watch is additive — the preview's routing half keeps the default
+    fanout and the watch shows under watchIds, scoped to its own session."""
+    with _client() as c:
+        w = c.post("/api/assistant/watches",
+                   json={"kind": "session", "target": "s1", "condition": "finishes"},
+                   headers=IDENTITY).json()
+        mine = c.post("/api/notifications/test",
+                      json={"eventClass": "session_ended", "sessionId": "s1"},
+                      headers=IDENTITY).json()
+        assert mine["action"] == "default" and mine["matchedRuleId"] is None
+        assert mine["watchIds"] == [w["id"]]
+        other = c.post("/api/notifications/test",
+                       json={"eventClass": "session_ended", "sessionId": "s2"},
+                       headers=IDENTITY).json()
+        assert other["watchIds"] == []
+
+        rule = next(r for r in c.get("/api/notifications/rules", headers=IDENTITY).json()
+                    if r["id"] == w["id"])
+        assert rule["scopeSessionId"] == "s1" and rule["once"] is True and rule["expiresAt"]
+
+
 def test_watch_route_allowed_for_the_assistant_token():
     """The `/api/assistant/*` recursion guard blocks every route under that prefix for a
     `ccas1:` caller EXCEPT watches (spec v2 §4.7) — a watch belongs to the thread that
