@@ -14,6 +14,7 @@ from server.sessions.goal_inference import (
     normalize_goal_text,
 )
 from server.sessions.engine import AgentEngine
+from server.sessions.helper_call import helper_cwd
 from server.sessions.types import SessionRecord
 
 
@@ -46,13 +47,13 @@ def _fake_query(reply_text):
 async def test_infer_goal_returns_one_line():
     fn = _fake_query("Ship the ReferralReward schema as a merged PR closing #10273.\n")
     g = await infer_goal("ReferralReward schema", [{"role": "user", "text": "implement it"}],
-                         config_dir="", cwd="/tmp", query_fn=fn)
+                         config_dir="", query_fn=fn)
     assert g == "Ship the ReferralReward schema as a merged PR closing #10273."
 
 
 @pytest.mark.asyncio
 async def test_infer_goal_empty_reply_is_none():
-    g = await infer_goal("n", [], config_dir="", cwd="/tmp", query_fn=_fake_query("   "))
+    g = await infer_goal("n", [], config_dir="", query_fn=_fake_query("   "))
     assert g is None
 
 
@@ -61,7 +62,7 @@ async def test_infer_goal_model_failure_is_none():
     async def boom(*, prompt, options):
         raise RuntimeError("down")
         yield  # pragma: no cover
-    g = await infer_goal("n", [], config_dir="", cwd="/tmp", query_fn=boom)
+    g = await infer_goal("n", [], config_dir="", query_fn=boom)
     assert g is None
 
 
@@ -138,8 +139,8 @@ def test_infer_goal_for_claude_session_uses_verified_helper_config_dir(monkeypat
     monkeypatch.setattr(orch_mod, "compose", _boom)
 
     calls = {}
-    async def fake_infer_goal(name, tail, *, config_dir, cwd, **_kw):
-        calls["args"] = (name, config_dir, cwd)
+    async def fake_infer_goal(name, tail, *, config_dir, **_kw):
+        calls["args"] = (name, config_dir)
         return "Ship the fix"
     monkeypatch.setattr(
         "server.sessions.goal_inference.infer_goal", fake_infer_goal)
@@ -157,7 +158,7 @@ def test_infer_goal_for_claude_session_uses_verified_helper_config_dir(monkeypat
     result = asyncio.run(run())
 
     assert result == "Ship the fix"
-    assert calls["args"] == ("Fix login bug", "/helper/a", "/work")
+    assert calls["args"] == ("Fix login bug", "/helper/a")
 
 
 def test_infer_goal_for_skips_when_no_helper_account_is_ready(monkeypatch):
@@ -199,7 +200,7 @@ async def test_infer_goal_failure_log_carries_kind_and_cli_detail(caplog):
 
     try:
         with caplog.at_level("WARNING", logger="server.sessions.goal_inference"):
-            g = await infer_goal("n", [], config_dir="/cfg/x", cwd="/tmp", query_fn=denied)
+            g = await infer_goal("n", [], config_dir="/cfg/x", query_fn=denied)
     finally:
         helper_call.reset_breakers()
     assert g is None
@@ -372,14 +373,15 @@ async def test_goal_options_probe_off_loop(monkeypatch, version, expected_path):
     monkeypatch.setattr(goal_inference, "helper_env", env)
     monkeypatch.setattr(claude_agent_sdk, "query", query)
 
-    result = await infer_goal("goal", [], config_dir="/test/config", cwd="/test/repo")
+    result = await infer_goal("goal", [], config_dir="/test/config")
 
     assert result == "Ship it"
     assert probe_threads and all(t != loop_thread for t in probe_threads)
     assert len(env_threads) == 1 and env_threads[0] != loop_thread
     assert len(options_seen) == 1
     assert options_seen[0].cli_path == expected_path
-    assert options_seen[0].cwd == "/test/repo"
+    # Never the session's own worktree: a one-shot helper must not inherit it (#3172).
+    assert options_seen[0].cwd == helper_cwd()
     assert options_seen[0].env == {"CLAUDE_CONFIG_DIR": "/test/config"}
 
 
@@ -391,7 +393,7 @@ async def test_injected_goal_query_skips_options_and_probe(monkeypatch):
         pytest.fail("injected query must not resolve the binary")
 
     monkeypatch.setattr(goal_inference, "cli_path_kwargs", unexpected)
-    assert await infer_goal("goal", [], config_dir="", cwd="/tmp",
+    assert await infer_goal("goal", [], config_dir="",
                             query_fn=_fake_query("Ship it")) == "Ship it"
 
 
@@ -416,7 +418,7 @@ async def test_goal_probe_cancellation_propagates(monkeypatch):
 
     monkeypatch.setattr(goal_inference, "cli_path_kwargs", probe)
     monkeypatch.setattr(goal_inference, "helper_env", lambda _: {})
-    task = asyncio.create_task(infer_goal("goal", [], config_dir="", cwd="/tmp"))
+    task = asyncio.create_task(infer_goal("goal", [], config_dir=""))
     try:
         await asyncio.wait_for(started.wait(), timeout=2)
         task.cancel()

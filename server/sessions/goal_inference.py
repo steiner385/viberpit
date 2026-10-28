@@ -13,7 +13,7 @@ import os
 
 from .account_auth import account_store_io, helper_env
 from .claude_bin import cli_path_kwargs
-from .helper_call import run_helper_call, stateless_helper_options
+from .helper_call import helper_cwd, run_helper_call, stateless_helper_options
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +105,6 @@ async def infer_goal(
     transcript_tail: list[dict],
     *,
     config_dir: str,
-    cwd: str,
     model: str = "haiku",
     query_fn=None,
     no_pr_dispatch: bool = False,
@@ -124,7 +123,7 @@ async def infer_goal(
             from claude_agent_sdk import ClaudeAgentOptions
             query_fn = _default_query_fn()
             options = ClaudeAgentOptions(
-                model=model, system_prompt=_SYSTEM_PROMPT, cwd=cwd,
+                model=model, system_prompt=_SYSTEM_PROMPT, cwd=helper_cwd(),
                 env=await account_store_io(helper_env, config_dir),
                 **stateless_helper_options(), **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:

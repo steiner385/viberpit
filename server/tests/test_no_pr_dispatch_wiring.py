@@ -74,6 +74,6 @@ async def test_infer_goal_tells_the_model_the_dispatch_forbids_a_pr():
         return
         yield  # pragma: no cover
 
-    await infer_goal("n", [], config_dir="", cwd="/tmp", query_fn=fn,
+    await infer_goal("n", [], config_dir="", query_fn=fn,
                      no_pr_dispatch=True)
     assert "forbid" in seen[0].lower()

@@ -23,7 +23,7 @@ class _StopAfterOptions(Exception):
     ("sessions.title_generator", "generate_title", (["Fix login"],),
      {"config_dir": "/test/config", "cwd": "/tmp"}),
     ("sessions.goal_inference", "infer_goal", ("Fix login", []),
-     {"config_dir": "/test/config", "cwd": "/tmp"}),
+     {"config_dir": "/test/config"}),
     ("sessions.prompt_refiner", "refine_prompt", ("Fix login",), {}),
     ("sessions.repo_match", "suggest_repo",
      ("Fix login", None, [RepoVocabulary("org/repo", [])]), {}),
