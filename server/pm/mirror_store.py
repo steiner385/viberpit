@@ -412,8 +412,8 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
     rows_by_id = {d.id: d for d in existing}
     # THE one place a removed dependency is kept removed on the ViberPit side
     # (#1472). ``dep_remove`` deletes the edge on GitHub and deactivates the local
-    # rows, but the mirror re-derives ``order``/``prose`` edges from the epic's
-    # sibling order and the issue body on every pass, so without this the row is
+    # rows, but the mirror re-derives ``prose`` edges from the issue body on
+    # every pass, so without this the row is
     # recreated (or reactivated) on the next sync and the leaf turns red again.
     # The applied ``remove_blocked_by`` key is the newer decision, exactly as it is
     # for ``reconcile_diff.compile_edges`` on the GitHub side.
@@ -431,7 +431,7 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
         Never suppresses a ``native`` edge: that one is GitHub telling us the
         dependency exists *again* (someone re-added it there), which is a newer
         decision than our removal — only the mirror's own re-derivation from the
-        sibling order or the body prose is suppressed. A pair we cannot resolve to
+        body prose is suppressed. A pair we cannot resolve to
         two node ids is never suppressed either: we could never have removed it."""
         if source == "native":
             return False

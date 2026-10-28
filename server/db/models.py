@@ -2187,6 +2187,9 @@ class WorkItem(Base):
 # spec 003 — Phase A: GitHub Projects v2 read-only mirror
 # ---------------------------------------------------------------------------
 
+# ``order`` is legacy: sibling-order edges are no longer derived (#3157), and the
+# mirror deactivates any surviving rows on its next pass. Kept so those persisted
+# rows still validate.
 DEP_SOURCES = ("native", "prose", "order")
 
 

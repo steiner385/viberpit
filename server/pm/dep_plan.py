@@ -1,8 +1,13 @@
 """Pure dependency-observation planner for the 003 mirror (read-only in Phase A).
 
 Prose parsing is delegated to backlog_deps — the single source of truth for
-`Depends on #N` conventions. Order edges chain consecutive sub-issue siblings,
-mirroring the "phase order = sibling blocked-by" convention of spec 003 §4.
+`Depends on #N` conventions.
+
+Sub-issue list order is deliberately NOT a dependency (#3157). Spec 003 §4:
+phase order is explicit sibling blocked-by links, written natively when an epic
+is materialized, and "list order alone is never trusted afterward". Chaining
+siblings here turned every epic's independent children into a serial chain that
+gated dispatch, so only ``native`` and ``prose`` edges are observed.
 """
 from __future__ import annotations
 
@@ -54,12 +59,6 @@ def observed_deps(repo: str, rels: list[IssueRelView],
         src = f"{rel.repo}#{rel.number}"
         for dst in rel.blocked_by:
             add(src, dst, "native")
-        # Cross-repo sub-issues are excluded from Phase A order edges (src-prefix
-        # scoping in mirror_store requires same-repo src); Phase B compiler revisits.
-        same_repo_subs = [ref for ref in rel.sub_issue_refs
-                          if ref.startswith(f"{rel.repo}#")]
-        for prev, cur in zip(same_repo_subs, same_repo_subs[1:]):
-            add(cur, prev, "order")
     for src, body in bodies.items():
         for dst in parse_body_dep_refs(body, repo):
             add(src, dst, "prose")

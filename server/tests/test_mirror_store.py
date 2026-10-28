@@ -78,7 +78,8 @@ def test_upsert_relations_sets_parents_and_plans_deps():
             for d in db.query(WorkItemDep).all()}
     assert (f"{REPO}#950", "steiner385/KinDash#12", "native", True) in deps
     assert (f"{REPO}#950", f"{REPO}#949", "prose", True) in deps
-    assert (f"{REPO}#951", f"{REPO}#950", "order", True) in deps
+    # Sibling order is not a dependency (#3157): no 951 ← 950 edge.
+    assert not any(src == f"{REPO}#951" for src, _, _, _ in deps)
     # cross-repo target is unmirrored: dst_work_item_id stays None, dst_ref carries it
     native = [d for d in db.query(WorkItemDep).all() if d.source == "native"][0]
     assert native.dst_work_item_id is None
@@ -248,7 +249,7 @@ def test_relations_under_the_canonical_name_link_after_rename():
     assert epic.is_epic is True and child.parent_work_item_id == epic.id
     native = db.query(WorkItemDep).filter_by(source="native").one()
     assert native.dst_work_item_id == epic.id
-    assert db.query(WorkItemDep).filter_by(source="order").one().src_ref == f"{CANON}#951"
+    assert db.query(WorkItemDep).filter_by(source="prose").one().src_ref == f"{CANON}#950"
 
 
 def test_upsert_relations_backfills_fks_when_target_later_mirrored():
@@ -678,49 +679,69 @@ def _journal_applied_removal(db, src_node: str, dst_node: str) -> None:
     db.commit()
 
 
-def _seed_order_pair(db):
-    """945 is an epic over 950, 951 — so the mirror derives an ``order`` dep
-    951 ← 950 on every pass. Both siblings carry a GitHub node id."""
+def _seed_prose_pair(db):
+    """951's body says ``Depends on #950`` — so the mirror derives a ``prose`` dep
+    951 ← 950 on every pass. Both issues carry a GitHub node id."""
     for number, node in ((950, "I_950"), (951, "I_951")):
         db.query(WorkItem).filter_by(number=number).one().gh_node_id = node
+    db.query(WorkItem).filter_by(number=951).one().body = "Depends on #950"
     db.commit()
-    return [IssueRelView(repo=REPO, number=945, blocked_by=[], parent_ref=None,
-                         sub_issue_refs=[f"{REPO}#950", f"{REPO}#951"])]
+    return []
+
+
+def _prose_951(db):
+    return db.query(WorkItemDep).filter_by(source="prose", src_ref=f"{REPO}#951")
 
 
 def test_upsert_relations_does_not_revive_a_removed_dependency():
     db = _db()
     _seed(db)
-    rels = _seed_order_pair(db)
+    rels = _seed_prose_pair(db)
     mirror_store.upsert_relations(db, REPO, rels)
-    order = db.query(WorkItemDep).filter_by(source="order").one()
-    assert order.active is True
+    dep = _prose_951(db).one()
+    assert dep.active is True
     # The human removes it: dep_remove deactivates the row and journals the apply.
-    order.active = False
+    dep.active = False
     _journal_applied_removal(db, "I_951", "I_950")
 
-    mirror_store.upsert_relations(db, REPO, rels)  # GitHub still reports the sibling order
+    mirror_store.upsert_relations(db, REPO, rels)  # the body still names #950
 
-    assert db.query(WorkItemDep).filter_by(source="order").one().active is False
+    assert _prose_951(db).one().active is False
     # ...and the create path is suppressed too, not just the reactivate path.
-    db.query(WorkItemDep).filter_by(source="order").delete()
+    _prose_951(db).delete()
     db.commit()
     mirror_store.upsert_relations(db, REPO, rels)
-    assert db.query(WorkItemDep).filter_by(source="order").count() == 0
+    assert _prose_951(db).count() == 0
 
 
 def test_upsert_relations_reactivates_when_no_removal_was_applied():
     """Control for the suppression: without a journaled removal the row comes back."""
     db = _db()
     _seed(db)
-    rels = _seed_order_pair(db)
+    rels = _seed_prose_pair(db)
     mirror_store.upsert_relations(db, REPO, rels)
-    db.query(WorkItemDep).filter_by(source="order").one().active = False
+    _prose_951(db).one().active = False
     db.commit()
 
     mirror_store.upsert_relations(db, REPO, rels)
 
-    assert db.query(WorkItemDep).filter_by(source="order").one().active is True
+    assert _prose_951(db).one().active is True
+
+
+def test_upsert_relations_deactivates_legacy_order_rows():
+    """#3157: ``order`` rows derived from sub-issue list order before the fix are
+    no longer observed, so the next pass deactivates them and the chain clears."""
+    db = _db()
+    _seed(db)
+    db.add(WorkItemDep(src_ref=f"{REPO}#951", dst_ref=f"{REPO}#950", source="order",
+                       active=True))
+    db.commit()
+
+    mirror_store.upsert_relations(db, REPO, [IssueRelView(
+        repo=REPO, number=945, blocked_by=[], parent_ref=None,
+        sub_issue_refs=[f"{REPO}#950", f"{REPO}#951"])])
+
+    assert db.query(WorkItemDep).filter_by(source="order").one().active is False
 
 
 def test_upsert_relations_still_honours_a_native_re_add_after_a_removal():
