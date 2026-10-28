@@ -29,7 +29,7 @@ _ITEM_FIELDS = """
 # fetched only to look for the marker; ten comments is enough, since a re-arm only
 # cares whether a person commented after the verdict's dispatch started.
 _ISSUE_COMMENTS = """
-      comments(last: 10) { nodes { createdAt body author { __typename login } } }
+      comments(last: 30) { nodes { createdAt body author { __typename login } } }
       timelineItems(itemTypes: [REOPENED_EVENT], last: 1) {
         nodes { ... on ReopenedEvent { createdAt } } }"""
 
@@ -73,6 +73,9 @@ class WorkItemView:
     last_human_comment_at: datetime | None = None
     # The issue's newest reopen (#2683 review); None for a PR or a never-reopened issue.
     last_reopened_at: datetime | None = None
+    # Session ids named by ownership markers in the issue's recent comments (#3152): a
+    # session may claim an issue by comment as well as in the body. Issues only.
+    comment_owner_ids: tuple[str, ...] = ()
     # Immutable GitHub databaseId of a User author (#3147); None for Bots/ghosts. A login
     # is mutable, so the trusted-author gate keys on this.
     author_id: int | None = None
@@ -187,6 +190,18 @@ def _last_human_comment_at(node: dict) -> datetime | None:
     return newest
 
 
+def _comment_owner_ids(node: dict) -> tuple[str, ...]:
+    """Every session id an ownership marker in *node*'s recent comments names, in first-seen
+    order. Author-agnostic on purpose: a marker can only SUPPRESS a dispatch, and only
+    while its session is live (``server.pm.session_ownership``)."""
+    from .session_ownership import marker_owners
+    seen: dict[str, None] = {}
+    for c in ((node.get("comments") or {}).get("nodes") or []):
+        if isinstance(c, dict):
+            seen.update(dict.fromkeys(sorted(marker_owners(str(c.get("body") or "")))))
+    return tuple(seen)
+
+
 def _last_reopened_at(node: dict) -> datetime | None:
     """The newest ReopenedEvent's ``createdAt`` (the query asks for the last one)."""
     newest: datetime | None = None
@@ -247,5 +262,6 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
                 if isinstance(a, dict) and a.get("login")),
             last_human_comment_at=_last_human_comment_at(node) if kind == "issue" else None,
             last_reopened_at=_last_reopened_at(node) if kind == "issue" else None,
+            comment_owner_ids=_comment_owner_ids(node) if kind == "issue" else (),
         ))
     return items, info.get("endCursor"), bool(info.get("hasNextPage"))

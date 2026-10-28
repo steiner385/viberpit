@@ -2150,6 +2150,9 @@ class WorkItem(Base):
     # issue never reopened, or a row synced before it.
     last_reopened_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # Session ids named by ownership markers in the issue's recent comments (#3152); the
+    # body's own markers are read from ``body``. NULL until the row is re-synced.
+    comment_owner_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     # --- overlay (ViberPit truth) ---

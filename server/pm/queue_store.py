@@ -26,7 +26,9 @@ from .outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                        not_needed_suppression, rows_to_bounces, verdicts_by_ref)
 from .queue import QueueRow
 from .reconcile_inputs import _aware
-from .session_ownership import MAX_ANCESTOR_DEPTH, missing_parents, owned_by_live_session
+from .session_ownership import (
+    MAX_ANCESTOR_DEPTH, missing_parents, owned_by_live_session, owner_marker,
+)
 
 # ``BacklogRunner.id``, as a literal: importing ``server.automations.backlog_runner``
 # from ``server.pm`` to read it would drag the whole automation registry into the
@@ -69,7 +71,9 @@ def _ownership_nodes(db: Session, items: list[WorkItem]
     ``MAX_ANCESTOR_DEPTH`` — the graph ``owned_by_live_session`` walks. One query per
     ancestor level, never one per item."""
     def node(w: WorkItem) -> tuple[str, str | None, str | None]:
-        return f"{w.repo}#{w.number}", w.body, w.parent_work_item_id
+        # A comment-borne claim (#3152) is folded into the text the marker scan reads.
+        text = "\n".join([w.body or "", *map(owner_marker, w.comment_owner_ids or ())])
+        return f"{w.repo}#{w.number}", text, w.parent_work_item_id
 
     nodes = {w.id: node(w) for w in items}
     frontier = missing_parents(nodes, nodes)
