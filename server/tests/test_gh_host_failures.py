@@ -422,6 +422,23 @@ def test_is_transient_github_edge_failure_matches_graphql_internal_error():
     ) is True
 
 
+def test_is_transient_github_edge_failure_matches_http_499():
+    """#3156: nginx-style "client closed request" from GitHub's edge."""
+    assert host_failures.is_transient_github_edge_failure("gh: HTTP 499") is True
+    assert host_failures.is_transient_github_edge_failure("gh: HTTP 4990") is False
+
+
+def test_demoting_caller_logs_http_499_at_info(caplog):
+    lg = logging.getLogger("t.499")
+    with caplog.at_level(logging.DEBUG, logger="t.499"):
+        host_failures.log_gh_failure(lg, "gh: HTTP 499", "boom %s", "x",
+                                     demote_edge_failures=True)
+        host_failures.log_gh_failure(lg, "gh: HTTP 499", "plain %s", "x")
+    levels = {r.getMessage(): r.levelno for r in caplog.records}
+    assert levels["boom x"] == logging.INFO
+    assert levels["plain x"] == logging.WARNING
+
+
 def test_a_bare_something_went_wrong_is_not_a_github_edge_failure():
     assert host_failures.is_transient_github_edge_failure(
         "Something went wrong") is False

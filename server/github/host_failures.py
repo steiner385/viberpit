@@ -183,6 +183,11 @@ _RE_STREAM_RESET = re.compile(
 #: unrelated defect; the timestamp and request id are deliberately not matched.
 _RE_GRAPHQL_INTERNAL_ERROR = re.compile(r"Something went wrong while executing your query")
 
+#: ``gh: HTTP 499`` — nginx-style "client closed request": GitHub's edge dropped
+#: a slow query before answering. The fifth wording of the same transient
+#: (#3156, after 5xx/#2490/#2677/#3025); not a 5xx, so the pattern above misses it.
+_RE_CLIENT_CLOSED = re.compile(r"\bHTTP 499\b")
+
 
 def is_transient_5xx(stderr: str) -> bool:
     """Whether *stderr* is gh reporting a GitHub-side 5xx: the request reached
@@ -197,7 +202,8 @@ def is_transient_github_edge_failure(stderr: str) -> bool:
     it — a bare 5xx (:func:`is_transient_5xx`), or a response cut short by the
     same edge timeout, either mid-body (:data:`_RE_TRUNCATED_JSON`) or as an
     HTTP/2 stream reset (:data:`_RE_STREAM_RESET`), or GraphQL's generic
-    internal-error envelope (:data:`_RE_GRAPHQL_INTERNAL_ERROR`). Not a host condition — just
+    internal-error envelope (:data:`_RE_GRAPHQL_INTERNAL_ERROR`), or a dropped
+    request reported as ``HTTP 499`` (:data:`_RE_CLIENT_CLOSED`). Not a host condition — just
     the shared read of when a per-target failure is GitHub's outage rather than
     a defect to chase."""
     return (
@@ -205,6 +211,7 @@ def is_transient_github_edge_failure(stderr: str) -> bool:
         or bool(_RE_TRUNCATED_JSON.search(stderr))
         or bool(_RE_STREAM_RESET.search(stderr))
         or bool(_RE_GRAPHQL_INTERNAL_ERROR.search(stderr))
+        or bool(_RE_CLIENT_CLOSED.search(stderr))
     )
 
 
