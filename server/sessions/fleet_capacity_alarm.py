@@ -21,11 +21,18 @@ for a run of consecutive ticks, and an INFO when it clears. A per-tick WARNING w
 file one auto-error per record (``server.obs.errsink``); a single-tick one would fire
 on every deploy restart and every cap edit. Capacity is read with ``_dispatchable``,
 the ranker's own verdict, so the alarm cannot disagree with dispatch.
+
+A fan-out deploy restarts every daemon and skew-fences hosts until the edge records the
+new commit, which outlasts the no-host run on a two-host fleet; every routine deploy
+filed this WARNING (#3173). The caller passes the hosts a deploy explains as data
+(``deploy_excused``) so this class stays pure: a spell where every down host is
+excused is INFO and holds the run at zero, so only a spell that outlives the deploy
+escalates.
 """
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from typing import AbstractSet, Iterable
 
 from server.sessions.fleet import HostCandidate, _dispatchable
 
@@ -50,19 +57,23 @@ class CapacityAlarm:
         self._at_cap: set[str] = set()
         self._no_host_ticks = 0
         self._no_host_warned = False
+        self._no_host_noted = False
 
     def clear(self) -> None:
         """Forget every spell (tests share the module-level instance)."""
         self._over_ticks.clear()
         self._over_warned.clear()
         self._at_cap.clear()
-        self._no_host_ticks, self._no_host_warned = 0, False
+        self._no_host_ticks, self._no_host_warned, self._no_host_noted = 0, False, False
 
-    def observe(self, candidates: Iterable[HostCandidate]) -> None:
+    def observe(self, candidates: Iterable[HostCandidate], *,
+                deploy_excused: AbstractSet[str] = frozenset()) -> None:
+        """``deploy_excused`` names hosts whose being down is a deploy doing its job
+        (restarting it, or fencing it on version skew mid-rollout)."""
         hosts = list(candidates)
         enabled = [c for c in hosts if c.enabled]
         self._observe_hosts(enabled)
-        self._observe_fleet(enabled)
+        self._observe_fleet(enabled, deploy_excused)
 
     def _observe_hosts(self, enabled: list[HostCandidate]) -> None:
         seen = {c.name for c in enabled}
@@ -99,13 +110,25 @@ class CapacityAlarm:
             self._over_warned.discard(name)
             log.info("fleet.capacity: host %s is back within its cap", name)
 
-    def _observe_fleet(self, enabled: list[HostCandidate]) -> None:
+    def _observe_fleet(self, enabled: list[HostCandidate],
+                       deploy_excused: AbstractSet[str]) -> None:
         none_up = bool(enabled) and not any(
             _dispatchable(c, ignore_capacity=True) for c in enabled)
         if not none_up:
-            if self._no_host_warned:
+            if self._no_host_warned or self._no_host_noted:
                 log.info("fleet.capacity: a dispatchable host is back")
-            self._no_host_ticks, self._no_host_warned = 0, False
+            self._no_host_ticks, self._no_host_warned, self._no_host_noted = 0, False, False
+            return
+        if all(c.name in deploy_excused for c in enabled):
+            # Held at zero, not paused: a fleet still down after the deploy gets the
+            # full run to settle its skew fence before it reads as an outage.
+            self._no_host_ticks = 0
+            if not self._no_host_noted and not self._no_host_warned:
+                self._no_host_noted = True
+                log.info(
+                    "fleet.capacity: no dispatchable host while a deploy restarts or "
+                    "fences every enabled host (%d enabled) — escalates only if it "
+                    "outlives the deploy", len(enabled))
             return
         self._no_host_ticks += 1
         if self._no_host_ticks >= NO_HOST_ESCALATE_AFTER and not self._no_host_warned:

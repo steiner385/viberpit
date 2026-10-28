@@ -250,13 +250,31 @@ async def _observe_capacity() -> None:
         async with db_session() as db:
             hosts = (await db.execute(sa_select(Host))).scalars().all()
         CAPACITY_ALARM.observe(
-            HostCandidate(name=h.name, enabled=h.enabled, healthy=h.healthy,
-                          weight=h.weight, active_sessions=h.active_sessions or 0,
-                          max_sessions=h.max_sessions, load_avg=h.load_avg,
-                          mem_available_mb=h.mem_available_mb)
-            for h in hosts)
+            [HostCandidate(name=h.name, enabled=h.enabled, healthy=h.healthy,
+                           weight=h.weight, active_sessions=h.active_sessions or 0,
+                           max_sessions=h.max_sessions, load_avg=h.load_avg,
+                           mem_available_mb=h.mem_available_mb)
+             for h in hosts],
+            deploy_excused=await _deploy_excused(hosts))
     except Exception:
         log.debug("fleet.capacity: alarm check failed", exc_info=True)
+
+
+async def _deploy_excused(hosts) -> set[str]:
+    """Enabled, unhealthy hosts whose outage a deploy explains (#3173): the host's own
+    restart step is running (``restart_expected``, as in ``probe_host``), or it was
+    reached but fenced on skew/protocol while a deploy is in flight — mid-rollout a
+    runner on the new commit is judged against a ``deploy_state`` that still names the
+    old one until the edge restart records it."""
+    from server.sessions import host_upgrade  # deferred, as in probe_host
+
+    down = [h for h in hosts if h.enabled and h.healthy is not True]
+    if not down:
+        return set()
+    deploying = await host_upgrade.deploy_running()
+    return {h.name for h in down
+            if await host_upgrade.restart_expected(h.name)
+            or (deploying and (h.last_error or "").startswith(FENCED_REACHABLE_PREFIXES))}
 
 
 async def probe_loop(interval_s: float = 30.0, *, fetch: Fetch | None = None,
