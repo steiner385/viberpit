@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from server.github.pr_status import CheckDetail, PullRequestInfo
+from server.automations import pr_doctor_engine as engine
 from server.automations.pr_doctor_engine import ci_red_is_unproven, classify
 
 
@@ -499,3 +500,52 @@ def test_2912_live_state_gate_skips_a_conflict_that_is_now_mergeable():
     live = _pr(head_sha="H", mergeable="MERGEABLE", merge_state_status="BLOCKED",
                checks="pending")
     assert stale_dispatch_reason("merge_conflict", snap, live) == "resolved"
+
+
+# --- stuck checks (#3159) ---------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+_NOW = datetime(2026, 10, 27, 18, 0, tzinfo=timezone.utc)
+
+
+def _ago(minutes: int) -> str:
+    return (_NOW - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+
+
+def _blocked(*checks: CheckDetail, rollup: str = "pending") -> PullRequestInfo:
+    return _pr(merge_state_status="BLOCKED", checks=rollup, checks_detail=tuple(checks))
+
+
+def test_pending_check_started_long_ago_is_stuck_checks():
+    info = _blocked(CheckDetail("ci-gate", "pending", started_at=_ago(19 * 60)))
+    assert engine.classify(info, _NOW) == "stuck_checks"
+    assert isinstance(engine.plan_recovery("stuck_checks", "auto", {}, {}), engine.Notify)
+
+
+def test_recent_pending_check_still_waits():
+    info = _blocked(CheckDetail("ci-gate", "pending", started_at=_ago(10)))
+    assert engine.classify(info, _NOW) == "blocked"
+
+
+def test_pending_check_without_timestamp_never_stuck():
+    assert engine.classify(_blocked(CheckDetail("ci-gate", "pending")), _NOW) == "blocked"
+
+
+def test_all_cancelled_long_ago_is_stuck_checks():
+    info = _blocked(CheckDetail("ci", "cancelled", completed_at=_ago(300)),
+                    CheckDetail("unit", "cancelled", completed_at=_ago(300)),
+                    rollup="failing")
+    assert engine.classify(info, _NOW) == "stuck_checks"
+
+
+def test_fresh_cancellation_is_not_stuck():
+    info = _blocked(CheckDetail("ci", "cancelled", completed_at=_ago(5)), rollup="failing")
+    assert engine.classify(info, _NOW) is None
+
+
+def test_real_failure_beside_old_cancellation_is_not_called_stuck():
+    # Still deferred as unproven (pre-existing #2218 behaviour) — just not stuck.
+    info = _blocked(CheckDetail("ci", "cancelled", completed_at=_ago(300)),
+                    CheckDetail("unit", "failure"), rollup="failing")
+    assert engine.classify(info, _NOW) is None

@@ -34,13 +34,19 @@ def has_human_hold(labels) -> bool:
 class CheckDetail:
     name: str
     conclusion: str  # 'success' | 'failure' | 'pending' | 'neutral' | 'skipped' | ...
+    # ISO-8601 timestamps from the CheckRun (None for a StatusContext or when the
+    # App lacks checks:read). PR Doctor ages a never-finishing check off these.
+    started_at: str | None = None
+    completed_at: str | None = None
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "conclusion": self.conclusion}
+        return {"name": self.name, "conclusion": self.conclusion,
+                "started_at": self.started_at, "completed_at": self.completed_at}
 
     @classmethod
     def from_dict(cls, d: dict) -> "CheckDetail":
-        return cls(name=d.get("name", ""), conclusion=d.get("conclusion", ""))
+        return cls(name=d.get("name", ""), conclusion=d.get("conclusion", ""),
+                   started_at=d.get("started_at"), completed_at=d.get("completed_at"))
 
 
 @dataclass(frozen=True)
@@ -294,7 +300,7 @@ _PR_NODE_FIELDS = (
     "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
     "        contexts(first: 100) { nodes {\n"
     "          __typename\n"
-    "          ... on CheckRun { name conclusion }\n"
+    "          ... on CheckRun { name conclusion startedAt completedAt }\n"
     "          ... on StatusContext { context state }\n"
     "        } }\n"
     "      } } } }"
@@ -596,7 +602,9 @@ def _checks_detail(pr: dict) -> tuple[CheckDetail, ...]:
         else:  # StatusContext
             name = c.get("context", "")
             raw = c.get("state", "")
-        out.append(CheckDetail(name=name, conclusion=_CONCLUSION_MAP.get(raw, raw.lower())))
+        out.append(CheckDetail(
+            name=name, conclusion=_CONCLUSION_MAP.get(raw, raw.lower()),
+            started_at=c.get("startedAt"), completed_at=c.get("completedAt")))
     return tuple(out)
 
 
