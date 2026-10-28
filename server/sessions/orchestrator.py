@@ -17478,7 +17478,7 @@ class SessionOrchestrator:
             if cfg_dir is None:
                 return None
             from server.sessions.goal_inference import infer_goal
-            return await infer_goal(rec.name, tail, config_dir=cfg_dir, cwd=rec.cwd,
+            return await infer_goal(rec.name, tail, config_dir=cfg_dir,
                                     no_pr_dispatch=no_pr)
         return None
 

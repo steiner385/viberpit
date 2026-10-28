@@ -66,7 +66,7 @@ def test_infer_goal_degrades_without_touching_the_cli(tmp_path):
     must return None immediately instead of spawning the bundled binary."""
     got = asyncio.run(goal_inference.infer_goal(
         "sess", [{"role": "user", "text": "hi"}],
-        config_dir=str(tmp_path), cwd=str(tmp_path)))
+        config_dir=str(tmp_path)))
     assert got is None
 
 
