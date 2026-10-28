@@ -565,6 +565,22 @@ class ArchiveOwnedElsewhereError(Exception):
             f"on that host (its worktree is not on this host's filesystem).")
 
 
+class ArchiveOwnerUnreachableError(ArchiveOwnedElsewhereError):
+    """The owning host is known, but this process holds no client identity to dial it
+    (#3142). Only the edge carries the mTLS client cert — workers allowlist the edge's
+    identity alone — so the primary daemon cannot route a worker's unarchive itself.
+    Restore the session through the edge (its ``unarchive`` routes per session)."""
+
+    def __init__(self, session_id: str, host: str | None, reason: str) -> None:
+        Exception.__init__(
+            self,
+            f"Archived session {session_id} is owned by host {host!r}, which this "
+            f"process cannot reach ({reason}); unarchive it from the Sessions page.")
+        self.session_id = session_id
+        self.host = host
+        self.reason = reason
+
+
 # Session-window utilisation ceiling that triggers rotation (100 = hard ceiling per spec)
 _ROTATION_CEILING: float = 100.0
 
@@ -14753,9 +14769,13 @@ class SessionOrchestrator:
                 return "not_found"
             if row.status != "open":
                 return "already_decided"
-            if decision == "reopen" and await self._unarchive_on_owning_host(
-                    row.session_id or "") is None:
-                return "unarchive_failed"
+            if decision == "reopen":
+                try:
+                    restored = await self._unarchive_on_owning_host(row.session_id or "")
+                except ArchiveOwnedElsewhereError:
+                    return "owned_elsewhere"
+                if restored is None:
+                    return "unarchive_failed"
             row.status = "retained" if decision == "retain" else "reopened"
             row.decided_at, row.decided_by = naive_utc_now(), "operator"
             await db.commit()
@@ -14766,7 +14786,9 @@ class SessionOrchestrator:
         (#3097). The archive-audit rows span every host, but ``self.unarchive`` is this
         daemon's local path; a worker's row goes to that worker's daemon over the same
         RPC the edge's FleetOrchestrator routes ``unarchive`` through. A row naming a
-        host with no enabled Host row raises ArchiveOwnedElsewhereError."""
+        host with no enabled Host row raises ArchiveOwnedElsewhereError; one whose host
+        this process holds no client TLS identity to dial raises
+        ArchiveOwnerUnreachableError (#3142) before any connection is attempted."""
         from sqlalchemy import select as sa_select
         from server.db.models import Host
         async with db_session() as db:
@@ -14781,8 +14803,12 @@ class SessionOrchestrator:
             return await self.unarchive(session_id)
         if endpoint is None:
             raise ArchiveOwnedElsewhereError(session_id, host)
+        from server.ipc.tls import TLSConfigError
         from server.sessions.fleet_orchestrator import _orch_for_endpoint
-        remote = _orch_for_endpoint(endpoint)
+        try:
+            remote = _orch_for_endpoint(endpoint)
+        except TLSConfigError as exc:
+            raise ArchiveOwnerUnreachableError(session_id, host, str(exc)) from exc
         try:
             return await remote.unarchive(session_id)
         finally:

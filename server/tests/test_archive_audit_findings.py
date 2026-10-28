@@ -118,10 +118,11 @@ def test_an_open_finding_self_resolves_when_the_session_is_no_longer_premature(i
 class _Orch:
     """Just the two seams the provider calls, backed by the real orchestrator methods,
     plus the host-routed unarchive the decision reaches (#3097)."""
-    def __init__(self, unarchive_result):
+    def __init__(self, unarchive_result, unarchive_exc=None):
         from server.sessions.orchestrator import SessionOrchestrator
         self.unarchived: list[str] = []
         self._result = unarchive_result
+        self._exc = unarchive_exc
         self.archive_audit_open_findings = (
             lambda: SessionOrchestrator.archive_audit_open_findings(self))
         self.archive_audit_decide_finding = (
@@ -129,6 +130,8 @@ class _Orch:
 
     async def _unarchive_on_owning_host(self, sid):
         self.unarchived.append(sid)
+        if self._exc is not None:
+            raise self._exc
         return SimpleNamespace(id=sid) if self._result else None
 
 
@@ -159,6 +162,24 @@ def test_a_failed_reopen_leaves_the_finding_open_for_retry(isolated_db):
         item = (await provider.actionable())[0]
         res = await provider.trigger(item.id, "reopen")
         assert res.status == "unarchive_failed" and res.level == "error"
+        assert (await _rows())["s1"].status == "open"
+    asyncio.run(run())
+
+
+def test_a_reopen_owned_by_an_unreachable_host_says_so_and_stays_open(isolated_db):
+    """#3142: the primary daemon can't dial a worker, so a human "reopen" of a
+    worker-owned session gets a status naming the cause, not an unhandled raise."""
+    from server.sessions.orchestrator import ArchiveOwnerUnreachableError
+
+    async def run():
+        await persist_findings(db_session, [_r("s1")], "propose")
+        provider = ArchiveAuditActionProvider(_Orch(
+            unarchive_result=False,
+            unarchive_exc=ArchiveOwnerUnreachableError("s1", "rocky", "no client cert")))
+        item = (await provider.actionable())[0]
+        res = await provider.trigger(item.id, "reopen")
+        assert res.status == "owned_elsewhere" and res.level == "error"
+        assert "another host" in res.message
         assert (await _rows())["s1"].status == "open"
     asyncio.run(run())
 

@@ -222,6 +222,8 @@ _ARCHIVE_AUDIT_STATUS_MAP = {
     "already_decided": ("warn", "This finding was already decided"),
     "not_found": ("warn", "Finding no longer exists"),
     "unarchive_failed": ("error", "Could not reopen the session — see the automation feed"),
+    "owned_elsewhere": ("error", "Could not reopen here: the session lives on another host — "
+                                 "unarchive it from the Sessions page"),
 }
 
 
