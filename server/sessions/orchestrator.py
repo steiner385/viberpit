@@ -575,7 +575,7 @@ class ArchiveOwnerUnreachableError(ArchiveOwnedElsewhereError):
         Exception.__init__(
             self,
             f"Archived session {session_id} is owned by host {host!r}, which this "
-            f"process cannot reach ({reason}); unarchive it from the Sessions page.")
+            f"process cannot reach ({reason}); the edge restores it instead.")
         self.session_id = session_id
         self.host = host
         self.reason = reason
@@ -1845,7 +1845,8 @@ class SessionOrchestrator:
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
         from server.automations.archive_audit import (
-            list_recent_archived_rows, mark_auto_reopen_failed, persist_findings)
+            list_recent_archived_rows, mark_auto_reopen_failed, mark_awaiting_edge_unarchive,
+            persist_findings)
         self._archaudit_ctx = AutomationContext("archive-audit")
         self._archaudit_loop = ArchiveAuditLoop(
             self._archaudit_ctx,
@@ -1857,6 +1858,7 @@ class SessionOrchestrator:
             clock=time.time,
             record_findings_fn=lambda results, mode: persist_findings(db_session, results, mode),
             mark_auto_reopen_failed_fn=lambda sid: mark_auto_reopen_failed(db_session, sid),
+            defer_to_edge_fn=lambda sid: mark_awaiting_edge_unarchive(db_session, sid),
         )
         self._archaudit_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
@@ -14754,32 +14756,12 @@ class SessionOrchestrator:
                      "goal": r.goal, "reason": r.reason} for r in rows]
 
     async def archive_audit_decide_finding(self, finding_id: str, decision: str) -> str:
-        """Record a human's decision on one open finding: ``retain`` keeps the session
-        archived, ``reopen`` unarchives it (restoring it to idle — this never starts a
-        turn). Returns a status string the provider maps to a toast. The decision is
-        persisted only after a reopen actually succeeds, so a failed unarchive leaves the
-        finding open for a retry."""
-        from sqlalchemy import select as sa_select
-        from server.db.clock import naive_utc_now
-        from server.db.models import ArchiveReviewFinding
-        async with db_session() as db:
-            row = (await db.execute(sa_select(ArchiveReviewFinding).where(
-                ArchiveReviewFinding.id == finding_id))).scalar_one_or_none()
-            if row is None:
-                return "not_found"
-            if row.status != "open":
-                return "already_decided"
-            if decision == "reopen":
-                try:
-                    restored = await self._unarchive_on_owning_host(row.session_id or "")
-                except ArchiveOwnedElsewhereError:
-                    return "owned_elsewhere"
-                if restored is None:
-                    return "unarchive_failed"
-            row.status = "retained" if decision == "retain" else "reopened"
-            row.decided_at, row.decided_by = naive_utc_now(), "operator"
-            await db.commit()
-        return "retained" if decision == "retain" else "reopened"
+        """A human's retain/reopen decision on one open finding (see ``decide_finding``),
+        unarchiving through this daemon's host routing. In fleet mode the edge serves
+        ``reopen`` itself so it can reach workers this daemon cannot (#3142)."""
+        from server.automations.archive_audit import decide_finding
+        return await decide_finding(db_session, finding_id, decision,
+                                    self._unarchive_on_owning_host)
 
     async def _unarchive_on_owning_host(self, session_id: str) -> "SessionRecord | None":
         """Unarchive ``session_id`` on the host whose filesystem holds its worktree
