@@ -1809,6 +1809,12 @@ class ClaudeAgentDriver:
         self._emit(e)
 
     @property
+    def has_subscribers(self) -> bool:
+        """True while any client holds an open stream on this driver — i.e. an
+        emitted non-buffered event (a watch Notice) would actually be heard."""
+        return bool(self._subscribers)
+
+    @property
     def turn_active(self) -> bool:
         return self._turn_active
 

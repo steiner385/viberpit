@@ -173,9 +173,13 @@ assistant mutation does not make subsequent harness cleanup safe.
   would, and destructive tools can never be marked "always allow".
 - **Proactive notices (Pack N, spec §4.7) are never a model turn** — a fired watch or notification
   rule with an `assistant` channel reaches the drawer through `SessionOrchestrator.post_notice`
-  (`server/sessions/orchestrator.py`), which appends a `kind="notice"` event straight to the live
-  stream (or queues it, flushed on the next WS attach by `pop_pending_notices`, if no driver is
-  attached) — it never asks Claude to generate the notice text, so a notice costs no tokens, cannot
+  (`server/sessions/orchestrator.py`), after `server/assistant/notices.py` has written a durable
+  `assistant_notices` row (plus an `assistant.notice.deliver` audit row; #3183). `post_notice`
+  appends a `kind="notice"` event to the live stream only when a client is attached (and marks the
+  row read); otherwise the row stays unread, is replayed (and marked read) on the next WS attach,
+  and counts toward the unread badge on the Assistant nav item (`GET /api/assistant/notices`),
+  which also raises a toast while the drawer is closed. Any daemon, including a worker, writes the
+  row — it never asks Claude to generate the notice text, so a notice costs no tokens, cannot
   be rate-limited by the per-identity prompt cap, and cannot be talked into saying something else
   by injected content. The drawer renders it as a card (`NoticeCard.tsx`) with an "Ask about it"
   action that starts a normal, tool-backed turn. `watch()` / `list_watches()` / `delete_watch()`

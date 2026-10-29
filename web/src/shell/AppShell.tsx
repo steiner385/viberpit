@@ -11,6 +11,7 @@ import {
   useAccounts, useCloseSession, useConfig, usePermanentDeleteSession,
   useRenameSession, useSendPrompt, useSessions,
 } from '@/api/hooks'
+import { useAssistantNoticeToasts } from '@/api/assistant'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/features/sessions/list/PermanentDeleteDialog'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
@@ -236,6 +237,7 @@ function AppShellInner() {
   // same way.
   const openItem = useOpenItem()
   const drawer = useDrawerName()
+  useAssistantNoticeToasts(drawer === 'assistant')
   const openDrawer = useOpenDrawer()
 
   const def = navDefForPath(pathname)

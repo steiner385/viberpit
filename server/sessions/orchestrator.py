@@ -770,13 +770,6 @@ _PAUSE_LOG = LogThrottle()
 # legitimately takes up to ~10s (interrupt flush + subprocess terminate).
 _STOP_TASK_TIMEOUT_S = 5.0
 _STOP_DRIVER_CLOSE_TIMEOUT_S = 10.0
-# Bounds on _pending_notices (#1502). A queued drawer notice is delivered ONLY when
-# someone opens that drawer, so without bounds a watch firing at a never-opened
-# drawer grows the map forever and a weeks-old "PR broke" surfaces as news. The
-# web push already went out when the notice fired, so dropping the drawer copy loses
-# nothing the person was not told. Keep the newest N per thread; expire after a day.
-_PENDING_NOTICE_CAP = 20
-_PENDING_NOTICE_TTL_S = 24 * 3600.0
 
 # The export path (/export.md) replays the FULL transcript with limit=None, so a
 # legitimately huge session can exceed the interactive ceiling above. Exporting is a
@@ -1213,14 +1206,6 @@ class SessionOrchestrator:
         # unarchive "why you're back" seed. Every other initial prompt is SENT at
         # spawn — a session must start working without anyone opening it.
         self._pending_initial_prompt: dict[str, str] = {}
-        # Proactive watch notices (Task 8.4, spec v2 §4.7 Pack N) queued because the
-        # target assistant thread had no live driver when post_notice fired. Flushed
-        # by the WS bridge's attach handler via pop_pending_notices — same in-memory,
-        # orchestrator-level, session_id-keyed shape as _pending_initial_prompt above
-        # (SessionRecord stays a plain mirror-the-DB-row dataclass; this is transient
-        # process state, not a session field). Each entry is (monotonic queued-at,
-        # notice); bounded by _PENDING_NOTICE_CAP / _PENDING_NOTICE_TTL_S (#1502).
-        self._pending_notices: dict[str, list[tuple[float, dict]]] = {}
         # session_id → options overlay for ANY kind (see register_overlay): the
         # assistant's full overlay (a ClaudeAgentOptions dict for Claude, a
         # CodexAssistantOverlay for Codex) or a coding session's
@@ -18334,72 +18319,38 @@ class SessionOrchestrator:
         return None
 
     async def post_notice(self, identity: str, notice: dict) -> bool:
-        """Deliver a proactive watch notice into *identity*'s assistant drawer
+        """Push a fired watch notice live into *identity*'s assistant drawer
         (Task 8.4, spec v2 §4.7 Pack N). ``notice`` carries
-        {"kind","title","body","url","watchId"} — the same shape push.notify_event
-        builds from the fired NotificationRule.
+        {"kind","title","body","url","watchId","noticeId"}.
 
-        Reuses find_assistant's identity lookup (including its idle-reaped-thread
-        adoption, #1122) rather than re-scanning _records. If the thread's driver
-        is live, emits ev.Notice through it immediately via the same out-of-band
-        `driver.emit()` path _auto_name uses for a Title rename — the notice rides
-        the live stream straight to an attached client. Otherwise the notice is
-        queued (pop_pending_notices flushes it on the next WS attach, mirroring
-        pop_pending_initial_prompt).
+        The notice is ALREADY durable when this runs (#3183): push.py writes the
+        ``assistant_notices`` row first, so this is only the live-delivery
+        shortcut. It emits ev.Notice through the thread's driver (the same
+        out-of-band ``driver.emit()`` path _auto_name uses for a Title rename)
+        ONLY when a client is attached to that driver — a live driver with no
+        subscriber would drop the event on the floor, which is how notices used
+        to vanish while the drawer was closed. A live delivery marks the row read;
+        otherwise it stays unread and the next WS attach replays it (and the nav
+        badge counts it).
 
-        The queue has no trigger but that attach, and that is deliberate (#1502):
-        the web push fired alongside this call already told the person, so the
-        drawer copy is a convenience for whoever opens the drawer, not the
-        delivery. What it must not do is grow without limit or resurface stale
-        news, so it is bounded — newest _PENDING_NOTICE_CAP per thread, nothing
-        older than _PENDING_NOTICE_TTL_S — and every drop is logged.
-
-        Returns whether delivery was live. Never raises: push.notify_event's
-        assistant-channel branch already wraps this in try/except and fails open
-        to the web push it sends unconditionally, but an unreachable identity
-        (no assistant thread at all) is not an error here either — it just means
-        nothing to deliver to yet.
+        Returns whether delivery was live. Never raises for an unreachable
+        identity: no assistant thread just means nothing to push to yet.
         """
         rec = await self.find_assistant(identity)
         if rec is None:
             return False
         driver = self._drivers.get(rec.id)
-        if driver is not None:
-            driver.emit(ev.Notice(
-                session_id=rec.id, kind=notice.get("kind", ""),
-                title=notice.get("title", ""), body=notice.get("body", ""),
-                url=notice.get("url"), watch_id=notice.get("watchId"),
-            ))
-            return True
-        now = time.monotonic()
-        self._expire_pending_notices(now)
-        queue = self._pending_notices.setdefault(rec.id, [])
-        queue.append((now, notice))
-        overflow = len(queue) - _PENDING_NOTICE_CAP
-        if overflow > 0:
-            del queue[:overflow]
-            log.info("assistant.notice_dropped session=%s count=%d reason=cap",
-                     rec.id, overflow)
-        log.info("assistant.notice_queued session=%s watch=%s pending=%d",
-                 rec.id, notice.get("watchId"), len(queue))
-        return False
-
-    def _expire_pending_notices(self, now: float) -> None:
-        """Drop queued notices older than _PENDING_NOTICE_TTL_S across EVERY thread
-        (#1502) — a drawer nobody opens never reaches pop_pending_notices, so the
-        sweep has to run on the write path too or its entries would never go."""
-        cutoff = now - _PENDING_NOTICE_TTL_S
-        for session_id in list(self._pending_notices):
-            queue = self._pending_notices[session_id]
-            kept = [entry for entry in queue if entry[0] >= cutoff]
-            if len(kept) == len(queue):
-                continue
-            log.info("assistant.notice_dropped session=%s count=%d reason=expired",
-                     session_id, len(queue) - len(kept))
-            if kept:
-                self._pending_notices[session_id] = kept
-            else:
-                del self._pending_notices[session_id]
+        if driver is None or not getattr(driver, "has_subscribers", False):
+            return False
+        driver.emit(ev.Notice(
+            session_id=rec.id, kind=notice.get("kind", ""),
+            title=notice.get("title", ""), body=notice.get("body", ""),
+            url=notice.get("url"), watch_id=notice.get("watchId"),
+        ))
+        if notice.get("noticeId"):
+            from server.assistant import notices as assistant_notices
+            await assistant_notices.mark_read(identity, [notice["noticeId"]])
+        return True
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None
@@ -21374,15 +21325,6 @@ class SessionOrchestrator:
         that follows it). The next attach's pop retries it instead of losing the
         slash command or unarchive seed for good."""
         self._pending_initial_prompt[session_id] = prompt
-
-    def pop_pending_notices(self, session_id: str) -> list[dict]:
-        """Return and clear the queued proactive watch notices for session_id
-        (Task 8.4). Called by the WS bridge on attach, alongside
-        pop_pending_initial_prompt, so a notice queued by post_notice while the
-        drawer had no live driver is delivered on the next open rather than lost.
-        Expired entries are swept first, so a stale notice is never delivered."""
-        self._expire_pending_notices(time.monotonic())
-        return [notice for _, notice in self._pending_notices.pop(session_id, [])]
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
                           interrupt: bool = False,

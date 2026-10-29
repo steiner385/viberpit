@@ -106,8 +106,11 @@ Re-sweep (2026-10-15, #1502): still exactly two pop-on-attach maps. `_pending_pr
 is consumed by the next `send_prompt`, and `_pending_approvals` by the approve path, so
 neither waits on a WS attach. Decisions:
 
-- `_pending_notices` stays deferred, because the web push sent with every assistant notice
-  is what actually delivers it. It is now **bounded**: the newest `_PENDING_NOTICE_CAP` per
+- **Superseded (#3183):** `_pending_notices` was removed. Push is not always configured, so
+  the drawer copy was the only delivery, and a memory-only queue lost it on every daemon restart.
+  Notices are now durable `assistant_notices` rows, replayed on attach. The 2026-10-15 note
+  follows as history: `_pending_notices` stayed deferred, because the web push sent with every
+  assistant notice was assumed to deliver it. It was **bounded**: the newest `_PENDING_NOTICE_CAP` per
   thread, a `_PENDING_NOTICE_TTL_S` expiry swept on both write and pop, and an
   `assistant.notice_queued` / `assistant.notice_dropped` log line for each. A never-opened
   drawer can no longer grow the map forever or show a day-old notice as news.

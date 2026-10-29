@@ -81,7 +81,7 @@ from server.sessions.replay import replay_window
 from server.sessions.origin_backfill import apply_origin_backfill
 from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
-from server.sessions.types import is_assistant
+from server.sessions.types import ASSISTANT_KIND, is_assistant
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -1181,7 +1181,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # Send the deferred initial prompt (if any) now that the client is watching
             # a live stream.
             await _send_deferred_initial_prompt(session_id)
-            # Flush any proactive watch notices queued while this drawer was closed.
+            # Replay unread proactive watch notices recorded while this drawer was closed.
             await _flush_pending_notices(session_id)
 
         async def _send_deferred_initial_prompt(session_id: str) -> None:
@@ -1243,21 +1243,28 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                             session_id, exc_info=True)
 
         async def _flush_pending_notices(session_id: str) -> None:
-            """Deliver any proactive watch notices queued while this session's
-            drawer had no live driver (Task 8.4, spec v2 §4.7 Pack N —
-            SessionOrchestrator.post_notice queues one there when it fires with no
-            driver attached). Called from the SAME two places as
-            _send_deferred_initial_prompt, for the same reason: a live stream may
-            open before OR after the notice was queued, so only a call at the
-            moment a live stream actually opens can guarantee delivery either way.
-            Best-effort — a raise here must not abort the attach."""
+            """Replay the owner's unread watch notices into this assistant drawer
+            (#3183). They are durable ``assistant_notices`` rows written when the
+            watch fired, so a drawer opened hours later, or after a daemon restart,
+            still shows them; replaying marks them read. Called from the SAME two
+            places as _send_deferred_initial_prompt, for the same reason: a live
+            stream may open before OR after the notice was recorded, so only a call
+            at the moment a live stream actually opens can guarantee delivery either
+            way. Best-effort — a raise here must not abort the attach."""
+            from server.assistant import notices as assistant_notices
             from server.sessions import events as ev
             try:
-                for notice in await orchestrator.pop_pending_notices(session_id):
+                async with db_session() as db:
+                    identity = (await db.execute(select(DbSession.owner_identity).where(
+                        DbSession.id == session_id, DbSession.kind == ASSISTANT_KIND
+                    ))).scalar_one_or_none()
+                if not identity:
+                    return
+                for notice in await assistant_notices.claim_unread(identity):
                     out_q.put_nowait({**ev.Notice(
-                        session_id=session_id, kind=notice.get("kind", ""),
-                        title=notice.get("title", ""), body=notice.get("body", ""),
-                        url=notice.get("url"), watch_id=notice.get("watchId"),
+                        session_id=session_id, kind=notice["kind"],
+                        title=notice["title"], body=notice["body"],
+                        url=notice["url"], watch_id=notice["watchId"],
                     ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: pending notice flush failed for %s",
@@ -1615,7 +1622,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # the detached path before the session was spawned (see the helper), and
             # the user's typed prompt must queue behind the original one, not replace it.
             await _send_deferred_initial_prompt(session_id)
-            # Flush any proactive watch notices queued while this drawer was closed.
+            # Replay unread proactive watch notices recorded while this drawer was closed.
             await _flush_pending_notices(session_id)
             # Flip the header from the read-only 'Ready' to the live state as the
             # resumed turn begins. Best-effort; rides out_q like every other

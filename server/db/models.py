@@ -617,6 +617,26 @@ class NotificationRule(Base):
         DateTime(timezone=True), nullable=True, default=None)
 
 
+class AssistantNotice(Base):
+    """A fired assistant watch's notice (#3183), kept until the person has seen it.
+
+    The drawer event alone was lossy: with no client attached it went to zero
+    subscribers, and the old in-memory fallback died with every daemon restart. The
+    row is the delivery; ``read_at`` NULL = unread (nav badge, replay on attach)."""
+
+    __tablename__ = "assistant_notices"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    identity: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="")
+    title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    watch_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+
 class Automation(Base):
     """Registry state for one code-defined automation. Identity (name, schema,
     behavior) lives in server/automations/; this row stores only mutable state."""
