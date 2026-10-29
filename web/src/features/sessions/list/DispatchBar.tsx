@@ -11,6 +11,7 @@ import {
 import { engineReasonLabel, hostDispatchable, type HostEngineState } from '@/api/fleet'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { getPreferredEngine, setPreferredEngine } from '@/lib/enginePreference'
+import { getDispatchToggle, setDispatchToggle } from '@/lib/dispatchToggles'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import { isGatedTier, modelName } from '@/session/modelName'
 import { useImageAttachments } from '@/features/sessions/composer/useImageAttachments'
@@ -167,11 +168,19 @@ export function DispatchBar({
   // be honoured.
   const [engineChoice, setEngineChoice] = useState<AgentEngine | null>(() => getPreferredEngine())
   // Per-session opt-outs. On = governed by the global autopilot mode / auto-archive
-  // setting; off = this session only. Deliberately NOT persisted like repo/engine
-  // and reset after every successful dispatch: the choice is about the session
-  // being created, and a sticky "off" would silently un-govern the next one.
-  const [autopilot, setAutopilot] = useState(true)
-  const [autoArchive, setAutoArchive] = useState(true)
+  // setting; off = the session being created only. Remembered like repo/engine,
+  // so the ticks carry from one dispatch to the next (and across reloads) —
+  // the operator asked for that; the bar shows them, so a sticky "off" is visible.
+  const [autopilot, setAutopilotState] = useState(() => getDispatchToggle('autopilot'))
+  const [autoArchive, setAutoArchiveState] = useState(() => getDispatchToggle('autoArchive'))
+  const setAutopilot = (on: boolean) => {
+    setAutopilotState(on)
+    setDispatchToggle('autopilot', on)
+  }
+  const setAutoArchive = (on: boolean) => {
+    setAutoArchiveState(on)
+    setDispatchToggle('autoArchive', on)
+  }
   // Mobile-only disclosure for the Account/Model selects; desktop always shows all three.
   const [showMore, setShowMore] = useState(false)
   const [assessing, setAssessing] = useState(false)
@@ -337,9 +346,6 @@ export function DispatchBar({
       setText('')
       setRefinedPrompt(null)
       att.clear()
-      // The opt-outs were for THAT session; the next one starts governed.
-      setAutopilot(true)
-      setAutoArchive(true)
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto'
       }
@@ -779,8 +785,8 @@ export function DispatchBar({
         )}
 
         {/* Per-session opt-outs. Both default ON (= governed by the global
-            autopilot mode / auto-archive setting); unticking pins THIS session
-            only. Grouped in one grid cell beside the selects; behind the
+            autopilot mode / auto-archive setting); unticking pins the session
+            being created, and the tick is remembered for the next dispatch. Grouped in one grid cell beside the selects; behind the
             same mobile disclosure as the rest of the advanced picks. */}
         <div
           id="dispatch-bar-toggles"

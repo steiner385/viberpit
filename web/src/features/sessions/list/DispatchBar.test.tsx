@@ -186,7 +186,7 @@ describe('DispatchBar', () => {
     expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
   })
 
-  it('offers Autopilot and Auto-archive toggles, on by default, and forwards an opt-out for THIS session only', async () => {
+  it('offers Autopilot and Auto-archive toggles, on by default, and remembers an opt-out for the next dispatch', async () => {
     const user = userEvent.setup()
     const onDispatch = vi.fn().mockResolvedValue(undefined)
     render(<DispatchBar {...makeProps({ onDispatch })} />)
@@ -205,10 +205,32 @@ describe('DispatchBar', () => {
       initialPrompt: 'quiet one', autopilot: false, autoArchive: false,
     }))
 
-    // The opt-out was for that session: the next dispatch starts governed again.
+    // The ticks carry to the next dispatch…
     await waitFor(() => expect(box).toHaveValue(''))
-    expect(autopilot).toBeChecked()
-    expect(autoArchive).toBeChecked()
+    expect(autopilot).not.toBeChecked()
+    expect(autoArchive).not.toBeChecked()
+    await user.type(box, 'second one')
+    await user.keyboard('{Enter}')
+    expect(onDispatch).toHaveBeenLastCalledWith(expect.objectContaining({
+      initialPrompt: 'second one', autopilot: false, autoArchive: false,
+    }))
+  })
+
+  it('restores remembered toggles on a fresh mount, and re-ticking is remembered too', async () => {
+    const user = userEvent.setup()
+    const { unmount } = render(<DispatchBar {...makeProps()} />)
+    await user.click(screen.getByRole('checkbox', { name: /^autopilot$/i }))
+    unmount()
+
+    const { unmount: unmount2 } = render(<DispatchBar {...makeProps()} />)
+    const autopilot = screen.getByRole('checkbox', { name: /^autopilot$/i })
+    expect(autopilot).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /^auto-archive$/i })).toBeChecked()
+    await user.click(autopilot)
+    unmount2()
+
+    render(<DispatchBar {...makeProps()} />)
+    expect(screen.getByRole('checkbox', { name: /^autopilot$/i })).toBeChecked()
   })
 
   it('keeps an opt-out when the dispatch fails, so a retry sends the same choice', async () => {
