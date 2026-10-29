@@ -28,11 +28,12 @@ from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
 from server.pipeline.lane_health import controller_deploy_snapshot, lane_health_ctx
 from server.pipeline.group_history import (
+    _iso_seconds,
     count_group_ejects,
     count_group_runs,
     group_run_samples,
 )
-from server.pipeline.merge_sim import eject_probability
+from server.pipeline.merge_sim import eject_probability, history_wait_p90
 from server.pipeline.notifier import TransitionNotifier
 from server.pipeline.timeline import timelines_for, tracked_merged
 
@@ -340,7 +341,8 @@ async def _sim_ctx(repos: list[str]) -> dict[str, dict]:
     → ejectProb), NOT per PR. ``since_iso`` is trailing-Z form to match
     group_history's stored ISO form (lexicographic ISO windowing).
     """
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
     since_iso = week_ago.isoformat().replace("+00:00", "Z")
     ctx: dict[str, dict] = {}
     for repo in repos:
@@ -349,9 +351,18 @@ async def _sim_ctx(repos: list[str]) -> dict[str, dict]:
             continue  # simulate_merge_eta would return None anyway; skip the reads
         runs = await count_group_runs(repo, since_iso)
         ejects = await count_group_ejects(repo, since_iso)
+        # Measured enqueue→merge waits (#3196): the analytic p90 assumes every
+        # group passes; this history is what the queue actually delivered.
+        waits = [
+            round(_iso_seconds(r.merged_at) - _iso_seconds(r.enqueued_at))
+            for r in await tracked_merged(repo)
+            if r.merged_at and r.enqueued_at
+        ]
         ctx[repo] = {
             "duration_samples": samples,
             "eject_prob": eject_probability(runs, ejects),
+            "history_p90": history_wait_p90(waits),
+            "now_epoch": int(now.timestamp()),
         }
     return ctx
 

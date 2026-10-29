@@ -1,6 +1,6 @@
-// Ported from plotroom@5166b52 frontend/src/QueueTrain.tsx; edits: none (all imports are pipeline-local siblings)
+// Ported from plotroom@5166b52 frontend/src/QueueTrain.tsx; edits: simText/simTooltip live in @/pipeline/format; blocked-queue ETAs (#3196)
 import type { RepoQueueView, QueueGroupView, MergeEtaSimulation, QueueHealthState } from '@/pipeline/types';
-import { formatDur } from '@/pipeline/format';
+import { blockedEtaText, formatDur, simText, simTooltip } from '@/pipeline/format';
 import { scrollBehavior } from '@/pipeline/motion';
 import { DEFS, defTitle } from '@/pipeline/definitions';
 import { prAnchorId } from '@/pipeline/prAnchor';
@@ -37,12 +37,18 @@ function BuildingCar({ repo, g }: { repo: string; g: QueueGroupView }) {
   const pct = g.percent;
   // g.etaSeconds is the REMAINING time (p50 − elapsed, max over required checks),
   // not the train's total duration — label it "left" so it can't read as a total.
-  const eta = g.etaSeconds != null ? formatDur(g.etaSeconds) : null;
-  const progressText = pct != null ? (eta ? `${pct}% · ~${eta} left` : `${pct}%`) : null;
+  // Behind a failing/UNMERGEABLE entry (#3196) GitHub's per-slot ETA assumes a
+  // pass that cannot happen — name the blocker instead of a time.
+  const blocked = g.blockedBy != null ? blockedEtaText(g.blockedBy) : null;
+  const eta = g.etaSeconds != null ? `~${formatDur(g.etaSeconds)} left` : null;
+  const tail = blocked ?? eta;
+  const progressText = pct != null ? (tail ? `${pct}% · ${tail}` : `${pct}%`) : blocked;
   const nums = g.prNumbers.map(prLabel).join(' ');
   const tooltip = g.failed
     ? `merge group build failed — the queue re-batches without the culprit: ${nums}`
-    : `merge group building — speculative merge of these PRs is running the full CI suite: ${nums}`;
+    : g.blockedBy != null
+      ? `merge group building behind ${prLabel(g.blockedBy)}, which is failing or unmergeable — this group fails and rebuilds once it is ejected: ${nums}`
+      : `merge group building — speculative merge of these PRs is running the full CI suite: ${nums}`;
   return (
     <div
       className={`car building${g.failed ? ' failed' : ''}`}
@@ -60,18 +66,6 @@ function BuildingCar({ repo, g }: { repo: string; g: QueueGroupView }) {
       )}
     </div>
   );
-}
-
-/** `~22m / ~41m p90` — the multi-train ETA range (issue #40); null-safe. */
-function simText(sim: MergeEtaSimulation | null | undefined): string | null {
-  if (!sim) return null;
-  return `~${formatDur(sim.p50Secs)} / ~${formatDur(sim.p90Secs)} p90`;
-}
-
-function simTooltip(sim: MergeEtaSimulation): string {
-  const ejects = sim.assumesEjects ? ', assumes ≤1 eject' : '';
-  const trains = `${sim.trainsAhead} train${sim.trainsAhead === 1 ? '' : 's'} ahead`;
-  return `merges in ~${formatDur(sim.p50Secs)} (p50) / ~${formatDur(sim.p90Secs)} (p90${ejects}); ${trains}`;
 }
 
 function WaitingCars({ repo, waiting, batchSize }: { repo: string; waiting: { prNumber: number; position: number; sim?: MergeEtaSimulation | null }[]; batchSize: number }) {

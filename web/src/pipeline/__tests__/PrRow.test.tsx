@@ -380,6 +380,24 @@ describe('PrRow merge ETA simulation (issue #40)', () => {
     expect(screen.queryByText(/p90/)).toBeNull();
     expect(screen.getByText('~4m left')).toBeInTheDocument(); // ci stage ETA intact
   });
+
+  it('a waiting PR behind a failing entry reads blocked, not a time (#3196)', () => {
+    render(<PrRow pr={queuedWaiting({
+      mergeEtaSim: { p50Secs: 1320, p90Secs: 2460, trainsAhead: 2, assumesEjects: true,
+        blockedBy: 20095 },
+    })} hasDeploy={false} />);
+    expect(screen.getByText('blocked behind #20095')).toHaveClass('eta-sim');
+    expect(screen.queryByText(/p90/)).toBeNull();
+  });
+
+  it('a building PR behind a failing entry names the blocker (#3196)', () => {
+    render(<PrRow pr={queuedWaiting({
+      mergeEtaSim: null,
+      stage: { stage: 'queue', substate: null, percent: 40, etaSeconds: null,
+        etaRangeSeconds: null, overdue: false, etaBlockedBy: 20095 },
+    })} hasDeploy={false} />);
+    expect(screen.getByText('blocked behind #20095')).toBeInTheDocument();
+  });
 });
 
 // ---- per-PR waterfall (issue #50) ----

@@ -509,3 +509,27 @@ describe('QueueTrain waiting-car merge ETA (issue #40)', () => {
     expect(container.querySelector('.car.queued .car-progress')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #3196: ETAs behind a failing/UNMERGEABLE entry read as blocked
+// ---------------------------------------------------------------------------
+
+describe('QueueTrain blocked-queue ETAs (issue #3196)', () => {
+  it('building and waiting cars behind a blocker name it instead of a time', () => {
+    const queue: RepoQueueView = {
+      groups: [{ oid: 'g2', prNumbers: [20100], percent: 40, etaSeconds: 2599,
+        failed: false, blockedBy: 20095 }],
+      unmergeable: [20095], queueBlocked: [], unmergeableCulprit: 20095, batchSize: 6,
+      waiting: [{ prNumber: 20101, position: 3,
+        sim: { p50Secs: 3159, p90Secs: 27000, trainsAhead: 1, assumesEjects: true,
+          historyP90Secs: 46080, blockedBy: 20095 } }],
+    };
+    const { container } = render(<QueueTrain repo="o/r" queue={queue} />);
+    expect(screen.getByText('40% · blocked behind #20095')).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/left/);
+    const waitingEta = container.querySelector('.car.queued .car-progress')!;
+    expect(waitingEta.textContent).toBe('blocked behind #20095');
+    expect(waitingEta.getAttribute('title')).toMatch(/^#20095 ahead is failing or unmergeable/);
+    expect(waitingEta.getAttribute('title')).toMatch(/measured queue-wait p90 ~12h 48m/);
+  });
+});

@@ -15,6 +15,9 @@ export interface StageResult {
    *  was computed (ISO-8601), letting the UI caption "~3h (from 2h ago)". */
   etaStale?: boolean;
   etaUpdatedAt?: string | null;
+  /** Queue stage only (#3196): the failing/UNMERGEABLE entry ahead that voids
+   *  this PR's merge-group ETA (etaSeconds is then null). */
+  etaBlockedBy?: number | null;
 }
 export interface CheckView {
   name: string; status: string; conclusion: string | null; isRequired: boolean;
@@ -119,6 +122,12 @@ export interface MergeEtaSimulation {
   trainsAhead: number;
   /** True when the p90 budgets one extra train for a likely eject. */
   assumesEjects: boolean;
+  /** ViberPit (#3196): the repo's measured enqueue→merge p90 that floors
+   *  p90Secs (less time already waited); null without enough history. */
+  historyP90Secs?: number | null;
+  /** ViberPit (#3196): a failing/UNMERGEABLE entry ahead — the estimate only
+   *  holds once it is ejected, so the UI shows "blocked" instead. */
+  blockedBy?: number | null;
 }
 
 /** Mirror of server estimator/queue-health.ts (issue #39). */
@@ -136,6 +145,8 @@ export interface QueueGroupView {
   percent: number | null;
   etaSeconds: number | null;
   failed: boolean;
+  /** ViberPit (#3196): failing/UNMERGEABLE entry ahead of this group. */
+  blockedBy?: number | null;
 }
 export interface RepoQueueView {
   groups: QueueGroupView[];

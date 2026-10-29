@@ -9,7 +9,7 @@ import { sessionPath } from '@/session/sessionNavState';
 import { useInteractive } from '@/shell/InteractionContext';
 import { useApiBase } from './ApiBaseContext';
 import type { PrView } from './types';
-import { formatDur, formatEta, formatSince, stageLabel } from './format';
+import { blockedEtaText, formatDur, formatEta, formatSince, simText, simTooltip, stageLabel } from './format';
 import { isFailedPr } from './StatusStrip';
 import { MetroTrack } from '@/features/pipeline/charts/MetroTrack';
 import { CheckGantt } from '@/features/pipeline/charts/CheckGantt';
@@ -197,9 +197,13 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
   // alike (2026-09-30 Pipeline critique, P1; PRODUCT.md: a status surface never
   // says Done). A failed row has no ETA either — its group or CI is over.
   // `overdue` stays a signal at any stage.
-  const eta = !isFailedPr(pr) && (TIMED_STAGES.has(s.stage) || s.overdue)
-    ? formatEta(s.etaSeconds, s.etaRangeSeconds, s.overdue)
-    : '';
+  // A merge-group ETA behind a failing/UNMERGEABLE entry is voided (#3196):
+  // name the blocker instead of a time that assumes it passes.
+  const eta = isFailedPr(pr) ? ''
+    : s.stage === 'queue' && s.etaBlockedBy != null ? blockedEtaText(s.etaBlockedBy)
+    : (TIMED_STAGES.has(s.stage) || s.overdue)
+      ? formatEta(s.etaSeconds, s.etaRangeSeconds, s.overdue)
+      : '';
   // ViberPit extension (spec §6): local const avoids repeated pr.session! non-null
   // assertions in the JSX below — narrowing on `session` is enough.
   const session = pr.session;
@@ -251,8 +255,8 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
           )}
           {sim ? (
             <span className="eta eta-sim whitespace-nowrap text-right text-xs tabular-nums text-ink-muted"
-              title={`merges in ~${formatDur(sim.p50Secs)} (p50) / ~${formatDur(sim.p90Secs)} (p90${sim.assumesEjects ? ', assumes ≤1 eject' : ''}); ${sim.trainsAhead} train${sim.trainsAhead === 1 ? '' : 's'} ahead`}>
-              ~{formatDur(sim.p50Secs)} / ~{formatDur(sim.p90Secs)} p90
+              title={simTooltip(sim)}>
+              {simText(sim)}
             </span>
           ) : (
             eta && (
