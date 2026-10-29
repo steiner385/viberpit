@@ -187,14 +187,36 @@ def token_endpoint(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
 
 _resource_cache: dict[str, str] = {}
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _url_href(url: str) -> str:
+    """*url* as the CLI serializes it (WHATWG ``new URL(url).href``) for the http(s) parts that
+    differ from the raw string: lower-case scheme and host, no default port, and ``/`` for an
+    empty path. Railway's metadata names the bare origin ``https://mcp.railway.com``; the CLI
+    authorized with ``…com/`` and the token endpoint compares exactly (400 invalid_target)."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    if scheme not in _DEFAULT_PORTS or not parts.hostname or "@" in parts.netloc:
+        return url
+    try:
+        port = parts.port
+    except ValueError:
+        return url
+    netloc = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname  # IPv6 literal
+    if port is not None and port != _DEFAULT_PORTS[scheme]:
+        netloc = f"{netloc}:{port}"
+    return urllib.parse.urlunsplit((scheme, netloc, parts.path or "/", parts.query, parts.fragment))
+
 
 def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
     """The ``resource`` to send, chosen as the CLI's MCP SDK does: the protected-resource
     metadata's ``resource`` when ``discoveryState.resourceMetadataUrl`` serves one, else the
-    server URL minus its fragment. The token endpoint rejects any other value: aws-oauth is
-    configured as ``…/mcp?oauth=initialize`` but its metadata names ``…/mcp``."""
+    server URL minus its fragment, serialized as the URL's ``href`` (:func:`_url_href`). The
+    token endpoint rejects any other value: aws-oauth is configured as
+    ``…/mcp?oauth=initialize`` but its metadata names ``…/mcp``."""
     server_url = bundle.get("serverUrl")
-    fallback = urllib.parse.urldefrag(server_url)[0] if isinstance(server_url, str) else ""
+    fallback = _url_href(urllib.parse.urldefrag(server_url)[0]) if isinstance(server_url, str) else ""
     prm_url = _discovery_state(bundle).get("resourceMetadataUrl")
     if not (isinstance(prm_url, str) and prm_url):
         return fallback
@@ -207,6 +229,7 @@ def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> 
         doc = None
     resource = doc.get("resource") if isinstance(doc, dict) else None
     if isinstance(resource, str) and resource:
+        resource = _url_href(resource)
         _resource_cache[prm_url] = resource
         return resource
     return fallback
