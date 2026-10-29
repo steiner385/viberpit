@@ -1188,10 +1188,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             """Pop + run the session's parked initial prompt, if one is staged.
 
             A normal initial prompt is sent at spawn and never lands here. The
-            orchestrator parks only two shapes for the bridge
+            orchestrator parks only one shape for the bridge
             (SessionOrchestrator._initial_prompt_waits_for_attach): a bare slash
             command typed as the initial prompt — it needs THIS socket's command
-            dispatch, not the model — and the unarchive "why you're back" seed. The
+            dispatch, not the model. The
             pop clears the entry, so it fires at most once; a plain reconnect finds
             nothing and falls through to live-stream only.
 

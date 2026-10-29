@@ -1,22 +1,20 @@
-"""Unarchiving an AUTOMATICALLY archived session seeds the restored session with a
-"why you're back" prompt, so that when the user next opens it the agent knows its
-archival was likely premature and re-checks state before continuing.
+"""Unarchiving a session seeds NO prompt: the user's own next message resumes it
+exactly as if it had never been archived.
 
-Behavior under test (see SessionOrchestrator._compose_unarchive_seed / unarchive):
-  - AUTO archive (autopilot / backlog-runner): unarchive stages the seed in
-    _pending_initial_prompt (lazy delivery on next attach) AND persists it to the
-    initial_prompt column (durable across a daemon restart).
-  - user/manual archive: no seed — nothing staged, initial_prompt stays NULL.
-  - the seed text carries the provenance, the archive reason, and the goal.
+A former "why you're back" seed (for autopilot / backlog-runner / completion
+archives) was staged for delivery on the next attach, so it ran AHEAD of the user's
+own re-prompt and hijacked the turn. These tests pin its absence for every
+provenance, and that the dispatch prompt in initial_prompt is left untouched.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -40,101 +38,34 @@ def _archived_row(**over) -> dict:
                 status="archived", cwd="/tmp/does-not-matter")
     base.update(over)
     # Archived rows resolve their directory through archive_root, so seed one and
-    # materialize it: unarchive then performs a REAL restore. Before archive_root
-    # existed these tests passed only because a missing archive silently produced an
-    # empty cwd — the very bug this column removes.
+    # materialize it: unarchive then performs a REAL restore.
     base.setdefault("archive_root", str(Path(str(base["cwd"])).parent / "archive"))
     Path(str(base["archive_root"]), str(base["id"])).mkdir(parents=True, exist_ok=True)
     return base
 
 
-# ---------------------------------------------------------------------------
-# _compose_unarchive_seed — pure helper
-# ---------------------------------------------------------------------------
-
-
-def test_compose_seed_auto_archive_carries_provenance_reason_and_goal():
-    seed = SessionOrchestrator._compose_unarchive_seed(
-        "autopilot",
-        {"reason": "autopilot: goal met", "goal": "ship feature X"},
-        datetime(2026, 8, 15, 9, 30),
-        "ship feature X",
-    )
-    assert seed is not None
-    assert "automatically archived on 2026-08-15 by autopilot" in seed
-    assert "autopilot: goal met" in seed          # the captured reason
-    assert "ship feature X" in seed               # the goal
-    assert "premature" in seed                    # the "was this wrong" framing
-
-
-def test_compose_seed_backlog_runner_names_the_runner():
-    seed = SessionOrchestrator._compose_unarchive_seed(
-        "backlog-runner", {}, None, None)
-    assert seed is not None
-    assert "the backlog runner" in seed
-    # No archived_at → no date clause; no reason → the fallback premise.
-    assert "on the assumption its work was already complete" in seed
-
-
-def test_compose_seed_returns_none_for_user_archive():
-    assert SessionOrchestrator._compose_unarchive_seed(
-        "user", {"goal": "g"}, datetime(2026, 8, 15), "g") is None
-
-
-def test_compose_seed_returns_none_for_no_provenance():
-    assert SessionOrchestrator._compose_unarchive_seed(None, None, None, "g") is None
-
-
-# ---------------------------------------------------------------------------
-# unarchive() — staging + persistence
-# ---------------------------------------------------------------------------
-
-
-def test_unarchive_auto_stages_and_persists_seed(tmp_path):
-    """An autopilot-archived session, on unarchive, stages the seed for next-attach
-    delivery and writes it to the durable initial_prompt column."""
+@pytest.mark.parametrize("archived_by", ["autopilot", "backlog-runner", "completion", "user"])
+def test_unarchive_stages_no_seed_and_keeps_dispatch_prompt(tmp_path, archived_by):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
 
     async def run():
         with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             await _seed([_archived_row(
-                cwd=str(tmp_path / "cwd"), repo="o/r", archived_by="autopilot",
+                cwd=str(tmp_path / "cwd"), repo="o/r", archived_by=archived_by,
+                initial_prompt="original dispatch prompt",
                 active_goal="ship feature X",
                 archive_context={"repo": "o/r", "goal": "ship feature X",
-                                 "reason": "autopilot: goal met"})])
+                                 "reason": "goal met"})])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             await orch.unarchive("s1")
             staged = orch.pop_pending_initial_prompt("s1")
             async with db_session() as db:
                 row = (await db.execute(
                     sa_select(DbSession).where(DbSession.id == "s1"))).scalars().first()
-            return staged, row.initial_prompt
+            return staged, row.initial_prompt, row.status
 
-    staged, persisted = asyncio.run(run())
-    assert staged is not None
-    assert "ship feature X" in staged
-    assert "autopilot" in staged
-    # The durable copy matches what was staged in memory, byte for byte.
-    assert persisted == staged
-
-
-def test_unarchive_user_archive_seeds_nothing(tmp_path):
-    """A plain user archive gets no seed: nothing staged, initial_prompt stays NULL."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'db.db'}"
-
-    async def run():
-        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
-            await init_db(db_url=db_url)
-            await _seed([_archived_row(cwd=str(tmp_path / "cwd"), archived_by="user")])
-            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-            await orch.unarchive("s1")
-            staged = orch.pop_pending_initial_prompt("s1")
-            async with db_session() as db:
-                row = (await db.execute(
-                    sa_select(DbSession).where(DbSession.id == "s1"))).scalars().first()
-            return staged, row.initial_prompt
-
-    staged, persisted = asyncio.run(run())
+    staged, persisted, status = asyncio.run(run())
+    assert status == "idle"
     assert staged is None
-    assert persisted is None
+    assert persisted == "original dispatch prompt"
