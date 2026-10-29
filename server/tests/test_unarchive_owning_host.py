@@ -23,6 +23,8 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select as sa_select
 
+from viberpit import brand
+
 _ME = "primary-test-host"
 _WORKER = "worker-test-host"
 
@@ -154,7 +156,8 @@ def test_audit_loop_and_reopen_decision_use_the_routing_helper(tmp_path):
     assert "_unarchive_on_owning_host" in src and "self.unarchive(" not in src
 
 
-_CLIENT_TLS_VARS = tuple(f"{p}_SESSIOND_CLIENT_{k}" for p in ("VIBERPIT", "CCSWITCH")
+_CLIENT_TLS_VARS = tuple(f"{p}SESSIOND_CLIENT_{k}"
+                         for p in (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)
                          for k in ("CERT", "KEY", "CA"))
 
 
