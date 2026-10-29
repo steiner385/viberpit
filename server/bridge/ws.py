@@ -1265,6 +1265,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         session_id=session_id, kind=notice["kind"],
                         title=notice["title"], body=notice["body"],
                         url=notice["url"], watch_id=notice["watchId"],
+                        # When it FIRED, never the replay time: an omitted ts
+                        # would show a days-old notice as just now and defeat
+                        # the reducer's age-based collapse (#1834 trap).
+                        ts=notice["firedAtMs"],
                     ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: pending notice flush failed for %s",

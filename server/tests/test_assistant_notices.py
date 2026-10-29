@@ -456,6 +456,43 @@ def test_unread_notice_replays_once_on_ws_attach(isolated_db):
         con.close()
 
 
+def test_replayed_notice_carries_its_fire_time_not_the_replay_time(isolated_db):
+    """An omitted ts defaults to now(), so a notice that fired two days ago would
+    replay as "just now" and escape the reducer's 24h collapse."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import update
+    from server.assistant import notices as assistant_notices
+    from server.db import db_session
+    from server.db.models import AssistantNotice
+    from server.db.models import Session as DbSession
+
+    fired = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0) - timedelta(days=2)
+
+    async def seed():
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="Assistant", account_name="a", cwd="/tmp",
+                             kind=ASSISTANT_KIND, owner_identity="wstest@example.com",
+                             created_at=datetime.utcnow()))
+            await db.commit()
+        nid = await assistant_notices.record_notice("wstest@example.com", {
+            "kind": "pr_broke", "title": "PR broke", "body": "CI failing",
+        })
+        async with db_session() as db:
+            await db.execute(update(AssistantNotice).where(AssistantNotice.id == nid)
+                             .values(created_at=fired))
+            await db.commit()
+
+    asyncio.run(seed())
+    app = create_app(orchestrator=_NoticeFlushFakeOrch())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": "s1"}))
+            frames = _drain_until(ws, until_type="notice")
+
+    frame = next(f for f in frames if f.get("type") == "notice")
+    assert frame["ts"] == fired.replace(tzinfo=timezone.utc).timestamp() * 1000
+
+
 def test_notices_endpoint_counts_unread_and_mark_read_clears(isolated_db):
     from server.assistant import notices as assistant_notices
 
