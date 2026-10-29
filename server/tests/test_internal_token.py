@@ -7,6 +7,7 @@ import os
 from unittest.mock import patch
 
 from server.auth.internal_token import PREFIX, mint_token, verify_token
+from server.tests._token_tamper import tamper_signature
 
 _ENV = {"VIBERPIT_SESSION_SECRET": "x" * 32}
 
@@ -21,7 +22,7 @@ def test_mint_verify_roundtrip():
 def test_verify_rejects_tamper_wrong_prefix_and_expiry():
     with patch.dict(os.environ, _ENV):
         tok = mint_token()
-        assert verify_token(tok[:-2] + "zz") is False
+        assert verify_token(tamper_signature(tok)) is False
         assert verify_token("nope") is False
         assert verify_token("ccas1:" + tok[len(PREFIX):]) is False
 

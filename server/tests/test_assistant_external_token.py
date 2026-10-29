@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from server.app import create_app
 from server.assistant.token import UserClaims, mint_user_token, verify_user_token
+from server.tests._token_tamper import tamper_signature
 
 _ENV = {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", "VIBERPIT_DEV": "1",
         "VIBERPIT_TAILNET_ALLOWLIST": "", "VIBERPIT_SESSION_SECRET": "x" * 32,
@@ -25,7 +26,7 @@ def test_mint_verify_roundtrip():
 def test_verify_rejects_tamper_and_expiry():
     with patch.dict(os.environ, _ENV):
         tok = mint_user_token("u@example.com", "act", "tok-1")
-        assert verify_user_token(tok[:-2] + "zz", max_age_s=60) is None
+        assert verify_user_token(tamper_signature(tok), max_age_s=60) is None
         assert verify_user_token("nope", max_age_s=60) is None
         assert verify_user_token(tok, max_age_s=-1) is None
 
