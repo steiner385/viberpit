@@ -112,8 +112,12 @@ async def test_runner_allocates_virtual_display_and_releases(monkeypatch):
     fake = _FakeX11()
     mgr = ReauthManager(x11=lambda: fake, key_available=lambda: True, timeout_s=30)
     await mgr.start("primary", "me@example.com")
-    # wait for the background task to finish
-    await asyncio.sleep(0.05)
+    # Poll for the finally-release rather than a fixed sleep: the runner hops
+    # through a worker thread, so a loaded CI host can exceed any fixed delay.
+    for _ in range(500):
+        if fake.stopped:
+            break
+        await asyncio.sleep(0.01)
     assert fake.started == [REAUTH_DISPLAY_KEY]
     assert fake.stopped == [REAUTH_DISPLAY_KEY]      # released in finally
     assert captured["DISPLAY"] == ":105"
