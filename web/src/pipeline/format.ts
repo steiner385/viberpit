@@ -1,4 +1,5 @@
-// Ported from plotroom@5166b52 frontend/src/format.ts; edits: none
+// Ported from plotroom@5166b52 frontend/src/format.ts; edits: simText/simTooltip moved here from QueueTrain.tsx with blocked-queue + history wording (#3196)
+import type { MergeEtaSimulation } from './types';
 /** Compact duration: `45s`, `4m`, `1h 5m`. */
 export function formatDur(secs: number): string {
   if (secs >= 3600) {
@@ -30,6 +31,30 @@ export function formatEta(etaSeconds: number | null, range: [number, number] | n
     if (lo !== hi) return `~${lo}–${hi}m left`;
   }
   return `~${formatDur(etaSeconds)} left`;
+}
+
+/** Text for a queue ETA voided by a failing/UNMERGEABLE entry ahead (#3196). */
+export function blockedEtaText(blockedBy: number): string {
+  return `blocked behind #${blockedBy}`;
+}
+
+/** `~22m / ~41m p90` — the multi-train ETA range (issue #40); a blocked
+ *  queue (#3196) reads `blocked behind #N` instead. Null-safe. */
+export function simText(sim: MergeEtaSimulation | null | undefined): string | null {
+  if (!sim) return null;
+  if (sim.blockedBy != null) return blockedEtaText(sim.blockedBy);
+  return `~${formatDur(sim.p50Secs)} / ~${formatDur(sim.p90Secs)} p90`;
+}
+
+export function simTooltip(sim: MergeEtaSimulation): string {
+  const ejects = sim.assumesEjects ? ', assumes ≤1 eject' : '';
+  const history = sim.historyP90Secs != null
+    ? `, measured queue-wait p90 ~${formatDur(sim.historyP90Secs)}` : '';
+  const trains = `${sim.trainsAhead} train${sim.trainsAhead === 1 ? '' : 's'} ahead`;
+  const eta = `merges in ~${formatDur(sim.p50Secs)} (p50) / ~${formatDur(sim.p90Secs)} (p90${ejects}${history}); ${trains}`;
+  return sim.blockedBy != null
+    ? `#${sim.blockedBy} ahead is failing or unmergeable — every group behind it fails until it is ejected. Once it clears: ${eta}`
+    : eta;
 }
 
 export const STAGE_LABEL: Record<string, string> = {

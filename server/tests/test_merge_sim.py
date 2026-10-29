@@ -6,7 +6,9 @@ server/estimator/queue.ts:107-167 + server/math.ts:6-8 (percentile). No DB.
 from server.pipeline.merge_sim import (
     EJECT_BUMP_MIN_PROB,
     EJECT_PROB_MIN_SAMPLES,
+    HISTORY_WAIT_MIN_SAMPLES,
     eject_probability,
+    history_wait_p90,
     simulate_merge_eta,
 )
 
@@ -26,6 +28,7 @@ def test_single_train_no_eject_bump():
     assert sim == {
         "p50Secs": 600,
         "p90Secs": 600,
+        "historyP90Secs": None,
         "trainsAhead": 0,
         "assumesEjects": False,
     }
@@ -95,3 +98,38 @@ def test_eject_probability_at_and_above_min_samples():
     assert eject_probability(3, 2) == 0.4          # total 5 => ejects/total
     assert eject_probability(9, 1) == 0.1
     assert eject_probability(0, 0) == 0.0
+
+
+# --- measured-history p90 floor (#3196) -------------------------------------
+
+
+def test_history_wait_p90_needs_min_samples():
+    assert history_wait_p90([3600] * (HISTORY_WAIT_MIN_SAMPLES - 1)) is None
+    assert history_wait_p90([3600] * HISTORY_WAIT_MIN_SAMPLES) == 3600
+
+
+def test_history_wait_p90_drops_non_positive_samples():
+    # A clock-skewed (merged before enqueued) row must not count toward the floor.
+    assert history_wait_p90([0, -60] + [3600] * (HISTORY_WAIT_MIN_SAMPLES - 1)) is None
+
+
+def test_history_wait_p90_nearest_rank_pick():
+    assert history_wait_p90(list(range(1, 21))) == 18
+
+
+def test_history_p90_floors_analytic_p90():
+    sim = simulate_merge_eta(0, 6, [600], 0.0, None, history_p90_secs=7200)
+    assert sim["p50Secs"] == 600            # the median stays analytic
+    assert sim["p90Secs"] == 7200
+    assert sim["historyP90Secs"] == 7200
+
+
+def test_history_p90_floor_shrinks_with_time_waited():
+    sim = simulate_merge_eta(0, 6, [600], 0.0, None,
+                             history_p90_secs=7200, waited_secs=7000)
+    assert sim["p90Secs"] == 600            # analytic wins once the floor is spent
+
+
+def test_history_p90_never_lowers_analytic_p90():
+    sim = simulate_merge_eta(0, 6, [600], 0.2, None, history_p90_secs=300)
+    assert sim["p90Secs"] == 1200

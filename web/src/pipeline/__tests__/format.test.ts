@@ -1,7 +1,7 @@
 // @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/__tests__/format.test.ts; edits: import path fixed to ../format
 import { describe, it, expect } from 'vitest';
-import { formatDur, formatEta, formatSince, stageLabel } from '../format';
+import { formatDur, formatEta, formatSince, simText, simTooltip, stageLabel } from '../format';
 
 describe('formatDur', () => {
   it('formats compact durations', () => {
@@ -55,5 +55,20 @@ describe('formatSince (issue #41)', () => {
 
   it('passes unparseable input through', () => {
     expect(formatSince('garbage', NOW)).toBe('garbage');
+  });
+});
+
+describe('simText / simTooltip (issue #3196)', () => {
+  const sim = { p50Secs: 1320, p90Secs: 2460, trainsAhead: 2, assumesEjects: false };
+  it('reads the p50/p90 pair when nothing ahead is failing', () => {
+    expect(simText(sim)).toBe('~22m / ~41m p90');
+    expect(simTooltip(sim)).toBe('merges in ~22m (p50) / ~41m (p90); 2 trains ahead');
+  });
+  it('reads blocked when an entry ahead is failing or unmergeable', () => {
+    expect(simText({ ...sim, blockedBy: 7 })).toBe('blocked behind #7');
+    expect(simTooltip({ ...sim, blockedBy: 7 })).toMatch(/^#7 ahead is failing or unmergeable.*Once it clears: merges in ~22m/);
+  });
+  it('null-safe', () => {
+    expect(simText(null)).toBeNull();
   });
 });

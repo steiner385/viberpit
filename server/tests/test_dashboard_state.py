@@ -56,7 +56,8 @@ def test_stage_result_open_ci():
                          eta_low_seconds=200, eta_high_seconds=500))
     assert s == {"stage": "ci", "substate": None, "percent": 40,
                  "etaSeconds": 300, "etaRangeSeconds": [200, 500],
-                 "overdue": False, "etaStale": False, "etaUpdatedAt": None}
+                 "overdue": False, "etaStale": False, "etaUpdatedAt": None,
+                 "etaBlockedBy": None}
 
 
 def test_stage_result_parked_substates():
@@ -131,7 +132,7 @@ def test_queue_view_groups_waiting_and_cascade():
     ]
     q = queue_view(entries, None)
     assert q["groups"] == [{"oid": "abc", "prNumbers": [10, 11], "percent": 50,
-                            "etaSeconds": 120, "failed": False}]
+                            "etaSeconds": 120, "failed": False, "blockedBy": None}]
     assert q["waiting"] == [{"prNumber": 14, "position": 5, "sim": None}]
     assert q["unmergeable"] == [12]          # lowest-position genuine conflict
     assert q["queueBlocked"] == [13]         # cascade victim behind it
@@ -248,8 +249,8 @@ def test_queue_view_sim_attaches_to_waiting_entry():
     q = queue_view(entries, None, sim_ctx=_sim_ctx())
     assert q["waiting"] == [{
         "prNumber": 14, "position": 1,
-        "sim": {"p50Secs": 600, "p90Secs": 600, "trainsAhead": 0,
-                "assumesEjects": False},
+        "sim": {"p50Secs": 600, "p90Secs": 600, "historyP90Secs": None,
+                "trainsAhead": 0, "assumesEjects": False, "blockedBy": None},
     }]
 
 
@@ -308,8 +309,9 @@ def test_dashboard_state_threads_sim_to_queue_and_pr_view():
                          generated_at="x", sim_ctx=sim_ctx)
     repo = st["repos"][0]
     waiting_sim = repo["queue"]["waiting"][0]["sim"]
-    assert waiting_sim == {"p50Secs": 600, "p90Secs": 600, "trainsAhead": 0,
-                           "assumesEjects": False}
+    assert waiting_sim == {"p50Secs": 600, "p90Secs": 600, "historyP90Secs": None,
+                           "trainsAhead": 0, "assumesEjects": False,
+                           "blockedBy": None}
     # Same sim lands on the matching pr_view.mergeEtaSim (waiting queue PR).
     assert repo["prs"][0]["mergeEtaSim"] == waiting_sim
 
@@ -471,3 +473,74 @@ def test_dashboard_state_emits_lane_health_only_for_repos_the_controller_vouches
     # Backward compatible: callers that pass no ctx get frames without the key.
     st2 = dashboard_state(prs, {}, {}, {}, generated_at="x")
     assert all("laneHealth" not in r for r in st2["repos"])
+
+
+# --- blocked-ahead ETAs (#3196) ---------------------------------------------
+
+
+def test_queue_view_marks_eta_behind_unmergeable_head_as_blocked():
+    # The KinDash shape: a poisoned UNMERGEABLE head; a building group and a
+    # waiting entry behind it. Their per-slot ETAs assume the head passes.
+    entries = [
+        _entry(pr_number=20095, position=1, state="UNMERGEABLE"),
+        _entry(pr_number=20100, position=2, batch_head_oid="g2",
+               state="AWAITING_CHECKS", eta_seconds=2599),
+        _entry(pr_number=20101, position=3, state="QUEUED"),
+    ]
+    q = queue_view(entries, None, sim_ctx=_sim_ctx())
+    assert q["groups"][0]["blockedBy"] == 20095
+    assert q["waiting"][0]["sim"]["blockedBy"] == 20095
+
+
+def test_queue_view_marks_eta_behind_failing_group_as_blocked():
+    entries = [
+        _entry(pr_number=10, position=1, batch_head_oid="g1", group_checks="failing"),
+        _entry(pr_number=11, position=2, batch_head_oid="g1", group_checks="failing"),
+        _entry(pr_number=12, position=3, batch_head_oid="g2", group_checks="pending",
+               eta_seconds=900),
+        _entry(pr_number=13, position=4, state="QUEUED"),
+    ]
+    q = queue_view(entries, None, sim_ctx=_sim_ctx())
+    groups = {g["oid"]: g for g in q["groups"]}
+    # The failed group's own members are not "behind" it — their car reads failed.
+    assert groups["g1"]["failed"] is True and groups["g1"]["blockedBy"] is None
+    assert groups["g2"]["blockedBy"] == 10
+    assert q["waiting"][0]["sim"]["blockedBy"] == 10
+
+
+def test_queue_view_healthy_queue_has_no_blocker():
+    entries = [
+        _entry(pr_number=10, position=1, batch_head_oid="g1", group_checks="pending"),
+        _entry(pr_number=11, position=2, state="QUEUED"),
+    ]
+    q = queue_view(entries, None, sim_ctx=_sim_ctx())
+    assert q["groups"][0]["blockedBy"] is None
+    assert q["waiting"][0]["sim"]["blockedBy"] is None
+
+
+def test_dashboard_state_drops_group_eta_behind_blocker():
+    # GitHub's estimatedTimeToMerge for a group behind a poisoned head is a
+    # promise that cannot be kept: the stage ETA goes null and names the blocker.
+    prs = {"o/r": [PipelinePr(pr=_pr(number=12, in_merge_queue=True))]}
+    queues = {"o/r": [
+        _entry(pr_number=11, position=1, state="UNMERGEABLE"),
+        _entry(pr_number=12, position=2, batch_head_oid="g2",
+               checks_total=4, checks_done=1, eta_seconds=2599),
+    ]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    stage = st["repos"][0]["prs"][0]["stage"]
+    assert stage["percent"] == 25
+    assert stage["etaSeconds"] is None
+    assert stage["etaBlockedBy"] == 11
+
+
+def test_queue_view_sim_p90_floored_by_history_less_time_waited():
+    # Analytic p90 = 600; measured enqueue→merge p90 = 7200 and this entry has
+    # waited 1200 s already => p90 floor 6000.
+    entries = [_entry(pr_number=14, position=1, state="QUEUED", enqueued_at=10_000)]
+    q = queue_view(entries, None,
+                   sim_ctx=_sim_ctx(history_p90=7200, now_epoch=11_200))
+    sim = q["waiting"][0]["sim"]
+    assert sim["p50Secs"] == 600
+    assert sim["p90Secs"] == 6000
+    assert sim["historyP90Secs"] == 7200

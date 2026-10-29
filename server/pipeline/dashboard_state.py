@@ -106,7 +106,10 @@ def stage_result(pr: PullRequestInfo, timeline: dict | None = None) -> dict:
             # Stale-while-revalidate caption (issue #671): a re-served last-good
             # ETA (fresh fetch failed) so the UI can mark it an estimate.
             "etaStale": pr.eta_stale,
-            "etaUpdatedAt": pr.eta_updated_at or None}
+            "etaUpdatedAt": pr.eta_updated_at or None,
+            # Queue-only (#3196): the failing/UNMERGEABLE entry ahead that voids
+            # this PR's merge-group ETA; set by pr_view, None everywhere else.
+            "etaBlockedBy": None}
 
 
 # QueueEntry states that mean "in a building merge group" when a batch oid exists.
@@ -143,7 +146,14 @@ def pr_view(
     # gets nulls, matching queueStage's waiting-line path (no partial bar).
     if stage["stage"] == "queue":
         stage["percent"] = queue_progress["percent"] if queue_progress else None
-        stage["etaSeconds"] = queue_progress["etaSeconds"] if queue_progress else None
+        blocked_by = queue_progress.get("blockedBy") if queue_progress else None
+        # GitHub's estimatedTimeToMerge assumes every group ahead passes; behind
+        # a failing/UNMERGEABLE entry that number is fiction (#3196) — drop it
+        # and name the blocker instead.
+        stage["etaSeconds"] = (
+            queue_progress["etaSeconds"] if queue_progress and blocked_by is None else None
+        )
+        stage["etaBlockedBy"] = blocked_by
         stage["etaRangeSeconds"] = None
         stage["overdue"] = False
         # Queue ETA tracks the merge-group build, not the head-checks ETA the
@@ -177,8 +187,41 @@ def pr_view(
 _SIM_AHEAD_EXCLUDED = frozenset({"MERGEABLE", "UNMERGEABLE"})
 
 
+def _queue_blocker(entries: Sequence[QueueEntry]) -> QueueEntry | None:
+    """The front-most entry whose failure voids every ETA behind it (#3196).
+
+    An UNMERGEABLE entry or one whose merge group is failing will be ejected,
+    and every group built on top of it fails and rebuilds — so the per-slot
+    ETAs GitHub and the analytic sim report behind it assume a pass that
+    cannot happen.
+    """
+    return min(
+        (e for e in entries
+         if e.state == "UNMERGEABLE" or e.group_checks == "failing"),
+        key=lambda e: e.position or 0, default=None,
+    )
+
+
+def _blocked_by(me: QueueEntry, blocker: QueueEntry | None) -> int | None:
+    """``blocker``'s PR number when ``me`` sits strictly behind it, else None.
+
+    A member of the blocker's own (failed) group is not "behind" it — its car
+    already reads failed.
+    """
+    if blocker is None or me.pr_number == blocker.pr_number:
+        return None
+    if me.batch_head_oid and me.batch_head_oid == blocker.batch_head_oid:
+        return None
+    if (me.position or 0) <= (blocker.position or 0):
+        return None
+    return blocker.pr_number
+
+
 def _waiting_sim(
-    me: QueueEntry, entries: Sequence[QueueEntry], sim_ctx: dict | None
+    me: QueueEntry,
+    entries: Sequence[QueueEntry],
+    sim_ctx: dict | None,
+    blocker: QueueEntry | None = None,
 ) -> dict | None:
     """mergeEtaSim for one WAITING entry (plotroom poller:2460-2486).
 
@@ -189,6 +232,11 @@ def _waiting_sim(
     resolves the "multiple building groups" ambiguity: SPEC §1 / poller:2473
     sort building-ahead by position descending and take the first, i.e. the
     building train closest in line to ``me``.
+
+    ViberPit extensions (#3196): ``blockedBy`` names a failing/UNMERGEABLE
+    entry ahead (the estimate then only holds once it clears), and the p90 is
+    floored by the repo's measured enqueue→merge p90 (``history_p90`` in
+    ``sim_ctx``) less the time ``me`` has already waited.
     """
     if sim_ctx is None:
         return None
@@ -204,13 +252,23 @@ def _waiting_sim(
     queued_ahead = len(ahead) - len(building)
     deepest = max(building, key=lambda e: e.position or 0, default=None)
     current_train_eta = deepest.eta_seconds if deepest else None
-    return simulate_merge_eta(
+    now_epoch = sim_ctx.get("now_epoch")
+    waited = (
+        max(0, int(now_epoch) - me.enqueued_at)
+        if now_epoch is not None and me.enqueued_at is not None else 0
+    )
+    sim = simulate_merge_eta(
         queued_ahead=queued_ahead,
         batch_size=DEFAULT_BATCH_SIZE,
         duration_samples=list(samples),
         eject_prob=float(sim_ctx.get("eject_prob") or 0.0),
         current_train_eta_secs=current_train_eta,
+        history_p90_secs=sim_ctx.get("history_p90"),
+        waited_secs=waited,
     )
+    if sim is not None:
+        sim["blockedBy"] = _blocked_by(me, blocker)
+    return sim
 
 
 def queue_view(
@@ -223,6 +281,7 @@ def queue_view(
     unmergeable: list[int] = []
     blocked: list[int] = []
     conflict_seen = False
+    blocker = _queue_blocker(entries)
     for e in sorted(entries, key=lambda e: (e.position is None, e.position or 0)):
         if e.state == "UNMERGEABLE":
             # GitHub marks cascade victims UNMERGEABLE too; without a DIRTY
@@ -235,6 +294,7 @@ def queue_view(
             g = groups.setdefault(e.batch_head_oid, {
                 "oid": e.batch_head_oid, "prNumbers": [],
                 "percent": None, "etaSeconds": None, "failed": False,
+                "blockedBy": _blocked_by(e, blocker),
             })
             g["prNumbers"].append(e.pr_number)
             if e.checks_total and e.checks_done is not None:
@@ -247,7 +307,7 @@ def queue_view(
                 g["failed"] = True
         else:
             waiting.append({"prNumber": e.pr_number, "position": e.position or 0,
-                            "sim": _waiting_sim(e, entries, sim_ctx)})
+                            "sim": _waiting_sim(e, entries, sim_ctx, blocker)})
     return {
         "groups": list(groups.values()), "waiting": waiting,
         "unmergeable": unmergeable, "queueBlocked": blocked,
