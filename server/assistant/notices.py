@@ -15,6 +15,7 @@ from sqlalchemy import func, select, update
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AssistantNotice
+from server.time_iso import aware_utc
 
 # A replay returns at most this many unread rows (newest) — a never-opened drawer
 # must not dump an unbounded backlog into the transcript.
@@ -22,10 +23,12 @@ _UNREAD_LIMIT = 50
 
 
 def notice_wire(row: AssistantNotice) -> dict:
+    fired = aware_utc(row.created_at)
     return {
         "id": row.id, "kind": row.kind, "title": row.title, "body": row.body,
         "url": row.url, "watchId": row.watch_id,
         "createdAt": row.created_at.isoformat() + "Z",
+        "firedAtMs": fired.timestamp() * 1000 if fired is not None else None,
         "read": row.read_at is not None,
     }
 
