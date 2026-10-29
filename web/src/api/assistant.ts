@@ -5,6 +5,8 @@
 // endpoints: GET /assistant/status, POST /assistant/session, GET
 // /assistant/history, POST /assistant/session/{id}/resume and GET
 // /assistant/gaps.
+import * as React from 'react'
+import { toast } from 'sonner'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type { ApiRequestError } from '@/api/client'
@@ -191,4 +193,47 @@ export function useAssistantFeedback() {
   return useMutation<void, ApiRequestError, AssistantFeedbackInput>({
     mutationFn: (input) => api.post<void>('/assistant/feedback', input),
   })
+}
+
+/** The unread-notices query key, exported so invalidations cannot misspell it. */
+export const ASSISTANT_NOTICES_KEY = ['assistant', 'notices'] as const
+
+/** One fired watch's notice (server/assistant/notices.py:notice_wire). */
+export interface AssistantNoticeRow {
+  id: string
+  kind: string
+  title: string
+  body: string
+  url: string | null
+  watchId: string | null
+  createdAt: string
+  read: boolean
+}
+
+/**
+ * The caller's unread watch notices (#3183). Polled app-wide, like the other nav
+ * badges: a notice has to be visible while you are looking at another section, and
+ * the drawer's own attach is what marks them read, so a closed drawer keeps the
+ * count lit instead of silently dropping the news.
+ */
+export function useAssistantNotices() {
+  return useQuery<{ unread: number; notices: AssistantNoticeRow[] }>({
+    queryKey: ASSISTANT_NOTICES_KEY,
+    queryFn: () => api.get('/assistant/notices'),
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+/** Toast each unread notice once as it arrives while the drawer is closed. */
+export function useAssistantNoticeToasts(drawerOpen: boolean) {
+  const { data } = useAssistantNotices()
+  const seen = React.useRef(new Set<string>())
+  React.useEffect(() => {
+    for (const n of data?.notices ?? []) {
+      if (seen.current.has(n.id)) continue
+      seen.current.add(n.id)
+      if (!drawerOpen) toast(n.title, { description: n.body || undefined })
+    }
+  }, [data, drawerOpen])
 }

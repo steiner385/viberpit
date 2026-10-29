@@ -4,10 +4,11 @@ event + push.
 Three behaviors:
   1. ``notify_event`` routes to an assistant-channel rule, calls
      ``orch.post_notice`` once, and disables the rule when ``once=True``.
-  2. ``SessionOrchestrator.post_notice`` emits live (driver present) or queues
-     (no driver) and reports which happened.
-  3. A notice queued while the drawer was closed flushes on the next WS attach
-     (mirrors the deferred-initial-prompt WS harness in test_ws_commands.py).
+  2. ``SessionOrchestrator.post_notice`` emits live only to an attached client and
+     reports which happened (#3183).
+  3. A fired notice is a durable ``assistant_notices`` row, replayed (and marked
+     read) on the next WS attach (mirrors the deferred-initial-prompt WS harness
+     in test_ws_commands.py).
 """
 from __future__ import annotations
 
@@ -93,12 +94,20 @@ def test_notify_event_routes_to_assistant_channel_and_disables_once_rule(tmp_pat
 
             from sqlalchemy import select
             from server.db import db_session
-            from server.db.models import NotificationRule
+            from server.db.models import AssistantNotice, AuditEvent, NotificationRule
             async with db_session() as db:
                 row = (await db.execute(
                     select(NotificationRule).where(NotificationRule.id == rule_id)
                 )).scalar_one()
                 assert row.enabled is False
+                # The notice is durable and unread, with an audit row (#3183).
+                saved = (await db.execute(select(AssistantNotice))).scalar_one()
+                assert (saved.identity, saved.title, saved.watch_id, saved.read_at) == (
+                    "u@x", "ViberPit needs you", rule_id, None)
+                assert notice["noticeId"] == saved.id
+                audits = (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "assistant.notice.deliver"))).scalars().all()
+                assert len(audits) == 1
         finally:
             await dispose_db()
 
@@ -277,15 +286,15 @@ def test_post_notice_emits_live_when_driver_present(tmp_path):
                 }
             finally:
                 stream.close()
-            # No pending notice was queued — it went out live.
-            assert orch.pop_pending_notices(a.id) == []
         finally:
             await _stop_orch(orch)
 
     asyncio.run(run())
 
 
-def test_post_notice_queues_when_no_live_driver(tmp_path):
+def test_post_notice_is_not_live_when_no_client_is_attached(tmp_path):
+    """A live driver with zero subscribers would drop the event (#3183): report
+    not-live so the durable row stays unread for the next attach."""
     async def run():
         orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'queue.db'}",
                                 tmp_path=tmp_path)
@@ -293,20 +302,13 @@ def test_post_notice_queues_when_no_live_driver(tmp_path):
             a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
                                           identity="u@x", kind=ASSISTANT_KIND,
                                           owner_identity="u@x")
-            # Simulate a detached drawer: no live driver for this identity's thread.
-            orch._drivers.pop(a.id, None)
-
+            assert a.id in orch._drivers
+            assert not orch._drivers[a.id].has_subscribers
             delivered = await orch.post_notice("u@x", {
                 "kind": "automation_error", "title": "Backlog runner failed",
                 "body": "boom", "url": None, "watchId": "rule-2",
             })
             assert delivered is False
-
-            pending = orch.pop_pending_notices(a.id)
-            assert len(pending) == 1
-            assert pending[0]["title"] == "Backlog runner failed"
-            # Popped once — a second pop is empty (matches pop_pending_initial_prompt).
-            assert orch.pop_pending_notices(a.id) == []
         finally:
             await _stop_orch(orch)
 
@@ -328,87 +330,15 @@ def test_post_notice_returns_false_for_unknown_identity(tmp_path):
     asyncio.run(run())
 
 
-def _notice(i: int) -> dict:
-    return {"kind": "pr_broke", "title": f"n{i}", "body": "b", "url": None,
-            "watchId": f"rule-{i}"}
-
-
-def test_pending_notices_keep_only_the_newest_cap(tmp_path, monkeypatch):
-    """#1502: a watch firing at a never-opened drawer must not grow the queue
-    without limit — the oldest entries fall off once the cap is reached."""
-    from server.sessions import orchestrator as orch_mod
-    monkeypatch.setattr(orch_mod, "_PENDING_NOTICE_CAP", 3)
-
-    async def run():
-        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'cap.db'}",
-                                tmp_path=tmp_path)
-        try:
-            a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
-                                          identity="u@x", kind=ASSISTANT_KIND,
-                                          owner_identity="u@x")
-            orch._drivers.pop(a.id, None)
-            for i in range(5):
-                assert await orch.post_notice("u@x", _notice(i)) is False
-            assert [n["title"] for n in orch.pop_pending_notices(a.id)] == ["n2", "n3", "n4"]
-        finally:
-            await _stop_orch(orch)
-
-    asyncio.run(run())
-
-
-def test_pending_notices_expire_on_pop_and_on_any_later_post(tmp_path):
-    """#1502: a notice older than the TTL is never delivered, and a thread nobody
-    opens is still swept — the write path expires every thread, not just its own.
-    Ages the stored queued-at stamps rather than patching time.monotonic, which the
-    event loop's own clock reads."""
-    from server.sessions import orchestrator as orch_mod
-    ttl = orch_mod._PENDING_NOTICE_TTL_S
-
-    def age(orch, session_id, by):
-        orch._pending_notices[session_id] = [
-            (ts - by, n) for ts, n in orch._pending_notices[session_id]]
-
-    async def run():
-        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ttl.db'}",
-                                tmp_path=tmp_path)
-        try:
-            a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
-                                          identity="u@x", kind=ASSISTANT_KIND,
-                                          owner_identity="u@x")
-            b = await orch.create_session(name="Assistant", cwd=str(tmp_path),
-                                          identity="v@x", kind=ASSISTANT_KIND,
-                                          owner_identity="v@x")
-            orch._drivers.pop(a.id, None)
-            orch._drivers.pop(b.id, None)
-
-            await orch.post_notice("u@x", _notice(0))
-            age(orch, a.id, ttl + 1)                            # n0 is now stale
-            assert orch.pop_pending_notices(a.id) == []         # pop path sweeps
-            await orch.post_notice("u@x", _notice(1))
-            age(orch, a.id, ttl - 60)                           # old but within TTL
-            assert [n["title"] for n in orch.pop_pending_notices(a.id)] == ["n1"]
-
-            await orch.post_notice("u@x", _notice(2))           # never popped
-            age(orch, a.id, ttl + 1)
-            await orch.post_notice("v@x", _notice(3))           # sweeps u@x's thread
-            assert a.id not in orch._pending_notices
-            assert [n["title"] for n in orch.pop_pending_notices(b.id)] == ["n3"]
-        finally:
-            await _stop_orch(orch)
-
-    asyncio.run(run())
-
-
 # --------------------------------------------------------------------------- #
-# 3. Pending notices flush on WS attach                                       #
+# 3. Unread notices replay on WS attach                                         #
 # --------------------------------------------------------------------------- #
 
 class _NoticeFlushFakeOrch:
     """Minimal WS-bridge-facing fake orchestrator (mirrors test_ws_commands.FakeOrch),
-    seeded with a pending notice for the session under test."""
+    (the notice itself lives in the DB, not the orchestrator)."""
 
-    def __init__(self, pending: list[dict]):
-        self._pending = {"s1": list(pending)}
+    def __init__(self):
         self._drivers: dict = {}
 
     async def rehydrate(self):
@@ -459,12 +389,6 @@ class _NoticeFlushFakeOrch:
     def pop_pending_initial_prompt(self, session_id):
         return None
 
-    async def pop_pending_notices(self, session_id):
-        # Async to match the facade contract every real orchestrator wrapper uses
-        # (server/sessions/facade.py, remote.py) — ws.py always `await`s this call
-        # (mirrors pop_pending_initial_prompt).
-        return self._pending.pop(session_id, [])
-
 
 def _drain_until(ws, *, until_type: str, timeout: float = 5.0) -> list[dict]:
     """Collect frames until one of type ``until_type`` is seen, flattening
@@ -488,12 +412,26 @@ def _drain_until(ws, *, until_type: str, timeout: float = 5.0) -> list[dict]:
     return frames
 
 
-def test_pending_notice_flushes_on_ws_attach():
-    orch = _NoticeFlushFakeOrch(pending=[{
-        "kind": "pr_broke", "title": "PR broke", "body": "CI failing",
-        "url": "/session/x", "watchId": "rule-1",
-    }])
-    app = create_app(orchestrator=orch)
+def test_unread_notice_replays_once_on_ws_attach(isolated_db):
+    from datetime import datetime
+    from server.assistant import notices as assistant_notices
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+
+    async def seed():
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="Assistant", account_name="a", cwd="/tmp",
+                             kind=ASSISTANT_KIND, owner_identity="wstest@example.com",
+                             created_at=datetime.utcnow()))
+            await db.commit()
+        await assistant_notices.record_notice("wstest@example.com", {
+            "kind": "pr_broke", "title": "PR broke", "body": "CI failing",
+            "url": "/session/x", "watchId": "rule-1",
+        })
+        assert await assistant_notices.unread_count("wstest@example.com") == 1
+
+    asyncio.run(seed())
+    app = create_app(orchestrator=_NoticeFlushFakeOrch())
     with TestClient(app, raise_server_exceptions=False) as client:
         with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
             ws.send_text(json.dumps({"type": "attach", "sessionId": "s1"}))
@@ -508,5 +446,25 @@ def test_pending_notice_flushes_on_ws_attach():
     assert frame["body"] == "CI failing"
     assert frame["url"] == "/session/x"
     assert frame["watchId"] == "rule-1"
-    # Popped once — reattaching finds nothing left to flush.
-    assert orch._pending == {}
+    # Replay marks it read — reattaching finds nothing left to flush.
+    import sqlite3
+    con = sqlite3.connect(isolated_db.removeprefix("sqlite+aiosqlite:///"))
+    try:
+        assert con.execute(
+            "SELECT count(*) FROM assistant_notices WHERE read_at IS NULL").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_notices_endpoint_counts_unread_and_mark_read_clears(isolated_db):
+    from server.assistant import notices as assistant_notices
+
+    asyncio.run(assistant_notices.record_notice("wstest@example.com", {
+        "kind": "session_ended", "title": "Done", "body": "b", "url": None, "watchId": "w1"}))
+    app = create_app(orchestrator=_NoticeFlushFakeOrch())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        got = client.get("/api/assistant/notices", headers=_IDENTITY_HEADERS).json()
+        assert got["unread"] == 1 and got["notices"][0]["title"] == "Done"
+        client.post("/api/assistant/notices/read", headers=_IDENTITY_HEADERS)
+        got = client.get("/api/assistant/notices", headers=_IDENTITY_HEADERS).json()
+        assert got == {"unread": 0, "notices": []}

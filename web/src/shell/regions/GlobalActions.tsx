@@ -2,6 +2,7 @@ import * as React from 'react'
 import { HelpCircle, Monitor, Moon, Sparkles, Sun, type LucideIcon } from 'lucide-react'
 import { Menu } from '@/ui/Menu'
 import { RadioGroup } from '@/ui/RadioGroup'
+import { useAssistantNotices } from '@/api/assistant'
 import { useOpenDrawer } from '@/shell/drawerParam'
 import { useTheme, type ThemeChoice } from '@/shell/theme'
 import { NavItem } from './NavItem'
@@ -57,6 +58,7 @@ export function GlobalActions({ showLabel = false, layout = 'menu' }: {
   layout?: 'menu' | 'inline'
 }) {
   const openDrawer = useOpenDrawer()
+  const unreadNotices = useAssistantNotices().data?.unread ?? 0
   const { choice, setChoice } = useTheme()
 
   const themeRef = React.useRef<HTMLButtonElement>(null)
@@ -65,7 +67,14 @@ export function GlobalActions({ showLabel = false, layout = 'menu' }: {
 
   return (
     <>
-      <NavItem onClick={() => openDrawer('assistant')} icon={Sparkles} label="Assistant" showLabel={showLabel} />
+      <NavItem
+        onClick={() => openDrawer('assistant')}
+        icon={Sparkles}
+        label="Assistant"
+        showLabel={showLabel}
+        count={unreadNotices}
+        attention={unreadNotices > 0}
+      />
       <NavItem onClick={() => openDrawer('help')} icon={HelpCircle} label="Help" showLabel={showLabel} />
       {layout === 'inline' ? (
         // Padded to the NavItem rows' text column so the legend lines up with

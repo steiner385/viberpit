@@ -250,6 +250,23 @@ async def _push_payload(title: str, body: str, url: str | None) -> None:
         log.warning("notify_event.webpush_failed", exc_info=True)
 
 
+async def _assistant_identity(owner_session_id: str,
+                              orch: "SessionOrchestrator | None") -> str | None:
+    """The identity owning the assistant thread that armed a watch. Read from the
+    sessions row, which both primary and worker daemons can see; the in-memory
+    record is only a fallback for a row not yet written."""
+    from sqlalchemy import select
+
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        identity = (await db.execute(select(DbSession.owner_identity).where(
+            DbSession.id == owner_session_id))).scalar_one_or_none()
+    if identity or orch is None:
+        return identity
+    rec = orch.get_session(owner_session_id)
+    return getattr(rec, "owner_identity", None) if rec is not None else None
+
+
 async def _deliver_assistant_notice(
     decision, event_class: str, title: str, body: str, url: str | None,
     orch: "SessionOrchestrator | None", owner_session_id: str | None,
@@ -264,15 +281,19 @@ async def _deliver_assistant_notice(
     if push:
         await _push_payload(title, body, url)
 
-    if orch is not None and owner_session_id is not None:
+    if owner_session_id is not None:
         try:
-            rec = orch.get_session(owner_session_id)
-            identity = getattr(rec, "owner_identity", None) if rec is not None else None
+            identity = await _assistant_identity(owner_session_id, orch)
             if identity:
-                await orch.post_notice(identity, {
-                    "kind": event_class, "title": title, "body": body,
-                    "url": url, "watchId": decision.rule_id,
-                })
+                from server.assistant import notices as assistant_notices
+                notice = {"kind": event_class, "title": title, "body": body,
+                          "url": url, "watchId": decision.rule_id}
+                # Durable first (#3183): the row is the delivery, so it must land
+                # even when this daemon is a worker that cannot see the primary's
+                # assistant thread, or the drawer is closed.
+                notice["noticeId"] = await assistant_notices.record_notice(identity, notice)
+                if orch is not None:
+                    await orch.post_notice(identity, notice)
         except Exception:
             log.warning("notify_event.assistant_notice_failed", exc_info=True)
 

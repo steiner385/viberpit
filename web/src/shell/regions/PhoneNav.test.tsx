@@ -20,6 +20,10 @@ vi.mock('@/shell/useNavBadges', async (importOriginal) => {
   return { ...actual, useNavBadges: () => badges() }
 })
 
+// The Assistant action wears an unread-notices count read from the API layer;
+// nothing unread here.
+vi.mock('@/api/assistant', () => ({ useAssistantNotices: () => ({ data: undefined }) }))
+
 import type { NavBadges } from '@/shell/useNavBadges'
 import { ThemeProvider } from '@/shell/theme'
 import { THEME_STORAGE_KEY } from '@/shell/themeKey'

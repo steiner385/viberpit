@@ -500,6 +500,11 @@ class CodexAgentDriver:
             self._qreg.rethread_identity(self.session_id, old, value)
 
     @property
+    def has_subscribers(self) -> bool:
+        """True while a client holds an open stream (a watch Notice would be heard)."""
+        return bool(self._subscribers)
+
+    @property
     def turn_active(self) -> bool:
         return self._turn_active
 

@@ -26,6 +26,10 @@ vi.mock('@/shell/useNavBadges', async (importOriginal) => {
 const deployState = vi.fn()
 vi.mock('@/lib/deployState', () => ({ useDeployState: () => deployState() }))
 
+// The Assistant action wears an unread-notices count read from the API layer;
+// nothing unread here.
+vi.mock('@/api/assistant', () => ({ useAssistantNotices: () => ({ data: undefined }) }))
+
 import type { NavBadges } from '@/shell/useNavBadges'
 import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { ViewportProvider } from '@/shell/useViewport'

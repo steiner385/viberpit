@@ -114,6 +114,10 @@ RECONCILE_EXEMPT: set[str] = {
     "assistant_tokens.scope",       # required at mint; "read" | "act"
     "assistant_tokens.token_hash",  # required at mint; sha256 of the minted token
     "assistant_tokens.expires_at",  # required at mint; computed from ttlDays, no sane default
+    # assistant_notices (#3183): a NEW table (create_all builds it on dev SQLite; Alembic
+    # 0091_assistant_notices on prod). identity is mandatory at insert — a notice with
+    # no owner is undeliverable — so there is no synthesizable default.
+    "assistant_notices.identity",   # required at insert; the watch owner's identity
 }
 
 

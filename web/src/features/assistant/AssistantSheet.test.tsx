@@ -8,6 +8,8 @@ import type { Session } from '@/api/types'
 
 vi.mock('@/api/assistant', () => ({
   useAssistantStatus: vi.fn(),
+  useAssistantNotices: vi.fn(() => ({ data: undefined })),
+  useAssistantNoticeToasts: vi.fn(),
   useAssistantSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useResetAssistant: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetAssistantModel: vi.fn(() => ({

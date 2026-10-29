@@ -322,9 +322,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "repark_pending_initial_prompt",
         "command_catalog", "run_command", "list_archived",
-        # Task 8.4 (spec v2 §4.7 Pack N): post_notice returns bool, pop_pending_notices
-        # returns list[dict] — both already JSON-safe, no bespoke handler needed.
-        "post_notice", "pop_pending_notices",
+        # Task 8.4 (spec v2 §4.7 Pack N): post_notice returns bool — already
+        # JSON-safe, no bespoke handler needed.
+        "post_notice",
         "latest_suggestions", "latest_suggestions_many",
         "generate_suggestions_now", "seed_idle_suggestions",
         "latest_summary", "latest_summary_many",

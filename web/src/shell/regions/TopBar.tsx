@@ -1,5 +1,6 @@
 import { HelpCircle, Sparkles } from 'lucide-react'
 import { BrandMark, Wordmark } from '@/shell/BrandMark'
+import { useAssistantNotices } from '@/api/assistant'
 import { useOpenDrawer } from '@/shell/drawerParam'
 import { NavItem } from './NavItem'
 
@@ -17,6 +18,7 @@ import { NavItem } from './NavItem'
  */
 export function TopBar() {
   const openDrawer = useOpenDrawer()
+  const unreadNotices = useAssistantNotices().data?.unread ?? 0
 
   return (
     <header
@@ -37,7 +39,13 @@ export function TopBar() {
       <BrandMark size={22} />
       <Wordmark className="text-base font-bold tracking-tight" />
       <div className="flex-1" />
-      <NavItem onClick={() => openDrawer('assistant')} icon={Sparkles} label="Assistant" />
+      <NavItem
+        onClick={() => openDrawer('assistant')}
+        icon={Sparkles}
+        label="Assistant"
+        count={unreadNotices}
+        attention={unreadNotices > 0}
+      />
       <NavItem onClick={() => openDrawer('help')} icon={HelpCircle} label="Help" />
     </header>
   )

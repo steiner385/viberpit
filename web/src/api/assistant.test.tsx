@@ -1,12 +1,14 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
+import { toast } from 'sonner'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
+vi.mock('sonner', () => ({ toast: vi.fn() }))
 vi.mock('@/api/client', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
 import { api } from '@/api/client'
 import {
-  useAssistantFeedback, useAssistantHistory, useAssistantSession, useAssistantStatus,
+  useAssistantFeedback, useAssistantHistory, useAssistantNoticeToasts, useAssistantSession, useAssistantStatus,
   useResetAssistant, useResumeAssistantSession,
 } from './assistant'
 
@@ -92,5 +94,28 @@ describe('assistant api', () => {
     const { result } = renderHook(() => useAssistantFeedback(), { wrapper })
     await result.current.mutateAsync({ sessionId: 'a1', turnId: 't1', vote: 'up' })
     expect(api.post).toHaveBeenCalledWith('/assistant/feedback', { sessionId: 'a1', turnId: 't1', vote: 'up' })
+  })
+})
+
+describe('assistant notice toasts (#3183)', () => {
+  const notice = { id: 'n1', kind: 'session_ended', title: 'Session finished', body: 'b',
+    url: null, watchId: 'w1', createdAt: '2026-10-28T00:00:00Z', read: false }
+
+  it('toasts an unread notice once while the drawer is closed', async () => {
+    vi.mocked(toast).mockClear()
+    vi.mocked(api.get).mockResolvedValue({ unread: 1, notices: [notice] })
+    const { rerender } = renderHook(({ open }) => useAssistantNoticeToasts(open),
+      { wrapper: wrap(), initialProps: { open: false } })
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1))
+    rerender({ open: false })
+    expect(toast).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays quiet while the drawer is open — the attach replay shows it', async () => {
+    vi.mocked(toast).mockClear()
+    vi.mocked(api.get).mockResolvedValue({ unread: 1, notices: [notice] })
+    renderHook(() => useAssistantNoticeToasts(true), { wrapper: wrap() })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    expect(toast).not.toHaveBeenCalled()
   })
 })

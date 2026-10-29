@@ -23,7 +23,7 @@ from server import config
 from server.config import get_settings
 from server.db import get_db
 from server.db.clock import db_utc_now
-from server.db.models import (AssistantToken, AuditEvent, NotificationChannel,
+from server.db.models import (AssistantNotice, AssistantToken, AuditEvent, NotificationChannel,
                                NotificationRule)
 from server.db.models import Session as DbSession
 from server.obs.metrics import assistant_feedback_total
@@ -33,6 +33,7 @@ from server.sessions.engine import AgentEngineUnavailable
 from server.sessions.types import ASSISTANT_KIND
 from server.time_iso import iso_utc
 
+from . import notices as watch_notices
 from . import watches as watch_conditions
 from .policy import (assistant_enabled, assistant_engine, assistant_model,
                      operator_tools_enabled)
@@ -532,3 +533,21 @@ async def delete_watch(watch_id: str, identity: str = Depends(current_identity),
             await db.commit()
             return {"ok": True}
     raise HTTPException(404, "watch not found")
+
+
+@router.get("/notices")
+async def list_notices(identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    """The caller's unread watch notices + count, for the nav badge (#3183)."""
+    rows = (await db.execute(
+        select(AssistantNotice)
+        .where(AssistantNotice.identity == identity, AssistantNotice.read_at.is_(None))
+        .order_by(AssistantNotice.created_at.desc()).limit(20)
+    )).scalars().all()
+    return {"unread": await watch_notices.unread_count(identity),
+            "notices": [watch_notices.notice_wire(r) for r in rows]}
+
+
+@router.post("/notices/read")
+async def mark_notices_read(identity: str = Depends(current_identity)) -> dict:
+    await watch_notices.mark_read(identity)
+    return {"ok": True}
