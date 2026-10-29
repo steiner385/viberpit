@@ -23,6 +23,8 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select as sa_select
 
+from viberpit import brand
+
 _ME = "primary-test-host"
 _WORKER = "worker-test-host"
 
@@ -152,3 +154,32 @@ def test_audit_loop_and_reopen_decision_use_the_routing_helper(tmp_path):
     _run(tmp_path, run)
     src = inspect.getsource(SessionOrchestrator.archive_audit_decide_finding)
     assert "_unarchive_on_owning_host" in src and "self.unarchive(" not in src
+
+
+_CLIENT_TLS_VARS = tuple(f"{p}SESSIOND_CLIENT_{k}"
+                         for p in (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)
+                         for k in ("CERT", "KEY", "CA"))
+
+
+def test_routing_without_client_tls_fails_fast_with_a_precondition_error(tmp_path,
+                                                                         monkeypatch):
+    """#3142: the primary daemon holds no mTLS client identity (only the edge does),
+    so dialing a worker's https endpoint must raise a typed owned-elsewhere error that
+    says why, never a raw TLSConfigError the audit loop logs as a WARNING every tick."""
+    from server.ipc.tls import TLSConfigError
+    from server.sessions.orchestrator import (ArchiveOwnedElsewhereError,
+                                              ArchiveOwnerUnreachableError)
+    for var in _CLIENT_TLS_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    async def run():
+        await _setup(tmp_path, host=_WORKER, cwd=tmp_path / "absent-here")
+        with pytest.raises(ArchiveOwnerUnreachableError) as ei:
+            await _orch()._unarchive_on_owning_host("s1")
+        return ei.value
+
+    err = _run(tmp_path, run)
+    assert isinstance(err, ArchiveOwnedElsewhereError)
+    assert err.host == _WORKER and err.session_id == "s1"
+    assert isinstance(err.__cause__, TLSConfigError)
+    assert "VIBERPIT_SESSIOND_CLIENT_CERT" in str(err) and _WORKER in str(err)

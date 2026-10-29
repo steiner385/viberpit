@@ -141,12 +141,20 @@ class ArchiveAuditLoop:
         outcome = await self._record_findings_fn(results, mode)
         to_unarchive = outcome.get("to_unarchive", [])
         unarchived = []
+        from server.sessions.orchestrator import ArchiveOwnedElsewhereError
         for sid in to_unarchive:
             try:
                 await self._unarchive_fn(sid)
                 unarchived.append(sid)
-            except Exception:
-                log.warning("archive_audit loop unarchive failed sid=%s", sid, exc_info=True)
+            except Exception as exc:
+                if isinstance(exc, ArchiveOwnedElsewhereError):
+                    # Expected, typed precondition (#3142): the session lives on a host
+                    # this daemon can't restore it on. It goes to a human below; a
+                    # WARNING here would file an auto-error issue on every tick.
+                    log.info("archive_audit loop unarchive deferred to a human: %s", exc)
+                else:
+                    log.warning("archive_audit loop unarchive failed sid=%s", sid,
+                                exc_info=True)
                 # persist_findings already committed this finding as "reopened" —
                 # a durable, never-resurrected decision — before we knew the actual
                 # unarchive would fail. Revert it to "open" (auto_reopen_failed=True)

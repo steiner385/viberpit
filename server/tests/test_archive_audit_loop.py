@@ -361,3 +361,37 @@ def test_default_mode_is_propose_and_legacy_act_is_not_consent_to_auto_reopen():
     assert ArchiveAudit.modes == ("off", "propose", "auto_reopen")
     assert retired_modes_of(ArchiveAudit()) == {"act": "propose"}
     assert "act" not in ArchiveAudit.modes
+
+
+def test_owned_elsewhere_unarchive_is_not_a_warning(caplog):
+    """#3142: a worker-owned row the primary daemon cannot reach is an expected,
+    typed precondition — the finding is handed to a human, but the loop must not log a
+    WARNING (which files an auto-error issue) on every tick."""
+    import logging
+
+    from server.sessions.orchestrator import ArchiveOwnerUnreachableError
+
+    async def run():
+        from server.automations.archive_audit import ArchiveAuditLoop
+        ctx = _FakeCtx()
+        unarchive_fn = AsyncMock(side_effect=ArchiveOwnerUnreachableError(
+            "sess-rocky", "rocky", "https daemon endpoint requires X (unset)"))
+        mark_failed_fn = AsyncMock()
+
+        async def read_config():
+            return ("auto_reopen", {"window_days": 7})
+
+        loop = ArchiveAuditLoop(
+            ctx, read_config=read_config,
+            list_rows=AsyncMock(return_value=[_row("sess-rocky", "fix ci")]),
+            gh_fn=_gh_returning(_pr(state="OPEN", auto_merge=False)),
+            gh_num_fn=None, unarchive_fn=unarchive_fn, clock=lambda: _FIXED_EPOCH,
+            record_findings_fn=_fake_record, mark_auto_reopen_failed_fn=mark_failed_fn)
+        await loop.tick()
+        mark_failed_fn.assert_awaited_once_with("sess-rocky")
+        assert ctx.emit.call_args.kwargs["detail"]["unarchived"] == []
+
+    with caplog.at_level(logging.INFO, logger="server.automations.archive_audit"):
+        asyncio.run(run())
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("sess-rocky" in r.getMessage() for r in caplog.records)
