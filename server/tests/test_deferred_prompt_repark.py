@@ -1,4 +1,4 @@
-"""A deferred initial prompt (slash command / unarchive seed, #943) must never be
+"""A deferred initial prompt (a parked slash command, #943) must never be
 lost for good when send_prompt races a concurrent driver teardown.
 
 Root cause (issue #1737, "send_prompt: no live driver for session=<id> — prompt

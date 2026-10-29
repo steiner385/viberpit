@@ -1199,12 +1199,12 @@ class SessionOrchestrator:
         # Sessions with an auth_stale relaunch in flight (backing off or rebuilding):
         # prompts sent meanwhile hit the same stale CLI and signal again.
         self._auth_stale_inflight: set[str] = set()
-        # Initial prompts parked for the WS bridge's first live attach. Only TWO
-        # shapes live here (see _initial_prompt_waits_for_attach): a bare slash
+        # Initial prompts parked for the WS bridge's first live attach. Only ONE
+        # shape lives here (see _initial_prompt_waits_for_attach): a bare slash
         # command typed as the initial prompt, which must run through the bridge's
-        # command dispatch rather than go to the model as text (#943), and the
-        # unarchive "why you're back" seed. Every other initial prompt is SENT at
-        # spawn — a session must start working without anyone opening it.
+        # command dispatch rather than go to the model as text (#943). Every other
+        # initial prompt is SENT at spawn — a session must start working without
+        # anyone opening it. (Unarchive deliberately stages nothing.)
         self._pending_initial_prompt: dict[str, str] = {}
         # session_id → options overlay for ANY kind (see register_overlay): the
         # assistant's full overlay (a ClaudeAgentOptions dict for Claude, a
@@ -17908,8 +17908,7 @@ class SessionOrchestrator:
         The durable state that makes recovery safe already exists on the row — no new
         column needed:
 
-        * ``initial_prompt`` is the prompt itself (persisted at create time, and also
-          re-written by ``unarchive`` as the "why you're back" seed).
+        * ``initial_prompt`` is the prompt itself (persisted at create time).
         * ``engine_session_id`` is NULL until the SDK assigns one, which happens when
           turn ONE actually starts (see ``_persist_engine_session_id``). A NULL is
           therefore proof that no turn has ever run, which is what makes redelivery
@@ -24923,44 +24922,6 @@ class SessionOrchestrator:
             for row in rows
         ]
 
-    @staticmethod
-    def _compose_unarchive_seed(
-        prev_archived_by: str | None,
-        prev_context: dict | None,
-        archived_at: "datetime | None",
-        goal: str | None,
-    ) -> str | None:
-        """Compose the prompt that greets a restored session, or None to seed nothing.
-
-        Only AUTOMATED archives (autopilot / backlog-runner) get a seed: a manual
-        unarchive of one is direct evidence the auto-archive judgement was premature,
-        and those are the only archives carrying an ``archive_context`` snapshot to
-        draw the reason/goal from. A user who unarchives their OWN archive needs no
-        "this was erroneous" narrative, so return None (also keeps the resume path a
-        no-op for the common manual case)."""
-        if prev_archived_by not in AUTO_ARCHIVE_PROVENANCE:
-            return None
-        ctx = prev_context or {}
-        who = {"autopilot": "autopilot",
-               "backlog-runner": "the backlog runner"}.get(prev_archived_by, prev_archived_by)
-        when = f" on {archived_at.date().isoformat()}" if archived_at is not None else ""
-        reason = (ctx.get("reason") or "").strip()
-        premise = (f', on the reasoning: "{reason}".' if reason
-                   else ", on the assumption its work was already complete.")
-        lines = [
-            f"This session was automatically archived{when} by {who}{premise}",
-            "It has now been manually restored, which means that judgement was very "
-            "likely premature or wrong.",
-            "Re-examine the ACTUAL current state — working tree, tests, any open PR, and "
-            "the transcript above — before doing anything, then continue the work.",
-        ]
-        if goal:
-            lines.append(f"The goal this session was pursuing: {goal}")
-        lines.append(
-            "If, after checking, you find the work genuinely IS complete, say so "
-            "explicitly and stop rather than redoing it.")
-        return "\n".join(lines)
-
     async def unarchive(self, session_id: str) -> "SessionRecord | None":
         """Restore an archived session to idle.
 
@@ -25005,15 +24966,9 @@ class SessionOrchestrator:
         prev_archived_by = getattr(row, "archived_by", None)
         prev_context = getattr(row, "archive_context", None)
 
-        # Seed the restored session with the "why you're back" context (AUTO archives
-        # only — see _compose_unarchive_seed). Prefer the goal snapshotted at archive
-        # time (what it was archived FOR), then the live goal fields.
-        seed_goal = ((prev_context or {}).get("goal")
-                     or getattr(row, "active_goal", None)
-                     or getattr(row, "inferred_goal", None))
-        seed = self._compose_unarchive_seed(
-            prev_archived_by, prev_context, getattr(row, "archived_at", None), seed_goal)
-
+        # Deliberately NO "why you're back" seed prompt: the user's own next message
+        # resumes the session exactly as if it had never been archived. A staged seed
+        # ran ahead of that message and hijacked the turn.
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = dict(
@@ -25023,11 +24978,6 @@ class SessionOrchestrator:
                 # cwd, so a stale root would misdescribe where they live.
                 status="idle", auto_archive_opt_out_reason="manual-unarchive",
                 archived_by=None, archive_context=None, archive_root=None)
-            # Persist the seed so it survives a daemon restart between now and the next
-            # attach (the in-memory _pending_initial_prompt below covers the no-restart
-            # common case; the column is the durable copy + feeds completion judgement).
-            if seed is not None:
-                values["initial_prompt"] = seed
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
@@ -25041,13 +24991,6 @@ class SessionOrchestrator:
         record = self._record_from_row(
             row, status="idle", auto_archive_opt_out_reason="manual-unarchive")
         self._records[session_id] = record
-        # Stage the seed for lazy delivery on the NEXT WS attach (same path as a
-        # slash-command initial prompt — ws.py pops + sends it once the client is
-        # watching). Unlike a new session's initial prompt this is deliberately NOT
-        # sent now: it is a "why you're back" briefing for the human who just
-        # unarchived, not work to start. setdefault: never clobber a queued prompt.
-        if seed is not None:
-            self._pending_initial_prompt.setdefault(session_id, seed)
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
         return record
 

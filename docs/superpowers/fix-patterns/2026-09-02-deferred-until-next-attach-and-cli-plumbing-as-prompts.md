@@ -95,8 +95,8 @@ client is watching":
 - a bare slash command typed as the initial prompt (#943) — it needs the socket's command
   dispatch, not the model. `SessionOrchestrator._initial_prompt_waits_for_attach` is the one
   predicate (shared with recovery) and uses the same `parse_command_line` the bridge does;
-- the unarchive "why you're back" seed — a briefing for the human who just clicked, not work
-  to start.
+- ~~the unarchive "why you're back" seed~~ — removed 2026-10-29: it ran ahead of the user's
+  own re-prompt and hijacked the turn; unarchive now stages nothing.
 
 `_pending_initial_attachment_ids` was deleted with its last writer. Re-sweep (2026-09-09):
 `_pending_notices` is the only other pop-on-attach state, and it is drawer UI content, so

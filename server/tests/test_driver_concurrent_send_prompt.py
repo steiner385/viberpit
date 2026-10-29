@@ -1,6 +1,6 @@
 """Two ``send_prompt`` calls that land together on an idle driver must start ONE turn.
 
-Unarchiving an auto-archived session stages a "why you're back" seed that the WS bridge
+Unarchiving an auto-archived session used to stage a "why you're back" seed that the WS bridge
 delivers on the first live attach (``pop_pending_initial_prompt`` → ``send_prompt``). A
 human who re-prompts at the same moment sends a second ``send_prompt`` milliseconds
 later. ``send_prompt`` reads ``_turn_live()`` before calling ``_start_turn``, and
