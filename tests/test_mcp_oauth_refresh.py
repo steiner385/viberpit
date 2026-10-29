@@ -358,6 +358,28 @@ def test_resource_falls_back_to_server_url_without_fragment():
     assert http.posts[0][1]["resource"] == SERVER_URL + "?x=1"
 
 
+@pytest.mark.parametrize("raw, sent", [
+    # Railway's metadata names a bare origin. The CLI authorized with `new URL(r).href`, which
+    # adds the root path; a refresh naming the raw string drew 400 invalid_target every time.
+    ("https://mcp.railway.com", "https://mcp.railway.com/"),
+    ("HTTPS://MCP.Example.COM:443", "https://mcp.example.com/"),
+    ("https://mcp.example.com:8443/mcp", "https://mcp.example.com:8443/mcp"),
+    (SERVER_URL, SERVER_URL),
+])
+def test_resource_is_sent_as_the_cli_url_href(raw, sent):
+    bundle = _bundle(discoveryState={"authorizationServerUrl": AS_URL, "resourceMetadataUrl": PRM_URL})
+    http = FakeHttp(metadata={**_meta(), PRM_URL: {"resource": raw}}, responses=[_ok()])
+    mor.refresh_bundle(bundle, post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    assert http.posts[0][1]["resource"] == sent
+
+
+def test_server_url_fallback_is_sent_as_the_cli_url_href():
+    bundle = _bundle(serverUrl="https://mcp.railway.com#frag")
+    http = FakeHttp(metadata=_meta(), responses=[_ok()])
+    mor.refresh_bundle(bundle, post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    assert http.posts[0][1]["resource"] == "https://mcp.railway.com/"
+
+
 def test_transient_failure_is_logged_at_info_with_status_and_code_only(caplog):
     caplog.set_level(logging.INFO)
     _seed({"aws|1": _bundle()}, {})
