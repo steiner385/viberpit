@@ -1071,6 +1071,12 @@ class ArchiveReviewFinding(Base):
     # re-attempting the SAME session automatically every tick (issue #1906) while the
     # finding stays "open" for a human to retain/reopen manually via the action provider.
     auto_reopen_failed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Set on a "reopened" finding whose session lives on a worker the primary daemon
+    # cannot dial (#3142): only the edge holds the mTLS client identity workers accept,
+    # so the edge's pass (archive_audit.run_edge_unarchive_pass) does the unarchive and
+    # clears it.
+    awaiting_edge_unarchive: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=None)
     first_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     last_seen_at: Mapped[datetime | None] = mapped_column(

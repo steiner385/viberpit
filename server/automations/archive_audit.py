@@ -91,7 +91,8 @@ class ArchiveAuditLoop:
                  unarchive_fn: Callable[[str], Awaitable[None]],
                  clock: Callable[[], float],
                  record_findings_fn: "Callable[[list[dict], str], Awaitable[dict]]",
-                 mark_auto_reopen_failed_fn: "Callable[[str], Awaitable[None]] | None" = None
+                 mark_auto_reopen_failed_fn: "Callable[[str], Awaitable[None]] | None" = None,
+                 defer_to_edge_fn: "Callable[[str], Awaitable[None]] | None" = None
                  ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -102,6 +103,7 @@ class ArchiveAuditLoop:
         self._clock = clock
         self._record_findings_fn = record_findings_fn
         self._mark_auto_reopen_failed_fn = mark_auto_reopen_failed_fn
+        self._defer_to_edge_fn = defer_to_edge_fn
         self._lock = asyncio.Lock()
 
     async def tick(self) -> None:
@@ -140,13 +142,24 @@ class ArchiveAuditLoop:
         # session id comes back here to actually unarchive.
         outcome = await self._record_findings_fn(results, mode)
         to_unarchive = outcome.get("to_unarchive", [])
-        unarchived = []
-        from server.sessions.orchestrator import ArchiveOwnedElsewhereError
+        unarchived: list[str] = []
+        deferred: list[str] = []
+        from server.sessions.orchestrator import (ArchiveOwnedElsewhereError,
+                                                  ArchiveOwnerUnreachableError)
         for sid in to_unarchive:
             try:
                 await self._unarchive_fn(sid)
                 unarchived.append(sid)
             except Exception as exc:
+                if (isinstance(exc, ArchiveOwnerUnreachableError)
+                        and self._defer_to_edge_fn is not None
+                        and await self._defer_to_edge(sid)):
+                    # The owning host is known but only the edge holds the client
+                    # identity to dial it (#3142). The "reopened" decision stands; the
+                    # edge's pass (run_edge_unarchive_pass) does the actual restore.
+                    log.info("archive_audit loop unarchive handed to the edge: %s", exc)
+                    deferred.append(sid)
+                    continue
                 if isinstance(exc, ArchiveOwnedElsewhereError):
                     # Expected, typed precondition (#3142): the session lives on a host
                     # this daemon can't restore it on. It goes to a human below; a
@@ -173,18 +186,34 @@ class ArchiveAuditLoop:
         # (mirrors CicdDoctorLoop). status() reads 'total', 'unarchived', 'open_findings'.
         publish_observation(self._ctx, "archive_audit_counts", {
             "total": len(rows), "unarchived": len(unarchived), "open_findings": open_findings,
+            "deferred_to_edge": len(deferred),
             **{b: counts.get(b, 0) for b in ("legit", "premature", "review", "ambiguous")},
-        }, degraded=bool(counts.get("ambiguous") or len(unarchived) < len(to_unarchive)))
+        }, degraded=bool(counts.get("ambiguous")
+                         or len(unarchived) + len(deferred) < len(to_unarchive)))
         if not rows:
             return
-        summary = (f"unarchived {len(unarchived)} premature" if mode == "auto_reopen"
+        summary = (f"unarchived {len(unarchived)} premature"
+                   + (f", {len(deferred)} handed to the edge" if deferred else "")
+                   if mode == "auto_reopen"
                   else f"{outcome.get('opened', 0)} new review finding(s), "
                        f"{open_findings} awaiting a decision")
         await self._ctx.emit(
             "info",
             f"re-audit: {len(rows)} recent archives — {summary}",
             kind="audit",
-            detail={"counts": dict(counts), "unarchived": unarchived, "findings": outcome})
+            detail={"counts": dict(counts), "unarchived": unarchived,
+                    "deferred_to_edge": deferred, "findings": outcome})
+
+    async def _defer_to_edge(self, sid: str) -> bool:
+        """Flag ``sid``'s finding for the edge's unarchive pass; False if that fails,
+        so the caller falls back to handing the finding to a human."""
+        assert self._defer_to_edge_fn is not None
+        try:
+            await self._defer_to_edge_fn(sid)
+            return True
+        except Exception:
+            log.warning("archive_audit defer_to_edge failed sid=%s", sid, exc_info=True)
+            return False
 
 GhFn = Callable[[str, str], list[dict]]              # (repo, branch) -> raw PR dicts
 GhNumFn = Callable[[str, int], "dict | None"]        # (repo, number) -> raw PR dict or None
@@ -462,7 +491,109 @@ async def mark_auto_reopen_failed(session_factory, session_id: str) -> None:
             return
         row.status, row.decided_at, row.decided_by = "open", None, None
         row.auto_reopen_failed = True
+        row.awaiting_edge_unarchive = None
         await db.commit()
+
+
+async def mark_awaiting_edge_unarchive(session_factory, session_id: str) -> None:
+    """Keep an auto-``reopened`` finding's decision but hand the actual unarchive to the
+    edge (#3142): the session lives on a worker, and only the edge holds the mTLS client
+    identity workers accept. ``run_edge_unarchive_pass`` picks it up. No-op unless the
+    finding is ``reopened`` (a human may have acted on it meanwhile)."""
+    from sqlalchemy import select as sa_select
+
+    from server.db.models import ArchiveReviewFinding
+
+    async with session_factory() as db:
+        row = (await db.execute(
+            sa_select(ArchiveReviewFinding).where(
+                ArchiveReviewFinding.session_id == session_id))).scalars().first()
+        if row is None or row.status != "reopened":
+            return
+        row.awaiting_edge_unarchive = True
+        await db.commit()
+
+
+async def run_edge_unarchive_pass(session_factory,
+                                  unarchive_fn: "Callable[[str], Awaitable[Any]]") -> dict:
+    """The edge half of an auto-reopen the primary daemon could not route (#3142).
+
+    For every ``reopened`` finding flagged ``awaiting_edge_unarchive``, call the edge's
+    per-session-routed ``unarchive``. Success clears the flag. An unreachable host is
+    left flagged for the next pass (a powered-off worker is routine). Any other
+    failure reverts the finding to ``open`` for a human, exactly like a failed
+    daemon-side auto-reopen (#1906). Returns ``{unarchived, retry, failed}`` ids."""
+    from sqlalchemy import select as sa_select
+
+    from server.db.models import ArchiveReviewFinding
+    from server.ipc.client import DaemonUnavailable
+
+    async with session_factory() as db:
+        sids = [sid for sid in (await db.execute(
+            sa_select(ArchiveReviewFinding.session_id).where(
+                ArchiveReviewFinding.status == "reopened",
+                ArchiveReviewFinding.awaiting_edge_unarchive.is_(True)))).scalars().all()
+            if sid]
+    done: list[str] = []
+    retry: list[str] = []
+    failed: list[str] = []
+    for sid in sids:
+        try:
+            await unarchive_fn(sid)
+        except DaemonUnavailable as exc:
+            log.info("archive_audit edge unarchive: host unreachable, will retry sid=%s: %s",
+                     sid, exc)
+            retry.append(sid)
+            continue
+        except Exception:
+            log.warning("archive_audit edge unarchive failed sid=%s", sid, exc_info=True)
+            await mark_auto_reopen_failed(session_factory, sid)
+            failed.append(sid)
+            continue
+        async with session_factory() as db:
+            row = (await db.execute(sa_select(ArchiveReviewFinding).where(
+                ArchiveReviewFinding.session_id == sid))).scalars().first()
+            if row is not None:
+                row.awaiting_edge_unarchive = None
+                await db.commit()
+        done.append(sid)
+    return {"unarchived": done, "retry": retry, "failed": failed}
+
+
+async def decide_finding(session_factory, finding_id: str, decision: str,
+                         unarchive_fn: "Callable[[str], Awaitable[Any]]") -> str:
+    """Record a human's decision on one open finding: ``retain`` keeps the session
+    archived, ``reopen`` unarchives it through ``unarchive_fn`` (restoring it to idle —
+    this never starts a turn). Returns a status string the action provider maps to a
+    toast. The decision is persisted only after a reopen actually succeeds, so a failed
+    unarchive leaves the finding open for a retry.
+
+    The daemon passes its host-routed unarchive; the edge passes its own per-session
+    routed one, which can reach workers the daemon cannot (#3142)."""
+    from sqlalchemy import select as sa_select
+
+    from server.db.clock import naive_utc_now
+    from server.db.models import ArchiveReviewFinding
+    from server.sessions.orchestrator import ArchiveOwnedElsewhereError
+
+    async with session_factory() as db:
+        row = (await db.execute(sa_select(ArchiveReviewFinding).where(
+            ArchiveReviewFinding.id == finding_id))).scalar_one_or_none()
+        if row is None:
+            return "not_found"
+        if row.status != "open":
+            return "already_decided"
+        if decision == "reopen":
+            try:
+                restored = await unarchive_fn(row.session_id or "")
+            except ArchiveOwnedElsewhereError:
+                return "owned_elsewhere"
+            if restored is None:
+                return "unarchive_failed"
+        row.status = "retained" if decision == "retain" else "reopened"
+        row.decided_at, row.decided_by = naive_utc_now(), "operator"
+        await db.commit()
+    return "retained" if decision == "retain" else "reopened"
 
 
 def format_report(results: list[dict]) -> str:

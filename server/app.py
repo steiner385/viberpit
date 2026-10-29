@@ -383,6 +383,7 @@ async def _lifespan(app: FastAPI):
     app.state.fleet_probe_task = None
     app.state.fleet_creds_task = None
     app.state.fleet_queue_drain_task = None
+    app.state.fleet_archive_reopen_task = None
     _endpoint = getattr(app.state, "daemon_endpoint", None)
     if _endpoint is not None:
         try:
@@ -409,6 +410,11 @@ async def _lifespan(app: FastAPI):
             # rather than only on the freeing host's own event-driven drain.
             app.state.fleet_queue_drain_task = asyncio.create_task(
                 app.state.sessions.queue_drain_loop(), name="fleet-queue-drain")
+            # Archive Audit reopens of worker-owned sessions: the primary daemon has no
+            # client identity to dial a worker, so it flags them and the edge restores
+            # them here (#3142).
+            app.state.fleet_archive_reopen_task = asyncio.create_task(
+                app.state.sessions.archive_reopen_loop(), name="fleet-archive-reopen")
             _logging.getLogger("server").info(
                 "fleet: dispatcher ready; hosts=%s", list(_router.names()))
         except Exception:
@@ -610,7 +616,8 @@ async def _lifespan(app: FastAPI):
                           ("mcp_oauth_refresh_task", "mcp-oauth-refresh"),
                           ("fleet_probe_task", "fleet-probe"),
                           ("fleet_creds_task", "fleet-creds-push"),
-                          ("fleet_queue_drain_task", "fleet-queue-drain")):
+                          ("fleet_queue_drain_task", "fleet-queue-drain"),
+                          ("fleet_archive_reopen_task", "fleet-archive-reopen")):
         _t = getattr(app.state, _attr, None)
         if _t is not None:
             _t.cancel()

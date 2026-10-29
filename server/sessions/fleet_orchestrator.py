@@ -38,6 +38,9 @@ CREDS_UNREACHABLE_ESCALATE_AFTER = math.ceil(CREDS_LEASE_S / CREDS_PUSH_INTERVAL
 # ``active_sessions`` on this interval, so this is how often "a host freed a slot"
 # can become visible to the edge at all.
 QUEUE_DRAIN_INTERVAL_S = 30.0
+# How often the edge finishes Archive Audit reopens the primary daemon handed it (#3142).
+# The audit itself runs about daily, so a few minutes of hand-off latency is invisible.
+ARCHIVE_REOPEN_INTERVAL_S = 300.0
 
 # Worker status is an in-memory read, not an actionable-provider refresh. Bound
 # its fan-out independently so an unavailable daemon cannot stall the overview.
@@ -579,6 +582,57 @@ class FleetOrchestrator:
                 log.info("fleet.queue_drain host=%s started %d queued session(s)",
                          host, started)
         return asked
+
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str,
+                                 identity: str | None = None) -> dict:
+        """Serve an Archive Audit ``reopen`` on the edge (#3142); delegate the rest.
+
+        The finding's session may live on a worker, and only the edge holds the mTLS
+        client identity workers accept, so the decision runs here with the edge's own
+        per-session ``unarchive`` routing instead of in the primary daemon."""
+        if automation_id == "archive-audit" and kind == "reopen":
+            from server.automations.action_providers import ArchiveAuditActionProvider
+            from server.automations.archive_audit import decide_finding
+            from server.db import db_session
+
+            fleet = self
+
+            class _EdgeDecider:
+                async def archive_audit_decide_finding(self, fid: str, decision: str) -> str:
+                    return await decide_finding(db_session, fid, decision,
+                                                fleet._edge_unarchive)
+
+            return (await ArchiveAuditActionProvider(_EdgeDecider()).trigger(
+                item_id, kind)).to_dict()
+        return await self._primary_orch().automation_trigger(
+            automation_id, item_id, kind, identity=identity)
+
+    async def _edge_unarchive(self, session_id: str):
+        """Per-session-routed unarchive for an operator's reopen: a failure is a toast,
+        not a 500 — an unreachable host is routine, anything else is worth a WARNING."""
+        try:
+            return await self.unarchive(session_id)
+        except DaemonUnavailable as exc:
+            log.info("archive_audit reopen: host unreachable for %s: %s", session_id, exc)
+        except Exception:
+            log.warning("archive_audit reopen failed for %s", session_id, exc_info=True)
+        return None
+
+    async def archive_reopen_once(self) -> dict:
+        """Finish the auto-reopens the primary daemon handed to the edge (#3142)."""
+        from server.automations.archive_audit import run_edge_unarchive_pass
+        from server.db import db_session
+        return await run_edge_unarchive_pass(db_session, self.unarchive)
+
+    async def archive_reopen_loop(self,
+                                  interval_s: float = ARCHIVE_REOPEN_INTERVAL_S) -> None:
+        """Run :meth:`archive_reopen_once` forever; a raising tick is logged, not fatal."""
+        while True:
+            try:
+                await self.archive_reopen_once()
+            except Exception:
+                log.warning("fleet.archive_reopen_tick_failed", exc_info=True)
+            await asyncio.sleep(interval_s)
 
     async def queue_drain_loop(self, interval_s: float = QUEUE_DRAIN_INTERVAL_S) -> None:
         """Nudge forever on the probe cadence; a raising tick is swallowed."""
