@@ -2136,9 +2136,12 @@ async def test_item_lifecycle_times_are_journalled_for_replay(harness, tmp_path)
         "item": {**exec_item, "status": "completed", "exitCode": 0, "aggregatedOutput": ""},
         "completedAtMs": 2_400,
     })
-    await harness.settle()
+    # The journal is written via `asyncio.to_thread`, which `settle()` cannot bound
+    # under load (#3144/#3194): poll the file until both edges have landed.
+    path = item_times_path(writer.root, THREAD)
+    await harness.wait_until(lambda: load_item_times(path).completed)
 
-    times = load_item_times(item_times_path(writer.root, THREAD))
+    times = load_item_times(path)
     assert dict(times.started) == {"exec-1": 1_700}
     assert dict(times.completed) == {"exec-1": 2_400}
 
@@ -2195,6 +2198,8 @@ async def test_interrupt_saves_old_buffer_before_queued_turn_replaces_it(harness
     harness.notify_turn_started('turn-2')
     # A late terminal cannot save the new buffer under the old turn identity.
     harness.notify_turn_completed('turn-1', 'interrupted')
+    # `_save_turn` writes via `asyncio.to_thread`, which `settle()` cannot bound.
+    await harness.wait_until(lambda: TurnHistoryStore(root).load(THREAD))
     await harness.settle()
     saved = TurnHistoryStore(root).load(THREAD)
     assert [t.turn_id for t in saved] == ['turn-1']
