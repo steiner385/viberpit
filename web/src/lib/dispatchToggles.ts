@@ -22,7 +22,7 @@ const KEYS: Record<DispatchToggle, string> = {
 export function getDispatchToggle(toggle: DispatchToggle): boolean {
   try {
     // No `migrateStorageNamespace`: these keys post-date the rebrand (#1368),
-    // so there is no `ccswitch.` twin to carry forward.
+    // so there is no legacy-namespace twin to carry forward.
     return window.localStorage.getItem(KEYS[toggle]) !== 'false'
   } catch {
     return true
