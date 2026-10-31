@@ -453,7 +453,16 @@ def test_issue_body_shows_utc_and_new_york_times_prs_runs_and_action():
     assert "external feed" in body and "never mute the check" in body
     poison = issue_body(_state(**{"class": "poisoner", "poisoner_pr": 20234}),
                         repo="cairnea/KinDash")
-    assert "> " in poison and "dequeue PR #20234 under the queue lock" in poison
+    assert "dequeue PR #20234 under the queue lock" in poison
+    cmd = ("gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id})"
+           "{clientMutationId}}' -f id=\"$(gh pr view 20234 -R cairnea/KinDash --json id -q .id)\"")
+    assert f"```sh\n{cmd}\n```" in poison
+    assert "under the KinDash merge-queue lock; the Doctor never runs it" in poison
+    braked = issue_body(_state(brake_state="set", brake_expires_ts=_ts("2026-10-31T05:02:00Z"),
+                               failed_per_hour=14), repo="cairnea/KinDash")
+    assert "**Brake:** set, expires 2026-10-31 05:02 UTC" in braked
+    assert "**Failed merge_group runs/hour:** 14" in braked
+    assert "runs/hour" not in body
 
 
 def test_fix_prompt_carries_class_instruction_and_safety_rules():

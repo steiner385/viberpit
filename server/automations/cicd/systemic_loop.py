@@ -79,6 +79,7 @@ class SystemicRedLoop:
         self._clock = clock
         self._lock = asyncio.Lock()
         self._last_alarm_check: float | None = None
+        self._failed_hour: dict[str, int] = {}  # repo -> failed merge_group runs, last hour
 
     async def tick(self) -> None:
         async with self._lock:
@@ -103,6 +104,9 @@ class SystemicRedLoop:
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
+            await self._lift_all()
+            self._ctx.cicd_systemic_counts = {"incidents": 0, "braked": 0, "thrash": False,
+                                              "alarms": 0}
             return
         now = self._clock()
         for repo in await self._list_repos(config):
@@ -119,6 +123,16 @@ class SystemicRedLoop:
             "thrash": any(k.startswith("systemic-thrash:") for k in states),
             "alarms": sum(1 for k in states if k.startswith("systemic-alarm:")),
         }
+
+    async def _lift_all(self) -> None:
+        """Off mode: lift every live brake now. No fetching, detection or alerts."""
+        for key, state in (await self._ctx.list_target_states()).items():
+            if key.startswith("systemic:") and state.get("brake_state") in ("set", "failed"):
+                repo = key[len("systemic:"):].rsplit(":", 1)[0]
+                try:
+                    await self._lift(repo, key, state, "lifted")
+                except Exception:  # noqa: BLE001
+                    log.warning("cicd_systemic.lift_failed key=%s", key, exc_info=True)
 
     # --- per repo -----------------------------------------------------------------
 
@@ -139,27 +153,47 @@ class SystemicRedLoop:
         windowed = [c for c in cands if now - window_s < c.created_ts <= now]
         rollups = frozenset(j.strip() for j in str(_cfg(config, "systemic_rollup_jobs")).split(",")
                             if j.strip())
+        await self._thrash(repo, cands, config, now)
         prefix = f"systemic:{repo}:"
         live = {k: s for k, s in (await self._ctx.list_target_states()).items()
                 if k.startswith(prefix)}
+        hits = {h.job: h for h in sy.detect(windowed, mains, now=now, window_s=window_s,
+                                            min_prs=int(_cfg(config, "systemic_min_prs")),
+                                            rollups=rollups)}
         for key, state in live.items():
-            await self._live(repo, key, state, cands, mains, mode, config, now, quiet_s, rollups)
+            if state.get("clearing") or sy.is_cleared(
+                    state["job"], float(state["opened_ts"]), cands, mains, now=now,
+                    quiet_s=quiet_s, rollups=rollups):
+                await self._clear(repo, key, state)
+                continue
+            hit = hits.get(state["job"])
+            if hit is not None:
+                await self._reclassify(key, state, hit, windowed, mains, config)
+            await self._live(repo, key, state, mode, config, now)
         live_jobs = {s.get("job") for s in live.values()}
-        hits = sy.detect(windowed, mains, now=now, window_s=window_s,
-                         min_prs=int(_cfg(config, "systemic_min_prs")), rollups=rollups)
-        for hit in hits:
-            if hit.job not in live_jobs:
+        for job, hit in hits.items():
+            if job not in live_jobs:
                 await self._open(repo, prefix, hit, windowed, mains, mode, config, now)
-        await self._thrash(repo, cands, config, now)
 
-    async def _live(self, repo: str, key: str, state: dict, cands: list[RunObs],
-                    mains: dict[int, RunObs], mode: str, config: dict, now: float,
-                    quiet_s: float, rollups: frozenset[str]) -> None:
-        if state.get("clearing") or sy.is_cleared(state["job"], float(state["opened_ts"]), cands,
-                                                  mains, now=now, quiet_s=quiet_s,
-                                                  rollups=rollups):
-            await self._clear(repo, key, state)
+    async def _reclassify(self, key: str, state: dict, hit: sy.Hit, cands: list[RunObs],
+                          mains: dict[int, RunObs], config: dict) -> None:
+        """§5c: re-run the pure classifier; a move out of BRAKE_CLASSES lifts the brake
+        (in ``_correct``) and the incident is never re-braked or re-dispatched."""
+        klass = sy.classify(hit, cands, mains, normalized_sig=state.get("signature") or "",
+                            external_feed_re=str(_cfg(config, "systemic_external_feed_jobs")))
+        if klass == state.get("class"):
             return
+        state["class"] = klass
+        if klass == "poisoner":
+            state["poisoner_pr"] = sy.poisoner_pr(hit, cands, mains)
+        if klass not in sy.BRAKE_CLASSES:
+            state["reclassified_out"] = True
+        await self._save(key, state)
+        await self._ctx.emit("info", f"{state['job']} reclassified as {sy.class_label(klass)}",
+                             kind="systemic_reclassified", target=key)
+
+    async def _live(self, repo: str, key: str, state: dict, mode: str, config: dict,
+                    now: float) -> None:
         if state.get("owner_closed"):
             return
         number = state.get("issue_number")
@@ -195,7 +229,7 @@ class SystemicRedLoop:
             "poisoner_pr": sy.poisoner_pr(hit, cands, mains) if klass == "poisoner" else None,
             "issue_number": None, "brake_set_ts": None, "brake_expires_ts": None,
             "brake_state": "none", "session_id": None, "alerted_open": False,
-            "owner_closed": False,
+            "owner_closed": False, "failed_per_hour": self._failed_hour.get(repo),
         }
         key = prefix + fp
         await self._save(key, state)
@@ -223,10 +257,10 @@ class SystemicRedLoop:
         title = (f"{_short(repo)}: {state['job']} red on {len(state.get('prs') or ())} PRs "
                  f"({sy.class_label(state['class'])}{brake})")
         body = sy.recommended_action(state)
+        state["alerted_open"] = True  # persisted first: a crash can't double-push
+        await self._save(key, state)
         await self._safe(self._notify, "ci_systemic_red", title, body, repo=repo,
                          url=self._issue_url(repo, state))
-        state["alerted_open"] = True
-        await self._save(key, state)
 
     @staticmethod
     def _issue_url(repo: str, state: dict) -> str | None:
@@ -237,12 +271,30 @@ class SystemicRedLoop:
 
     async def _correct(self, repo: str, key: str, state: dict, mode: str, config: dict,
                        now: float) -> None:
-        if mode != "correct" or state.get("class") not in sy.BRAKE_CLASSES:
-            return
-        if bool(_cfg(config, "systemic_brake")) and state.get("issue_number") is not None:
-            await self._brake(repo, key, state, config, now)
-        if bool(_cfg(config, "systemic_dispatch_fix")) and not state.get("session_id"):
+        brake_class = state.get("class") in sy.BRAKE_CLASSES
+        if (mode == "correct" and brake_class and not state.get("reclassified_out")
+                and bool(_cfg(config, "systemic_brake"))):
+            if state.get("issue_number") is not None:
+                await self._brake(repo, key, state, config, now)
+        elif state.get("brake_state") in ("set", "failed"):
+            # Braking turned off (mode, knob, or the class left BRAKE_CLASSES): lift now.
+            await self._lift(repo, key, state, "lifted")
+        if (mode == "correct" and brake_class and not state.get("reclassified_out")
+                and bool(_cfg(config, "systemic_dispatch_fix")) and not state.get("session_id")):
             await self._dispatch(repo, key, state, config, now)
+
+    async def _lift(self, repo: str, key: str, state: dict, final: str) -> bool:
+        """Remove the label and marker, then record ``final`` ("lifted" | "ceiling").
+        On a failed write the state is unchanged, so the next tick retries."""
+        number = state.get("issue_number")
+        if number is not None and not await self._unbrake(repo, int(number),
+                                                          {**state, "brake_state": final}):
+            await self._ctx.emit("warn", f"{repo} #{number}: brake lift failed; will retry",
+                                 kind="systemic_lift_failed", target=key)
+            return False
+        state["brake_state"] = final
+        await self._save(key, state)
+        return True
 
     async def _brake(self, repo: str, key: str, state: dict, config: dict, now: float) -> None:
         if state.get("brake_state") in ("lifted", "ceiling"):
@@ -251,9 +303,8 @@ class SystemicRedLoop:
         max_s = float(_cfg(config, "systemic_brake_max_min")) * 60
         set_ts = state.get("brake_set_ts")
         if set_ts is not None and now - float(set_ts) >= max_s:
-            await self._unbrake(repo, number)
-            state["brake_state"] = "ceiling"
-            await self._save(key, state)
+            if not await self._lift(repo, key, state, "ceiling"):
+                return
             hours = max_s / 3600
             await self._safe(self._notify, "ci_systemic_red",
                              f"{_short(repo)}: brake lifted after {hours:g} h; incident still live",
@@ -265,10 +316,12 @@ class SystemicRedLoop:
         expires = min(now + ttl_s, anchor + max_s, now + _CONSUMER_CAP_S)
         marker = sy.brake_marker(job=state["job"], klass=state["class"],
                                  incident=state["fingerprint"], set_at=anchor, expires_at=expires)
+        state["failed_per_hour"] = self._failed_hour.get(repo, state.get("failed_per_hour"))
         snap = await self._safe(self._snapshot, repo, number)
         ok = False
         if snap is not None:  # a failed read never opens or renews a brake
-            body = sy.strip_brake_marker(snap.get("body") or "").rstrip("\n") + "\n\n" + marker
+            shown = {**state, "brake_state": "set", "brake_expires_ts": expires}
+            body = sy.issue_body(shown, repo=repo) + "\n\n" + marker
             if BRAKE_LABEL not in (snap.get("labels") or []):
                 await self._safe(self._add_label, repo, number, BRAKE_LABEL, default=False)
             if await self._safe(self._edit, repo, number, body, default=False):
@@ -283,16 +336,20 @@ class SystemicRedLoop:
                                  "will retry next tick", kind="systemic_brake_failed", target=key)
         await self._save(key, state)
 
-    async def _unbrake(self, repo: str, number: int) -> bool:
-        removed = await self._safe(self._remove_label, repo, number, BRAKE_LABEL, default=False)
+    async def _unbrake(self, repo: str, number: int, shown: dict) -> bool:
+        """Make the issue carry no brake. Label absent and marker absent is success; a
+        present marker is replaced by the body rebuilt from ``shown``."""
         snap = await self._safe(self._snapshot, repo, number)
         if snap is None:
             return False
+        if BRAKE_LABEL in (snap.get("labels") or []) and not await self._safe(
+                self._remove_label, repo, number, BRAKE_LABEL, default=False):
+            return False
         body = snap.get("body") or ""
-        stripped = sy.strip_brake_marker(body)
-        edited = stripped == body or await self._safe(self._edit, repo, number, stripped,
-                                                      default=False)
-        return bool(removed) and bool(edited)
+        if sy.strip_brake_marker(body) == body:
+            return True
+        return bool(await self._safe(self._edit, repo, number, sy.issue_body(shown, repo=repo),
+                                     default=False))
 
     async def _dispatch(self, repo: str, key: str, state: dict, config: dict, now: float) -> None:
         day_key = f"systemic-dispatch:{repo}:{time.strftime('%Y-%m-%d', time.gmtime(now))}"
@@ -319,16 +376,19 @@ class SystemicRedLoop:
             await self._save(key, state)
         number = state.get("issue_number")
         done = set(state.get("clear_done") or ())
+        braked = state.get("brake_state") in ("set", "failed")
         if number is not None and not state.get("owner_closed"):
+            lifted = " Brake lifted;" if braked and state.get("brake_set_ts") is not None else ""
             steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
                 ("comment", lambda: self._safe(
                     self._comment, repo, number,
-                    f"Recovered: `{state['job']}` ran green again. Brake lifted; closing.",
+                    f"Recovered: `{state['job']}` ran green again.{lifted} Closing.",
                     default=False)),
                 ("close", lambda: self._safe(self._close, repo, number, default=False)),
             ]
-            if state.get("brake_state") in ("set", "failed"):
-                steps.insert(0, ("unbrake", lambda: self._unbrake(repo, int(number))))
+            if braked:
+                steps.insert(0, ("unbrake", lambda: self._unbrake(
+                    repo, int(number), {**state, "brake_state": "lifted"})))
             for name, step in steps:
                 if name in done:
                     continue
@@ -337,9 +397,12 @@ class SystemicRedLoop:
                 done.add(name)
                 state["clear_done"] = sorted(done)
                 await self._save(key, state)
+        if state.get("alerted_open") and not state.get("cleared_notified"):
+            state["cleared_notified"] = True  # persisted first: a crash can't double-push
+            await self._save(key, state)
             await self._safe(self._notify, "ci_systemic_red",
                              f"{_short(repo)}: {state['job']} cleared",
-                             f"{state['job']} is green again; brake lifted and issue closed.",
+                             f"{state['job']} is green again; the incident is closed.",
                              repo=repo, url=self._issue_url(repo, state))
         await self._ctx.delete_target_state(key)
         await self._ctx.emit("info", f"{repo}: {state['job']} systemic red cleared",
@@ -352,6 +415,7 @@ class SystemicRedLoop:
         if counts is None:
             return
         failed, hourly, ratio, runs = counts
+        self._failed_hour[repo] = int(failed)
         key = f"systemic-thrash:{repo}"
         on = sy.thrash(failed, list(hourly), float(ratio), int(runs),
                        min_failed=int(_cfg(config, "thrash_min_failed_per_hour")))
@@ -369,11 +433,11 @@ class SystemicRedLoop:
                       for j in r.jobs if j.completed_ts is not None)
         body = (f"{failed} failed merge_group runs in the last hour ({ratio:.0%} of {runs}); "
                 f"about {minutes:.0f} runner-minutes (upper bound) burned.")
+        await self._ctx.set_target_state(key, {"since": now, "failed": failed})
         await self._ctx.emit("warn", f"{repo}: queue thrash. {body}", kind="queue_thrash",
                              target=key)
         await self._safe(self._notify, "ci_systemic_red", f"{_short(repo)}: merge queue thrash",
                          body, repo=repo, url=None)
-        await self._ctx.set_target_state(key, {"since": now, "failed": failed})
 
     async def _aws(self, config: dict, now: float) -> None:
         if self._last_alarm_check is not None and now - self._last_alarm_check < _ALARM_EVERY_S:
@@ -395,7 +459,7 @@ class SystemicRedLoop:
             if not name or key in states:
                 continue
             body = f"{name} is in ALARM: {a.get('reason') or 'no reason given'}"
+            await self._ctx.set_target_state(key, {"since": now})
             await self._ctx.emit("warn", body, kind="spend_alarm", target=key)
             await self._safe(self._notify, "ci_spend_alarm", f"AWS spend alarm: {name}", body,
                              repo=None, url=None)
-            await self._ctx.set_target_state(key, {"since": now})

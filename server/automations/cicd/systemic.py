@@ -447,6 +447,15 @@ def recommended_action(state: dict) -> str:
     return "Alert only: triage the signature by hand; no brake and no fix session."
 
 
+def dequeue_block(pr: object, *, repo: str) -> str:
+    """The owner's lock-gated dequeue command for a poisoner (§5b); never run here."""
+    n = pr if pr else "<N>"
+    cmd = ("gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id})"
+           "{clientMutationId}}' -f id=\"$(gh pr view " f"{n} -R {repo}" " --json id -q .id)\"")
+    return ("The owner runs this under the KinDash merge-queue lock; the Doctor never runs it:"
+            f"\n\n```sh\n{cmd}\n```")
+
+
 def issue_title(state: dict) -> str:
     n = len(state.get("prs") or ())
     return (f"CI systemic red: `{state.get('job', '')}` failing on {n} PRs "
@@ -460,7 +469,11 @@ def issue_body(state: dict, *, repo: str) -> str:
     runs = "\n".join(f"- {_run_url(repo, r)}" for r in (state.get("runs") or ())[:10]) or "- none"
     action = recommended_action(state)
     if klass == "poisoner":
-        action = "\n".join(f"> {ln}" for ln in action.splitlines())
+        action += "\n\n" + dequeue_block(state.get("poisoner_pr"), repo=repo)
+    brake = state.get("brake_state", "none")
+    if brake == "set" and state.get("brake_expires_ts") is not None:
+        brake = f"set, expires {when(state.get('brake_expires_ts'))}"
+    rate = state.get("failed_per_hour")
     excerpt = (state.get("excerpt") or "").replace("```", "`​``")
     return "\n".join([
         f"ViberPit CI/CD Doctor detected a systemic red in `{repo}`.",
@@ -472,7 +485,8 @@ def issue_body(state: dict, *, repo: str) -> str:
         f"- **First failure:** {when(state.get('first_failed_ts'))}",
         f"- **Last failure:** {when(state.get('last_failed_ts'))}",
         f"- **Opened:** {when(state.get('opened_ts'))}",
-        f"- **Brake:** {state.get('brake_state', 'none')}",
+        f"- **Brake:** {brake}",
+        *([f"- **Failed merge_group runs/hour:** {rate}"] if rate is not None else []),
         f"- **Signature:** `{state.get('signature') or '-'}`",
         "",
         "**Failing runs**",

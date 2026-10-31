@@ -83,6 +83,7 @@ class Seams:
         self.push: list[RunObs] = []
         self.fail_fetch = False
         self.fail_edit = False
+        self.fail_label = False
         self.issues: dict[int, dict] = {}
         self.next_issue = 500
         self.calls: list[tuple] = []
@@ -139,14 +140,17 @@ class Seams:
 
     async def add_label(self, repo, number, label):
         self.calls.append(("add_label", number, label))
+        if self.fail_label:
+            return False
         if label not in self.issues[number]["labels"]:
             self.issues[number]["labels"].append(label)
         return True
 
     async def remove_label(self, repo, number, label):
         self.calls.append(("remove_label", number, label))
-        if label in self.issues[number]["labels"]:
-            self.issues[number]["labels"].remove(label)
+        if label not in self.issues[number]["labels"]:
+            return False  # like ci_issues.remove_label on GitHub's 404
+        self.issues[number]["labels"].remove(label)
         return True
 
     async def close_issue(self, repo, number):
@@ -264,6 +268,7 @@ def test_poisoner_never_brakes_and_never_dispatches():
     assert s.spawns == []
     body = s.issues[st["issue_number"]]["body"]
     assert "dequeue PR #9 under the queue lock" in body
+    assert f"gh pr view 9 -R {REPO} --json id -q .id" in body and "```sh" in body
     assert len(s.notes) == 1
 
 
@@ -373,6 +378,126 @@ def test_owner_closed_issue_is_not_reopened_or_rebraked():
     _tick(loop)
     assert ctx.incidents() == {}
     assert s.calls[mark:] == []
+    assert len([x for x in s.notes if "cleared" in x[1]]) == 1  # the open push had gone out
+
+
+def _green_after(s: Seams) -> None:
+    s.now += 120
+    s.merge_group.append(_cand(20306, s.now - 1, conclusion="success"))
+    s.now += 6 * MIN
+
+
+def test_clear_after_failed_brake_closes_incident():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    s.fail_label = True  # the label never lands; the marker does
+    loop = s.loop(ctx)
+    _tick(loop)
+    n = _only_incident(ctx)["issue_number"]
+    assert _only_incident(ctx)["brake_state"] == "failed" and s.marker(n) is not None
+    _green_after(s)
+    _tick(loop)
+    assert ctx.incidents() == {}
+    assert s.issues[n]["state"] == "closed" and s.marker(n) is None
+    assert ("remove_label", n, LABEL) not in s.calls
+
+
+def test_clear_after_owner_removed_label():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    n = _only_incident(ctx)["issue_number"]
+    s.issues[n]["labels"].remove(LABEL)  # a human took the label off by hand
+    _green_after(s)
+    _tick(loop)
+    assert ctx.incidents() == {}
+    assert s.issues[n]["state"] == "closed" and s.marker(n) is None
+    comment = [c for c in s.calls if c[0] == "comment"][0][2]
+    assert "Brake lifted" in comment
+
+
+def test_recovery_comment_omits_brake_when_none_was_set():
+    s, ctx = Seams("propose"), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    _green_after(s)
+    _tick(loop)
+    comment = [c for c in s.calls if c[0] == "comment"][0][2]
+    assert "Brake" not in comment and "brake" not in comment
+
+
+def test_reclassified_to_poisoner_lifts_brake_and_never_rebrakes():
+    job = "test: unit (3/4)"
+    s, ctx = Seams(systemic_external_feed_jobs=r"^test: unit"), FakeCtx()
+    s.merge_group = _poison_queue()
+    s.push = [_main(T0 - HOUR, job=job)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    st = _only_incident(ctx)
+    n = st["issue_number"]
+    assert st["class"] == "external_feed" and st["brake_state"] == "set"
+    assert len(s.spawns) == 1
+    s.config["systemic_external_feed_jobs"] = "^security: audit$"
+    s.now += 120
+    _tick(loop)
+    st = _only_incident(ctx)
+    assert st["class"] == "poisoner" and st["brake_state"] == "lifted"
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+    s.config["systemic_external_feed_jobs"] = r"^test: unit"  # flips back
+    mark = len(s.calls)
+    s.now += 120
+    _tick(loop)
+    st = _only_incident(ctx)
+    assert st["class"] == "external_feed" and st["brake_state"] == "lifted"
+    assert not [c for c in s.calls[mark:] if c[0] in ("add_label", "edit")]
+    assert len(s.spawns) == 1
+
+
+def _braked(mode_after: str) -> tuple[Seams, FakeCtx, SystemicRedLoop, int]:
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    n = _only_incident(ctx)["issue_number"]
+    assert _only_incident(ctx)["brake_state"] == "set"
+    s.mode = mode_after
+    s.now += 120
+    return s, ctx, loop, n
+
+
+def test_switching_to_propose_lifts_brake():
+    s, ctx, loop, n = _braked("propose")
+    _tick(loop)
+    assert _only_incident(ctx)["brake_state"] == "lifted"
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+    s.mode = "correct"
+    s.now += 120
+    _tick(loop)
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+
+
+def test_brake_knob_off_lifts_brake():
+    s, ctx, loop, n = _braked("correct")
+    s.config["systemic_brake"] = False
+    _tick(loop)
+    assert _only_incident(ctx)["brake_state"] == "lifted" and s.marker(n) is None
+
+
+def test_off_mode_lifts_live_brake():
+    s, ctx, loop, n = _braked("off")
+    s.fail_fetch = True  # the lift-only pass reads nothing from Actions
+    notes = len(s.notes)
+    _tick(loop)
+    assert _only_incident(ctx)["brake_state"] == "lifted"
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+    assert s.issues[n]["state"] == "open" and len(s.notes) == notes
+    assert ctx.cicd_systemic_counts == {"incidents": 0, "braked": 0, "thrash": False, "alarms": 0}
 
 
 def test_daily_dispatch_cap():
