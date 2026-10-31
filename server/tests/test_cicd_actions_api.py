@@ -292,3 +292,66 @@ def test_junit_artifacts_non_5xx_failure_still_warns_without_retry(caplog):
     assert len(calls) == 1
     assert any(r.levelno == logging.WARNING and "artifact_fetch_failed" in r.getMessage()
                for r in caplog.records)
+
+
+# ---- systemic-red seams ----
+
+def _recent_runner(calls, runs, jobs_by_run):
+    def run(args, token=None):
+        calls.append(args)
+        url = args[1]
+        if "/jobs" in url:
+            rid = int(url.split("/runs/")[1].split("/")[0])
+            return _ok({"jobs": jobs_by_run[rid]})
+        return _ok({"workflow_runs": runs})
+    return run
+
+
+def _wf_run(rid, status, attempt=1):
+    return {"id": rid, "workflow_id": 9, "event": "pull_request", "head_branch": "f",
+            "head_sha": "s", "created_at": "2026-10-31T10:00:00Z", "status": status,
+            "conclusion": "failure" if status == "completed" else None,
+            "run_attempt": attempt}
+
+
+_JOB = {"id": 70, "name": "ci", "status": "completed", "conclusion": "failure",
+        "completed_at": "2026-10-31T10:05:00Z"}
+
+
+def test_list_recent_runs_always_bounds_created_and_includes_in_progress():
+    from server.github.actions_api import list_recent_runs
+    calls: list = []
+    run = _recent_runner(calls, [_wf_run(1, "in_progress")], {1: [_JOB]})
+    out = list_recent_runs("o/r", event="pull_request", since_ts=1_790_000_000.0, run=run)
+    first = calls[0][1]
+    assert "created=%3E%3D2026-" in first
+    assert "status=completed" not in first
+    assert "event=pull_request" in first
+    assert out[0].status == "in_progress" and out[0].jobs[0].job_id == 70
+    assert out[0].jobs[0].completed_ts is not None
+
+
+def test_completed_run_jobs_fetched_once_in_progress_refetched():
+    from server.github import actions_api
+    actions_api._JOB_CACHE.clear()
+    calls: list = []
+    run = _recent_runner(calls, [_wf_run(1, "completed"), _wf_run(2, "in_progress")],
+                         {1: [_JOB], 2: [_JOB]})
+    for _ in range(2):
+        actions_api.list_recent_runs("o/r", event="pull_request", since_ts=1_790_000_000.0,
+                                     run=run)
+    jobs_calls = [c[1] for c in calls if "/jobs" in c[1]]
+    assert sum("/runs/1/" in u for u in jobs_calls) == 1
+    assert sum("/runs/2/" in u for u in jobs_calls) == 2
+    actions_api._JOB_CACHE.clear()
+
+
+def test_job_log_text_returns_empty_on_failure_and_tails_ok():
+    from server.github.actions_api import job_log_text
+
+    def boom(args):
+        raise gitrepos.GhError("nope")
+    assert job_log_text("o/r", 5, run=boom) == ""
+    big = b"x" * (3 * 1024 * 1024) + b"END"
+    got = job_log_text("o/r", 5, run=lambda args: big)
+    assert len(got) == 2 * 1024 * 1024 and got.endswith("END")

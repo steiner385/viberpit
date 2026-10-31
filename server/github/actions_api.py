@@ -17,6 +17,7 @@ from typing import Any
 from viberpit import gitrepos
 
 from .host_failures import log_gh_failure
+from server.automations.cicd.systemic import JobObs, RunObs
 
 log = logging.getLogger(__name__)
 
@@ -261,3 +262,73 @@ def workflow_texts(repo: str, default_branch: str, *, run=None,
     if head_sha is not None:  # a successful listing (even empty) caches under this sha
         cache[repo] = (head_sha, dict(out))
     return out
+
+
+# ---- systemic-red seams -----------------------------------------------------
+
+_RECENT_RUN_PAGES = 3
+_JOB_CACHE_MAX = 2000
+_LOG_TAIL_BYTES = 2 * 1024 * 1024
+
+# (repo, run_id, run_attempt) -> jobs of a COMPLETED run. A finished attempt never
+# changes, so it is fetched once; insertion order doubles as eviction order.
+_JOB_CACHE: dict[tuple[str, int, int], tuple[JobObs, ...]] = {}
+
+
+def _jobs_for_run(repo: str, run_id: int, *, run) -> tuple[JobObs, ...]:
+    data = _json(run(["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"]))
+    return tuple(
+        JobObs(name=j.get("name") or "", conclusion=j.get("conclusion") or "",
+               status=j.get("status") or "", completed_ts=_iso_ts(j.get("completed_at")),
+               job_id=int(j["id"]))
+        for j in data.get("jobs", []))
+
+
+def list_recent_runs(repo: str, *, event: str, since_ts: float, branch: str | None = None,
+                     run=None) -> list[RunObs]:
+    """Runs of any status created at or after ``since_ts``, with their jobs.
+
+    Always bounded by ``created>=`` (up to 3 pages of 100). An in_progress run's jobs are
+    re-read every call; a completed run's jobs are cached per (repo, run, attempt).
+    Raises on a failed read so the caller can fail open."""
+    from urllib.parse import quote
+    run = run or _run_gh_for(repo)
+    iso = datetime.fromtimestamp(since_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    qs = f"event={quote(event, safe='')}&per_page=100&created={quote('>=', safe='')}{iso}"
+    if branch:
+        qs += f"&branch={quote(branch, safe='')}"
+    out: list[RunObs] = []
+    for page in range(1, _RECENT_RUN_PAGES + 1):
+        data = _json(run(["api", f"repos/{repo}/actions/runs?{qs}&page={page}"]))
+        runs = data.get("workflow_runs", [])
+        for r in runs:
+            run_id = int(r["id"])
+            status = r.get("status") or ""
+            key = (repo, run_id, int(r.get("run_attempt") or 1))
+            jobs = _JOB_CACHE.get(key) if status == "completed" else None
+            if jobs is None:
+                jobs = _jobs_for_run(repo, run_id, run=run)
+                if status == "completed":
+                    _JOB_CACHE[key] = jobs
+                    while len(_JOB_CACHE) > _JOB_CACHE_MAX:
+                        del _JOB_CACHE[next(iter(_JOB_CACHE))]
+            out.append(RunObs(
+                run_id=run_id, workflow_id=int(r.get("workflow_id") or 0),
+                event=r.get("event") or "", head_branch=r.get("head_branch") or "",
+                head_sha=r.get("head_sha") or "",
+                created_ts=_iso_ts(r.get("created_at")) or 0.0, status=status,
+                conclusion=r.get("conclusion") or "", jobs=jobs))
+        if len(runs) < 100:
+            break
+    return out
+
+
+def job_log_text(repo: str, job_id: int, *, run=None) -> str:
+    """The last 2 MB of a job's log as text; "" on any failure."""
+    try:
+        run = run or _run_gh_bytes_for(repo)
+        blob = run(["api", f"repos/{repo}/actions/jobs/{job_id}/logs"])
+        return blob[-_LOG_TAIL_BYTES:].decode(errors="replace")
+    except Exception:
+        log.debug("cicd.job_log_failed repo=%s job=%s", repo, job_id, exc_info=True)
+        return ""
