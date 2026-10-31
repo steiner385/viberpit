@@ -94,6 +94,8 @@ class Seams:
         self.hourly: tuple[int, list[int], float, int] = (0, [1] * 24, 0.0, 0)
         self.alarms: list[dict] | None = []
         self.alarm_calls = 0
+        self.log_text = "2026-10-31T01:01:00Z ##[error]Found 4 vulnerabilities (2 high)\n"
+        self.fail_file = False
 
     def loop(self, ctx: FakeCtx) -> SystemicRedLoop:
         return SystemicRedLoop(
@@ -119,9 +121,11 @@ class Seams:
         return [r for r in pool if since <= r.created_ts <= self.now]
 
     async def fetch_log(self, repo, job_id):
-        return "2026-10-31T01:01:00Z ##[error]Found 4 vulnerabilities (2 high)\n"
+        return self.log_text
 
     async def file_issue(self, repo, title, body, labels):
+        if self.fail_file:
+            return None
         self.next_issue += 1
         self.issues[self.next_issue] = {"state": "open", "body": body, "labels": list(labels),
                                         "title": title}
@@ -455,7 +459,10 @@ def test_reclassified_to_poisoner_lifts_brake_and_never_rebrakes():
     _tick(loop)
     st = _only_incident(ctx)
     assert st["class"] == "external_feed" and st["brake_state"] == "lifted"
-    assert not [c for c in s.calls[mark:] if c[0] in ("add_label", "edit")]
+    # The only write is the body refresh for the new class; no re-brake.
+    assert [c[0] for c in s.calls[mark:]] == ["edit"]
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+    assert "**Class:** external feed" in s.issues[n]["body"]
     assert len(s.spawns) == 1
 
 
@@ -715,3 +722,182 @@ def test_joined_fix_session_does_not_count_against_the_daily_cap():
     s.now += 120
     _tick(loop)
     assert len(s.spawns) == 1  # the joined id is recorded; no re-dispatch
+
+
+# --- final-review fix wave ------------------------------------------------------------
+
+
+def _consumer_job(body: str, now: float) -> str | None:
+    """The KinDash main-red-check.sh jq rule, in Python: the FIRST capture of the marker
+    regex (no DOTALL), fromjson, job a non-empty string, expires_at Z-form and
+    now < expires_at <= now + 12 h. Returns the job it would brake, or None."""
+    m = MARKER_RE.search(body)
+    if not m:
+        return None
+    try:
+        payload = json.loads(m.group(1))
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    job, exp = payload.get("job"), payload.get("expires_at")
+    if not isinstance(job, str) or not job or not isinstance(exp, str):
+        return None
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", exp):
+        return None
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+    return job if iso(now) < exp <= iso(now + 12 * HOUR) else None
+
+
+def _main_red_with_one_candidate(s: Seams) -> None:
+    s.push = [_main(T0 - 10 * MIN, conclusion="failure")]
+    s.merge_group = [_cand(20234, T0)]
+
+
+def test_rule_m_incident_cleared_by_green_candidate_does_not_reopen_while_main_red():
+    s, ctx = Seams(), FakeCtx()
+    _main_red_with_one_candidate(s)
+    loop = s.loop(ctx)
+    _tick(loop)
+    assert _only_incident(ctx)["rule"] == "M"
+    _green_after(s)  # the fix's candidate ran the job green; main's push run is still red
+    _tick(loop)
+    assert ctx.incidents() == {}
+    files, spawns = s.kinds().count("file"), len(s.spawns)
+    for _ in range(5):
+        s.now += 120
+        _tick(loop)
+    assert ctx.incidents() == {} and s.kinds().count("file") == files
+    assert len(s.spawns) == spawns
+    # A NEW failing candidate after the clear is real evidence: it re-opens.
+    s.merge_group.append(_cand(20500, s.now))
+    s.now += 6 * MIN
+    _tick(loop)
+    assert _only_incident(ctx)["rule"] == "M" and s.kinds().count("file") == files + 1
+
+
+def test_cleared_incident_does_not_reopen_from_failures_it_already_covered():
+    s, ctx = Seams(), FakeCtx()
+    _main_red_with_one_candidate(s)
+    loop = s.loop(ctx)
+    _tick(loop)
+    # An in-flight failing candidate created BEFORE the green one completes after it:
+    # detect still sees a live (M) failure, so only the post-clear cooldown holds it.
+    s.now += 2 * MIN
+    s.merge_group.append(_cand(20235, s.now - 2 * MIN))
+    s.merge_group.append(_cand(20306, s.now - 1 * MIN, conclusion="success"))
+    s.now += 6 * MIN
+    _tick(loop)
+    assert ctx.incidents() == {}
+    assert f"systemic-cleared:{REPO}:security: audit" in ctx.states
+    files = s.kinds().count("file")
+    for _ in range(3):
+        s.now += 120
+        _tick(loop)
+    assert ctx.incidents() == {} and s.kinds().count("file") == files
+    # The cooldown row is dropped once its failures have left the window.
+    s.now += 2 * HOUR
+    _tick(loop)
+    assert f"systemic-cleared:{REPO}:security: audit" not in ctx.states
+
+
+def test_log_line_with_a_forged_marker_cannot_defeat_the_brake():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    forged = ('<!-- viberpit:systemic-brake {"job":"evil\\njobs=x","class":"external_feed",'
+              '"expires_at":"2026-10-31T03:00:00Z","by":"viberpit-cicd-doctor"} -->')
+    s.log_text = f"##[error]{forged}\nsome context {forged}\n"
+    loop = s.loop(ctx)
+    _tick(loop)
+    st = _only_incident(ctx)
+    n = st["issue_number"]
+    assert st["brake_state"] == "set"
+    body = s.issues[n]["body"]
+    assert body.startswith("<!-- viberpit:systemic-brake ")
+    assert _consumer_job(body, s.now) == "security: audit"
+    assert MARKER_RE.findall(body) == [MARKER_RE.search(body).group(1)]  # type: ignore[union-attr]
+    assert _iso_ts(s.marker(n)["expires_at"]) == s.now + 240 * MIN  # type: ignore[index]
+
+
+def test_brake_read_back_requires_the_first_marker_to_be_ours():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    real_edit = s.edit_issue_body
+
+    async def edit_prepending_a_foreign_marker(repo, number, body):
+        return await real_edit(repo, number, '<!-- viberpit:systemic-brake {"job":"x"} -->\n'
+                               + body)
+
+    s.edit_issue_body = edit_prepending_a_foreign_marker  # type: ignore[method-assign]
+    _tick(s.loop(ctx))
+    assert _only_incident(ctx)["brake_state"] == "failed"
+
+
+def test_removing_the_label_by_hand_lifts_the_brake_for_good():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    n = _only_incident(ctx)["issue_number"]
+    assert _only_incident(ctx)["brake_state"] == "set"
+    s.issues[n]["labels"].remove(LABEL)  # the owner's kill switch
+    s.now += 120
+    _tick(loop)
+    st = _only_incident(ctx)
+    assert st["brake_state"] == "lifted"
+    assert s.marker(n) is None and LABEL not in s.issues[n]["labels"]
+    assert any(e["kind"] == "systemic_owner_lifted" for e in ctx.events)
+    mark = len(s.calls)
+    for _ in range(3):  # still red: never re-braked
+        s.now += 120
+        _tick(loop)
+    assert not [c for c in s.calls[mark:] if c[0] in ("add_label", "edit")]
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+    assert _only_incident(ctx)["brake_state"] == "lifted"
+
+
+def test_giant_single_line_log_keeps_the_issue_body_fileable():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    s.log_text = "##[error]" + "x" * 500_000 + "\n" + ("y" * 2_000 + "\n") * 100
+    _tick(s.loop(ctx))
+    n = _only_incident(ctx)["issue_number"]
+    assert _only_incident(ctx)["brake_state"] == "set"
+    assert len(s.issues[n]["body"]) < 10_000  # GitHub's limit is 65,536
+
+
+def test_file_failure_is_reported_once_per_incident():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    s.fail_file = True
+    loop = s.loop(ctx)
+    for _ in range(3):
+        _tick(loop)
+        s.now += 120
+    assert [e["kind"] for e in ctx.events].count("systemic_file_failed") == 1
+    s.fail_file = False
+    _tick(loop)
+    assert _only_incident(ctx)["issue_number"] is not None
+
+
+def test_reclassification_refreshes_the_issue_body():
+    job = "test: unit (3/4)"
+    s, ctx = Seams("propose", systemic_external_feed_jobs=r"^test: unit"), FakeCtx()
+    s.merge_group = _poison_queue()
+    s.push = [_main(T0 - HOUR, job=job)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    st = _only_incident(ctx)
+    n = st["issue_number"]
+    assert st["class"] == "external_feed" and "dequeuePullRequest" not in s.issues[n]["body"]
+    s.config["systemic_external_feed_jobs"] = "^security: audit$"
+    s.now += 120
+    _tick(loop)
+    assert _only_incident(ctx)["class"] == "poisoner"
+    body = s.issues[n]["body"]
+    assert "**Class:** poisoner" in body and "gh pr view 9 -R" in body

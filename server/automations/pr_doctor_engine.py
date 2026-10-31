@@ -49,7 +49,8 @@ _NO_VERDICT = frozenset({"pending", "cancelled"})
 
 # Aggregator jobs that turn red only because their inputs did (cancelled or
 # still running): ``lint-and-test`` is this repo's ``if: always()`` aggregator
-# over lint-and-test-core + server-tests; ``ci``/``ci-gate`` are KinDash's. A failure on one of these is not evidence of its own.
+# over lint-and-test-core + server-tests; ``ci``/``ci-gate`` are KinDash's. A
+# failure on one of these is not evidence of its own.
 ROLLUP_CHECKS = frozenset({"ci", "ci-gate", "lint-and-test"})
 
 # ``pr_status`` normalizes GraphQL TIMED_OUT/ERROR/STARTUP_FAILURE to "failure",
@@ -108,7 +109,8 @@ def ci_red_is_unproven(info: PullRequestInfo) -> bool:
     normalized with ``normalize_job`` and not in ``ROLLUP_CHECKS``) is evidence
     by itself, so it overrides a pending or cancelled sibling: the red is proven
     and PR Doctor may act while the rest of the run finishes. A failure only on
-    the ``ci``/``ci-gate`` aggregators (the #2218 shape) still defers.
+    the rollup aggregators (``ci``/``ci-gate``, or this repo's ``lint-and-test``;
+    the #2218 shape) still defers.
 
     Fails CLOSED: with no per-check data at all (a GitHub App without
     ``checks:read``, or a daemon→edge payload that carries none) this returns

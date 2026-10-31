@@ -259,16 +259,9 @@ def close_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
         return False
 
 
-def reopen_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
-    """Reopen an issue. Only the systemic-red incident issue uses this (the filers
-    file a linked "[regression]" issue instead, issue_filing.decide, #1433)."""
-    try:
-        proc = run(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}",
-                    "-f", "state=open"])
-        return proc.returncode == 0
-    except Exception:
-        log.warning("cicd.issue_reopen_failed repo=%s #%s", repo, number, exc_info=True)
-        return False
+# No reopen_issue: every filer now files a linked "[regression]" issue when a
+# closed fingerprint comes back, and none of them reopens (issue_filing.decide,
+# #1433). The doctor's reopen path (#448) was this module's only caller.
 
 
 def edit_issue_body(repo: str, number: int, body: str, *, run=gitrepos._run_gh) -> bool:

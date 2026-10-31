@@ -158,8 +158,17 @@ class SystemicRedLoop:
                             if j.strip())
         await self._thrash(repo, cands, config, now)
         prefix = f"systemic:{repo}:"
-        live = {k: s for k, s in (await self._ctx.list_target_states()).items()
-                if k.startswith(prefix)}
+        cooldown_prefix = f"systemic-cleared:{repo}:"
+        all_states = await self._ctx.list_target_states()
+        live = {k: s for k, s in all_states.items() if k.startswith(prefix)}
+        cleared_at: dict[str, float] = {}
+        for k, s in all_states.items():
+            if not k.startswith(cooldown_prefix):
+                continue
+            if now - float(s.get("cleared_ts", 0)) >= window_s:
+                await self._ctx.delete_target_state(k)  # its failures left the window
+            else:
+                cleared_at[k[len(cooldown_prefix):]] = float(s["cleared_ts"])
         hits = {h.job: h for h in sy.detect(windowed, mains, now=now, window_s=window_s,
                                             min_prs=int(_cfg(config, "systemic_min_prs")),
                                             rollups=rollups)}
@@ -167,23 +176,31 @@ class SystemicRedLoop:
             if state.get("clearing") or sy.is_cleared(
                     state["job"], float(state["opened_ts"]), cands, mains, now=now,
                     quiet_s=quiet_s, rollups=rollups):
-                await self._clear(repo, key, state)
+                await self._clear(repo, key, state, now)
                 continue
             if state.get("dismissed"):
                 continue  # operator dismissed: tracked only so it can clear, never acted on
             hit = hits.get(state["job"])
             if hit is not None:
-                await self._reclassify(key, state, hit, windowed, mains, config)
+                await self._reclassify(repo, key, state, hit, windowed, mains, config)
             await self._live(repo, key, state, mode, config, now)
         live_jobs = {s.get("job") for s in live.values()}
+        created = {r.run_id: r.created_ts for r in windowed}
         for job, hit in hits.items():
-            if job not in live_jobs:
-                await self._open(repo, prefix, hit, windowed, mains, mode, config, now)
+            if job in live_jobs:
+                continue
+            since = cleared_at.get(job)
+            if since is not None and not any(created.get(r, 0.0) > since
+                                             for r in hit.failing_runs):
+                continue  # only failures the just-cleared incident already covered
+            await self._open(repo, prefix, hit, windowed, mains, mode, config, now)
 
-    async def _reclassify(self, key: str, state: dict, hit: sy.Hit, cands: list[RunObs],
-                          mains: dict[int, RunObs], config: dict) -> None:
+    async def _reclassify(self, repo: str, key: str, state: dict, hit: sy.Hit,
+                          cands: list[RunObs], mains: dict[int, RunObs], config: dict) -> None:
         """§5c: re-run the pure classifier; a move out of BRAKE_CLASSES lifts the brake
-        (in ``_correct``) and the incident is never re-braked or re-dispatched."""
+        (in ``_correct``) and the incident is never re-braked or re-dispatched. The issue
+        body is refreshed so the owner sees the new class (and a poisoner's dequeue
+        command); with a brake on the issue, ``_correct`` rewrites the body instead."""
         klass = sy.classify(hit, cands, mains, normalized_sig=state.get("signature") or "",
                             external_feed_re=str(_cfg(config, "systemic_external_feed_jobs")))
         if klass == state.get("class"):
@@ -196,6 +213,11 @@ class SystemicRedLoop:
         await self._save(key, state)
         await self._ctx.emit("info", f"{state['job']} reclassified as {sy.class_label(klass)}",
                              kind="systemic_reclassified", target=key)
+        number = state.get("issue_number")
+        if (number is not None and not state.get("owner_closed")
+                and state.get("brake_state") not in ("set", "failed")):
+            await self._safe(self._edit, repo, int(number), sy.issue_body(state, repo=repo),
+                             default=False)
 
     async def _live(self, repo: str, key: str, state: dict, mode: str, config: dict,
                     now: float) -> None:
@@ -238,7 +260,7 @@ class SystemicRedLoop:
         }
         key = prefix + fp
         await self._save(key, state)
-        await self._ctx.emit("warn", f"{repo}: {hit.job} systemic red on {len(hit.prs)} PRs "
+        await self._ctx.emit("warn", f"{repo}: {hit.job} systemic red on {sy.pr_count(hit.prs)} "
                              f"({sy.class_label(klass)})", kind="systemic_open", target=key)
         await self._file(repo, key, state)
         await self._correct(repo, key, state, mode, config, now)
@@ -248,8 +270,11 @@ class SystemicRedLoop:
         number = await self._safe(self._file_issue, repo, sy.issue_title(state),
                                   sy.issue_body(state, repo=repo), list(ISSUE_LABELS))
         if number is None:
-            await self._ctx.emit("warn", f"{repo}: incident issue for {state['job']} not filed; "
-                                 "will retry", kind="systemic_file_failed", target=key)
+            if not state.get("file_failed_emitted"):  # once per incident, not every tick
+                state["file_failed_emitted"] = True
+                await self._save(key, state)
+                await self._ctx.emit("warn", f"{repo}: incident issue for {state['job']} not "
+                                     "filed; will retry", kind="systemic_file_failed", target=key)
             return
         state["issue_number"] = int(number)
         await self._save(key, state)
@@ -259,7 +284,7 @@ class SystemicRedLoop:
             return
         brake = {"set": ", queue braked", "failed": ", brake NOT set"}.get(
             state.get("brake_state", ""), "")
-        title = (f"{_short(repo)}: {state['job']} red on {len(state.get('prs') or ())} PRs "
+        title = (f"{_short(repo)}: {state['job']} red on {sy.pr_count(state.get('prs'))} "
                  f"({sy.class_label(state['class'])}{brake})")
         body = sy.recommended_action(state)
         state["alerted_open"] = True  # persisted first: a crash can't double-push
@@ -323,21 +348,33 @@ class SystemicRedLoop:
                                  incident=state["fingerprint"], set_at=anchor, expires_at=expires)
         state["failed_per_hour"] = self._failed_hour.get(repo, state.get("failed_per_hour"))
         snap = await self._safe(self._snapshot, repo, number)
+        if (snap is not None and state.get("brake_state") == "set"
+                and BRAKE_LABEL not in (snap.get("labels") or [])):
+            # The Doctor only removes the label inside _lift/_unbrake, which never leaves
+            # brake_state "set" behind: a set brake with no label is a human's kill
+            # switch. Honor it like a closed issue: strip the marker, never re-brake.
+            if await self._lift(repo, key, state, "lifted"):
+                await self._ctx.emit("info", f"{repo} #{number}: {BRAKE_LABEL} removed by a "
+                                     "human; brake lifted and not re-applied",
+                                     kind="systemic_owner_lifted", target=key)
+            return
         ok = False
         if snap is not None:  # a failed read never opens or renews a brake
             shown = {**state, "brake_state": "set", "brake_expires_ts": expires}
-            body = sy.issue_body(shown, repo=repo) + "\n\n" + marker
+            body = sy.issue_body(shown, repo=repo, marker=marker)
             if BRAKE_LABEL not in (snap.get("labels") or []):
                 await self._safe(self._add_label, repo, number, BRAKE_LABEL, default=False)
             if await self._safe(self._edit, repo, number, body, default=False):
                 check = await self._safe(self._snapshot, repo, number)
-                ok = bool(check) and marker in (check.get("body") or "") \
+                # Verify what the consumer will honor: its FIRST marker match is ours.
+                ok = bool(check) and sy.first_brake_marker(check.get("body") or "") == marker \
                     and BRAKE_LABEL in (check.get("labels") or [])
         if ok:
             state.update(brake_state="set", brake_set_ts=anchor, brake_expires_ts=expires)
         else:
+            what = "brake renewal failed" if state.get("brake_state") == "set" else "brake NOT set"
             state["brake_state"] = "failed"
-            await self._ctx.emit("warn", f"{repo} #{number}: brake NOT set for {state['job']}; "
+            await self._ctx.emit("warn", f"{repo} #{number}: {what} for {state['job']}; "
                                  "will retry next tick", kind="systemic_brake_failed", target=key)
         await self._save(key, state)
 
@@ -394,7 +431,7 @@ class SystemicRedLoop:
             actions.append(ActionSpec(kind="dismiss", label="Dismiss", style="risky"))
             items.append(ActionableItem(
                 id=key, subtitle=repo, url=self._issue_url(repo, st), actions=actions,
-                title=(f"{st.get('job')} red on {len(st.get('prs') or ())} PRs "
+                title=(f"{st.get('job')} red on {sy.pr_count(st.get('prs'))} "
                        f"({sy.class_label(str(st.get('class')))})"),
                 status={"set": "Queue braked", "failed": "Brake NOT set",
                         "lifted": "Brake lifted", "ceiling": "Brake lifted at ceiling"
@@ -441,10 +478,13 @@ class SystemicRedLoop:
 
     # --- clearing -----------------------------------------------------------------
 
-    async def _clear(self, repo: str, key: str, state: dict) -> None:
+    async def _clear(self, repo: str, key: str, state: dict, now: float) -> None:
         """Lift, comment, close, notify, forget; each step journaled so none replays.
-        A dismissed incident already had its issue closed: it is dropped silently."""
+        A dismissed incident already had its issue closed: it is dropped silently.
+        Forgetting leaves a ``systemic-cleared:<repo>:<job>`` cooldown row, so the job
+        re-opens only from a failing run created after the clear."""
         if state.get("dismissed"):
+            await self._cooldown(repo, state, now)
             await self._ctx.delete_target_state(key)
             await self._ctx.emit("info", f"{repo}: dismissed {state['job']} incident cleared",
                                  kind="systemic_cleared", target=key)
@@ -482,9 +522,14 @@ class SystemicRedLoop:
                              f"{_short(repo)}: {state['job']} cleared",
                              f"{state['job']} is green again; the incident is closed.",
                              repo=repo, url=self._issue_url(repo, state))
+        await self._cooldown(repo, state, now)
         await self._ctx.delete_target_state(key)
         await self._ctx.emit("info", f"{repo}: {state['job']} systemic red cleared",
                              kind="systemic_cleared", target=key)
+
+    async def _cooldown(self, repo: str, state: dict, now: float) -> None:
+        await self._ctx.set_target_state(f"systemic-cleared:{repo}:{state['job']}",
+                                         {"cleared_ts": now})
 
     # --- thrash and AWS -----------------------------------------------------------
 

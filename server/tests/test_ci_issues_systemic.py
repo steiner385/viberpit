@@ -23,13 +23,6 @@ def test_edit_issue_body_and_add_label_argv():
     assert calls[-1] == ["api", "repos/o/r/issues/7/labels", "-f", "labels[]=ci:systemic-red"]
 
 
-def test_reopen_issue_argv_and_failure():
-    calls: list = []
-    assert ci_issues.reopen_issue("o/r", 7, run=_runner(calls))
-    assert calls[0] == ["api", "-X", "PATCH", "repos/o/r/issues/7", "-f", "state=open"]
-    assert not ci_issues.reopen_issue("o/r", 7, run=_runner([], rc=1))
-
-
 def test_issue_snapshot_parses_state_body_labels():
     payload = {"state": "open", "body": "b", "labels": [{"name": "a"}, {"name": "ci:x"}]}
     assert ci_issues.issue_snapshot("o/r", 7, run=_runner([], stdout=json.dumps(payload))) == {
