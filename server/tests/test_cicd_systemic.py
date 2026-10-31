@@ -15,8 +15,11 @@ from server.automations.cicd.systemic import (
     classify,
     detect,
     fingerprint,
+    fix_prompt,
     is_cleared,
+    issue_body,
     normalize_job,
+    poisoner_pr,
     pr_of_branch,
     signature,
     strip_brake_marker,
@@ -202,6 +205,24 @@ def test_replay_2026_10_31_opens_on_security_audit_by_0110_utc():
     assert not is_cleared("security: audit", at, cands, {main.workflow_id: main},
                           now=_ts("2026-10-31T11:30:00Z"), quiet_s=90 * MIN,  # type: ignore[arg-type]
                           rollups=ROLLUPS)
+
+
+def test_replay_2026_10_31_without_feed_regex_classifies_poisoner():
+    """Locks why external_feed is checked first: on 10-31 the serial queue made every
+    failing stack share the front PR and push:main ran the audit green, so without the
+    external-feed rule the classifier would call it a poisoner (no brake, no fix)."""
+    data = json.loads(FIXTURE.read_text())
+    cands = [_run_from(c) for c in data["candidates"]]
+    main = _run_from(data["main"])
+    at = _ts("2026-10-31T01:02:00Z")
+    assert at is not None
+    visible = [c for c in cands if c.created_ts <= at]
+    mains = {main.workflow_id: main}
+    hit = next(h for h in detect(visible, mains, now=at, window_s=WINDOW, min_prs=3,
+                                 rollups=ROLLUPS) if h.job == "security: audit")
+    assert classify(hit, visible, mains, normalized_sig="Found N vulnerabilities",
+                    external_feed_re="^$x") == "poisoner"
+    assert poisoner_pr(hit, visible, mains) in hit.prs
 
 
 # --- classification ------------------------------------------------------------
@@ -411,3 +432,35 @@ def test_thrash_rule():
     assert thrash(6, base, 0.9, 7, min_failed=6) is False
     assert thrash(8, [3] * 24, 0.9, 10, min_failed=6) is False  # 3 x median 3 = 9
     assert thrash(6, [], 0.9, 10, min_failed=6) is True
+
+
+def _state(**kw):
+    base = {"job": "security: audit", "class": "external_feed", "rule": "C",
+            "opened_ts": _ts("2026-10-31T01:02:00Z"),
+            "first_failed_ts": _ts("2026-10-31T00:41:00Z"),
+            "last_failed_ts": _ts("2026-10-31T01:01:36Z"), "prs": [20234, 20304, 20305],
+            "runs": [111, 222], "signature": "Found N vulnerabilities",
+            "excerpt": "Found 4 vulnerabilities", "brake_state": "none", "fingerprint": "abc123"}
+    base.update(kw)
+    return base
+
+
+def test_issue_body_shows_utc_and_new_york_times_prs_runs_and_action():
+    body = issue_body(_state(), repo="cairnea/KinDash")
+    assert "2026-10-31 01:02 UTC (2026-10-30 21:02 EDT)" in body
+    assert "#20234, #20304, #20305" in body
+    assert "https://github.com/cairnea/KinDash/actions/runs/111" in body
+    assert "external feed" in body and "never mute the check" in body
+    poison = issue_body(_state(**{"class": "poisoner", "poisoner_pr": 20234}),
+                        repo="cairnea/KinDash")
+    assert "> " in poison and "dequeue PR #20234 under the queue lock" in poison
+
+
+def test_fix_prompt_carries_class_instruction_and_safety_rules():
+    p = fix_prompt(_state(), repo="cairnea/KinDash")
+    assert "restore the gate" in p
+    assert "already touches the inputs" in p and "instead of opening a parallel one" in p
+    assert "Never mute" in p and "Never mutate the merge queue" in p
+    assert "arm auto-merge" in p
+    m = fix_prompt(_state(**{"class": "main_regression"}), repo="cairnea/KinDash")
+    assert "revert the merge that broke `security: audit` on main" in m

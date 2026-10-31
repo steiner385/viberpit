@@ -16,6 +16,8 @@ import statistics
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 # A job counts as failed only once it has completed with one of these. startup_failure
 # is included so a job that cannot start on every candidate surfaces (and classifies
@@ -31,7 +33,6 @@ BRAKE_BY = "viberpit-cicd-doctor"
 _QUEUE_BRANCH = re.compile(r"^gh-readonly-queue/(?P<base>.+)/pr-(?P<pr>\d+)-(?P<sha>[0-9a-fA-F]+)$")
 _MARKER_RE = re.compile(r"<!-- viberpit:systemic-brake \{.*?\} -->\n?", re.DOTALL)
 _ADVISORY_RE = re.compile(r"\b(?:GHSA(?:-[0-9a-z]{4}){3}|CVE-\d{4}-\d{4,})\b", re.IGNORECASE)
-_ADVISORY_MARK = re.compile(r"\b(?:GHSA-|CVE-)", re.IGNORECASE)
 # Runner-level failures (§4b). Matched against the NORMALIZED signature, so every
 # entry must survive normalization (``exit code 137`` is protected below).
 _INFRA_SIGNATURES = (
@@ -154,6 +155,7 @@ def detect(candidates: list[RunObs], mains: dict[int, RunObs], *, now: float,
     in-progress run contributes the static checks that already failed.
     """
     rollups = frozenset(normalize_job(r) for r in rollups)
+    main_red_by_wf = {wf: _main_failed_jobs(m, now, rollups) for wf, m in mains.items()}
     fails: dict[str, list[_Fail]] = defaultdict(list)
     greens: dict[str, list[float]] = defaultdict(list)  # candidate created_ts
     m_fails: dict[str, list[_Fail]] = defaultdict(list)
@@ -165,7 +167,7 @@ def detect(candidates: list[RunObs], mains: dict[int, RunObs], *, now: float,
             continue
         pr = parsed[0]
         main = mains.get(run.workflow_id)
-        main_red = _main_failed_jobs(main, now, rollups) if main else frozenset()
+        main_red = main_red_by_wf.get(run.workflow_id, frozenset())
         for name, j in _outcomes(run, now, rollups):
             if j.conclusion in _FAILED:
                 f = _Fail(pr=pr, ts=_job_ts(j, run), run_id=run.run_id, job_id=j.job_id)
@@ -293,11 +295,12 @@ def classify(hit: Hit, candidates: list[RunObs], mains: dict[int, RunObs], *,
              normalized_sig: str, external_feed_re: str) -> str:
     """§4b, first match wins: external_feed → infra → poisoner → main_regression → unknown."""
     job = hit.job
-    if re.search(external_feed_re, job) or _ADVISORY_MARK.search(normalized_sig):
+    if re.search(external_feed_re, job) or _ADVISORY_RE.search(normalized_sig):
         return "external_feed"
 
     failing_ids = set(hit.failing_job_ids)
-    failing_runs = [c for c in candidates if c.run_id in set(hit.failing_runs)]
+    failing_run_ids = set(hit.failing_runs)
+    failing_runs = [c for c in candidates if c.run_id in failing_run_ids]
     if any(r.conclusion == "startup_failure" for r in failing_runs) or any(
         j.conclusion == "startup_failure" for r in failing_runs for j in r.jobs
         if j.job_id in failing_ids
@@ -313,26 +316,44 @@ def classify(hit: Hit, candidates: list[RunObs], mains: dict[int, RunObs], *,
         return "main_regression"
     if not failing_runs:
         return "unknown"
+    common, all_complete, suspect = _stack_verdict(job, failing_runs, candidates, mains)
+    if suspect is not None:
+        return "poisoner"
+    # A shared PR that isn't provably the poisoner: poisoner vs main_regression is
+    # undecided, so never a brake class.
+    if common:
+        return "unknown"
+    return "main_regression" if all_complete else "unknown"
+
+
+def poisoner_pr(hit: Hit, candidates: list[RunObs], mains: dict[int, RunObs]) -> int | None:
+    """The PR that §4b proves poisons ``hit.job`` (shared by every failing stack, job
+    green on push:main, and no failing candidate lacks it); None when unproven."""
+    failing_run_ids = set(hit.failing_runs)
+    failing_runs = [c for c in candidates if c.run_id in failing_run_ids]
+    if not failing_runs:
+        return None
+    return _stack_verdict(hit.job, failing_runs, candidates, mains)[2]
+
+
+def _stack_verdict(job: str, failing_runs: list[RunObs], candidates: list[RunObs],
+                   mains: dict[int, RunObs]) -> tuple[frozenset[int], bool, int | None]:
+    """(PRs common to every failing stack, all stacks complete?, proven poisoner)."""
     by_head = {c.head_sha: c for c in candidates if pr_of_branch(c.head_branch)}
-    wf = failing_runs[0].workflow_id
-    main = mains.get(wf)
+    main = mains.get(failing_runs[0].workflow_id)
     main_head = main.head_sha if main else None
     stacks = [_stack(r, by_head, main_head) for r in failing_runs]
     common = frozenset.intersection(*(s for s, _ in stacks))
     all_complete = all(ok for _, ok in stacks)
-
-    if common:
-        main_green = main is not None and any(
-            normalize_job(j.name) == job and j.status == "completed" and j.conclusion == _GREEN
-            for j in main.jobs
-        )
-        if main_green and any(_only_stacks_with(p, job, candidates, by_head, main_head)
-                              for p in common):
-            return "poisoner"
-        # A shared PR that isn't provably the poisoner: poisoner vs main_regression
-        # is undecided, so never a brake class.
-        return "unknown"
-    return "main_regression" if all_complete else "unknown"
+    main_green = main is not None and any(
+        normalize_job(j.name) == job and j.status == "completed" and j.conclusion == _GREEN
+        for j in main.jobs
+    )
+    suspect = None
+    if main_green:
+        suspect = next((p for p in sorted(common)
+                        if _only_stacks_with(p, job, candidates, by_head, main_head)), None)
+    return common, all_complete, suspect
 
 
 def _only_stacks_with(p: int, job: str, candidates: list[RunObs],
@@ -374,3 +395,131 @@ def thrash(failed_last_hour: int, hourly_failed_14d: list[int], ratio: float,
     median = statistics.median(hourly_failed_14d) if hourly_failed_14d else 0
     return (failed_last_hour >= max(min_failed, 3 * median)
             and ratio >= 0.8 and runs_in_window >= 8)
+
+
+# --- incident issue body and fix-session prompt (spec §5b, §5d) -----------------
+
+_NY = ZoneInfo("America/New_York")
+_CLASS_LABEL = {
+    "external_feed": "external feed",
+    "main_regression": "main regression",
+    "poisoner": "poisoner",
+    "infra": "infra",
+    "unknown": "unknown",
+}
+# §4b class-specific instruction for a fix session (brake classes only dispatch).
+_FIX_INSTRUCTION = {
+    "external_feed": ("The external feed moved; restore the gate (overrides or bumps, or "
+                      "the repo's documented baseline procedure); never mute the check."),
+    "main_regression": "Fix forward or revert the merge that broke `{job}` on main.",
+}
+
+
+def class_label(klass: str) -> str:
+    return _CLASS_LABEL.get(klass, klass)
+
+
+def when(ts: float | None) -> str:
+    """``2026-10-31 01:02 UTC (2026-10-30 21:02 EDT)``; ``-`` for None."""
+    if ts is None:
+        return "-"
+    utc = datetime.fromtimestamp(ts, tz=timezone.utc)
+    return f"{utc:%Y-%m-%d %H:%M} UTC ({utc.astimezone(_NY):%Y-%m-%d %H:%M %Z})"
+
+
+def _run_url(repo: str, run_id: object) -> str:
+    return f"https://github.com/{repo}/actions/runs/{run_id}"
+
+
+def recommended_action(state: dict) -> str:
+    klass, job = state.get("class", "unknown"), state.get("job", "")
+    if klass == "poisoner":
+        p = state.get("poisoner_pr")
+        who = f"PR #{p}" if p else "the shared PR"
+        return (f"{who} poisons every candidate queued behind it. PR Doctor owns its "
+                f"failing CI. Ask the owner to dequeue {who} under the queue lock; the "
+                "Doctor never touches the merge queue and never brakes a poisoner.")
+    if klass == "infra":
+        return ("Runner-level failure (shutdown, lost runner, disk, OOM). Follow the infra "
+                "runbook; no brake and no fix session.")
+    if klass in _FIX_INSTRUCTION:
+        return _FIX_INSTRUCTION[klass].format(job=job)
+    return "Alert only: triage the signature by hand; no brake and no fix session."
+
+
+def issue_title(state: dict) -> str:
+    n = len(state.get("prs") or ())
+    return (f"CI systemic red: `{state.get('job', '')}` failing on {n} PRs "
+            f"({class_label(state.get('class', 'unknown'))})")
+
+
+def issue_body(state: dict, *, repo: str) -> str:
+    """Incident issue body (§5b). The brake marker is appended separately."""
+    job, klass = state.get("job", ""), state.get("class", "unknown")
+    prs = ", ".join(f"#{p}" for p in state.get("prs") or ()) or "-"
+    runs = "\n".join(f"- {_run_url(repo, r)}" for r in (state.get("runs") or ())[:10]) or "- none"
+    action = recommended_action(state)
+    if klass == "poisoner":
+        action = "\n".join(f"> {ln}" for ln in action.splitlines())
+    excerpt = (state.get("excerpt") or "").replace("```", "`​``")
+    return "\n".join([
+        f"ViberPit CI/CD Doctor detected a systemic red in `{repo}`.",
+        "",
+        f"- **Job:** `{job}`",
+        f"- **Class:** {class_label(klass)}",
+        f"- **Rule:** {state.get('rule', '-')}",
+        f"- **PRs failing it:** {prs}",
+        f"- **First failure:** {when(state.get('first_failed_ts'))}",
+        f"- **Last failure:** {when(state.get('last_failed_ts'))}",
+        f"- **Opened:** {when(state.get('opened_ts'))}",
+        f"- **Brake:** {state.get('brake_state', 'none')}",
+        f"- **Signature:** `{state.get('signature') or '-'}`",
+        "",
+        "**Failing runs**",
+        runs,
+        "",
+        "**Recommended action**",
+        "",
+        action,
+        "",
+        "<details><summary>Log excerpt</summary>",
+        "",
+        "```",
+        excerpt,
+        "```",
+        "</details>",
+        "",
+        f"Incident `{state.get('fingerprint', '')}`. Closing this issue lifts the brake.",
+    ])
+
+
+def fix_prompt(state: dict, *, repo: str) -> str:
+    """Seed for the one fix session per incident (§5d)."""
+    job, klass = state.get("job", ""), state.get("class", "unknown")
+    runs = "\n".join(f"- {_run_url(repo, r)}" for r in (state.get("runs") or ())[:5]) or "- none"
+    instruction = _FIX_INSTRUCTION.get(klass, recommended_action(state)).format(job=job)
+    return "\n".join([
+        f"The merge queue in {repo} is systemically red: `{job}` fails on every candidate "
+        f"(PRs {', '.join(f'#{p}' for p in state.get('prs') or ()) or '-'}), "
+        f"class {class_label(klass)}.",
+        "",
+        f"Signature: `{state.get('signature') or '-'}`",
+        "",
+        "Example failing runs:",
+        runs,
+        "",
+        "Log excerpt:",
+        "```",
+        (state.get("excerpt") or "")[:4000],
+        "```",
+        "",
+        f"What to do: {instruction}",
+        "",
+        "Rules:",
+        f"1. First search the open PRs in {repo} for one that already touches the inputs of "
+        f"`{job}` (its workflow step, the files it checks, or its dependencies). If one "
+        "exists, finish or review that PR instead of opening a parallel one.",
+        "2. Never mute, skip, or weaken the check, and never mark it non-required.",
+        "3. Never mutate the merge queue (no enqueue, dequeue, or jump).",
+        "4. Open a PR with the fix and arm auto-merge.",
+    ])
