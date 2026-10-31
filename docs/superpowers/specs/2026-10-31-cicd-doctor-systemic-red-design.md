@@ -271,9 +271,11 @@ polls instead of subscribing SNS.
 #3159 made never-finishing checks `stuck_checks` after 120 min. Still open: a PR
 whose required check concluded `failure` while a *sibling* check is `pending` or
 `cancelled` reads `ci_red_is_unproven` → no verdict until the sibling resolves or
-120 min pass. Change: a `failure` / `timed_out` on a check that is not an
-aggregate (same `systemic_rollup_jobs` list) is evidence on its own;
-`ci_red_is_unproven` returns False when such a check exists. Rollup-only failures
+120 min pass. Change: a `failure` or `timed_out` on a check that is not an
+aggregate counts as evidence on its own. The aggregates are `ROLLUP_CHECKS` in
+`pr_doctor_engine.py`: `ci` and `ci-gate` (KinDash), plus `lint-and-test` (ViberPit's own
+`if: always()` aggregator, the #2213 shape). With such a check present,
+`ci_red_is_unproven` returns False. Rollup-only failures
 keep today's behavior (the #2218 case: a rollup red because its inputs were
 cancelled).
 

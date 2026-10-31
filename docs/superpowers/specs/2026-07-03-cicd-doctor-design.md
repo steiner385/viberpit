@@ -2,6 +2,8 @@
 
 Date: 2026-07-03
 Status: draft — pending user sign-off on graduation-gate defaults and prerequisite-PR sequencing.
+For systemic incidents only, the v2 systemic-red path replaces this spec's propose-only
+boundary: see `2026-10-31-cicd-doctor-systemic-red-design.md`.
 
 ## Purpose
 
