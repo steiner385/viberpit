@@ -16,8 +16,9 @@ from typing import Any
 
 from viberpit import gitrepos
 
-from .host_failures import log_gh_failure
 from server.automations.cicd.systemic import JobObs, RunObs
+
+from .host_failures import log_gh_failure
 
 log = logging.getLogger(__name__)
 
@@ -302,6 +303,11 @@ def list_recent_runs(repo: str, *, event: str, since_ts: float, branch: str | No
         data = _json(run(["api", f"repos/{repo}/actions/runs?{qs}&page={page}"]))
         runs = data.get("workflow_runs", [])
         for r in runs:
+            # Same fork guard as list_completed_runs: a fork run's job names and
+            # conclusions are attacker-written, so skip it before any jobs fetch.
+            head = (r.get("head_repository") or {}).get("full_name") or ""
+            if head.lower() != repo.lower():
+                continue
             run_id = int(r["id"])
             status = r.get("status") or ""
             key = (repo, run_id, int(r.get("run_attempt") or 1))

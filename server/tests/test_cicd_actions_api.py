@@ -311,7 +311,8 @@ def _wf_run(rid, status, attempt=1):
     return {"id": rid, "workflow_id": 9, "event": "pull_request", "head_branch": "f",
             "head_sha": "s", "created_at": "2026-10-31T10:00:00Z", "status": status,
             "conclusion": "failure" if status == "completed" else None,
-            "run_attempt": attempt}
+            "run_attempt": attempt,
+            "head_repository": {"full_name": "O/R"}}
 
 
 _JOB = {"id": 70, "name": "ci", "status": "completed", "conclusion": "failure",
@@ -355,3 +356,17 @@ def test_job_log_text_returns_empty_on_failure_and_tails_ok():
     big = b"x" * (3 * 1024 * 1024) + b"END"
     got = job_log_text("o/r", 5, run=lambda args: big)
     assert len(got) == 2 * 1024 * 1024 and got.endswith("END")
+
+
+def test_list_recent_runs_skips_fork_runs():
+    from server.github import actions_api
+    actions_api._JOB_CACHE.clear()
+    fork = {**_wf_run(2, "completed"), "head_repository": {"full_name": "evil/r"}}
+    gone = {**_wf_run(3, "completed"), "head_repository": None}
+    calls: list = []
+    run = _recent_runner(calls, [_wf_run(1, "completed"), fork, gone], {1: [_JOB]})
+    out = actions_api.list_recent_runs("o/r", event="pull_request", since_ts=1_790_000_000.0,
+                                       run=run)
+    assert [r.run_id for r in out] == [1]
+    assert not any("/runs/2/" in c[1] or "/runs/3/" in c[1] for c in calls)
+    actions_api._JOB_CACHE.clear()
