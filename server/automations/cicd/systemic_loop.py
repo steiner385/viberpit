@@ -57,7 +57,7 @@ class SystemicRedLoop:
                  close_issue: Callable[[str, int], Awaitable[bool]],
                  issue_snapshot: Callable[[str, int], Awaitable[dict | None]],
                  notify: Callable[..., Awaitable[None]],
-                 spawn_fix: Callable[[str, str, str], Awaitable[str | None]],
+                 spawn_fix: Callable[[str, str, str], Awaitable[tuple[str, bool] | None]],
                  failed_hourly_counts: Callable[[str], Awaitable[tuple[int, list[int], float, int]]],
                  alarms_in_alarm: Callable[[dict], Awaitable[list[dict] | None]],
                  clock: Callable[[], float]) -> None:
@@ -117,7 +117,9 @@ class SystemicRedLoop:
                 log.warning("cicd_systemic.repo_failed repo=%s", repo, exc_info=True)
         await self._aws(config, now)
         states = await self._ctx.list_target_states()
-        incidents = [s for k, s in states.items() if k.startswith("systemic:")]
+        # Dismissed and clearing incidents are off the card, so they are not counted.
+        incidents = [s for k, s in states.items() if k.startswith("systemic:")
+                     and not s.get("dismissed") and not s.get("clearing")]
         self._ctx.cicd_systemic_counts = {
             "incidents": len(incidents),
             "braked": sum(1 for s in incidents if s.get("brake_state") == "set"),
@@ -360,15 +362,19 @@ class SystemicRedLoop:
         count = int(counter.get("count", 0))
         if count >= int(_cfg(config, "systemic_max_fix_sessions_per_day")):
             return
-        sid = await self._safe(self._spawn, repo, f"{repo}#systemic:{state['fingerprint']}",
-                               sy.fix_prompt(state, repo=repo))
-        if not sid:
+        spawned = await self._safe(self._spawn, repo,
+                                   f"{repo}#systemic:{state['fingerprint']}",
+                                   sy.fix_prompt(state, repo=repo))
+        if not spawned or not spawned[0]:
             return  # not spawned: retry next tick, counter untouched
-        state["session_id"] = str(sid)
+        sid, created = str(spawned[0]), bool(spawned[1])
+        state["session_id"] = sid
         await self._save(key, state)
+        if not created:  # joined a live session for this incident: not a new spawn
+            return
         await self._ctx.set_target_state(day_key, {"count": count + 1})
         await self._ctx.emit("info", f"{repo}: fix session {sid} dispatched for {state['job']}",
-                             kind="systemic_dispatch", target=key, session_id=str(sid))
+                             kind="systemic_dispatch", target=key, session_id=sid)
 
     # --- card actions (spec §5a) ---------------------------------------------------
 

@@ -89,6 +89,7 @@ class Seams:
         self.calls: list[tuple] = []
         self.notes: list[tuple] = []
         self.spawn_result: str | None = "sess-1"
+        self.spawn_created = True  # False = joined an existing session (dedupe hit)
         self.spawns: list[tuple] = []
         self.hourly: tuple[int, list[int], float, int] = (0, [1] * 24, 0.0, 0)
         self.alarms: list[dict] | None = []
@@ -168,7 +169,7 @@ class Seams:
 
     async def spawn_fix(self, repo, origin_ref, prompt):
         self.spawns.append((repo, origin_ref, prompt))
-        return self.spawn_result
+        return (self.spawn_result, self.spawn_created) if self.spawn_result else None
 
     async def failed_hourly_counts(self, repo):
         return self.hourly
@@ -681,6 +682,9 @@ def test_dismissed_incident_does_not_reopen_while_still_red():
     _tick(loop)
     key = next(iter(ctx.incidents()))
     assert asyncio.run(loop.action_result(key, "dismiss")) == "dismissed"
+    s.now += 120
+    _tick(loop)
+    assert ctx.cicd_systemic_counts["incidents"] == 0  # off the card, not counted
     mark, notes, spawns = len(s.calls), len(s.notes), len(s.spawns)
     for i in range(4):  # still red, with a fresh failing candidate each tick
         s.now += 120
@@ -695,3 +699,19 @@ def test_dismissed_incident_does_not_reopen_while_still_red():
     _tick(loop)
     assert ctx.incidents() == {}
     assert s.calls[mark:] == [] and len(s.notes) == notes
+
+
+def test_joined_fix_session_does_not_count_against_the_daily_cap():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    s.spawn_created = False  # a live session for this incident already existed
+    loop = s.loop(ctx)
+    _tick(loop)
+    day = time.strftime("%Y-%m-%d", time.gmtime(s.now))
+    assert _only_incident(ctx)["session_id"] == "sess-1"
+    assert ctx.states.get(f"systemic-dispatch:{REPO}:{day}", {}).get("count", 0) == 0
+    assert not any(e["kind"] == "systemic_dispatch" for e in ctx.events)
+    s.now += 120
+    _tick(loop)
+    assert len(s.spawns) == 1  # the joined id is recorded; no re-dispatch

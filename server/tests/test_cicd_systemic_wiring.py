@@ -92,8 +92,9 @@ async def test_failed_hourly_counts_aggregate_merge_group_failures(tmp_path):
         now = time.time()
         rows = [
             # last hour: 3 failed + 1 success merge_group, 1 failed push (ignored)
-            (1, "merge_group", "failure", now - 60), (2, "merge_group", "failure", now - 600),
-            (3, "merge_group", "failure", now - 1800), (4, "merge_group", "success", now - 900),
+            (1, "merge_group", "failure", now - 60), (2, "merge_group", "timed_out", now - 600),
+            (3, "merge_group", "startup_failure", now - 1800),
+            (4, "merge_group", "success", now - 900),
             (5, "push", "failure", now - 300),
             # earlier: one failure 5 h ago, one 15 days ago (outside the 14-day window)
             (6, "merge_group", "failure", now - 5 * 3600 - 10),
@@ -114,6 +115,10 @@ async def test_failed_hourly_counts_aggregate_merge_group_failures(tmp_path):
         assert len(hourly) == 14 * 24 and sum(hourly) == 1 and hourly[4] == 1
     finally:
         await dispose_db()
+
+
+async def _boom():
+    raise RuntimeError("target-state read failed")
 
 
 def test_card_provider_offers_systemic_actions_and_maps_statuses():
@@ -140,6 +145,10 @@ def test_card_provider_offers_systemic_actions_and_maps_statuses():
     orch = SimpleNamespace(_cicd_systemic_loop=Loop(), cicd_actionable_findings=findings,
                            cicd_file_issue_now=file_now)
     p = CicdDoctorActionProvider(orch)
+    # A systemic failure never blanks the v1 findings.
+    broken = SimpleNamespace(_cicd_systemic_loop=SimpleNamespace(actionable_items=_boom),
+                             cicd_actionable_findings=findings, cicd_file_issue_now=file_now)
+    assert [i.id for i in asyncio.run(CicdDoctorActionProvider(broken).actionable())] == ["f1"]
     assert p.valid_kinds == frozenset({"file_issue", "clear_brake", "dismiss"})
     ids = [i.id for i in asyncio.run(p.actionable())]
     assert ids == ["systemic:o/r:abc", "f1"]

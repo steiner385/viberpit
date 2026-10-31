@@ -14298,13 +14298,16 @@ class SessionOrchestrator:
         hours = 14 * 24
         hour_ago, start = now - 3600.0, now - (hours + 1) * 3600.0
         mg = (CiRun.repo == repo, CiRun.event == "merge_group")
+        # The detector's own failed set, not just "failure".
+        from server.automations.cicd.systemic import _FAILED
+        failed_conclusions = sorted(_FAILED)
         async with db_session() as db:
             total, failed = (await db.execute(select(
                 func.count(), func.coalesce(func.sum(case(
-                    (CiRun.conclusion == "failure", 1), else_=0)), 0))
+                    (CiRun.conclusion.in_(failed_conclusions), 1), else_=0)), 0))
                 .where(*mg, CiRun.created_ts > hour_ago, CiRun.created_ts <= now))).one()
             stamps = (await db.execute(select(CiRun.created_ts).where(
-                *mg, CiRun.conclusion == "failure", CiRun.created_ts > start,
+                *mg, CiRun.conclusion.in_(failed_conclusions), CiRun.created_ts > start,
                 CiRun.created_ts <= hour_ago))).scalars().all()
         hourly = [0] * hours
         for ts in stamps:
@@ -14317,9 +14320,11 @@ class SessionOrchestrator:
         return failed, hourly, (failed / total if total else 0.0), total
 
     async def _cicd_systemic_spawn_fix(self, repo: str, origin_ref: str,
-                                       prompt: str) -> str | None:
-        """Spawn (or join) the one fix session for a systemic incident; its id, or
-        None when the launch was refused or nothing could be spawned."""
+                                       prompt: str) -> tuple[str, bool] | None:
+        """Spawn (or join) the one fix session for a systemic incident:
+        ``(session_id, created)``, where ``created`` is False on a dedupe hit (the
+        loop does not count that against its daily cap); None when the launch was
+        refused or nothing could be spawned."""
         ctx = self._cicd_ctx
         plan = await ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
@@ -14333,13 +14338,14 @@ class SessionOrchestrator:
             f"https://github.com/{repo}.git")
         choice = await self._resolve_spawn_model(
             engine, account, config, f"fix a systemic CI red blocking the {repo} merge queue")
-        rec, _created = await ctx.spawn_or_join_session(
+        rec, created = await ctx.spawn_or_join_session(
             origin_ref=origin_ref, dedupe_key=origin_ref, repo=repo, cwd=cwd,
             account=account, engine=engine, name=f"fix systemic red {repo}",
             initial_prompt=prompt, model=choice.model,
             reasoning_effort=choice.reasoning_effort,
-            detail={"automation": "cicd-doctor", "systemic": True, **choice.detail})
-        return str(rec.id) if rec is not None else None
+            detail={"automation": "cicd-doctor", "systemic": True, "engine": engine.value,
+                    **choice.detail})
+        return (str(rec.id), bool(created)) if rec is not None else None
 
     async def _cicd_read_config(self) -> tuple[str, dict]:
         """(effective mode, validated config) for cicd-doctor; off + defaults on

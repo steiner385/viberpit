@@ -7,10 +7,13 @@ user-facing level/message pairs.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from server.automations import pr_doctor_engine as engine
 from server.automations.base import ActionableItem, ActionSpec, TriggerResult
+
+log = logging.getLogger(__name__)
 
 # --- PR Doctor -------------------------------------------------------------
 
@@ -288,7 +291,12 @@ class CicdDoctorActionProvider:
 
     async def actionable(self) -> list[ActionableItem]:
         loop = getattr(self._orch, "_cicd_systemic_loop", None)
-        items: list[ActionableItem] = list(await loop.actionable_items()) if loop else []
+        items: list[ActionableItem] = []
+        if loop is not None:
+            try:  # a systemic failure must never blank the v1 findings
+                items.extend(await loop.actionable_items())
+            except Exception:  # noqa: BLE001
+                log.warning("cicd_doctor.systemic_actionable_failed", exc_info=True)
         for f in await self._orch.cicd_actionable_findings():
             items.append(ActionableItem(
                 id=f["id"], title=f.get("title") or f["id"], subtitle=f.get("repo"),
