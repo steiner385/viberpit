@@ -42,3 +42,46 @@ def test_status_errors():
     both_ctx = SimpleNamespace(cicd_doctor_counts={"open": 1, "candidates": 0, "errors": 1})
     st2 = d.status(both_ctx)
     assert st2.level == "active" and "1 repo error(s)" in st2.text
+
+
+def test_modes_include_correct():
+    assert CicdDoctor.modes == ("off", "propose", "correct")
+
+
+def test_systemic_config_fields_and_defaults():
+    cfg = validate_config(CicdDoctor.config_schema, {})
+    assert {k: cfg[k] for k in (
+        "systemic_window_min", "systemic_min_prs", "systemic_rollup_jobs",
+        "systemic_external_feed_jobs", "systemic_quiet_clear_min", "systemic_brake_ttl_min",
+        "systemic_brake_max_min", "systemic_dispatch_fix", "systemic_brake",
+        "systemic_max_fix_sessions_per_day", "thrash_min_failed_per_hour",
+        "aws_alarm_prefix", "aws_profile")} == {
+        "systemic_window_min": 60, "systemic_min_prs": 3, "systemic_rollup_jobs": "ci,ci-gate",
+        "systemic_external_feed_jobs": "^security: audit$", "systemic_quiet_clear_min": 90,
+        "systemic_brake_ttl_min": 240, "systemic_brake_max_min": 600,
+        "systemic_dispatch_fix": True, "systemic_brake": True,
+        "systemic_max_fix_sessions_per_day": 3, "thrash_min_failed_per_hour": 6,
+        "aws_alarm_prefix": "", "aws_profile": ""}
+    # The loop's fallback defaults are the same values (one statement each).
+    from server.automations.cicd.systemic_loop import DEFAULTS
+    assert all(cfg[k] == v for k, v in DEFAULTS.items())
+
+
+def test_status_reports_systemic_incidents():
+    d = CicdDoctor()
+    ctx = SimpleNamespace(cicd_doctor_counts={"open": 0, "candidates": 0},
+                          cicd_systemic_counts={"incidents": 2, "braked": 1, "thrash": False,
+                                                "alarms": 0})
+    st = d.status(ctx)
+    assert "2 systemic incident(s), 1 braked" in st.text and st.level == "active"
+    assert st.counts["systemic_incidents"] == 2 and st.counts["systemic_braked"] == 1
+    assert all(isinstance(v, int) for v in st.counts.values())
+    # Systemic counts alone (the v1 loop has not ticked yet) still render.
+    only = SimpleNamespace(cicd_systemic_counts={"incidents": 1, "braked": 0,
+                                                 "thrash": False, "alarms": 0})
+    st = d.status(only)
+    assert "1 systemic incident(s)" in st.text and "braked" not in st.text
+    quiet = SimpleNamespace(cicd_doctor_counts={"open": 0, "candidates": 0},
+                            cicd_systemic_counts={"incidents": 0, "braked": 0,
+                                                  "thrash": False, "alarms": 0})
+    assert "systemic" not in d.status(quiet).text and d.status(quiet).level == "idle"

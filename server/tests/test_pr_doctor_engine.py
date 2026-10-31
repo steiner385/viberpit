@@ -147,9 +147,17 @@ def test_classify_superseded_sha_does_not_fall_through_to_stuck_enqueue():
                         checks_detail=_SUPERSEDED_SHA_CHECKS)) is None
 
 
-def test_classify_defers_while_ci_is_still_in_flight():
+def test_classify_real_failure_with_pending_shard_is_failing_ci():
     # A null CheckRun conclusion parses as "pending" — the run has not reported.
+    # A real (non-rollup) failure is evidence regardless (spec section 7).
     still_running = _detail(("lint-and-test-core", "failure"),
+                            ("server-tests (4)", "pending"))
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
+                        checks_detail=still_running)) == "failing_ci"
+
+
+def test_classify_rollup_failure_with_pending_input_stays_deferred():
+    still_running = _detail(("lint-and-test", "failure"),
                             ("server-tests (4)", "pending"))
     assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
                         checks_detail=still_running)) is None
@@ -182,6 +190,24 @@ def test_unproven_guard_only_gates_failing_ci():
                         checks_detail=_SUPERSEDED_SHA_CHECKS)) == "merge_conflict"
     assert classify(_pr(merge_state_status="BEHIND", checks="failing",
                         checks_detail=_SUPERSEDED_SHA_CHECKS)) == "out_of_date"
+
+
+def test_required_failure_with_pending_sibling_is_failing_ci():
+    # A real (non-rollup) failure is evidence even while a sibling is pending.
+    checks = _detail(("ci / server-tests (1)", "failure"),
+                     ("ci / server-tests (2)", "pending"))
+    info = _pr(merge_state_status="BLOCKED", checks="failing", checks_detail=checks)
+    assert ci_red_is_unproven(info) is False
+    assert classify(info) == "failing_ci"
+
+
+def test_rollup_only_failure_with_cancelled_inputs_stays_unproven():
+    # The #2218 shape: only the rollup aggregators are red, inputs were cancelled.
+    checks = _detail(("changes", "success"), ("server-tests (1)", "cancelled"),
+                     ("ci / ci-gate", "failure"), ("ci", "failure"))
+    info = _pr(merge_state_status="BLOCKED", checks="failing", checks_detail=checks)
+    assert ci_red_is_unproven(info) is True
+    assert classify(info) is None
 
 
 def test_ci_red_is_unproven_predicate():
@@ -545,7 +571,16 @@ def test_fresh_cancellation_is_not_stuck():
 
 
 def test_real_failure_beside_old_cancellation_is_not_called_stuck():
-    # Still deferred as unproven (pre-existing #2218 behaviour) — just not stuck.
+    # A real failure is evidence even beside an old cancellation: failing_ci,
+    # not stuck_checks and no longer deferred as unproven.
     info = _blocked(CheckDetail("ci", "cancelled", completed_at=_ago(300)),
                     CheckDetail("unit", "failure"), rollup="failing")
-    assert engine.classify(info, _NOW) is None
+    assert engine.classify(info, _NOW) == "failing_ci"
+
+
+def test_rollup_failure_with_long_cancelled_inputs_is_stuck_checks():
+    # #3159 cancelled arm: only the aggregator failed, every input was cancelled
+    # more than 120 minutes ago, nothing newer is coming.
+    info = _blocked(CheckDetail("server-tests (1)", "cancelled", completed_at=_ago(300)),
+                    CheckDetail("lint-and-test", "failure"), rollup="failing")
+    assert engine.classify(info, _NOW) == "stuck_checks"

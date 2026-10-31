@@ -85,6 +85,8 @@ export const EVENT_CLASSES: { value: string; label: string }[] = [
   { value: 'deploy_failed', label: 'Deploy failed' },
   { value: 'account_limited', label: 'Account limited' },
   { value: 'decision_needed', label: 'Decision needed' },
+  { value: 'ci_systemic_red', label: 'CI systemic red' },
+  { value: 'ci_spend_alarm', label: 'CI spend alarm' },
 ]
 
 export const ACTIONS: { value: string; label: string }[] = [

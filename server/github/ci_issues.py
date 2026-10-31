@@ -262,3 +262,51 @@ def close_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
 # No reopen_issue: every filer now files a linked "[regression]" issue when a
 # closed fingerprint comes back, and none of them reopens (issue_filing.decide,
 # #1433). The doctor's reopen path (#448) was this module's only caller.
+
+
+def edit_issue_body(repo: str, number: int, body: str, *, run=gitrepos._run_gh) -> bool:
+    try:
+        proc = run(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}",
+                    "-f", f"body={body}"])
+        if proc.returncode != 0:
+            log_gh_failure(log, proc.stderr, "cicd.issue_edit_failed repo=%s #%s: %s",
+                           repo, number, proc.stderr.strip())
+            return False
+        return True
+    except Exception:
+        log.warning("cicd.issue_edit_failed repo=%s #%s", repo, number, exc_info=True)
+        return False
+
+
+def add_label(repo: str, number: int, name: str, *, run=gitrepos._run_gh) -> bool:
+    """Add label *name* to an issue, creating it in the repo first if needed."""
+    if not valid_repo(repo) or not name.strip():
+        return False
+    try:
+        _ensure_label(repo, name, run)
+        proc = run(["api", f"repos/{repo}/issues/{number}/labels", "-f", f"labels[]={name}"])
+        if proc.returncode != 0:
+            log_gh_failure(log, proc.stderr, "cicd.label_add_failed repo=%s #%s: %s",
+                           repo, number, proc.stderr.strip())
+            return False
+        return True
+    except Exception:
+        log.warning("cicd.label_add_failed repo=%s #%s", repo, number, exc_info=True)
+        return False
+
+
+def issue_snapshot(repo: str, number: int, *, run=gitrepos._run_gh) -> dict | None:
+    """``{"state", "body", "labels"}`` for one issue; None on any failure."""
+    try:
+        proc = run(["api", f"repos/{repo}/issues/{number}"])
+        if proc.returncode != 0:
+            log_gh_failure(log, proc.stderr, "cicd.issue_read_failed repo=%s #%s: %s",
+                           repo, number, proc.stderr.strip())
+            return None
+        data = json.loads(proc.stdout)
+        return {"state": str(data.get("state") or ""), "body": data.get("body") or "",
+                "labels": [str(lb.get("name")) for lb in data.get("labels") or []
+                           if isinstance(lb, dict) and lb.get("name")]}
+    except Exception:
+        log.warning("cicd.issue_read_failed repo=%s #%s", repo, number, exc_info=True)
+        return None

@@ -178,7 +178,12 @@ registry.register(CicdDoctor(), oversight=AutomationOversight(
         'off': 'Disable background CI health analysis.',
         'propose': 'Analyze CI health; automatically file or reopen qualifying GitHub issues when File GitHub issues '
                    'is enabled. Close resolved issues even when filing is disabled. Track findings and graduation '
-                   'candidates without launching repair sessions.',
+                   'candidates without launching repair sessions. Detect systemic merge-queue reds: '
+                   'push an alert and open one incident issue, without braking or dispatching.',
+        'correct': 'Everything propose does, plus for an external-feed or main-regression systemic red: '
+                   'set the issue-borne merge-queue brake (label and expiring marker) and dispatch one '
+                   'fix session, each behind its own setting. Explicit opt-in. Never mutates the merge '
+                   'queue itself.',
     },
     (Relationship('shares_work_with', 'pr-doctor',
                   'Examines CI system health while PR Doctor repairs individual PRs.'),),
