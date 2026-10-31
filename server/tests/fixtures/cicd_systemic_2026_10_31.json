@@ -1,0 +1,2911 @@
+{
+ "repo": "cairnea/KinDash",
+ "window": [
+  "2026-10-30T20:00:00Z",
+  "2026-10-31T11:30:00Z"
+ ],
+ "candidates": [
+  {
+   "run_id": 41122279556,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-27f7dfb7d73815d5a5d8cfe4a5c0f67689096d75",
+   "head_sha": "e3236abb2ece60d0bc6d21b0dc5f6bc9a43e82e7",
+   "created_at": "2026-10-30T20:19:47Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124304511269,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T20:53:20Z"
+    },
+    {
+     "id": 124304515122,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T20:51:32Z"
+    },
+    {
+     "id": 124304516635,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T20:28:09Z"
+    },
+    {
+     "id": 124304519112,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T20:43:38Z"
+    },
+    {
+     "id": 124307128049,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T20:53:57Z"
+    },
+    {
+     "id": 124307407161,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T20:53:57Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41122804510,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20301-e3236abb2ece60d0bc6d21b0dc5f6bc9a43e82e7",
+   "head_sha": "f0462f070ed898a2868aa5db295cd7eae4dadbe6",
+   "created_at": "2026-10-30T20:23:31Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124305791180,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T20:52:38Z"
+    },
+    {
+     "id": 124305794681,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T20:59:35Z"
+    },
+    {
+     "id": 124305798030,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T20:32:19Z"
+    },
+    {
+     "id": 124305798434,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T20:45:08Z"
+    },
+    {
+     "id": 124305921559,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:01:19Z"
+    },
+    {
+     "id": 124309866983,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:00:48Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41127849077,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20300-f0462f070ed898a2868aa5db295cd7eae4dadbe6",
+   "head_sha": "3182ec496f1094423d14857b2d593759f58e77f2",
+   "created_at": "2026-10-30T21:01:46Z",
+   "status": "completed",
+   "conclusion": "cancelled",
+   "jobs": [
+    {
+     "id": 124321244252,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:28:20Z"
+    },
+    {
+     "id": 124321246780,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:30:14Z"
+    },
+    {
+     "id": 124321248533,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:08:55Z"
+    },
+    {
+     "id": 124321249084,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:16:37Z"
+    },
+    {
+     "id": 124323341704,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:31:25Z"
+    },
+    {
+     "id": 124323844435,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:31:26Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41131725257,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20301-27f7dfb7d73815d5a5d8cfe4a5c0f67689096d75",
+   "head_sha": "ba3781e212f2c55a00896016a5471df152ece815",
+   "created_at": "2026-10-30T21:31:52Z",
+   "status": "completed",
+   "conclusion": "success",
+   "jobs": [
+    {
+     "id": 124324308440,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:35:15Z"
+    },
+    {
+     "id": 124325669323,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:36:46Z"
+    },
+    {
+     "id": 124325669324,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:42:35Z"
+    },
+    {
+     "id": 124325669370,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:44:41Z"
+    },
+    {
+     "id": 124331215539,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:49:44Z"
+    },
+    {
+     "id": 124331793580,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "cancelled",
+     "completed_at": "2026-10-30T21:55:52Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41131726865,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20300-ba3781e212f2c55a00896016a5471df152ece815",
+   "head_sha": "4828823608245cc67901114d8c33c4bff417f4dd",
+   "created_at": "2026-10-30T21:31:53Z",
+   "status": "completed",
+   "conclusion": "success",
+   "jobs": [
+    {
+     "id": 124324541867,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:36:20Z"
+    },
+    {
+     "id": 124326121231,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:42:41Z"
+    },
+    {
+     "id": 124326121836,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:38:45Z"
+    },
+    {
+     "id": 124326122149,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:49:41Z"
+    },
+    {
+     "id": 124332190322,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:52:17Z"
+    },
+    {
+     "id": 124332936873,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T22:15:40Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41132206170,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "bbb203a97b10626bd61135a6d4f6e77a4b717991",
+   "created_at": "2026-10-30T21:35:41Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124332454059,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:54:46Z"
+    },
+    {
+     "id": 124332457435,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:57:38Z"
+    },
+    {
+     "id": 124332459814,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:42:29Z"
+    },
+    {
+     "id": 124332459973,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T21:50:56Z"
+    },
+    {
+     "id": 124334489989,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:58:08Z"
+    },
+    {
+     "id": 124334682214,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T21:58:09Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41135946188,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "b2a8294f7610d41981a7e6f4b4da1f023140645a",
+   "created_at": "2026-10-30T22:07:15Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124345570079,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T22:29:43Z"
+    },
+    {
+     "id": 124345572439,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T22:35:29Z"
+    },
+    {
+     "id": 124345574267,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T22:12:22Z"
+    },
+    {
+     "id": 124345574478,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T22:24:29Z"
+    },
+    {
+     "id": 124348833683,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T22:36:35Z"
+    },
+    {
+     "id": 124349234585,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T22:36:35Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41140604046,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "62c361ebfcbd4303cde5e5329ac59f74a4e3b3db",
+   "created_at": "2026-10-30T22:49:13Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124361825434,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T23:16:12Z"
+    },
+    {
+     "id": 124361828095,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T23:22:45Z"
+    },
+    {
+     "id": 124361830106,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T23:06:52Z"
+    },
+    {
+     "id": 124361830791,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T22:55:35Z"
+    },
+    {
+     "id": 124365041335,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T23:23:53Z"
+    },
+    {
+     "id": 124365413577,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-30T23:23:54Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41145368737,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "89d8d4681dda1cf05b3b77e698b1135e17a39364",
+   "created_at": "2026-10-30T23:35:18Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124376064304,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:00:48Z"
+    },
+    {
+     "id": 124376066227,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:05:40Z"
+    },
+    {
+     "id": 124376067298,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T23:52:57Z"
+    },
+    {
+     "id": 124376068202,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-30T23:40:43Z"
+    },
+    {
+     "id": 124378302982,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:06:52Z"
+    },
+    {
+     "id": 124378681674,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:06:53Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41147267253,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-89d8d4681dda1cf05b3b77e698b1135e17a39364",
+   "head_sha": "542541d1127289efb634ed84e7d114982c4a5ce3",
+   "created_at": "2026-10-30T23:55:14Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124381076262,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:18:03Z"
+    },
+    {
+     "id": 124381078441,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "cancelled",
+     "completed_at": "2026-10-31T00:34:46Z"
+    },
+    {
+     "id": 124381078763,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:33:11Z"
+    },
+    {
+     "id": 124381080568,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T00:01:05Z"
+    },
+    {
+     "id": 124387033569,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:35:18Z"
+    },
+    {
+     "id": 124387161258,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:35:19Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41149076593,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "b05df249b422e860463afe4dbacc465498a1a0ba",
+   "created_at": "2026-10-31T00:14:30Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124386868708,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T00:18:14Z"
+    },
+    {
+     "id": 124386869286,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:34:44Z"
+    },
+    {
+     "id": 124386869520,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:42:34Z"
+    },
+    {
+     "id": 124386870552,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T00:26:27Z"
+    },
+    {
+     "id": 124389226883,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:44:22Z"
+    },
+    {
+     "id": 124389729180,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:44:22Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41149573149,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-b05df249b422e860463afe4dbacc465498a1a0ba",
+   "head_sha": "2d320ec51aedc2c5aed9a7b3a73487ed4d3591db",
+   "created_at": "2026-10-31T00:19:50Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124387614536,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:39:20Z"
+    },
+    {
+     "id": 124387616775,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:41:58Z"
+    },
+    {
+     "id": 124387616921,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:37:30Z"
+    },
+    {
+     "id": 124387617391,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:45:15Z"
+    },
+    {
+     "id": 124389976545,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:45:34Z"
+    },
+    {
+     "id": 124390071357,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T00:45:35Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41151446206,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-2d320ec51aedc2c5aed9a7b3a73487ed4d3591db",
+   "head_sha": "9f933b4c59763de02eb828746e555f5ae94d20e1",
+   "created_at": "2026-10-31T00:40:34Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124394181943,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:04:05Z"
+    },
+    {
+     "id": 124394184417,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:01:36Z"
+    },
+    {
+     "id": 124394184490,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:06:02Z"
+    },
+    {
+     "id": 124394184665,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:08:05Z"
+    },
+    {
+     "id": 124396099454,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:09:15Z"
+    },
+    {
+     "id": 124396406147,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:09:16Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41153932389,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "27e850c7f926b46415cf5c9947136a8fce73bd55",
+   "created_at": "2026-10-31T01:09:25Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124401050553,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:29:51Z"
+    },
+    {
+     "id": 124401051868,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:32:12Z"
+    },
+    {
+     "id": 124401051943,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:27:53Z"
+    },
+    {
+     "id": 124401052313,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:35:45Z"
+    },
+    {
+     "id": 124403108995,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:36:36Z"
+    },
+    {
+     "id": 124403314451,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:36:36Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41153934651,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-27e850c7f926b46415cf5c9947136a8fce73bd55",
+   "head_sha": "bd229e305f84d02549ca65640fef8cff5c8f8f24",
+   "created_at": "2026-10-31T01:09:27Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124401856373,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:33:02Z"
+    },
+    {
+     "id": 124401858007,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:35:40Z"
+    },
+    {
+     "id": 124401858141,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:31:03Z"
+    },
+    {
+     "id": 124401858551,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:39:35Z"
+    },
+    {
+     "id": 124404044878,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:39:55Z"
+    },
+    {
+     "id": 124404133858,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:39:56Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41154131592,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-bd229e305f84d02549ca65640fef8cff5c8f8f24",
+   "head_sha": "2b2564f13e8372e00e2b6d2a47275a617d50e51a",
+   "created_at": "2026-10-31T01:11:44Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124402039198,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:33:47Z"
+    },
+    {
+     "id": 124402040470,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:36:34Z"
+    },
+    {
+     "id": 124402040560,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:31:56Z"
+    },
+    {
+     "id": 124402040783,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:40:56Z"
+    },
+    {
+     "id": 124404390220,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:41:25Z"
+    },
+    {
+     "id": 124404511837,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:41:26Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41155443887,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-2b2564f13e8372e00e2b6d2a47275a617d50e51a",
+   "head_sha": "c438b6da99b1f86487ed2ebbac401ce20f2e8874",
+   "created_at": "2026-10-31T01:27:33Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124405157047,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:47:26Z"
+    },
+    {
+     "id": 124405158435,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:45:10Z"
+    },
+    {
+     "id": 124405158570,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:50:57Z"
+    },
+    {
+     "id": 124405159329,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:55:26Z"
+    },
+    {
+     "id": 124407758587,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:56:35Z"
+    },
+    {
+     "id": 124408024743,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T01:56:36Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41156724976,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "e63b91227680e1de5404c100e8932ca108ae60ec",
+   "created_at": "2026-10-31T01:43:39Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124410177549,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T01:47:26Z"
+    },
+    {
+     "id": 124410178439,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:07:16Z"
+    },
+    {
+     "id": 124410178701,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:15:56Z"
+    },
+    {
+     "id": 124410179642,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T01:53:43Z"
+    },
+    {
+     "id": 124412727511,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:16:31Z"
+    },
+    {
+     "id": 124412882264,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:16:32Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41156725808,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-e63b91227680e1de5404c100e8932ca108ae60ec",
+   "head_sha": "298f2ebc2dbfdb52c6e985132fe7d8c95200a5da",
+   "created_at": "2026-10-31T01:43:39Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124410027690,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T01:48:27Z"
+    },
+    {
+     "id": 124410028735,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:06:06Z"
+    },
+    {
+     "id": 124410029052,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:14:56Z"
+    },
+    {
+     "id": 124410029439,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T01:54:44Z"
+    },
+    {
+     "id": 124412471391,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:16:05Z"
+    },
+    {
+     "id": 124412772065,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:16:06Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41156727138,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-298f2ebc2dbfdb52c6e985132fe7d8c95200a5da",
+   "head_sha": "011486c6eeaa324bfb4696feab25ed6139e22982",
+   "created_at": "2026-10-31T01:43:40Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124409654009,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T01:47:46Z"
+    },
+    {
+     "id": 124409655060,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:05:12Z"
+    },
+    {
+     "id": 124409655375,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:13:54Z"
+    },
+    {
+     "id": 124409656425,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T01:56:05Z"
+    },
+    {
+     "id": 124412217911,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:14:14Z"
+    },
+    {
+     "id": 124412305720,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:14:15Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41157690430,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20302-011486c6eeaa324bfb4696feab25ed6139e22982",
+   "head_sha": "8964ee68cfa2bc826c8ca1c949517d4191a1d1ca",
+   "created_at": "2026-10-31T01:56:32Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124412546042,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:01:34Z"
+    },
+    {
+     "id": 124412546273,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:15:47Z"
+    },
+    {
+     "id": 124412547650,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:08:05Z"
+    },
+    {
+     "id": 124412548198,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:13:45Z"
+    },
+    {
+     "id": 124412690865,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:16:11Z"
+    },
+    {
+     "id": 124412796978,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:16:12Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41159283325,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-4aedac6bffa14a6d59574107002a5af147dcf73f",
+   "head_sha": "656980198ac6d0f20f1ff4663fc291a81930e2d1",
+   "created_at": "2026-10-31T02:16:59Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124417971100,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:21:53Z"
+    },
+    {
+     "id": 124417971275,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:38:49Z"
+    },
+    {
+     "id": 124417971344,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:47:11Z"
+    },
+    {
+     "id": 124417972626,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:28:07Z"
+    },
+    {
+     "id": 124419939023,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:48:19Z"
+    },
+    {
+     "id": 124420184270,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:48:20Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41159282612,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "4aedac6bffa14a6d59574107002a5af147dcf73f",
+   "created_at": "2026-10-31T02:16:59Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124417521765,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:36:43Z"
+    },
+    {
+     "id": 124417521891,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:21:50Z"
+    },
+    {
+     "id": 124417522141,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:45:03Z"
+    },
+    {
+     "id": 124417523252,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:27:16Z"
+    },
+    {
+     "id": 124419472658,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:46:13Z"
+    },
+    {
+     "id": 124419733187,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:46:14Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41159284391,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20302-656980198ac6d0f20f1ff4663fc291a81930e2d1",
+   "head_sha": "717bd04eaf0bec95c85dbc6d37b5ab37be36ae7e",
+   "created_at": "2026-10-31T02:17:00Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124417878994,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:38:23Z"
+    },
+    {
+     "id": 124417880510,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:30:12Z"
+    },
+    {
+     "id": 124417880654,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:35:03Z"
+    },
+    {
+     "id": 124417896769,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:21:52Z"
+    },
+    {
+     "id": 124418024876,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:38:44Z"
+    },
+    {
+     "id": 124418101882,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:38:44Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41159749715,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-717bd04eaf0bec95c85dbc6d37b5ab37be36ae7e",
+   "head_sha": "98c4034966137370d7b5f1cbde54578d335eb291",
+   "created_at": "2026-10-31T02:23:01Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124419004949,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:25:54Z"
+    },
+    {
+     "id": 124419005731,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:43:29Z"
+    },
+    {
+     "id": 124419006971,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:34:55Z"
+    },
+    {
+     "id": 124419007339,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:39:39Z"
+    },
+    {
+     "id": 124419131593,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:44:35Z"
+    },
+    {
+     "id": 124419372651,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T02:44:35Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41161645332,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20302-4be922f5aba35fa0bdf4fdc8841101b2656c1217",
+   "head_sha": "5255998409c095075852952cbb682d183062d775",
+   "created_at": "2026-10-31T02:48:46Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124425110982,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:53:59Z"
+    },
+    {
+     "id": 124425111742,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:11:17Z"
+    },
+    {
+     "id": 124425113161,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:01:50Z"
+    },
+    {
+     "id": 124425113351,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:07:54Z"
+    },
+    {
+     "id": 124425253487,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:12:24Z"
+    },
+    {
+     "id": 124425515278,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:12:25Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41161644516,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "4be922f5aba35fa0bdf4fdc8841101b2656c1217",
+   "created_at": "2026-10-31T02:48:46Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124424940582,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:53:47Z"
+    },
+    {
+     "id": 124424940926,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:10:29Z"
+    },
+    {
+     "id": 124424941328,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:18:53Z"
+    },
+    {
+     "id": 124424942516,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:01:49Z"
+    },
+    {
+     "id": 124426978185,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:20:03Z"
+    },
+    {
+     "id": 124427241780,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:20:03Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41161646671,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-5255998409c095075852952cbb682d183062d775",
+   "head_sha": "339e54c5f68ae51217271c2d916fe3079ef18d3e",
+   "created_at": "2026-10-31T02:48:47Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124424847697,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:10:11Z"
+    },
+    {
+     "id": 124424848857,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:02:16Z"
+    },
+    {
+     "id": 124424849622,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:08:19Z"
+    },
+    {
+     "id": 124424885115,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T02:54:26Z"
+    },
+    {
+     "id": 124424999665,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:10:36Z"
+    },
+    {
+     "id": 124425097513,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:10:36Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41163948324,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20302-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "198cbdd6ea0228bab8d5bd893d2f6dc07fbc6138",
+   "created_at": "2026-10-31T03:20:28Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124432019631,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:25:15Z"
+    },
+    {
+     "id": 124432020302,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:42:38Z"
+    },
+    {
+     "id": 124432021116,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:33:30Z"
+    },
+    {
+     "id": 124432021401,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:38:42Z"
+    },
+    {
+     "id": 124432162186,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:43:47Z"
+    },
+    {
+     "id": 124432403902,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:43:48Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41163950192,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-198cbdd6ea0228bab8d5bd893d2f6dc07fbc6138",
+   "head_sha": "b46600a09890335d398cfa3877d7781d6147e4da",
+   "created_at": "2026-10-31T03:20:30Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124432014103,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:42:34Z"
+    },
+    {
+     "id": 124432015496,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:39:35Z"
+    },
+    {
+     "id": 124432015663,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:29:28Z"
+    },
+    {
+     "id": 124432033802,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:25:47Z"
+    },
+    {
+     "id": 124432147106,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:43:45Z"
+    },
+    {
+     "id": 124432398456,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T03:43:46Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41165637244,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "23f2f47b8e4a9b7bf7f3537f956f091a4f2beb0c",
+   "created_at": "2026-10-31T03:44:11Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124437152588,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:48:01Z"
+    },
+    {
+     "id": 124437153243,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T04:07:20Z"
+    },
+    {
+     "id": 124437153545,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T04:13:28Z"
+    },
+    {
+     "id": 124437154662,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T03:56:41Z"
+    },
+    {
+     "id": 124438639837,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T04:14:34Z"
+    },
+    {
+     "id": 124438879626,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T04:14:35Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41175605929,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "756cbd94f9622989d3fd615ff3921ff400f7970d",
+   "created_at": "2026-10-31T06:12:03Z",
+   "status": "completed",
+   "conclusion": "cancelled",
+   "jobs": [
+    {
+     "id": 124466695952,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "cancelled",
+     "completed_at": "2026-10-31T06:35:52Z"
+    },
+    {
+     "id": 124466697294,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "cancelled",
+     "completed_at": "2026-10-31T06:36:02Z"
+    },
+    {
+     "id": 124466697332,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T06:34:36Z"
+    },
+    {
+     "id": 124466697654,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "cancelled",
+     "completed_at": "2026-10-31T06:36:04Z"
+    },
+    {
+     "id": 124467335023,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "cancelled",
+     "completed_at": "2026-10-31T06:37:28Z"
+    },
+    {
+     "id": 124467610713,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "cancelled",
+     "completed_at": "2026-10-31T06:37:28Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41177259591,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "efaf52284bd4440a13a0159a46d8208007b35338",
+   "created_at": "2026-10-31T06:35:45Z",
+   "status": "completed",
+   "conclusion": "cancelled",
+   "jobs": [
+    {
+     "id": 124471452013,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:01:04Z"
+    },
+    {
+     "id": 124471453559,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:04:43Z"
+    },
+    {
+     "id": 124471453610,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T06:59:42Z"
+    },
+    {
+     "id": 124471453724,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:08:25Z"
+    },
+    {
+     "id": 124473535658,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:09:46Z"
+    },
+    {
+     "id": 124473803167,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:09:46Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41179405059,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20234-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "b5aa4b81784a29a36d70cda35e2a4e5aa73bd33e",
+   "created_at": "2026-10-31T07:08:26Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124477675135,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:32:58Z"
+    },
+    {
+     "id": 124477676351,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:36:27Z"
+    },
+    {
+     "id": 124477676408,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:31:26Z"
+    },
+    {
+     "id": 124477676688,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:40:16Z"
+    },
+    {
+     "id": 124479713454,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:40:43Z"
+    },
+    {
+     "id": 124479801114,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:40:43Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41181202865,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-b5aa4b81784a29a36d70cda35e2a4e5aa73bd33e",
+   "head_sha": "d523e64e0111a14ce76b698e2302168e22a89078",
+   "created_at": "2026-10-31T07:35:17Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124482662696,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:58:52Z"
+    },
+    {
+     "id": 124482663852,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:01:40Z"
+    },
+    {
+     "id": 124482663904,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T07:57:19Z"
+    },
+    {
+     "id": 124482664075,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:03:54Z"
+    },
+    {
+     "id": 124484247746,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:05:09Z"
+    },
+    {
+     "id": 124484497405,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:05:09Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41183171852,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "afc31a76c35f357bd48cff9e6e342bc8267c3387",
+   "created_at": "2026-10-31T08:05:35Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124488869646,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:09:22Z"
+    },
+    {
+     "id": 124488869764,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:28:00Z"
+    },
+    {
+     "id": 124488870060,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:38:26Z"
+    },
+    {
+     "id": 124488871267,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:18:36Z"
+    },
+    {
+     "id": 124491277231,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:39:38Z"
+    },
+    {
+     "id": 124491498180,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:39:38Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41183451479,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-afc31a76c35f357bd48cff9e6e342bc8267c3387",
+   "head_sha": "1181f131f484e6f902230215ac4f147ca2e27f05",
+   "created_at": "2026-10-31T08:09:44Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124489937523,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:32:21Z"
+    },
+    {
+     "id": 124489937822,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:41:20Z"
+    },
+    {
+     "id": 124489938679,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:21:53Z"
+    },
+    {
+     "id": 124489955864,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:13:29Z"
+    },
+    {
+     "id": 124491831540,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:42:10Z"
+    },
+    {
+     "id": 124491994244,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:42:11Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41184274986,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20302-1181f131f484e6f902230215ac4f147ca2e27f05",
+   "head_sha": "22582966c8dc110f0b1e80667c2e79b1f7455bbb",
+   "created_at": "2026-10-31T08:21:32Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124491659703,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:25:27Z"
+    },
+    {
+     "id": 124491660107,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:41:01Z"
+    },
+    {
+     "id": 124491661143,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:32:59Z"
+    },
+    {
+     "id": 124491661448,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:37:54Z"
+    },
+    {
+     "id": 124491769726,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:42:14Z"
+    },
+    {
+     "id": 124492005746,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T08:42:14Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41185698494,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "a2b73a2c2f81b209a7e2d8717c03672ce450b1d2",
+   "created_at": "2026-10-31T08:42:32Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124495986671,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:03:29Z"
+    },
+    {
+     "id": 124495986713,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:11:53Z"
+    },
+    {
+     "id": 124495987328,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:55:14Z"
+    },
+    {
+     "id": 124496013232,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:46:36Z"
+    },
+    {
+     "id": 124497854721,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:12:23Z"
+    },
+    {
+     "id": 124497959938,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:12:24Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41185699435,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20302-a2b73a2c2f81b209a7e2d8717c03672ce450b1d2",
+   "head_sha": "9a52fccb0554ffc060499b5b3be56808bdd50454",
+   "created_at": "2026-10-31T08:42:33Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124496100336,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:04:00Z"
+    },
+    {
+     "id": 124496101249,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:56:28Z"
+    },
+    {
+     "id": 124496101276,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:02:10Z"
+    },
+    {
+     "id": 124496120769,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:47:40Z"
+    },
+    {
+     "id": 124496218591,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:04:29Z"
+    },
+    {
+     "id": 124496320198,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:04:30Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41186140707,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-9a52fccb0554ffc060499b5b3be56808bdd50454",
+   "head_sha": "c0057a7e9b67c03ad84a16d9655e71722141115d",
+   "created_at": "2026-10-31T08:49:13Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124497071663,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T08:52:16Z"
+    },
+    {
+     "id": 124497072161,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:08:42Z"
+    },
+    {
+     "id": 124497073375,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:00:58Z"
+    },
+    {
+     "id": 124497073385,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:06:11Z"
+    },
+    {
+     "id": 124497191124,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:09:31Z"
+    },
+    {
+     "id": 124497363483,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:09:31Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41187440938,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-c0057a7e9b67c03ad84a16d9655e71722141115d",
+   "head_sha": "d7a32aab8c5e1a850a1a1177dcf3e9be6bbc397a",
+   "created_at": "2026-10-31T09:08:20Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124502072266,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:13:28Z"
+    },
+    {
+     "id": 124502073041,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:34:03Z"
+    },
+    {
+     "id": 124502073988,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:20:07Z"
+    },
+    {
+     "id": 124502074490,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:24:48Z"
+    },
+    {
+     "id": 124502336215,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:35:10Z"
+    },
+    {
+     "id": 124502568833,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:35:11Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41189328312,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20302-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "60e87256cf50bebc6b427ca2cd05dc00b4e5602a",
+   "created_at": "2026-10-31T09:35:36Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124506544764,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:39:35Z"
+    },
+    {
+     "id": 124506544956,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:55:59Z"
+    },
+    {
+     "id": 124506545664,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:47:15Z"
+    },
+    {
+     "id": 124506545676,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:49:36Z"
+    },
+    {
+     "id": 124506648279,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:56:21Z"
+    },
+    {
+     "id": 124506718987,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:56:21Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41189329905,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-60e87256cf50bebc6b427ca2cd05dc00b4e5602a",
+   "head_sha": "a1238183dc763a5ebe7b62e156b48294d17c6a7d",
+   "created_at": "2026-10-31T09:35:37Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124507251161,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:59:41Z"
+    },
+    {
+     "id": 124507251242,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:09:05Z"
+    },
+    {
+     "id": 124507251926,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:46:19Z"
+    },
+    {
+     "id": 124507269101,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:40:53Z"
+    },
+    {
+     "id": 124509242803,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:09:32Z"
+    },
+    {
+     "id": 124509325303,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:09:32Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41189330928,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-a1238183dc763a5ebe7b62e156b48294d17c6a7d",
+   "head_sha": "1872c291de8dfddd5c17be859c6e5ffdad73a830",
+   "created_at": "2026-10-31T09:35:38Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124506875479,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:57:34Z"
+    },
+    {
+     "id": 124506875610,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:40:15Z"
+    },
+    {
+     "id": 124506876134,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:48:58Z"
+    },
+    {
+     "id": 124506876532,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:55:52Z"
+    },
+    {
+     "id": 124506941083,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:57:58Z"
+    },
+    {
+     "id": 124507015880,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T09:57:58Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41190218330,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-1872c291de8dfddd5c17be859c6e5ffdad73a830",
+   "head_sha": "e625fbebf065c0bb38322f8305eed9f8fd613d5f",
+   "created_at": "2026-10-31T09:49:02Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124508841014,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:07:53Z"
+    },
+    {
+     "id": 124508842050,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:05:11Z"
+    },
+    {
+     "id": 124508842292,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:59:51Z"
+    },
+    {
+     "id": 124508871364,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T09:53:12Z"
+    },
+    {
+     "id": 124508997976,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:09:02Z"
+    },
+    {
+     "id": 124509224550,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:09:02Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41191624346,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20304-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "ea8283dd68b27e8cfdb1ecd8edb11b0346b42ba4",
+   "created_at": "2026-10-31T10:09:58Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124513519074,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:12:58Z"
+    },
+    {
+     "id": 124513519383,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:31:12Z"
+    },
+    {
+     "id": 124513519544,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:39:45Z"
+    },
+    {
+     "id": 124513520280,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:22:58Z"
+    },
+    {
+     "id": 124515381713,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:40:25Z"
+    },
+    {
+     "id": 124515513906,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:40:25Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41191625347,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-ea8283dd68b27e8cfdb1ecd8edb11b0346b42ba4",
+   "head_sha": "7c562da31b80cb4fddeaac60073a16f69b040835",
+   "created_at": "2026-10-31T10:09:58Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124513685541,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:15:01Z"
+    },
+    {
+     "id": 124513685910,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:32:03Z"
+    },
+    {
+     "id": 124513686277,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:40:48Z"
+    },
+    {
+     "id": 124513686824,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:20:02Z"
+    },
+    {
+     "id": 124513711429,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:41:38Z"
+    },
+    {
+     "id": 124515584719,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:41:12Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41191625782,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-7c562da31b80cb4fddeaac60073a16f69b040835",
+   "head_sha": "b4f0af712e7c33c7d6d34ebc2531e75728db37e3",
+   "created_at": "2026-10-31T10:09:59Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124513587525,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:14:13Z"
+    },
+    {
+     "id": 124513588126,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:31:29Z"
+    },
+    {
+     "id": 124513588318,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:39:45Z"
+    },
+    {
+     "id": 124513589232,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:23:13Z"
+    },
+    {
+     "id": 124515383547,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:40:25Z"
+    },
+    {
+     "id": 124515512892,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T10:40:25Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41193824409,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20305-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "7d8acfaef0ea539b5cb4b07ab93b54a348234f87",
+   "created_at": "2026-10-31T10:42:13Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124519600522,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:45:36Z"
+    },
+    {
+     "id": 124519600844,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:02:06Z"
+    },
+    {
+     "id": 124519600988,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:10:51Z"
+    },
+    {
+     "id": 124519602097,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:54:07Z"
+    },
+    {
+     "id": 124521557020,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:12:07Z"
+    },
+    {
+     "id": 124521788355,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:12:07Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41193825440,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-7d8acfaef0ea539b5cb4b07ab93b54a348234f87",
+   "head_sha": "b903933e27ae905117aa642f457fa111a3e9d7ce",
+   "created_at": "2026-10-31T10:42:14Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124520358983,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:46:16Z"
+    },
+    {
+     "id": 124520359348,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:05:41Z"
+    },
+    {
+     "id": 124520359450,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:14:33Z"
+    },
+    {
+     "id": 124520360536,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T10:55:12Z"
+    },
+    {
+     "id": 124522267849,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:15:41Z"
+    },
+    {
+     "id": 124522499358,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:15:42Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41196144202,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20303-4828823608245cc67901114d8c33c4bff417f4dd",
+   "head_sha": "1d819aee68bbd5efcfb1aee30204dc18a4fe11a8",
+   "created_at": "2026-10-31T11:16:07Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124526419612,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T11:20:06Z"
+    },
+    {
+     "id": 124526420284,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:35:45Z"
+    },
+    {
+     "id": 124526420528,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:44:24Z"
+    },
+    {
+     "id": 124526421058,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T11:27:54Z"
+    },
+    {
+     "id": 124528253374,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:44:35Z"
+    },
+    {
+     "id": 124528289998,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:44:35Z"
+    }
+   ]
+  },
+  {
+   "run_id": 41196288777,
+   "workflow_id": 164765747,
+   "event": "merge_group",
+   "head_branch": "gh-readonly-queue/main/pr-20307-1d819aee68bbd5efcfb1aee30204dc18a4fe11a8",
+   "head_sha": "1977703d63604aa9965ce2e946b4ed172e0f39b5",
+   "created_at": "2026-10-31T11:18:13Z",
+   "status": "completed",
+   "conclusion": "failure",
+   "jobs": [
+    {
+     "id": 124527197110,
+     "name": "docs: conformance",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T11:22:14Z"
+    },
+    {
+     "id": 124527198064,
+     "name": "static-checks / security: audit",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:39:28Z"
+    },
+    {
+     "id": 124527198292,
+     "name": "static-checks / test: unit (3/4)",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:48:41Z"
+    },
+    {
+     "id": 124527198623,
+     "name": "bats-tests / test: bats",
+     "status": "completed",
+     "conclusion": "success",
+     "completed_at": "2026-10-31T11:30:49Z"
+    },
+    {
+     "id": 124529103759,
+     "name": "ci",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:49:07Z"
+    },
+    {
+     "id": 124529191700,
+     "name": "ci-gate",
+     "status": "completed",
+     "conclusion": "failure",
+     "completed_at": "2026-10-31T11:49:08Z"
+    }
+   ]
+  }
+ ],
+ "main": {
+  "run_id": 41134261204,
+  "workflow_id": 164765747,
+  "event": "push",
+  "head_branch": "main",
+  "head_sha": "4828823608245cc67901114d8c33c4bff417f4dd",
+  "created_at": "2026-10-30T21:53:00Z",
+  "status": "completed",
+  "conclusion": "success",
+  "jobs": [
+   {
+    "id": 124334194869,
+    "name": "docs: conformance",
+    "status": "completed",
+    "conclusion": "success",
+    "completed_at": "2026-10-30T21:59:19Z"
+   },
+   {
+    "id": 124335700896,
+    "name": "bats-tests / test: bats",
+    "status": "completed",
+    "conclusion": "success",
+    "completed_at": "2026-10-30T22:06:03Z"
+   },
+   {
+    "id": 124335985101,
+    "name": "static-checks / security: audit",
+    "status": "completed",
+    "conclusion": "success",
+    "completed_at": "2026-10-30T22:02:22Z"
+   },
+   {
+    "id": 124339319753,
+    "name": "ci",
+    "status": "completed",
+    "conclusion": "success",
+    "completed_at": "2026-10-30T22:10:18Z"
+   }
+  ]
+ }
+}
