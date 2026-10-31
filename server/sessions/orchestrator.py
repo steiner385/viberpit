@@ -16660,7 +16660,8 @@ class SessionOrchestrator:
         """Needs-human alert for a PR whose checks will never report (#3159).
 
         ``ci_red_is_unproven`` suppresses every other alert while a check is
-        pending or cancelled, so a check that never completes (a refused job
+        pending or cancelled (unless a real non-rollup failure already counts as
+        evidence), so a check that never completes (a refused job
         during a billing outage) made the PR invisible for ~19 h. One feed event
         and one push per (target, head); in-memory like ``_pr_doctor_report_skip``,
         so a restart repeats a still-standing alert once."""

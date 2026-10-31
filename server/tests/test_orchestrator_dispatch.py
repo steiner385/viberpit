@@ -89,7 +89,7 @@ def test_dispatch_proposal_ignores_a_red_no_check_earned():
     orch = _make_orch()
     rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
     superseded = (CheckDetail(name="server-tests (1)", conclusion="cancelled"),
-                  CheckDetail(name="ci-gate", conclusion="failure"))
+                  CheckDetail(name="lint-and-test", conclusion="failure"))
     orch.pr_for = lambda repo, branch: PullRequestInfo(
         218, "u", "open", "failing", "fix the thing", checks_detail=superseded)
     orch._review_proposals[("o/r", 218)] = (time.monotonic(), None)

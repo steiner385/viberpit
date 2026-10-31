@@ -160,7 +160,7 @@ class _SupersededPoller:
                 ("changes", "success"), ("frontend", "success"),
                 ("lint-and-test-core", "cancelled"),
                 ("server-tests (1)", "cancelled"), ("server-tests (2)", "cancelled"),
-                ("ci-gate", "failure"),
+                ("lint-and-test", "failure"),
             )
         )
 

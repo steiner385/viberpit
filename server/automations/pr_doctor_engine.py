@@ -48,8 +48,9 @@ _NO_VERDICT = frozenset({"pending", "cancelled"})
 
 
 # Aggregator jobs that turn red only because their inputs did (cancelled or
-# still running). A failure on one of these is not evidence of its own.
-ROLLUP_CHECKS = frozenset({"ci", "ci-gate"})
+# still running): ``lint-and-test`` is this repo's ``if: always()`` aggregator
+# over lint-and-test-core + server-tests; ``ci``/``ci-gate`` are KinDash's. A failure on one of these is not evidence of its own.
+ROLLUP_CHECKS = frozenset({"ci", "ci-gate", "lint-and-test"})
 
 # ``pr_status`` normalizes GraphQL TIMED_OUT/ERROR/STARTUP_FAILURE to "failure",
 # so "timed_out" is listed only as a defensive match for un-normalized payloads.
@@ -155,7 +156,7 @@ def checks_are_stuck(info: PullRequestInfo, now: datetime | None = None) -> bool
     if pending:
         return any((t := _parse_ts(c.started_at)) is not None and t < cutoff
                    for c in pending)
-    if any(c.conclusion == "failure" for c in info.checks_detail):
+    if _has_real_failure(info):
         return False
     cancelled = [c for c in info.checks_detail if c.conclusion == "cancelled"]
     stamps = [_parse_ts(c.completed_at) for c in cancelled]

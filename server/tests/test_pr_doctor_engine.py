@@ -122,7 +122,7 @@ _SUPERSEDED_SHA_CHECKS = _detail(
     ("lint-and-test-core", "cancelled"),
     ("server-tests (1)", "cancelled"), ("server-tests (2)", "cancelled"),
     ("server-tests (3)", "cancelled"), ("server-tests (4)", "cancelled"),
-    ("ci-gate", "failure"),  # the aggregator (a ROLLUP_CHECKS name, #2218)
+    ("lint-and-test", "failure"),
 )
 
 
@@ -147,10 +147,17 @@ def test_classify_superseded_sha_does_not_fall_through_to_stuck_enqueue():
                         checks_detail=_SUPERSEDED_SHA_CHECKS)) is None
 
 
-def test_classify_defers_while_ci_is_still_in_flight():
+def test_classify_real_failure_with_pending_shard_is_failing_ci():
     # A null CheckRun conclusion parses as "pending" — the run has not reported.
-    # Only a rollup aggregator is red, so the red is not evidence yet.
-    still_running = _detail(("ci-gate", "failure"),
+    # A real (non-rollup) failure is evidence regardless (spec section 7).
+    still_running = _detail(("lint-and-test-core", "failure"),
+                            ("server-tests (4)", "pending"))
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
+                        checks_detail=still_running)) == "failing_ci"
+
+
+def test_classify_rollup_failure_with_pending_input_stays_deferred():
+    still_running = _detail(("lint-and-test", "failure"),
                             ("server-tests (4)", "pending"))
     assert classify(_pr(merge_state_status="BLOCKED", checks="failing",
                         checks_detail=still_running)) is None
@@ -569,3 +576,11 @@ def test_real_failure_beside_old_cancellation_is_not_called_stuck():
     info = _blocked(CheckDetail("ci", "cancelled", completed_at=_ago(300)),
                     CheckDetail("unit", "failure"), rollup="failing")
     assert engine.classify(info, _NOW) == "failing_ci"
+
+
+def test_rollup_failure_with_long_cancelled_inputs_is_stuck_checks():
+    # #3159 cancelled arm: only the aggregator failed, every input was cancelled
+    # more than 120 minutes ago, nothing newer is coming.
+    info = _blocked(CheckDetail("server-tests (1)", "cancelled", completed_at=_ago(300)),
+                    CheckDetail("lint-and-test", "failure"), rollup="failing")
+    assert engine.classify(info, _NOW) == "stuck_checks"
