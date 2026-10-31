@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from viberpit.brand import SYSTEMIC_BRAKE_MARKER_PREFIX
+
 # A job counts as failed only once it has completed with one of these. startup_failure
 # is included so a job that cannot start on every candidate surfaces (and classifies
 # as infra) instead of hiding.
@@ -31,7 +33,7 @@ BRAKE_CLASSES = frozenset({"external_feed", "main_regression"})
 BRAKE_BY = "viberpit-cicd-doctor"
 
 _QUEUE_BRANCH = re.compile(r"^gh-readonly-queue/(?P<base>.+)/pr-(?P<pr>\d+)-(?P<sha>[0-9a-fA-F]+)$")
-_MARKER_RE = re.compile(r"<!-- viberpit:systemic-brake \{.*?\} -->\n?", re.DOTALL)
+_MARKER_RE = re.compile(re.escape(SYSTEMIC_BRAKE_MARKER_PREFIX) + r"\{.*?\} -->\n?", re.DOTALL)
 _ADVISORY_RE = re.compile(r"\b(?:GHSA(?:-[0-9a-z]{4}){3}|CVE-\d{4}-\d{4,})\b", re.IGNORECASE)
 # Runner-level failures (§4b). Matched against the NORMALIZED signature, so every
 # entry must survive normalization (``exit code 137`` is protected below).
@@ -380,7 +382,7 @@ def brake_marker(*, job: str, klass: str, incident: str, set_at: float, expires_
     """The KinDash brake-marker HTML comment (contract: cairnea/KinDash#20319)."""
     payload = {"job": job, "class": klass, "incident": incident, "set_at": _iso(set_at),
                "expires_at": _iso(expires_at), "by": BRAKE_BY}
-    return f"<!-- viberpit:systemic-brake {json.dumps(payload, separators=(',', ':'))} -->"
+    return f"{SYSTEMIC_BRAKE_MARKER_PREFIX}{json.dumps(payload, separators=(',', ':'))} -->"
 
 
 def strip_brake_marker(body: str) -> str:

@@ -658,10 +658,40 @@ def test_dismiss_action_closes_and_forgets():
     key, st = next(iter(ctx.incidents().items()))
     n = st["issue_number"]
     assert asyncio.run(loop.action_result(key, "dismiss")) == "dismissed"
-    assert ctx.incidents() == {}
+    st = _only_incident(ctx)
+    assert st["dismissed"] is True and st["brake_state"] == "lifted"
     assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
     assert s.issues[n]["state"] == "closed"
     comments = [c for c in s.calls if c[0] == "comment" and c[1] == n]
     assert len(comments) == 1 and "dismissed" in comments[0][2].lower()
     assert any(e["kind"] == "systemic_dismissed" for e in ctx.events)
-    assert asyncio.run(loop.action_result(key, "dismiss")) == "not_found"
+    assert asyncio.run(loop.actionable_items()) == []  # off the card
+    mark = len(s.calls)
+    assert asyncio.run(loop.action_result(key, "dismiss")) == "dismissed"  # idempotent
+    assert asyncio.run(loop.action_result(key, "clear_brake")) == "not_found"
+    assert s.calls[mark:] == []
+    assert asyncio.run(loop.action_result("systemic:o/r:nope", "dismiss")) == "not_found"
+
+
+def test_dismissed_incident_does_not_reopen_while_still_red():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    key = next(iter(ctx.incidents()))
+    assert asyncio.run(loop.action_result(key, "dismiss")) == "dismissed"
+    mark, notes, spawns = len(s.calls), len(s.notes), len(s.spawns)
+    for i in range(4):  # still red, with a fresh failing candidate each tick
+        s.now += 120
+        s.merge_group.append(_cand(20400 + i, s.now - 30))
+        _tick(loop)
+    assert s.calls[mark:] == []  # no new issue, label, marker edit or comment
+    assert len(s.notes) == notes and len(s.spawns) == spawns
+    assert list(ctx.incidents()) == [key] and ctx.incidents()[key]["dismissed"] is True
+    assert ctx.cicd_systemic_counts["braked"] == 0
+    # The job goes green: the incident clears silently (no push, no comment).
+    _green_after(s)
+    _tick(loop)
+    assert ctx.incidents() == {}
+    assert s.calls[mark:] == [] and len(s.notes) == notes

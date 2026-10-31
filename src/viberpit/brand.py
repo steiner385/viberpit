@@ -141,6 +141,14 @@ def in_repo_namespace(parts: tuple[str, ...]) -> bool:
 EITHER_SLUG_RE = f"(?:{SLUG}|{LEGACY_SLUG})"
 
 
+#: The systemic-red brake marker the CI/CD Doctor writes into an incident issue body
+#: (``<!-- viberpit:systemic-brake {json} -->``). A CROSS-REPO contract: the
+#: KinDash merge gate (cairnea/KinDash#20319) parses exactly this spelling, so it is
+#: pinned to the literal ``viberpit`` and must NOT follow a future ``SLUG`` flip.
+#: Changing it needs a dual-accept window on the consumer first.
+SYSTEMIC_BRAKE_MARKER_PREFIX = "<!-- viberpit:systemic-brake "
+
+
 def marker(name: str) -> str:
     """The emitted HTML-comment marker for *name* (e.g. ``complete`` → ``<!-- viberpit:complete -->``).
 

@@ -167,6 +167,8 @@ class SystemicRedLoop:
                     quiet_s=quiet_s, rollups=rollups):
                 await self._clear(repo, key, state)
                 continue
+            if state.get("dismissed"):
+                continue  # operator dismissed: tracked only so it can clear, never acted on
             hit = hits.get(state["job"])
             if hit is not None:
                 await self._reclassify(key, state, hit, windowed, mains, config)
@@ -375,7 +377,7 @@ class SystemicRedLoop:
         issue, Dismiss always."""
         items: list[ActionableItem] = []
         for key, st in sorted((await self._ctx.list_target_states()).items()):
-            if not key.startswith("systemic:") or st.get("clearing"):
+            if not key.startswith("systemic:") or st.get("clearing") or st.get("dismissed"):
                 continue
             repo = key[len("systemic:"):].rsplit(":", 1)[0]
             brake = st.get("brake_state")
@@ -396,12 +398,16 @@ class SystemicRedLoop:
     async def action_result(self, key: str, kind: str) -> str:
         """``clear_brake``: lift the brake now and record ``lifted``, so the incident is
         never re-braked. ``dismiss``: lift, close the issue with a dismiss comment and
-        forget the incident. Returns brake_cleared | dismissed | not_found | failed."""
+        keep the state marked ``dismissed``, so a still-red job never re-opens; it takes
+        no further side effects and is dropped silently when the job clears.
+        Returns brake_cleared | dismissed | not_found | failed."""
         async with self._lock:  # never interleave with a tick's writes
             state = await self._ctx.get_target_state(key) if key.startswith("systemic:") \
                 else None
             if not state:
                 return "not_found"
+            if state.get("dismissed"):
+                return "dismissed" if kind == "dismiss" else "not_found"
             if kind not in ("clear_brake", "dismiss"):
                 return "failed"
             repo = key[len("systemic:"):].rsplit(":", 1)[0]
@@ -420,8 +426,9 @@ class SystemicRedLoop:
                     state["dismiss_commented"] = True  # a retried dismiss never re-comments
                     await self._save(key, state)
                 if not await self._safe(self._close, repo, int(number), default=False):
-                    return "failed"  # state kept (brake lifted): a retry re-closes
-            await self._ctx.delete_target_state(key)
+                    return "failed"  # not yet dismissed (brake lifted): a retry re-closes
+            state["dismissed"] = True
+            await self._save(key, state)
             await self._ctx.emit("info", f"{repo}: {state['job']} incident dismissed by the "
                                  "operator", kind="systemic_dismissed", target=key)
             return "dismissed"
@@ -429,7 +436,13 @@ class SystemicRedLoop:
     # --- clearing -----------------------------------------------------------------
 
     async def _clear(self, repo: str, key: str, state: dict) -> None:
-        """Lift, comment, close, notify, forget; each step journaled so none replays."""
+        """Lift, comment, close, notify, forget; each step journaled so none replays.
+        A dismissed incident already had its issue closed: it is dropped silently."""
+        if state.get("dismissed"):
+            await self._ctx.delete_target_state(key)
+            await self._ctx.emit("info", f"{repo}: dismissed {state['job']} incident cleared",
+                                 kind="systemic_cleared", target=key)
+            return
         if not state.get("clearing"):
             state["clearing"] = True
             await self._save(key, state)

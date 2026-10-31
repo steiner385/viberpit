@@ -363,6 +363,10 @@ def test_brake_marker_round_trip_matches_kindash_contract():
                           set_at=set_at, expires_at=set_at + 4 * 3600)
     m = re.search(r"<!-- viberpit:systemic-brake (\{.*?\}) -->", marker)
     assert m
+    assert marker.startswith("<!-- viberpit:systemic-brake {") and marker.endswith("} -->")
+    # Pinned to the literal: the KinDash consumer parses exactly this spelling.
+    from viberpit.brand import SYSTEMIC_BRAKE_MARKER_PREFIX
+    assert SYSTEMIC_BRAKE_MARKER_PREFIX == "<!-- viberpit:systemic-brake "
     payload = json.loads(m.group(1))
     assert set(payload) == {"job", "class", "incident", "set_at", "expires_at", "by"}
     assert payload["job"] == "security: audit"
