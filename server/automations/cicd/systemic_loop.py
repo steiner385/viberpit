@@ -15,6 +15,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable
 
+from ..base import ActionableItem, ActionSpec
 from ..context import observation_failed
 from . import systemic as sy
 from .systemic import RunObs
@@ -366,6 +367,64 @@ class SystemicRedLoop:
         await self._ctx.set_target_state(day_key, {"count": count + 1})
         await self._ctx.emit("info", f"{repo}: fix session {sid} dispatched for {state['job']}",
                              kind="systemic_dispatch", target=key, session_id=str(sid))
+
+    # --- card actions (spec §5a) ---------------------------------------------------
+
+    async def actionable_items(self) -> list[ActionableItem]:
+        """One row per live incident: Clear brake while a brake is (or may be) on the
+        issue, Dismiss always."""
+        items: list[ActionableItem] = []
+        for key, st in sorted((await self._ctx.list_target_states()).items()):
+            if not key.startswith("systemic:") or st.get("clearing"):
+                continue
+            repo = key[len("systemic:"):].rsplit(":", 1)[0]
+            brake = st.get("brake_state")
+            actions = []
+            if brake in ("set", "failed"):
+                actions.append(ActionSpec(kind="clear_brake", label="Clear brake",
+                                          style="risky"))
+            actions.append(ActionSpec(kind="dismiss", label="Dismiss", style="risky"))
+            items.append(ActionableItem(
+                id=key, subtitle=repo, url=self._issue_url(repo, st), actions=actions,
+                title=(f"{st.get('job')} red on {len(st.get('prs') or ())} PRs "
+                       f"({sy.class_label(str(st.get('class')))})"),
+                status={"set": "Queue braked", "failed": "Brake NOT set",
+                        "lifted": "Brake lifted", "ceiling": "Brake lifted at ceiling"
+                        }.get(str(brake))))
+        return items
+
+    async def action_result(self, key: str, kind: str) -> str:
+        """``clear_brake``: lift the brake now and record ``lifted``, so the incident is
+        never re-braked. ``dismiss``: lift, close the issue with a dismiss comment and
+        forget the incident. Returns brake_cleared | dismissed | not_found | failed."""
+        async with self._lock:  # never interleave with a tick's writes
+            state = await self._ctx.get_target_state(key) if key.startswith("systemic:") \
+                else None
+            if not state:
+                return "not_found"
+            if kind not in ("clear_brake", "dismiss"):
+                return "failed"
+            repo = key[len("systemic:"):].rsplit(":", 1)[0]
+            if not await self._lift(repo, key, state, "lifted"):
+                return "failed"
+            if kind == "clear_brake":
+                await self._ctx.emit("info", f"{repo}: brake cleared for {state['job']} by "
+                                     "the operator", kind="systemic_brake_cleared", target=key)
+                return "brake_cleared"
+            number = state.get("issue_number")
+            if number is not None and not state.get("owner_closed"):
+                if not state.get("dismiss_commented") and await self._safe(
+                        self._comment, repo, int(number),
+                        f"Dismissed by the operator from ViberPit; `{state['job']}` is no "
+                        "longer tracked as a systemic incident. Closing.", default=False):
+                    state["dismiss_commented"] = True  # a retried dismiss never re-comments
+                    await self._save(key, state)
+                if not await self._safe(self._close, repo, int(number), default=False):
+                    return "failed"  # state kept (brake lifted): a retry re-closes
+            await self._ctx.delete_target_state(key)
+            await self._ctx.emit("info", f"{repo}: {state['job']} incident dismissed by the "
+                                 "operator", kind="systemic_dismissed", target=key)
+            return "dismissed"
 
     # --- clearing -----------------------------------------------------------------
 

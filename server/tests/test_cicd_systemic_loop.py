@@ -604,3 +604,64 @@ def test_brake_marker_expiry_never_exceeds_twelve_hours():
     _tick(s.loop(ctx))
     n = _only_incident(ctx)["issue_number"]
     assert _iso_ts(s.marker(n)["expires_at"]) == s.now + 12 * HOUR  # type: ignore[index]
+
+
+def test_clear_brake_action_lifts_and_never_rebrakes():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    key, st = next(iter(ctx.incidents().items()))
+    n = st["issue_number"]
+    assert st["brake_state"] == "set"
+    items = asyncio.run(loop.actionable_items())
+    assert [i.id for i in items] == [key]
+    assert {a.kind for a in items[0].actions} == {"clear_brake", "dismiss"}
+    assert items[0].url == f"https://github.com/{REPO}/issues/{n}"
+
+    assert asyncio.run(loop.action_result(key, "clear_brake")) == "brake_cleared"
+    st = _only_incident(ctx)
+    assert st["brake_state"] == "lifted"
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+    assert s.issues[n]["state"] == "open"  # the issue closes only on clear
+    items = asyncio.run(loop.actionable_items())
+    assert {a.kind for a in items[0].actions} == {"dismiss"}
+    mark = len(s.calls)
+    for _ in range(3):  # still red: renewed every tick, but never re-braked
+        s.now += 120
+        _tick(loop)
+    assert not [c for c in s.calls[mark:] if c[0] in ("add_label", "edit")]
+    assert _only_incident(ctx)["brake_state"] == "lifted"
+    assert asyncio.run(loop.action_result("systemic:o/r:nope", "clear_brake")) == "not_found"
+    assert asyncio.run(loop.action_result(key, "mute")) == "failed"
+
+
+def test_clear_brake_action_failed_lift_reports_failed():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    key, st = next(iter(ctx.incidents().items()))
+    s.issues.pop(st["issue_number"])  # snapshot read fails -> cannot verify a lift
+    assert asyncio.run(loop.action_result(key, "clear_brake")) == "failed"
+    assert _only_incident(ctx)["brake_state"] == "set"
+
+
+def test_dismiss_action_closes_and_forgets():
+    s, ctx = Seams(), FakeCtx()
+    s.merge_group = _red_audit()
+    s.push = [_main(T0 - HOUR)]
+    loop = s.loop(ctx)
+    _tick(loop)
+    key, st = next(iter(ctx.incidents().items()))
+    n = st["issue_number"]
+    assert asyncio.run(loop.action_result(key, "dismiss")) == "dismissed"
+    assert ctx.incidents() == {}
+    assert LABEL not in s.issues[n]["labels"] and s.marker(n) is None
+    assert s.issues[n]["state"] == "closed"
+    comments = [c for c in s.calls if c[0] == "comment" and c[1] == n]
+    assert len(comments) == 1 and "dismissed" in comments[0][2].lower()
+    assert any(e["kind"] == "systemic_dismissed" for e in ctx.events)
+    assert asyncio.run(loop.action_result(key, "dismiss")) == "not_found"

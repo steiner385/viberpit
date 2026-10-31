@@ -1,7 +1,13 @@
 """The cicd-doctor automation: system-level CI health — flaky tests, advisory-
 check graduation, waste. Proactive/per-system, where pr-doctor is reactive/
-per-PR (it never touches an individual PR). v1 is propose-only: every verdict
-is a finding row + optional ci-doctor GitHub issue, never a mutation."""
+per-PR (it never touches an individual PR).
+
+v1 (``propose``, this module's loop) never mutates: every verdict is a finding row
++ optional ci-doctor GitHub issue. v2 (spec 2026-10-31, ``cicd/systemic_loop.py``)
+adds systemic-red incidents: ``propose`` alerts and files one incident issue;
+``correct`` also dispatches a fix session and sets the issue-borne brake (the
+``ci:systemic-red`` label + body marker the repo's merge gate reads), each behind
+its own bool. Neither mode ever touches the merge queue itself."""
 from __future__ import annotations
 
 from .context import observation_failed, publish_observation
@@ -73,7 +79,7 @@ class CicdDoctor:
     work_class = "maintenance"
     description = ("Watches CI health across repos: flaky tests, advisory-check "
                    "stability and graduation, and workflow waste.")
-    modes: tuple[str, ...] = ("off", "propose")
+    modes: tuple[str, ...] = ("off", "propose", "correct")
     # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
     # acceptance evidence, so it launches Claude only. Widening it is a
     # reviewable one-line change gated on its acceptance suite passing.
@@ -111,12 +117,55 @@ class CicdDoctor:
                     help="Keep individual passed/skipped test rows this long, then fold "
                          "them into per-day counts. Failed rows are kept raw for the "
                          "full retention window."),
+        # Systemic red (v2). Defaults mirror cicd.systemic_loop.DEFAULTS.
+        ConfigField(key="systemic_window_min", label="Systemic window (min)", type="int",
+                    default=60, min=1,
+                    help="Merge-queue failures within this window count toward a systemic red."),
+        ConfigField(key="systemic_min_prs", label="Systemic min PRs", type="int", default=3,
+                    min=2,
+                    help="Distinct PRs failing the same job before it is a systemic red."),
+        ConfigField(key="systemic_rollup_jobs", label="Rollup jobs", type="string",
+                    default="ci,ci-gate",
+                    help="Comma-separated aggregate jobs that are never the failing job itself."),
+        ConfigField(key="systemic_external_feed_jobs", label="External-feed jobs (regex)",
+                    type="string", default="^security: audit$",
+                    help="Jobs whose red comes from an outside feed (advisories), not a PR."),
+        ConfigField(key="systemic_quiet_clear_min", label="Quiet clear (min)", type="int",
+                    default=90, min=1,
+                    help="An incident with no new failure for this long clears on its own."),
+        ConfigField(key="systemic_brake_ttl_min", label="Brake TTL (min)", type="int",
+                    default=240, min=1,
+                    help="Brake expiry, pushed forward each tick while the incident is live."),
+        ConfigField(key="systemic_brake_max_min", label="Brake ceiling (min)", type="int",
+                    default=600, min=1,
+                    help="The brake is lifted for good after this long, even if still red."),
+        ConfigField(key="systemic_dispatch_fix", label="Dispatch fix sessions", type="bool",
+                    default=True,
+                    help="Correct mode: dispatch one fix session per braking incident."),
+        ConfigField(key="systemic_brake", label="Brake the queue", type="bool", default=True,
+                    help="Correct mode: set the issue-borne merge-queue brake."),
+        ConfigField(key="systemic_max_fix_sessions_per_day",
+                    label="Max fix sessions per day", type="int", default=3, min=0,
+                    help="Per-repo daily cap on systemic fix sessions."),
+        ConfigField(key="thrash_min_failed_per_hour", label="Thrash min failed/hour",
+                    type="int", default=6, min=1,
+                    help="Failed merge-queue runs per hour before queue thrash is reported."),
+        ConfigField(key="aws_alarm_prefix", label="AWS alarm prefix", type="string",
+                    default="",
+                    help="CloudWatch alarms with this name prefix are bridged as spend "
+                         "alarms (empty = off)."),
+        ConfigField(key="aws_profile", label="AWS profile", type="string", default="",
+                    help="AWS CLI profile for the alarm read (empty = the default chain)."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
         counts = getattr(ctx, "cicd_doctor_counts", None) if ctx is not None else None
-        if not counts:
+        systemic = getattr(ctx, "cicd_systemic_counts", None) if ctx is not None else None
+        incidents = int((systemic or {}).get("incidents", 0))
+        braked = int((systemic or {}).get("braked", 0))
+        if not counts and not incidents:
             return AutomationStatus(text="idle", level="idle")
+        counts = dict(counts or {})
         open_n, cand = counts.get("open", 0), counts.get("candidates", 0)
         errors = counts.get("errors", 0)
         bits = [f"{open_n} open finding(s)"]
@@ -124,7 +173,12 @@ class CicdDoctor:
             bits.append(f"{cand} graduation candidate(s)")
         if errors:
             bits.append(f"{errors} repo error(s)")
-        if open_n:
+        if incidents:
+            # Int-only: the web types counts as Record<string, number>.
+            counts.update(systemic_incidents=incidents, systemic_braked=braked)
+            bits.append(f"{incidents} systemic incident(s)"
+                        + (f", {braked} braked" if braked else ""))
+        if open_n or incidents:
             level = "active"
         elif errors:
             level = "warn"

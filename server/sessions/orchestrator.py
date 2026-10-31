@@ -941,7 +941,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_pm_triage_task",
     "_gh_reconcile_task",
     "_sdlc_synth_task", "_control_band_task",
-    "_cicd_task", "_archaudit_task", "_sweep_task",
+    "_cicd_task", "_cicd_systemic_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task", "_session_feedback_task",
     "_deploy_monitor_task", "_capacity_governor_task", "_decision_escalation_task",
@@ -1748,7 +1748,9 @@ class SessionOrchestrator:
         # graduation, waste). Real seams shell out to gh via asyncio.to_thread.
         from server.automations.cicd_doctor import CicdDoctorLoop
         from server.github import actions_api
-        self._cicd_ctx = AutomationContext("cicd-doctor")
+        # create_session bound: the systemic-red loop dispatches fix sessions.
+        self._cicd_ctx = AutomationContext(
+            "cicd-doctor", create_session=self._automation_create_session)
         self._cicd_loop = CicdDoctorLoop(
             self._cicd_ctx,
             read_config=self._cicd_read_config,
@@ -1769,6 +1771,43 @@ class SessionOrchestrator:
             clock=time.time,  # wall clock: created_ts from GitHub is epoch time
         )
         self._cicd_task: asyncio.Task | None = None
+        # CI/CD Doctor v2, systemic red (spec 2026-10-31): same ctx, config and repos
+        # as the doctor; its own 120 s task. Sync gh/aws seams run off-loop.
+        from server.automations.cicd.systemic_loop import SystemicRedLoop
+        from server.github import aws_alarms, ci_issues
+        from server.sessions import push as push_mod
+        self._cicd_systemic_loop = SystemicRedLoop(
+            self._cicd_ctx,
+            read_config=self._cicd_read_config,
+            list_repos=self._cicd_list_repos,
+            fetch_runs=lambda repo, event, since, branch: asyncio.to_thread(
+                actions_api.list_recent_runs, repo, event=event, since_ts=since,
+                branch=branch),
+            fetch_log=lambda repo, job_id: asyncio.to_thread(
+                actions_api.job_log_text, repo, job_id),
+            file_issue=lambda repo, title, body, labels: asyncio.to_thread(
+                ci_issues.create_issue, repo, title, body, labels=labels),
+            comment_issue=lambda repo, n, body: asyncio.to_thread(
+                lambda: ci_issues.comment_on_issue(repo, n, body) is not None),
+            edit_issue_body=lambda repo, n, body: asyncio.to_thread(
+                ci_issues.edit_issue_body, repo, n, body),
+            add_label=lambda repo, n, label: asyncio.to_thread(
+                ci_issues.add_label, repo, n, label),
+            remove_label=lambda repo, n, label: asyncio.to_thread(
+                ci_issues.remove_label, repo, n, label),
+            close_issue=lambda repo, n: asyncio.to_thread(ci_issues.close_issue, repo, n),
+            issue_snapshot=lambda repo, n: asyncio.to_thread(ci_issues.issue_snapshot, repo, n),
+            notify=lambda event_class, title, body, *, repo, url: push_mod.notify_event(
+                event_class, title, body, repo=repo, url=url, automation="cicd-doctor",
+                fanout_when_unconfigured=True, orch=self),
+            spawn_fix=self._cicd_systemic_spawn_fix,
+            failed_hourly_counts=self._cicd_systemic_hourly_counts,
+            alarms_in_alarm=lambda config: asyncio.to_thread(
+                aws_alarms.alarms_in_alarm, str(config.get("aws_alarm_prefix") or ""),
+                str(config.get("aws_profile") or "")),
+            clock=time.time,
+        )
+        self._cicd_systemic_task: asyncio.Task | None = None
         # Error Triage: WARNING+ log signatures → deduplicated backlog issues
         # (spec 2026-09-07). Filing goes through the ambient gh path like the doctor.
         from server.automations.error_triage import ErrorTriageLoop
@@ -2994,6 +3033,11 @@ class SessionOrchestrator:
             self._cicd_task = asyncio.create_task(
                 self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
             )
+            # CI/CD Doctor systemic red: 120 s — a red queue burns runner money by
+            # the minute, so detection and the brake must not wait a doctor tick.
+            self._cicd_systemic_task = asyncio.create_task(
+                self._cicd_systemic_tick_loop(interval=120.0), name="cicd-systemic-loop"
+            )
             # Error Triage: 60 s — issue state sync is one GraphQL call, filing is
             # capped per day, so a fast cadence costs little and keeps the inbox fresh.
             self._error_triage_task = asyncio.create_task(
@@ -3673,7 +3717,8 @@ class SessionOrchestrator:
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
                      "_sdlc_synth_task", "_control_band_task", "_capacity_governor_task",
                      "_autopilot_task", "_mirror_task",
-                     "_cicd_task", "_error_triage_task", "_session_feedback_task",
+                     "_cicd_task", "_cicd_systemic_task", "_error_triage_task",
+                     "_session_feedback_task",
                      "_deploy_monitor_task", "_decision_escalation_task",
                      "_needs_you_hygiene_task",
                      "_archaudit_task", "_sweep_task",
@@ -14229,15 +14274,81 @@ class SessionOrchestrator:
         except Exception:
             log.debug("cicd_doctor.heartbeat_failed", exc_info=True)
 
+    async def _cicd_systemic_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._cicd_systemic_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _cicd_systemic_tick_once(self) -> None:
+        """One systemic-red tick, under the doctor's schedule. The doctor's own tick
+        owns the last_active_at heartbeat."""
+        if not await self._schedule_allows_tick("cicd-doctor"):
+            return
+        await self._cicd_systemic_loop.tick()
+
+    async def _cicd_systemic_hourly_counts(
+            self, repo: str) -> tuple[int, list[int], float, int]:
+        """``(failed_last_hour, hourly_failed_14d, ratio, runs_in_last_hour)`` over the
+        ingested merge_group ``CiRun`` rows. ``hourly_failed_14d[i]`` counts failures
+        ``i + 1`` hours ago (the 14 days before the last hour, the thrash baseline).
+        Only failed rows of the window are read; the last-hour totals are SQL counts."""
+        from sqlalchemy import case, func, select
+        from server.db.models import CiRun
+        now = (getattr(self, "_clock", None) or time.time)()
+        hours = 14 * 24
+        hour_ago, start = now - 3600.0, now - (hours + 1) * 3600.0
+        mg = (CiRun.repo == repo, CiRun.event == "merge_group")
+        async with db_session() as db:
+            total, failed = (await db.execute(select(
+                func.count(), func.coalesce(func.sum(case(
+                    (CiRun.conclusion == "failure", 1), else_=0)), 0))
+                .where(*mg, CiRun.created_ts > hour_ago, CiRun.created_ts <= now))).one()
+            stamps = (await db.execute(select(CiRun.created_ts).where(
+                *mg, CiRun.conclusion == "failure", CiRun.created_ts > start,
+                CiRun.created_ts <= hour_ago))).scalars().all()
+        hourly = [0] * hours
+        for ts in stamps:
+            if ts is None:
+                continue
+            i = int((now - float(ts)) // 3600) - 1
+            if 0 <= i < hours:
+                hourly[i] += 1
+        total, failed = int(total or 0), int(failed or 0)
+        return failed, hourly, (failed / total if total else 0.0), total
+
+    async def _cicd_systemic_spawn_fix(self, repo: str, origin_ref: str,
+                                       prompt: str) -> str | None:
+        """Spawn (or join) the one fix session for a systemic incident; its id, or
+        None when the launch was refused or nothing could be spawned."""
+        ctx = self._cicd_ctx
+        plan = await ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        engine, config = plan
+        account = await self._automation_account_for(ctx, origin_ref, engine=engine)
+        if account is None:
+            return None
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo,
+            f"https://github.com/{repo}.git")
+        choice = await self._resolve_spawn_model(
+            engine, account, config, f"fix a systemic CI red blocking the {repo} merge queue")
+        rec, _created = await ctx.spawn_or_join_session(
+            origin_ref=origin_ref, dedupe_key=origin_ref, repo=repo, cwd=cwd,
+            account=account, engine=engine, name=f"fix systemic red {repo}",
+            initial_prompt=prompt, model=choice.model,
+            reasoning_effort=choice.reasoning_effort,
+            detail={"automation": "cicd-doctor", "systemic": True, **choice.detail})
+        return str(rec.id) if rec is not None else None
+
     async def _cicd_read_config(self) -> tuple[str, dict]:
         """(effective mode, validated config) for cicd-doctor; off + defaults on
         any bad row so a corrupt config can never act."""
         from server.automations.cicd_doctor import CicdDoctor
         from server.automations.config_store import read_automation_config
-        # cicd-doctor is a 2-mode (off/propose) automation, so the UI hides the
-        # mode <select> and its toggle enables the row with mode left NULL. Resolve
-        # enabled + no explicit mode to the first non-off mode (the least-invasive
-        # active mode by convention), else an enabled row is stuck 'off' forever.
+        # An enabled row with mode left NULL (the toggle, before anyone picks a mode)
+        # resolves to the first non-off mode, the least invasive one: "propose".
+        # "correct" (brake + fix dispatch) is only ever an explicit choice.
         active = tuple(m for m in CicdDoctor.modes if m != "off")
         return await read_automation_config(
             CicdDoctor, modes=active, default_mode=active[0],

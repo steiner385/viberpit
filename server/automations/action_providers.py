@@ -260,25 +260,35 @@ _CICD_STATUS_MAP = {
     "exists": ("warn", "An issue is already filed for this finding"),
     "unknown": ("warn", "Finding is no longer open"),
     "file_failed": ("error", "Could not file the issue — see the automation feed"),
+    # Systemic-red incidents (SystemicRedLoop.action_result).
+    "brake_cleared": ("ok", "Brake cleared — it will not be re-applied for this incident"),
+    "dismissed": ("ok", "Incident dismissed and its issue closed"),
+    "not_found": ("warn", "That incident no longer exists"),
+    "failed": ("error", "Action failed — see the automation feed"),
 }
+_SYSTEMIC_KINDS = frozenset({"clear_brake", "dismiss"})
 
 
 class CicdDoctorActionProvider:
-    """Surface open CI/CD Doctor findings that still need a GitHub issue filed.
+    """Surface open CI/CD Doctor findings that still need a GitHub issue filed, and
+    live systemic-red incidents (Clear brake · Dismiss).
 
     The loop auto-files *actionable* findings on its tick; this lets a human file
     one immediately (or file a graduation candidate the loop deliberately skips)
     without waiting. Reuses the loop's issue-filing machinery — no new recovery
-    logic. Findings that already link an issue expose no action.
+    logic. Findings that already link an issue expose no action. Incident actions
+    go to ``SystemicRedLoop.action_result``, read off the orchestrator lazily (the
+    providers dict is built before the loops are).
     """
 
-    valid_kinds = frozenset({"file_issue"})
+    valid_kinds = frozenset({"file_issue"}) | _SYSTEMIC_KINDS
 
     def __init__(self, orch) -> None:
         self._orch = orch
 
     async def actionable(self) -> list[ActionableItem]:
-        items: list[ActionableItem] = []
+        loop = getattr(self._orch, "_cicd_systemic_loop", None)
+        items: list[ActionableItem] = list(await loop.actionable_items()) if loop else []
         for f in await self._orch.cicd_actionable_findings():
             items.append(ActionableItem(
                 id=f["id"], title=f.get("title") or f["id"], subtitle=f.get("repo"),
@@ -287,6 +297,10 @@ class CicdDoctorActionProvider:
         return items
 
     async def trigger(self, item_id: str, kind: str, **_kw: Any) -> TriggerResult:
-        status = await self._orch.cicd_file_issue_now(item_id)
+        if kind in _SYSTEMIC_KINDS:
+            loop = getattr(self._orch, "_cicd_systemic_loop", None)
+            status = await loop.action_result(item_id, kind) if loop else "not_found"
+        else:
+            status = await self._orch.cicd_file_issue_now(item_id)
         level, message = _CICD_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
         return TriggerResult(status=status, level=level, message=message)
