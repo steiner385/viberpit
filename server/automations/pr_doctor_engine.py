@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from server.automations.cicd.systemic import normalize_job
 from server.github.pr_status import PullRequestInfo
 from server.pipeline.stage import is_required_ci_red
 
@@ -44,6 +45,25 @@ FAILURE_PRIORITY = ("blocked", "stuck_checks", "stuck_enqueue", "merge_conflict"
 # has not reported yet ("pending" — a null GraphQL conclusion, i.e. QUEUED or
 # IN_PROGRESS) or was killed before it could ("cancelled").
 _NO_VERDICT = frozenset({"pending", "cancelled"})
+
+
+# Aggregator jobs that turn red only because their inputs did (cancelled or
+# still running). A failure on one of these is not evidence of its own.
+ROLLUP_CHECKS = frozenset({"ci", "ci-gate"})
+
+# ``pr_status`` normalizes GraphQL TIMED_OUT/ERROR/STARTUP_FAILURE to "failure",
+# so "timed_out" is listed only as a defensive match for un-normalized payloads.
+_FAILED = frozenset({"failure", "timed_out"})
+
+
+def _has_no_verdict(info: PullRequestInfo) -> bool:
+    return any(c.conclusion in _NO_VERDICT for c in info.checks_detail)
+
+
+def _has_real_failure(info: PullRequestInfo) -> bool:
+    return any(c.conclusion in _FAILED
+               and normalize_job(c.name) not in ROLLUP_CHECKS
+               for c in info.checks_detail)
 
 
 def ci_red_is_unproven(info: PullRequestInfo) -> bool:
@@ -83,11 +103,19 @@ def ci_red_is_unproven(info: PullRequestInfo) -> bool:
     while acting on a fake one costs a session and risks a junk commit pushed to
     a healthy branch — so the guard errs toward deferring.
 
+    A genuine failure on a non-rollup check (``failure``/``timed_out``, name
+    normalized with ``normalize_job`` and not in ``ROLLUP_CHECKS``) is evidence
+    by itself, so it overrides a pending or cancelled sibling: the red is proven
+    and PR Doctor may act while the rest of the run finishes. A failure only on
+    the ``ci``/``ci-gate`` aggregators (the #2218 shape) still defers.
+
     Fails CLOSED: with no per-check data at all (a GitHub App without
     ``checks:read``, or a daemon→edge payload that carries none) this returns
     False and ``classify`` keeps its previous behaviour.
     """
-    return any(c.conclusion in _NO_VERDICT for c in info.checks_detail)
+    if _has_real_failure(info):
+        return False
+    return _has_no_verdict(info)
 
 
 # A check that has had no verdict this long will not get one on its own. Twice
@@ -176,7 +204,7 @@ def classify(info: PullRequestInfo, now: datetime | None = None) -> str | None:
         # armed, checks still running — misclassified as stuck_enqueue within
         # two minutes and "fixed" with a needless branch update, which gated
         # the whole product's Backlog Runner capacity on nothing.
-        if info.auto_merge_enabled and not info.in_merge_queue and not ci_red_is_unproven(info):
+        if info.auto_merge_enabled and not info.in_merge_queue and not _has_no_verdict(info):
             return "stuck_enqueue"
         return "blocked"  # review/approval gate — notify only (non-goal to approve)
     if info.mergeable == "CONFLICTING" or info.merge_state_status == "DIRTY":
