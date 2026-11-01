@@ -1,6 +1,6 @@
 # ccswitch Web UI — Target-State Design (umbrella spec)
 
-**Status:** approved design, 2026-09-02 · **Feeds:** three sub-specs (A/B/C below), each with its own
+**Status:** approved design, 2026-09-02; revised 2026-11-01 (Desktop-parity target, sub-spec D) · **Feeds:** four sub-specs (A/B/C/D below), each with its own
 implementation plan · **Supersedes:** the layout described in
 `docs/superpowers/plans/2026-06-21-master-detail-sessions-layout.md` · **Evidence:**
 `docs/audits/2026-09-02-ui-framework-audit.md` (the audit whose findings F1.1–F6.4 this design resolves).
@@ -14,6 +14,7 @@ contracts live in the sub-specs:
 | **A — Foundation** | `@theme` token layer, primitives, lint guard, theme provider | `2026-09-02-ui-foundation-tokens-primitives-design.md` |
 | **B — Shell & workspace** | `AppShell`, regions, layout modes, routing, session workspace, kiosk, drawer host | `2026-09-02-ui-shell-workspace-design.md` |
 | **C — Page migration** | page variants, per-page migration, palette sweep, docs | `2026-09-02-ui-page-migration-design.md` |
+| **D — Desktop-parity session workspace** | tabs + rail, prompt row, branching, Changes/Files/PR, palette, config surfaces | `2026-11-01-ui-desktop-parity-design.md` |
 
 The AI assistant's **backend** (tool surface, model/account routing, permission posture) is a
 separate spec — `2026-09-04-ai-assistant-design.md` (research basis:
@@ -36,8 +37,10 @@ sub-spec B defines only the drawer and the API shape it expects.
 
 **Non-goals (this design)**
 
-- The assistant backend; drag-and-drop pane grids; an integrated terminal or file editor; side chats;
-  Cmd+click split view; a public design-system package; visual-regression screenshots.
+- The assistant backend; drag-and-drop pane grids; an integrated terminal or file editing; Cmd+click split view
+  and pop-out windows; a public design-system package; visual-regression screenshots. (Revised 2026-11-01:
+  a Changes pane, a read-only Files viewer and a session-scoped side chat moved **in scope** via sub-spec D;
+  the side chat is the Assistant drawer.)
 - Changing any server API except the assistant endpoint shape reserved in sub-spec B.
 
 ## 2. Governing principles
@@ -68,13 +71,14 @@ sub-spec B defines only the drawer and the API shape it expects.
 | D5 | Theme | **System + explicit light/dark override**, per browser, toggle in rail and Settings → General; kiosk pins via URL. |
 | D6 | Desktop routing | Router is the source of truth in every mode (was: `useState` on desktop). |
 | D7 | Reference UX | **Claude Code Desktop app, Code tab** (not the TUI, not claude.ai/code). |
-| D8 | Shortcuts | Strict Desktop parity: `Esc` stops the turn; `Cmd+W` / Back detaches; **no `Shift+Tab`** alias; mode via selector / `Cmd+Shift+M`. |
+| D8 | Shortcuts | Desktop parity: `Esc` stops the turn **while one is running** and detaches when idle (amended 2026-11-01, sub-spec D §3); ← / Back detaches; **no `Shift+Tab`** alias; mode via selector / `Cmd+Shift+M`. |
 | D9 | Migration | **Strategy A — foundation-first strangler** (tokens → primitives → shell hosting old pages → one page per PR). Never more than one shell for longer than one PR. |
 | D10 | Dock scope | `app.dock` appears **only in the Sessions section**; "New session" in the rail jumps there. |
 | D11 | Settings | **Split variant** with a vertical `SettingsNav`; sections are path segments `/settings/:section`. |
 | D12 | Folders | Reorganize into `web/src/{ui,shell,features/*}`; the flat `components/` bucket empties as pages migrate. |
 | D13 | Drawer placement | Right `Sheet`; pushes `app.main` at ≥1280px, overlays below; full-height sheet on phone/tablet. |
-| D14 | Specs | One umbrella (this) + sub-specs A, B, C. |
+| D14 | Specs | One umbrella (this) + sub-specs A, B, C, and D (added 2026-11-01). |
+| D15 | Desktop parity (2026-11-01) | Re-benchmarked against the Desktop Code mode (61% weighted parity); owner decisions D1–D21 in `docs/audits/2026-11-01-claude-desktop-code-benchmark.md` §7 define the target in sub-spec D, which **replaces §5's table** as the alignment source of truth. |
 
 ## 4. Vocabulary
 
@@ -108,8 +112,10 @@ decides placement and visibility per mode; the region decides its content.
 
 Page-level regions inside `app.main`: `page.header` · `page.subnav` (optional) · `page.content`.
 Session-workspace regions inside a Sessions page: `session.header` · `session.meta` ·
-`session.transcript` · `session.pinned` · `session.panes` (Browser / Tasks / PR). The composer is
-`app.dock`, not a page region.
+`session.tabs` (Conversation / Changes / Files / PR / Browser) · `session.transcript` · `session.pinned` ·
+`session.rail` (Changes / Context / Environment / Tasks cards; a Details tab below 1280px). `session.meta` is
+retired by sub-spec D (its contents move to the rail and the prompt row). The composer is `app.dock`, not a page
+region.
 
 ### 4.3 Page variants
 
@@ -148,20 +154,12 @@ routing, viewport, kiosk, theme · `web/src/features/<feature>/` pages and widge
 
 ## 5. Claude Code Desktop alignment
 
-| Desktop convention (verified) | ccswitch target | Sub-spec |
-|---|---|---|
-| Sidebar: **+ New session** top; filter by status / project / environment; group by project; hover archive; **Dispatch** badge | `ContextList` for Sessions gains status/project/environment filters + group-by-project; queue position and fleet host shown as badges; hover archive | B |
-| Session toolbar: title click-to-rename · **Views** menu | `session.header`: title (click-to-rename) · `StatusPill` · Views menu with **Browser**, **Tasks**, **PR** | B |
-| Prompt box: `+` menu · `@` mention · model + **permission-mode selector next to Send** · **Transcript view** (Normal / Verbose / Summary) · usage ring · Stop; mid-run corrections don't interrupt | `SessionComposer` row: `+` (attachments, slash commands, presets) · model · mode · view-mode · `UsageRing` · Send/Stop. `DispatchBar` adds environment (host) · repo · account, mirroring Desktop's pre-flight | B |
-| Mode labels **Manual / Accept edits / Plan / Auto / Bypass permissions** | `PERMISSION_MODES` relabeled; keys unchanged | B |
-| `Cmd+N` new · `Cmd+W` close · `Ctrl+Tab` cycle · `Esc` stop · `Cmd+Shift+M/I/E` menus · `1–9` pick · `Cmd+/` shortcuts · `Ctrl+O` view modes · `Cmd+;` side chat | `shortcuts.ts` is the sole registry; `Cmd+;` opens the assistant drawer; `Shift+Tab` removed | B |
-| Inline permission / question cards with Allow once / Always allow / Deny | `PermissionCard`, `QuestionCard` restyled on primitives | C |
-| Diff chip `+12 −1`; CI status bar with **Auto-fix / Auto-merge** | `session.meta` diff chip; CI bar replaces ad-hoc PR indicators; toggles wire to existing autopilot flags | B |
-| Cross-session "check on / message / archive"; task chips spawn sessions | Assistant drawer (app level); suggestion chips call `DispatchBar` | B |
-| OS notification when a non-viewed session finishes | existing push notifications, unchanged | — |
-
-Not inherited now: pane grid, terminal, file editor, side chat, Cmd+click split. Reserved as future
-`session.panes` entries.
+**Superseded 2026-11-01 by sub-spec D** (`2026-11-01-ui-desktop-parity-design.md`). That spec is now the only
+place Desktop alignment is defined; this section keeps only the history. Of this section's original table, the
+sidebar filters, inline permission/question cards, cross-session assistant and push notifications shipped. The
+mode relabel, mode selector next to Send, Views menu, transcript view modes, usage ring, diff chip and
+`Esc`-stops did **not**; sub-spec D carries each of them (§3, §2, §4) with its own PR in D §11. The 2026-09-02
+"not inherited" list is revised in §1 above.
 
 ## 6. Routing (single source of truth)
 
@@ -208,6 +206,7 @@ Redirects kept: `/session/:id`, `/session/:id/subagent/:a`, `/review/:id`, `/set
 | 10 | Pipeline as Workspace; attract cycle + wake-lock + `--scale`; Playwright viewport projects | B/C | `pipeline/kiosk.ts`, `useKioskCycle` (moved) — landed 2026-09-11 (finish-line row 5, #1469; viewport projects deferred to row 7) |
 | 11 | Repo-wide palette sweep; ESLint to full scope; rewrite `docs/ACCESSIBILITY.md`, `web/README.md` | C | remaining `dark:` / raw palette — landed 2026-09-12 (finish-line row 7, #1471) |
 | 12 | `AssistantSheet` UI against the assistant API | B (after backend spec) | "coming soon" sheet |
+| 13+ | Desktop-parity series D-1 … D-18 | D (§11) | `session.meta` strip, in-session Plan toggle, `transcript/DiffView.tsx`, Likely-complete branch |
 
 ## 9. Success criteria
 
@@ -218,3 +217,4 @@ Redirects kept: `/session/:id`, `/session/:id/subagent/:a`, `/review/:id`, `/set
 - `web/dist` CSS contains every token utility the app uses (build-output test green).
 - The audit's F1.1, F2.1, F2.2, F2.3, F3.1–F3.4, F4.1–F4.5, F5.1, F5.2, F6.1 are closed by the PR
   named in §8; each PR body cites the finding ids it closes.
+- `scripts/desktop_parity_benchmark.py` reports Target completion ≥ 95% (sub-spec D §12; 63% on 2026-11-01).

@@ -116,6 +116,13 @@ D=[
  ("Hand work over from phone (Dispatch)",1,"Y","dispatch bar on phone"),
 ]),
 ]
+# Rows the owner rejected for the target (docs/audits/2026-11-01-claude-desktop-code-benchmark.md §7).
+# They still count against parity but are excluded from "target completion".
+REJECTED={
+ "Split view / tiled panes","Integrated terminal","Pin / star sessions","Pop session into own window",
+ "Prompt history (↑/↓ + Ctrl+R search)","Notification levels per event type",
+ "Appearance: theme, font + transcript size","Scheduled tasks / routines",
+}
 out=[]; tot=totw=0
 summ=[]
 for dim,rows in D:
@@ -124,10 +131,13 @@ for dim,rows in D:
 md=["| Dimension | ViberPit score | Parity |","|---|---:|---:|"]
 for dim,s,W in summ: md.append(f"| {dim} | {s:g} / {W} | {100*s/W:.0f}% |")
 md.append(f"| **Overall (weighted)** | **{tot:g} / {totw}** | **{100*tot/totw:.0f}%** |")
+rows_t=[(w,st) for _,rows in D for f,w,st,_ in rows if f not in REJECTED]
+ts=sum(w*S[st] for w,st in rows_t); tw=sum(w for w,_ in rows_t)
+md.append(f"| **Target completion** (excl. rejected rows) | **{ts:g} / {tw}** | **{100*ts/tw:.0f}%** |")
 md.append("")
 for dim,rows in D:
     md+= [f"### {dim}","","| Desktop capability | Weight | ViberPit | Notes |","|---|:-:|:-:|---|"]
-    for f,w,st,n in rows: md.append(f"| {f} | {w} | {dict(Y='✅',P='◐',N='❌')[st]} | {n} |")
+    for f,w,st,n in rows: md.append(f"| {f} | {w} | {dict(Y='✅',P='◐',N='❌')[st]} | {n}{' · *rejected for target*' if f in REJECTED else ''} |")
     md.append("")
 gaps=sorted([(w*(1-S[st]),w,f,dim,st) for dim,rows in D for f,w,st,n in rows if st!="Y"],key=lambda x:(-x[0],x[3]))
 md+=["### Ranked gaps (weight × missing)","","| # | Gap | Dimension | Points lost |","|---|---|---|---:|"]

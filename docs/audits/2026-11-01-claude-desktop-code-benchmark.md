@@ -51,8 +51,9 @@ ViberPit earns the full weight for ✅, half for ◐ and nothing for ❌. Capabi
 - **Absent in Desktop:** usage-aware multi-account rotation, a hooks editor, fleet orchestration, and a phone-native
   UI. On a phone it relies on Remote Control through claude.ai and the mobile app.
 
-Full inventories, with an evidence tag on every item, were kept in the session's scratch directory
-(`desktop-bundle-inventory.md`, `desktop-docs-inventory.md`).
+Full inventories, with an evidence tag on every item:
+`2026-11-01-claude-desktop-evidence/desktop-bundle-inventory.md` (bundle and user-data forensics) and
+`2026-11-01-claude-desktop-evidence/desktop-docs-inventory.md` (official docs, with source URLs).
 
 ## 3. Benchmark results
 
@@ -69,6 +70,7 @@ Full inventories, with an evidence tag on every item, were kept in the session's
 | 9 Shortcuts & a11y | 5 / 8 | 62% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
 | **Overall (weighted)** | **98 / 161** | **61%** |
+| **Target completion** (excl. rejected rows) | **95.5 / 151** | **63%** |
 
 ### 1 Shell & IA
 
@@ -76,11 +78,11 @@ Full inventories, with an evidence tag on every item, were kept in the session's
 |---|:-:|:-:|---|
 | Session sidebar + search | 3 | ✅ | Active/Background/Archived scopes, server FTS |
 | Group/sort by project, folder, branch, status, env, date, PR | 2 | ◐ | group none/repo/status only |
-| Pin / star sessions | 1 | ❌ |  |
+| Pin / star sessions | 1 | ❌ |  · *rejected for target* |
 | Read / unread marking | 1 | ❌ | needs-you badge only |
 | ⌘K palette over sessions + branches | 2 | ❌ |  |
-| Split view / tiled panes | 2 | ❌ | umbrella spec non-goal |
-| Pop session into own window | 1 | ◐ | every session is a URL; no layout restore |
+| Split view / tiled panes | 2 | ❌ | umbrella spec non-goal · *rejected for target* |
+| Pop session into own window | 1 | ◐ | every session is a URL; no layout restore · *rejected for target* |
 | Archived view + unarchive | 2 | ✅ |  |
 | Session rail: Changes / Context / Environment / Tasks cards | 2 | ◐ | meta strip has ctx, host, bg tasks; no Changes |
 
@@ -114,7 +116,7 @@ Full inventories, with an evidence tag on every item, were kept in the session's
 | Effort picker in session | 2 | ◐ | dispatch-time only |
 | Permission-mode picker (5 modes) in session | 3 | ◐ | Plan toggle only; Settings for the rest |
 | Fast-mode toggle | 1 | ❌ |  |
-| Prompt history (↑/↓ + Ctrl+R search) | 1 | ◐ | ↑/↓ only |
+| Prompt history (↑/↓ + Ctrl+R search) | 1 | ◐ | ↑/↓ only · *rejected for target* |
 | Suggested next prompt (Tab) | 1 | ✅ |  |
 | Dictation | 1 | ✅ | server STT + Web Speech |
 | Usage ring in prompt row | 1 | ❌ | UsageRing built, unused |
@@ -140,8 +142,8 @@ Full inventories, with an evidence tag on every item, were kept in the session's
 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 1 | ◐ | auto-archive + autopilot; no branch prefix |
 | Worktree location / policy | 1 | ❌ | server-only |
 | Default transcript view | 1 | ✅ |  |
-| Notification levels per event type | 1 | ◐ | quiet hours, channels, routing rules |
-| Appearance: theme, font + transcript size | 1 | ◐ | theme + widths |
+| Notification levels per event type | 1 | ◐ | quiet hours, channels, routing rules · *rejected for target* |
+| Appearance: theme, font + transcript size | 1 | ◐ | theme + widths · *rejected for target* |
 | Presets / environments selectable at new session | 2 | ◐ | editable in Settings, not selectable at dispatch |
 | Sandbox settings | 1 | ❌ |  |
 
@@ -174,7 +176,7 @@ Full inventories, with an evidence tag on every item, were kept in the session's
 | Archive / unarchive / auto-archive | 2 | ✅ |  |
 | Rename + AI titles | 1 | ✅ |  |
 | Move session to cloud / other host | 1 | ❌ |  |
-| Scheduled tasks / routines | 1 | ◐ | Delivery automations |
+| Scheduled tasks / routines | 1 | ◐ | Delivery automations · *rejected for target* |
 
 ### 8 Code review & dev
 
@@ -185,7 +187,7 @@ Full inventories, with an evidence tag on every item, were kept in the session's
 | Files pane (view / edit) | 1 | ❌ |  |
 | PR viewer: checks, threads, merge, auto-merge | 2 | ◐ | Pipeline page + PR pills + Fix |
 | Preview browser with dev-server detection | 2 | ◐ | VNC Browser tab, no dev-server detect |
-| Integrated terminal | 2 | ❌ |  |
+| Integrated terminal | 2 | ❌ |  · *rejected for target* |
 
 ### 9 Shortcuts & a11y
 
@@ -288,10 +290,11 @@ The spec's "Not inherited now" list (pane grid, terminal, file editor, side chat
 6.5 of the 63 points lost. Most of the gap is in the core chat loop: `@`-files, fork, rewind, edit-and-resend,
 the Changes pane, and the mode and permission controls.
 
-## 6. Review order
+## 6. Outcome
 
-The gaps are reviewed one at a time with the owner, in ranked-gap order. Each decision (adopt / adapt / reject,
-with a reason) is recorded in the updated UI spec.
+Each gap was reviewed with the owner, one at a time, in ranked-gap order on 2026-11-01. The decisions are in §7.
+The resulting target is `docs/superpowers/specs/2026-11-01-ui-desktop-parity-design.md` (sub-spec D of the UI
+umbrella), whose §11 sequences the work into PRs D-1 … D-18.
 
 ## 7. Decisions log (owner review, 2026-11-01)
 
@@ -307,3 +310,14 @@ with a reason) is recorded in the updated UI spec.
 | D8 | CLAUDE.md (#8) | **View all, edit user-level:** the session Context card lists every memory file actually loaded. Settings edits the user-level file, synced across accounts and hosts. Repo CLAUDE.md is read-only in the UI. |
 | D9 | Esc (#11) | **Esc stops while a turn runs** (with "Stopped · Esc" feedback). While idle, Esc detaches. ← always detaches. |
 | D10 | Permission-mode picker (#12) | **Picker beside Send** (⌘⇧M), changeable mid-session. Desktop names first (Ask / Accept edits / Plan / Auto / Bypass), with Plan folded in and the separate toggle removed. Allowlist and Full auto stay as a labelled ViberPit group. Mode keys are unchanged. |
+| D11 | Permission card (#13) | **Four buttons:** Allow once / Allow for this session / Always allow… / Deny. A session-scoped grant appears in the session rules readout and can be revoked there. |
+| D12 | Sidebar and rail (#14–17) | **Adopt:** more group/sort keys (branch, host/environment, date, PR state); read/unread; a session rail with Changes / Context / Environment / Background-task cards replacing the meta strip (collapsible on desktop, a tab on phone). **Reject:** pin/star. |
+| D13 | Transcript (#18–20, #46) | **Adopt all:** in-session view modes Normal / Verbose / Thinking (Ctrl+O, with the Settings value as default); clickable file paths that open the Files viewer at the line (attach as `@` and copy as secondary actions); in-transcript search across unloaded pages; a post-turn summary card that subsumes "Likely complete". |
+| D14 | Prompt row (#21–24) | **Adopt all:** model (⌘⇧I, keeping gated-model approval), effort (⌘⇧E), fast-mode toggle and usage ring in the prompt row. Model moves out of the meta strip. |
+| D15 | Commands and config (#25–28) | **Adopt all:** app-handled `/fork /rewind /btw /plan /effort /fast /model` drive the same actions as the UI; plugin marketplace browse/install; MCP per-tool toggles (per server and per session); output styles. |
+| D16 | Worktrees, presets, sandbox (#29–31, #35, #48) | **Adopt all:** worktree and branch shown in the Environment card (open PR / discard / repair) plus Settings for worktree location and branch prefix; presets selectable in the dispatch bar (⌘⌥1–9); sandbox default and per-session toggle; a per-session PR auto-fix toggle mapped onto PR Doctor and autopilot. |
+| D17 | Feedback (#32–34) | **Adopt all:** plan approval with comments; "auto-compacts soon" plus a /compact action; error-card recovery (switch model / lower effort / rewind & retry). |
+| D18 | Side chat (#36) | **Context-aware Assistant:** ⌘; inside a session opens the Assistant drawer scoped to that session (reads its transcript and diff, never writes to it). Outside a session it stays app-level. `/btw` opens the same drawer. No second chat surface. |
+| D19 | Dev surfaces (#37–41) | **Adopt all:** move a session between fleet hosts; inline tool diffs rendered by the Changes-pane renderer (one renderer); a PR tab (checks, threads, merge/auto-merge, from Pipeline data); dev-server detection offered in the Browser tab or a proxied preview. |
+| D20 | Keyboard (#42–44, #47) | **Adopt:** ⌘⇧M/I/E menus (each verified against browser-reserved chords); previous/next session and 1–9 jump on non-reserved chords; jump between prompts. **Reject:** Ctrl+R prompt search. |
+| D21 | Leftovers (#45, #49–51) | **Reject all:** pop-out window, per-event notification levels, font/transcript size, routines in the session UI. |
