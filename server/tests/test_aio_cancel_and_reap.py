@@ -161,3 +161,44 @@ def test_does_not_re_cancel_a_task_already_being_cancelled():
         assert cleaned_up is True, "the reap escalated an in-flight cancellation"
 
     asyncio.run(main())
+
+
+def test_reaps_a_child_whose_pending_cancel_was_an_absorbed_timeout():
+    """#3203: an ``asyncio.timeout`` that has just expired inside the child ALSO reads
+    as cancelling() == 1. The child's timeout then uncancel()s that request and carries
+    on, so trusting the first "already being cancelled" verdict waited forever on a
+    loop nobody had cancelled (the daemon's loop-lag watchdog, mid PSI read)."""
+    async def main():
+        async def absorbs_its_own_timeout():
+            me = asyncio.current_task()
+            assert me is not None
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                if me.uncancel() > 0:       # what Timeout.__aexit__ does on expiry
+                    raise
+            await asyncio.sleep(3600)       # absorbed as a TimeoutError — next tick
+
+        child = asyncio.create_task(absorbs_its_own_timeout())
+        await asyncio.sleep(0)
+        child.cancel()                      # the expired timeout's request, not yet delivered
+
+        assert await asyncio.wait_for(cancel_and_reap(child, phase="test"), 2) is True
+        assert child.cancelled()
+
+    asyncio.run(main())
+
+
+def test_timeout_still_bounds_a_reap_that_keeps_rechecking():
+    async def main():
+        release = asyncio.Event()
+        child = asyncio.create_task(_ignores_first_cancel(release))
+        await asyncio.sleep(0)
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        assert await cancel_and_reap(child, phase="test", timeout=0.25) is False
+        assert loop.time() - t0 < 1.0
+        release.set()
+        await asyncio.wait({child}, timeout=2)
+
+    asyncio.run(main())
