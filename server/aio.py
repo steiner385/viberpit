@@ -38,6 +38,10 @@ log = logging.getLogger(__name__)
 # already blown its primary budget.
 _CANCEL_GRACE_S = 2.0
 
+# How often cancel_and_reap re-checks a child it found already cancelling, in case
+# that request was absorbed (see cancel_and_reap).
+_REAP_RECHECK_S = 0.1
+
 
 async def bounded_wait(
     aw: Awaitable[Any],
@@ -302,9 +306,21 @@ async def cancel_and_reap(
     if task is asyncio.current_task():
         log.warning("cancel_and_reap: phase %r tried to reap its own task — ignored", phase)
         return False
-    if not task.done() and not _cancel_requested(task):
-        task.cancel()
-    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    # "Already being cancelled" is re-checked while we wait, not trusted once: an
+    # ``asyncio.timeout``/``wait_for`` inside the child that has just expired also
+    # reads as cancelling() == 1, then uncancel()s and turns it into a TimeoutError
+    # the child handles and keeps running — so a single check waited forever on a
+    # loop nobody had cancelled (the loop-lag watchdog's PSI read, #3203).
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout is None else loop.time() + timeout
+    while True:
+        if not task.done() and not _cancel_requested(task):
+            task.cancel()
+        remaining = None if deadline is None else max(0.0, deadline - loop.time())
+        step = _REAP_RECHECK_S if remaining is None else min(remaining, _REAP_RECHECK_S)
+        done, _pending = await asyncio.wait({task}, timeout=step)
+        if done or remaining is not None and remaining <= step:
+            break
     if not done:
         log.debug("cancel_and_reap: phase %r still unwinding after %ss — abandoned",
                   phase, timeout)
