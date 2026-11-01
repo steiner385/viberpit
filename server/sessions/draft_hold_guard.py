@@ -190,10 +190,13 @@ def parse_ready_request(args: object) -> tuple[str, int] | None:
 class ReadyCall:
     """One command that would mark a PR ready. *selector* is what ``gh pr view``
     takes (number, URL or branch; None = the current branch's PR), *repo* an
-    explicit ``owner/name``, *cwd* a directory a preceding ``cd`` moved to."""
+    explicit ``owner/name``, *cwd* a directory a preceding ``cd`` moved to.
+    *node_id* is set instead of a selector when the command names the PR by its
+    GraphQL node ID (``merge_hold_guard``'s merge-queue enqueue)."""
     selector: str | None
     repo: str | None
     cwd: str | None
+    node_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -318,7 +321,7 @@ def env_repo_ambiguous(command: str, tokens: list[str], calls) -> bool:
     the variable in gh, so only those calls are safe to judge. Checked on the raw
     text, on the tokens after quote removal (``GH_R""EPO=…``), and in the
     environment a session inherits."""
-    if all(c.repo is not None for c in calls):
+    if all(c.repo is not None or c.node_id is not None for c in calls):
         return False
     return ("GH_REPO" in command or bool(os.environ.get("GH_REPO"))
             or any("GH_REPO" in t for toks in token_lists(tokens) for t in toks))
@@ -354,21 +357,36 @@ class TargetPr:
     human_hold: bool = False   # carries ``hold:human`` (``pr_status.has_human_hold``)
 
 
+# A node ID's PR, shaped by --jq like `gh pr view --json` output so one parser reads both.
+_NODE_QUERY = ("query($id:ID!){node(id:$id){... on PullRequest{url number headRefName "
+               "isDraft labels(first:100){nodes{name}}}}}")
+_NODE_JQ = ".data.node | {url, number, headRefName, isDraft, labels: .labels.nodes}"
+
+
 def resolve_pr(call: ReadyCall, cwd: str | None) -> TargetPr | None:
     """Which PR *call* targets, resolved the way ``gh`` would resolve it — in the
     directory the command runs in, so an unqualified number or the current branch
-    means the same PR to the guard as to the session (blocking; off the loop)."""
+    means the same PR to the guard as to the session (blocking; off the loop). A
+    node ID names one PR wherever the command runs, so it is looked up directly."""
+    env = gitrepos._gh_env()
+    if call.node_id is not None:
+        args = ["gh", "api", "graphql", "-f", f"query={_NODE_QUERY}",
+                "-f", f"id={call.node_id}", "--jq", _NODE_JQ]
+        return _run_lookup(args, env, None)
     args = ["gh", "pr", "view"] + ([call.selector] if call.selector else [])
     if call.repo:
         args += ["-R", call.repo]
     args += ["--json", "url,number,headRefName,isDraft,labels"]
-    env = gitrepos._gh_env()
     token = gitrepos.app_token_for_owner(call.repo.partition("/")[0]) if call.repo else None
     if token:
         env["GH_TOKEN"] = token
     run_in = cwd if cwd and os.path.isdir(cwd) else None
     if run_in is None and not call.repo:
         return None  # e.g. `cd $DIR`: gh would read the daemon's repo, not the session's
+    return _run_lookup(args, env, run_in)
+
+
+def _run_lookup(args: list[str], env: dict[str, str], run_in: str | None) -> TargetPr | None:
     try:
         proc = subprocess.run(args, capture_output=True, text=True, env=env,
                               cwd=run_in, timeout=30)
