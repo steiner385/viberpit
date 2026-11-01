@@ -292,3 +292,18 @@ the Changes pane, and the mode and permission controls.
 
 The gaps are reviewed one at a time with the owner, in ranked-gap order. Each decision (adopt / adapt / reject,
 with a reason) is recorded in the updated UI spec.
+
+## 7. Decisions log (owner review, 2026-11-01)
+
+| # | Gap | Decision |
+|---|---|---|
+| D1 | Spec non-goals (pane grid, terminal, editor, side chat, split view) | **Lift selectively:** Changes pane, read-only Files viewer and a session-scoped side chat become session tabs beside Conversation/Browser. Terminal, file editor and split view stay out. |
+| D2 | `@` mentions (#1) | **Files and sessions:** one `@` menu in the session composer. Worktree files come first and are inserted as `@path`, which the CLI resolves natively; other sessions come second. Needs a per-host file-list endpoint. |
+| D3 | Fork and rewind (#2, #3) | **Both, Desktop-style:** per-message "Fork from here" opens a linked child session in its own worktree; "Rewind to here" restores conversation and files, with undo. Checkpoint behaviour is verified against the real CLI first. |
+| D4 | Changes pane (#4) | **Full:** aggregate worktree diff with a `+N −M` header chip, unified (phone) / split (desktop) toggle, whitespace toggle, next-change navigation, and line comments batched into one prompt. |
+| D5 | ⌘K palette (#5) | **Global:** ⌘K/Ctrl+K over sessions (including archived), repos/branches, sections and app actions, driven from the existing `shortcuts`/`navDefs` registries. |
+| D6 | Split view (#6), terminal (#10) | Out, per D1. |
+| D7 | Per-message actions (#7, #9) | **Copy as Markdown** on every message. **Edit & resend** on user messages, implemented as rewind-to-before-message plus a prefilled composer, reusing D3 rather than a second mechanism. |
+| D8 | CLAUDE.md (#8) | **View all, edit user-level:** the session Context card lists every memory file actually loaded. Settings edits the user-level file, synced across accounts and hosts. Repo CLAUDE.md is read-only in the UI. |
+| D9 | Esc (#11) | **Esc stops while a turn runs** (with "Stopped · Esc" feedback). While idle, Esc detaches. ← always detaches. |
+| D10 | Permission-mode picker (#12) | **Picker beside Send** (⌘⇧M), changeable mid-session. Desktop names first (Ask / Accept edits / Plan / Auto / Bypass), with Plan folded in and the separate toggle removed. Allowlist and Full auto stay as a labelled ViberPit group. Mode keys are unchanged. |
