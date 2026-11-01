@@ -56,7 +56,8 @@ Goals
 Non-goals
 - No merge-queue mutation of any kind: no enqueue, dequeue, jump, or merge.
   KinDash rule: queue mutations are incident-only and lock-gated; ViberPit's
-  `merge_hold_guard` blocks them for sessions. The Doctor *recommends* the exact
+  `merge_hold_guard` refuses them for sessions except a lone, readable enqueue
+  (queue jump) on an unheld PR (#3200). The Doctor *recommends* the exact
   owner command for a dequeue; it never runs one.
 - No muting, skipping, or baseline-raising of the failing check by the Doctor
   itself. The fix session may propose a baseline change in a PR, reviewed like any PR.

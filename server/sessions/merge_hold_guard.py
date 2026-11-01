@@ -13,9 +13,13 @@ human's to merge even when a session opened it.
 Command shapes: ``gh pr merge [<number>|<url>|<branch>] [-R repo]`` in any form
 (``--auto``, ``--admin``, an immediate merge) anywhere in the shell command, a REST
 ``gh api …/pulls/N/merge`` call, and the GraphQL ``enablePullRequestAutoMerge`` /
-``mergePullRequest`` / ``enqueuePullRequest`` mutations. The mutations name a node
-ID the guard cannot map back to a PR, so they are always denied — ``gh pr merge N``
-is the path for an unheld PR — and so is any ``gh api graphql`` call whose query the
+``mergePullRequest`` / ``enqueuePullRequest`` mutations. The mutations name a PR by
+node ID. ``gh pr merge N`` covers the first two, so they are always denied; it cannot
+jump a merge queue, so a lone ``enqueuePullRequest`` the guard can read exactly — one
+top-level ``gh api graphql -f query='…'`` naming one ``pullRequestId`` as a literal or
+a ``-f``/``-F`` variable bound once — is resolved to its PR and judged like any other
+call (#3200: KinDash's owner-approved, lock-gated queue-jump recipe). Every other
+shape of it is denied, and so is any ``gh api graphql`` call whose query the
 guard cannot read (``query=@file``, ``--input``). A ``GH_REPO`` the guard would have
 to evaluate the shell to apply denies a call that names no ``--repo``.
 ``gh pr merge --disable-auto`` is the safe direction and always passes. The scanner
@@ -61,7 +65,10 @@ _PROSE_ADVICE = (
 MUTATION_REASON = (
     "Blocked: a GraphQL merge / auto-merge mutation names a PR by node ID, so this guard "
     f"cannot tell whether it carries `{HUMAN_HOLD_LABEL}`. Use `gh pr merge <number>` "
-    "instead. " + _HAND_BACK + " " + _PROSE_ADVICE)
+    "instead. To jump a merge queue, run one `enqueuePullRequest` alone in a single "
+    "top-level `gh api graphql -f query='…'` (single-quoted) whose input names "
+    "`pullRequestId` once — as a literal or as a variable bound by one `-F id=PR_…` — and "
+    "the guard checks that PR. " + _HAND_BACK + " " + _PROSE_ADVICE)
 
 HIDDEN_QUERY_REASON = (
     "Blocked: this `gh api graphql` call reads its query from a file or stdin "
@@ -122,6 +129,18 @@ def _match_merge(tokens: list[str], i: int, cwd: str | None) -> ReadyCall | None
 _FIELD_FLAGS = ("-f", "-F", "--field", "--raw-field")
 
 
+def _field(tok: str, it) -> str | None:
+    """The ``name=value`` a ``gh api`` field flag at *tok* passes (consuming the next
+    token when the value is separate), or None when *tok* is no field flag."""
+    if tok in _FIELD_FLAGS:
+        return next(it, "")
+    for flag in _FIELD_FLAGS:   # attached: -Fquery=…, --field=query=…
+        glued = flag + ("=" if flag.startswith("--") else "")
+        if tok.startswith(glued) and len(tok) > len(glued):
+            return tok[len(glued):]
+    return None
+
+
 def _hides_graphql_query(tokens: list[str]) -> bool:
     """True when a GraphQL call in *tokens* (after quote removal) takes its query
     from somewhere the guard cannot read: ``--input``, a ``query=@file`` field, or a
@@ -132,15 +151,7 @@ def _hides_graphql_query(tokens: list[str]) -> bool:
     for tok in it:
         if tok == "--input" or tok.startswith("--input="):
             return True
-        field = None
-        if tok in _FIELD_FLAGS:
-            field = next(it, "")
-        else:
-            for flag in _FIELD_FLAGS:   # attached: -Fquery=…, --field=query=…
-                glued = flag + ("=" if flag.startswith("--") else "")
-                if tok.startswith(glued) and len(tok) > len(glued):
-                    field = tok[len(glued):]
-                    break
+        field = _field(tok, it)
         if field is not None and field.startswith("query="):
             value = field[len("query="):]
             # GraphQL's own `$var`s sit inside a query; a value that IS an expansion
@@ -150,15 +161,72 @@ def _hides_graphql_query(tokens: list[str]) -> bool:
     return False
 
 
+# The PR an `enqueuePullRequest` input names: a string literal or a `$variable`.
+# GraphQL names are case-sensitive, so this is too (unlike `_MUTATION`).
+_ENQUEUE_ID = re.compile(
+    r"\benqueuePullRequest\s*\(\s*input\s*:\s*\{[^{}]*?\bpullRequestId\s*:\s*"
+    r"(?:\"([^\"]*)\"|\$(\w+))")
+# Opaque base64-ish; anything else ($VAR, @file, quotes, escapes) is unreadable.
+_NODE_ID = re.compile(r"^[A-Za-z0-9_=+/-]+$")
+
+
+def _enqueue_call(command: str, tokens: list[str]) -> ReadyCall | None:
+    """The PR a lone merge-queue enqueue in *command* names, or None unless the guard
+    can read exactly which node ID GitHub will receive (#3200). Fail closed: one
+    merge-mutation token in the whole command, nested strings included; that token
+    is the query field of a top-level ``gh api graphql`` call, passed verbatim in
+    single quotes (so the shell expands nothing in it); one ``pullRequestId`` in the
+    query, comments and strings included (so nothing hides which one is read); and
+    the id is a literal
+    or a variable bound exactly once to a plain node ID."""
+    hits = [t for toks in _draft.token_lists(tokens) for t in toks if _MUTATION.search(t)]
+    if len(hits) != 1 or not hits[0].startswith("query="):
+        return None
+    query = hits[0][len("query="):]
+    if (len(_MUTATION.findall(query)) != 1
+            or query.count("pullRequestId") != 1 or f"query='{query}'" not in command):
+        return None
+    named = _ENQUEUE_ID.search(query)
+    if named is None:
+        return None
+    for i, tok in enumerate(tokens):
+        if not (_draft._is_gh(tok) and tokens[i + 1:i + 3] == ["api", "graphql"]):
+            continue
+        args = _draft._args(tokens, i + 3)
+        if any(a == "--hostname" or a.startswith("--hostname=") for a in args):
+            return None   # the lookup reads github.com, not that host
+        fields: list[tuple[str, str]] = []
+        it = iter(args)
+        for arg in it:
+            field = _field(arg, it)
+            if field is not None:
+                name, _, value = field.partition("=")
+                fields.append((name, value))
+        queries = [v for n, v in fields if n == "query"]
+        if not queries:
+            continue
+        if queries != [query]:
+            return None
+        literal, var = named.groups()
+        bound = [literal] if literal is not None else [v for n, v in fields if n == var]
+        if len(bound) != 1 or not _NODE_ID.match(bound[0]):
+            return None
+        return ReadyCall(None, None, None, bound[0])
+    return None
+
+
 def scan_command(command: str) -> Scan:
     """Every way the shell *command* would merge a PR or arm its auto-merge."""
-    if _MUTATION.search(command):
-        return Scan(deny_reason=MUTATION_REASON)
-    if _GRAPHQL.search(command) and _HIDDEN_QUERY.search(command):
-        return Scan(deny_reason=HIDDEN_QUERY_REASON)
     try:
         tokens = _draft._tokens(command)
     except ValueError:
+        tokens = None
+    enqueue = _enqueue_call(command, tokens) if tokens is not None else None
+    if enqueue is None and _MUTATION.search(command):
+        return Scan(deny_reason=MUTATION_REASON)
+    if _GRAPHQL.search(command) and _HIDDEN_QUERY.search(command):
+        return Scan(deny_reason=HIDDEN_QUERY_REASON)
+    if tokens is None:
         if _GRAPHQL.search(command):   # an unreadable query: fail closed
             return Scan(deny_reason=HIDDEN_QUERY_REASON)
         # Unbalanced quoting: no reliable tokens, so judge the raw text (fail closed).
@@ -168,11 +236,13 @@ def scan_command(command: str) -> Scan:
         return Scan()
     nested = _draft.token_lists(tokens)
     # quote-split, top level or nested: enable''PullRequest…
-    if any(_MUTATION.search(t) for toks in nested for t in toks):
+    if enqueue is None and any(_MUTATION.search(t) for toks in nested for t in toks):
         return Scan(deny_reason=MUTATION_REASON)
     if any(_hides_graphql_query(toks) for toks in nested):
         return Scan(deny_reason=HIDDEN_QUERY_REASON)
     calls = tuple(_draft.scan_tokens(tokens, _match_merge, _RAW_MERGE))
+    if enqueue is not None:
+        calls += (enqueue,)
     if _draft.env_repo_ambiguous(command, tokens, calls):
         return Scan(deny_reason=UNRESOLVED_REASON)
     return Scan(calls=calls)

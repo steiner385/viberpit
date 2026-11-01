@@ -67,6 +67,107 @@ def test_graphql_merge_mutations_are_always_refused(mutation):
     assert scan_command(command).deny_reason == MUTATION_REASON
 
 
+_ENQ = "enqueue" + "PullRequest"   # split so this file's own text is not the shape
+
+
+@pytest.mark.parametrize("command, node_id", [
+    # The incident recipe (#3200): a variable bound by -F / -f.
+    (f"gh api graphql -f query='mutation($id:ID!){{{_ENQ}(input:{{pullRequestId:$id,"
+     f"jump:true}}){{mergeQueueEntry{{position state}}}}}}' -F id=PR_kwDOabc123", "PR_kwDOabc123"),
+    (f"gh api graphql -F id=PR_x -f query='mutation($id:ID!){{{_ENQ}(input:"
+     f"{{jump:true, pullRequestId: $id}}){{clientMutationId}}}}'", "PR_x"),
+    # An inline literal, in a chain after the lock step.
+    (f"gh api graphql -f query='mutation{{q:{_ENQ}(input:{{pullRequestId:\"PR_y\"}})"
+     f"{{clientMutationId}}}}' | jq .", "PR_y"),
+])
+def test_an_enqueue_naming_one_readable_node_id_is_judged(command, node_id):
+    scan = scan_command(command)
+    assert scan.deny_reason is None
+    assert scan.calls == (ReadyCall(None, None, None, node_id),)
+
+
+def test_an_enqueue_is_judged_alongside_other_merge_calls():
+    command = (f"gh pr merge 17 --auto && gh api graphql -f query='mutation{{{_ENQ}"
+               f"(input:{{pullRequestId:\"PR_y\"}}){{clientMutationId}}}}'")
+    assert scan_command(command).calls == (
+        ReadyCall("17", None, None), ReadyCall(None, None, None, "PR_y"))
+
+
+def test_gh_repo_does_not_make_a_node_id_ambiguous(monkeypatch):
+    monkeypatch.setenv("GH_REPO", "o/r")
+    command = (f"gh api graphql -f query='mutation{{{_ENQ}(input:{{pullRequestId:\"PR_y\"}})"
+               f"{{clientMutationId}}}}'")
+    assert scan_command(command).calls == (ReadyCall(None, None, None, "PR_y"),)
+
+
+_Q = f"mutation($id:ID!){{{_ENQ}(input:{{pullRequestId:$id}}){{clientMutationId}}}}"
+
+
+@pytest.mark.parametrize("command", [
+    # The id is a shell expansion, a file, missing, or bound twice (gh keeps the last).
+    f"gh api graphql -f query='{_Q}' -F id=$PR",
+    f"gh api graphql -f query='{_Q}' -F id=\"$(gh pr view 1 --json id -q .id)\"",
+    f"gh api graphql -f query='{_Q}' -F id=@id.txt",
+    f"gh api graphql -f query='{_Q}'",
+    f"gh api graphql -f query='{_Q}' -F id=PR_a -F id=PR_b",
+    f"gh api graphql -f query='{_Q}' -F id=PR_a -Fid=PR_b",
+    f"gh api graphql -f query='{_Q}' -F id=PR_a --field=id=PR_b",
+    # The input is a variable, or the id sits outside the enqueue's input.
+    f"gh api graphql -f query='mutation($i:{_ENQ}Input!){{{_ENQ}(input:$i){{x}}}}' "
+    "-F i[pullRequestId]=PR_a",
+    f"gh api graphql -f query='mutation{{{_ENQ}(input:$i){{x}} c:addComment(input:"
+    "{pullRequestId:\"PR_a\"}){x}}'",
+    # A second pullRequestId — even in a comment or a string — hides which id is read.
+    f"gh api graphql -f query='mutation{{{_ENQ}(input:{{#pullRequestId:\"PR_a\"\n"
+    "pullRequestId:\"PR_b\"}){x}}'",
+    f"gh api graphql -f query='mutation{{{_ENQ}(input:{{clientMutationId:\"pullRequestId:\","
+    "pullRequestId:\"PR_b\"}){x}}'",
+    # Two enqueues, or an enqueue plus another merge mutation.
+    f"gh api graphql -f query='mutation{{a:{_ENQ}(input:{{pullRequestId:\"PR_a\"}}){{x}} "
+    f"b:{_ENQ}(input:{{pullRequestId:\"PR_b\"}}){{x}}}}'",
+    f"gh api graphql -f query='mutation{{{_ENQ}(input:{{pullRequestId:\"PR_a\"}}){{x}} "
+    "m:merge''PullRequest(input:{pullRequestId:\"PR_b\"}){x}}'",
+    # The query is not exactly the single-quoted text the shell passes.
+    f"gh api graphql -f query=\"{_Q}\" -F id=PR_a",
+    f"gh api graphql -f query='{_Q}'$EXTRA -F id=PR_a",
+    f"bash -c \"gh api graphql -f query='{_Q}' -F id=PR_a\"",
+    f"gh api graphql -fquery='{_Q}' -F id=PR_a",
+    # Not a gh api graphql call the guard reads.
+    f"curl -d '{_Q}' https://api.github.com/graphql",
+    f"gh api --hostname x graphql -f query='{_Q}' -F id=PR_a",
+    f"gh api graphql --hostname x -f query='{_Q}' -F id=PR_a",
+    # GraphQL is case-sensitive: a near-miss spelling is not the mutation it reads.
+    "gh api graphql -f query='mutation{ENQUEUEPullRequest(input:{pullRequestId:\"PR_a\"})"
+    "{x}}'",
+])
+def test_an_enqueue_the_guard_cannot_read_exactly_is_refused(command):
+    assert scan_command(command).deny_reason == MUTATION_REASON
+
+
+@pytest.mark.asyncio
+async def test_the_merge_queue_jump_on_an_unheld_pr_passes_and_on_a_held_one_is_refused():
+    command = (f"gh api graphql -f query='mutation($id:ID!){{{_ENQ}(input:{{pullRequestId:$id,"
+               "jump:true}){mergeQueueEntry{position}}}' -F id=PR_x")
+    seen: list = []
+
+    def resolve(call, cwd):
+        seen.append(call)
+        return TargetPr("o/r", 20177, "fix/x", False, held)
+    held = False
+    assert await merge_hold_guard(resolve)(_call(command), "tu", None) == {}
+    held = True
+    assert _denied(await merge_hold_guard(resolve)(_call(command), "tu", None)) == \
+        held_reason("o/r", 20177)
+    assert [c.node_id for c in seen] == ["PR_x", "PR_x"]
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_node_id_is_refused():
+    command = f"gh api graphql -f query='{_Q}' -F id=PR_x"
+    hook = merge_hold_guard(_resolver(found=False))
+    assert _denied(await hook(_call(command), "tu", None)) == UNRESOLVED_REASON
+
+
 @pytest.mark.parametrize("command", [
     "gh api graphql -F query=@arm.graphql -f id=PR_x",
     "gh api graphql --input body.json",
@@ -245,3 +346,28 @@ def test_resolve_pr_reads_the_hold_label(monkeypatch):
     pr = guard.resolve_pr(ReadyCall("17", "O/R", None), None)
     assert pr == TargetPr("O/R", 17, "feat/x", False, True)
     assert "labels" in seen["args"][-1].split(",")
+
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"url": "https://github.com/O/R/pull/20177", "number": 20177, "headRefName": "fix/x",
+      "isDraft": False, "labels": [{"name": "hold:human"}]},
+     TargetPr("O/R", 20177, "fix/x", False, True)),
+    ({"url": "https://github.com/O/R/pull/20177", "number": 20177, "headRefName": "fix/x",
+      "isDraft": False, "labels": []}, TargetPr("O/R", 20177, "fix/x", False, False)),
+    # The id is some other node type: no PR url, so the guard cannot vouch for it.
+    ({"url": None, "number": None, "headRefName": None, "isDraft": None, "labels": None}, None),
+])
+def test_resolve_pr_maps_a_node_id_to_its_pr(monkeypatch, payload, expected):
+    import json
+    import subprocess
+    from server.sessions import draft_hold_guard as guard
+    seen = {}
+
+    def run(args, **kw):
+        seen["args"], seen["cwd"] = args, kw.get("cwd")
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+    monkeypatch.setattr(guard.subprocess, "run", run)
+    pr = guard.resolve_pr(ReadyCall(None, None, "/nowhere", "PR_kwDOabc"), "/nowhere")
+    assert pr == expected
+    assert seen["args"][:3] == ["gh", "api", "graphql"]
+    assert "id=PR_kwDOabc" in seen["args"] and seen["cwd"] is None
