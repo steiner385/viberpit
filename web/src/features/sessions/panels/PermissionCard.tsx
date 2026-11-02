@@ -80,13 +80,18 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
     ? { hasRepo, onPreviewRule, onGrantRule }
     : null
 
+  // The server says whether "Allow for this session" would really grant; when it would only
+  // degrade to allow-once, the button is hidden rather than promising a grant.
+  const canSessionGrant = canAlwaysAllow && block.sessionGrantEffective !== false
+
   // Ordered actions matching the rendered buttons; digit/arrow indices map here.
   // Plan cards keep their own two-button layout. A grantable permission card is
   // Allow once · Allow for this session · [Always allow… when the chooser is available] · Deny.
   const actions: CardAction[] = block.plan
     ? ['allow', 'keepPlanning']
     : !canAlwaysAllow ? ['allow', 'deny']
-    : rules ? ['allow', 'session', 'chooser', 'deny'] : ['allow', 'session', 'deny']
+    : ['allow', ...(canSessionGrant ? ['session' as const] : []),
+       ...(rules ? ['chooser' as const] : []), 'deny']
 
   const activate = (a: CardAction) => {
     if (a === 'chooser') setChooserOpen(true)
@@ -187,7 +192,7 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
               aria-label={`Allow ${label}`} className={allowBtn}>
               Allow once
             </button>
-            {canAlwaysAllow && (
+            {canSessionGrant && (
               <button type="button" {...kb.itemProps(1)} onClick={() => activate('session')}
                 aria-label={`Allow for this session: ${label}`} className={secondaryBtn}
                 title="Allow this for the rest of the session">
@@ -195,7 +200,7 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
               </button>
             )}
             {rules && (
-              <button type="button" {...kb.itemProps(2)} onClick={() => activate('chooser')}
+              <button type="button" {...kb.itemProps(actions.indexOf('chooser'))} onClick={() => activate('chooser')}
                 aria-label={`Always allow ${label}`} className={tertiaryBtn}
                 title="Choose a standing rule">
                 Always allow…

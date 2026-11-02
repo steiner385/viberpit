@@ -129,6 +129,19 @@ def write_target_inside_worktree(tool: str, input: Mapping[str, Any], cwd: str |
     return rel is not None and not is_protected_path(rel)
 
 
+def session_grant_effective(suggestions: list[dict], engine_managed: bool) -> bool:
+    """Whether the ``always`` decision on a card becomes a real session-scope grant.
+
+    True on an engine-managed (Codex) card, which maps it onto the engine's own session
+    accept; otherwise only when rules are enabled and an ``ok`` suggestion exists —
+    ``session_actions.resolve_permission`` degrades it to allow-once without one."""
+    if engine_managed:
+        return True
+    from server.config import get_settings
+    return bool(get_settings().permission_rules_enabled) and any(
+        s.get("level") == "ok" for s in suggestions)
+
+
 class PermissionRegistry:
     """
     Lifecycle invariant: pending permission Futures are resolved to False ONLY by
@@ -214,6 +227,12 @@ class PermissionRegistry:
         if denied_meanwhile:
             return None
         return hit is not None
+
+    def session_grant_effective_for(self, perm_id) -> bool:
+        """Whether "Allow for this session" on *perm_id*'s card would really grant."""
+        rec = self._pending.get(perm_id)
+        return rec is not None and session_grant_effective(
+            rec.get("suggestions") or [], bool(rec.get("raw_decision")))
 
     def suggestions_for(self, perm_id) -> list[dict]:
         """Standing-rule patterns the card for *perm_id* offers (empty once resolved)."""
@@ -454,6 +473,8 @@ class PermissionRegistry:
                  "always_allowed": r.get("always_allowed", True),
                  "suggestions": r.get("suggestions") or [],
                  "engine_managed": bool(r.get("raw_decision")),
+                 "session_grant_effective": session_grant_effective(
+                     r.get("suggestions") or [], bool(r.get("raw_decision"))),
                  # Who may resolve it (the identity it was raised under). Server-side
                  # only: the WS re-emit copies selected keys, never this one.
                  "owner": r["identity"]}

@@ -39,7 +39,7 @@ export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: bo
 /** A server-proposed standing-rule pattern for a permission card ("Always allow…"). */
 export type RuleSuggestion = { pattern: string; description: string; level: 'ok' | 'warn' }
 
-export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ruleSuggestions?: RuleSuggestion[]; parentToolUseId?: string | null; ts?: number }
+export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ruleSuggestions?: RuleSuggestion[]; sessionGrantEffective?: boolean; parentToolUseId?: string | null; ts?: number }
 // A permission's future settled server-side (allowed or denied). Rides the same stream
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.
