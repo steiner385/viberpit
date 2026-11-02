@@ -1452,6 +1452,7 @@ class SessionOrchestrator:
             session_terminal_attest=self._backlog_session_terminal_attest,
             session_absent=self._backlog_session_absent,
             session_ran=self._backlog_session_ran,
+            session_hand_back=self._backlog_session_hand_back,
             session_work_stopped=self._automation_session_work_stopped,
             handoff=self._backlog_handoff,
             closeout_completed=self._backlog_closeout_completed,
@@ -9066,6 +9067,27 @@ class SessionOrchestrator:
         if row is None:
             return True
         return bool(row[0])
+
+    async def _backlog_session_hand_back(self, session_id: str | None) -> str | None:
+        """The reason the runner session *session_id* gave ``hand_back`` (#3216), else None.
+
+        Reads the ``session.hand_back`` audit event ``_persist_status`` writes, because
+        ``Session.hand_back_reason`` is blanked by the next status write (archive
+        included). The newest matching event wins; "" when the reason was empty, so a
+        hand-back is still distinguishable from none."""
+        from sqlalchemy import select as _select
+
+        from server.db.models import AuditEvent
+        if not session_id:
+            return None
+        async with db_session() as db:
+            rows = (await db.execute(_select(AuditEvent.detail).where(
+                AuditEvent.type == "session.hand_back").order_by(
+                    AuditEvent.at.desc()).limit(500))).scalars().all()
+        for detail in rows:
+            if isinstance(detail, dict) and detail.get("session_id") == session_id:
+                return str(detail.get("reason") or "") or "(no reason given)"
+        return None
 
     async def _backlog_count_candidates(self) -> "tuple[int, int, int, dict | None]":
         """(eligible, blocked, untriaged, per_product) counts of unclaimed OPEN
