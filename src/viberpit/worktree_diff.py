@@ -12,13 +12,20 @@ synthesised from their content. Strictly read-only: ``--no-optional-locks``, no
 ``git add -N``, nothing that writes the index.
 
 Synchronous and side-effect free by design — callers run it via ``asyncio.to_thread``.
+
+Work is bounded: at most ``MAX_FILES`` files get hunks, patch output is streamed and
+cut once it passes the remaining budget plus one file's cap, and untracked files are
+read for line counts only up to ``MAX_TOTAL_BYTES`` in total. Whenever something is
+left unread, ``truncated`` is true and the totals are **lower bounds**.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import selectors
 import subprocess
+import time
 from typing import Any
 
 MAX_FILES = 300
@@ -37,35 +44,89 @@ _REPO_ENV_VARS = (
 _GIT_GLOBAL = (
     "--no-optional-locks", "--literal-pathspecs",
     "-c", "core.quotePath=false", "-c", "core.fsmonitor=false",
-    "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+    "-c", "diff.suppressBlankEmpty=false",
 )
-_DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "-M")
+# Explicit prefixes override diff.noprefix / mnemonicPrefix / srcPrefix / dstPrefix.
+_DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "-M",
+              "--src-prefix=a/", "--dst-prefix=b/")
 _HUNK_RE = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 _STATUS = {"A": "added", "D": "deleted", "R": "renamed", "C": "added"}
 
 
-def _git(cwd: str, *args: str) -> bytes | None:
-    """Run git in ``cwd``; stdout bytes, or None on any failure. Bytes, not text
-    (unlike ``worktrees._run``): paths and file contents need not be UTF-8."""
+class _GitTimeout(Exception):
+    """A git call ran past ``_GIT_TIMEOUT_S`` — distinct from failure, so a hung git
+    never reads as a clean tree."""
+
+
+def _env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _REPO_ENV_VARS}
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    return env
+
+
+def _git(cwd: str, *args: str) -> bytes | None:
+    """Run git in ``cwd``; stdout bytes, or None on failure (raises ``_GitTimeout``).
+    Bytes, not text (unlike ``worktrees._run``): paths and contents need not be UTF-8."""
     try:
         r = subprocess.run(
             ["git", "-C", cwd, *_GIT_GLOBAL, *args],
-            capture_output=True, env=env, timeout=_GIT_TIMEOUT_S, check=False,
+            capture_output=True, env=_env(), timeout=_GIT_TIMEOUT_S, check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired as exc:
+        raise _GitTimeout from exc
+    except OSError:
         return None
     return r.stdout if r.returncode == 0 else None
+
+
+def _git_bounded(cwd: str, args: list[str], limit: int) -> tuple[bytes, bool]:
+    """Stream git's stdout, killing it once more than ``limit`` bytes have arrived (or
+    on timeout). Returns ``(data, complete)``; a failed run is ``(b"", True)``."""
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", cwd, *_GIT_GLOBAL, *args],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=_env(),
+        )
+    except OSError:
+        return b"", True
+    assert proc.stdout is not None
+    buf = bytearray()
+    complete = True
+    deadline = time.monotonic() + _GIT_TIMEOUT_S
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0 or not sel.select(left):
+                complete = False
+                break
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > limit:
+                complete = False
+                break
+    finally:
+        sel.close()
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdout.close()
+        proc.wait()
+    if complete and proc.returncode != 0:
+        return b"", True
+    return bytes(buf), complete
 
 
 def _text(b: bytes) -> str:
     return b.decode("utf-8", "replace")
 
 
-def _empty(base: str | None = None, head: str | None = None) -> dict[str, Any]:
+def _empty(base: str | None = None, head: str | None = None,
+           truncated: bool = False) -> dict[str, Any]:
     return {"base": base, "head": head, "files": [], "additions": 0, "deletions": 0,
-            "truncated": False}
+            "truncated": truncated}
 
 
 def _file(path: bytes, old: bytes | None, status: str, adds: int, dels: int,
@@ -143,56 +204,51 @@ def _parse_name_status(out: bytes) -> dict[bytes, str]:
     return status
 
 
-def _split_patch(out: bytes) -> dict[bytes, bytes]:
-    """Split ``git diff`` patch output into ``diff --git`` header line → block."""
-    blocks: dict[bytes, bytes] = {}
+def _split_patch(out: bytes) -> list[tuple[bytes, bytes]]:
+    """Split ``git diff`` patch output into (``diff --git`` header line, block)."""
     starts = [m.start() for m in re.finditer(rb"(?m)^diff --git ", out)]
-    for s, e in zip(starts, [*starts[1:], len(out)]):
-        block = out[s:e]
-        blocks[block.split(b"\n", 1)[0]] = block
-    return blocks
+    return [(out[s:e].split(b"\n", 1)[0], out[s:e])
+            for s, e in zip(starts, [*starts[1:], len(out)])]
 
 
 def _parse_hunks(block: bytes) -> list[dict[str, Any]]:
     hunks: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
-    old_no = new_no = 0
+    old_no = new_no = old_left = new_left = 0
     for line in block.split(b"\n"):
         m = _HUNK_RE.match(line)
         if m:
-            old_start, new_start = int(m.group(1)), int(m.group(3))
-            cur = {
-                "oldStart": old_start,
-                "oldLines": int(m.group(2)) if m.group(2) is not None else 1,
-                "newStart": new_start,
-                "newLines": int(m.group(4)) if m.group(4) is not None else 1,
-                "header": _text(m.group(5)),
-                "lines": [],
-            }
+            old_no, new_no = int(m.group(1)), int(m.group(3))
+            old_left = int(m.group(2)) if m.group(2) is not None else 1
+            new_left = int(m.group(4)) if m.group(4) is not None else 1
+            cur = {"oldStart": old_no, "oldLines": old_left, "newStart": new_no,
+                   "newLines": new_left, "header": _text(m.group(5)), "lines": []}
             hunks.append(cur)
-            old_no, new_no = old_start, new_start
             continue
-        if cur is None or not line:
+        # Only lines the hunk header still owes are file lines; "\ No newline at end
+        # of file" never is.
+        if cur is None or line[:1] == b"\\" or (old_left <= 0 and new_left <= 0):
             continue
-        tag, text = line[:1], _text(line[1:])
+        # A bare empty line is an empty context line (diff.suppressBlankEmpty).
+        tag, text = line[:1] or b" ", _text(line[1:])
         if tag == b" ":
             cur["lines"].append({"kind": "context", "oldNo": old_no, "newNo": new_no, "text": text})
-            old_no += 1
-            new_no += 1
+            old_no, new_no, old_left, new_left = old_no + 1, new_no + 1, old_left - 1, new_left - 1
         elif tag == b"-":
             cur["lines"].append({"kind": "del", "oldNo": old_no, "newNo": None, "text": text})
-            old_no += 1
+            old_no, old_left = old_no + 1, old_left - 1
         elif tag == b"+":
             cur["lines"].append({"kind": "add", "oldNo": None, "newNo": new_no, "text": text})
-            new_no += 1
-        # "\ No newline at end of file" and anything else: not a line of the file.
+            new_no, new_left = new_no + 1, new_left - 1
     return hunks
 
 
 # -- untracked files -------------------------------------------------------------------
 
-def _untracked(top: str, path: bytes, *, want_hunks: bool) -> tuple[dict[str, Any], int]:
-    """An untracked file as an ``added`` FileDiff, plus its synthetic patch size."""
+def _untracked(top: str, path: bytes, *, want_hunks: bool,
+               read_left: int) -> tuple[dict[str, Any], int, int] | None:
+    """An untracked file as an ``added`` FileDiff, with its synthetic patch size and
+    the bytes read; None (nothing read) when it would exceed ``read_left``."""
     full = os.path.join(os.fsencode(top), path)
     try:
         st = os.lstat(full)
@@ -203,44 +259,46 @@ def _untracked(top: str, path: bytes, *, want_hunks: bool) -> tuple[dict[str, An
             size = st.st_size
             data = None
         else:
-            return _file(path, None, "added", 0, 0, False), 0
+            return _file(path, None, "added", 0, 0, False), 0, 0
+        if size > read_left:
+            return None
         if data is None:
             with open(full, "rb") as fh:
                 head = fh.read(_BINARY_SNIFF_BYTES)
                 if b"\0" in head:
-                    return _file(path, None, "added", 0, 0, True), 0
+                    return _file(path, None, "added", 0, 0, True), 0, len(head)
                 if want_hunks and size <= MAX_FILE_PATCH_BYTES:
-                    data = head + fh.read()
-                else:  # count lines without holding the file
-                    nl, last = head.count(b"\n"), head[-1:]
-                    while chunk := fh.read(1 << 20):
+                    data = head + fh.read(MAX_FILE_PATCH_BYTES + 1 - len(head))
+                else:  # count lines without holding the file, never past what we stat'd
+                    nl, last, read = head.count(b"\n"), head[-1:], len(head)
+                    while read < size and (chunk := fh.read(min(1 << 20, size - read))):
                         nl += chunk.count(b"\n")
-                        last = chunk[-1:]
+                        last, read = chunk[-1:], read + len(chunk)
                     lines = nl + (1 if last and last != b"\n" else 0)
                     f = _file(path, None, "added", lines, 0, False)
                     f["tooLarge"] = want_hunks
-                    return f, 0
+                    return f, 0, read
     except OSError:
-        return _file(path, None, "added", 0, 0, False), 0
+        return _file(path, None, "added", 0, 0, False), 0, 0
     assert data is not None
     if b"\0" in data[:_BINARY_SNIFF_BYTES]:
-        return _file(path, None, "added", 0, 0, True), 0
+        return _file(path, None, "added", 0, 0, True), 0, len(data)
     rows = data.split(b"\n")
     if rows and rows[-1] == b"":
         rows.pop()
     f = _file(path, None, "added", len(rows), 0, False)
     if not want_hunks or not rows:
-        return f, 0
+        return f, 0, len(data)
     patch_size = len(data) + len(rows)
     if patch_size > MAX_FILE_PATCH_BYTES:
         f["tooLarge"] = True
-        return f, 0
+        return f, 0, len(data)
     f["hunks"] = [{
         "oldStart": 0, "oldLines": 0, "newStart": 1, "newLines": len(rows), "header": "",
         "lines": [{"kind": "add", "oldNo": None, "newNo": n, "text": _text(r)}
                   for n, r in enumerate(rows, 1)],
     }]
-    return f, patch_size
+    return f, patch_size, len(data)
 
 
 # -- entry point -----------------------------------------------------------------------
@@ -267,21 +325,29 @@ def session_diff(cwd: str, *, summary: bool = False,
     """The ``SessionDiff`` (camelCase) of ``cwd`` from its base to the working tree.
 
     A ``cwd`` that is missing or not a git work tree yields an empty diff. ``summary``
-    skips hunks (totals unchanged); ``ignore_whitespace`` is ``git diff -w``.
+    skips hunks; ``ignore_whitespace`` is ``git diff -w``. When ``truncated`` is true,
+    ``additions``/``deletions`` are lower bounds: untracked files beyond ``MAX_FILES``
+    or past the read budget are listed unread with zero counts, and a git timeout
+    yields ``files: []``.
     """
     if not cwd or not os.path.isdir(cwd):
         return _empty()
-    out = _git(cwd, "rev-parse", "--show-toplevel")
-    if not out:
-        return _empty()
-    top = os.fsdecode(out.rstrip(b"\n"))
-    base, head, rev = _resolve_base(top)
-    if not rev:
-        return _empty(base, head)
-    ws = ("-w",) if ignore_whitespace else ()
-    numstat = _git(top, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
-    names = _git(top, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
-    untracked = _git(top, "ls-files", "--others", "--exclude-standard", "-z")
+    base: str | None = None
+    head: str | None = None
+    try:
+        out = _git(cwd, "rev-parse", "--show-toplevel")
+        if not out:
+            return _empty()
+        top = os.fsdecode(out.rstrip(b"\n"))
+        base, head, rev = _resolve_base(top)
+        if not rev:
+            return _empty(base, head)
+        ws = ("-w",) if ignore_whitespace else ()
+        numstat = _git(top, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
+        names = _git(top, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
+        untracked = _git(top, "ls-files", "--others", "--exclude-standard", "-z")
+    except _GitTimeout:
+        return _empty(base, head, truncated=True)
     if numstat is None or names is None:
         return _empty(base, head)
     status = _parse_name_status(names)
@@ -303,36 +369,62 @@ def session_diff(cwd: str, *, summary: bool = False,
     # Tracked files whose patch will be fetched, in output order, for lazy batching.
     to_fetch = [pr for _, e, pr in combined[:MAX_FILES]
                 if e is not None and pr is not None and not e["binary"] and not oversized(e)]
-    fetched = 0
-    blocks: dict[bytes, bytes] = {}
+    position = {_header(*pr): i for i, pr in enumerate(to_fetch)}
+    blocks: dict[bytes, bytes] = {}   # complete patch blocks not yet consumed
+    partial: dict[bytes, int] = {}    # header -> bytes seen before a fetch was cut
+    tried: set[bytes] = set()         # headers a fetch has started from
+
+    def fetch_from(header: bytes) -> None:
+        tried.add(header)
+        i = position[header]
+        specs = sorted({os.fsdecode(p) for pr in to_fetch[i:i + _PATCH_BATCH] for p in pr})
+        data, complete = _git_bounded(
+            top, ["diff", *_DIFF_OPTS, *ws, "-U3", rev, "--", *specs],
+            max(budget, 0) + MAX_FILE_PATCH_BYTES)
+        parts = _split_patch(data)
+        if not complete and parts:
+            cut_header, cut_block = parts.pop()
+            partial[cut_header] = len(cut_block)
+        blocks.update(parts)
+
     files: list[dict[str, Any]] = []
     truncated = len(combined) > MAX_FILES
     budget = MAX_TOTAL_BYTES
+    read_left = MAX_TOTAL_BYTES
     for idx, (path, entry, pair) in enumerate(combined):
         want = not summary and idx < MAX_FILES and budget >= 0
-        if entry is not None:
-            f = entry
-        else:
-            f, size = _untracked(top, path, want_hunks=want)
+        if entry is None:
+            got = (_untracked(top, path, want_hunks=want, read_left=read_left)
+                   if idx < MAX_FILES else None)
+            if got is None:  # listed unread: counts unknown
+                files.append(_file(path, None, "added", 0, 0, False))
+                truncated = True
+                continue
+            f, size, consumed = got
+            read_left -= consumed
             if size > budget:
                 f["hunks"], truncated, budget = [], True, -1
             else:
                 budget -= size
-        if entry is not None and want and pair is not None and not f["binary"]:
+            files.append(f)
+            continue
+        f = entry
+        if want and pair is not None and not f["binary"]:
+            header = _header(*pair)
             if oversized(f):
                 f["tooLarge"] = True
             else:
-                header = _header(*pair)
-                if header not in blocks and fetched < len(to_fetch):
-                    batch = to_fetch[fetched:fetched + _PATCH_BATCH]
-                    fetched += len(batch)
-                    specs = sorted({os.fsdecode(p) for pr in batch for p in pr})
-                    patch = _git(top, "diff", *_DIFF_OPTS, *ws, "-U3", rev, "--", *specs)
-                    blocks.update(_split_patch(patch or b""))
+                # A block cut short only because earlier output filled the fetch is
+                # re-fetched starting from this file.
+                if (header not in blocks and header not in tried and header in position
+                        and partial.get(header, 0) <= MAX_FILE_PATCH_BYTES):
+                    partial.pop(header, None)
+                    fetch_from(header)
+                cut = partial.pop(header, None)
                 block = blocks.pop(header, b"")
-                if len(block) > MAX_FILE_PATCH_BYTES:
+                if (cut or 0) > MAX_FILE_PATCH_BYTES or len(block) > MAX_FILE_PATCH_BYTES:
                     f["tooLarge"] = True
-                elif len(block) > budget:
+                elif cut is not None or len(block) > budget:
                     truncated, budget = True, -1
                 else:
                     budget -= len(block)

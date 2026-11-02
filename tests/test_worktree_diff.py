@@ -212,7 +212,10 @@ def test_file_count_cap_truncates(repo: Path) -> None:
     assert d["truncated"] is True
     assert len(d["files"]) == MAX_FILES + 6  # the rest are listed, just without hunks
     assert sum(1 for f in d["files"] if f["hunks"]) == MAX_FILES
-    assert d["additions"] == MAX_FILES + 6  # totals still cover every file
+    # Tracked totals come from numstat, so they cover every tracked file; an untracked
+    # file beyond the cap is listed unread (a lower bound).
+    assert d["additions"] == MAX_FILES + 5
+    assert _by_path(d)["zz-untracked.txt"]["additions"] == 0
 
 
 def test_oversized_file_is_too_large(repo: Path) -> None:
@@ -276,3 +279,108 @@ def test_read_only_index_untouched(repo: Path) -> None:
     session_diff(str(repo), summary=True, ignore_whitespace=True)
     assert index.stat().st_mtime_ns == before
     assert _git(repo, "status", "--porcelain").count("??") == 1  # new.txt never staged
+
+
+def test_suppress_blank_empty_config_keeps_numbering(repo: Path) -> None:
+    _git(repo, "config", "diff.suppressBlankEmpty", "true")
+    (repo / "blank.txt").write_text("a\n\nb\nc\n")
+    _commit(repo, "blank")
+    _git(repo, "push", "-q", "origin", "HEAD:main")
+    _git(repo, "fetch", "-q", "origin")
+    (repo / "blank.txt").write_text("a\n\nb\nC\n")
+    (h,) = _by_path(session_diff(str(repo)))["blank.txt"]["hunks"]
+    assert [(ln["kind"], ln["oldNo"], ln["newNo"], ln["text"]) for ln in h["lines"]] == [
+        ("context", 1, 1, "a"), ("context", 2, 2, ""), ("context", 3, 3, "b"),
+        ("del", 4, None, "c"), ("add", None, 4, "C"),
+    ]
+
+
+def test_parser_treats_bare_empty_line_as_context() -> None:
+    block = b"diff --git a/f b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+B\n"
+    (h,) = worktree_diff._parse_hunks(block)
+    assert [(ln["kind"], ln["oldNo"], ln["newNo"]) for ln in h["lines"]] == [
+        ("context", 1, 1), ("context", 2, 2), ("del", 3, None), ("add", None, 3),
+    ]
+
+
+def test_custom_diff_prefix_config_still_maps_hunks(repo: Path) -> None:
+    _git(repo, "config", "diff.srcPrefix", "x/")
+    _git(repo, "config", "diff.dstPrefix", "y/")
+    _git(repo, "config", "diff.noprefix", "true")
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    assert len(_by_path(session_diff(str(repo)))["keep.txt"]["hunks"]) == 1
+
+
+def test_single_huge_line_is_too_large_with_bounded_read(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (repo / "bundle.min.js").write_text("a" * (1 << 20) + "\n")
+    (repo / "zz.txt").write_text("z\n")
+    _commit(repo, "bundle")
+    _git(repo, "push", "-q", "origin", "HEAD:main")
+    _git(repo, "fetch", "-q", "origin")
+    (repo / "bundle.min.js").write_text("b" * (1 << 20) + "\n")
+    (repo / "zz.txt").write_text("zz\n")
+    seen: list[int] = []
+    real = worktree_diff._git_bounded
+
+    def spy(cwd: str, args: list[str], limit: int) -> tuple[bytes, bool]:
+        data, complete = real(cwd, args, limit)
+        seen.append(len(data))
+        return data, complete
+
+    monkeypatch.setattr(worktree_diff, "_git_bounded", spy)
+    files = _by_path(session_diff(str(repo)))
+    assert files["bundle.min.js"]["tooLarge"] is True
+    assert files["bundle.min.js"]["hunks"] == []
+    assert (files["bundle.min.js"]["additions"], files["bundle.min.js"]["deletions"]) == (1, 1)
+    assert len(files["zz.txt"]["hunks"]) == 1  # a later file in the cut batch still lands
+    limit = worktree_diff.MAX_TOTAL_BYTES + MAX_FILE_PATCH_BYTES
+    assert seen and max(seen) <= limit + 65536  # one read chunk past the limit at most
+
+
+def test_line_count_precheck_skips_fetch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (repo / "many.txt").write_text("".join(f"{i}\n" for i in range(MAX_FILE_PATCH_BYTES // 2 + 1)))
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    _commit(repo, "many lines")
+    specs: list[list[str]] = []
+    real = worktree_diff._git_bounded
+
+    def spy(cwd: str, args: list[str], limit: int) -> tuple[bytes, bool]:
+        specs.append(args[args.index("--") + 1:])
+        return real(cwd, args, limit)
+
+    monkeypatch.setattr(worktree_diff, "_git_bounded", spy)
+    files = _by_path(session_diff(str(repo)))
+    assert files["many.txt"]["tooLarge"] is True and files["many.txt"]["hunks"] == []
+    assert files["many.txt"]["additions"] == MAX_FILE_PATCH_BYTES // 2 + 1
+    assert all("many.txt" not in s for s in specs)
+    assert len(files["keep.txt"]["hunks"]) == 1
+
+
+def test_untracked_read_budget_stops_reading(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worktree_diff, "MAX_TOTAL_BYTES", 1000)
+    for i in range(10):
+        (repo / f"u{i}.txt").write_text("x" * 99 + "\n" + "y" * 199 + "\n")  # 300 bytes
+    for summary in (False, True):
+        d = session_diff(str(repo), summary=summary)
+        files = _by_path(d)
+        assert d["truncated"] is True
+        assert [files[f"u{i}.txt"]["additions"] for i in range(10)] == [2, 2, 2] + [0] * 7
+        assert d["additions"] == 6
+
+
+def test_numstat_timeout_is_not_a_clean_tree(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (repo / "keep.txt").write_text("changed\n")
+    real = subprocess.run
+
+    def slow(args, *a, **kw):  # type: ignore[no-untyped-def]
+        if "--numstat" in args:
+            raise subprocess.TimeoutExpired(args, 30)
+        return real(args, *a, **kw)
+
+    monkeypatch.setattr(worktree_diff.subprocess, "run", slow)
+    d = session_diff(str(repo))
+    assert d["files"] == [] and d["truncated"] is True
+    assert d["head"] == _git(repo, "rev-parse", "HEAD").strip()
