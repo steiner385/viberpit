@@ -57,10 +57,6 @@ interface Props {
   liveModel?: string | null
   /** True while a "switch after this turn" change waits for the in-flight turn to end. */
   modelPending?: boolean
-  /** Permission mode for the session ('plan' shows the plan-mode toggle as on). */
-  mode: string
-  /** Latest requested mode, while the effective mode above is awaiting change. */
-  pendingMode?: string | null
   contextPct: number | null
   quota: UsageWindow[] | null
   subAgents: SubAgent[]
@@ -87,7 +83,6 @@ interface Props {
   accountPinned: boolean
   onSelectModel: (id: string) => void
   onSelectAccount: (name: string) => void
-  onSetMode: (mode: string) => void
   /** Clear the account pin; the server rotates a `limited` session immediately. */
   onUnpin?: () => void
 }
@@ -102,7 +97,7 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onUnpin }: Props) {
   const [panel, setPanel] = useState<'agents' | 'background' | null>(null)
   const now = useNow(1000, backgroundWork.wakeupAt != null)
   // `now` is 0 until the first tick; a countdown against 0 would flash a huge number.
@@ -113,8 +108,8 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
   // strip wrapped three rows deep — 114px of a phone's 844 before the transcript,
   // on top of the TopBar and the header. The live status, export, the session
   // actions and the sub-agent toggle stay on the one visible row; the identity
-  // and settings readouts (account, model, effort, host, display, ctx, quota,
-  // plan) fold behind a "Details" toggle. Same mechanism as the list controls'
+  // and settings readouts (account, model, effort, host, display, ctx, quota)
+  // fold behind a "Details" toggle. Same mechanism as the list controls'
   // fold: this strip is a `@container`, `@max-md:` folds, `display: contents`
   // everywhere else so a wide pane's single row is untouched. Hidden, not
   // unmounted: the selects keep their state and jsdom tests see every control.
@@ -325,26 +320,6 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
           </span>
         )}
 
-        {/* Plan mode toggle — sits with the other session settings */}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={mode === 'plan'}
-          aria-label="Plan mode"
-          onClick={() => onSetMode((pendingMode ?? mode) === 'plan' ? 'default' : 'plan')}
-          className={cn(
-            'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium min-h-7 border',
-            mode === 'plan'
-              ? 'bg-accent-wash border-accent text-accent'
-              : 'bg-transparent border-edge-strong text-ink-muted',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-          )}
-        >
-          plan
-        </button>
-        {pendingMode && (
-          <span role="status">{pendingMode === 'plan' ? 'Plan pending' : pendingMode === 'default' ? 'Exit plan pending' : 'Mode change pending'}</span>
-        )}
         </div>
 
         {/* Right cluster: live status (folded-in StatusBar) + export + session

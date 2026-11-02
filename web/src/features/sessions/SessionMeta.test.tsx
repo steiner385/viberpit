@@ -22,7 +22,6 @@ const baseProps = {
   sessionId: 's1',
   account: 'work-max',
   model: 'claude-sonnet-4-5',
-  mode: 'default',
   contextPct: 78,
   quota: [
     { key: 'session', label: 'session', pct: 42, resetsAt: '2026-06-19T14:30:00.000Z', durationSeconds: 18000 },
@@ -34,7 +33,6 @@ const baseProps = {
   accountPinned: false,
   onSelectModel: () => {},
   onSelectAccount: () => {},
-  onSetMode: () => {},
 }
 
 describe('SessionMeta', () => {
@@ -167,48 +165,10 @@ describe('SessionMeta', () => {
     expect(screen.queryByText(/wk /i)).toBeNull()
   })
 
-  it('plan mode toggle shows aria-checked=false when not in plan mode', () => {
-    render(<SessionMeta {...baseProps} mode="default" />)
-    expect(screen.getByRole('switch', { name: /plan mode/i })).toHaveAttribute('aria-checked', 'false')
-  })
-
-  it('plan mode toggle shows aria-checked=true when in plan mode', () => {
-    render(<SessionMeta {...baseProps} mode="plan" />)
-    expect(screen.getByRole('switch', { name: /plan mode/i })).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('clicking plan toggle calls onSetMode with "plan" when not in plan mode', () => {
-    const onSetMode = vi.fn()
-    render(<SessionMeta {...baseProps} mode="default" onSetMode={onSetMode} />)
-    fireEvent.click(screen.getByRole('switch', { name: /plan mode/i }))
-    expect(onSetMode).toHaveBeenCalledWith('plan')
-  })
-
-  it('clicking plan toggle calls onSetMode with "default" when in plan mode', () => {
-    const onSetMode = vi.fn()
-    render(<SessionMeta {...baseProps} mode="plan" onSetMode={onSetMode} />)
-    fireEvent.click(screen.getByRole('switch', { name: /plan mode/i }))
-    expect(onSetMode).toHaveBeenCalledWith('default')
-  })
-
-  it('can cancel a pending plan entry without claiming plan is active', () => {
-    const onSetMode = vi.fn()
-    render(<SessionMeta {...baseProps} mode="full-auto" pendingMode="plan" onSetMode={onSetMode} />)
-    const toggle = screen.getByRole('switch', { name: /plan mode/i })
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByText('Plan pending')).toBeInTheDocument()
-    fireEvent.click(toggle)
-    expect(onSetMode).toHaveBeenCalledWith('default')
-  })
-
-  it('can reverse a pending plan exit while plan is still active', () => {
-    const onSetMode = vi.fn()
-    render(<SessionMeta {...baseProps} mode="plan" pendingMode="default" onSetMode={onSetMode} />)
-    const toggle = screen.getByRole('switch', { name: /plan mode/i })
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByText('Exit plan pending')).toBeInTheDocument()
-    fireEvent.click(toggle)
-    expect(onSetMode).toHaveBeenCalledWith('plan')
+  it('has no Plan mode control: mode moved to the prompt row picker (D-1)', () => {
+    render(<SessionMeta {...baseProps} />)
+    expect(screen.queryByRole('switch', { name: /plan mode/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /plan mode/i })).toBeNull()
   })
 
   it('omits the sub-agents control when there are none', () => {

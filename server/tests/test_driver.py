@@ -147,6 +147,35 @@ def test_default_outside_plan_is_not_hijacked():
     assert d.mode == "default"
 
 
+def _plan_from_auto_driver() -> ClaudeAgentDriver:
+    d = ClaudeAgentDriver("sp-switch", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+    d._client = _ModeRecorder()
+    return d
+
+
+def test_prompt_row_picker_switches_straight_out_of_plan():
+    """The prompt-row mode picker (D-1) replaces the plan toggle: from plan it can
+    jump straight to any mode, and that mode must win — not the pre-plan one."""
+    async def run():
+        d = _plan_from_auto_driver()
+        await d.set_permission_mode("plan")
+        assert d.mode == "plan"
+        await d.set_permission_mode("full-auto")
+        return d
+    assert asyncio.run(run()).mode == "full-auto"
+
+
+def test_prompt_row_default_sentinel_restores_pre_plan_auto():
+    async def run():
+        d = _plan_from_auto_driver()
+        await d.set_permission_mode("plan")
+        await d.set_permission_mode("default")
+        return d
+    assert asyncio.run(run()).mode == "auto"
+
+
 def _factory(msgs):
     def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)

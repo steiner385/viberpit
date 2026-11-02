@@ -105,8 +105,6 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           model={rt.model}
           liveModel={rt.liveModel}
           modelPending={rt.modelPending}
-          mode={rt.mode}
-          pendingMode={rt.pendingMode}
           contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
@@ -124,7 +122,6 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             else rt.onSetModel(id, 'now')
           }}
           onSelectAccount={(name) => rt.onCommand('account', name)}
-          onSetMode={rt.onSetMode}
           onUnpin={() => setAccountPin.mutate({ id: rt.sessionId, pinned: false })}
         />
       </div>

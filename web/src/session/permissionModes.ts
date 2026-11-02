@@ -39,8 +39,13 @@ export const PERMISSION_GROUP_HEADINGS: Record<PermissionModeGroup, string | nul
   viberpit: 'ViberPit',
 }
 
+/** The ViberPit mode key a reported mode stands for (`default` → `interactive`); others pass through. */
+export function canonicalMode(mode: string): string {
+  return SDK_MODE_ALIASES[mode] ?? mode
+}
+
 /** Human label for a mode key; an unknown key is shown as-is rather than hidden. */
 export function modeLabel(mode: string): string {
-  const key = SDK_MODE_ALIASES[mode] ?? mode
+  const key = canonicalMode(mode)
   return SESSION_MODE_OPTIONS.find((o) => o.value === key)?.label ?? mode
 }

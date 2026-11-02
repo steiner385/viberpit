@@ -12,6 +12,14 @@ export interface MenuItem {
   icon?: React.ReactNode
   disabled?: boolean
   selected?: boolean
+  /** Id of the `MenuProps.groups` entry this item belongs to. */
+  group?: string
+}
+
+/** A run of consecutive items rendered as one `role="group"`; `heading` is its visible, accessible name. */
+export interface MenuGroup {
+  id: string
+  heading: string | null
 }
 
 export interface MenuProps {
@@ -24,12 +32,16 @@ export interface MenuProps {
   label: string
   align?: 'start' | 'end'
   className?: string
+  /** When set, consecutive items sharing a `group` id render inside one
+   *  `role="group"`, under its heading if it has one. Keyboard order is unchanged. */
+  groups?: readonly MenuGroup[]
 }
 
 const GAP = 4
 
-export function Menu({ open, onClose, anchorRef, items, onSelect, label, align = 'start', className }: MenuProps) {
+export function Menu({ open, onClose, anchorRef, items, onSelect, label, align = 'start', className, groups }: MenuProps) {
   const listRef = React.useRef<HTMLDivElement>(null)
+  const menuId = React.useId()
   const [active, setActive] = React.useState(0)
   // Callers pass `items` as an inline array literal — the normal shape — so it
   // arrives with a fresh identity on every parent render. Memoizing off that
@@ -202,6 +214,50 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
     if (e.key.length === 1) { typeahead(e.key.toLowerCase()) }
   }
 
+  const renderItem = (it: MenuItem, i: number) => {
+    // Badge number derives from the exact same enabledIdx array the digit
+    // shortcuts use, so a disabled item (absent from enabledIdx) never
+    // gets a badge and never consumes a digit.
+    const enabledPos = enabledIdx.indexOf(i)
+    const n = enabledPos >= 0 ? enabledPos + 1 : null
+    // Single-choice pickers (current permission mode / model): `selected`
+    // being defined at all marks this as a radio-style item, which is
+    // the only role `aria-checked` is valid on — a plain `menuitem`
+    // never carries it.
+    const role = it.selected === undefined ? 'menuitem' : 'menuitemradio'
+    return (
+      <div
+        key={it.id}
+        role={role}
+        tabIndex={i === active ? 0 : -1}
+        aria-disabled={it.disabled || undefined}
+        aria-checked={role === 'menuitemradio' ? it.selected : undefined}
+        onClick={() => pick(i)}
+        onMouseEnter={() => !it.disabled && setActive(i)}
+        className={cn(
+          'flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-ink cursor-default select-none min-h-target',
+          'focus:outline-none focus:bg-surface-raised',
+          it.disabled && 'opacity-50',
+          it.selected && 'font-semibold',
+        )}
+      >
+        {it.icon}
+        <span className="flex-1">{it.label}</span>
+        {it.shortcut && <Kbd keys={it.shortcut} />}
+        {n !== null && n <= 9 && <span aria-hidden="true" className="text-2xs text-ink-faint tabular-nums">{n}</span>}
+      </div>
+    )
+  }
+
+  // Consecutive runs of one group id, each keeping its items' GLOBAL index so
+  // the active/digit bookkeeping above is untouched by grouping.
+  const runs: { id: string | undefined; group: MenuGroup | undefined; entries: { it: MenuItem; i: number }[] }[] = []
+  items.forEach((it, i) => {
+    const last = runs[runs.length - 1]
+    if (last && last.id === it.group) last.entries.push({ it, i })
+    else runs.push({ id: it.group, group: groups?.find((g) => g.id === it.group), entries: [{ it, i }] })
+  })
+
   return createPortal(
     <div
       ref={listRef}
@@ -211,40 +267,26 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
       style={{ position: 'fixed', top: pos.top, left: pos.left }}
       className={cn('z-popover min-w-48 rounded-md border border-edge bg-surface p-1 shadow-lg', className)}
     >
-      {items.map((it, i) => {
-        // Badge number derives from the exact same enabledIdx array the digit
-        // shortcuts use, so a disabled item (absent from enabledIdx) never
-        // gets a badge and never consumes a digit.
-        const enabledPos = enabledIdx.indexOf(i)
-        const n = enabledPos >= 0 ? enabledPos + 1 : null
-        // Single-choice pickers (current permission mode / model): `selected`
-        // being defined at all marks this as a radio-style item, which is
-        // the only role `aria-checked` is valid on — a plain `menuitem`
-        // never carries it.
-        const role = it.selected === undefined ? 'menuitem' : 'menuitemradio'
-        return (
-          <div
-            key={it.id}
-            role={role}
-            tabIndex={i === active ? 0 : -1}
-            aria-disabled={it.disabled || undefined}
-            aria-checked={role === 'menuitemradio' ? it.selected : undefined}
-            onClick={() => pick(i)}
-            onMouseEnter={() => !it.disabled && setActive(i)}
-            className={cn(
-              'flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-ink cursor-default select-none min-h-target',
-              'focus:outline-none focus:bg-surface-raised',
-              it.disabled && 'opacity-50',
-              it.selected && 'font-semibold',
-            )}
-          >
-            {it.icon}
-            <span className="flex-1">{it.label}</span>
-            {it.shortcut && <Kbd keys={it.shortcut} />}
-            {n !== null && n <= 9 && <span aria-hidden="true" className="text-2xs text-ink-faint tabular-nums">{n}</span>}
-          </div>
-        )
-      })}
+      {groups
+        ? runs.map((run, k) => {
+            const headingId = run.group?.heading ? `${menuId}-g${k}` : undefined
+            return (
+              <div
+                key={k}
+                role="group"
+                aria-labelledby={headingId}
+                className={cn(k > 0 && 'mt-1 border-t border-edge pt-1')}
+              >
+                {run.group?.heading && (
+                  <div id={headingId} role="presentation" className="px-2 py-1 text-2xs font-medium uppercase tracking-wide text-ink-faint">
+                    {run.group.heading}
+                  </div>
+                )}
+                {run.entries.map(({ it, i }) => renderItem(it, i))}
+              </div>
+            )
+          })
+        : items.map(renderItem)}
     </div>,
     getOverlayRoot(),
   )
