@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useSettings, useUpdateSettings, type AppSettings } from '@/api/hooks'
-import { PERMISSION_MODES } from '@/session/permissionModes'
+import { PERMISSION_MODES, PERMISSION_GROUP_HEADINGS, type PermissionModeGroup } from '@/session/permissionModes'
 import { Select } from '@/ui/Select'
 import { Input } from '@/ui/Input'
 import { Banner } from '@/ui/Banner'
@@ -167,9 +167,13 @@ export function SessionDefaultsSection() {
             value={draft.permissionMode}
             onChange={(e) => set('permissionMode', e.target.value)}
           >
-            {PERMISSION_MODES.map((m) => (
-              <option key={m.value} value={m.value} disabled={!accepted.has(m.value)}>{m.label}</option>
-            ))}
+            {(['desktop', 'viberpit'] as const satisfies readonly PermissionModeGroup[]).map((g) => {
+              const opts = PERMISSION_MODES.filter((m) => m.group === g).map((m) => (
+                <option key={m.value} value={m.value} disabled={!accepted.has(m.value)}>{m.label}</option>
+              ))
+              const heading = PERMISSION_GROUP_HEADINGS[g]
+              return heading ? <optgroup key={g} label={heading}>{opts}</optgroup> : opts
+            })}
           </Select>
         </SettingRow>
         {UNSAFE_MODES.has(draft.permissionMode) && (

@@ -100,7 +100,7 @@ describe('SessionDefaultsSection', () => {
 
   it('disables, with a reason, any mode the server does not accept (DEC-4)', () => {
     mount()
-    const opt = screen.getByRole('option', { name: /Bypass all permissions/ })
+    const opt = screen.getByRole('option', { name: /Bypass/ })
     expect(opt).toBeDisabled()
     expect(screen.getByText(/not accepted by this server/i)).toBeInTheDocument()
   })
