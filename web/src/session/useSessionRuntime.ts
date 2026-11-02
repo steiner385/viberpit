@@ -79,8 +79,6 @@ export interface SessionRuntime {
   /** Open background work — the shells / Monitors / wakeup a "Waiting…" session waits on (#2635). Live events win; the record snapshot covers reload. */
   backgroundWork: BackgroundWorkView
   hasOpenAction: boolean
-  /** True when at least one open permission block is pending (permission blocks only). */
-  hasOpenPermission: boolean
   /** Question currently armed for a free-flowing chat reply (next prompt answers it), or null. */
   armedQuestionId: string | null
   /** True when a question is armed for chat — the composer shows a "Reply" affordance. */
@@ -480,7 +478,6 @@ export function useSessionRuntime(
   const hasOpenAction = viewState.turns.some((t) =>
     t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
   )
-  const hasOpenPermission = viewState.turns.some((t) => t.blocks.some((b) => b.kind === 'permission'))
 
   // If the armed question is no longer LIVE (resolved/replaced), disarm. A resolved
   // question stays inline as an answered block (live:false), so presence alone is not
@@ -646,7 +643,6 @@ export function useSessionRuntime(
     subAgents,
     backgroundWork,
     hasOpenAction,
-    hasOpenPermission,
     armedQuestionId,
     chatArmed: armedQuestionId !== null,
     onDecision,

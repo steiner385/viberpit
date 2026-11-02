@@ -90,7 +90,6 @@ function fakeRuntime() {
     contextPct: null,
     subAgents: {},
     hasOpenAction: false,
-    hasOpenPermission: false,
     armedQuestionId: null,
     chatArmed: false,
     onDecision: vi.fn(),

@@ -19,8 +19,10 @@ interface Props {
   block: PermBlock
   /** `message` only ever rides with `deny` — a plan card's "keep planning" comment. */
   onDecision: (permId: string, decision: Decision, message?: string) => void
-  /** Standing-rule wiring. All three present → "Always allow…" opens the chooser; otherwise
-   *  (sub-agent page, assistant drawer) it falls back to the direct session-wide decision. */
+  /** Standing-rule wiring. With both rule callbacks present (and a card that allows standing
+   *  grants with rule suggestions) an "Always allow…" button opens the chooser, at "This repo" when
+   *  `hasRepo`. Without them (sub-agent page, assistant drawer) there is no Always allow… button;
+   *  "Allow for this session" is always its own button and sends the `always` decision directly. */
   hasRepo?: boolean
   onPreviewRule?: (permId: string, pattern: string, scope: RuleScope) => Promise<RulePreview>
   onGrantRule?: (permId: string, pattern: string, scope: RuleScope, confirm: boolean) => Promise<unknown>

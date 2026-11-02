@@ -65,7 +65,6 @@ function fakeRuntime() {
     contextPct: null,
     subAgents: {},
     hasOpenAction: false,
-    hasOpenPermission: false,
     armedQuestionId: null,
     chatArmed: false,
     onDecision: vi.fn(),
@@ -142,7 +141,6 @@ describe('AssistantSheet', () => {
         toolKind: 'app_action', input: { target: 'o/r#1' }, plan: false, alwaysAllowed: false, items: null,
       }],
     }] as never
-    rt.hasOpenPermission = true
     vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
     renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
     const dlg = screen.getByRole('dialog', { name: /assistant/i })

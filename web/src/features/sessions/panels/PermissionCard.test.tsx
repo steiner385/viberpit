@@ -138,7 +138,7 @@ describe('PermissionCard — Always allow… chooser', () => {
 describe('PermissionCard', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('renders three buttons in normal mode (Yes, No, Yes always)', () => {
+  it('renders Allow once, Deny and Allow for this session without rule wiring', () => {
     render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
     // Use exact aria-label patterns; "Allow" button must not match "Always allow"
     expect(screen.getByRole('button', { name: /^Allow Bash/i })).toBeInTheDocument()
@@ -146,12 +146,12 @@ describe('PermissionCard', () => {
     expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
   })
 
-  it('shows "Yes, always" button in auto mode', () => {
+  it('shows Allow for this session in auto mode', () => {
     render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
     expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
   })
 
-  it('shows "Yes, always" button when mode is undefined (default)', () => {
+  it('shows Allow for this session when mode is undefined (default)', () => {
     render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
     expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
   })
@@ -162,7 +162,7 @@ describe('PermissionCard', () => {
     expect(screen.getByRole('button', { name: /keep planning/i })).toBeInTheDocument()
   })
 
-  it('calls onDecision with allow on Yes click', async () => {
+  it('calls onDecision with allow on Allow once click', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
@@ -170,7 +170,7 @@ describe('PermissionCard', () => {
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'allow')
   })
 
-  it('calls onDecision with deny on No click', async () => {
+  it('calls onDecision with deny on Deny click', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
@@ -178,7 +178,7 @@ describe('PermissionCard', () => {
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'deny')
   })
 
-  it('calls onDecision with always on Yes always click', async () => {
+  it('calls onDecision with always on Allow for this session click', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
@@ -212,13 +212,13 @@ describe('PermissionCard', () => {
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
   })
 
-  it('hides "Yes, always" for a destructive app_action even in auto mode', () => {
+  it('hides Allow for this session for a destructive app_action even in auto mode', () => {
     render(<PermissionCard block={destructiveAppActionPerm} onDecision={vi.fn()} />)
     const group = screen.getByRole('group', { name: /Permission request/ })
     expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Allow once', 'Deny'])
   })
 
-  it('digit 3 is ignored for a destructive app_action (no always button)', async () => {
+  it('digit 3 is ignored for a destructive app_action (no session-grant button)', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={destructiveAppActionPerm} onDecision={onDecision} />)
@@ -401,6 +401,23 @@ describe('PermissionCard — plan comments (Keep planning)', () => {
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('textbox', { name: /what should change/i })).toBeNull()
     expect(onDecision).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['Cancel', async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(screen.getByRole('button', { name: /^Cancel/i }))
+    }],
+    ['Esc in the field', async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.keyboard('{Escape}')
+    }],
+  ])('focus returns to Keep planning after %s', async (_label, close) => {
+    const user = userEvent.setup()
+    render(<PermissionCard block={planPerm} onDecision={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /^Keep planning/i }))
+    expect(field()).toHaveFocus()
+    await close(user)
+    expect(screen.queryByRole('textbox', { name: /what should change/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Keep planning/i })).toHaveFocus()
   })
 
   it('typing digits in the field never triggers the card digit shortcuts', async () => {

@@ -74,7 +74,7 @@ function makeRuntime(): SessionRuntime {
     toggleToolDetail: vi.fn(),
     connectionState: 'connected',
     title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
-    hasOpenAction: false, hasOpenPermission: false,
+    hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
     onInterrupt: vi.fn(), onSetMode: vi.fn(), onCancelQueued: vi.fn(),
