@@ -8,6 +8,8 @@ import { toolLabel, toolDetail } from '@/session/toolSummary'
 
 type PermBlock = Extract<Block, { kind: 'permission' }>
 type Decision = 'allow' | 'deny' | 'always'
+/** A card button: 'session' sends the `always` decision; 'chooser' opens the standing-rule dialog. */
+type CardAction = 'allow' | 'deny' | 'session' | 'chooser'
 
 interface Props {
   block: PermBlock
@@ -63,11 +65,15 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
     : null
 
   // Ordered actions matching the rendered buttons; digit/arrow indices map here.
-  const actions: Decision[] = canAlwaysAllow ? ['allow', 'deny', 'always'] : ['allow', 'deny']
+  // Plan cards keep their own two-button layout. A grantable permission card is
+  // Allow once · Allow for this session · [Always allow… when the chooser is available] · Deny.
+  const actions: CardAction[] = block.plan || !canAlwaysAllow
+    ? ['allow', 'deny']
+    : rules ? ['allow', 'session', 'chooser', 'deny'] : ['allow', 'session', 'deny']
 
-  const activate = (d: Decision) => {
-    if (d === 'always' && rules) setChooserOpen(true)
-    else onDecision(block.permId, d)
+  const activate = (a: CardAction) => {
+    if (a === 'chooser') setChooserOpen(true)
+    else onDecision(block.permId, a === 'session' ? 'always' : a)
   }
 
   const kb = useCardKeyboard({
@@ -145,17 +151,24 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
               aria-label={`Allow ${label}`} className={allowBtn}>
               Allow once
             </button>
-            <button type="button" {...kb.itemProps(1)} onClick={() => onDecision(block.permId, 'deny')}
-              aria-label={`Deny ${label}`} className={secondaryBtn}>
-              Deny
-            </button>
             {canAlwaysAllow && (
-              <button type="button" {...kb.itemProps(2)} onClick={() => activate('always')}
-                aria-label={`Always allow ${label}`} className={cn(tertiaryBtn, 'sm:ml-auto')}
-                title={rules ? 'Choose a standing rule' : 'Grant this for the rest of the session'}>
-                {rules ? 'Always allow…' : 'Always allow (this session)'}
+              <button type="button" {...kb.itemProps(1)} onClick={() => activate('session')}
+                aria-label={`Allow for this session: ${label}`} className={secondaryBtn}
+                title="Allow this for the rest of the session">
+                Allow for this session
               </button>
             )}
+            {rules && (
+              <button type="button" {...kb.itemProps(2)} onClick={() => activate('chooser')}
+                aria-label={`Always allow ${label}`} className={tertiaryBtn}
+                title="Choose a standing rule">
+                Always allow…
+              </button>
+            )}
+            <button type="button" {...kb.itemProps(actions.length - 1)} onClick={() => activate('deny')}
+              aria-label={`Deny ${label}`} className={cn(secondaryBtn, 'sm:ml-auto')}>
+              Deny
+            </button>
           </>
         )}
       </div>
@@ -167,6 +180,7 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
         open={chooserOpen}
         block={block}
         hasRepo={rules.hasRepo}
+        initialScope={rules.hasRepo ? 'repo' : 'session'}
         onPreview={(pattern, scope) => rules.onPreviewRule(block.permId, pattern, scope)}
         onGrant={(pattern, scope, confirm) => rules.onGrantRule(block.permId, pattern, scope, confirm)}
         onClose={() => setChooserOpen(false)}

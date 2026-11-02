@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PermissionCard } from './PermissionCard'
 import type { Block } from '@/session/reducer'
@@ -47,10 +47,49 @@ const ruleProps = () => ({
 })
 
 describe('PermissionCard — Always allow… chooser', () => {
-  it('labels the buttons Allow once / Deny / Always allow…', () => {
+  it('shows four buttons in order: Allow once, Allow for this session, Always allow…, Deny', () => {
     render(<PermissionCard block={sugPerm} onDecision={vi.fn()} {...ruleProps()} />)
-    expect(screen.getByRole('button', { name: /^Allow Bash/ })).toHaveTextContent(/^Allow once$/)
-    expect(screen.getByRole('button', { name: /^Always allow Bash/ })).toHaveTextContent(/^Always allow…$/)
+    const group = screen.getByRole('group', { name: /Permission request/ })
+    const names = within(group).getAllByRole('button').map((b) => b.textContent)
+    expect(names).toEqual(['Allow once', 'Allow for this session', 'Always allow…', 'Deny'])
+  })
+
+  it('Allow for this session sends the always decision with no chooser', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={sugPerm} onDecision={onDecision} {...ruleProps()} />)
+    await user.click(screen.getByRole('button', { name: /^Allow for this session/ }))
+    expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('chooser opens on This repo when the session has a repo', async () => {
+    const user = userEvent.setup()
+    render(<PermissionCard block={sugPerm} onDecision={vi.fn()} {...ruleProps()} hasRepo />)
+    await user.click(screen.getByRole('button', { name: /^Always allow Bash/ }))
+    expect(screen.getByRole('radio', { name: /This repo/ })).toBeChecked()
+  })
+
+  it('chooser opens on This session when there is no repo', async () => {
+    const user = userEvent.setup()
+    render(<PermissionCard block={sugPerm} onDecision={vi.fn()} {...ruleProps()} hasRepo={false} />)
+    await user.click(screen.getByRole('button', { name: /^Always allow Bash/ }))
+    expect(screen.getByRole('radio', { name: /This session/ })).toBeChecked()
+  })
+
+  it('digits 1-4 follow the visual order', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={sugPerm} onDecision={onDecision} {...ruleProps()} />)
+    await user.keyboard('1')
+    expect(onDecision).toHaveBeenLastCalledWith('perm-1', 'allow')
+    await user.keyboard('2')
+    expect(onDecision).toHaveBeenLastCalledWith('perm-1', 'always')
+    await user.keyboard('4')
+    expect(onDecision).toHaveBeenLastCalledWith('perm-1', 'deny')
+    expect(onDecision).toHaveBeenCalledTimes(3)
+    await user.keyboard('3')
+    expect(screen.getByRole('dialog', { name: 'Always allow' })).toBeInTheDocument()
   })
 
   it('shows it in interactive mode when suggestions exist', () => {
@@ -78,28 +117,19 @@ describe('PermissionCard — Always allow… chooser', () => {
     expect(screen.getByRole('dialog', { name: 'Always allow' })).toBeInTheDocument()
   })
 
-  it('without rule props, suggestions still present, labels the direct session-wide grant honestly', () => {
+  it('without rule props, shows three buttons (no Always allow…)', () => {
     render(<PermissionCard block={sugPerm} onDecision={vi.fn()} />)
-    const btn = screen.getByRole('button', { name: /^Always allow Bash/ })
-    expect(btn).toHaveTextContent('Always allow (this session)')
-    expect(btn).toHaveAttribute('title', 'Grant this for the rest of the session')
+    const group = screen.getByRole('group', { name: /Permission request/ })
+    expect(within(group).getAllByRole('button').map((b) => b.textContent))
+      .toEqual(['Allow once', 'Allow for this session', 'Deny'])
   })
 
-  it('without rule props, Always allow… falls back to the direct decision', async () => {
-    const user = userEvent.setup()
-    const onDecision = vi.fn()
-    render(<PermissionCard block={sugPerm} onDecision={onDecision} />)
-    await user.click(screen.getByRole('button', { name: /^Always allow Bash/ }))
-    expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
-  })
-
-  it('engine-managed card (no suggestions) keeps the legacy session-wide button', async () => {
+  it('engine-managed card (no suggestions) shows three buttons and the session grant decides directly', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={bashPerm} onDecision={onDecision} {...ruleProps()} />)
-    const btn = screen.getByRole('button', { name: /^Always allow Bash/ })
-    expect(btn).toHaveTextContent('Always allow (this session)')
-    await user.click(btn)
+    expect(screen.queryByRole('button', { name: /^Always allow/ })).toBeNull()
+    await user.click(screen.getByRole('button', { name: /^Allow for this session/ }))
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
     expect(screen.queryByRole('dialog')).toBeNull()
   })
@@ -113,17 +143,17 @@ describe('PermissionCard', () => {
     // Use exact aria-label patterns; "Allow" button must not match "Always allow"
     expect(screen.getByRole('button', { name: /^Allow Bash/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Deny Bash/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^Always allow Bash/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
   })
 
   it('shows "Yes, always" button in auto mode', () => {
     render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
-    expect(screen.getByRole('button', { name: /^Always allow Bash/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
   })
 
   it('shows "Yes, always" button when mode is undefined (default)', () => {
     render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
-    expect(screen.getByRole('button', { name: /^Always allow Bash/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
   })
 
   it('renders plan variant buttons when block.plan is true', () => {
@@ -152,7 +182,7 @@ describe('PermissionCard', () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
-    await user.click(screen.getByRole('button', { name: /^Always allow Bash/i }))
+    await user.click(screen.getByRole('button', { name: /^Allow for this session/i }))
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
   })
 
@@ -162,31 +192,30 @@ describe('PermissionCard', () => {
     expect(document.activeElement).toBe(primary)
   })
 
-  it('digit 1 allows, 2 denies, 3 always (normal mode)', async () => {
+  it('digit 1 allows, 2 allows for the session, 3 denies (no chooser)', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
     await user.keyboard('1')
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'allow')
     await user.keyboard('2')
-    expect(onDecision).toHaveBeenCalledWith('perm-1', 'deny')
-    await user.keyboard('3')
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
+    await user.keyboard('3')
+    expect(onDecision).toHaveBeenCalledWith('perm-1', 'deny')
   })
 
-  it('ArrowDown then Enter denies', async () => {
+  it('ArrowDown then Enter allows for the session', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
     await user.keyboard('{ArrowDown}{Enter}')
-    expect(onDecision).toHaveBeenCalledWith('perm-1', 'deny')
+    expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
   })
 
   it('hides "Yes, always" for a destructive app_action even in auto mode', () => {
     render(<PermissionCard block={destructiveAppActionPerm} onDecision={vi.fn()} />)
-    expect(screen.getByRole('button', { name: /^Allow /i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^Deny /i })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^Always allow/i })).toBeNull()
+    const group = screen.getByRole('group', { name: /Permission request/ })
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Allow once', 'Deny'])
   })
 
   it('digit 3 is ignored for a destructive app_action (no always button)', async () => {
@@ -249,16 +278,16 @@ describe('PermissionCard — readable request, honest weighting', () => {
     expect(detail).toHaveAttribute('tabindex', '0')
   })
 
-  it('names the actions on the buttons (Allow / Deny / Always allow), never Yes / No', () => {
+  it('names the actions on the buttons, never Yes / No', () => {
     render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
     expect(screen.getByRole('button', { name: /^Allow Bash/ })).toHaveTextContent(/^Allow once$/)
     expect(screen.getByRole('button', { name: /^Deny Bash/ })).toHaveTextContent(/^Deny$/)
-    expect(screen.getByRole('button', { name: /^Always allow Bash/ })).toHaveTextContent(/^Always allow \(this session\)$/)
+    expect(screen.getByRole('button', { name: /^Allow for this session/ })).toHaveTextContent(/^Allow for this session$/)
     expect(screen.queryByText(/^Yes/)).toBeNull()
   })
 
-  it('weights Allow as the primary action and Always allow as a quiet tertiary one', () => {
-    render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
+  it('weights Allow as the primary action and Always allow… as a quiet tertiary one', () => {
+    render(<PermissionCard block={sugPerm} onDecision={vi.fn()} {...ruleProps()} />)
     const allow = screen.getByRole('button', { name: /^Allow Bash/ })
     const always = screen.getByRole('button', { name: /^Always allow Bash/ })
     expect(document.activeElement).toBe(allow)

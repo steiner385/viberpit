@@ -300,7 +300,7 @@ describe('SessionBody — capability-gated surfaces', () => {
     expect(screen.getByTestId('pending-permission-panel')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Allow Bash: pytest -q$/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Deny Bash: pytest -q$/ })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /^Always allow Bash: pytest -q$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Allow for this session: Bash: pytest -q$/ }))
     expect(rt.onDecision).toHaveBeenCalledWith('p1', 'always')
   })
 

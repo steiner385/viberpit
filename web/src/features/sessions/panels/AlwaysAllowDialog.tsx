@@ -14,6 +14,8 @@ interface Props {
   open: boolean
   block: PermBlock
   hasRepo: boolean
+  /** Scope the chooser opens on (the card passes 'repo' when the session has a repo). */
+  initialScope: RuleScope
   onPreview: (pattern: string, scope: RuleScope) => Promise<RulePreview>
   /** Rejects with `ApiRequestError`; branch on its code. */
   onGrant: (pattern: string, scope: RuleScope, confirm: boolean) => Promise<unknown>
@@ -22,10 +24,10 @@ interface Props {
 
 const PREVIEW_DEBOUNCE_MS = 300
 
-function Chooser({ block, hasRepo, onPreview, onGrant, onClose }: Omit<Props, 'open'>) {
+function Chooser({ block, hasRepo, initialScope, onPreview, onGrant, onClose }: Omit<Props, 'open'>) {
   const suggestions = block.ruleSuggestions ?? []
   const [pattern, setPattern] = useState(suggestions[0]?.pattern ?? '')
-  const [scope, setScope] = useState<RuleScope>('session')
+  const [scope, setScope] = useState<RuleScope>(initialScope)
   // Keyed by the inputs it answers: a preview for a previous pattern/scope must never drive
   // the confirm/refusal state of the current one.
   const [settled, setSettled] = useState<{ key: string; preview: RulePreview | null } | null>(null)

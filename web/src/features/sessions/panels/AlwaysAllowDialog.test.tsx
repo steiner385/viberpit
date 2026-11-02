@@ -27,7 +27,7 @@ function setup(over: Partial<React.ComponentProps<typeof AlwaysAllowDialog>> = {
   const onGrant = vi.fn().mockResolvedValue(undefined)
   const onClose = vi.fn()
   render(
-    <AlwaysAllowDialog open block={block} hasRepo onPreview={onPreview} onGrant={onGrant} onClose={onClose} {...over} />,
+    <AlwaysAllowDialog open block={block} hasRepo initialScope="session" onPreview={onPreview} onGrant={onGrant} onClose={onClose} {...over} />,
   )
   return { onPreview, onGrant, onClose }
 }
@@ -40,6 +40,12 @@ describe('AlwaysAllowDialog', () => {
     expect(patternInput().value).toBe('Bash(npm test)')
     await waitFor(() => expect(onPreview).toHaveBeenCalledWith('Bash(npm test)', 'session'))
     expect(await screen.findByText('Runs npm test')).toBeInTheDocument()
+  })
+
+  it('opens on the scope it is given', async () => {
+    const { onPreview } = setup({ initialScope: 'repo' })
+    await waitFor(() => expect(onPreview).toHaveBeenCalledWith('Bash(npm test)', 'repo'))
+    expect(screen.getByRole('radio', { name: /This repo/ })).toBeChecked()
   })
 
   it('picking a suggestion overwrites the pattern', async () => {
@@ -200,11 +206,11 @@ describe('AlwaysAllowDialog', () => {
     const onPreview = vi.fn().mockResolvedValue(okPreview)
     const props = { open: true, block, hasRepo: true, onClose: vi.fn() }
     const { rerender } = render(
-      <AlwaysAllowDialog {...props} onPreview={(p, s) => onPreview(p, s)} onGrant={vi.fn()} />,
+      <AlwaysAllowDialog initialScope="session" {...props} onPreview={(p, s) => onPreview(p, s)} onGrant={vi.fn()} />,
     )
     for (let i = 0; i < 4; i++) {
       await new Promise((r) => setTimeout(r, 100))
-      rerender(<AlwaysAllowDialog {...props} onPreview={(p, s) => onPreview(p, s)} onGrant={vi.fn()} />)
+      rerender(<AlwaysAllowDialog initialScope="session" {...props} onPreview={(p, s) => onPreview(p, s)} onGrant={vi.fn()} />)
     }
     await screen.findByText('Runs npm test')
     expect(onPreview).toHaveBeenCalledTimes(1)
