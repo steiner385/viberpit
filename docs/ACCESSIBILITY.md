@@ -91,6 +91,10 @@ more.
   too — `web/e2e/touch-targets.spec.ts` measures real rendered boxes under an emulated coarse
   pointer (`hasTouch`/`isMobile`), since desktop Chromium reports `hover: hover` even at a
   phone-sized viewport.
+  Exception: the dense comment gutters (the Changes tab's diff and the plan card's step lines,
+  `review/LineCommentGutter.tsx`) get a 44px-wide, row-high target on a coarse pointer, because
+  contiguous 20px rows cannot take a 44px height without overlapping and misdirecting taps to the
+  next line; the desktop diff gutter has the same constraint.
 - **`StatusPill`** (`ui/StatusPill.tsx`) — colour is never the only signal: every pill pairs an icon
   with a text label (`aria-label="Status: <label>"`), so a status reads correctly with colour vision
   off. `features/accounts/UsageBadge.tsx` re-exports a thin `StatusPill` adapter over this primitive

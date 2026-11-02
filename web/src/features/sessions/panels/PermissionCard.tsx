@@ -1,19 +1,30 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useId, useRef, useState } from 'react'
 import type { Block } from '@/session/reducer'
 import type { RulePreview, RuleScope } from '@/api/types'
 import { AlwaysAllowDialog } from './AlwaysAllowDialog'
 import { cn } from '@/lib/utils'
 import { useCardKeyboard } from '@/features/sessions/useCardKeyboard'
 import { toolLabel, toolDetail } from '@/session/toolSummary'
+import { composePlanFeedback, PLAN_FEEDBACK_MAX } from '../review/planFeedback'
+import type { LineComment } from '../review/reviewComments'
+
+/**
+ * The numbered, commentable plan lines (D-5) load only when "Keep planning" opens comment mode:
+ * the plan card is first-paint. They ride the Changes tab's existing chunk (which already holds the
+ * gutter and editor) rather than a chunk of their own — a new chunk sharing those modules would
+ * regroup the shared chunks and grow the initial preload. A failed load (offline, a deploy
+ * rollover) falls back to the plain plan text, so the overall comment still sends.
+ */
+const PlanStepLines = lazy(() => import('../diff/ChangesTab').then(
+  (m) => ({ default: m.PlanStepLines }),
+  () => ({ default: ({ text }: { text: string }) => <PlainDetail text={text} /> }),
+))
 
 type PermBlock = Extract<Block, { kind: 'permission' }>
 type Decision = 'allow' | 'deny' | 'always'
 /** A card button: 'session' sends the `always` decision; 'chooser' opens the standing-rule dialog;
  *  'keepPlanning' (plan cards) opens the optional comment field rather than answering. */
 type CardAction = 'allow' | 'deny' | 'session' | 'chooser' | 'keepPlanning'
-
-/** The server's cap on a deny message (`MESSAGE_TOO_LONG` past it). */
-const MAX_PLAN_COMMENT = 4000
 
 interface Props {
   block: PermBlock
@@ -59,6 +70,7 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
   // Plan cards: Keep planning opens an inline, optional comment instead of answering at once.
   const [commenting, setCommenting] = useState(false)
   const [comment, setComment] = useState('')
+  const [steps, setSteps] = useState<LineComment[]>([])
   const commentId = useId()
   const commentRef = useRef<HTMLTextAreaElement | null>(null)
   const keepPlanningRef = useRef<HTMLButtonElement | null>(null)
@@ -99,15 +111,22 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
     else onDecision(block.permId, a === 'session' ? 'always' : a)
   }
 
-  // A blank comment is "Keep planning" exactly as it was: a bare deny, no message key.
+  // The plan as sent (`input.plan`), else the request's detail text, as commentable lines.
+  const planText = typeof block.input.plan === 'string' ? block.input.plan : detail
+  // Overall text plus the per-step comments; past the server's deny-message cap Send is disabled.
+  const feedback = composePlanFeedback(comment, steps)
+  const tooLong = feedback.length > PLAN_FEEDBACK_MAX
+
+  // Blank feedback is "Keep planning" exactly as it was: a bare deny, no message key.
   const sendKeepPlanning = () => {
-    const note = comment.trim()
-    if (note) onDecision(block.permId, 'deny', note)
+    if (tooLong) return
+    if (feedback) onDecision(block.permId, 'deny', feedback)
     else onDecision(block.permId, 'deny')
   }
   const cancelComment = () => {
     setCommenting(false)
     setComment('')
+    setSteps([])
     keepPlanningRef.current?.focus()
   }
 
@@ -145,23 +164,14 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
         <span className="min-w-0 break-all font-mono text-xs text-ink-muted">{block.tool}</span>
       </div>
 
-      {detail && (
-        <pre
-          data-testid="permission-detail"
-          // Focusable so a keyboard user can scroll a long request; the label
-          // says what the region is, not just that it is a block of monospace.
-          tabIndex={0}
-          aria-label="Full request"
-          className={cn(
-            'mb-3 max-h-48 overflow-y-auto overscroll-contain rounded border border-warning/40 bg-surface',
-            'px-2.5 py-2 font-mono text-xs leading-relaxed text-ink',
-            'whitespace-pre-wrap break-all',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-          )}
-        >
-          {detail}
-        </pre>
-      )}
+      {block.plan && commenting && planText ? (
+        // The plan as numbered, commentable lines replaces the plain text (never shown twice).
+        <Suspense fallback={<PlainDetail text={planText} />}>
+          <div className="mb-3">
+            <PlanStepLines text={planText} comments={steps} onChange={setSteps} />
+          </div>
+        </Suspense>
+      ) : detail && <PlainDetail text={detail} />}
 
       {block.items && block.items.length > 0 && (
         <ul className="mb-3 list-disc pl-5 text-xs text-ink space-y-0.5">
@@ -225,7 +235,6 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
             id={commentId}
             ref={commentRef}
             rows={3}
-            maxLength={MAX_PLAN_COMMENT}
             placeholder="Optional"
             value={comment}
             onChange={(e) => setComment(e.target.value)}
@@ -241,8 +250,15 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
             )}
           />
+          {/* The live region is always mounted and holds only the static "Too long", so it
+              announces once as the limit is crossed — not the count on every keystroke. */}
+          <p className={cn('text-xs font-medium text-danger', !tooLong && 'sr-only')}>
+            <span role="status">{tooLong ? 'Too long' : ''}</span>
+            {tooLong && <span>{` — ${feedback.length}/${PLAN_FEEDBACK_MAX}`}</span>}
+          </p>
           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-            <button type="button" onClick={sendKeepPlanning} className={secondaryBtn}>
+            <button type="button" onClick={sendKeepPlanning} disabled={tooLong}
+              className={cn(secondaryBtn, 'disabled:cursor-not-allowed disabled:opacity-50')}>
               Send & keep planning
             </button>
             <button type="button" onClick={cancelComment} className={tertiaryBtn}>
@@ -266,5 +282,25 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
       />
     )}
     </>
+  )
+}
+
+/** The request's full text. Focusable so a keyboard user can scroll a long request; the label
+ *  says what the region is, not just that it is a block of monospace. */
+function PlainDetail({ text }: { text: string }) {
+  return (
+    <pre
+      data-testid="permission-detail"
+      tabIndex={0}
+      aria-label="Full request"
+      className={cn(
+        'mb-3 max-h-48 overflow-y-auto overscroll-contain rounded border border-warning/40 bg-surface',
+        'px-2.5 py-2 font-mono text-xs leading-relaxed text-ink',
+        'whitespace-pre-wrap break-all',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+      )}
+    >
+      {text}
+    </pre>
   )
 }

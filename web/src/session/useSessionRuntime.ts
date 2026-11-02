@@ -11,7 +11,7 @@
 
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useReducer, useState, useCallback, useRef } from 'react'
-import { useSessionSocket } from '@/ws/client'
+import { useSessionSocket, type PromptSendResult } from '@/ws/client'
 import type {
   ConnectionState, SocketChannel, WsRotatedMsg, WsErrorMsg, WsPromptAckMsg, WsPromptRejectedMsg,
 } from '@/ws/client'
@@ -104,6 +104,11 @@ export interface SessionRuntime {
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
   onPrompt: (text: string, attachmentIds: AttachmentIds, context?: PromptContext, replySource?: 'suggested') => void
+  /** `onPrompt` minus chat-arming: always a prompt frame through the same send/queue path
+   *  (busy = queued server-side, closed socket = held here), never a question's answer.
+   *  For text the user did not type into the composer (the Changes tab's review).
+   *  Returns the send stage: `'sent'` or `'buffered'`. */
+  onPlainPrompt: (text: string, attachmentIds: AttachmentIds) => PromptSendResult
   /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
   onActivity: () => void
   onInterrupt: () => void
@@ -398,18 +403,10 @@ export function useSessionRuntime(
     [],
   )
 
-  // Composer handlers — when a question is armed for chat, the next message answers
-  // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
-  // (Chat replies go through the answer channel, which carries no attachments.)
-  const onPrompt = useCallback(
-    (text: string, attachmentIds: AttachmentIds, context?: PromptContext, replySource?: 'suggested') => {
-      if (armedQuestionId) {
-        // A chat reply is delivered through the answer channel — route it through the
-        // same gated path as onAnswer so a closed socket REJECTS (visible error, card
-        // kept interactive) instead of falsely resolving the question (#505).
-        onAnswer(armedQuestionId, [text], 'chat')
-        return
-      }
+  // The prompt send itself — shared by onPrompt (after its chat-arming branch) and
+  // onPlainPrompt, so the two can never take different send/queue paths.
+  const sendPrompt = useCallback(
+    (text: string, attachmentIds: AttachmentIds, context?: PromptContext, replySource?: 'suggested'): PromptSendResult => {
       // Send FIRST, then record — the frame's fate is what the bubble reports, and a
       // prompt the socket had to hold must not be drawn as one that is on its way.
       // (Omit the trailing arg entirely when there's no context, rather than passing an
@@ -432,8 +429,29 @@ export function useSessionRuntime(
         dispatch({ type: '_promptStalled' })
       }, PROMPT_ACK_TIMEOUT_MS)
       ackTimersRef.current.add(timer)
+      return result
     },
-    [sessionId, prompt, onAnswer, armedQuestionId],
+    [sessionId, prompt],
+  )
+  // Composer handlers — when a question is armed for chat, the next message answers
+  // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
+  // (Chat replies go through the answer channel, which carries no attachments.)
+  const onPrompt = useCallback(
+    (text: string, attachmentIds: AttachmentIds, context?: PromptContext, replySource?: 'suggested') => {
+      if (armedQuestionId) {
+        // A chat reply is delivered through the answer channel — route it through the
+        // same gated path as onAnswer so a closed socket REJECTS (visible error, card
+        // kept interactive) instead of falsely resolving the question (#505).
+        onAnswer(armedQuestionId, [text], 'chat')
+        return
+      }
+      sendPrompt(text, attachmentIds, context, replySource)
+    },
+    [sendPrompt, onAnswer, armedQuestionId],
+  )
+  const onPlainPrompt = useCallback(
+    (text: string, attachmentIds: AttachmentIds) => sendPrompt(text, attachmentIds),
+    [sendPrompt],
   )
   const onInterrupt = useCallback(
     () => {
@@ -683,6 +701,7 @@ export function useSessionRuntime(
     onAnswer,
     onChat,
     onPrompt,
+    onPlainPrompt,
     onActivity,
     onInterrupt,
     onInterruptAndPrompt,

@@ -118,6 +118,16 @@ the session's worktree differs from its base.
 - **Controls:** a Unified/Split toggle (unified below 1024px, split from 1024px; remembered per
   browser), Hide whitespace, and Previous change / Next change.
 - **Notices:** truncated, binary and too-large files are flagged.
+- **Line comments:** click a line's gutter button (`Comment on line N`, or `Comment on removed line N` on
+  the old side); Shift-click extends the range on the same side within a hunk. The editor saves with
+  Ctrl/⌘+Enter and cancels with Esc; saved comments show inline with Edit and Delete. A comment whose line
+  has moved shows at the top of its file as outdated, and is still sent with an `(outdated)` marker. A
+  sticky review bar shows `N comments`, Discard all (with a confirm dialog) and Send to Claude. Send
+  composes one prompt and goes through the normal prompt path (queued when busy, held while disconnected,
+  never taken as the answer to a pending question); there is no separate endpoint. Drafts persist per
+  session in sessionStorage. On touch the gutter glyph stays the desktop's 20px size (rows keep their height)
+  and is always shown, with an invisible 44px-wide, row-high hit area. Closing an editor, a card or the review bar
+  returns focus to the gutter button, the card's Edit button or the first file header.
 
 A `+N −M` chip in the session header opens the tab. It refreshes when a turn ends and when the tab
 opens, and never polls. Edit and Write diffs in the transcript use the same renderer, with syntax

@@ -21,6 +21,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { MoreVertical } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { TOUCH_FLOOR } from './listControlStyles'
 import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 
 /** Shared sizing for the per-row icon buttons: 44px tap target on touch, a
@@ -49,7 +50,7 @@ export const menuItem = cn(
   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
   // 44px rows on a coarse pointer (they measured 36px — 2026-09-29 critique),
   // the same touch/hover split as `actionBtn` and `listControlClass`.
-  'min-h-11 [@media(hover:hover)]:min-h-0',
+  TOUCH_FLOOR,
   'hover:bg-surface-raised',
   'focus-visible:outline-none focus-visible:bg-surface-raised',
 )

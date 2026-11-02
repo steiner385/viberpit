@@ -52,7 +52,7 @@ function renderTab(tier: 'phone' | 'desktop' = 'desktop') {
   stubMatchMedia(WIDTH_TIER_QUERIES[tier])
   return render(
     <ViewportProvider kiosk={null}>
-      <ChangesTab sessionId="s1" />
+      <ChangesTab sessionId="s1" onSendReview={vi.fn()} />
     </ViewportProvider>,
   )
 }

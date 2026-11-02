@@ -85,6 +85,9 @@ exception (see Standing rules).
   as before. The permission decision (HTTP and WS) accepts an optional
   `message`, honoured only with `deny`, trimmed and capped at 4000 characters (errors
   `MESSAGE_REQUIRES_DENY`, `MESSAGE_TOO_LONG`).
+  Keep planning also shows the plan as numbered lines (`Comment on step line N`) for per-step
+  comments. Sending composes the overall comment plus the step comments into the one `message`,
+  capped at 4000 characters in the UI ("Too long — n/4000" disables Send).
 - **Standing rules ("always allow").** A rule is one pattern string stored in an auto-managed,
   scoped `PermissionProfile` (`always-allow:*`, hidden from the named-profile API) with a
   `PermissionRuleStats` row for id, author and hit counters. Code: `server/permission_rules/`
