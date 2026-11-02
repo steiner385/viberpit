@@ -99,8 +99,8 @@ def test_gh_cross_ref_fallback_fires_only_after_session_ends(tmp_path, monkeypat
         want = _info(1234, "merged")
         calls: list = []
 
-        def fake_find(ref, *, gh_run):
-            calls.append(ref)
+        def fake_find(ref, *, merged_after=None, gh_run):
+            calls.append((ref, merged_after))
             return want
 
         import server.automations.backlog_github as bg
@@ -108,10 +108,13 @@ def test_gh_cross_ref_fallback_fires_only_after_session_ends(tmp_path, monkeypat
 
         orch = _orch(StubPoller())
         await orch._backlog_ctx.set_target_state(
-            "o/r#5", {"session_id": "s1", "claimed": True})
+            "o/r#5", {"session_id": "s1", "claimed": True,
+                      "claimed_at": "2026-11-02T15:44:00+00:00"})
 
         assert await orch._backlog_pr_status_for("o/r#5") is want
-        assert calls == ["o/r#5"]
+        # The claim's start bounds the lookup: an earlier claim's merged PR is not
+        # this one's (#3216).
+        assert calls == [("o/r#5", "2026-11-02T15:44:00+00:00")]
 
     asyncio.run(run())
 
@@ -123,7 +126,7 @@ def test_no_gh_fallback_while_session_alive(tmp_path, monkeypatch):
         await _seed_session("s1", status="working")
         calls: list = []
 
-        def fake_find(ref, *, gh_run):
+        def fake_find(ref, *, merged_after=None, gh_run):
             calls.append(ref)
             return _info(1, "merged")
 
@@ -170,7 +173,7 @@ def test_handed_off_row_falls_back_to_gh_even_when_its_session_row_is_gone(tmp_p
         want = _info(16889, "merged")
         calls: list = []
 
-        def fake_find(ref, *, gh_run):
+        def fake_find(ref, *, merged_after=None, gh_run):
             calls.append(ref)
             return want
 

@@ -8003,8 +8003,11 @@ class SessionOrchestrator:
         if not handed_off and (sid is None or not await self._backlog_session_ended(sid)):
             return None
         from server.automations import backlog_github
+        # A PR merged before this claim began is an earlier claim's, already closed
+        # out (#3216) — never this session's work.
         return await asyncio.to_thread(
-            backlog_github.find_referencing_pr, target, gh_run=self._gh_run)
+            backlog_github.find_referencing_pr, target,
+            merged_after=st.get("claimed_at"), gh_run=self._gh_run)
 
     async def _pr_doctor_enabled(self) -> bool:
         """True iff the pr-doctor automation row exists and is enabled.

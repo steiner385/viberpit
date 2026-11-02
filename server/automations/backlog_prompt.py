@@ -194,6 +194,10 @@ def build_investigate_prompt(batch: Batch) -> str:
       re-queues the issue as an implement candidate).
     - Escalate (only the owner can supply what is needed).
 
+    A report blocked only on time (a condition not met yet) is none of these: the
+    session hands back with ``recheck_at`` and the runner parks it until then
+    (#3216), rather than converting it into an implement claim on an unmet gate.
+
     A session that ends without one of these exits is handed to the owner by
     the runner (the no-exit rule; spec 2026-09-18-hold-ladder-design.md §5).
 
@@ -234,6 +238,13 @@ def build_investigate_prompt(batch: Batch) -> str:
         'the body\'s "## Findings" section, then '
         f"{escalate_finish} The runner hands the issue to the owner with that "
         "note as the reason.\n\n"
+        "**Not yet checkable** — if the issue names a condition that is not met "
+        "yet and only time can meet it (N consecutive green runs, a deploy, a "
+        "scheduled job), that is NOT a conversion: converting re-queues it for "
+        "implementation at once, and the implementer meets the same unmet "
+        "condition. Instead call `hand_back(reason, recheck_at=<ISO-8601 time "
+        "nothing can change before>)`; the runner leaves the issue alone until "
+        "then and investigates again.\n\n"
         "If you end without one of these exits, the runner hands the issue to "
         "the owner.\n"
     )

@@ -298,6 +298,14 @@ def test_investigate_names_all_four_exits():
     assert "Escalate" in result
 
 
+def test_investigate_sends_a_time_gate_to_hand_back_with_recheck_at_not_convert():
+    """#3216: an unmet time gate converted into an implement claim that met the same
+    gate. The prompt routes it to ``hand_back(recheck_at=…)``, which the runner parks."""
+    result = build_investigate_prompt(SINGLE_BATCH)
+    assert "NOT a conversion" in result
+    assert "hand_back(reason, recheck_at=" in result
+
+
 def test_investigate_mentions_mark_no_pr_but_not_set_hold_on_claude():
     """Exit 3 must not tell the session to call set_hold — it's a SIGNAL-class
     tool Codex never has (durable_tool_surface=False), and the ruling made exit 3
