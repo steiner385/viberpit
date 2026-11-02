@@ -621,6 +621,10 @@ SessionRan = Callable[[str], Awaitable[bool]]
 # ``session.hand_back`` audit event, not ``Session.hand_back_reason``, which the next
 # status write clears — archiving the session must not reopen the issue to the runner.
 SessionHandBack = Callable[["str | None"], Awaitable["str | None"]]
+# ``session_recheck_at(session_id)`` -> the ISO time the session's ``hand_back`` said
+# nothing can change before (``recheck_at``, #3216), or None. A future time parks the
+# item as a timed wait — no owner hold — that lifts itself then.
+SessionRecheckAt = Callable[["str | None"], Awaitable["str | None"]]
 # Grouping-optimizer seam: recompute + persist the group plan from the live
 # backlog; returns the number of groups stored. MUST raise on a model/plan
 # failure (rather than storing an empty plan over a real backlog) so the loop
@@ -682,7 +686,7 @@ async def _stub_model_quota_out(_tier: str) -> str | None:
 #: provider's usage lags its own reset, and re-reading every tick buys nothing.
 QUOTA_WAIT_RECHECK = timedelta(minutes=15)
 #: The keys a quota-waiting parked row carries on top of a give-up row's.
-_QUOTA_WAIT_KEYS = ("quota_wait", "hand_off_reason")
+_QUOTA_WAIT_KEYS = ("quota_wait", "hand_off_reason", "recheck_wait")
 
 
 async def _stub_escalate(_target: str, _reason: str, _rung: str) -> None:
@@ -807,6 +811,7 @@ class BacklogRunnerLoop:
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
         session_hand_back: SessionHandBack | None = None,
+        session_recheck_at: SessionRecheckAt | None = None,
         session_work_stopped: SessionEnded | None = None,
         handoff: Callable[[str, dict, PullRequestInfo], Awaitable[bool]] | None = None,
         closeout_completed: Callable[[str, dict], Awaitable[bool]] | None = None,
@@ -887,6 +892,7 @@ class BacklogRunnerLoop:
         self._session_work_stopped = session_work_stopped
         self._session_ran = session_ran             # (session_id) -> bool | None
         self._session_hand_back = session_hand_back  # (session_id) -> reason | None
+        self._session_recheck_at = session_recheck_at  # (session_id) -> ISO | None
         self._pr_doctor_attempts_for = pr_doctor_attempts_for  # (repo#N) -> int | None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
@@ -1145,6 +1151,7 @@ class BacklogRunnerLoop:
             # count is items 3b/6's concern.)
             # A quota wait (#2684) is the runner's own, waiting on a reset, not a person.
             counts["needs_human"] = sum(bool(s.get("gave_up")) and not s.get("quota_wait")
+                                        and not s.get("recheck_wait")
                                         for s in states.values())
         except Exception:
             errors.append("workload counts unavailable (the claim read failed)")
@@ -1922,6 +1929,21 @@ class BacklogRunnerLoop:
     async def _release_give_up(self, target: str, st: dict,
                                held: "Mapping[str, str]") -> None:
         """``_release_give_ups`` for one ``gave_up`` row."""
+        if st.get("recheck_wait"):
+            # No hold backs a hand-back's timed wait either (#3216): the clock does.
+            until = str((st["recheck_wait"] or {}).get("until") or "")
+            try:
+                at = datetime.fromisoformat(until)
+                at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+                pending = at > self._wall_clock()
+            except ValueError:
+                pending = False
+            if pending:
+                return
+            if await self._write_state(target, st, None):
+                await self._ctx.emit("info", f"{target}: re-check time reached — back in "
+                                     "the pool", kind="hold_released", target=target)
+            return
         if st.get("quota_wait"):
             # No hold backs a quota wait (#2684) — the reset does.
             await self._settle_quota_wait(target, st)
@@ -3124,10 +3146,39 @@ class BacklogRunnerLoop:
             return False
         safe = _reason_from_note(raw)
         reason = f"session handed back: {safe}" if safe else "session handed back"
+        until = await self._recheck_at(st)
+        if until is not None:
+            # A time gate with a known re-check time: a timed wait, not an owner hold.
+            parked = {**st, "claimed": False, "gave_up": True, "held": True,
+                      "reason": f"{reason}; re-check at {until}",
+                      "recheck_wait": {"until": until}}
+            if await self._write_state(target, st, parked, outcome={
+                    "outcome": "no_pr", "cause": "session handed back",
+                    "fallback": self._outcome_fallback(st)}):
+                await self._ctx.emit("info", f"{target}: {reason} — not re-dispatched "
+                                     f"until {until}", kind="recheck_wait", target=target,
+                                     detail={"until": until})
+            return True
         await self._give_up(target, st, reason, outcome={
             "outcome": "no_pr", "cause": "session handed back",
             "fallback": self._outcome_fallback(st)})
         return True
+
+    async def _recheck_at(self, st: dict) -> "str | None":
+        """The still-future re-check time the dispatch's session handed back with, else
+        None. Never raises: a failed read falls back to the ordinary owner hold."""
+        if self._session_recheck_at is None:
+            return None
+        try:
+            raw = await self._session_recheck_at(st.get("session_id"))
+            at = datetime.fromisoformat(raw) if raw else None
+        except Exception:  # noqa: BLE001 - a read failure must not stall the sweep
+            log.warning("backlog_runner.session_recheck_at_failed", exc_info=True)
+            return None
+        if at is None:
+            return None
+        at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+        return at.isoformat() if at > self._wall_clock() else None
 
     async def _decision_hold_is_real(self, target: str, st: dict) -> bool:
         """Is one of this claim's issues parked BY A DECISION — i.e. did the proposal

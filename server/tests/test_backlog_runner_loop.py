@@ -149,7 +149,7 @@ def build_loop(*, mode="on", config=None, clock=None,
                held: "Collection[str] | Mapping[str, str] | None" = None,
                escalate_raises=False,
                investigation_state=None, session_resolution=None, model_quota_out=None,
-               session_hand_back=None):
+               session_hand_back=None, session_recheck_at=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -366,6 +366,8 @@ def build_loop(*, mode="on", config=None, clock=None,
         session_ran=session_ran_probe if session_ran is not None else None,
         session_hand_back=(None if session_hand_back is None
                            else (lambda _sid: _async_value(session_hand_back))),
+        session_recheck_at=(None if session_recheck_at is None
+                            else (lambda _sid: _async_value(session_recheck_at))),
         pr_doctor_attempts_for=attempts_seam,
         close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
@@ -4397,6 +4399,30 @@ def test_a_handed_back_ending_hands_off_instead_of_climbing_the_ladder(tmp_path)
         assert "handed back: gate not met" in rec.needs_humans[0][1]
         assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
             ("no_pr", "session handed back")]
+
+    asyncio.run(run())
+
+
+def test_a_hand_back_with_a_recheck_time_waits_then_returns_to_the_pool(tmp_path):
+    """#3216: a time-gated hand-back parks the item (no owner hold, no ladder climb) until
+    ``recheck_at``, then the row lifts itself and the issue is eligible again."""
+    async def run():
+        now = [datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)]
+        until = "2026-11-03T12:00:00+00:00"
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "recheck.db", None, held=(), wall_clock=lambda: now[0],
+            session_hand_back="gate not met: 2 of 3 green runs", session_recheck_at=until)
+        assert rec.escalations == [] and rec.needs_humans == []
+        st = await ctx.get_target_state("o/r#1")
+        assert st["recheck_wait"] == {"until": until} and st["gave_up"] is True
+
+        await _loop.tick()                      # before the time: still parked
+        assert await ctx.get_target_state("o/r#1") is not None
+
+        now[0] = datetime(2026, 11, 3, 12, 1, tzinfo=timezone.utc)
+        await _loop.tick()                      # past it: row dropped, back in the pool
+        assert await ctx.get_target_state("o/r#1") is None or \
+            "recheck_wait" not in await ctx.get_target_state("o/r#1")
 
     asyncio.run(run())
 
