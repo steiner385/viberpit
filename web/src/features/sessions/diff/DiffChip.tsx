@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils'
 import { useSessionView } from '@/features/sessions/sessionView'
+import { DiffCounts } from './DiffCounts'
 
 interface Props {
   additions: number
@@ -34,10 +35,11 @@ export function DiffChip({ additions, deletions, truncated = false, className }:
         className,
       )}
     >
-      <span className="whitespace-nowrap rounded-md border border-edge px-1.5 py-0.5 font-mono text-xs tabular-nums hover:bg-surface">
-        <span className="text-success">+{additions}</span>{' '}
-        <span className="text-danger">−{deletions}</span>
-      </span>
+      <DiffCounts
+        additions={additions}
+        deletions={deletions}
+        className="whitespace-nowrap rounded-md border border-edge px-1.5 py-0.5 text-xs hover:bg-surface"
+      />
     </button>
   )
 }

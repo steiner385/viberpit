@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { displayFallbackTitle } from './displayFallback'
+import { displayFallbackTitle, displayReadout } from './displayFallback'
 
 describe('displayFallbackTitle', () => {
   it('is null without a reason', () => {
@@ -18,5 +18,20 @@ describe('displayFallbackTitle', () => {
   })
   it('still explains an unknown reason generically', () => {
     expect(displayFallbackTitle('future_reason')).toBe('Desktop unavailable — opened on a virtual display')
+  })
+})
+
+describe('displayReadout', () => {
+  it('reads native as desktop', () => {
+    expect(displayReadout('native', 'cookie_missing')).toEqual({ value: 'desktop', title: "Windows open on the host's desktop" })
+  })
+  it('reads a fallback reason as virtual, with the reason copy', () => {
+    expect(displayReadout('virtual', 'native_disabled')).toEqual({
+      value: 'virtual', title: 'Desktop unavailable — opened on a virtual display: native display is not configured'
+    })
+  })
+  it('shows nothing for a plain virtual display or no mode', () => {
+    expect(displayReadout('virtual', null)).toBeNull()
+    expect(displayReadout(null, null)).toBeNull()
   })
 })

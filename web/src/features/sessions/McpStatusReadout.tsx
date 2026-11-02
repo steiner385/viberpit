@@ -2,7 +2,8 @@
  * McpStatusReadout — the `MCP n/m` readout in the SessionMeta strip. Live
  * `mcpStatus` events win; the GET snapshot fills in until the first event.
  * Engines without MCP status report no servers, so the readout renders nothing.
- * The popover body is `McpServerList`, shared with the `/mcp` command panel.
+ * The popover body is `McpServerList`, shared with the `/mcp` command panel;
+ * `McpInlineList` renders the same body inline for the session rail.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -22,8 +23,41 @@ interface Props {
 
 const NO_SERVERS: McpServerState[] = []
 
-export function McpStatusReadout({ sessionId, account, live }: Props) {
+/** The session's MCP servers: live `mcpStatus` events win; the GET snapshot
+ *  (fetched only while there is no live status) fills in until the first one. */
+function useMcpServers(sessionId: string, live: McpServerState[] | null): McpServerState[] {
   const snapshot = useSessionMcp(sessionId, live == null)
+  return live ?? snapshot.data?.servers ?? NO_SERVERS
+}
+
+/** The server list plus the `Manage →` link into Settings → MCP. */
+function McpServerPanel({ sessionId, account, servers }: { sessionId: string; account: string; servers: McpServerState[] }) {
+  return (
+    <>
+      <McpServerList sessionId={sessionId} account={account} servers={servers} />
+      <div className="py-1.5 text-xs">
+        <Link to={settingsSectionPath('mcp')} className="text-accent hover:underline">
+          Manage →
+        </Link>
+      </div>
+    </>
+  )
+}
+
+/** The same list, inline (no popover) — the session rail's Context card.
+ *  Renders nothing when the session reports no servers. */
+export function McpInlineList({ sessionId, account, live }: Props) {
+  const servers = useMcpServers(sessionId, live)
+  if (servers.length === 0) return null
+  return (
+    <div role="group" aria-label="MCP servers" className="min-w-0">
+      <p className="text-ink-muted">MCP servers</p>
+      <McpServerPanel sessionId={sessionId} account={account} servers={servers} />
+    </div>
+  )
+}
+
+export function McpStatusReadout({ sessionId, account, live }: Props) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLSpanElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -46,7 +80,7 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
     return () => popOverlay()
   }, [open])
 
-  const servers = live ?? snapshot.data?.servers ?? NO_SERVERS
+  const servers = useMcpServers(sessionId, live)
   if (servers.length === 0) return null
 
   const connected = servers.filter((s) => s.status === 'connected').length
@@ -89,12 +123,7 @@ export function McpStatusReadout({ sessionId, account, live }: Props) {
             'rounded-md border border-edge bg-surface shadow-lg px-2 py-1',
           )}
         >
-          <McpServerList sessionId={sessionId} account={account} servers={servers} />
-          <div className="py-1.5 text-xs">
-            <Link to={settingsSectionPath('mcp')} className="text-accent hover:underline">
-              Manage →
-            </Link>
-          </div>
+          <McpServerPanel sessionId={sessionId} account={account} servers={servers} />
         </div>
       )}
     </span>

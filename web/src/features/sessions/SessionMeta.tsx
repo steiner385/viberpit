@@ -11,24 +11,18 @@
  */
 import { Fragment, useId, useState } from 'react'
 import { useNow } from '@/hooks/useNow'
-import { Pin, SlidersHorizontal } from 'lucide-react'
+import { SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { formatResetTime } from '@/lib/formatReset'
 import { EMPTY_BACKGROUND_WORK_VIEW, type BackgroundWorkView, type SubAgent, type SubAgentStatus } from '@/session/selectors'
 import { engineBadge } from '@/session/modelName'
-import { windowLabel } from '@/lib/usageWindows'
+import { quotaWindowAriaLabel, quotaWindowTitle, windowLabel } from '@/lib/usageWindows'
 import { SubAgentList } from './SubAgentList'
 import { BackgroundWorkList } from './BackgroundWorkList'
 import { backgroundWorkSummary } from './backgroundWorkSummary'
 import { STATUS_TONE, statusTone } from './subAgentStatus'
-import { displayFallbackTitle } from './displayFallback'
+import { displayReadout } from './displayFallback'
+import { AccountSwitcher } from './AccountSwitcher'
 import type { AgentEngine, UsageWindow } from '@/api/types'
-
-/** Tooltip copy for a quota window: spell out the abbreviation + reset time. */
-function quotaTitle(window: string, resetsAt: string | null): string {
-  const reset = formatResetTime(resetsAt)
-  return reset ? `${window} limit · resets ${reset}` : `${window} limit · no active window`
-}
 
 interface Props {
   /** The session this strip belongs to; the sub-agent popover's rows link into
@@ -91,6 +85,7 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
   const bgSummary = backgroundWorkSummary(now === 0 ? { ...backgroundWork, wakeupAt: null } : backgroundWork, now)
   const agentCount = subAgentsSupported ? subAgents.length : 0
   const agentBadge = engineBadge(engine)
+  const display = displayReadout(displayMode, displayFallbackReason)
   // Narrow-strip fold (2026-09-29 re-critique, P2). In a pane under 28rem this
   // strip wrapped three rows deep — 114px of a phone's 844 before the transcript,
   // on top of the TopBar and the header. The live status, export, the session
@@ -153,28 +148,13 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
         {/* Account switcher */}
         <span className="inline-flex items-center gap-1">
           <span className="text-ink-muted">acct</span>
-          <select
-            aria-label="Switch account"
-            value={account}
-            onChange={(e) => e.target.value && e.target.value !== account && onSelectAccount(e.target.value)}
-            className="bg-transparent font-medium text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
-          >
-            {accounts.every((a) => a.name !== account) && <option value={account}>{account}</option>}
-            {accounts.map((a) => (
-              <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
-            ))}
-          </select>
-          {accountPinned && (
-            <button
-              type="button"
-              onClick={onUnpin}
-              aria-label="Unpin account"
-              title="Pinned — auto-rotation off. Click to unpin."
-              className="text-warning rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              <Pin size={14} aria-hidden="true" />
-            </button>
-          )}
+          <AccountSwitcher
+            account={account}
+            accounts={accounts}
+            accountPinned={accountPinned}
+            onSelectAccount={onSelectAccount}
+            onUnpin={onUnpin}
+          />
         </span>
 
         {/* Runner host — which fleet member is actually executing this session. */}
@@ -187,22 +167,14 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
           </span>
         )}
 
-        {displayMode === 'native' && (
-          <span className="inline-flex items-center gap-1" aria-label="Display" title="Windows open on the host's desktop">
+        {display && (
+          <span className="inline-flex items-center gap-1" aria-label="Display" title={display.title}
+                data-testid={display.value === 'virtual' ? 'meta-display-fallback' : undefined}>
             <span className="text-ink-muted">display</span>
-            <span className="font-medium text-ink">desktop</span>
-          </span>
-        )}
-
-        {displayMode !== 'native' && displayFallbackTitle(displayFallbackReason) && (
-          <span className="inline-flex items-center gap-1" aria-label="Display"
-                title={displayFallbackTitle(displayFallbackReason) ?? undefined}
-                data-testid="meta-display-fallback">
-            <span className="text-ink-muted">display</span>
-            <span className="font-medium text-ink">virtual</span>
-            <span className="text-ink-muted" data-testid="meta-display-fallback-reason">
-              {displayFallbackTitle(displayFallbackReason)}
-            </span>
+            <span className="font-medium text-ink">{display.value}</span>
+            {display.value === 'virtual' && (
+              <span className="text-ink-muted" data-testid="meta-display-fallback-reason">{display.title}</span>
+            )}
           </span>
         )}
 
@@ -221,8 +193,8 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
                 {i > 0 && <span className="text-ink">/</span>}
                 <span
                   className="tabular-nums text-ink"
-                  title={quotaTitle(w.label, w.resetsAt)}
-                  aria-label={`${w.label} usage: ${w.pct}% — ${quotaTitle(w.label, w.resetsAt)}`}
+                  title={quotaWindowTitle(w)}
+                  aria-label={quotaWindowAriaLabel(w)}
                 >
                   {windowLabel(w)} {w.pct}%
                 </span>

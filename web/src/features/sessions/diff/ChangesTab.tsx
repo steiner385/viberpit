@@ -14,6 +14,7 @@ import { afterDelete, useReturnFocus } from '../review/returnFocus'
 import { composeReviewPrompt, newCommentId, type CommentAnchor, type LineComment } from '../review/reviewComments'
 import { useReviewDraft } from '../review/useReviewDraft'
 import type { DiffViewMode } from './DiffRenderer'
+import { DiffCounts } from './DiffCounts'
 import { getDiffViewPreference, setDiffViewPreference } from './diffViewPreference'
 import type { DiffHunk, FileDiff } from './types'
 
@@ -279,10 +280,7 @@ function FileSection({ file, view, open, onToggle, truncated, comments, review }
         <span aria-hidden="true" className="w-3 shrink-0 text-ink-muted">{open ? '▾' : '▸'}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-ink">{name}</span>
         <span className="shrink-0 text-ink-muted">{file.status}</span>
-        <span className="shrink-0 font-mono tabular-nums">
-          <span className="text-success">+{file.additions}</span>{' '}
-          <span className="text-danger">−{file.deletions}</span>
-        </span>
+        <DiffCounts additions={file.additions} deletions={file.deletions} className="shrink-0" />
       </button>
       {open && <FileBody file={file} view={view} truncated={truncated} comments={comments} review={review} />}
     </section>
