@@ -1621,6 +1621,7 @@ class CodexAgentDriver:
             mode=self.mode,
             denylist=(),
             identity=self.identity,
+            cwd=self.cwd,
         )
         if perm_id is not None:
             self._emit(

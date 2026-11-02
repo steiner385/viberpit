@@ -261,11 +261,11 @@ def test_repo_memory_dir_not_auto_allowed(tmp_path, monkeypatch):
 # and allowlist modes an MCP tool would otherwise create a pending permission.
 # ---------------------------------------------------------------------------
 
-def _request_tool(reg, tool, mode, input=None):
+def _request_tool(reg, tool, mode, input=None, cwd=None):
     async def run():
         pid, fut, _ = await reg.request("s1", "t1", tool, input or {},
                                      mode=mode, denylist=PermissionRegistry.DANGEROUS,
-                                     identity="me")
+                                     identity="me", cwd=cwd)
         if pid is not None:
             reg.resolve(pid, "allow", "me")
             await fut
@@ -305,13 +305,16 @@ def test_non_mcp_unknown_tool_still_prompts_in_interactive():
 # full-auto.  Both mirror the SDK's own permission_mode names.
 # ---------------------------------------------------------------------------
 
-def test_accept_edits_auto_allows_file_writes():
+def test_accept_edits_auto_allows_file_writes(tmp_path):
+    # Only inside the session worktree (#3217); the boundary itself is pinned in
+    # test_accept_edits_boundary.py.
     reg = PermissionRegistry()
-    for tool, inp in [("Edit", {"file_path": "/repo/a.py"}),
-                      ("Write", {"file_path": "/repo/b.py"}),
-                      ("MultiEdit", {"file_path": "/repo/c.py"}),
-                      ("NotebookEdit", {"notebook_path": "/repo/d.ipynb"})]:
-        pid = _request_tool(reg, tool, "acceptEdits", inp)
+    repo = str(tmp_path)
+    for tool, inp in [("Edit", {"file_path": f"{repo}/a.py"}),
+                      ("Write", {"file_path": f"{repo}/b.py"}),
+                      ("MultiEdit", {"file_path": f"{repo}/c.py"}),
+                      ("NotebookEdit", {"notebook_path": f"{repo}/d.ipynb"})]:
+        pid = _request_tool(reg, tool, "acceptEdits", inp, cwd=repo)
         assert pid is None, f"{tool} must auto-accept in acceptEdits mode"
 
 

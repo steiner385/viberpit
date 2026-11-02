@@ -1,7 +1,8 @@
 from __future__ import annotations
 import asyncio, logging, os, uuid as _uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from viberpit import paths as _paths
 from server.mcp_spec import is_mcp_tool
@@ -109,6 +110,51 @@ def _is_account_memory_path(file_path) -> bool:
     return len(parts) >= 5 and parts[1] == "projects" and parts[3] == "memory"
 
 
+def write_target_inside_worktree(input: Mapping[str, Any], cwd: str | None) -> bool:
+    """True when a file-write tool's target lies inside the session worktree *cwd*
+    (and outside every ``.git``) — the boundary ``acceptEdits`` auto-approves within (#3217).
+
+    Fails closed: anything not provably inside answers False, and the caller then
+    falls through to the standing-rule check and a card (never an outright deny).
+
+    * The target is ``input["file_path"]`` (``input["notebook_path"]`` for
+      NotebookEdit); a relative target resolves against *cwd*. A leading ``~`` is
+      never expanded or trusted.
+    * Symlinks are resolved with ``os.path.realpath`` on the nearest EXISTING ancestor
+      (``lexists``, so a dangling link resolves to the target it would create); the
+      not-yet-existing remainder is appended verbatim and may not contain ``..``.
+    * Containment is ``os.path.commonpath`` on realpaths — never a string prefix, so
+      ``/repo-evil`` is not inside ``/repo``.
+    * Any ``.git`` component below the worktree (a directory, a linked worktree's
+      ``.git`` file, a nested repo's ``.git``) is outside.
+    """
+    if not cwd:
+        return False
+    raw = input.get("file_path") or input.get("notebook_path")
+    if not isinstance(raw, str) or not raw or "\x00" in raw or raw.startswith("~"):
+        return False
+    base = os.path.realpath(cwd)
+    probe = os.path.join(cwd, raw)
+    remainder: list[str] = []
+    while not os.path.lexists(probe):
+        head, tail = os.path.split(probe)
+        if head == probe:  # reached the filesystem root without an existing ancestor
+            return False
+        if tail:
+            remainder.append(tail)
+        probe = head
+    if ".." in remainder:
+        return False
+    target = os.path.join(os.path.realpath(probe), *reversed(remainder))
+    try:
+        if os.path.commonpath([target, base]) != base:
+            return False
+    except ValueError:
+        return False
+    rel = os.path.relpath(target, base)
+    return not any(part.casefold() == ".git" for part in rel.split(os.sep))
+
+
 class PermissionRegistry:
     """
     Lifecycle invariant: pending permission Futures are resolved to False ONLY by
@@ -201,7 +247,8 @@ class PermissionRegistry:
         return list(rec.get("suggestions") or []) if rec else []
 
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, identity,
-                      items: list[str] | None = None, parent_tool_use_id: str | None = None):
+                      items: list[str] | None = None, parent_tool_use_id: str | None = None,
+                      cwd: str | None = None):
         # Our own MCP server (`mcp__viberpit__*`, and `mcp__ccswitch__*` from
         # before the rebrand) is the app talking to
         # itself, not a third-party integration trusted unconditionally like the
@@ -289,12 +336,17 @@ class PermissionRegistry:
             # they are not on the DANGEROUS denylist.
             return None, _resolved(True), True
         if mode == "acceptEdits" and tool in _FILE_WRITE_TOOLS:
-            # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit); every other
-            # tool still prompts. Mirrors the SDK's acceptEdits semantics and is the
-            # default for unattended automation sessions (issue #750): an agent editing
-            # its own worktree proceeds without a human, while shell/network calls — a
-            # materially larger blast radius — remain gated.
-            return None, _resolved(True), True
+            # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit) ONLY inside the
+            # session worktree *cwd*, never into its `.git` (#3217); every other tool
+            # still prompts. The default for unattended automation sessions (issue
+            # #750): an agent editing its own worktree proceeds without a human, while
+            # a write anywhere else (~/.bashrc, another repo, .git/hooks) and
+            # shell/network calls — a materially larger blast radius — remain gated.
+            # Outside the boundary this falls through to the standing-rule check and
+            # a card below; it never denies outright.
+            if write_target_inside_worktree(input, cwd):
+                return None, _resolved(True), True
+            log.info("perm.accept_edits.outside_worktree session=%s tool=%s", session_id, tool)
         # A standing "always allow" rule is checked in EVERY mode, including interactive:
         # it is an explicit human decision (spec 2026-10-11 §3.1), unlike the old
         # per-session grant cache that "ask each time" overrode. Only reached where a
