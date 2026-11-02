@@ -27,8 +27,10 @@ spliced into ``-c`` fails closed. Submodules are never entered
 (``--ignore-submodules=dirty``), so a submodule's own config cannot run one either.
 
 Two residuals are accepted; both need the agent to write config files outside its
-working files, and the write boundary of #3217 (auto-approved writes confined to the
-worktree, never ``.git`` or ``$HOME``) is what closes them:
+working files. The acceptEdits write boundary (#3217) is now enforced: auto-approved
+writes stay inside the worktree and never touch ``.git`` or other protected config. The
+residuals still apply to shell-capable modes (full-auto, bypass, or an approved Bash),
+which have same-user access by design:
 
 - **TOCTOU.** The overrides are computed from a config read that precedes the diff
   calls; a repo or worktree config rewritten in between (a new driver name) can still
