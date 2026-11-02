@@ -1,5 +1,5 @@
 /**
- * ViewModeMenu — the transcript view-mode control in the session meta strip
+ * ViewModeMenu — the transcript view-mode control in the session toolbar
  * (Desktop parity, sub-spec D §4): Normal / Thinking / Verbose, also cycled by
  * Ctrl/⌘+O. The list and labels come from `session/viewMode.ts`; this only renders.
  */
@@ -19,7 +19,7 @@ export function ViewModeMenu({ mode, onSelect }: ViewModeMenuProps) {
   const [open, setOpen] = useState(false)
   const modeLabel = viewModeLabel(mode)
   // The accessible name is "View: <Mode>" at every width; below `md` the visible
-  // "View: " prefix drops so the trigger fits the phone meta strip on one line.
+  // "View: " prefix drops so the trigger fits the phone toolbar on one line.
   const label = `View: ${modeLabel}`
 
   return (

@@ -98,7 +98,21 @@ home, and replaced the ad-hoc `lib/useMediaQuery.ts` call sites with the single
 `useViewport()` reader. The session transcript is a live view bridged over WebSocket, not a
 raw PTY dump — there is no terminal emulator in the tree.
 
-**Transcript view modes and message actions** — the session meta strip shows `View: <Mode>`,
+**Session rail and Details tab** — the old meta strip under the session header is gone. A
+right-hand session rail (20rem, collapsible, remembered per browser) shows four cards:
+- **Changes** — totals, the first 5 files, and an Open Changes button.
+- **Context** — a meter matching the prompt-row ring with an "Auto-compacts soon" line, a
+  "Compact now" button near the limit (when the engine supports `/compact`), the inline MCP
+  server list with a Manage link, always-allow rules, and quota.
+- **Environment** — engine, account switch and Unpin, host, display mode, branch, worktree
+  path, and PR pills.
+- **Tasks** — sub-agents and background work.
+
+When the session pane is narrower than 64rem (phones, tablets, or desktop with the assistant
+drawer pushed) the cards appear in a **Details** tab instead; this follows the pane's own width,
+not the screen width. A slim toolbar keeps the status, View mode, Export and the rail toggle.
+
+**Transcript view modes and message actions** — the session toolbar shows `View: <Mode>`,
 cycled with Ctrl/⌘+O:
 - **Normal** uses your Settings defaults (tool detail, thinking collapsed).
 - **Thinking** expands thinking blocks.

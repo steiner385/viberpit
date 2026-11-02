@@ -15,7 +15,7 @@ import { ModePicker } from './ModePicker'
 import { ModelPicker } from './ModelPicker'
 import { EffortPicker } from './EffortPicker'
 import { UsageRing } from '@/ui/UsageRing'
-import { contextSeverity } from '@/lib/contextWindow'
+import { contextSeverity, contextUsedLabel } from '@/lib/contextWindow'
 
 /** Imperative openers for the row's menus (the Alt+Shift+M / I / E shortcuts). */
 export interface PromptRowMenus {
@@ -104,7 +104,7 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: Pr
 /** The context-window ring. `remainingPct` is the share still FREE (`rt.contextPct`). */
 function ContextRing({ remainingPct }: { remainingPct: number }) {
   const usedPct = 100 - remainingPct
-  const label = `Context ${usedPct}% used${contextSeverity(remainingPct) === 'danger' ? ' · auto-compacts soon' : ''}`
+  const label = `${contextUsedLabel(remainingPct)}${contextSeverity(remainingPct) === 'danger' ? ' · auto-compacts soon' : ''}`
   // `title` on the wrapper: the ring is icon-sized, so the hover tooltip is how a
   // sighted user reads the number the aria-label gives a screen reader.
   return (

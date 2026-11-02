@@ -1,5 +1,6 @@
 import type { AccountUsage, UsageWindow } from '@/api/types'
 import { modelTier } from '@/session/modelName'
+import { formatResetTime } from '@/lib/formatReset'
 
 /**
  * Reading an account's quota windows — the single source of truth for it.
@@ -119,4 +120,16 @@ const ACCOUNT_ABBR: Record<string, string> = { session: 'sess', weekly: 'wk', pr
 export function windowLabel(w: UsageWindow): string {
   if (w.scope === 'model') return w.label
   return ACCOUNT_ABBR[w.key] ?? w.label
+}
+
+/** Tooltip copy for a quota window: the provider's label spelled out plus when it
+ *  resets. Shared by every surface that shows a window's percentage. */
+export function quotaWindowTitle(w: Pick<UsageWindow, 'label' | 'resetsAt'>): string {
+  const reset = formatResetTime(w.resetsAt)
+  return reset ? `${w.label} limit · resets ${reset}` : `${w.label} limit · no active window`
+}
+
+/** Accessible name for one window's percentage readout. */
+export function quotaWindowAriaLabel(w: Pick<UsageWindow, 'label' | 'resetsAt' | 'pct'>): string {
+  return `${w.label} usage: ${w.pct}% — ${quotaWindowTitle(w)}`
 }

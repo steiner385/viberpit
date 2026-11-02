@@ -583,7 +583,8 @@ def _err(msg: str) -> dict[str, Any]:
 
 
 # Matches the LIVE-session wire shape from `_record_to_dict`
-# (server/api/sessions.py) — that endpoint never emits `branch`, and pending
+# (server/api/sessions.py). That endpoint does emit `branch` and `cwd` (for the
+# session rail), but they are deliberately left out of `_SESSION_KEYS`; pending
 # permission/question state is already carried by `status`
 # (`waiting_input` / `waiting_question`), not separate counters.
 _SESSION_KEYS = ("id", "name", "status", "repo", "host", "accountName", "model",

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { SessionBody } from './SessionBody'
@@ -10,6 +10,8 @@ import * as hooks from '@/api/hooks'
 import { queryResult } from '@/test/reactQuery'
 import type { AgentCapabilities, EngineOffer, Session } from '@/api/types'
 import { session as makeSession } from '@/test/factories'
+import { setElementWidth, resetElementWidth } from '@/test/elementWidth'
+import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
 
 // SessionBody now calls useModels/useAccounts/useSessions (account+model switchers).
 // Stub them so this layout test needs no QueryClientProvider or network.
@@ -19,9 +21,8 @@ const { useEngineOffers } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/api/hooks', () => ({
-  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin, sub-agents.
   useSessionMcp: vi.fn(() => ({ data: undefined })),
-  // Per-session standing rules readout (SessionBody → SessionMeta rulesSlot).
   usePermissionRules: vi.fn(() => ({ data: [] })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
@@ -42,7 +43,6 @@ vi.mock('@/api/hooks', () => ({
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
-  // Unpin account button (SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -75,7 +75,7 @@ function makeRuntime(blocks: Block[]): SessionRuntime {
     toolDetailMode: 'auto',
     thinkingCollapsed: true,
     connectionState: 'connected',
-    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW,
     hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
@@ -103,7 +103,7 @@ function makeEmptyRuntime(): SessionRuntime {
     toolDetailMode: 'auto',
     thinkingCollapsed: true,
     connectionState: 'connected',
-    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW,
     hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
@@ -274,12 +274,20 @@ describe('SessionBody — capability-gated surfaces', () => {
     expect(screen.getByTestId('pending-model-approval-panel')).toBeInTheDocument()
   })
 
-  it('renders the session identity (agent, runner) in the meta strip; effort moved to the prompt row', () => {
+  it('renders the session identity (agent, runner) in the rail; no model or effort control there', async () => {
     setSession({ engine: 'codex', host: 'rocky', reasoningEffort: 'high' })
-    renderBody(<SessionBody rt={makeRuntime([])} />)
-    expect(screen.getByLabelText('Agent')).toHaveTextContent('Codex')
-    expect(screen.getByLabelText('Runner host')).toHaveTextContent('rocky')
-    expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
+    setElementWidth(1200)
+    try {
+      renderBody(<SessionBody rt={{ ...makeRuntime([]), commands: [] }} />)
+      const env = within(await screen.findByRole('region', { name: 'Environment' }))
+      expect(env.getByTestId('env-agent')).toHaveTextContent('Codex')
+      expect(env.getByTestId('env-host')).toHaveTextContent('rocky')
+      // The model and effort pickers live in the composer's prompt row.
+      expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
+      expect(screen.queryByLabelText('Select model')).toBeNull()
+    } finally {
+      resetElementWidth()
+    }
   })
 
   it('renders a Codex approval through the existing pending-permission UX', () => {

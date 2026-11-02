@@ -68,13 +68,15 @@ Reconnect failures are logged and show up in the next status poll; they never fa
 
 ## In-session readout
 
-A compact `MCP n/m` (connected of total) sits beside the context meter in the session header, only when the session has at least one user MCP server. It is muted when all are connected and warning-coloured when any is failed or needs-auth. Its popover lists each server's status, error and tool count with:
+The session's MCP servers are listed inline in the session rail's **Context** card (D-6; it replaced the `MCP n/m` header pill and its popover). On a pane narrower than 64rem the rail's cards move into the **Details** tab. The list renders only when the session reports at least one user MCP server. Each row shows the server's status, error and tool count, with:
 
 - **Reconnect** - `POST /api/sessions/{id}/mcp/{server}/reconnect` (audited as `session.mcp_reconnect`)
 - **Reauth** - opens `McpAuthFlow` in place
 - **Manage** - links to Settings › MCP
 
-Data loads from `GET /api/sessions/{id}/mcp` on mount, then follows `mcpStatus` session events. The internal ViberPit app server is hidden (filtered by name).
+Data loads from `GET /api/sessions/{id}/mcp` until the first live `mcpStatus` session event arrives, then follows those events (`useMcpServers`). The internal ViberPit app server is hidden (filtered by name). The same list backs the `/mcp` command panel.
+
+**Attention dot** - while the rail is out of sight, an amber dot flags anything in it worth a look. The dot appears on the Details tab on a narrow pane, and on the toolbar's rail toggle when the rail is collapsed on a wide pane. Its accessible name gains "(needs attention)", for example `Show details (needs attention)`. It shows when any MCP server is `failed` or `needs-auth`, when background work is running or a wakeup is armed, or when a sub-agent has failed. One predicate, `web/src/features/sessions/rail/railAttention.ts:railNeedsAttention`, decides it for both places. It reads the same live-then-snapshot server list as the Context card.
 
 ## Scope
 
@@ -93,15 +95,15 @@ Plugin servers are keyed by the plugin manifest name (`plugin:Notion:notion`, no
 
 **How it reaches the CLI** - at every driver build (spawn, resume, reassign, adopt) the effective list is written to the CLI's `projects[<worktree>].disabledMcpServers` through `configdir.trust_project`. The driver also re-enforces it after start: on its first successful MCP status poll (and after a `/clear` reconnect) it calls `toggle_mcp_server(name, False)` once for each desired-disabled server not already `disabled`. This closes a race where `compose()` rewrites the account config while the CLI is starting.
 
-**Live toggle** - the in-session `MCP n/m` popover gets an on/off switch per server (`POST /api/sessions/{id}/mcp/{server}/toggle`, `{enabled}`; 400 unknown server, 409 if the CLI refuses, 404 if the session is not live). The choice is saved to `sessions.mcp_overrides` and survives resume; the driver's enforcement set is kept in sync. The DB is authoritative: the CLI also mirrors toggles into `.claude.json`, but that copy is overwritten at the next driver build. Disabled servers are excluded from the `n/m` count.
+**Live toggle** - each row of the in-session MCP list gets an on/off switch (`POST /api/sessions/{id}/mcp/{server}/toggle`, `{enabled}`; 400 unknown server, 409 if the CLI refuses, 404 if the session is not live). The choice is saved to `sessions.mcp_overrides` and survives resume; the driver's enforcement set is kept in sync. The DB is authoritative: the CLI also mirrors toggles into `.claude.json`, but that copy is overwritten at the next driver build.
 
 **Repo key** - repo rules key on the session's stored repo (`Session.repo`, set at creation), not the live git remote some UI labels show. Adopted and explicit-cwd sessions have no stored repo and get server defaults only.
 
-**Switch coverage** - the popover shows a switch only for user-scope and plugin servers (CLI scope `user` or `dynamic`); `project`, `claudeai` and `local` rows keep status, Reconnect and Reauth but no switch, since the toggle route rejects them.
+**Switch coverage** - the in-session list shows a switch only for user-scope and plugin servers (CLI scope `user` or `dynamic`); `project`, `claudeai` and `local` rows keep status, Reconnect and Reauth but no switch, since the toggle route rejects them.
 
 **Applies to new and resumed sessions** - changing a repo rule or server default does not touch sessions that are already running. Use the live toggle for those.
 
-**Kill switch** - `VIBERPIT_MCP_SCOPE_ENABLED` (default on). When off, no list is written and both the rules API and the toggle route return 404 `{"error": "mcp_scope_disabled"}`; Settings hides its scope controls immediately; the session popover hides its switches only after the first toggle returns 404 `mcp_scope_disabled`. Post-start enforcement runs from the MCP status poll, so it also requires `VIBERPIT_MCP_STATUS_ENABLED` on; with status off only the pre-launch list protects a session.
+**Kill switch** - `VIBERPIT_MCP_SCOPE_ENABLED` (default on). When off, no list is written and both the rules API and the toggle route return 404 `{"error": "mcp_scope_disabled"}`; Settings hides its scope controls immediately; the in-session list hides its switches only after the first toggle returns 404 `mcp_scope_disabled`. Post-start enforcement runs from the MCP status poll, so it also requires `VIBERPIT_MCP_STATUS_ENABLED` on; with status off only the pre-launch list protects a session.
 
 **Known limitations**
 

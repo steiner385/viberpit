@@ -3,8 +3,8 @@
  * (switchable), and a "New chat" reset.
  *
  * The picker posts to the ordinary session model route, because the assistant IS a
- * session. It does NOT reuse the composer's model menu (`SessionMeta` in
- * `SessionBody.tsx`): that one is wired to the full session status strip and carries
+ * session. It does NOT reuse the composer's model menu (`ModelPicker` in the
+ * prompt row): that one is wired to the full session composer and carries
  * effort, queueing and approval affordances the drawer has no room for.
  */
 import { useState } from 'react'

@@ -27,9 +27,8 @@ import { anthropicUsage } from '@/test/factories'
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
 vi.mock('@/api/hooks', () => ({
-  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin.
   useSessionMcp: vi.fn(() => ({ data: undefined })),
-  // Per-session standing rules readout (SessionBody → SessionMeta rulesSlot).
   usePermissionRules: vi.fn(() => ({ data: [] })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
@@ -37,7 +36,6 @@ vi.mock('@/api/hooks', () => ({
   useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // "Next best account" (MainPaneSession → SessionHeader → SessionActions).
   useRotateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  // Unpin account button (MainPaneSession → SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // The shell mounts the Roadmap list column app-wide (`useRoadmapWorkspace`),
   // so this whole-module mock has to answer for it too.

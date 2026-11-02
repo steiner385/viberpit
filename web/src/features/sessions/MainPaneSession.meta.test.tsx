@@ -1,14 +1,14 @@
 /**
- * MainPaneSession ↔ SessionMeta integration: the status strip reflects account
- * (from useSessions, overridden by rotation), model + context (from reducer),
- * and account quota (from useAccounts).
+ * MainPaneSession ↔ session rail integration (D-6; was the `SessionMeta`
+ * strip): on a pane of 64rem or more the rail reflects the account (from
+ * useSessions, overridden by rotation) and the account quota (from
+ * useAccounts); the model and context live in the docked prompt row.
  *
  * Was `SessionView.meta.test.tsx`. `SessionView` is deleted (Task 18 / Item 2);
  * the pane the shell actually renders is `MainPaneSession`, and it reads the
  * runtime from the provider `PageHost` mounts, so the harness supplies one.
- * Every assertion is unchanged.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -17,6 +17,7 @@ import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/ses
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import type { SessionEvent } from '@/session/events'
 import { anthropicUsage } from '@/test/factories'
+import { setElementWidth, resetElementWidth } from '@/test/elementWidth'
 
 let capturedHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
 
@@ -38,9 +39,8 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 vi.mock('@/api/hooks', () => ({
-  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin.
   useSessionMcp: vi.fn(() => ({ data: undefined })),
-  // Per-session standing rules readout (SessionBody → SessionMeta rulesSlot).
   usePermissionRules: vi.fn(() => ({ data: [] })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
@@ -48,7 +48,6 @@ vi.mock('@/api/hooks', () => ({
   useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // "Next best account" (MainPaneSession → SessionHeader → SessionActions).
   useRotateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  // Unpin account button (MainPaneSession → SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
@@ -107,8 +106,11 @@ function DockedComposer() {
   return <SessionComposer rt={useSessionRuntimeContext()} />
 }
 
-describe('MainPaneSession status strip', () => {
+describe('MainPaneSession session rail', () => {
+  // A wide pane: the account and quota readouts are in the rail column.
+  afterEach(() => resetElementWidth())
   beforeEach(() => {
+    setElementWidth(1200)
     capturedHandlers = {}
     mockOn.mockClear()
     mockOn.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
@@ -125,9 +127,9 @@ describe('MainPaneSession status strip', () => {
     expect(screen.queryByRole('heading', { level: 1, name: 's1' })).not.toBeInTheDocument()
   })
 
-  it('shows the account from useSessions and quota from useAccounts', () => {
+  it('shows the account from useSessions and quota from useAccounts', async () => {
     renderPane()
-    expect(screen.getByLabelText(/switch account/i)).toHaveValue('work-max')
+    expect(await screen.findByLabelText(/switch account/i)).toHaveValue('work-max')
     const quota = screen.getByLabelText(/account quota/i)
     expect(quota).toHaveTextContent('42%')
     expect(quota).toHaveTextContent('18%')

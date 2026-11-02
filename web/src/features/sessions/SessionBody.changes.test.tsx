@@ -6,11 +6,13 @@
  */
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { queryResult } from '@/test/reactQuery'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
+import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
+import { setElementWidth, resetElementWidth } from '@/test/elementWidth'
 import type { SessionDiff } from './diff/types'
 import { SessionBody } from './SessionBody'
 
@@ -69,6 +71,7 @@ function makeRuntime(status = 'idle'): SessionRuntime {
     mode: 'interactive', toolDetailMode: 'auto', toggleToolDetail: vi.fn(),
     connectionState: 'connected',
     title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    commands: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW,
     hasOpenAction: false, armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(), onPlainPrompt: vi.fn(() => 'sent'),
     onInterrupt: vi.fn(), onInterruptAndPrompt: vi.fn(), onSetMode: vi.fn(), onCancelQueued: vi.fn(),
@@ -101,7 +104,9 @@ beforeEach(() => {
 })
 
 describe('SessionBody — Changes tab', () => {
-  it('is not listed when the summary has no files', async () => {
+  it('is not listed when the summary has no files (wide pane: no strip at all)', async () => {
+    setElementWidth(1200)
+    onTestFinished(resetElementWidth)
     x11(false)
     serve(NO_FILES)
     renderBody(makeRuntime())
@@ -119,12 +124,12 @@ describe('SessionBody — Changes tab', () => {
     expect(await screen.findByTestId('changes-tab-stub')).toHaveTextContent('Changes:s1')
   })
 
-  it('sits between Conversation and Browser', async () => {
+  it('sits between Conversation and Browser; Details (a narrow pane) is last', async () => {
     x11(true)
     serve(WITH_FILES)
     renderBody(makeRuntime())
     await screen.findByRole('tab', { name: /browser/i })
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Changes', 'Browser'])
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Changes', 'Browser', 'Details'])
   })
 
   it('opens from ?view=changes without refetching the summary it just loaded', async () => {

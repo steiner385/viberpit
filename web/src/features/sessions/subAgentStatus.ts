@@ -4,7 +4,7 @@
 // (#1471 carry-over 1). Originally two private copies — `SubAgentPage.tsx`'s
 // `STATUS_TONE`/`STATUS_LABEL` and `SubAgentRows.tsx`'s untyped `DOT` map
 // (raw palette, no `stopped` key) — consolidated here so every consumer
-// (`SubAgentPage`, `SubAgentRows`, and 7e's `SubAgentList`/`SessionMeta`)
+// (`SubAgentPage`, `SubAgentRows`, and 7e's `SubAgentList`)
 // agrees on both the tone and the label. `done` reads "completed": the wire
 // event (`SubAgentEnded.status`) and the 2026-09-11 sub-agent spec both say
 // "completed", not "done".

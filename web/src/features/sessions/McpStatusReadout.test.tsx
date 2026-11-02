@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
-import { McpStatusReadout } from './McpStatusReadout'
+import { McpInlineList } from './McpStatusReadout'
 import type { McpServerState } from '@/api/types'
 import { ApiRequestError } from '@/api/client'
 
@@ -55,7 +55,7 @@ function mockToggle(over: Record<string, unknown> = {}) {
 }
 
 const ui = (live: McpServerState[] | null) => (
-  <McpStatusReadout sessionId="s1" account="work" live={live} />
+  <McpInlineList sessionId="s1" account="work" live={live} />
 )
 
 beforeEach(() => {
@@ -67,7 +67,9 @@ beforeEach(() => {
   mockToggle()
 })
 
-describe('McpStatusReadout', () => {
+// The session rail's inline MCP list (D-6). The strip's `MCP n/m` popover went
+// with `SessionMeta`; the list body (McpServerList + Manage) is unchanged.
+describe('McpInlineList', () => {
   it('renders nothing with no servers', () => {
     mockSessionMcp({ servers: [] })
     const { container } = render(ui(null), { wrapper: Wrapper })
@@ -80,95 +82,58 @@ describe('McpStatusReadout', () => {
   })
 
   it('falls back to the fetched snapshot', () => {
-    mockSessionMcp({ servers: [st('a', 'connected')] })
+    mockSessionMcp({ servers: [st('snap', 'connected')] })
     render(ui(null), { wrapper: Wrapper })
     expect(sessionMcp).toHaveBeenCalledWith('s1', true)
-    expect(screen.getByRole('button', { name: /MCP 1\/1/ })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'MCP servers' })).toHaveTextContent('snap')
   })
 
-  it('prefers live event data over the fetched snapshot and warns on problems', () => {
-    mockSessionMcp({ servers: [st('a', 'connected')] })
-    render(ui([st('a', 'connected'), st('b', 'needs-auth')]), { wrapper: Wrapper })
-    expect(screen.getByRole('button', { name: /MCP 1\/2/ }).className).toMatch(/warning/)
-  })
-
-  it('is muted when everything is healthy', () => {
-    render(ui([st('a', 'connected')]), { wrapper: Wrapper })
-    expect(screen.getByRole('button', { name: /MCP 1\/1/ }).className).not.toMatch(/warning/)
+  it('prefers live event data over the fetched snapshot', () => {
+    mockSessionMcp({ servers: [st('snap', 'connected')] })
+    render(ui([st('live', 'connected')]), { wrapper: Wrapper })
+    const group = screen.getByRole('group', { name: 'MCP servers' })
+    expect(group).toHaveTextContent('live')
+    expect(group).not.toHaveTextContent('snap')
   })
 
   it('lists error and tool count, and Reconnect calls the endpoint with the full name', async () => {
     const rc = mockReconnect()
     render(ui([st('plugin:p:b', 'failed', 'ENOENT', 5)]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 0\/1/ }))
     expect(screen.getByText('ENOENT')).toBeInTheDocument()
     expect(screen.getByText('5 tools')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Reconnect b' }))
     expect(rc.mutate).toHaveBeenCalledWith({ server: 'plugin:p:b' })
   })
 
-  it('hides Reconnect for connected servers', async () => {
+  it('hides Reconnect for connected servers', () => {
     render(ui([st('a', 'connected')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
     expect(screen.queryByRole('button', { name: /Reconnect/ })).toBeNull()
   })
 
-  it('shows the reconnect failure message inline', async () => {
+  it('shows the reconnect failure message inline', () => {
     mockReconnect({
       isError: true,
       error: new ApiRequestError(409, { detail: { code: 'MCP_RECONNECT_FAILED', message: 'boom' } }),
     })
     render(ui([st('b', 'failed')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 0\/1/ }))
     expect(screen.getByRole('alert')).toHaveTextContent('boom')
   })
 
   it('offers Reauth for needs-auth servers', async () => {
     render(ui([st('plugin:p:b', 'needs-auth')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 0\/1/ }))
     await userEvent.click(screen.getByRole('button', { name: /^Reauth b$/ }))
     expect(screen.getByRole('button', { name: 'Fix auth' })).toBeInTheDocument()
   })
 
-  it('links to Settings > MCP', async () => {
+  it('links to Settings > MCP', () => {
     render(ui([st('a', 'connected')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
     expect(screen.getByRole('link', { name: /manage/i })).toHaveAttribute('href', expect.stringContaining('/settings/mcp'))
   })
 
-  it('shows a 404 string detail from the server', async () => {
+  it('shows a 404 string detail from the server', () => {
     mockReconnect({ isError: true, error: new ApiRequestError(404, { detail: 'Session not live' }) })
     render(ui([st('b', 'failed')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 0\/1/ }))
     expect(screen.getByRole('alert')).toHaveTextContent('Session not live')
-  })
-
-  it('Escape closes the popover and returns focus to the trigger', async () => {
-    render(ui([st('a', 'failed')]), { wrapper: Wrapper })
-    const trigger = screen.getByRole('button', { name: /MCP 0\/1/ })
-    await userEvent.click(trigger)
-    screen.getByRole('button', { name: 'Reconnect a' }).focus()
-    await userEvent.keyboard('{Escape}')
-    expect(screen.queryByRole('link', { name: /manage/i })).toBeNull()
-    expect(trigger).toHaveFocus()
-  })
-
-  it('closes on a mousedown outside but not on a click inside', async () => {
-    render(<div><p>outside</p>{ui([st('a', 'failed')])}</div>, { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 0\/1/ }))
-    await userEvent.click(screen.getByText('a'))
-    expect(screen.getByRole('link', { name: /manage/i })).toBeInTheDocument()
-    fireEvent.mouseDown(screen.getByText('outside'))
-    expect(screen.queryByRole('link', { name: /manage/i })).toBeNull()
-  })
-
-  it('is anchored to the strip and capped to the viewport (375px contract)', async () => {
-    render(ui([st('a', 'connected')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
-    const pop = screen.getByRole('link', { name: /manage/i }).closest('div.absolute') as HTMLElement
-    expect(pop.className).toMatch(/\bright-2\b/)
-    expect(pop.className).toContain('max-w-[calc(100vw-1rem)]')
-    expect(pop.parentElement!.className).not.toMatch(/\brelative\b/)
   })
 
   it('renders a switch only for user and dynamic (plugin) scope rows', () => {
@@ -182,7 +147,6 @@ describe('McpStatusReadout', () => {
       ]),
       { wrapper: Wrapper },
     )
-    fireEvent.click(screen.getByRole('button', { name: /MCP 5\/5/ }))
     expect(screen.getByRole('switch', { name: 'u enabled' })).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'd enabled' })).toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: 'p enabled' })).toBeNull()
@@ -190,9 +154,8 @@ describe('McpStatusReadout', () => {
     expect(screen.queryByRole('switch', { name: 'l enabled' })).toBeNull()
   })
 
-  it('switch state follows status', async () => {
+  it('switch state follows status', () => {
     render(ui([st('a', 'connected'), st('b', 'disabled')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
     expect(screen.getByRole('switch', { name: 'a enabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('switch', { name: 'b enabled' })).toHaveAttribute('aria-checked', 'false')
   })
@@ -200,30 +163,22 @@ describe('McpStatusReadout', () => {
   it('toggling sends the full server name', async () => {
     const t = mockToggle()
     render(ui([st('plugin:p:b', 'connected')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
     await userEvent.click(screen.getByRole('switch', { name: 'b enabled' }))
     expect(t.mutate).toHaveBeenCalledWith({ server: 'plugin:p:b', enabled: false })
   })
 
-  it('count excludes disabled servers', () => {
-    render(ui([st('a', 'connected'), st('b', 'disabled')]), { wrapper: Wrapper })
-    expect(screen.getByRole('button', { name: /MCP 1\/1/ })).toBeInTheDocument()
-  })
-
-  it('shows the toggle failure message inline', async () => {
+  it('shows the toggle failure message inline', () => {
     mockToggle({
       isError: true,
       error: new ApiRequestError(409, { detail: { code: 'MCP_TOGGLE_FAILED', message: 'nope' } }),
     })
     render(ui([st('a', 'connected')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
     expect(screen.getByRole('alert')).toHaveTextContent('nope')
   })
 
-  it('hides switches after a 404 mcp_scope_disabled', async () => {
+  it('hides switches after a 404 mcp_scope_disabled', () => {
     mockToggle({ isError: true, error: new ApiRequestError(404, { error: 'mcp_scope_disabled' }) })
     render(ui([st('a', 'connected')]), { wrapper: Wrapper })
-    await userEvent.click(screen.getByRole('button', { name: /MCP 1\/1/ }))
     expect(screen.queryByRole('switch')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
   })

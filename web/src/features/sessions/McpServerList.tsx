@@ -1,7 +1,7 @@
 /**
  * McpServerList — one session's MCP servers, one row each: status, enable
- * switch, tool count, error, Reconnect and Reauth. Shared by the `MCP n/m`
- * readout popover and the `/mcp` command panel (spec 2026-10-13).
+ * switch, tool count, error, Reconnect and Reauth. Shared by the session
+ * rail's inline list (`McpInlineList`) and the `/mcp` command panel (spec 2026-10-13).
  * Reauth opens `McpAuthFlow` for the session's own account, so the login runs
  * in that account's config dir.
  */

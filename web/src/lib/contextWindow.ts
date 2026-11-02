@@ -74,3 +74,12 @@ export function contextSeverity(remainingPct: number | null): ContextSeverity {
   if (remainingPct <= 25) return 'warning'
   return 'neutral'
 }
+
+/**
+ * The one wording for context usage: `Context N% used`, from the REMAINING
+ * percentage (`rt.contextPct`). The prompt row's ring and the session rail's
+ * meter both label themselves with it, so the two can never show different numbers.
+ */
+export function contextUsedLabel(remainingPct: number): string {
+  return `Context ${100 - remainingPct}% used`
+}
