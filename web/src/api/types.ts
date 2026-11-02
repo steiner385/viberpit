@@ -330,6 +330,10 @@ export interface Session {
   reasoningEffort?: string | null
   /** GitHub nameWithOwner ("owner/name") this session works on, or null for a scratch session. */
   repo?: string | null
+  /** Git branch the session's worktree is on; null when unknown. */
+  branch?: string | null
+  /** Absolute worktree path the session runs in; null when unknown. */
+  cwd?: string | null
   /** Fleet host that ran this session. Null for sessions created before the fleet
    *  existed, and for deployments whose endpoint is not in the host registry. */
   host?: string | null
