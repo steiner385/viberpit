@@ -72,7 +72,7 @@ D=[
 ("6 User feedback",[
  ("Permission card: once / this session / always / deny",3,"Y",""),
  ("AskUserQuestion card",3,"Y","multi-question batching"),
- ("Plan approval with comments",2,"Y","overall comment; per-step comments reuse D-5 line comments"),
+ ("Plan approval with comments",2,"Y","overall + per-step"),
  ("Per-session status (working / waiting / review-ready)",3,"Y",""),
  ("OS / push notifications with actions",2,"Y","Web Push"),
  ("Context meter + 'auto-compacts soon'",2,"P","% only"),
@@ -95,7 +95,7 @@ D=[
  ("Scheduled tasks / routines",1,"P","Delivery automations"),
 ]),
 ("8 Code review & dev",[
- ("Changes pane: aggregate diff, unified/split, line comments",3,"P","line comments → D-5"),
+ ("Changes pane: aggregate diff, unified/split, line comments",3,"Y",""),
  ("Inline tool diffs",2,"Y","shared DiffRenderer, highlighted; MultiEdit edits[] not rendered"),
  ("Files pane (view / edit)",1,"N",""),
  ("PR viewer: checks, threads, merge, auto-merge",2,"P","Pipeline page + PR pills + Fix"),

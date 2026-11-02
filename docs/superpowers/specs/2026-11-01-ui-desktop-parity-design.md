@@ -188,7 +188,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | `GET /sessions/{id}/files?q=` (worktree file list, per host via the fleet router) | `@` files, Files tab, palette |
 | `GET /sessions/{id}/files/{path}` (read-only content, with a size cap) | Files tab, memory-file viewer |
 | `GET /sessions/{id}/diff` (aggregate worktree diff vs base, structured hunks) | Changes tab, chip, rail, inline diffs |
-| `POST /sessions/{id}/review-comments` (batch → one prompt) | Changes line comments `[A-D4]` |
+| `POST /sessions/{id}/review-comments` (batch → one prompt) | not needed — client-composed prompt (D-5) |
 | `POST /sessions/{id}/fork` `{at_message_id}` | Fork |
 | `POST /sessions/{id}/rewind` `{to_message_id}` + `POST …/rewind/undo` | Rewind, Edit & resend, Rewind & retry |
 | live `set_permission_mode` / effort / fast on the driver | prompt row |
