@@ -22,6 +22,16 @@ CLOSE_REASON_RESTART = "restart"
 #: user did nothing, and the card is re-offered after the restart.
 QUESTION_MODE_INTERRUPTED = "interrupted"
 
+#: ``QuestionResolved.mode`` for a question the autopilot loop answered. The agent
+#: reads it as "automation chose this, the owner did not" (#3216) — a session once
+#: told its operator "the decision you made is to wait" about an autopilot pick.
+QUESTION_MODE_AUTOPILOT = "autopilot"
+
+#: What the agent reads in front of an autopilot-chosen answer.
+AUTOPILOT_ANSWER_PREFIX = (
+    "[Automation (autopilot) answered this question — the owner has NOT decided; "
+    "do not report it to them as their decision]")
+
 #: What the agent reads as the result of an ask a restart cut off. Load-bearing
 #: wording: the old "user did not answer" / "denied by user" made the model act on a
 #: refusal nobody gave.
