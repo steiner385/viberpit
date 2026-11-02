@@ -147,19 +147,15 @@ def test_default_outside_plan_is_not_hijacked():
     assert d.mode == "default"
 
 
-def _plan_from_auto_driver() -> ClaudeAgentDriver:
-    d = ClaudeAgentDriver("sp-switch", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
-                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
-                          identity="me")
-    d._client = _ModeRecorder()
-    return d
-
-
 def test_prompt_row_picker_switches_straight_out_of_plan():
     """The prompt-row mode picker (D-1) replaces the plan toggle: from plan it can
     jump straight to any mode, and that mode must win — not the pre-plan one."""
     async def run():
-        d = _plan_from_auto_driver()
+        rec = _ModeRecorder()
+        d = ClaudeAgentDriver("sp-switch", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
         await d.set_permission_mode("plan")
         assert d.mode == "plan"
         await d.set_permission_mode("full-auto")
@@ -169,7 +165,11 @@ def test_prompt_row_picker_switches_straight_out_of_plan():
 
 def test_prompt_row_default_sentinel_restores_pre_plan_auto():
     async def run():
-        d = _plan_from_auto_driver()
+        rec = _ModeRecorder()
+        d = ClaudeAgentDriver("sp-switch", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
         await d.set_permission_mode("plan")
         await d.set_permission_mode("default")
         return d
