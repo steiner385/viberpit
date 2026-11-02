@@ -29,6 +29,8 @@ seams it needs, and the order to ship it in.
 
 ## 2. Session workspace layout
 
+The rail switches on the session pane's own width (64rem, a container query), not the viewport; below that its cards move to a Details tab.
+
 ```
 ┌ session.header ─────────────────────────────────────────────────────────────┐
 │ ← title (rename) · StatusPill · [+12 −1] chip · [PR #N ✓] chip · Views ▾ · ⋮ │

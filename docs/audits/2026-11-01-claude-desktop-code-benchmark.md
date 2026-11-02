@@ -59,18 +59,18 @@ Full inventories, with an evidence tag on every item:
 
 | Dimension | ViberPit score | Parity |
 |---|---:|---:|
-| 1 Shell & IA | 7.5 / 16 | 47% |
+| 1 Shell & IA | 8.5 / 16 | 53% |
 | 2 Transcript | 18.5 / 21 | 88% |
 | 3 Composer | 23.5 / 29 | 81% |
 | 4 Commands & config | 9 / 15 | 60% |
 | 5 Settings | 3.5 / 8 | 44% |
-| 6 User feedback | 17 / 19 | 89% |
+| 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 13.5 / 25 | 54% |
 | 8 Code review & dev | 7 / 12 | 58% |
 | 9 Shortcuts & a11y | 6 / 8 | 75% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **113.5 / 161** | **70%** |
-| **Target completion** (excl. rejected rows) | **111 / 151** | **74%** |
+| **Overall (weighted)** | **115.5 / 161** | **72%** |
+| **Target completion** (excl. rejected rows) | **113 / 151** | **75%** |
 
 ### 1 Shell & IA
 
@@ -84,7 +84,7 @@ Full inventories, with an evidence tag on every item:
 | Split view / tiled panes | 2 | ❌ | umbrella spec non-goal · *rejected for target* |
 | Pop session into own window | 1 | ◐ | every session is a URL; no layout restore · *rejected for target* |
 | Archived view + unarchive | 2 | ✅ |  |
-| Session rail: Changes / Context / Environment / Tasks cards | 2 | ◐ | meta strip has ctx, host, bg tasks; Changes chip in header; rail → D-6 |
+| Session rail: Changes / Context / Environment / Tasks cards | 2 | ✅ |  |
 
 ### 2 Transcript
 
@@ -156,7 +156,7 @@ Full inventories, with an evidence tag on every item:
 | Plan approval with comments | 2 | ✅ | overall + per-step |
 | Per-session status (working / waiting / review-ready) | 3 | ✅ |  |
 | OS / push notifications with actions | 2 | ✅ | Web Push |
-| Context meter + 'auto-compacts soon' | 2 | ◐ | % only |
+| Context meter + 'auto-compacts soon' | 2 | ✅ |  |
 | Plan-usage meter | 2 | ✅ | per-window quota |
 | Error recovery actions (switch model, lower effort, rewind & retry) | 2 | ◐ | auto-resend, rotate |
 
@@ -165,7 +165,7 @@ Full inventories, with an evidence tag on every item:
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | New session pre-flight (folder/env/model/effort) | 3 | ✅ | plus account + host |
-| Worktree visible + controls (branch, enter, discard) | 2 | ◐ | automatic but invisible |
+| Worktree visible + controls (branch, enter, discard) | 2 | ◐ | branch + path shown; discard/repair → D-14 |
 | Resume / continue | 3 | ✅ |  |
 | Import CLI sessions | 1 | ✅ | Adopt |
 | Fork session (from here) | 3 | ❌ | engine capability exists, no UI |
@@ -223,35 +223,33 @@ Full inventories, with an evidence tag on every item:
 | 9 | Group/sort by project, folder, branch, status, env, date, PR | 1 Shell & IA | 1 |
 | 10 | Pin / star sessions | 1 Shell & IA | 1 |
 | 11 | Read / unread marking | 1 Shell & IA | 1 |
-| 12 | Session rail: Changes / Context / Environment / Tasks cards | 1 Shell & IA | 1 |
-| 13 | Clickable file paths (open / attach as context) | 2 Transcript | 1 |
-| 14 | In-transcript search | 2 Transcript | 1 |
-| 15 | Effort picker in session | 3 Composer | 1 |
-| 16 | Fast-mode toggle | 3 Composer | 1 |
-| 17 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
-| 18 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
-| 19 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
-| 20 | Output styles | 4 Commands & config | 1 |
-| 21 | Worktree location / policy | 5 Settings | 1 |
-| 22 | Presets / environments selectable at new session | 5 Settings | 1 |
-| 23 | Sandbox settings | 5 Settings | 1 |
-| 24 | Context meter + 'auto-compacts soon' | 6 User feedback | 1 |
-| 25 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
-| 26 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 27 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
-| 28 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 29 | Files pane (view / edit) | 8 Code review & dev | 1 |
-| 30 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 31 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 32 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
-| 33 | Jump between prompts | 9 Shortcuts & a11y | 1 |
-| 34 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 35 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
-| 36 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 37 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
-| 38 | Notification levels per event type | 5 Settings | 0.5 |
-| 39 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 40 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 12 | Clickable file paths (open / attach as context) | 2 Transcript | 1 |
+| 13 | In-transcript search | 2 Transcript | 1 |
+| 14 | Effort picker in session | 3 Composer | 1 |
+| 15 | Fast-mode toggle | 3 Composer | 1 |
+| 16 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
+| 17 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
+| 18 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
+| 19 | Output styles | 4 Commands & config | 1 |
+| 20 | Worktree location / policy | 5 Settings | 1 |
+| 21 | Presets / environments selectable at new session | 5 Settings | 1 |
+| 22 | Sandbox settings | 5 Settings | 1 |
+| 23 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
+| 24 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
+| 25 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
+| 26 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
+| 27 | Files pane (view / edit) | 8 Code review & dev | 1 |
+| 28 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
+| 29 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 30 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
+| 31 | Jump between prompts | 9 Shortcuts & a11y | 1 |
+| 32 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 33 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
+| 34 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 35 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
+| 36 | Notification levels per event type | 5 Settings | 0.5 |
+| 37 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 38 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 
