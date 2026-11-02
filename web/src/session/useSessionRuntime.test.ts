@@ -24,6 +24,7 @@ const mockAnswerQuestion = vi.fn()
 const mockPermissionResponse = vi.fn()
 const mockSetPermissionMode = vi.fn()
 const mockInterruptAndPrompt = vi.fn()
+const mockPrompt = vi.fn()
 let capturedSessionEventHandler: ((e: unknown) => void) | undefined
 let capturedErrorHandler: ((e: unknown) => void) | undefined
 // Controllable so tests can simulate a reconnect (reconnecting → connected).
@@ -37,7 +38,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
       attach: vi.fn(),
       detach: vi.fn(),
       interrupt: vi.fn(),
-      prompt: vi.fn(),
+      prompt: mockPrompt,
       sendInterrupt: vi.fn(),
       permissionResponse: mockPermissionResponse,
       answerQuestion: mockAnswerQuestion,
@@ -611,5 +612,42 @@ describe('useSessionRuntime transcript view mode', () => {
     rerender({ id: 'vsess3' })
     expect(result.current.viewMode).toBe('normal')
     expect(result.current.toolDetailMode).not.toBe('all-open')
+  })
+})
+
+describe('useSessionRuntime.onPlainPrompt', () => {
+  beforeEach(() => {
+    mockAnswerQuestion.mockReset()
+    mockPrompt.mockReset()
+    mockPrompt.mockReturnValue('sent')
+  })
+
+  it('sends a prompt frame even with a question armed for chat (never an answer), and reports the stage', () => {
+    const { result } = renderHook(() => useSessionRuntime('sess-plain'), { wrapper })
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'replayComplete' })
+      capturedSessionEventHandler?.({
+        type: 'question', questionId: 'q9', turnId: 'turn-1', header: 'Q', question: 'Q?',
+        options: [{ label: 'Yes' }], multiSelect: false,
+      })
+    })
+    act(() => { result.current.onChat('q9') })
+    expect(result.current.armedQuestionId).toBe('q9')
+
+    let stage: unknown
+    act(() => { stage = result.current.onPlainPrompt('Review comments', []) })
+    expect(stage).toBe('sent')
+    expect(mockPrompt).toHaveBeenCalledWith('sess-plain', 'Review comments', [])
+    expect(mockAnswerQuestion).not.toHaveBeenCalled()
+    // The question stays armed for the user's own next message.
+    expect(result.current.armedQuestionId).toBe('q9')
+  })
+
+  it('reports a buffered (held) send as such', () => {
+    mockPrompt.mockReturnValue('buffered')
+    const { result } = renderHook(() => useSessionRuntime('sess-plain2'), { wrapper })
+    let stage: unknown
+    act(() => { stage = result.current.onPlainPrompt('x', []) })
+    expect(stage).toBe('buffered')
   })
 })

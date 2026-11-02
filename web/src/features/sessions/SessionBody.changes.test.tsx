@@ -15,7 +15,7 @@ import type { SessionDiff } from './diff/types'
 import { SessionBody } from './SessionBody'
 
 vi.mock('@/features/sessions/diff/ChangesTab', () => ({
-  default: ({ sessionId, onSendReview }: { sessionId: string; onSendReview: (text: string, ids: string[]) => void }) => (
+  default: ({ sessionId, onSendReview }: { sessionId: string; onSendReview: (text: string, ids: string[]) => string }) => (
     <div data-testid="changes-tab-stub">
       Changes:{sessionId}
       <button type="button" onClick={() => onSendReview('REVIEW PROMPT', [])}>stub send review</button>
@@ -70,7 +70,7 @@ function makeRuntime(status = 'idle'): SessionRuntime {
     connectionState: 'connected',
     title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
     hasOpenAction: false, armedQuestionId: null, chatArmed: false,
-    onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
+    onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(), onPlainPrompt: vi.fn(() => 'sent'),
     onInterrupt: vi.fn(), onInterruptAndPrompt: vi.fn(), onSetMode: vi.fn(), onCancelQueued: vi.fn(),
   } as unknown as SessionRuntime
 }
@@ -180,15 +180,16 @@ describe('SessionBody — Changes tab', () => {
     expect(vi.mocked(useSessionDiff)).toHaveBeenLastCalledWith('s1', { summary: true, busy: false })
   })
 
-  it('sends the review through the composer\'s prompt path, which queues while busy', async () => {
+  it('sends the review through the composer\'s prompt path (minus chat-arming), which queues while busy', async () => {
     x11(false)
     serve(WITH_FILES)
     const rt = makeRuntime('working')
     renderBody(rt, '/sessions/s1?view=changes')
     await userEvent.click(await screen.findByRole('button', { name: 'stub send review' }))
-    // The composer's Send/Queue both call rt.onPrompt(text, attachmentIds); a busy
-    // session queues it behind the live turn. Never the interrupting "Send now".
-    expect(rt.onPrompt).toHaveBeenCalledWith('REVIEW PROMPT', [])
+    // onPlainPrompt is onPrompt's send/queue path without the chat-armed branch; a
+    // busy session queues it behind the live turn. Never the interrupting "Send now".
+    expect(rt.onPlainPrompt).toHaveBeenCalledWith('REVIEW PROMPT', [])
+    expect(rt.onPrompt).not.toHaveBeenCalled()
     expect(rt.onInterruptAndPrompt).not.toHaveBeenCalled()
   })
 })

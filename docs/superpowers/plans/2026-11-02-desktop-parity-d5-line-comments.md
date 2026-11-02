@@ -39,7 +39,7 @@ D-2's plan-comment field.
   ```
   Review comments on the current changes (<N>):
 
-  1. `<path>` line <start>[–<end>]<" (removed)" when side is old>:
+  1. `<path>` line <start>[–<end>]<" (removed)" when side is old><" (outdated)" when the anchor no longer matches the diff>:
      > <quote line 1>
      > <quote line 2>
      <body>
@@ -60,8 +60,8 @@ D-2's plan-comment field.
   The result must be at most 4000 characters, the server's deny-message cap. When it is longer, Send is disabled and
   the card shows `Too long — <len>/4000`.
 - **Interaction:**
-  - Each numbered diff line has a gutter button (`aria-label` `Comment on line <n>`). It is revealed on hover or focus,
-    and always visible on coarse pointers.
+  - Each numbered diff line has a gutter button (`aria-label` `Comment on line <n>`; `Comment on removed line <n>` on the
+    old side). It is revealed on hover or focus, and always visible (with a 44px floor) on coarse pointers.
   - Shift-clicking a second line on the same side within the same hunk extends the range. A shift-click anywhere else
     starts a new range.
   - The editor opens under the range end, with Save / Cancel. Ctrl/⌘+Enter saves and Esc cancels; an empty body

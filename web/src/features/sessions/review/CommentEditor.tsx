@@ -1,27 +1,25 @@
 import { useState, type KeyboardEvent } from 'react'
-import { cn } from '@/lib/utils'
-import type { LineComment } from './reviewComments'
+import { Button } from '@/ui/Button'
+import { Textarea } from '@/ui/Textarea'
+import type { CommentAnchor, LineComment } from './reviewComments'
 
 /**
  * The review-comment editor and the saved-comment card (D-5). Presentational:
  * both report through callbacks; the caller owns the draft. They ship in the
  * Changes tab's chunk (and, lazily, the plan card's), never in the entry.
  *
- * Native controls, not `@/ui/Button`/`Textarea`/`Input`'s `controlClass`:
- * importing any of those from a lazy chunk regroups shared chunks onto the
- * critical path (measured +0.2–1.3 kB initialJs, against a ceiling with no headroom).
+ * Buttons are `Button size="sm"` with the coarse-pointer 44px floor
+ * (docs/ACCESSIBILITY.md §4): dense inline controls on a mouse, full targets on touch.
  */
-const ACTION = cn(
-  'inline-flex min-h-target items-center justify-center rounded-md px-3 text-xs font-medium',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-  'disabled:pointer-events-none disabled:opacity-50',
-)
-const PRIMARY = 'bg-accent text-accent-ink hover:bg-accent/90'
-const QUIET = 'text-ink-muted hover:bg-surface-raised hover:text-ink'
-export default function CommentEditor({ initial = '', onSave, onCancel }: {
-  initial?: string
+const TOUCH_FLOOR = 'min-h-11 [@media(hover:hover)]:min-h-0'
+
+export default function CommentEditor({ initial = '', onSave, onCancel, onDraftChange }: {
+  /** The starting text, or a function returning it (read once, at mount). */
+  initial?: string | (() => string)
   onSave: (body: string) => void
   onCancel: () => void
+  /** Every keystroke's text, so a caller that may remount the editor can hand it back as `initial`. */
+  onDraftChange?: (body: string) => void
 }) {
   const [body, setBody] = useState(initial)
   const trimmed = body.trim()
@@ -38,36 +36,57 @@ export default function CommentEditor({ initial = '', onSave, onCancel }: {
   }
   return (
     <div className="flex flex-col gap-2 font-sans">
-      <textarea
+      <Textarea
         aria-label="Comment"
         placeholder="Leave a comment for Claude…"
         value={body}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={(e) => { setBody(e.target.value); onDraftChange?.(e.target.value) }}
         onKeyDown={onKeyDown}
         autoFocus
-        rows={3}
-        className={cn(
-          'w-full resize-y rounded-md border border-edge bg-surface px-3 py-2 text-sm leading-relaxed text-ink',
-          'focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent',
-        )}
+        autoGrow
+        rows={2}
       />
       <div className="flex justify-end gap-2">
-        <button type="button" className={cn(ACTION, QUIET)} onClick={onCancel}>Cancel</button>
-        <button type="button" className={cn(ACTION, PRIMARY)} disabled={!trimmed} onClick={save}>Save</button>
+        <Button type="button" variant="ghost" size="sm" className={TOUCH_FLOOR} onClick={onCancel}>Cancel</Button>
+        <Button type="button" size="sm" className={TOUCH_FLOOR} disabled={!trimmed} onClick={save}>Save</Button>
       </div>
     </div>
   )
 }
 
-/** `line 3`, `lines 2–4`, plus ` (removed)` for the old side — the card's accessible name. */
-function rangeLabel({ anchor: { side, start, end } }: LineComment): string {
+/** `line 3`, `lines 2–4`, plus ` (removed)` for the old side. */
+function rangeLabel({ side, start, end }: CommentAnchor): string {
   return `${end > start ? `lines ${start}–${end}` : `line ${start}`}${side === 'old' ? ' (removed)' : ''}`
 }
 
 /**
+ * What an outdated comment (or an open editor whose lines moved) was made on:
+ * an "Outdated" tag, the range, optionally the file, and the quoted lines.
+ */
+export function StaleAnchor({ anchor, quote, stale, showPath }: {
+  anchor: CommentAnchor; quote: readonly string[]; stale: boolean; showPath: boolean
+}) {
+  if (!stale && !showPath) return null
+  return (
+    <>
+      <p className="mb-1 text-xs text-ink-muted">
+        {stale && <span className="mr-1 rounded-sm bg-warning-wash px-1 text-ink">Outdated</span>}
+        {showPath && <span className="mr-1 font-mono">{anchor.path}</span>}
+        {rangeLabel(anchor)}
+      </p>
+      {stale && (
+        <pre className="mb-1 whitespace-pre-wrap break-all border-l-2 border-edge pl-2 font-mono text-xs text-ink-muted">
+          {quote.join('\n')}
+        </pre>
+      )}
+    </>
+  )
+}
+
+/**
  * A saved comment: its body with Edit / Delete. `stale` marks one whose lines no
- * longer match the diff — it then shows the quote it was made on (still sent).
- * `showPath` names the file, for a comment whose file left the diff entirely.
+ * longer match the diff (still sent, marked `(outdated)`). `showPath` names the
+ * file, for a comment whose file left the diff entirely.
  */
 export function CommentCard({ comment, stale = false, showPath = false, onEdit, onDelete }: {
   comment: LineComment
@@ -77,23 +96,12 @@ export function CommentCard({ comment, stale = false, showPath = false, onEdit, 
   onDelete: () => void
 }) {
   const [editing, setEditing] = useState(false)
-  const label = rangeLabel(comment)
   return (
     <article
-      aria-label={`Comment on ${label}`}
+      aria-label={`Comment on ${rangeLabel(comment.anchor)}`}
       className="rounded-md border border-edge bg-surface p-2 font-sans text-sm text-ink"
     >
-      {(stale || showPath) && (
-        <p className="mb-1 text-xs text-ink-muted">
-          {stale && <span className="mr-1 rounded-sm bg-warning-wash px-1 text-ink">Outdated</span>}
-          {showPath && <span className="font-mono">{comment.anchor.path}</span>}{showPath ? ' ' : ''}{label}
-        </p>
-      )}
-      {stale && (
-        <pre className="mb-1 whitespace-pre-wrap break-all border-l-2 border-edge pl-2 font-mono text-xs text-ink-muted">
-          {comment.quote.join('\n')}
-        </pre>
-      )}
+      <StaleAnchor anchor={comment.anchor} quote={comment.quote} stale={stale} showPath={showPath} />
       {editing ? (
         <CommentEditor
           initial={comment.body}
@@ -103,8 +111,8 @@ export function CommentCard({ comment, stale = false, showPath = false, onEdit, 
       ) : (
         <div className="flex items-start gap-2">
           <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">{comment.body}</p>
-          <button type="button" className={cn(ACTION, QUIET)} onClick={() => setEditing(true)}>Edit</button>
-          <button type="button" className={cn(ACTION, QUIET)} onClick={onDelete}>Delete</button>
+          <Button type="button" variant="ghost" size="sm" className={TOUCH_FLOOR} onClick={() => setEditing(true)}>Edit</Button>
+          <Button type="button" variant="ghost" size="sm" className={TOUCH_FLOOR} onClick={onDelete}>Delete</Button>
         </div>
       )}
     </article>

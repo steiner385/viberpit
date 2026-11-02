@@ -13,6 +13,7 @@
  * hence `hasTouch`/`isMobile` below, not just a narrow viewport.
  */
 import { test, expect, type Page } from '@playwright/test'
+import { replayFrame, wire } from './fixtures/wsFrames'
 
 const MOCK_SESSIONS = Array.from({ length: 3 }, (_, i) => ({
   id: `sess-${i}`,
@@ -116,5 +117,69 @@ test.describe('Sessions list-controls touch targets — desktop mouse', () => {
     // Not a regression threshold on the exact px — just proving the
     // touch-target floor does not leak into the dense desktop chrome.
     expect(sortBy.height).toBeLessThan(36)
+  })
+})
+
+/**
+ * D-5: the Changes tab's per-line comment gutter is a 20px button for a mouse
+ * but must floor at 44px on a coarse pointer (the `CardMenu` `actionBtn`
+ * pattern) — and be visible there, since a touch screen has no hover to reveal it.
+ */
+const CHANGES_SID = 'touch-changes'
+const CHANGES_DIFF = {
+  base: '0123456789abcdef0123456789abcdef01234567', head: null, additions: 1, deletions: 1, truncated: false,
+  files: [{
+    path: 'src/a.ts', oldPath: null, status: 'modified', additions: 1, deletions: 1, binary: false, tooLarge: false,
+    hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, header: '', lines: [
+      { kind: 'context', oldNo: 1, newNo: 1, text: 'keep' },
+      { kind: 'del', oldNo: 2, newNo: null, text: 'old' },
+      { kind: 'add', oldNo: null, newNo: 2, text: 'new' },
+    ] }],
+  }],
+}
+
+async function openChanges(page: Page) {
+  await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
+  await page.route('**/api/sessions', (route) => route.fulfill({ json: [{
+    id: CHANGES_SID, name: 'Touch changes', accountName: 'alice', engine: 'claude_code', status: 'idle',
+    createdAt: '2026-11-01T10:00:00Z', updatedAt: '2026-11-01T10:00:00Z',
+  }] }))
+  await page.route('**/api/config', (route) => route.fulfill({ json: { repoRoot: '', adoptionEnabled: false } }))
+  await page.route('**/api/daemon/health', (route) => route.fulfill({ json: { status: 'ok' } }))
+  await page.route(`**/api/sessions/${CHANGES_SID}/diff**`, (route) => route.fulfill({ json: CHANGES_DIFF }))
+  await page.routeWebSocket('**/ws', (ws) => ws.onMessage((msg) => {
+    if (JSON.parse(msg.toString()).type === 'attach') ws.send(wire(replayFrame(CHANGES_SID, [], { totalTurns: 0 })))
+  }))
+  await page.goto(`/sessions/${CHANGES_SID}?view=changes`)
+  await expect(page.getByTestId('changes-tab')).toBeVisible()
+}
+
+test.describe('Changes tab comment gutter — phone, coarse pointer', () => {
+  test.use({ viewport: { width: 393, height: 852 }, hasTouch: true, isMobile: true })
+
+  test('every gutter button is a visible 44px target', async ({ page }) => {
+    await openChanges(page)
+    const buttons = page.getByRole('button', { name: /^Comment on (removed )?line \d+$/ })
+    await expect(buttons.first()).toBeVisible()
+    const n = await buttons.count()
+    expect(n).toBeGreaterThanOrEqual(3)
+    for (let i = 0; i < n; i++) {
+      const b = buttons.nth(i)
+      const box = await targetBox(b)
+      expect(box.height).toBeGreaterThanOrEqual(44)
+      expect(box.width).toBeGreaterThanOrEqual(44)
+      expect(await b.evaluate((el) => getComputedStyle(el).opacity)).toBe('1')
+    }
+  })
+})
+
+test.describe('Changes tab comment gutter — desktop mouse', () => {
+  test.use({ viewport: { width: 1440, height: 900 } })
+
+  test('stays a dense 20px gutter for a hover-capable pointer', async ({ page }) => {
+    await openChanges(page)
+    const box = await targetBox(page.getByRole('button', { name: 'Comment on line 2' }))
+    expect(box.height).toBeLessThan(24)
+    expect(box.width).toBeLessThan(24)
   })
 })

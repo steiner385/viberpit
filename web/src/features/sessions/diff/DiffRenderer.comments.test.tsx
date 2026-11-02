@@ -109,7 +109,7 @@ describe('DiffRenderer comments: ranges', () => {
     const user = userEvent.setup()
     const onAdd = vi.fn()
     render(<Harness onAdd={onAdd} />)
-    await user.click((await gutter(2)).find((b) => b.closest('[data-kind="add"]'))!)
+    await user.click((await gutter(2))[0])
     await user.keyboard('{Shift>}')
     await user.click((await gutter(4))[0])
     await user.keyboard('{/Shift}')
@@ -143,7 +143,7 @@ describe('DiffRenderer comments: ranges', () => {
     await gutter(1)
     const oldTwo = cells('old').find((c) => c.textContent?.includes('two'))!
     const newThree = cells('new').find((c) => c.textContent?.includes('THREE'))!
-    await user.click(within(oldTwo).getByRole('button', { name: 'Comment on line 2' }))
+    await user.click(within(oldTwo).getByRole('button', { name: 'Comment on removed line 2' }))
     await user.keyboard('{Shift>}')
     await user.click(within(newThree).getByRole('button', { name: 'Comment on line 3' }))
     await user.keyboard('{/Shift}')
@@ -161,7 +161,7 @@ describe('DiffRenderer comments: sides', () => {
     render(<Harness onAdd={onAdd} />)
     await gutter(1)
     const delRow = document.querySelector<HTMLElement>('[data-diff-row][data-kind="del"]')!
-    await user.click(within(delRow).getByRole('button', { name: 'Comment on line 2' }))
+    await user.click(within(delRow).getByRole('button', { name: 'Comment on removed line 2' }))
     await user.type(await screen.findByRole('textbox', { name: /comment/i }), 'why{Control>}{Enter}{/Control}')
     expect(onAdd).toHaveBeenCalledWith({
       anchor: { path: 'src/app.ts', side: 'old', start: 2, end: 2 }, quote: ['two'], body: 'why',
@@ -175,7 +175,7 @@ describe('DiffRenderer comments: sides', () => {
     await gutter(1)
     const left = Array.from(document.querySelectorAll<HTMLElement>('[data-side="old"]'))
       .find((c) => c.textContent?.includes('twenty-three'))!
-    await user.click(within(left).getByRole('button', { name: 'Comment on line 21' }))
+    await user.click(within(left).getByRole('button', { name: 'Comment on removed line 21' }))
     await user.type(await screen.findByRole('textbox', { name: /comment/i }), 'ctx{Control>}{Enter}{/Control}')
     expect(onAdd).toHaveBeenCalledWith({
       anchor: { path: 'src/app.ts', side: 'old', start: 21, end: 21 }, quote: ['twenty-three'], body: 'ctx',
@@ -190,6 +190,60 @@ describe('DiffRenderer comments: placement', () => {
     }]
     render(<Harness view="split" initial={initial} />)
     expect(await screen.findAllByRole('article')).toHaveLength(1)
+  })
+})
+
+describe('DiffRenderer comments: gutter labels', () => {
+  it('split view names the side: new column "Comment on line N", old column "Comment on removed line N"', () => {
+    render(<Harness view="split" />)
+    const cells = (side: 'old' | 'new') => Array.from(document.querySelectorAll<HTMLElement>(`[data-side="${side}"]`))
+    const labels = (side: 'old' | 'new') => cells(side).flatMap((c) => within(c).queryAllByRole('button').map((b) => b.getAttribute('aria-label')))
+    expect(labels('new')).toContain('Comment on line 3')
+    expect(labels('new').every((l) => /^Comment on line \d+$/.test(l ?? ''))).toBe(true)
+    expect(labels('old')).toContain('Comment on removed line 2')
+    expect(labels('old').every((l) => /^Comment on removed line \d+$/.test(l ?? ''))).toBe(true)
+  })
+})
+
+describe('DiffRenderer comments: a refetch while the editor is open', () => {
+  it('keeps the editor and its text, and Save stores the snapshot quote', async () => {
+    const user = userEvent.setup()
+    const onAdd = vi.fn()
+    const { rerender } = render(<Harness onAdd={onAdd} />)
+    await user.click((await gutter(22))[0])
+    await user.type(await screen.findByRole('textbox', { name: /comment/i }), 'half typed')
+    // Refetch: the second hunk is gone and the first grew — line 22 no longer reads 'twenty-two'.
+    const merged: FileDiff = { ...FILE, hunks: [{ ...FILE.hunks[0], lines: [
+      ctx(1, 1, 'one'), add(2, 'TWO'), add(3, 'THREE'), ctx(3, 4, 'four'),
+    ] }] }
+    rerender(<Harness file={merged} onAdd={onAdd} />)
+    const box = await screen.findByRole('textbox', { name: /comment/i })
+    expect(box).toHaveValue('half typed')
+    // It moved to the top of the file, marked outdated, before the first row.
+    expect(box.closest('[data-comment-slot]')!.textContent).toMatch(/outdated/i)
+    await user.type(box, ' done')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onAdd).toHaveBeenCalledWith({
+      anchor: { path: 'src/app.ts', side: 'new', start: 22, end: 22 }, quote: ['twenty-two'], body: 'half typed done',
+    })
+  })
+
+  it('stays in place, text kept, when the refetch shifts hunks but the line still reads the same', async () => {
+    const user = userEvent.setup()
+    const onAdd = vi.fn()
+    const { rerender } = render(<Harness onAdd={onAdd} />)
+    await user.click((await gutter(3))[0])
+    await user.type(await screen.findByRole('textbox', { name: /comment/i }), 'keep me')
+    // A new hunk lands in front: hunk indices shift, line 3 is unchanged.
+    const shifted: FileDiff = { ...FILE, hunks: [
+      { oldStart: 0, oldLines: 0, newStart: 0, newLines: 0, header: '', lines: [] }, ...FILE.hunks,
+    ] }
+    rerender(<Harness file={shifted} onAdd={onAdd} />)
+    const box = await screen.findByRole('textbox', { name: /comment/i })
+    expect(box).toHaveValue('keep me')
+    expect(box.closest('[data-comment-slot]')!.textContent).not.toMatch(/outdated/i)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ quote: ['THREE'], body: 'keep me' }))
   })
 })
 
@@ -214,7 +268,6 @@ describe('DiffRenderer comments: stale anchors', () => {
 describe('DiffRenderer without decorations', () => {
   it('renders no gutter (inline transcript diffs)', () => {
     render(<DiffRenderer file={FILE} view="unified" />)
-    expect(document.querySelector('.group')).toBeNull()
     expect(screen.queryAllByRole('button', { name: /comment on line/i })).toHaveLength(0)
     expect(document.querySelector('[data-comment-gutter]')).toBeNull()
   })

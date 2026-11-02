@@ -10,6 +10,7 @@ import { ViewportProvider } from '@/shell/useViewport'
 import { stubMatchMedia, WIDTH_TIER_QUERIES } from '@/test/matchMedia'
 import { queryResult } from '@/test/reactQuery'
 import { storageKey } from '@/lib/storageKey'
+import type { PromptSendResult } from '@/ws/client'
 import type { LineComment } from '../review/reviewComments'
 import type { FileDiff, SessionDiff } from './types'
 
@@ -63,7 +64,9 @@ function seed(comments: LineComment[]) {
   sessionStorage.setItem(DRAFT_KEY, JSON.stringify(comments))
 }
 
-function renderTab(onSendReview = vi.fn()) {
+type Send = (text: string, attachmentIds: string[]) => PromptSendResult
+
+function renderTab(onSendReview = vi.fn<Send>(() => 'sent')) {
   stubMatchMedia(WIDTH_TIER_QUERIES.phone)
   const utils = render(
     <ViewportProvider kiosk={null}>
@@ -76,6 +79,7 @@ function renderTab(onSendReview = vi.fn()) {
 beforeEach(() => {
   sessionStorage.clear()
   vi.mocked(toast.success).mockReset()
+  vi.mocked(toast.error).mockReset()
   vi.mocked(useSessionDiff).mockReset()
   serve(DIFF)
   Element.prototype.scrollIntoView = vi.fn()
@@ -113,17 +117,38 @@ describe('ChangesTab review bar', () => {
     expect(toast.success).toHaveBeenCalledWith('Sent 2 comments')
   })
 
+  it('a held (buffered) send also clears the draft, and says it is held', async () => {
+    const user = userEvent.setup()
+    seed(SEEDED)
+    renderTab(vi.fn<Send>(() => 'buffered'))
+    await user.click(screen.getByRole('button', { name: 'Send to Claude' }))
+    expect(sessionStorage.getItem(DRAFT_KEY)).toBeNull()
+    expect(toast.success).toHaveBeenCalledWith('Queued 2 comments — they send when the connection is back')
+  })
+
+  it('a failed send keeps the draft and toasts an error', async () => {
+    const user = userEvent.setup()
+    seed(SEEDED)
+    renderTab(vi.fn<Send>(() => { throw new Error('socket gone') }))
+    await user.click(screen.getByRole('button', { name: 'Send to Claude' }))
+    expect(screen.getByRole('region', { name: 'Review comments' })).toHaveTextContent('2 comments')
+    expect(JSON.parse(sessionStorage.getItem(DRAFT_KEY) ?? '[]')).toHaveLength(2)
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('Couldn’t send the review — your comments are kept.')
+  })
+
   it('Discard all asks first', async () => {
     const user = userEvent.setup()
     seed(SEEDED)
     renderTab()
     await user.click(screen.getByRole('button', { name: 'Discard all' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('Discard 2 comments?')
-    await user.click(screen.getByRole('button', { name: 'Keep' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('Discard all comments?')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('region', { name: 'Review comments' })).toHaveTextContent('2 comments')
     expect(sessionStorage.getItem(DRAFT_KEY)).not.toBeNull()
     await user.click(screen.getByRole('button', { name: 'Discard all' }))
-    await user.click(screen.getByRole('button', { name: 'Discard' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard' }))
     expect(screen.queryByRole('region', { name: 'Review comments' })).not.toBeInTheDocument()
     expect(sessionStorage.getItem(DRAFT_KEY)).toBeNull()
   })
@@ -143,7 +168,7 @@ describe('ChangesTab review bar', () => {
     const card = await screen.findByRole('article', { name: /comment on lines? 2/i })
     expect(card).toHaveTextContent(/outdated/i)
     await user.click(screen.getByRole('button', { name: 'Send to Claude' }))
-    expect(onSendReview.mock.calls[0][0]).toContain('1. `src/app.ts` line 2–3:\n   > B\n   > C\n   rename')
+    expect(onSendReview.mock.calls[0][0]).toContain('1. `src/app.ts` line 2–3 (outdated):\n   > B\n   > C\n   rename')
   })
 
   it('a comment on a file no longer in the diff is still shown and sent', async () => {

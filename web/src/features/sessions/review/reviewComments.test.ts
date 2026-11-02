@@ -30,6 +30,25 @@ describe('sortComments', () => {
 })
 
 describe('composeReviewPrompt', () => {
+  it('marks a comment whose anchor no longer matches the diff as (outdated)', () => {
+    const fresh = c('a.ts', 'new', 2, 2, ['x'], 'ok')
+    const stale = c('a.ts', 'old', 4, 5, ['y', 'z'], 'moved')
+    expect(composeReviewPrompt([fresh, stale], new Set([stale.id]))).toBe([
+      'Review comments on the current changes (2):',
+      '',
+      '1. `a.ts` line 2:',
+      '   > x',
+      '   ok',
+      '',
+      '2. `a.ts` line 4–5 (removed) (outdated):',
+      '   > y',
+      '   > z',
+      '   moved',
+      '',
+      'Address each comment, then summarize what you changed.',
+    ].join('\n'))
+  })
+
   it('renders the exact text', () => {
     const out = composeReviewPrompt([
       c('b.ts', 'new', 5, 5, ['const b = 1'], '  rename this  '),

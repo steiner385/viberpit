@@ -1,17 +1,21 @@
-import { useMemo, useState, type ComponentProps, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { DiffRenderer, type DiffDecorations } from '../diff/DiffRenderer'
-import type { DiffHunk, DiffLine } from '../diff/types'
-import CommentEditor, { CommentCard } from './CommentEditor'
-import LineCommentGutter from './LineCommentGutter'
+import type { DiffHunk } from '../diff/types'
+import CommentEditor, { CommentCard, StaleAnchor } from './CommentEditor'
+import { anchorMatches, lineKeys, lineNo, onSide, quoteOf, type Side } from './diffAnchors'
+import LineCommentGutter, { GutterSpacer } from './LineCommentGutter'
 import type { CommentAnchor, LineComment } from './reviewComments'
 
-type Side = CommentAnchor['side']
-
-/** The range being commented: one side of one hunk, `from` the first click. */
-type Selection = { side: Side; hunk: number; from: number; start: number; end: number }
+/**
+ * The range being commented, snapshotted when clicked: its side, lines and
+ * quoted text. Save uses only this — never the (possibly refetched) diff — so a
+ * refetch while the editor is open can neither crash Save nor change the quote.
+ * `hunk` is the hunk index at click time, used only to scope a shift-click.
+ */
+type Selection = { side: Side; hunk: number; from: number; start: number; end: number; quote: string[] }
 
 interface Props extends Omit<ComponentProps<typeof DiffRenderer>, 'decorations'> {
-  /** This file's comments (anchor.path === file.path). */
+  /** This file's comments (anchor.path === file.path). Keep the array stable while it is unchanged. */
   comments: readonly LineComment[]
   onAddComment: (anchor: CommentAnchor, quote: string[], body: string) => void
   onEditComment: (id: string, body: string) => void
@@ -24,8 +28,10 @@ interface Props extends Omit<ComponentProps<typeof DiffRenderer>, 'decorations'>
  * Every numbered line gets a gutter button. A click starts a range; a shift-click
  * on the same side of the same hunk extends it, anywhere else starts a new one.
  * The editor opens under the range's last line. A saved comment sits under its
- * last line while that line still reads as quoted; one whose lines changed, or
+ * last line while its lines still read as quoted; one whose lines changed, or
  * that is past the render cap, goes to the top of the file (changed = "Outdated").
+ * An open editor whose lines changed under a refetch moves there too, keeping
+ * its text.
  *
  * Side: in split view the column (left = `old`, right = `new`); in unified the
  * line's own — `old` for a removed line, `new` for an added or context line.
@@ -34,44 +40,77 @@ interface Props extends Omit<ComponentProps<typeof DiffRenderer>, 'decorations'>
  * renderer and never load it.
  */
 export default function CommentableDiff({ comments, onAddComment, onEditComment, onDeleteComment, ...diff }: Props) {
-  const { file } = diff
+  const { file, maxLines } = diff
   const [sel, setSel] = useState<Selection | null>(null)
+  // The editor's text, kept per keystroke without re-rendering: the editor remounts
+  // when its row moves (a refetch), and a shift-extend keeps what was typed. Read
+  // only by the editor's lazy initial state, never during this render.
+  const typed = useRef('')
 
-  const card = (c: LineComment, stale = false) => (
-    <CommentCard key={c.id} comment={c} stale={stale}
-                 onEdit={(b) => onEditComment(c.id, b)} onDelete={() => onDeleteComment(c.id)} />
-  )
+  const shown = useMemo(() => (maxLines == null ? null : shownKeys(file.hunks, maxLines)), [file, maxLines])
 
   // Comments a row can hold, by `side:line`; the rest go to the top.
   const { placed, top } = useMemo(() => {
     const placed = new Map<string, LineComment[]>()
     const top: Array<{ c: LineComment; stale: boolean }> = []
-    const shown = diff.maxLines == null ? null : shownKeys(file.hunks, diff.maxLines)
     for (const c of comments) {
       const key = `${c.anchor.side}:${c.anchor.end}`
-      const fresh = file.hunks.some((h) => matchesQuote(h, c))
+      const fresh = anchorMatches(file.hunks, c.anchor, c.quote)
       if (fresh && (shown === null || shown.has(key))) placed.set(key, [...(placed.get(key) ?? []), c])
       else top.push({ c, stale: !fresh })
     }
     return { placed, top }
-  }, [comments, file, diff.maxLines])
+  }, [comments, file, shown])
 
   // Which hunk a line is in — the renderer's capped hunks reuse these line objects.
   const hunkOf = useMemo(() => new Map(file.hunks.flatMap((h, i) => h.lines.map((l) => [l, i] as const))), [file])
 
-  const decorations: DiffDecorations = {
+  // The open editor's anchor, from the snapshot; it stays in its row only while that row still reads as quoted.
+  const editorAnchor = useMemo<CommentAnchor | null>(
+    () => sel && { path: file.path, side: sel.side, start: sel.start, end: sel.end }, [sel, file.path])
+  const editorInPlace = useMemo(
+    () => sel !== null && editorAnchor !== null && anchorMatches(file.hunks, editorAnchor, sel.quote)
+      && (shown === null || shown.has(`${sel.side}:${sel.end}`)),
+    [sel, editorAnchor, file, shown])
+
+  const card = useCallback((c: LineComment, stale = false) => (
+    <CommentCard key={c.id} comment={c} stale={stale}
+                 onEdit={(b) => onEditComment(c.id, b)} onDelete={() => onDeleteComment(c.id)} />
+  ), [onEditComment, onDeleteComment])
+
+  const editor = useMemo(() => sel && editorAnchor && (
+    <CommentEditor
+      key="editor"
+      initial={() => typed.current}
+      onDraftChange={(t) => { typed.current = t }}
+      onCancel={() => setSel(null)}
+      onSave={(body) => {
+        onAddComment(editorAnchor, sel.quote, body)
+        setSel(null)
+      }}
+    />
+  ), [sel, editorAnchor, onAddComment])
+
+  const decorations = useMemo<DiffDecorations>(() => ({
     gutter: (line, column) => {
       const side = column ?? (line?.kind === 'del' ? 'old' : 'new')
       const n = line && onSide(line, side) ? lineNo(line, side) : null
-      if (!line || n == null) return <span className="w-5 shrink-0" />
+      if (!line || n == null) return <GutterSpacer />
       const hunk = hunkOf.get(line) ?? -1
       return (
         <LineCommentGutter
           line={n}
+          side={side}
           selected={sel?.side === side && sel.hunk === hunk && n >= sel.start && n <= sel.end}
-          onClick={(e) => setSel((p) => (e.shiftKey && p && p.side === side && p.hunk === hunk
-            ? { ...p, start: Math.min(p.from, n), end: Math.max(p.from, n) }
-            : { side, hunk, from: n, start: n, end: n }))}
+          onClick={(e) => {
+            const extend = e.shiftKey && sel && sel.side === side && sel.hunk === hunk
+            const [start, end] = extend ? [Math.min(sel.from, n), Math.max(sel.from, n)] : [n, n]
+            setSel({
+              side, hunk, from: extend ? sel.from : n, start, end,
+              quote: quoteOf(file.hunks[hunk], side, start, end),
+            })
+            if (!extend) typed.current = ''
+          }}
         />
       )
     },
@@ -79,29 +118,22 @@ export default function CommentableDiff({ comments, onAddComment, onEditComment,
       // A split context row passes one line as both cells: dedupe its keys.
       const keys = [...new Set(cells.flatMap((l) => (l ? lineKeys(l) : [])))]
       const saved = keys.flatMap((k) => placed.get(k) ?? [])
-      const editing = sel !== null && keys.includes(`${sel.side}:${sel.end}`)
+      const editing = sel !== null && editorInPlace && keys.includes(`${sel.side}:${sel.end}`)
       if (saved.length === 0 && !editing) return null
-      return (
-        <Slot>
-          {saved.map((c) => card(c))}
-          {editing && (
-            <CommentEditor
-              onCancel={() => setSel(null)}
-              onSave={(body) => {
-                const { side, start, end, hunk } = sel
-                onAddComment({ path: file.path, side, start, end }, quoteOf(file.hunks[hunk], side, start, end), body)
-                setSel(null)
-              }}
-            />
-          )}
-        </Slot>
-      )
+      return <Slot>{saved.map((c) => card(c))}{editing && editor}</Slot>
     },
-  }
+  }), [sel, placed, hunkOf, editorInPlace, file, card, editor])
+
+  const strayEditor = sel && editorAnchor && !editorInPlace && (
+    <div className="rounded-md border border-edge bg-surface p-2 text-sm text-ink">
+      <StaleAnchor anchor={editorAnchor} quote={sel.quote} stale showPath={false} />
+      {editor}
+    </div>
+  )
 
   return (
     <>
-      {top.length > 0 && <Slot>{top.map(({ c, stale }) => card(c, stale))}</Slot>}
+      {(top.length > 0 || strayEditor) && <Slot>{top.map(({ c, stale }) => card(c, stale))}{strayEditor}</Slot>}
       <DiffRenderer {...diff} decorations={decorations} />
     </>
   )
@@ -116,38 +148,7 @@ function Slot({ children }: { children: ReactNode }) {
   return <div data-comment-slot className="sticky left-0 w-full max-w-[min(100%,40rem)] space-y-1 px-2 py-1">{children}</div>
 }
 
-/** Whether `line` exists on `side`: the new side has context + adds, the old side context + dels. */
-function onSide(line: DiffLine, side: Side): boolean {
-  return side === 'old' ? line.kind !== 'add' : line.kind !== 'del'
-}
-
-function lineNo(line: DiffLine, side: Side): number | null {
-  return side === 'old' ? line.oldNo : line.newNo
-}
-
-/** The `side:number` keys a line answers to — both sides for a context line. */
-function lineKeys(line: DiffLine): string[] {
-  return (['old', 'new'] as const).filter((s) => onSide(line, s)).map((s) => `${s}:${lineNo(line, s)}`)
-}
-
 /** The keys of the first `max` lines — what the renderer draws under its cap. */
 function shownKeys(hunks: DiffHunk[], max: number): Set<string> {
   return new Set(hunks.flatMap((h) => h.lines).slice(0, max).flatMap(lineKeys))
-}
-
-/** The text of `side`'s lines `start..end` in one hunk — a comment's quote. */
-function quoteOf(hunk: DiffHunk, side: Side, start: number, end: number): string[] {
-  return hunk.lines
-    .filter((l) => {
-      const n = onSide(l, side) ? lineNo(l, side) : null
-      return n != null && n >= start && n <= end
-    })
-    .map((l) => l.text)
-}
-
-/** A comment still anchors when its lines exist in this hunk with the text it quoted. */
-function matchesQuote(hunk: DiffHunk, c: LineComment): boolean {
-  const { side, start, end } = c.anchor
-  const now = quoteOf(hunk, side, start, end)
-  return now.length === end - start + 1 && now.length === c.quote.length && now.every((t, k) => t === c.quote[k])
 }

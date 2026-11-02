@@ -38,11 +38,12 @@ function quoteLines(quote: readonly string[]): string[] {
   return shown
 }
 
-export function composeReviewPrompt(comments: readonly LineComment[]): string {
+/** `stale` holds the ids of comments whose anchor no longer matches the current diff — marked ` (outdated)`. */
+export function composeReviewPrompt(comments: readonly LineComment[], stale: ReadonlySet<string> = new Set()): string {
   const blocks = sortComments(comments).map((c, i) => {
     const { path, side, start, end } = c.anchor
     const range = end > start ? `${start}–${end}` : `${start}`
-    const head = `${i + 1}. \`${path}\` line ${range}${side === 'old' ? ' (removed)' : ''}:`
+    const head = `${i + 1}. \`${path}\` line ${range}${side === 'old' ? ' (removed)' : ''}${stale.has(c.id) ? ' (outdated)' : ''}:`
     return [head, ...quoteLines(c.quote), `   ${c.body.trim()}`].join('\n')
   })
   return [
