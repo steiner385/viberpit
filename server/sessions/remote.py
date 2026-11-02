@@ -21,6 +21,7 @@ from server.sessions.engine import (
     parse_agent_engine,
 )
 from server.sessions.orchestrator import ModelBlockedError
+from server.sessions import worktree_files
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -55,6 +56,11 @@ SPAWN_RPC_TIMEOUT = 90.0
 # at 30s by viberpit.worktree_diff, so a slow worktree can outlast the 30s client
 # default. It is a read: timing out only costs the user a retry.
 DIFF_RPC_TIMEOUT = 90.0
+
+# The D-7 file list / file read: a worktree probe plus one streamed, capped
+# ``git ls-files`` (each bounded at 30s by viberpit.worktree_diff), or one capped read.
+# Same headroom as the diff; a timeout only costs a retry.
+FILES_RPC_TIMEOUT = 90.0
 
 # Materialization apply (#992): its own budget because it is not spawn-shaped at all.
 # The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
@@ -873,6 +879,34 @@ class RemoteOrchestrator:
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
+            raise
+
+    async def session_files(self, session_id, *, q: str = "", limit: int = 50) -> dict:
+        """Proxy session_files to the daemon that owns the worktree; an unknown session
+        is re-raised as the orchestrator's KeyError."""
+        try:
+            return await self._client.call("session_files", timeout=FILES_RPC_TIMEOUT,
+                                           session_id=session_id, q=q, limit=limit)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
+    async def session_file(self, session_id, *, path: str) -> dict:
+        """Proxy session_file to the daemon that owns the worktree. An unknown session is
+        re-raised as KeyError and a refused read as FileAccessError with the code from
+        the envelope's ``data`` — only the codes the edge maps; anything else stays a
+        DaemonError rather than being invented into a 400/404."""
+        try:
+            return await self._client.call("session_file", timeout=FILES_RPC_TIMEOUT,
+                                           session_id=session_id, path=path)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            code = (exc.data or {}).get("code")
+            if exc.err_type == "FileAccessError" and code in (
+                    worktree_files.PATH_OUTSIDE_WORKTREE, worktree_files.FILE_NOT_FOUND):
+                raise worktree_files.FileAccessError(code) from exc
             raise
 
     async def mcp_reconnect(self, session_id, server: str):

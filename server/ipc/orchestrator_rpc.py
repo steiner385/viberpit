@@ -316,6 +316,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         # D-4 Changes pane: a camelCase dict of JSON scalars, computed on the daemon
         # that owns the session's worktree.
         "session_diff",
+        # D-7 @-files / Files tab: {files, truncated} and {path, text, binary, truncated,
+        # size}, read on the owning daemon. A refused read raises FileAccessError, whose
+        # error_data carries its code across the envelope.
+        "session_files", "session_file",
         "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",

@@ -101,6 +101,7 @@ from server.sessions.liveness import heartbeat_interval_s
 from server.sessions import primary_lease
 from server.sessions import session_lease
 from server.sessions import push as push_mod
+from server.sessions import worktree_files
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.claude_driver import (
@@ -19915,6 +19916,23 @@ class SessionOrchestrator:
         rec = self.record(session_id)
         return await asyncio.to_thread(worktree_diff.session_diff, rec.cwd or "",
                                        summary=summary, ignore_whitespace=ignore_whitespace)
+
+    async def session_files(self, session_id: str, *, q: str = "",
+                            limit: int = worktree_files.DEFAULT_LIST_LIMIT) -> dict:
+        """``{files, truncated}`` of the session's worktree, fuzzy-filtered by ``q``
+        (D-7 @-files and Files tab). ``KeyError`` for an unknown session; no cwd, or a
+        cwd that is not a git work tree, lists nothing. Runs off the event loop."""
+        rec = self.record(session_id)
+        return await asyncio.to_thread(worktree_files.list_files, rec.cwd or "",
+                                       q=q, limit=limit)
+
+    async def session_file(self, session_id: str, *, path: str) -> dict:
+        """``{path, text, binary, truncated, size}`` of one file in the session's
+        worktree (D-7 Files tab). ``KeyError`` for an unknown session;
+        ``FileAccessError`` (``PATH_OUTSIDE_WORKTREE`` / ``FILE_NOT_FOUND``) for a
+        refused read. Runs off the event loop."""
+        rec = self.record(session_id)
+        return await asyncio.to_thread(worktree_files.read_file, rec.cwd or "", path)
 
     async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
         """Reconnect one MCP server in a live session. ``LookupError`` when not live,

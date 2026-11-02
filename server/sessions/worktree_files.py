@@ -52,11 +52,16 @@ _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 
 class FileAccessError(Exception):
     """A file read refused: ``code`` is ``PATH_OUTSIDE_WORKTREE`` (400) or
-    ``FILE_NOT_FOUND`` (404)."""
+    ``FILE_NOT_FOUND`` (404).
+
+    ``error_data`` rides the daemon's RPC error envelope, so a remote edge rebuilds it
+    with its code (``RemoteOrchestrator.session_file``), and marks it an expected
+    refusal the daemon logs at INFO rather than a handler defect."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+        self.error_data = {"code": code}
 
 
 # ------------------------------------------------------------------ listing

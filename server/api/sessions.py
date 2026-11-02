@@ -17,7 +17,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Literal, TYPE_CHECKING
+from typing import Any, Literal, NoReturn, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -47,6 +47,7 @@ from server.sessions.orchestrator import (
     ModelBlockedError,
 )
 from server.sessions import session_actions
+from server.sessions import worktree_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
@@ -2015,14 +2016,81 @@ async def session_diff(
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
-        if exc.err_type != "UnknownMethod":
-            raise
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "daemon_outdated",
-                    "message": "The session daemon has not been updated to compute "
-                               "session diffs yet; try again after the next rollout."},
-        ) from exc
+        _raise_worktree_read_error(exc, "compute session diffs")
+
+
+def _raise_worktree_read_error(exc: DaemonError, what: str) -> NoReturn:
+    """A worktree read (diff, file list, file read) failed on the daemon. One that
+    predates the RPC answers UnknownMethod: an explicit 409 ``daemon_outdated`` (a 4xx
+    the UI neither retries nor surfaces as a crash) instead of a bare
+    ``{"detail": "<method>"}`` from the app-level DaemonError handler. Anything else
+    re-raises to that handler."""
+    if exc.err_type != "UnknownMethod":
+        raise exc
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"code": "daemon_outdated",
+                "message": f"The session daemon has not been updated to {what} yet; "
+                           "try again after the next rollout."},
+    ) from exc
+
+
+# Longest ``q`` the file list ranks: a fuzzy subsequence match is O(len(q) * paths), so
+# an unbounded query is a cheap way to burn daemon CPU (D-7).
+MAX_FILES_QUERY_CHARS = 256
+
+
+@router.get("/{session_id}/files")
+async def session_files(
+    session_id: str,
+    request: Request,
+    q: str = "",
+    limit: int = Query(worktree_files.DEFAULT_LIST_LIMIT, ge=1,
+                       le=worktree_files.MAX_LIST_LIMIT),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """``{files: [{path}], truncated}`` in the session's worktree (D-7 @-files menu and
+    Files tab), computed on the daemon that owns it. ``q`` is a fuzzy filter (cut to
+    ``MAX_FILES_QUERY_CHARS``); empty lists the most recently modified first. No cwd,
+    or a non-git cwd, is 200 with no files; unknown session 404; an old daemon 409
+    ``daemon_outdated``."""
+    try:
+        return await _get_orchestrator(request).session_files(
+            session_id, q=q[:MAX_FILES_QUERY_CHARS], limit=limit)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_worktree_read_error(exc, "list session files")
+
+
+_FILE_ACCESS_STATUS = {
+    worktree_files.PATH_OUTSIDE_WORKTREE: status.HTTP_400_BAD_REQUEST,
+    worktree_files.FILE_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+}
+
+
+@router.get("/{session_id}/files/content")
+async def session_file_content(
+    session_id: str,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """``{path, text, binary, truncated, size}`` of one file in the session's worktree
+    (D-7 Files tab), read on the daemon that owns it. ``path`` is a query parameter, not
+    a route segment, so slashes need no special routing. A path resolving outside the
+    worktree or into ``.git`` is 400 ``PATH_OUTSIDE_WORKTREE``; a missing file (or no
+    git cwd) 404 ``FILE_NOT_FOUND``; unknown session 404; an old daemon 409
+    ``daemon_outdated``."""
+    try:
+        return await _get_orchestrator(request).session_file(session_id, path=path)
+    except worktree_files.FileAccessError as exc:
+        raise HTTPException(status_code=_FILE_ACCESS_STATUS[exc.code],
+                            detail={"code": exc.code}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_worktree_read_error(exc, "read session files")
 
 
 @router.post("/{session_id}/mcp/{server}/reconnect")
