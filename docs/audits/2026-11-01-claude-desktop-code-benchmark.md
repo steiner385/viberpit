@@ -60,17 +60,17 @@ Full inventories, with an evidence tag on every item:
 | Dimension | ViberPit score | Parity |
 |---|---:|---:|
 | 1 Shell & IA | 8.5 / 16 | 53% |
-| 2 Transcript | 18.5 / 21 | 88% |
-| 3 Composer | 23.5 / 29 | 81% |
+| 2 Transcript | 19.5 / 21 | 93% |
+| 3 Composer | 26.5 / 29 | 91% |
 | 4 Commands & config | 9 / 15 | 60% |
 | 5 Settings | 3.5 / 8 | 44% |
 | 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 13.5 / 25 | 54% |
-| 8 Code review & dev | 7 / 12 | 58% |
+| 8 Code review & dev | 8 / 12 | 67% |
 | 9 Shortcuts & a11y | 6 / 8 | 75% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **115.5 / 161** | **72%** |
-| **Target completion** (excl. rejected rows) | **113 / 151** | **75%** |
+| **Overall (weighted)** | **120.5 / 161** | **75%** |
+| **Target completion** (excl. rejected rows) | **118 / 151** | **78%** |
 
 ### 1 Shell & IA
 
@@ -98,7 +98,7 @@ Full inventories, with an evidence tag on every item:
 | Subagent reports + drill-down | 2 | ✅ | VP has dedicated sub-agent page |
 | Compaction marker | 1 | ✅ |  |
 | Per-message copy as Markdown | 2 | ✅ |  |
-| Clickable file paths (open / attach as context) | 2 | ◐ | click-to-copy only |
+| Clickable file paths (open / attach as context) | 2 | ✅ |  |
 | In-transcript search | 1 | ❌ |  |
 | Post-turn summary card (completed / ready for review) | 1 | ◐ | 'Likely complete' panel |
 
@@ -110,7 +110,7 @@ Full inventories, with an evidence tag on every item:
 | Stop button + Esc stops the turn | 3 | ✅ |  |
 | Queue while busy + Send now (steer) | 3 | ✅ | no reorder of queue |
 | Attachments: paste / drag / picker | 2 | ✅ |  |
-| @-file mentions | 3 | ❌ | @ matches session titles, assistant only |
+| @-file mentions | 3 | ✅ |  |
 | Slash-command palette | 3 | ✅ | catalog pushed per session |
 | Model picker in prompt row | 2 | ✅ |  |
 | Effort picker in session | 2 | ◐ | Codex only; Claude effort pending CLI verification |
@@ -184,7 +184,7 @@ Full inventories, with an evidence tag on every item:
 |---|:-:|:-:|---|
 | Changes pane: aggregate diff, unified/split, line comments | 3 | ✅ |  |
 | Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted; MultiEdit edits[] not rendered |
-| Files pane (view / edit) | 1 | ❌ |  |
+| Files pane (view / edit) | 1 | ✅ | read-only by design (D1) |
 | PR viewer: checks, threads, merge, auto-merge | 2 | ◐ | Pipeline page + PR pills + Fix |
 | Preview browser with dev-server detection | 2 | ◐ | VNC Browser tab, no dev-server detect |
 | Integrated terminal | 2 | ❌ |  · *rejected for target* |
@@ -212,44 +212,41 @@ Full inventories, with an evidence tag on every item:
 
 | # | Gap | Dimension | Points lost |
 |---|---|---|---:|
-| 1 | @-file mentions | 3 Composer | 3 |
-| 2 | Fork session (from here) | 7 Lifecycle & branching | 3 |
-| 3 | Rewind to message (with file restore, undo) | 7 Lifecycle & branching | 3 |
-| 4 | ⌘K palette over sessions + branches | 1 Shell & IA | 2 |
-| 5 | Split view / tiled panes | 1 Shell & IA | 2 |
-| 6 | CLAUDE.md / memory-file editor | 4 Commands & config | 2 |
-| 7 | Edit & resend a previous message | 7 Lifecycle & branching | 2 |
-| 8 | Integrated terminal | 8 Code review & dev | 2 |
-| 9 | Group/sort by project, folder, branch, status, env, date, PR | 1 Shell & IA | 1 |
-| 10 | Pin / star sessions | 1 Shell & IA | 1 |
-| 11 | Read / unread marking | 1 Shell & IA | 1 |
-| 12 | Clickable file paths (open / attach as context) | 2 Transcript | 1 |
-| 13 | In-transcript search | 2 Transcript | 1 |
-| 14 | Effort picker in session | 3 Composer | 1 |
-| 15 | Fast-mode toggle | 3 Composer | 1 |
-| 16 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
-| 17 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
-| 18 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
-| 19 | Output styles | 4 Commands & config | 1 |
-| 20 | Worktree location / policy | 5 Settings | 1 |
-| 21 | Presets / environments selectable at new session | 5 Settings | 1 |
-| 22 | Sandbox settings | 5 Settings | 1 |
-| 23 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
-| 24 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 25 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
-| 26 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 27 | Files pane (view / edit) | 8 Code review & dev | 1 |
-| 28 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 29 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 30 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
-| 31 | Jump between prompts | 9 Shortcuts & a11y | 1 |
-| 32 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 33 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
-| 34 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 35 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
-| 36 | Notification levels per event type | 5 Settings | 0.5 |
-| 37 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 38 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 1 | Fork session (from here) | 7 Lifecycle & branching | 3 |
+| 2 | Rewind to message (with file restore, undo) | 7 Lifecycle & branching | 3 |
+| 3 | ⌘K palette over sessions + branches | 1 Shell & IA | 2 |
+| 4 | Split view / tiled panes | 1 Shell & IA | 2 |
+| 5 | CLAUDE.md / memory-file editor | 4 Commands & config | 2 |
+| 6 | Edit & resend a previous message | 7 Lifecycle & branching | 2 |
+| 7 | Integrated terminal | 8 Code review & dev | 2 |
+| 8 | Group/sort by project, folder, branch, status, env, date, PR | 1 Shell & IA | 1 |
+| 9 | Pin / star sessions | 1 Shell & IA | 1 |
+| 10 | Read / unread marking | 1 Shell & IA | 1 |
+| 11 | In-transcript search | 2 Transcript | 1 |
+| 12 | Effort picker in session | 3 Composer | 1 |
+| 13 | Fast-mode toggle | 3 Composer | 1 |
+| 14 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
+| 15 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
+| 16 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
+| 17 | Output styles | 4 Commands & config | 1 |
+| 18 | Worktree location / policy | 5 Settings | 1 |
+| 19 | Presets / environments selectable at new session | 5 Settings | 1 |
+| 20 | Sandbox settings | 5 Settings | 1 |
+| 21 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
+| 22 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
+| 23 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
+| 24 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
+| 25 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
+| 26 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 27 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
+| 28 | Jump between prompts | 9 Shortcuts & a11y | 1 |
+| 29 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 30 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
+| 31 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 32 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
+| 33 | Notification levels per event type | 5 Settings | 0.5 |
+| 34 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 35 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

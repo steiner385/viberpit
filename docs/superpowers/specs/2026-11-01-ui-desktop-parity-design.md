@@ -187,8 +187,8 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 
 | Seam | Needed by |
 |---|---|
-| `GET /sessions/{id}/files?q=` (worktree file list, per host via the fleet router) | `@` files, Files tab, palette |
-| `GET /sessions/{id}/files/{path}` (read-only content, with a size cap) | Files tab, memory-file viewer |
+| `GET /sessions/{id}/files?q=` (worktree file list, per host via the fleet router) — **shipped (D-7)** | `@` files, Files tab, palette |
+| `GET /sessions/{id}/files/{path}` (read-only content, with a size cap) — **shipped (D-7)** as `GET /sessions/{id}/files/content?path=` | Files tab, memory-file viewer |
 | `GET /sessions/{id}/diff` (aggregate worktree diff vs base, structured hunks) | Changes tab, chip, rail, inline diffs |
 | `POST /sessions/{id}/review-comments` (batch → one prompt) | not needed — client-composed prompt (D-5) |
 | `POST /sessions/{id}/fork` `{at_message_id}` | Fork |

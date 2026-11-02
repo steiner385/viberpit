@@ -154,6 +154,25 @@ can still run a driver, and global-scope drivers (e.g. git-lfs) are trusted; the
 boundary (#3217) now keeps auto-approved writes out of `.git` and other protected config, though
 shell-capable modes (full-auto, bypass, an approved Bash) still have same-user access by design.
 
+**Files tab, `@` mentions and clickable paths** — a read-only view of the session's worktree, and the
+ways into it from the composer and the transcript.
+- **Files tab:** search, line numbers, lazily loaded syntax highlighting, and virtualised large files.
+  Binary and truncated files show a notice. `?view=files&file=<path>&line=<n>` jumps to a line. It is
+  read-only by design; edits go through the agent.
+- **`@` mentions:** typing `@` in the composer opens a menu with **Files** first (worktree files,
+  fuzzy-ranked on the session's host, debounced) and **Sessions** second. Picking a file inserts `@path`,
+  or `@"path"` when the path contains spaces; the CLI resolves it. The menu also works inside
+  slash-command arguments (for example `/review @src/a.ts`). With no worktree it shows Sessions only.
+  Enter never sends while the menu is open.
+- **Clickable paths:** file paths in the transcript (a `/` or a known file extension, with optional
+  `:line`) open the Files tab at that line. A small menu offers **Copy path** and **Attach as @**.
+  Identifiers, versions, `host:port`, Windows paths and paths outside the worktree stay copy-only, as do
+  the archived reader, sub-agent page and assistant.
+- **Server:** `GET /api/sessions/{id}/files?q=&limit=` and `GET /api/sessions/{id}/files/content?path=`
+  are computed on the session's host. Reads are capped at 512 KiB, refuse `.git` and anything outside the
+  worktree, and are opened without following symlinks. An unknown session is an expected refusal, logged
+  at INFO, not filed as an auto-error.
+
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a
 model tier and a refined prompt, shown as the "Refined:" chip with Accept / Discard.
