@@ -15,6 +15,7 @@ import {
   type Shortcut,
   type ShortcutContext,
 } from './shortcuts'
+import { SESSION_COMPOSER_ATTR } from '@/lib/detachKeyGuard'
 
 function ev(over: Partial<KeyboardLike>): KeyboardLike {
   return { key: '', code: '', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...over }
@@ -594,9 +595,18 @@ describe('matchShortcut — the shell scope', () => {
     const busy = ctx({ sessionOpen: true, sessionBusy: true })
     expect(shellRow(ev({ key: 'Escape' }), busy)).toBe('insession.stop')
     expect(shellRow(ev({ key: 'ArrowLeft' }), busy)).toBe('insession.detach')
-    // Desktop stops regardless of the draft (the draft is kept).
-    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: true })))
+    // Desktop stops regardless of the session composer's draft (the draft is kept)…
+    const composer = document.createElement('textarea')
+    composer.setAttribute(SESSION_COMPOSER_ATTR, '')
+    expect(shellRow(ev({ key: 'Escape' }),
+      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: true, active: composer })))
       .toBe('insession.stop')
+    // …but any OTHER text entry that claims Esc keeps it: no stop, no detach.
+    const search = document.createElement('input')
+    search.type = 'search'
+    expect(shellRow(ev({ key: 'Escape' }),
+      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: true, active: search })))
+      .toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, hasOpenAction: true })))
       .toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, overlayOpen: true })))

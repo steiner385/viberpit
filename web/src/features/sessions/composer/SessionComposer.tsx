@@ -64,6 +64,8 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
         sessionId={rt.sessionId}
         externalDraft={externalDraft}
         mentionSource={mentionSource}
+        // The composer with session controls IS the session's; the assistant drawer hides them.
+        sessionComposer={!hideSessionControls}
       />
       {!hideSessionControls && <SessionPromptRow rt={rt} menuRef={promptRowMenus} />}
     </>

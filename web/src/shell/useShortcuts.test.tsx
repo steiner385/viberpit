@@ -539,6 +539,18 @@ describe('Esc stops a running turn; ← always detaches', () => {
     expect(app.path()).toBe('/sessions/s1')
   })
 
+  it('busy + the list search focused with text: Esc is the field\'s — no interrupt, no detach', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    await user.type(search, 'abc')
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).not.toHaveBeenCalled()
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
   it('busy + a composer draft: Esc interrupts regardless, and the draft is kept', async () => {
     const user = userEvent.setup()
     const app = await renderSession()

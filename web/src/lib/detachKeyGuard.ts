@@ -77,6 +77,19 @@ export function isFormControl(el: Element | null): boolean {
   return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'
 }
 
+/**
+ * Marks the open SESSION's composer textarea (not the assistant drawer's, which
+ * shares the `Message` label). Esc-stops-the-turn fires through this one field's
+ * draft — Desktop stops regardless of what is typed — and yields to every other
+ * text entry that claims Esc (list search, rename, …).
+ */
+export const SESSION_COMPOSER_ATTR = 'data-session-composer'
+
+/** True ⇒ `el` is the open session's composer textarea. */
+export function isSessionComposer(el: Element | null): boolean {
+  return el?.hasAttribute(SESSION_COMPOSER_ATTR) ?? false
+}
+
 /** True ⇒ the key belongs to the focused text entry; do NOT detach. */
 export function detachKeyYieldsToTextEntry(key: DetachKey, active: Element | null): boolean {
   const el = asTextEntry(active)

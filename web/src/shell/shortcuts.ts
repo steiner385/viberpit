@@ -1,4 +1,4 @@
-import { isFormControl } from '@/lib/detachKeyGuard'
+import { isFormControl, isSessionComposer } from '@/lib/detachKeyGuard'
 
 /** An action performed against the focused session row in list mode. */
 export type ListRowAction =
@@ -326,15 +326,18 @@ export const SHORTCUTS: Shortcut[] = [
   // runs Esc STOPS it; while idle it detaches. ← always detaches. The two Esc rows
   // carry mutually exclusive guards, so which one wins never depends on order.
   //
-  // `insession.stop` deliberately does NOT yield to the composer's draft: Desktop
-  // stops regardless of what is typed, and the draft stays put. What it does
-  // yield to is anything that consumed Esc first — the slash palette and mention
-  // menu `preventDefault` it, and the dispatcher skips a prevented event.
+  // `insession.stop` deliberately does NOT yield to the session composer's
+  // draft: Desktop stops regardless of what is typed, and the draft stays put.
+  // It DOES yield to every other text entry that claims Esc (the list search,
+  // a rename field …) — stopping a turn from there would be a destructive
+  // surprise — and to anything that consumed Esc first: the slash palette and
+  // mention menu `preventDefault` it, and the dispatcher skips a prevented event.
   { id: 'insession.stop', keys: 'Esc', description: 'Stop the running turn',
     group: 'in-session',
     match: plain((e) => e.key === 'Escape'),
     // `interactive`: stopping a turn mutates, and kiosk is read-only.
-    when: (c) => c.interactive && c.sessionOpen && c.sessionBusy && !c.overlayOpen && !c.hasOpenAction },
+    when: (c) => c.interactive && c.sessionOpen && c.sessionBusy && !c.overlayOpen && !c.hasOpenAction
+      && (!c.yieldsToTextEntry || isSessionComposer(c.active)) },
   { id: 'insession.detach', keys: '←', description: 'Detach back to the session list',
     group: 'in-session',
     match: plain((e) => e.key === 'ArrowLeft'),

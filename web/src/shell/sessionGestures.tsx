@@ -3,14 +3,15 @@
    and splitting them would put the shell's side and the session's side of the
    same bridge in two files. Same convention as `shell/InteractionContext.tsx`. */
 /**
- * How the open session hands its two facts to the shell's one keydown listener.
+ * How the open session hands its gestures to the shell's one keydown listener.
  *
  * ## Why a bridge is needed at all
  *
  * The in-session gestures (← / Ctrl+Z → detach; Esc → stop a running turn, else
- * detach) need `hasOpenAction` — is a permission or question card unanswered —
- * whether a turn is running, a stop, and a detach that first detaches the socket. Both belong to the session runtime, and the runtime provider is mounted
- * by `PageHost`, BELOW the shell (deliberately: audit F2.3 scoped it there so
+ * detach) need four things: `hasOpenAction` (is a permission or question card
+ * unanswered), `busy` (is a turn running), a stop, and a detach that first
+ * detaches the socket. All four belong to the session runtime, and the runtime
+ * provider is mounted by `PageHost`, BELOW the shell (deliberately: audit F2.3 scoped it there so
  * selecting a session stops remounting the whole shell). So the shell cannot read
  * it from context, and the router gives no way to pass a prop upwards.
  *

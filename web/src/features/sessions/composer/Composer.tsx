@@ -15,6 +15,7 @@ import type { Command, QueuedItem, PromptContext } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import { mentionQueryAt } from '@/lib/mentionQuery'
+import { SESSION_COMPOSER_ATTR } from '@/lib/detachKeyGuard'
 
 interface Props {
   status: { state: string; count: number }
@@ -46,9 +47,12 @@ interface Props {
    *  by the AI assistant drawer — a coding session's Composer never sees this prop, so
    *  typing `@` there is plain text. */
   mentionSource?: MentionSource[]
+  /** This is the open session's composer (not the assistant drawer's): marks the
+   *  textarea so Esc-stops-the-turn fires through its draft (`lib/detachKeyGuard`). */
+  sessionComposer?: boolean
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, sessionComposer = false }: Props) {
   const { replies, statusText: repliesStatus } = useQuickReplies()
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
@@ -422,6 +426,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
           <textarea
             ref={textareaRef}
             aria-label="Message"
+            {...(sessionComposer ? { [SESSION_COMPOSER_ATTR]: '' } : {})}
             value={text}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
