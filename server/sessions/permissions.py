@@ -312,10 +312,12 @@ class PermissionRegistry:
             # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit) ONLY inside the
             # session worktree *cwd*, never to a protected path (`.git`, `.claude/**`,
             # `.mcp.json`, `.envrc`, `.husky/**`, …) (#3217); every other tool still
-            # prompts. The default for unattended automation sessions (issue #750): an
-            # agent editing its own worktree proceeds without a human, while a write
-            # anywhere else (~/.bashrc, another repo, .git/hooks, .claude/settings) and
-            # shell/network calls — a materially larger blast radius — remain gated.
+            # prompts. acceptEdits is a human-chosen mode, or comes from an account pin
+            # or a global default. The CLI approves ordinary in-worktree edits itself, so
+            # only out-of-worktree writes and the CLI-escalated dangerous paths reach this
+            # branch, and the boundary decides those: a write anywhere else (~/.bashrc,
+            # another repo, .git/hooks, .claude/settings) and shell/network calls — a
+            # materially larger blast radius — remain gated.
             # Outside the boundary this falls through to the standing-rule check and
             # a card below; it never denies outright.
             if write_target_inside_worktree(tool, input, cwd):
