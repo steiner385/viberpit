@@ -150,7 +150,7 @@ function AssistantSheetBody() {
       />
       <SessionComposer
         rt={rt}
-        hideModeSelector
+        hideSessionControls
         contextProvider={() => ({ route: pathname, ...(openSessionId ? { sessionId: openSessionId } : {}) })}
         externalDraft={draftSeed}
         mentionSource={mentionSource}

@@ -8,10 +8,12 @@ import type { SessionRuntime } from '@/session/useSessionRuntime'
 
 // SessionComposer now owns the on-demand suggestion mutation (useGenerateSuggestions),
 // so it needs a QueryClient in context.
-function renderComposer(rt: SessionRuntime, mentionSource?: MentionSource[]) {
+function renderComposer(rt: SessionRuntime, mentionSource?: MentionSource[], hideSessionControls?: boolean) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}><SessionComposer rt={rt} mentionSource={mentionSource} /></QueryClientProvider>,
+    <QueryClientProvider client={qc}>
+      <SessionComposer rt={rt} mentionSource={mentionSource} hideSessionControls={hideSessionControls} />
+    </QueryClientProvider>,
   )
 }
 
@@ -92,4 +94,17 @@ it('forwards suggested provenance through the shared runtime adapter', () => {
   fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
   fireEvent.click(screen.getByRole('menuitem', { name: 'Keep going' }))
   expect(rt.onPrompt).toHaveBeenCalledWith('Keep going', [], undefined, 'suggested')
+})
+
+describe('SessionComposer prompt row (D-1)', () => {
+  it('renders the mode picker under the composer, wired to the runtime', () => {
+    renderComposer(fakeRuntime({ mode: 'plan' }))
+    expect(screen.getByRole('button', { name: /^Mode:/ })).toHaveTextContent('Plan')
+  })
+
+  it('hides the whole row for the assistant drawer (hideSessionControls)', () => {
+    renderComposer(fakeRuntime(), undefined, true)
+    expect(screen.queryByTestId('prompt-row')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Mode:/ })).toBeNull()
+  })
 })

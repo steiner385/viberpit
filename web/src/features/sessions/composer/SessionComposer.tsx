@@ -6,11 +6,12 @@
  * exactly the bug this consolidates away).
  */
 
-import { useMemo, useCallback } from 'react'
+import { useMemo, useCallback, type Ref } from 'react'
 import { Composer } from './Composer'
 import type { MentionSource } from './MentionMenu'
+import { PromptRow, type PromptRowMenus } from './PromptRow'
 import { deriveHistory } from '@/session/history'
-import { useGenerateSuggestions } from '@/api/hooks'
+import { useEngineCapabilities, useGenerateSuggestions, useModels, useSessions } from '@/api/hooks'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { PromptContext } from '@/session/events'
 
@@ -20,10 +21,11 @@ interface Props {
    *  context (the AI assistant drawer's "sent from" chip). Computed lazily at
    *  send time (not once) so it always reflects the current route/open session. */
   contextProvider?: () => PromptContext
-  /** Forward-compat: Composer has no mode-selector UI today, so this has no
-   *  effect yet — accepted so the assistant drawer can opt out ahead of that UI
-   *  landing, without a follow-up prop-plumbing change. */
-  hideModeSelector?: boolean
+  /** Hide the prompt row (mode / model / effort pickers) — the AI assistant
+   *  drawer has no session controls, so its lookups are skipped too. */
+  hideSessionControls?: boolean
+  /** Imperative openers for the prompt row's menus (keyboard shortcuts). */
+  promptRowMenus?: Ref<PromptRowMenus>
   /** Prefill the draft from outside the composer (e.g. a NoticeCard's "Ask about it"). */
   externalDraft?: { text: string } | null
   /** `@` mentions the composer can insert (spec v2 §10.2). Only the AI assistant
@@ -31,11 +33,7 @@ interface Props {
   mentionSource?: MentionSource[]
 }
 
-export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideModeSelector, externalDraft, mentionSource }: Props) {
-  // `hideModeSelector` is forward-compat only — Composer has no mode-selector UI to
-  // hide today (see the Props doc above). Referenced here (no-op) so it isn't
-  // flagged as unused; wire it up for real once that UI exists.
-  void _hideModeSelector
+export function SessionComposer({ rt, contextProvider, hideSessionControls = false, promptRowMenus, externalDraft, mentionSource }: Props) {
   const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
   const genSuggestions = useGenerateSuggestions()
   const onPrompt = useCallback(
@@ -47,24 +45,40 @@ export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideMo
     [rt, contextProvider],
   )
   return (
-    <Composer
-      status={rt.state.status}
-      onPrompt={onPrompt}
-      onActivity={rt.onActivity}
-      onInterrupt={rt.onInterrupt}
-      onInterruptAndPrompt={rt.onInterruptAndPrompt}
-      queued={rt.state.queued}
-      onCancelQueued={rt.onCancelQueued}
-      chatArmed={rt.chatArmed}
-      commands={rt.commands}
-      onCommand={rt.onCommand}
-      autoFocusKey={rt.sessionId}
-      suggestions={rt.suggestions}
-      onRequestSuggestions={() => genSuggestions.mutateAsync({ id: rt.sessionId })}
-      history={history}
-      sessionId={rt.sessionId}
-      externalDraft={externalDraft}
-      mentionSource={mentionSource}
-    />
+    <>
+      <Composer
+        status={rt.state.status}
+        onPrompt={onPrompt}
+        onActivity={rt.onActivity}
+        onInterrupt={rt.onInterrupt}
+        onInterruptAndPrompt={rt.onInterruptAndPrompt}
+        queued={rt.state.queued}
+        onCancelQueued={rt.onCancelQueued}
+        chatArmed={rt.chatArmed}
+        commands={rt.commands}
+        onCommand={rt.onCommand}
+        autoFocusKey={rt.sessionId}
+        suggestions={rt.suggestions}
+        onRequestSuggestions={() => genSuggestions.mutateAsync({ id: rt.sessionId })}
+        history={history}
+        sessionId={rt.sessionId}
+        externalDraft={externalDraft}
+        mentionSource={mentionSource}
+        // The composer with session controls IS the session's; the assistant drawer hides them.
+        sessionComposer={!hideSessionControls}
+      />
+      {!hideSessionControls && <SessionPromptRow rt={rt} menuRef={promptRowMenus} />}
+    </>
   )
+}
+
+/** The prompt row plus the lookups only it needs: the session record, its
+ *  engine's capabilities and its engine's model catalog. A component of its own
+ *  so a composer without session controls never runs them. */
+function SessionPromptRow({ rt, menuRef }: { rt: SessionRuntime; menuRef?: Ref<PromptRowMenus> }) {
+  const { data: sessions } = useSessions()
+  const session = sessions?.find((s) => s.id === rt.sessionId)
+  const caps = useEngineCapabilities(session?.engine)
+  const { data: models } = useModels(session?.engine, session?.accountName)
+  return <PromptRow rt={rt} session={session} caps={caps} models={models} menuRef={menuRef} />
 }

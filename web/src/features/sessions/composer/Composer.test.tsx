@@ -222,6 +222,18 @@ describe('Composer', () => {
     expect(screen.getByRole('listbox', { name: /slash commands/i })).toBeInTheDocument()
   })
 
+  it('Esc closes the palette without changing the text; the next keystroke reopens it', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/go')
+    await user.keyboard('{Escape}')
+    expect(textarea).toHaveValue('/go')
+    expect(screen.queryByRole('listbox', { name: /slash commands/i })).not.toBeInTheDocument()
+    await user.type(textarea, 'a')
+    expect(screen.getByRole('listbox', { name: /slash commands/i })).toBeInTheDocument()
+  })
+
   it('hides the palette once the user types a space after the command name', async () => {
     const user = userEvent.setup()
     render(<Composer {...defaults} commands={[goalCmd]} onCommand={vi.fn()} />)

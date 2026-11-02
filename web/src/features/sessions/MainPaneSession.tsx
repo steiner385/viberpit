@@ -18,7 +18,7 @@
  * this shell and would have been silently lost with it, so they live here now —
  * in one component, in every layout mode, rather than in a phone-only twin:
  *
- * - **Back.** The click equivalent of the ← / Esc detach gesture. On phone it is
+ * - **Back.** The click equivalent of the ← / Esc (idle) detach gesture. On phone it is
  *   the only way out of an open session that is not the bottom nav (the list
  *   region is dropped once an item is open); on desktop it is what
  *   `DesktopShell`'s ← already did — return to the welcome pane beside the list.
@@ -38,12 +38,14 @@
  * status pill. This component keeps what only it can know: the socket-detaching
  * `leave()` that every exit path runs through.
  */
+import { toast } from 'sonner'
 import type { SessionStatus } from '@/api/types'
 import { useReloadSession, useRotateSession } from '@/api/hooks'
 import { useSessionSocket } from '@/ws/client'
 import { SessionBody } from '@/features/sessions/SessionBody'
 import { CommandResultOverlay } from '@/features/sessions/composer/CommandResultOverlay'
 import { useSessionGestures } from '@/shell/sessionGestures'
+import { statusTier } from '@/session/statusTier'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { SessionHeader } from './SessionHeader'
 
@@ -51,7 +53,7 @@ export interface MainPaneSessionProps {
   sessionId: string
   /** Archive/delete finished — the host advances to the neighbouring session. */
   onClosed: () => void
-  /** Leave the session for the list (Back, ← / Esc / Ctrl+Z). */
+  /** Leave the session for the list (Back, ← / idle Esc / Ctrl+Z). */
   onDetach: () => void
   /** Open another session — the prev/next chevrons. */
   onOpenSession: (id: string) => void
@@ -88,12 +90,19 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
   }
 
   // The keyboard half is the shell's single listener (`shell/useShortcuts`); this
-  // publishes the two things it cannot see from up there — whether a card is
-  // unanswered, and a detach that drops the socket first. Registering rather than
+  // publishes what it cannot see from up there — whether a card is unanswered,
+  // whether a turn is running (Esc then stops it), and a detach that drops the
+  // socket first. Registering rather than
   // listening is what makes ← / Esc / Ctrl+Z one implementation with the rest of
   // the app's keys instead of a sixth window listener.
   useSessionGestures({
     hasOpenAction: rt.hasOpenAction,
+    // The composer's own Stop-button predicate, so Esc stops exactly when Stop shows.
+    busy: statusTier(rt.state.status.state) === 'busy',
+    onStop: () => {
+      rt.onInterrupt()
+      toast('Stopped · Esc')
+    },
     onDetach: () => leave(onDetach),
   })
 

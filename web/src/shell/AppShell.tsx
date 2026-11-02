@@ -34,7 +34,7 @@ import { useAttractCycle } from './useAttractCycle'
 import { useIdleCursor } from './useIdleCursor'
 import { useWakeLock } from './useWakeLock'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
-import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
+import { SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle } from './sessionGestures'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts } from './useShortcuts'
 import { useToastAnchor } from './toastInsets'
@@ -310,6 +310,7 @@ function AppShellInner() {
   // here re-renders when they change, because the listener reads them at
   // keydown time.
   const gestures = useSessionGestureHandle()
+  const promptMenus = usePromptRowMenusHandle()
   useShortcuts(
     (e) => {
       const active = document.activeElement
@@ -323,6 +324,7 @@ function AppShellInner() {
         // and a detach row that fires with nothing to detach would swallow
         // Escape app-wide.
         sessionOpen: gestures.current !== null,
+        sessionBusy: gestures.current?.busy ?? false,
         inSessions: region.inSessions,
         interactive: mode !== 'kiosk',
         active,
@@ -337,8 +339,13 @@ function AppShellInner() {
       'app.assistant': () => openDrawer('assistant'),
       'compose.help': () => openDrawer('help'),
       'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
+      'insession.stop': () => gestures.current?.onStop(),
       'insession.detach': () => gestures.current?.onDetach(),
+      'insession.detachEsc': () => gestures.current?.onDetach(),
       'insession.forceDetach': () => gestures.current?.onDetach(),
+      'insession.modeMenu': () => promptMenus.current?.openMode(),
+      'insession.modelMenu': () => promptMenus.current?.openModel(),
+      'insession.effortMenu': () => promptMenus.current?.openEffort(),
     },
   )
 

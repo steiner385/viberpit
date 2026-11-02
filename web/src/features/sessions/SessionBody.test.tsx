@@ -272,12 +272,12 @@ describe('SessionBody — capability-gated surfaces', () => {
     expect(screen.getByTestId('pending-model-approval-panel')).toBeInTheDocument()
   })
 
-  it('renders the session identity (agent, runner, reasoning effort) in the meta strip', () => {
+  it('renders the session identity (agent, runner) in the meta strip; effort moved to the prompt row', () => {
     setSession({ engine: 'codex', host: 'rocky', reasoningEffort: 'high' })
     renderBody(<SessionBody rt={makeRuntime([])} />)
     expect(screen.getByLabelText('Agent')).toHaveTextContent('Codex')
     expect(screen.getByLabelText('Runner host')).toHaveTextContent('rocky')
-    expect(screen.getByLabelText('Reasoning effort')).toHaveTextContent('high')
+    expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
   })
 
   it('renders a Codex approval through the existing pending-permission UX', () => {

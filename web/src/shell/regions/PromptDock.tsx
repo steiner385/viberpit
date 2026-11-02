@@ -12,6 +12,7 @@ import { setLastRepo } from '@/lib/lastRepo'
 import { isPendingSessionId } from '@/lib/pendingSessions'
 import { NAV_BY_ID } from '@/shell/navDefs'
 import { useOpenSessionId } from '@/shell/openSessionId'
+import { usePromptRowMenusRegistration } from '@/shell/sessionGestures'
 import { sessionOpenState } from '@/session/sessionNavState'
 import type { SessionListState } from '@/features/sessions/useSessionListState'
 import { createSessionFailureMessage, describeCreateSessionFailure } from '@/features/sessions/createSessionFailure'
@@ -123,7 +124,9 @@ export function PromptDock(props: PromptDockProps) {
  */
 function LiveComposer() {
   const rt = useSessionRuntimeContext()
-  return <SessionComposer rt={rt} />
+  // The prompt row's keyboard openers go to the shell's one dispatcher (`shell/sessionGestures`).
+  const promptRowMenus = usePromptRowMenusRegistration()
+  return <SessionComposer rt={rt} promptRowMenus={promptRowMenus} />
 }
 
 /**

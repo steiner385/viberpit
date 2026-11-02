@@ -3,14 +3,15 @@
    and splitting them would put the shell's side and the session's side of the
    same bridge in two files. Same convention as `shell/InteractionContext.tsx`. */
 /**
- * How the open session hands its two facts to the shell's one keydown listener.
+ * How the open session hands its gestures to the shell's one keydown listener.
  *
  * ## Why a bridge is needed at all
  *
- * The in-session gestures (Esc / ← / Ctrl+Z → detach) need `hasOpenAction` — is
- * a permission or question card unanswered — and a detach that first detaches the
- * socket. Both belong to the session runtime, and the runtime provider is mounted
- * by `PageHost`, BELOW the shell (deliberately: audit F2.3 scoped it there so
+ * The in-session gestures (← / Ctrl+Z → detach; Esc → stop a running turn, else
+ * detach) need four things: `hasOpenAction` (is a permission or question card
+ * unanswered), `busy` (is a turn running), a stop, and a detach that first
+ * detaches the socket. All four belong to the session runtime, and the runtime
+ * provider is mounted by `PageHost`, BELOW the shell (deliberately: audit F2.3 scoped it there so
  * selecting a session stops remounting the whole shell). So the shell cannot read
  * it from context, and the router gives no way to pass a prop upwards.
  *
@@ -27,10 +28,15 @@
  * `onDetach` identity change, which is every render of `MainPaneSession`.
  */
 import * as React from 'react'
+import type { PromptRowMenus } from '@/features/sessions/composer/PromptRow'
 
 export interface SessionGestures {
   /** A permission or question card is waiting for an answer. */
   hasOpenAction: boolean
+  /** A turn is running — the composer's Stop button is showing. Esc stops it. */
+  busy: boolean
+  /** Stop the running turn (the click equivalent is the composer's Stop). */
+  onStop: () => void
   /** Leave the session for the list (the click equivalent is Back). */
   onDetach: () => void
 }
@@ -45,10 +51,42 @@ const SessionGestureContext = React.createContext<React.RefObject<SessionGesture
   null,
 )
 
-/** The shell's side: owns the ref both halves share. */
+/**
+ * The prompt row's menu openers (Alt+Shift+M / I / E). They live beside the
+ * gestures rather than in them because the OTHER half is the dock's composer,
+ * not `MainPaneSession`: the row is mounted by `PromptDock`, a sibling of the
+ * pane, so neither could hand it to the other. Same lifetime rule, same bridge.
+ * Null current means no prompt row is mounted, and the chords then do nothing.
+ */
+const PromptRowMenusContext = React.createContext<React.RefObject<PromptRowMenus | null> | null>(
+  null,
+)
+
+/** The shell's side: owns the refs both halves share. */
 export function SessionGestureProvider({ children }: { children: React.ReactNode }) {
   const ref = React.useRef<SessionGestures | null>(null)
-  return <SessionGestureContext.Provider value={ref}>{children}</SessionGestureContext.Provider>
+  const menus = React.useRef<PromptRowMenus | null>(null)
+  return (
+    <SessionGestureContext.Provider value={ref}>
+      <PromptRowMenusContext.Provider value={menus}>{children}</PromptRowMenusContext.Provider>
+    </SessionGestureContext.Provider>
+  )
+}
+
+/** The shell's read handle for the prompt row's menus (see `PromptRowMenusContext`). */
+export function usePromptRowMenusHandle(): React.RefObject<PromptRowMenus | null> {
+  const ref = React.useContext(PromptRowMenusContext)
+  if (!ref) throw new Error('usePromptRowMenusHandle must be used inside SessionGestureProvider')
+  return ref
+}
+
+/**
+ * The dock composer's side: the ref to pass as `SessionComposer`'s
+ * `promptRowMenus`. Undefined outside the shell, so the composer stays
+ * mountable in a unit test without it.
+ */
+export function usePromptRowMenusRegistration(): React.RefObject<PromptRowMenus | null> | undefined {
+  return React.useContext(PromptRowMenusContext) ?? undefined
 }
 
 /**

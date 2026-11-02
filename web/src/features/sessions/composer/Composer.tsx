@@ -15,6 +15,7 @@ import type { Command, QueuedItem, PromptContext } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import { mentionQueryAt } from '@/lib/mentionQuery'
+import { SESSION_COMPOSER_ATTR } from '@/lib/detachKeyGuard'
 
 interface Props {
   status: { state: string; count: number }
@@ -46,9 +47,12 @@ interface Props {
    *  by the AI assistant drawer — a coding session's Composer never sees this prop, so
    *  typing `@` there is plain text. */
   mentionSource?: MentionSource[]
+  /** This is the open session's composer (not the assistant drawer's): marks the
+   *  textarea so Esc-stops-the-turn fires through its draft (`lib/detachKeyGuard`). */
+  sessionComposer?: boolean
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, sessionComposer = false }: Props) {
   const { replies, statusText: repliesStatus } = useQuickReplies()
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
@@ -93,13 +97,18 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // command NAME (no space yet). Once a space is typed they're entering args, so
   // Enter must submit the command (with its args) instead of re-selecting from
   // the palette — otherwise the trailing text is silently dropped.
-  const pickingCommand = slash && !/\s/.test(afterSlash)
+  const typingCommand = slash && !/\s/.test(afterSlash)
+  // Esc dismisses the palette for the exact text it was dismissed at; the next
+  // keystroke reopens it. The palette must CONSUME that Esc (and close), or the
+  // shell's Esc-stops-the-turn row would fire underneath an open menu.
+  const [dismissedSlashAt, setDismissedSlashAt] = useState<string | null>(null)
+  const pickingCommand = typingCommand && text !== dismissedSlashAt
   const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
   // `@` session mentions (assistant drawer only — mentionSource is absent for a
   // coding session's Composer). Mutually exclusive with the slash palette: a
   // message starting with `/` is a command line, not prose with a mention in it.
-  const mentionQuery = !pickingCommand && mentionSource ? mentionQueryAt(text, caretPos) : null
+  const mentionQuery = !typingCommand && mentionSource ? mentionQueryAt(text, caretPos) : null
   // The `@` position the current query is anchored to — Esc records it here so the
   // SAME mention attempt stays dismissed across further keystrokes; a fresh `@`
   // elsewhere has a different start and reopens. Cleared in handleChange (not an
@@ -178,6 +187,8 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     if (mentionSource && dismissedMentionAt !== null && mentionQueryAt(value, nextCaret) === null) {
       setDismissedMentionAt(null)
     }
+    // Any edit ends a palette dismissal, so backspacing to the dismissed text reopens it.
+    if (dismissedSlashAt !== null && value !== dismissedSlashAt) setDismissedSlashAt(null)
     onActivity?.()
     const el = e.target
     el.style.height = 'auto'
@@ -399,7 +410,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             query={slashQuery}
             onSelect={(c) => { if (c.argumentHint) { setText(`/${c.name} `) } else { onCommand?.(c.name, ''); setText('') } }}
             onComplete={(c) => setText(`/${c.name} `)}
-            onDismiss={() => { /* keep text; palette hides when slash becomes false */ }}
+            onDismiss={() => setDismissedSlashAt(text)}
           />
         )}
         {pickingMention && (
@@ -415,6 +426,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
           <textarea
             ref={textareaRef}
             aria-label="Message"
+            {...(sessionComposer ? { [SESSION_COMPOSER_ATTR]: '' } : {})}
             value={text}
             onChange={handleChange}
             onKeyDown={handleKeyDown}

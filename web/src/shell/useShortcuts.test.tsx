@@ -23,7 +23,7 @@
  * shipping components.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/api/types'
 
@@ -104,6 +104,14 @@ const socket = {
 vi.mock('@/ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/ws/client')>()
   return { ...actual, useSessionSocket: () => socket }
+})
+
+// sonner's `toast` is a spy over the real one: the shell's own Toaster is mounted
+// by `main.tsx`, outside `renderApp`, so the call is what is observable here.
+const toastSpy = vi.hoisted(() => vi.fn())
+vi.mock('sonner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('sonner')>()
+  return { ...actual, toast: Object.assign(toastSpy, actual.toast) }
 })
 
 import { renderApp } from '@/test/renderApp'
@@ -450,6 +458,181 @@ describe('Esc / ← / Ctrl+Z detach from an open session', () => {
     box.setSelectionRange(0, 0)
     await user.keyboard('{ArrowLeft}')
     expect(app.path()).toBe('/sessions')
+  })
+})
+
+// ── Esc stops a running turn (Desktop parity, sub-spec D §3) ─────────────────
+
+/** Put the open session mid-turn: the runtime status the composer's Stop button reads. */
+async function startTurn(): Promise<void> {
+  await act(async () => {
+    const emit = (frame: Record<string, unknown>) =>
+      handlers['sessionEvent']?.forEach((cb) => cb(frame))
+    emit({ type: 'replayComplete' })
+    emit({ type: 'status', state: 'in_progress', count: 1 })
+  })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Stop current turn' })).toBeInTheDocument())
+}
+
+describe('Esc stops a running turn; ← always detaches', () => {
+  beforeEach(() => {
+    socket.sendInterrupt.mockClear()
+    toastSpy.mockClear()
+  })
+
+  it('busy: Esc interrupts the turn, says so, and stays in the session', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    screen.getByRole('button', { name: /back to session list/i }).focus()
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).toHaveBeenCalledWith('s1')
+    expect(toastSpy).toHaveBeenCalledWith('Stopped · Esc')
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('idle: Esc detaches, exactly as before', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    screen.getByRole('button', { name: /back to session list/i }).focus()
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).not.toHaveBeenCalled()
+    expect(app.path()).toBe('/sessions')
+  })
+
+  it('busy: ← still detaches', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    screen.getByRole('button', { name: /back to session list/i }).focus()
+    await user.keyboard('{ArrowLeft}')
+    expect(socket.sendInterrupt).not.toHaveBeenCalled()
+    expect(app.path()).toBe('/sessions')
+  })
+
+  it('busy + slash palette open: Esc closes the palette, nothing is interrupted', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    await act(async () => {
+      handlers['commands']?.forEach((cb) => cb({
+        sessionId: 's1',
+        commands: [{ name: 'goal', description: 'Set the goal', argumentHint: null, kind: 'passthrough', source: 'vendor' }],
+      }))
+    })
+    await user.click(composer())
+    await user.type(composer(), '/go')
+    expect(screen.getByRole('listbox', { name: /slash commands/i })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox', { name: /slash commands/i })).not.toBeInTheDocument()
+    expect(socket.sendInterrupt).not.toHaveBeenCalled()
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('busy + an unanswered permission card: Esc neither interrupts nor detaches', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    await openPermissionCard()
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).not.toHaveBeenCalled()
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('busy + the list search focused with text: Esc is the field\'s — no interrupt, no detach', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    await user.type(search, 'abc')
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).not.toHaveBeenCalled()
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('busy + the EMPTY list search focused: Esc still is not a stop — no interrupt, no detach', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    expect(search).toHaveValue('')
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).not.toHaveBeenCalled()
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('busy + the EMPTY composer focused: Esc interrupts', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    await user.click(composer())
+    expect(composer().value).toBe('')
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).toHaveBeenCalledWith('s1')
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('busy + focus on the page body: Esc interrupts', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).toBe(document.body)
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).toHaveBeenCalledWith('s1')
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('busy + a composer draft: Esc interrupts regardless, and the draft is kept', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await startTurn()
+    await user.click(composer())
+    await user.type(composer(), 'wip')
+    await user.keyboard('{Escape}')
+    expect(socket.sendInterrupt).toHaveBeenCalledWith('s1')
+    expect(composer().value).toBe('wip')
+    expect(app.path()).toBe('/sessions/s1')
+  })
+})
+
+// ── Alt+Shift+M / I / E open the prompt row's menus ──────────────────────────
+
+describe('Alt+Shift+M / I / E open the prompt row menus', () => {
+  const chord = (code: string, key: string) =>
+    ({ key, code, altKey: true, shiftKey: true, bubbles: true, cancelable: true })
+
+  it('Alt+Shift+M opens the mode menu while the composer is focused and typing', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    await user.keyboard('hi')
+    fireEvent.keyDown(composer(), chord('KeyM', 'M'))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByText('Ask')).toBeInTheDocument()
+    expect(composer().value).toBe('hi')
+  })
+
+  it('Alt+Shift+I opens the model menu', async () => {
+    await renderSession()
+    fireEvent.keyDown(composer(), chord('KeyI', 'I'))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).queryByText('Ask')).not.toBeInTheDocument()
+  })
+
+  it('Alt+Shift+E does nothing on a Claude session (no effort picker)', async () => {
+    await renderSession()
+    fireEvent.keyDown(composer(), chord('KeyE', 'E'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('does nothing without a session open', async () => {
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    fireEvent.keyDown(railLink(), chord('KeyM', 'M'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 })
 

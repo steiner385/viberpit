@@ -15,13 +15,13 @@ function renderMeta() {
   return render(
     <MemoryRouter>
       <SessionMeta
-        sessionId="s1" account="alice" host="rocky" model={null} mode="default"
-        contextPct={81} quota={[{ key: 'session', label: 'session', pct: 4, resetsAt: null, durationSeconds: 18000 }]}
+        sessionId="s1" account="alice" host="rocky"
+        quota={[{ key: 'session', label: 'session', pct: 4, resetsAt: null, durationSeconds: 18000 }]}
         subAgents={[]} statusSlot={<span data-testid="status-slot">Working…</span>}
         exportSlot={<button type="button">Export</button>}
         actionsSlot={<button type="button">Archive</button>}
-        models={[]} accounts={[{ name: 'alice' }]} accountPinned={false}
-        onSelectModel={vi.fn()} onSelectAccount={vi.fn()} onSetMode={vi.fn()}
+        accounts={[{ name: 'alice' }]} accountPinned={false}
+        onSelectAccount={vi.fn()}
       />
     </MemoryRouter>,
   )
@@ -40,11 +40,8 @@ describe('SessionMeta — narrow-strip fold', () => {
     expect(fold).toHaveClass('contents', '@max-md:hidden')
     // Inside the fold: the readouts and settings.
     expect(within(fold).getByLabelText('Switch account')).toBeInTheDocument()
-    expect(within(fold).getByLabelText('Select model')).toBeInTheDocument()
     expect(within(fold).getByLabelText('Runner host')).toBeInTheDocument()
-    expect(within(fold).getByLabelText('Remaining context')).toBeInTheDocument()
     expect(within(fold).getByLabelText('Account quota')).toBeInTheDocument()
-    expect(within(fold).getByRole('switch', { name: 'Plan mode' })).toBeInTheDocument()
     await userEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(fold).not.toHaveClass('@max-md:hidden')

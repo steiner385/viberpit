@@ -18,6 +18,7 @@ from typing import Any
 from server.audit import record_audit
 from server.auth.identity import LOCAL_PROCESS_VIA, LOCAL_TRUSTED_VIA
 from server.config import get_settings
+from server.sessions.engine import EFFORT_UNCHANGED, AgentEngine, _EffortUnchanged
 from server.sessions.types import SYSTEM_IDENTITY
 
 log = logging.getLogger(__name__)
@@ -407,12 +408,20 @@ async def set_permission_mode(
 async def set_model(
     orch, db, *, session_id: str, model: str | None, when: str = "now",
     identity: str, via: str | None = None,
+    effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
 ) -> dict:
     """Switch the session's model (→ ``set_model_for_session``). Also the call site
     ``orchestrator.run_command``'s WS `/model` slash command routes through (passing
     its own ``when``) — the notice-string / after_turn composition for that command
     stays in ``run_command``, reading this call's ``restarted`` result; this helper
-    owns the single apply-and-audit path both entry points share."""
+    owns the single apply-and-audit path both entry points share.
+
+    ``effort`` (the prompt row's effort picker) rides the same switch into
+    ``set_model_for_session(reasoning_effort=…)``. It is forwarded ONLY when given,
+    so every ordinary switch keeps the session's effort (``EFFORT_UNCHANGED``) and
+    an orchestrator double — or an older remote daemon — without the kwarg keeps
+    working. A Claude session has no effort dial: refused with the code session
+    creation uses."""
     from server.sessions.orchestrator import ModelBlockedError  # noqa: PLC0415
     from server.sessions.types import is_assistant  # noqa: PLC0415
 
@@ -438,6 +447,13 @@ async def set_model(
     from server.sessions.facade import _maybe_await  # noqa: PLC0415
 
     rec = await _maybe_await(orch.get_session(session_id))
+    effort_given = not isinstance(effort, _EffortUnchanged)
+    if effort_given and rec is not None and rec.engine is AgentEngine.CLAUDE_CODE:
+        raise ActionError(
+            "unsupported_reasoning_effort",
+            f"reasoning effort is not supported by agent engine: {rec.engine.value}",
+            400, {"engine": rec.engine.value},
+        )
     if rec is not None and is_assistant(rec):
         from server.sessions.model_policy import launch_model, resolve_model_policy  # noqa: PLC0415
         if await resolve_model_policy(db, model=launch_model(model)) != "allow":
@@ -446,12 +462,15 @@ async def set_model(
             )
 
     try:
+        effort_kw: dict[str, Any] = {"reasoning_effort": effort} if effort_given else {}
         restarted = await orch.set_model_for_session(session_id, model, when=when,
-                                                       identity=identity)
+                                                       identity=identity, **effort_kw)
     except ModelBlockedError:
         raise ActionError(
             "MODEL_BLOCKED", f"{model} is blocked by policy", 409,
         )
-    await _audit(db, "session.model_change", identity,
-                 {"sessionId": session_id, "model": model}, via)
+    detail: dict[str, Any] = {"sessionId": session_id, "model": model}
+    if effort_given:
+        detail["effort"] = effort
+    await _audit(db, "session.model_change", identity, detail, via)
     return {"ok": True, "restarted": restarted}

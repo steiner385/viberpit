@@ -15,6 +15,7 @@ import {
   type Shortcut,
   type ShortcutContext,
 } from './shortcuts'
+import { SESSION_COMPOSER_ATTR, textEntryClaimsKey } from '@/lib/detachKeyGuard'
 
 function ev(over: Partial<KeyboardLike>): KeyboardLike {
   return { key: '', code: '', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...over }
@@ -26,6 +27,7 @@ function ctx(over: Partial<ShortcutContext> = {}): ShortcutContext {
     overlayOpen: false,
     hasOpenAction: false,
     sessionOpen: false,
+    sessionBusy: false,
     inSessions: true,
     interactive: true,
     active: null,
@@ -51,7 +53,8 @@ const headerAction = (e: KeyboardLike) => matchShortcut(e, inGroup('list-mode-he
  */
 const SHELL_HANDLED = [
   'app.help', 'app.assistant',
-  'compose.help', 'compose.nav', 'insession.detach', 'insession.forceDetach',
+  'compose.help', 'compose.nav', 'insession.stop', 'insession.detach', 'insession.detachEsc',
+  'insession.forceDetach',
 ]
 const shellRow = (e: KeyboardLike, c: ShortcutContext) =>
   matchShortcut(e, (s) => SHELL_HANDLED.includes(s.id), c)?.id
@@ -164,6 +167,11 @@ function keyForGlyph(glyph: string): string | null {
  * display string promises a key its matcher rejects" is the whole point.
  */
 function chordFromKeys(keys: string): KeyboardLike | null {
+  // Alt+Shift+M / ⌥⇧M: matched on `code`, because Option rewrites `key` on macOS.
+  const asAltShift = /^(?:Alt\+Shift\+|⌥⇧)([A-Z])$/.exec(keys)
+  if (asAltShift) {
+    return ev({ key: asAltShift[1], code: `Key${asAltShift[1]}`, altKey: true, shiftKey: true })
+  }
   const asCtrl = /^Ctrl\+(.+)$/.exec(keys)
   if (asCtrl) {
     const key = keyForGlyph(asCtrl[1].toLowerCase())
@@ -382,8 +390,11 @@ describe('shortcutAllowed', () => {
   })
 
   it('no shipped row is unreachable under a fully-permissive context', () => {
+    // Two permissive contexts, idle and busy: the Esc rows split on `sessionBusy`
+    // by design (stop vs detach), so no ONE context reaches both.
+    const permissive = [ctx({ sessionOpen: true }), ctx({ sessionOpen: true, sessionBusy: true })]
     for (const s of SHORTCUTS) {
-      expect(shortcutAllowed(s, ctx({ sessionOpen: true })), `${s.id}`).toBe(true)
+      expect(permissive.some((c) => shortcutAllowed(s, c)), `${s.id}`).toBe(true)
     }
   })
 })
@@ -439,6 +450,12 @@ describe('displayKeys / isApplePlatform', () => {
 
   it('a platform-varying row is a ⌘ chord on Apple and the SAME key on Ctrl elsewhere', () => {
     for (const s of SHORTCUTS.filter((x) => x.keysMac !== undefined)) {
+      // Alt+Shift+letter rows are ⌥⇧ on Apple, not ⌘ (Option, not Command).
+      const altShift = /^Alt\+Shift\+(.)$/.exec(s.keys)
+      if (altShift) {
+        expect(s.keysMac, `${s.id} keysMac`).toBe(`⌥⇧${altShift[1]}`)
+        continue
+      }
       expect(s.keysMac, `${s.id} keysMac`).toMatch(/^⌘/)
       expect(s.keys, `${s.id} keys`).toMatch(/^Ctrl\+/)
       // The two must name the same terminal key, or a Mac user is told to press
@@ -576,13 +593,59 @@ describe('matchShortcut — the shell scope', () => {
 
   it('Esc and ← detach only with a session open, and yield to a card or a draft', () => {
     const open = ctx({ sessionOpen: true })
-    expect(shellRow(ev({ key: 'Escape' }), open)).toBe('insession.detach')
+    expect(shellRow(ev({ key: 'Escape' }), open)).toBe('insession.detachEsc')
     expect(shellRow(ev({ key: 'ArrowLeft' }), open)).toBe('insession.detach')
     expect(shellRow(ev({ key: 'Escape' }), ctx())).toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, hasOpenAction: true }))).toBeUndefined()
     expect(shellRow(ev({ key: 'ArrowLeft' }), ctx({ sessionOpen: true, hasOpenAction: true }))).toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, yieldsToTextEntry: true }))).toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, overlayOpen: true }))).toBeUndefined()
+  })
+
+  it('while a turn runs, Esc stops it — through a draft, but not through a card or an overlay; ← still detaches', () => {
+    const busy = ctx({ sessionOpen: true, sessionBusy: true })
+    expect(shellRow(ev({ key: 'Escape' }), busy)).toBe('insession.stop')
+    expect(shellRow(ev({ key: 'ArrowLeft' }), busy)).toBe('insession.detach')
+    // Desktop stops regardless of the session composer's draft (the draft is kept)…
+    const composer = document.createElement('textarea')
+    composer.setAttribute(SESSION_COMPOSER_ATTR, '')
+    expect(shellRow(ev({ key: 'Escape' }),
+      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: true, active: composer })))
+      .toBe('insession.stop')
+    // …and from the EMPTY session composer, or with focus on the page itself.
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, active: composer })))
+      .toBe('insession.stop')
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, active: document.body })))
+      .toBe('insession.stop')
+    // Any OTHER text entry keeps Esc — with text or EMPTY. Each fixture's
+    // `yieldsToTextEntry` is what the shell would compute for that field: an
+    // empty field does not claim Esc, so the focused element itself must block.
+    const search = document.createElement('input')
+    search.type = 'search'
+    expect(shellRow(ev({ key: 'Escape' }),
+      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: textEntryClaimsKey(ev({ key: 'Escape' }), search), active: search })))
+      .toBeUndefined()
+    search.value = 'abc'
+    expect(shellRow(ev({ key: 'Escape' }),
+      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: textEntryClaimsKey(ev({ key: 'Escape' }), search), active: search })))
+      .toBeUndefined()
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, hasOpenAction: true })))
+      .toBeUndefined()
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, overlayOpen: true })))
+      .toBeUndefined()
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionBusy: true }))).toBeUndefined()
+    // Kiosk is read-only: a wall display's keyboard must not stop a turn.
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, interactive: false })))
+      .toBeUndefined()
+  })
+
+  it('the two Esc rows are mutually exclusive, so registry order never decides between them', () => {
+    const stop = SHORTCUTS.find((s) => s.id === 'insession.stop')!
+    const detachEsc = SHORTCUTS.find((s) => s.id === 'insession.detachEsc')!
+    for (const sessionBusy of [true, false]) {
+      const c = ctx({ sessionOpen: true, sessionBusy })
+      expect(shortcutAllowed(stop, c) && shortcutAllowed(detachEsc, c)).toBe(false)
+    }
   })
 
   it('Ctrl+Z force-detaches THROUGH an open card — the escape hatch — but not through a draft', () => {
@@ -697,6 +760,23 @@ describe('the un-bindable Desktop chords bind nothing', () => {
     expect(matchShortcut(e, () => true, anywhere), label).toBeUndefined()
     // …and it is not selectable by a focused row or group header either.
     expect(matchShortcut(e, () => true), label).toBeUndefined()
+  })
+
+  it('the prompt-row menu chords (Alt+Shift+M / I / E) are not in the browser-reserved set', () => {
+    // The set documented at the top of the registry: ⌘/Ctrl + N W T Q, Ctrl(+Shift)+Tab,
+    // Ctrl+PageUp/Down, ⌘⇧[ ], plus Ctrl+Shift+I (DevTools) and ⌘⇧M (profile switcher),
+    // which are why the menus use Alt+Shift.
+    const reserved = /(⌘|Cmd|Ctrl)\s*\+?\s*(Shift\s*\+\s*|⇧\s*)?(N|W|T|Q|I|M|Tab|Page(Up|Down))\b|⌘\s*⇧\s*[[\]]/i
+    const rows = SHORTCUTS.filter((s) => ['insession.modeMenu', 'insession.modelMenu', 'insession.effortMenu'].includes(s.id))
+    expect(rows).toHaveLength(3)
+    for (const s of rows) {
+      expect(s.keys, `${s.id} keys`).not.toMatch(reserved)
+      expect(s.keysMac ?? '', `${s.id} keysMac`).not.toMatch(reserved)
+      expect(s.keys).toMatch(/^Alt\+Shift\+[MIE]$/)
+    }
+    // Ctrl+Shift+I / ⌘⇧M themselves reach none of them.
+    expect(matchShortcut(ev({ key: 'I', code: 'KeyI', ctrlKey: true, shiftKey: true }), () => true, anywhere)).toBeUndefined()
+    expect(matchShortcut(ev({ key: 'M', code: 'KeyM', metaKey: true, shiftKey: true }), () => true, anywhere)).toBeUndefined()
   })
 
   it('the dropped row ids are absent, so the drop is a decision and not an oversight', () => {

@@ -23728,9 +23728,13 @@ class SessionOrchestrator:
 
         ``reasoning_effort`` rides the SAME switch for engines with that dial (Codex):
         left unset it changes nothing, so every ordinary model switch keeps the
-        session's effort. Only a self-directed Codex request (#1273) sets it — with
-        the CURRENT model, since a session never moves itself to a different Codex
-        model.
+        session's effort. Two callers set it, both with the CURRENT model: a
+        self-directed Codex request (#1273 — a session never moves itself to a
+        different Codex model) and the D-1 prompt row's effort picker. Re-sending an
+        explicit model the session already runs on never PARKS an approval (it is not
+        a switch, and parking would drop the effort) — but a ``block`` verdict still
+        refuses it, and None / ``"default"`` get no exemption at all: the inherited
+        default may have moved onto a gated model since launch.
 
         Record update + persistence run in every case, including driverless
         (detached), so the model applies when the session resumes."""
@@ -23752,11 +23756,23 @@ class SessionOrchestrator:
         from server.sessions.model_policy import (
             INHERITED_DEFAULT_REASON, launch_model, resolve_model_policy)
         gate_model = launch_model(model, engine=_engine)
+        # Re-sending the EXPLICIT model id the session already runs on (an effort-only
+        # pick from the prompt row) is not a switch: the policy still runs and a block
+        # still refuses it, but require_approval does not park an approval for the
+        # running model (which would drop the effort riding along). None / "default"
+        # get no exemption — the inherited default may now resolve to a gated model.
+        _same_model = (
+            record is not None and record.model not in (None, "default")
+            and record.model == model)
+        # UI-only: the same CHOICE (None == "default") queues no model change, so it
+        # must not raise model_pending ("after this turn").
+        _same_choice = record is not None and (
+            (record.model or "default") == (model or "default"))
         async with db_session() as _db:
             _policy = await resolve_model_policy(_db, model=gate_model, account=_account)
         if _policy == "block":
             raise ModelBlockedError(gate_model)
-        if _policy == "require_approval":
+        if _policy == "require_approval" and not _same_model:
             park_kwargs = (
                 {"reason": INHERITED_DEFAULT_REASON} if gate_model != model else {})
             await self._park_model(
@@ -23801,7 +23817,12 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         if record is not None:
             record.model = model
-            record.model_pending = pending
+            # model_pending means "a DIFFERENT model is waiting for the turn to end"
+            # (the UI's "after this turn"). Re-sending the running model (an effort-
+            # only pick) queues no model change: it never raises the flag, only keeps
+            # one an earlier real switch raised while that turn is still running.
+            record.model_pending = (
+                (record.model_pending and pending) if _same_choice else pending)
             if not isinstance(reasoning_effort, _EffortUnchanged):
                 record.reasoning_effort = reasoning_effort
         # Same "only pass what changed" discipline as `_set_driver_model` above, and

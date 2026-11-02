@@ -14,8 +14,10 @@ from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable, reconstruct_create_session_error
 from server.sessions.facade import rpc_deadline
 from server.sessions.engine import (
+    EFFORT_UNCHANGED,
     AgentEngine,
     AgentEngineUnavailable,
+    _EffortUnchanged,
     parse_agent_engine,
 )
 from server.sessions.orchestrator import ModelBlockedError
@@ -935,18 +937,26 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             raise
 
-    async def set_model_for_session(self, session_id: str, model: str | None, *,
-                                    when: str = "now",
-                                    identity: str = SYSTEM_IDENTITY) -> bool:
+    async def set_model_for_session(
+        self, session_id: str, model: str | None, *, when: str = "now",
+        identity: str = SYSTEM_IDENTITY,
+        reasoning_effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
+    ) -> bool:
         """Proxy set_model_for_session, reconstituting the in-process error contract.
 
         ``ModelBlockedError`` is the whole point of the round trip: `session_actions`
         turns it into the 409 MODEL_BLOCKED response, and a bare DaemonError would
-        surface as a 500 instead."""
+        surface as a 500 instead.
+
+        ``reasoning_effort`` crosses the wire only when set: the sentinel is not
+        JSON, and a daemon that predates the kwarg keeps accepting every ordinary
+        switch."""
+        effort_kw = ({} if isinstance(reasoning_effort, _EffortUnchanged)
+                     else {"reasoning_effort": reasoning_effort})
         try:
             return bool(await self._client.call(
                 "set_model_for_session", session_id=session_id, model=model,
-                when=when, identity=identity))
+                when=when, identity=identity, **effort_kw))
         except DaemonError as exc:
             if exc.err_type == "ModelBlockedError":
                 raise ModelBlockedError(exc.message) from exc

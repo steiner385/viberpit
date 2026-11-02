@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { useRef, useState } from 'react'
-import { Menu, type MenuItem } from './Menu'
+import { Menu, type MenuGroup, type MenuItem } from './Menu'
 
 function Host({ onSelect, items }: { onSelect: (id: string) => void; items: MenuItem[] }) {
   const ref = useRef<HTMLButtonElement>(null)
@@ -315,5 +315,25 @@ describe('Menu', () => {
     expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Alpha/ }))
     fireEvent.click(screen.getByText('Disable Alpha'))
     expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Charlie/ }))
+  })
+
+  it('groups consecutive items under their heading without changing keyboard order', () => {
+    const groups: MenuGroup[] = [{ id: 'one', heading: null }, { id: 'two', heading: 'Extras' }]
+    const items: MenuItem[] = [
+      { id: 'a', label: 'Alpha', group: 'one' },
+      { id: 'b', label: 'Bravo', group: 'one' },
+      { id: 'c', label: 'Charlie', group: 'two' },
+    ]
+    const ref = { current: document.createElement('button') }
+    const onSelect = vi.fn()
+    render(<Menu open onClose={() => {}} anchorRef={ref} label="Grouped" onSelect={onSelect} items={items} groups={groups} />)
+    const menu = screen.getByRole('menu', { name: 'Grouped' })
+    const [first, second] = within(menu).getAllByRole('group')
+    expect(within(first).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Alpha1', 'Bravo2'])
+    expect(second).toHaveAccessibleName('Extras')
+    fireEvent.keyDown(menu, { key: 'End' })
+    expect(document.activeElement).toBe(within(second).getByRole('menuitem', { name: /Charlie/ }))
+    fireEvent.keyDown(menu, { key: '3' })
+    expect(onSelect).toHaveBeenCalledWith('c')
   })
 })

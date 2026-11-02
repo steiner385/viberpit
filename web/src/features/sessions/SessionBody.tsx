@@ -29,10 +29,9 @@ import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
-import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete } from '@/api/hooks'
+import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { ExportMenu } from './ExportMenu'
-import { ModelSwitchDialog } from '@/features/sessions/panels/ModelSwitchDialog'
 
 /** Local alias: the shared gate now lives beside the hook that feeds it. */
 const can = canUseEngine
@@ -45,7 +44,6 @@ type SessionView = (typeof SESSION_VIEWS)[number]
 
 export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSlot?: ReactNode }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns, rt.state.subAgents)
-  const { data: models = [] } = useModels()
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [] } = useSessions()
   const sessionRecord = sessions.find((s) => s.id === rt.sessionId)
@@ -63,12 +61,6 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const [browserEnabled, setBrowserEnabled] = useState(false)
   // Active view: 'conversation' (default) or 'browser', persisted in `?view=`.
   const [view, setView] = useSearchParamState<SessionView>('view', SESSION_VIEWS, 'conversation')
-
-  // Model id awaiting confirmation: switching model on a BUSY session either stops
-  // the in-flight turn and restarts it on the new model, or waits for the turn to
-  // finish — so the picker gates on a choice dialog instead of firing immediately.
-  // Non-busy tiers switch directly.
-  const [pendingModelId, setPendingModelId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -89,7 +81,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
 
   return (
     <>
-      {/* Status strip: account · model · context · quota · live status · sub-agents.
+      {/* Status strip: account · context · quota · live status · sub-agents (the model
+          and effort pickers are in the composer's prompt row).
           The live StatusBar is folded into the right of this strip so the session
           pane shows a single status line rather than two stacked bars. */}
       <div className="flex-shrink-0">
@@ -100,14 +93,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           host={sessionRecord?.host}
           displayMode={sessionRecord?.displayMode}
           displayFallbackReason={sessionRecord?.displayFallbackReason}
-          reasoningEffort={sessionRecord?.reasoningEffort}
           subAgentsSupported={can(caps, 'subagents')}
-          model={rt.model}
-          liveModel={rt.liveModel}
-          modelPending={rt.modelPending}
-          mode={rt.mode}
-          pendingMode={rt.pendingMode}
-          contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
           backgroundWork={rt.backgroundWork}
@@ -116,15 +102,9 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           rulesSlot={<SessionRulesReadout sessionId={rt.sessionId} />}
           exportSlot={<ExportMenu sessionId={rt.sessionId} />}
           actionsSlot={actionsSlot}
-          models={models}
           accounts={accounts.map((a) => ({ name: a.name, nickname: a.nickname }))}
           accountPinned={pinned}
-          onSelectModel={(id) => {
-            if (statusTier(rt.state.status.state) === 'busy') setPendingModelId(id)
-            else rt.onSetModel(id, 'now')
-          }}
           onSelectAccount={(name) => rt.onCommand('account', name)}
-          onSetMode={rt.onSetMode}
           onUnpin={() => setAccountPin.mutate({ id: rt.sessionId, pinned: false })}
         />
       </div>
@@ -305,21 +285,6 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
 
         return <div {...convoWrapperProps}>{conversationPanel}</div>
       })()}
-
-      {/* Choose stop-now vs after-this-turn before switching model on a busy
-          session. Cancel just closes: the <select> is controlled by rt.model (the
-          record's chosen alias), so it snaps back on its own. */}
-      {pendingModelId !== null && (
-        <ModelSwitchDialog
-          modelLabel={models.find((m) => m.id === pendingModelId)?.label ?? pendingModelId}
-          canSteer={caps?.steer === true}
-          onClose={() => setPendingModelId(null)}
-          onConfirm={(when) => {
-            rt.onSetModel(pendingModelId, when)
-            setPendingModelId(null)
-          }}
-        />
-      )}
     </>
   )
 }

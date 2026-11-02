@@ -10,7 +10,7 @@ engine that has no SDK to fall back on.
 The mode vocabulary is NOT restated here. It is
 :data:`server.sessions.types.VALID_SESSION_MODES` (the six modes the API,
 Settings and the SDLC tier resolver accept) plus the two transient values a
-driver receives directly from the web plan toggle — see
+driver receives directly from REST/WS/assistant callers — see
 :data:`TRANSIENT_DRIVER_MODES`.
 
 Why the mapping looks the way it does
@@ -67,10 +67,10 @@ from types import MappingProxyType
 from typing import Final
 
 #: Permission-mode values that reach a driver's ``set_permission_mode`` without
-#: being members of ``VALID_SESSION_MODES``: the web plan toggle turns plan mode
-#: ON with ``"plan"`` and OFF with the ``"default"`` sentinel (see
+#: being members of ``VALID_SESSION_MODES``: a REST/WS/assistant caller turns
+#: plan mode ON with ``"plan"`` and OFF with the ``"default"`` sentinel (see
 #: ``ClaudeAgentDriver.set_permission_mode``). Mapped here so the Codex driver
-#: can honour the same toggle instead of failing on a value the UI always sends.
+#: honours the same sentinel instead of failing on a value those callers send.
 TRANSIENT_DRIVER_MODES: Final[tuple[str, ...]] = ("plan", "default")
 
 
@@ -211,9 +211,9 @@ ASSISTANT_PROFILE: Final = CodexPermissionProfile(
 )
 
 PROFILES: Final[Mapping[str, CodexPermissionProfile]] = MappingProxyType({
-    # Transient driver-level overlay (web plan toggle).
+    # Transient driver-level overlay (plan ON from a REST/WS/assistant caller).
     "plan": _PLAN,
-    # "default" is the plan toggle's OFF sentinel; when a driver cannot restore a
+    # "default" is the plan-OFF sentinel those callers send; when a driver cannot restore a
     # remembered pre-plan mode it means "the engine's own gating", which for Codex
     # is the ask-before-acting profile — never a widening.
     "default": _ASK_EVERY_ACTION,

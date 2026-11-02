@@ -1,4 +1,4 @@
-import { isFormControl } from '@/lib/detachKeyGuard'
+import { focusInOtherTextEntry, isFormControl } from '@/lib/detachKeyGuard'
 
 /** An action performed against the focused session row in list mode. */
 export type ListRowAction =
@@ -41,6 +41,8 @@ export interface ShortcutContext {
   hasOpenAction: boolean
   /** A session is open (`/sessions/:id`). */
   sessionOpen: boolean
+  /** The open session has a turn running — the composer's Stop button is showing. */
+  sessionBusy: boolean
   /** The Sessions section is current. */
   inSessions: boolean
   /** Kiosk is read-only: nothing that mutates may fire. */
@@ -184,6 +186,10 @@ export const SHORTCUTS: Shortcut[] = [
   //   · `session.next`    Ctrl+Tab          — reserved: NEXT TAB.
   //   · `session.prev`    Ctrl+Shift+Tab    — reserved: PREVIOUS TAB.
   //
+  // The prompt-row menu chords stay clear of the browser too: Ctrl+Shift+I is
+  // DevTools and ⌘⇧M the Chrome profile switcher, so the menus use Alt+Shift+I /
+  // Alt+Shift+M, which neither Chrome nor Safari reserves.
+  //
   // The help sheet renders from this array, so a row here is a PROMISE that the
   // key does something. Shipping a promise the browser silently eats is worse
   // than the missing shortcut: the user presses it, a tab closes, and the sheet
@@ -205,7 +211,7 @@ export const SHORTCUTS: Shortcut[] = [
   //     list renders, or cycling will navigate to a filtered-out session.
   //   · Starting a session is still reachable without a chord: the New Session
   //     button at the foot of the list column clears the open session, which
-  //     puts the dispatch bar in `app.dock`. Detach is still Esc / ←.
+  //     puts the dispatch bar in `app.dock`. Detach is still ← (and Esc while idle).
   // Pinned by "the un-bindable Desktop chords bind nothing" in shortcuts.test.ts.
   //
   // ── List mode — WIRED ────────────────────────────────────────────────
@@ -319,10 +325,33 @@ export const SHORTCUTS: Shortcut[] = [
   // `hasOpenAction` holds ← and Esc — an unanswered permission or question card
   // is answered first — but deliberately NOT Ctrl+Z, which is the force-detach
   // escape hatch that keeps the user from being trapped by a card.
-  { id: 'insession.detach', keys: '← / Esc', description: 'Detach back to the session list',
+  //
+  // Esc is split by `sessionBusy` (Desktop parity, sub-spec D §3): while a turn
+  // runs Esc STOPS it; while idle it detaches. ← always detaches. The two Esc rows
+  // carry mutually exclusive guards, so which one wins never depends on order.
+  //
+  // `insession.stop` deliberately does NOT yield to the session composer's
+  // draft: Desktop stops regardless of what is typed, and the draft stays put.
+  // It never fires from any OTHER text entry (the list search, a rename field,
+  // the assistant composer …), empty or not — keyed on the focused element, not
+  // `yieldsToTextEntry`, which an empty field leaves false — because stopping a
+  // turn from there would be a destructive surprise. It also yields to anything
+  // that consumed Esc first: the slash palette and mention menu `preventDefault`
+  // it, and the dispatcher skips a prevented event.
+  { id: 'insession.stop', keys: 'Esc', description: 'Stop the running turn',
     group: 'in-session',
-    match: plain((e) => e.key === 'Escape' || e.key === 'ArrowLeft'),
+    match: plain((e) => e.key === 'Escape'),
+    // `interactive`: stopping a turn mutates, and kiosk is read-only.
+    when: (c) => c.interactive && c.sessionOpen && c.sessionBusy && !c.overlayOpen && !c.hasOpenAction
+      && !focusInOtherTextEntry(c.active) },
+  { id: 'insession.detach', keys: '←', description: 'Detach back to the session list',
+    group: 'in-session',
+    match: plain((e) => e.key === 'ArrowLeft'),
     when: (c) => c.sessionOpen && !c.overlayOpen && !c.hasOpenAction && !c.yieldsToTextEntry },
+  { id: 'insession.detachEsc', keys: 'Esc', description: 'Detach back to the session list (no turn running)',
+    group: 'in-session',
+    match: plain((e) => e.key === 'Escape'),
+    when: (c) => c.sessionOpen && !c.sessionBusy && !c.overlayOpen && !c.hasOpenAction && !c.yieldsToTextEntry },
   { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list',
     group: 'in-session',
     // `ctrl()`, not an inline modifier test: this row spelled its own
@@ -331,6 +360,22 @@ export const SHORTCUTS: Shortcut[] = [
     // question the helpers own.
     match: ctrl((e) => e.key === 'z' || e.key === 'Z'),
     when: (c) => c.sessionOpen && !c.overlayOpen && !c.yieldsToTextEntry },
+  // Prompt-row menus (Desktop parity, sub-spec D §3.1). Alt+Shift+letter, matched
+  // on `e.code` because macOS Option rewrites `e.key` (⌥⇧M is "Â", not "M"). They
+  // fire while typing — a chord is not a character — and `Alt+Shift` leaves
+  // Ctrl+Shift+I (DevTools) and ⌘⇧M (Chrome profile switcher) alone.
+  { id: 'insession.modeMenu', keys: 'Alt+Shift+M', keysMac: '⌥⇧M', description: 'Open the permission-mode menu',
+    group: 'in-session',
+    match: (e) => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyM',
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen },
+  { id: 'insession.modelMenu', keys: 'Alt+Shift+I', keysMac: '⌥⇧I', description: 'Open the model menu',
+    group: 'in-session',
+    match: (e) => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyI',
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen },
+  { id: 'insession.effortMenu', keys: 'Alt+Shift+E', keysMac: '⌥⇧E', description: 'Open the reasoning-effort menu (when the model has one)',
+    group: 'in-session',
+    match: (e) => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyE',
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
   // session). All three are reserved by the browser's own UI — see the
   // "NOT BOUND, and why" block at the top of this array for the evidence.

@@ -87,8 +87,8 @@ def test_every_viberpit_session_mode_is_mapped():
 
 
 def test_transient_driver_modes_are_mapped():
-    # ClaudeAgentDriver.set_permission_mode receives these two straight from the
-    # web plan toggle; they are not in VALID_SESSION_MODES but do reach a driver.
+    # ClaudeAgentDriver.set_permission_mode receives these two straight from REST/
+    # WS/assistant callers; they are not in VALID_SESSION_MODES but do reach a driver.
     for mode in ("plan", "default"):
         assert mode in PROFILES
 

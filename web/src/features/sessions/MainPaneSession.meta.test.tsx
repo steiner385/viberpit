@@ -13,7 +13,8 @@ import { render, screen, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { MainPaneSession } from './MainPaneSession'
-import { SessionRuntimeProvider } from '@/features/sessions/SessionRuntimeProvider'
+import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
+import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import type { SessionEvent } from '@/session/events'
 import { anthropicUsage } from '@/test/factories'
 
@@ -98,6 +99,12 @@ function renderPane() {
   )
 }
 
+/** The model picker lives in the composer's prompt row, which the shell mounts
+ *  beside the pane (PromptDock) from the same runtime provider. */
+function DockedComposer() {
+  return <SessionComposer rt={useSessionRuntimeContext()} />
+}
+
 describe('MainPaneSession status strip', () => {
   beforeEach(() => {
     capturedHandlers = {}
@@ -125,7 +132,13 @@ describe('MainPaneSession status strip', () => {
   })
 
   it('shows the live model after a sessionMeta event, while the picker stays on the record choice', async () => {
-    renderPane()
+    render(
+      <>
+        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />
+        <DockedComposer />
+      </>,
+      { wrapper },
+    )
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
     await waitFor(() => {
       expect(screen.getByLabelText(/model in use/i)).toHaveTextContent('Sonnet 4.5')
@@ -133,20 +146,26 @@ describe('MainPaneSession status strip', () => {
     // The SDK's launch model is what the account defaulted to, not a user choice:
     // the picker reflects the session record (no model → "Default"). Binding the
     // picker to sessionMeta is what made every session look pinned to the default.
-    expect(screen.getByLabelText(/select model/i)).toHaveValue('default')
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default')
   })
 
-  it('shows remaining context after a turnEnd with usage', async () => {
-    renderPane()
+  it('shows context usage in the prompt row after a turnEnd with usage', async () => {
+    render(
+      <>
+        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />
+        <DockedComposer />
+      </>,
+      { wrapper },
+    )
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
-    // 50k of 200k used → 75% remaining
+    // 50k of 200k used → 25% used (75% remaining)
     emitSessionEvent({
       type: 'turnEnd', turnId: 't1',
       usage: { input_tokens: 10_000, output_tokens: 5, cache_read_input_tokens: 40_000 },
       costUsd: 0.2,
     })
     await waitFor(() => {
-      expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('75%')
+      expect(screen.getByRole('img', { name: 'Context 25% used' })).toBeInTheDocument()
     })
   })
 

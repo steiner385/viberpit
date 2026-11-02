@@ -112,7 +112,7 @@ class _ModeRecorder:
 
 
 def test_exiting_plan_restores_pre_plan_permission_mode():
-    """The web plan toggle sends the 'default' sentinel to turn plan OFF. Exiting
+    """A REST/WS/assistant caller sends the 'default' sentinel to turn plan OFF. Exiting
     plan must return the session to the mode it had BEFORE plan (here full-auto),
     NOT collapse to the SDK 'default' engine — which the registry treats as
     "prompt on every dangerous tool", silently breaking a full-auto session."""
@@ -145,6 +145,35 @@ def test_default_outside_plan_is_not_hijacked():
         return d
     d = asyncio.run(run())
     assert d.mode == "default"
+
+
+def test_prompt_row_picker_switches_straight_out_of_plan():
+    """The prompt-row mode picker (D-1) replaces the plan toggle: from plan it can
+    jump straight to any mode, and that mode must win — not the pre-plan one."""
+    async def run():
+        rec = _ModeRecorder()
+        d = ClaudeAgentDriver("sp-switch", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
+        await d.set_permission_mode("plan")
+        assert d.mode == "plan"
+        await d.set_permission_mode("full-auto")
+        return d
+    assert asyncio.run(run()).mode == "full-auto"
+
+
+def test_prompt_row_default_sentinel_restores_pre_plan_auto():
+    async def run():
+        rec = _ModeRecorder()
+        d = ClaudeAgentDriver("sp-switch", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
+        await d.set_permission_mode("plan")
+        await d.set_permission_mode("default")
+        return d
+    assert asyncio.run(run()).mode == "auto"
 
 
 def _factory(msgs):
