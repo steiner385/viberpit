@@ -31,10 +31,12 @@ import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
 import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
-import { useSessionView, type SessionView } from './sessionView'
+import { useFileTarget, useSessionView, type SessionView } from './sessionView'
 
 /** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
 const ChangesTab = lazy(() => import('@/features/sessions/diff/ChangesTab'))
+/** The Files tab too (D-7): a read-only worktree viewer, off the entry path. */
+const FilesTab = lazy(() => import('@/features/sessions/files/FilesTab'))
 /** The rail's cards too (D-6): secondary to the transcript, so they load after it. */
 const SessionRail = lazy(() => import('./rail/SessionRail').then((m) => ({ default: m.SessionRail })))
 
@@ -63,12 +65,16 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   const [browserEnabled, setBrowserEnabled] = useState(false)
   // Active view, persisted in `?view=` (see `sessionView.ts`).
   const [requestedView, setView] = useSessionView()
+  // The Files tab's open file and line (`?file=&line=`), handed to the lazy pane.
+  const [fileTarget, setFile] = useFileTarget()
 
   // The worktree diff summary (D-4): it lists the Changes tab, and the header's
   // chip reads the same query. `busy` going false (a turn ended) refetches it.
   const busy = statusTier(rt.state.status.state) === 'busy'
   const diffSummary = useSessionDiff(rt.sessionId, { summary: true, busy })
   const hasChanges = (diffSummary.data?.files.length ?? 0) > 0
+  // The Files tab (D-7) reads the session's worktree, so it needs one.
+  const hasFiles = !!sessionRecord?.cwd
 
   // The rail is a column on a pane of 64rem or more — the pane's own width, so
   // the pushed assistant drawer folds it into Details like a narrow window does.
@@ -84,10 +90,10 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   // A view that is not listed falls back to the conversation. Details is listed
   // only where there is no rail column to hold the cards.
   const listed: Record<SessionView, boolean> = {
-    conversation: true, changes: hasChanges, browser: browserEnabled, details: !wide,
+    conversation: true, changes: hasChanges, files: hasFiles, browser: browserEnabled, details: !wide,
   }
   const view: SessionView = listed[requestedView] ? requestedView : 'conversation'
-  const showTabs = hasChanges || browserEnabled || !wide
+  const showTabs = hasChanges || hasFiles || browserEnabled || !wide
 
   // Opening the tab refreshes the summary too (the pane itself fetches the full diff).
   // Keyed on the REQUESTED view changing to Changes after mount — a click on the tab
@@ -173,15 +179,17 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           pushing the rail off the pane. */}
       <div ref={rowRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {/* Conversation | Changes | Browser | Details — Changes once the worktree
-              differs from its base, Browser when the X display is available, Details
-              on a pane too narrow for the rail; no strip for the conversation alone. */}
+          {/* Conversation | Changes | Files | Browser | Details — Changes once the
+              worktree differs from its base, Files when the session has a cwd, Browser
+              when the X display is available, Details on a pane too narrow for the
+              rail; no strip for the conversation alone. */}
           {showTabs && (
             <Tabs
               label="Session view"
               items={[
                 { id: 'conversation', label: 'Conversation' },
                 ...(hasChanges ? [{ id: 'changes', label: 'Changes' }] : []),
+                ...(hasFiles ? [{ id: 'files', label: 'Files' }] : []),
                 ...(browserEnabled ? [{ id: 'browser', label: 'Browser' }] : []),
                 ...(!wide ? [{ id: 'details', label: 'Details', attention: railAttention }] : []),
               ]}
@@ -334,12 +342,14 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
               </>
             )
 
-            /* Changes tab panel */
-            if (view === 'changes') {
+            /* Changes and Files tab panels — both lazy panes */
+            if (view === 'changes' || view === 'files') {
               return (
-                <div id="tab-panel-changes" role="tabpanel" aria-labelledby="tab-changes" className="flex-1 min-h-0 min-w-0">
+                <div id={`tab-panel-${view}`} role="tabpanel" aria-labelledby={`tab-${view}`} className="flex-1 min-h-0 min-w-0">
                   <Suspense fallback={<div className="h-full w-full" aria-busy="true" />}>
-                    <ChangesTab sessionId={rt.sessionId} onSendReview={rt.onPlainPrompt} />
+                    {view === 'changes'
+                      ? <ChangesTab sessionId={rt.sessionId} onSendReview={rt.onPlainPrompt} />
+                      : <FilesTab sessionId={rt.sessionId} target={fileTarget} onOpen={setFile} />}
                   </Suspense>
                 </div>
               )

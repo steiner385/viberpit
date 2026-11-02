@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useMemo, useState, type HTMLAttributes, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { loadDiffHighlight, loadedDiffHighlight } from './highlightChunk'
 import type { DiffHunk, DiffLine, FileDiff } from './types'
@@ -39,9 +39,8 @@ export interface DiffDecorations {
  * row, so a changed line sits beside its replacement; the side a run is short
  * on gets an empty cell. Context lines appear on both sides.
  *
- * Line numbers and hunk headers are dimmed with a translucent text colour, not
- * `opacity` — an opacity layer is a stacking context, and would paint over a
- * touch gutter's hit area where it extends over the numbers (`review/LineCommentGutter`).
+ * Line numbers (`LineNumber`) and hunk headers are dimmed with a
+ * translucent text colour, not `opacity` — see `LineNumber` for why.
  *
  * Colours come from the app's one highlight.js theme: the frame is `.hljs` and
  * add/del rows are `.hljs-addition` / `.hljs-deletion`, so diff and code-block
@@ -137,12 +136,8 @@ interface CellProps {
 
 function LineCell({ line, side, anchored, numWidth, highlight, split, lead }: CellProps) {
   const num = (attr: 'data-old-no' | 'data-new-no', n: number | null | undefined) =>
-    anchored && (
-      <span {...{ [attr]: '' }} className="shrink-0 select-none px-1 text-right text-current/60" style={{ minWidth: numWidth }}>
-        {n ?? ''}
-      </span>
-    )
-  const content = line && <Code text={line.text} highlight={highlight} />
+    anchored && <LineNumber {...{ [attr]: '' }} n={n} width={numWidth} />
+  const content = line && <HighlightedCode text={line.text} highlight={highlight} />
   const sign = line && (
     <span data-sign className="shrink-0 select-none pr-1">{line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '}</span>
   )
@@ -167,29 +162,11 @@ function LineCell({ line, side, anchored, numWidth, highlight, split, lead }: Ce
   )
 }
 
-function Code({ text, highlight }: { text: string; highlight: ((text: string) => string) | null }) {
-  // highlight.js escapes the source; its only markup is its own token spans.
-  if (highlight) return <span dangerouslySetInnerHTML={{ __html: highlight(text) }} />
-  return <>{text}</>
-}
-
 /** Fallback washes sit in Tailwind's layer, so the unlayered theme classes win once the theme CSS is loaded. */
 function rowClass(kind: DiffLine['kind']): string | undefined {
   if (kind === 'add') return 'hljs-addition bg-success-wash'
   if (kind === 'del') return 'hljs-deletion bg-danger-wash'
   return undefined
-}
-
-/** The line highlighter for `path`, or null while it loads / for plain text. */
-function useHighlighter(path: string): ((text: string) => string) | null {
-  const [mod, setMod] = useState(loadedDiffHighlight)
-  useEffect(() => {
-    if (!path || mod) return
-    let live = true
-    void loadDiffHighlight().then((m) => { if (live && m) setMod(m) })
-    return () => { live = false }
-  }, [path, mod])
-  return useMemo(() => (path && mod ? mod.highlighterFor(path) : null), [path, mod])
 }
 
 function hunkHeader(h: DiffHunk): string {
@@ -240,4 +217,54 @@ function splitRows(lines: DiffLine[]): Array<[DiffLine | null, DiffLine | null]>
     for (let k = 0; k < Math.max(dels.length, adds.length); k++) rows.push([dels[k] ?? null, adds[k] ?? null])
   }
   return rows
+}
+
+/*
+ * Shared with the Files tab's viewer (D-7), so a line looks and is coloured the
+ * same in both.
+ */
+
+/** One line's source, as highlight.js markup when there is a highlighter, else plain text. */
+export function HighlightedCode({ text, highlight }: { text: string; highlight: ((text: string) => string) | null }) {
+  // highlight.js escapes the source; its only markup is its own token spans.
+  if (highlight) return <span dangerouslySetInnerHTML={{ __html: highlight(text) }} />
+  return <>{text}</>
+}
+
+/**
+ * A line-number cell with room for `width` (`<digits>ch`) of digits — the
+ * min-width adds the `px-1` padding back, as the box is `border-box` and three
+ * digits would otherwise spill past a two-digit column. Dimmed with a translucent
+ * text colour, not `opacity` — an opacity layer is a stacking context, and would
+ * paint over a touch gutter's hit area where it extends over the numbers
+ * (`review/LineCommentGutter`). Extra attributes (`data-*`) pass through.
+ */
+export function LineNumber({ n, width, className, ...rest }: {
+  n: number | null | undefined
+  width: string
+} & HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span {...rest} className={cn('shrink-0 select-none px-1 text-right text-current/60', className)} style={{ minWidth: `calc(${width} + 0.5rem)` }}>
+      {n ?? ''}
+    </span>
+  )
+}
+
+/**
+ * The line highlighter for `path`, or null while it loads / for plain text.
+ * Shared by `DiffRenderer` and the Files tab's viewer (D-7), so both colour a
+ * file the same way and load highlight.js through the one lazy chunk.
+ */
+// A hook beside the components: the Files tab's viewer (D-7) imports these from
+// this module, so the diff renderer's chunk is not split in two for it.
+// eslint-disable-next-line react-refresh/only-export-components
+export function useHighlighter(path: string): ((text: string) => string) | null {
+  const [mod, setMod] = useState(loadedDiffHighlight)
+  useEffect(() => {
+    if (!path || mod) return
+    let live = true
+    void loadDiffHighlight().then((m) => { if (live && m) setMod(m) })
+    return () => { live = false }
+  }, [path, mod])
+  return useMemo(() => (path && mod ? mod.highlighterFor(path) : null), [path, mod])
 }
