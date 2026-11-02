@@ -50,7 +50,8 @@ from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
-from server.sessions.engine import AgentEngine, AgentEngineUnavailable, parse_agent_engine
+from server.sessions.engine import (
+    EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, parse_agent_engine)
 from server.sessions.model_policy import quota_model
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy, select_account
@@ -1925,6 +1926,9 @@ class PermissionModeRequest(BaseModel):
 
 class SetModelRequest(BaseModel):
     model: str | None = None
+    #: Engine-native reasoning effort (Codex) to apply with the switch. Omitted ⇒
+    #: the session's effort is left exactly where it was.
+    effort: str | None = None
 
 
 def _action_error_response(exc: ActionError) -> JSONResponse:
@@ -2097,13 +2101,16 @@ async def set_session_model(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Switch a session's model (→ `set_model_for_session`). 409 if the model is
-    blocked by policy."""
+    """Switch a session's model (→ `set_model_for_session`), optionally with a
+    reasoning ``effort``. 409 if the model is blocked by policy; 400
+    ``unsupported_reasoning_effort`` for an effort on a Claude session."""
     orch = _get_orchestrator(request)
     via = getattr(request.state, "via", None)
+    effort = body.effort if body.effort is not None else EFFORT_UNCHANGED
     try:
         return await session_actions.set_model(
-            orch, db, session_id=session_id, model=body.model, identity=identity, via=via)
+            orch, db, session_id=session_id, model=body.model, identity=identity, via=via,
+            effort=effort)
     except ActionError as exc:
         return _action_error_response(exc)
 

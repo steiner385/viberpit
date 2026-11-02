@@ -5,44 +5,29 @@ import { SessionMeta } from './SessionMeta'
 
 const base = {
   sessionId: 's1',
-  account: 'acct-a', model: 'opus', contextPct: null, quota: null,
+  account: 'acct-a', contextPct: null, quota: null,
   subAgents: [],
-  models: [{ id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }],
   accounts: [{ name: 'acct-a' }, { name: 'acct-b' }],
   accountPinned: false,
 }
 
 describe('SessionMeta switchers', () => {
-  it('dispatches a model selection', () => {
-    const onSelectModel = vi.fn()
-    render(<SessionMeta {...base} onSelectModel={onSelectModel} onSelectAccount={vi.fn()} />)
-    fireEvent.change(screen.getByLabelText('Select model'), { target: { value: 'sonnet' } })
-    expect(onSelectModel).toHaveBeenCalledWith('sonnet')
-  })
-
-  it('does not dispatch a model selection when the value equals the current model', () => {
-    const onSelectModel = vi.fn()
-    render(<SessionMeta {...base} onSelectModel={onSelectModel} onSelectAccount={vi.fn()} />)
-    fireEvent.change(screen.getByLabelText('Select model'), { target: { value: 'opus' } })
-    expect(onSelectModel).not.toHaveBeenCalled()
-  })
-
   it('dispatches an account selection', () => {
     const onSelectAccount = vi.fn()
-    render(<SessionMeta {...base} onSelectModel={vi.fn()} onSelectAccount={onSelectAccount} />)
+    render(<SessionMeta {...base} onSelectAccount={onSelectAccount} />)
     fireEvent.change(screen.getByLabelText('Switch account'), { target: { value: 'acct-b' } })
     expect(onSelectAccount).toHaveBeenCalledWith('acct-b')
   })
 
   it('renders the pin as an Unpin button and dispatches onUnpin', () => {
     const onUnpin = vi.fn()
-    render(<SessionMeta {...base} accountPinned onSelectModel={vi.fn()} onSelectAccount={vi.fn()} onUnpin={onUnpin} />)
+    render(<SessionMeta {...base} accountPinned onSelectAccount={vi.fn()} onUnpin={onUnpin} />)
     fireEvent.click(screen.getByRole('button', { name: 'Unpin account' }))
     expect(onUnpin).toHaveBeenCalledTimes(1)
   })
 
   it('renders no pin control when not pinned', () => {
-    render(<SessionMeta {...base} onSelectModel={vi.fn()} onSelectAccount={vi.fn()} />)
+    render(<SessionMeta {...base} onSelectAccount={vi.fn()} />)
     expect(screen.queryByRole('button', { name: 'Unpin account' })).not.toBeInTheDocument()
   })
 })

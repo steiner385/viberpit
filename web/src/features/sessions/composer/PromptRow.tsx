@@ -1,15 +1,19 @@
 /**
  * PromptRow — the compact control row under the session composer (sub-spec D §3):
- * Mode ▾ today; the model / effort pickers and the usage ring join it later. It
- * reads the live runtime directly, and the session record + engine capabilities
- * are passed in so capability-gated controls can hide (never disable) themselves.
+ * Mode ▾ · Model ▾ · Effort ▾ (the usage ring joins it later). It reads the live
+ * runtime directly; the session record, engine capabilities and model catalog are
+ * passed in so capability-gated controls hide (never disable) themselves.
  */
 
 import { useImperativeHandle, useState, type Ref } from 'react'
-import type { AgentCapabilities, Session } from '@/api/types'
+import type { AgentCapabilities, ModelOption, Session } from '@/api/types'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SESSION_MODE_OPTIONS } from '@/session/permissionModes'
+import { canUseEngine } from '@/session/engineCapabilities'
+import { statusTier } from '@/session/statusTier'
 import { ModePicker } from './ModePicker'
+import { ModelPicker } from './ModelPicker'
+import { EffortPicker } from './EffortPicker'
 
 /** Imperative openers for the row's menus (the Alt+Shift+M / I / E shortcuts). */
 export interface PromptRowMenus {
@@ -18,29 +22,44 @@ export interface PromptRowMenus {
   openEffort(): void
 }
 
+type OpenMenu = 'mode' | 'model' | 'effort' | null
+
 export interface PromptRowProps {
-  rt: Pick<SessionRuntime, 'mode' | 'pendingMode' | 'onSetMode'>
+  rt: Pick<SessionRuntime, 'mode' | 'pendingMode' | 'onSetMode' | 'model' | 'liveModel' | 'modelPending' | 'onSetModel'> & {
+    state: { status: { state: string } }
+  }
   /** The open session's record (undefined until the list query answers). */
   session?: Pick<Session, 'engine'> & Partial<Session>
   /** The session engine's capabilities; undefined means "unknown" — treat as present. */
   caps?: AgentCapabilities
+  /** The session engine's model catalog (`GET /api/models`). */
+  models?: readonly ModelOption[]
   menuRef?: Ref<PromptRowMenus>
-  /** The assistant drawer has no session controls: the whole row is hidden. */
-  hideSessionControls?: boolean
 }
 
-// `session` / `caps` are not read yet: no engine restricts permission modes
-// (AgentCapabilities has no mode field and Codex maps all seven). They are part
-// of the row's contract for the model/effort pickers and the usage ring.
-export function PromptRow({ rt, menuRef, hideSessionControls = false }: PromptRowProps) {
-  const [modeOpen, setModeOpen] = useState(false)
-  useImperativeHandle(menuRef, () => ({
-    openMode: () => setModeOpen(true),
-    openModel: () => {},
-    openEffort: () => {},
-  }), [])
+const NO_MODELS: readonly ModelOption[] = []
 
-  if (hideSessionControls) return null
+// `caps` gates nothing for the mode picker: no engine restricts permission modes
+// (AgentCapabilities has no mode field and Codex maps all seven).
+export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: PromptRowProps) {
+  const [openMenu, setOpenMenu] = useState<OpenMenu>(null)
+  const menuOpener = (menu: OpenMenu) => (next: boolean) => setOpenMenu(next ? menu : null)
+
+  // The chosen model's catalog row: its efforts drive the effort picker. A null
+  // choice is the account default, which the catalog flags (Codex) when it knows it.
+  const chosenModel = models.find((m) => m.id === rt.model)
+    ?? (rt.model == null ? models.find((m) => m.default) : undefined)
+  const efforts = chosenModel?.reasoningEfforts ?? []
+  const showEffort = canUseEngine(caps, 'reasoningEffort') && efforts.length > 0
+  const effort = session?.reasoningEffort ?? chosenModel?.defaultReasoningEffort ?? null
+
+  useImperativeHandle(menuRef, () => ({
+    openMode: () => setOpenMenu('mode'),
+    openModel: () => setOpenMenu('model'),
+    // Hidden, not disabled: with no effort picker the shortcut does nothing.
+    openEffort: () => { if (showEffort) setOpenMenu('effort') },
+  }), [showEffort])
+
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pb-1 text-xs" data-testid="prompt-row">
       <ModePicker
@@ -48,9 +67,30 @@ export function PromptRow({ rt, menuRef, hideSessionControls = false }: PromptRo
         pendingMode={rt.pendingMode}
         options={SESSION_MODE_OPTIONS}
         onSelect={rt.onSetMode}
-        open={modeOpen}
-        onOpenChange={setModeOpen}
+        open={openMenu === 'mode'}
+        onOpenChange={menuOpener('mode')}
       />
+      <ModelPicker
+        chosen={rt.model}
+        live={rt.liveModel}
+        pending={rt.modelPending}
+        models={models}
+        engine={session?.engine}
+        busy={statusTier(rt.state.status.state) === 'busy'}
+        canSteer={caps?.steer === true}
+        onSelect={(id, when) => rt.onSetModel(id, when)}
+        open={openMenu === 'model'}
+        onOpenChange={menuOpener('model')}
+      />
+      {showEffort && (
+        <EffortPicker
+          effort={effort}
+          efforts={efforts}
+          onSelect={(next) => rt.onSetModel(rt.model ?? 'default', 'now', next)}
+          open={openMenu === 'effort'}
+          onOpenChange={menuOpener('effort')}
+        />
+      )}
     </div>
   )
 }

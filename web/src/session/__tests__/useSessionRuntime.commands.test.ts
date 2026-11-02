@@ -33,6 +33,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 import { useSessionRuntime } from '@/session/useSessionRuntime'
+import { api } from '@/api/client'
 
 // useSessionRuntime invalidates permission-rules after a grant, so it needs a client.
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -67,6 +68,25 @@ describe('runtime commands', () => {
     act(() => result.current.onSetModel('default', 'now'))
     expect(command).toHaveBeenCalledWith('s1', 'model', 'default')
     expect(result.current.model).toBeNull()
+  })
+
+  it('onSetModel with an effort POSTs it on the model route instead of the slash command', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ ok: true, restarted: false })
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    await act(async () => result.current.onSetModel('gpt-5', 'now', 'high'))
+    expect(post).toHaveBeenCalledWith('/sessions/s1/model', { model: 'gpt-5', effort: 'high' })
+    expect(command).not.toHaveBeenCalled()
+    expect(result.current.model).toBe('gpt-5')
+    post.mockRestore()
+  })
+
+  it('a refused effort change surfaces an error and drops the optimistic model', async () => {
+    const post = vi.spyOn(api, 'post').mockRejectedValue(new Error('nope'))
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    await act(async () => result.current.onSetModel('gpt-5', 'now', 'high'))
+    expect(result.current.model).toBeNull()
+    expect(result.current.state.error?.message).toMatch(/reasoning effort/)
+    post.mockRestore()
   })
 
   it('liveModel tracks the producing model from sessionMeta / turnModel, separate from the picker', () => {

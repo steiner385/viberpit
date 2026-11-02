@@ -11,7 +11,7 @@ import { Composer } from './Composer'
 import type { MentionSource } from './MentionMenu'
 import { PromptRow, type PromptRowMenus } from './PromptRow'
 import { deriveHistory } from '@/session/history'
-import { useEngineCapabilities, useGenerateSuggestions, useSessions } from '@/api/hooks'
+import { useEngineCapabilities, useGenerateSuggestions, useModels, useSessions } from '@/api/hooks'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { PromptContext } from '@/session/events'
 
@@ -21,8 +21,8 @@ interface Props {
    *  context (the AI assistant drawer's "sent from" chip). Computed lazily at
    *  send time (not once) so it always reflects the current route/open session. */
   contextProvider?: () => PromptContext
-  /** Hide the prompt row (mode picker and friends) — the AI assistant drawer
-   *  has no session controls. */
+  /** Hide the prompt row (mode / model / effort pickers) — the AI assistant
+   *  drawer has no session controls, so its lookups are skipped too. */
   hideSessionControls?: boolean
   /** Imperative openers for the prompt row's menus (keyboard shortcuts). */
   promptRowMenus?: Ref<PromptRowMenus>
@@ -34,9 +34,6 @@ interface Props {
 }
 
 export function SessionComposer({ rt, contextProvider, hideSessionControls = false, promptRowMenus, externalDraft, mentionSource }: Props) {
-  const { data: sessions } = useSessions()
-  const session = sessions?.find((s) => s.id === rt.sessionId)
-  const caps = useEngineCapabilities(session?.engine)
   const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
   const genSuggestions = useGenerateSuggestions()
   const onPrompt = useCallback(
@@ -68,7 +65,18 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
         externalDraft={externalDraft}
         mentionSource={mentionSource}
       />
-      <PromptRow rt={rt} session={session} caps={caps} menuRef={promptRowMenus} hideSessionControls={hideSessionControls} />
+      {!hideSessionControls && <SessionPromptRow rt={rt} menuRef={promptRowMenus} />}
     </>
   )
+}
+
+/** The prompt row plus the lookups only it needs: the session record, its
+ *  engine's capabilities and its engine's model catalog. A component of its own
+ *  so a composer without session controls never runs them. */
+function SessionPromptRow({ rt, menuRef }: { rt: SessionRuntime; menuRef?: Ref<PromptRowMenus> }) {
+  const { data: sessions } = useSessions()
+  const session = sessions?.find((s) => s.id === rt.sessionId)
+  const caps = useEngineCapabilities(session?.engine)
+  const { data: models } = useModels(session?.engine, session?.accountName)
+  return <PromptRow rt={rt} session={session} caps={caps} models={models} menuRef={menuRef} />
 }

@@ -21,10 +21,10 @@ import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command, PromptContext } from '@/session/events'
 import { selectBackgroundWork, type BackgroundWorkView, selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
-import { useSessions, useAccounts, useSettings } from '@/api/hooks'
+import { QK, useSessions, useAccounts, useSettings } from '@/api/hooks'
 import { isPreSpawnStatus } from '@/api/types'
 import type { UsageWindow, RulePreview, GrantResult, RuleScope } from '@/api/types'
-import { api } from '@/api/client'
+import { api, apiErrorCode } from '@/api/client'
 import { usageWindows } from '@/lib/usageWindows'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
@@ -107,8 +107,10 @@ export interface SessionRuntime {
   commandResult: CommandResultView | null
   onCommand: (name: string, args: string) => void
   /** Switch model: 'now' stops + restarts a busy turn on the new model; 'after_turn'
-   *  hands the model to the SDK without interrupting (applies on the next turn). */
-  onSetModel: (id: string, when: 'now' | 'after_turn') => void
+   *  hands the model to the SDK without interrupting (applies on the next turn).
+   *  `effort` (engines with the `reasoningEffort` capability) rides the same switch;
+   *  omitted, the session's effort is left as it is. */
+  onSetModel: (id: string, when: 'now' | 'after_turn', effort?: string) => void
   dismissCommandResult: () => void
   /** Close the error banner. The inline transcript card keeps the durable record. */
   dismissError: () => void
@@ -554,10 +556,27 @@ export function useSessionRuntime(
     // eslint-disable-next-line react-hooks/set-state-in-effect -- retire the override once the record moves
     if (modelOverride && recordModel !== modelOverride.seen) setModelOverride(null)
   }, [recordModel, modelOverride])
-  const onSetModel = useCallback((id: string, when: 'now' | 'after_turn') => {
-    setModelOverride((cur) => ({ model: id === 'default' ? null : id, seen: cur ? cur.seen : recordModel }))
-    command(sessionId, 'model', when === 'after_turn' ? `${id} --after-turn` : id)
-  }, [sessionId, command, recordModel])
+  const onSetModel = useCallback((id: string, when: 'now' | 'after_turn', effort?: string) => {
+    const model = id === 'default' ? null : id
+    setModelOverride((cur) => ({ model, seen: cur ? cur.seen : recordModel }))
+    if (effort === undefined) {
+      command(sessionId, 'model', when === 'after_turn' ? `${id} --after-turn` : id)
+      return
+    }
+    // The `/model` slash command has no effort slot; the HTTP route is the same
+    // `session_actions.set_model` path with one. It always switches 'now' (the
+    // route's default) — the effort picker only ever asks for that.
+    api.post(`/sessions/${sessionId}/model`, { model, effort })
+      .then(() => qc.invalidateQueries({ queryKey: QK.sessions }))
+      .catch((err: unknown) => {
+        setModelOverride(null)
+        dispatch({
+          type: 'error',
+          code: apiErrorCode(err) ?? 'effort_not_set',
+          message: `Couldn't set reasoning effort to ${effort}.`,
+        })
+      })
+  }, [sessionId, command, recordModel, qc])
   const model = modelOverride ? modelOverride.model : recordModel
   const modelPending = sessionRecord?.modelPending ?? false
   const liveModel = state.model

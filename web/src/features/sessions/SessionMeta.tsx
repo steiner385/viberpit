@@ -2,9 +2,9 @@
  * SessionMeta — the second-tier session status strip.
  *
  * Shows, glanceably: the agent (engine) when it is not the default one, current
- * account, current model, reasoning effort, runner host, remaining context,
- * account quota (one readout per provider window), and a toggle for the
- * sub-agent list.
+ * account, runner host, remaining context, account quota (one readout per
+ * provider window), and a toggle for the sub-agent list. The model and effort
+ * pickers live in the composer's prompt row (`composer/PromptRow.tsx`).
  * All values are pre-derived by the caller (SessionView); this component is
  * pure presentation — including the capability flags, which the caller reads
  * from the server's per-engine capability report rather than inferring here.
@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
 import { EMPTY_BACKGROUND_WORK_VIEW, type BackgroundWorkView, type SubAgent, type SubAgentStatus } from '@/session/selectors'
-import { engineBadge, modelName } from '@/session/modelName'
+import { engineBadge } from '@/session/modelName'
 import { windowLabel } from '@/lib/usageWindows'
 import { SubAgentList } from './SubAgentList'
 import { BackgroundWorkList } from './BackgroundWorkList'
@@ -43,20 +43,11 @@ interface Props {
   /** Where the session's GUI renders; 'native' shows the desktop chip. */
   displayMode?: 'native' | 'virtual' | null
   displayFallbackReason?: string | null
-  /** Engine-native reasoning choice (Codex); null = the model's own default. */
-  reasoningEffort?: string | null
   /** Server-advertised `subagents` capability for this session's engine. False
    *  hides the sub-agent surface entirely — an engine that never spawns one must
    *  not offer a control for it. Defaults to true so an unanswered capability
    *  report never removes a control that works today. */
   subAgentsSupported?: boolean
-  /** The CHOSEN model alias (session record); null = account default. Drives the picker. */
-  model: string | null
-  /** The model actually producing (SDK id, e.g. "claude-opus-4-8"); shown as a read-only
-   *  readout beside the picker. After a switch it lags `model` by one turn. */
-  liveModel?: string | null
-  /** True while a "switch after this turn" change waits for the in-flight turn to end. */
-  modelPending?: boolean
   contextPct: number | null
   quota: UsageWindow[] | null
   subAgents: SubAgent[]
@@ -74,14 +65,12 @@ interface Props {
    *  this strip's status line instead of needing a row of their own; desktop omits
    *  it and keeps the actions in its own header. */
   actionsSlot?: React.ReactNode
-  models: { id: string; label: string }[]
   /** In-session MCP readout (rendered right after ctx). */
   mcpSlot?: React.ReactNode
   /** Standing "Always allow" rules that apply to this session (rendered after the MCP readout). */
   rulesSlot?: React.ReactNode
   accounts: { name: string; nickname?: string | null }[]
   accountPinned: boolean
-  onSelectModel: (id: string) => void
   onSelectAccount: (name: string) => void
   /** Clear the account pin; the server rotates a `limited` session immediately. */
   onUnpin?: () => void
@@ -97,7 +86,7 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onUnpin }: Props) {
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, subAgentsSupported = true, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, accounts, accountPinned, onSelectAccount, onUnpin }: Props) {
   const [panel, setPanel] = useState<'agents' | 'background' | null>(null)
   const now = useNow(1000, backgroundWork.wakeupAt != null)
   // `now` is 0 until the first tick; a countdown against 0 would flash a huge number.
@@ -108,7 +97,7 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
   // strip wrapped three rows deep — 114px of a phone's 844 before the transcript,
   // on top of the TopBar and the header. The live status, export, the session
   // actions and the sub-agent toggle stay on the one visible row; the identity
-  // and settings readouts (account, model, effort, host, display, ctx, quota)
+  // and settings readouts (account, host, display, ctx, quota)
   // fold behind a "Details" toggle. Same mechanism as the list controls'
   // fold: this strip is a `@container`, `@max-md:` folds, `display: contents`
   // everywhere else so a wide pane's single row is untouched. Hidden, not
@@ -189,63 +178,6 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
             </button>
           )}
         </span>
-
-        {/* Model switcher: bound to the CHOSEN alias (the session record), never to
-            the SDK-reported id — that id is the launch default until a turn runs on
-            the new model, so binding to it made the picker snap back on every switch. */}
-        {(() => {
-          const chosen = model ?? 'default'
-          const live = liveModel ? modelName(liveModel, engine) : ''
-          return (
-            <span className="inline-flex items-center gap-1">
-              <span className="text-ink-muted">model</span>
-              <select
-                aria-label="Select model"
-                value={chosen}
-                onChange={(e) => e.target.value && e.target.value !== chosen && onSelectModel(e.target.value)}
-                className="bg-transparent font-medium text-ink truncate max-w-[14rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
-              >
-                {!models.some((m) => m.id === chosen) && (
-                  <option value={chosen}>{chosen === 'default' ? 'Default' : chosen}</option>
-                )}
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </select>
-              {live && (
-                <span
-                  aria-label="Model in use"
-                  title="Model currently answering (a switch takes effect on the next turn)"
-                  className="text-ink-muted truncate max-w-[8rem]"
-                >
-                  {live}
-                </span>
-              )}
-              {modelPending && (
-                <span
-                  aria-label="Model switch pending"
-                  title="Switching when the current turn finishes"
-                  className="text-warning"
-                >
-                  · after this turn
-                </span>
-              )}
-            </span>
-          )
-        })()}
-
-        {/* Reasoning effort — the engine-native depth choice (Codex). Absent
-            means "the model's own default", which is not worth a readout. It is
-            data-gated, not capability-gated: an engine without the capability
-            never reports one. */}
-        {reasoningEffort && (
-          <span className="inline-flex items-center gap-1" aria-label="Reasoning effort">
-            <span className="text-ink-muted">effort</span>
-            <span className="font-medium text-ink truncate max-w-[8rem]">
-              {reasoningEffort}
-            </span>
-          </span>
-        )}
 
         {/* Runner host — which fleet member is actually executing this session. */}
         {host && (

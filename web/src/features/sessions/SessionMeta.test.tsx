@@ -21,17 +21,14 @@ function Wrapper({ children }: { children: ReactNode }) {
 const baseProps = {
   sessionId: 's1',
   account: 'work-max',
-  model: 'claude-sonnet-4-5',
   contextPct: 78,
   quota: [
     { key: 'session', label: 'session', pct: 42, resetsAt: '2026-06-19T14:30:00.000Z', durationSeconds: 18000 },
     { key: 'weekly', label: 'weekly', pct: 18, resetsAt: null, durationSeconds: 604800 },
   ] as UsageWindow[],
   subAgents: [] as SubAgent[],
-  models: [{ id: 'claude-sonnet-4-5', label: 'Sonnet' }],
   accounts: [{ name: 'work-max' }],
   accountPinned: false,
-  onSelectModel: () => {},
   onSelectAccount: () => {},
 }
 
@@ -56,37 +53,16 @@ describe('SessionMeta', () => {
     expect(screen.queryByRole('list', { name: 'Sub-agents' })).toBeNull()
     expect(screen.getByRole('list', { name: 'Background work' })).toBeInTheDocument()
   })
-  it('shows the current account and model', () => {
+  it('shows the current account', () => {
     render(<SessionMeta {...baseProps} />)
     // Account is shown as the selected value of the account switcher dropdown.
     expect(screen.getByLabelText('Switch account')).toHaveValue('work-max')
-    // Model is shown as the selected value of the model switcher dropdown.
-    expect(screen.getByLabelText('Select model')).toHaveValue('claude-sonnet-4-5')
   })
 
-  it('binds the picker to the chosen alias and shows the live model as a separate readout', () => {
-    render(
-      <SessionMeta
-        {...baseProps}
-        model="opus"
-        liveModel="claude-fable-5"
-        models={[{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }]}
-      />,
-    )
-    // The picker never snaps to the SDK-reported id — that is what pinned it.
-    expect(screen.getByLabelText('Select model')).toHaveValue('opus')
-    expect(screen.getByLabelText('Model in use')).toHaveTextContent('Fable 5')
-  })
-
-  it('selects Default for a null model even before the catalog has loaded', () => {
-    render(<SessionMeta {...baseProps} model={null} models={[]} />)
-    expect(screen.getByLabelText('Select model')).toHaveValue('default')
-    expect(screen.queryByLabelText('Model in use')).not.toBeInTheDocument()
-  })
-
-  it('flags a switch that waits for the current turn to finish', () => {
-    render(<SessionMeta {...baseProps} model="claude-sonnet-4-5" modelPending />)
-    expect(screen.getByLabelText('Model switch pending')).toHaveTextContent(/after this turn/i)
+  it('carries no model or effort control: those live in the prompt row', () => {
+    render(<SessionMeta {...baseProps} engine="codex" />)
+    expect(screen.queryByLabelText('Select model')).toBeNull()
+    expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
   })
 
   it('labels the account option with the nickname but keeps the slug as its value', () => {
@@ -121,11 +97,8 @@ describe('SessionMeta', () => {
   })
 
   it('renders an em-dash for unknown context', () => {
-    render(<SessionMeta {...baseProps} model={null} contextPct={null} />)
-    // Context still shows em-dash when unknown.
+    render(<SessionMeta {...baseProps} contextPct={null} />)
     expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('—')
-    // Model select is still rendered (not absent) when model is null.
-    expect(screen.getByLabelText('Select model')).toBeInTheDocument()
   })
 
   it('shows account quota when present', () => {
@@ -250,29 +223,6 @@ describe('SessionMeta', () => {
       'Desktop unavailable — opened on a virtual display: the desktop session changed or is not responding')
     rerender(<SessionMeta {...baseProps} displayMode="virtual" displayFallbackReason={null} />)
     expect(screen.queryByTestId('meta-display-fallback')).toBeNull()
-  })
-
-  it('shows the engine-native reasoning effort', () => {
-    render(<SessionMeta {...baseProps} engine="codex" reasoningEffort="high" />)
-    expect(screen.getByLabelText('Reasoning effort')).toHaveTextContent('high')
-  })
-
-  it('omits reasoning effort when the session runs the model default', () => {
-    render(<SessionMeta {...baseProps} reasoningEffort={null} />)
-    expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
-  })
-
-  it('renders a codex live model through the shared label helper', () => {
-    render(
-      <SessionMeta
-        {...baseProps}
-        engine="codex"
-        model="gpt-5.1-codex"
-        liveModel="gpt-5.1-codex"
-        models={[{ id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' }]}
-      />,
-    )
-    expect(screen.getByLabelText('Model in use')).toHaveTextContent('GPT-5.1 Codex')
   })
 
   it('hides the sub-agent control for an engine without the subagents capability', () => {
