@@ -23,7 +23,7 @@
  * shipping components.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/api/types'
 
@@ -595,6 +595,44 @@ describe('Esc stops a running turn; ← always detaches', () => {
     expect(socket.sendInterrupt).toHaveBeenCalledWith('s1')
     expect(composer().value).toBe('wip')
     expect(app.path()).toBe('/sessions/s1')
+  })
+})
+
+// ── Alt+Shift+M / I / E open the prompt row's menus ──────────────────────────
+
+describe('Alt+Shift+M / I / E open the prompt row menus', () => {
+  const chord = (code: string, key: string) =>
+    ({ key, code, altKey: true, shiftKey: true, bubbles: true, cancelable: true })
+
+  it('Alt+Shift+M opens the mode menu while the composer is focused and typing', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    await user.keyboard('hi')
+    fireEvent.keyDown(composer(), chord('KeyM', 'M'))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByText('Ask')).toBeInTheDocument()
+    expect(composer().value).toBe('hi')
+  })
+
+  it('Alt+Shift+I opens the model menu', async () => {
+    await renderSession()
+    fireEvent.keyDown(composer(), chord('KeyI', 'I'))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).queryByText('Ask')).not.toBeInTheDocument()
+  })
+
+  it('Alt+Shift+E does nothing on a Claude session (no effort picker)', async () => {
+    await renderSession()
+    fireEvent.keyDown(composer(), chord('KeyE', 'E'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('does nothing without a session open', async () => {
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    fireEvent.keyDown(railLink(), chord('KeyM', 'M'))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 })
 

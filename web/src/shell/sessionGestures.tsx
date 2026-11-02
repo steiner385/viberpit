@@ -28,6 +28,7 @@
  * `onDetach` identity change, which is every render of `MainPaneSession`.
  */
 import * as React from 'react'
+import type { PromptRowMenus } from '@/features/sessions/composer/PromptRow'
 
 export interface SessionGestures {
   /** A permission or question card is waiting for an answer. */
@@ -50,10 +51,42 @@ const SessionGestureContext = React.createContext<React.RefObject<SessionGesture
   null,
 )
 
-/** The shell's side: owns the ref both halves share. */
+/**
+ * The prompt row's menu openers (Alt+Shift+M / I / E). They live beside the
+ * gestures rather than in them because the OTHER half is the dock's composer,
+ * not `MainPaneSession`: the row is mounted by `PromptDock`, a sibling of the
+ * pane, so neither could hand it to the other. Same lifetime rule, same bridge.
+ * Null current means no prompt row is mounted, and the chords then do nothing.
+ */
+const PromptRowMenusContext = React.createContext<React.RefObject<PromptRowMenus | null> | null>(
+  null,
+)
+
+/** The shell's side: owns the refs both halves share. */
 export function SessionGestureProvider({ children }: { children: React.ReactNode }) {
   const ref = React.useRef<SessionGestures | null>(null)
-  return <SessionGestureContext.Provider value={ref}>{children}</SessionGestureContext.Provider>
+  const menus = React.useRef<PromptRowMenus | null>(null)
+  return (
+    <SessionGestureContext.Provider value={ref}>
+      <PromptRowMenusContext.Provider value={menus}>{children}</PromptRowMenusContext.Provider>
+    </SessionGestureContext.Provider>
+  )
+}
+
+/** The shell's read handle for the prompt row's menus (see `PromptRowMenusContext`). */
+export function usePromptRowMenusHandle(): React.RefObject<PromptRowMenus | null> {
+  const ref = React.useContext(PromptRowMenusContext)
+  if (!ref) throw new Error('usePromptRowMenusHandle must be used inside SessionGestureProvider')
+  return ref
+}
+
+/**
+ * The dock composer's side: the ref to pass as `SessionComposer`'s
+ * `promptRowMenus`. Undefined outside the shell, so the composer stays
+ * mountable in a unit test without it.
+ */
+export function usePromptRowMenusRegistration(): React.RefObject<PromptRowMenus | null> | undefined {
+  return React.useContext(PromptRowMenusContext) ?? undefined
 }
 
 /**

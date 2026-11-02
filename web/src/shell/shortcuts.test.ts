@@ -167,6 +167,11 @@ function keyForGlyph(glyph: string): string | null {
  * display string promises a key its matcher rejects" is the whole point.
  */
 function chordFromKeys(keys: string): KeyboardLike | null {
+  // Alt+Shift+M / ⌥⇧M: matched on `code`, because Option rewrites `key` on macOS.
+  const asAltShift = /^(?:Alt\+Shift\+|⌥⇧)([A-Z])$/.exec(keys)
+  if (asAltShift) {
+    return ev({ key: asAltShift[1], code: `Key${asAltShift[1]}`, altKey: true, shiftKey: true })
+  }
   const asCtrl = /^Ctrl\+(.+)$/.exec(keys)
   if (asCtrl) {
     const key = keyForGlyph(asCtrl[1].toLowerCase())
@@ -445,6 +450,12 @@ describe('displayKeys / isApplePlatform', () => {
 
   it('a platform-varying row is a ⌘ chord on Apple and the SAME key on Ctrl elsewhere', () => {
     for (const s of SHORTCUTS.filter((x) => x.keysMac !== undefined)) {
+      // Alt+Shift+letter rows are ⌥⇧ on Apple, not ⌘ (Option, not Command).
+      const altShift = /^Alt\+Shift\+(.)$/.exec(s.keys)
+      if (altShift) {
+        expect(s.keysMac, `${s.id} keysMac`).toBe(`⌥⇧${altShift[1]}`)
+        continue
+      }
       expect(s.keysMac, `${s.id} keysMac`).toMatch(/^⌘/)
       expect(s.keys, `${s.id} keys`).toMatch(/^Ctrl\+/)
       // The two must name the same terminal key, or a Mac user is told to press
@@ -749,6 +760,23 @@ describe('the un-bindable Desktop chords bind nothing', () => {
     expect(matchShortcut(e, () => true, anywhere), label).toBeUndefined()
     // …and it is not selectable by a focused row or group header either.
     expect(matchShortcut(e, () => true), label).toBeUndefined()
+  })
+
+  it('the prompt-row menu chords (Alt+Shift+M / I / E) are not in the browser-reserved set', () => {
+    // The set documented at the top of the registry: ⌘/Ctrl + N W T Q, Ctrl(+Shift)+Tab,
+    // Ctrl+PageUp/Down, ⌘⇧[ ], plus Ctrl+Shift+I (DevTools) and ⌘⇧M (profile switcher),
+    // which are why the menus use Alt+Shift.
+    const reserved = /(⌘|Cmd|Ctrl)\s*\+?\s*(Shift\s*\+\s*|⇧\s*)?(N|W|T|Q|I|M|Tab|Page(Up|Down))\b|⌘\s*⇧\s*[[\]]/i
+    const rows = SHORTCUTS.filter((s) => ['insession.modeMenu', 'insession.modelMenu', 'insession.effortMenu'].includes(s.id))
+    expect(rows).toHaveLength(3)
+    for (const s of rows) {
+      expect(s.keys, `${s.id} keys`).not.toMatch(reserved)
+      expect(s.keysMac ?? '', `${s.id} keysMac`).not.toMatch(reserved)
+      expect(s.keys).toMatch(/^Alt\+Shift\+[MIE]$/)
+    }
+    // Ctrl+Shift+I / ⌘⇧M themselves reach none of them.
+    expect(matchShortcut(ev({ key: 'I', code: 'KeyI', ctrlKey: true, shiftKey: true }), () => true, anywhere)).toBeUndefined()
+    expect(matchShortcut(ev({ key: 'M', code: 'KeyM', metaKey: true, shiftKey: true }), () => true, anywhere)).toBeUndefined()
   })
 
   it('the dropped row ids are absent, so the drop is a decision and not an oversight', () => {

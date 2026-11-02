@@ -34,7 +34,7 @@ import { useAttractCycle } from './useAttractCycle'
 import { useIdleCursor } from './useIdleCursor'
 import { useWakeLock } from './useWakeLock'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
-import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
+import { SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle } from './sessionGestures'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts } from './useShortcuts'
 import { useToastAnchor } from './toastInsets'
@@ -310,6 +310,7 @@ function AppShellInner() {
   // here re-renders when they change, because the listener reads them at
   // keydown time.
   const gestures = useSessionGestureHandle()
+  const promptMenus = usePromptRowMenusHandle()
   useShortcuts(
     (e) => {
       const active = document.activeElement
@@ -342,6 +343,9 @@ function AppShellInner() {
       'insession.detach': () => gestures.current?.onDetach(),
       'insession.detachEsc': () => gestures.current?.onDetach(),
       'insession.forceDetach': () => gestures.current?.onDetach(),
+      'insession.modeMenu': () => promptMenus.current?.openMode(),
+      'insession.modelMenu': () => promptMenus.current?.openModel(),
+      'insession.effortMenu': () => promptMenus.current?.openEffort(),
     },
   )
 

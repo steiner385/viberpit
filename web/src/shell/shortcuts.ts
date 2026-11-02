@@ -186,6 +186,10 @@ export const SHORTCUTS: Shortcut[] = [
   //   · `session.next`    Ctrl+Tab          — reserved: NEXT TAB.
   //   · `session.prev`    Ctrl+Shift+Tab    — reserved: PREVIOUS TAB.
   //
+  // The prompt-row menu chords stay clear of the browser too: Ctrl+Shift+I is
+  // DevTools and ⌘⇧M the Chrome profile switcher, so the menus use Alt+Shift+I /
+  // Alt+Shift+M, which neither Chrome nor Safari reserves.
+  //
   // The help sheet renders from this array, so a row here is a PROMISE that the
   // key does something. Shipping a promise the browser silently eats is worse
   // than the missing shortcut: the user presses it, a tab closes, and the sheet
@@ -356,6 +360,22 @@ export const SHORTCUTS: Shortcut[] = [
     // question the helpers own.
     match: ctrl((e) => e.key === 'z' || e.key === 'Z'),
     when: (c) => c.sessionOpen && !c.overlayOpen && !c.yieldsToTextEntry },
+  // Prompt-row menus (Desktop parity, sub-spec D §3.1). Alt+Shift+letter, matched
+  // on `e.code` because macOS Option rewrites `e.key` (⌥⇧M is "Â", not "M"). They
+  // fire while typing — a chord is not a character — and `Alt+Shift` leaves
+  // Ctrl+Shift+I (DevTools) and ⌘⇧M (Chrome profile switcher) alone.
+  { id: 'insession.modeMenu', keys: 'Alt+Shift+M', keysMac: '⌥⇧M', description: 'Open the permission-mode menu',
+    group: 'in-session',
+    match: (e) => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyM',
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen },
+  { id: 'insession.modelMenu', keys: 'Alt+Shift+I', keysMac: '⌥⇧I', description: 'Open the model menu',
+    group: 'in-session',
+    match: (e) => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyI',
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen },
+  { id: 'insession.effortMenu', keys: 'Alt+Shift+E', keysMac: '⌥⇧E', description: 'Open the reasoning-effort menu (when the model has one)',
+    group: 'in-session',
+    match: (e) => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyE',
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
   // session). All three are reserved by the browser's own UI — see the
   // "NOT BOUND, and why" block at the top of this array for the evidence.
