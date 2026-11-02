@@ -41,7 +41,7 @@ export function EnvironmentCard({
   return (
     <RailCard title="Environment">
       <RailFields>
-        {agent && <RailField label="Agent">{agent}</RailField>}
+        {agent && <RailField label="Agent" testId="env-agent">{agent}</RailField>}
         <RailField label="Account">
           <span className="inline-flex min-w-0 items-center gap-1">
             <AccountSwitcher
@@ -53,7 +53,7 @@ export function EnvironmentCard({
             />
           </span>
         </RailField>
-        {host && <RailField label="Host">{host}</RailField>}
+        {host && <RailField label="Host" testId="env-host">{host}</RailField>}
         {display && (
           <RailField label="Display">
             <span title={display.title}>

@@ -7,24 +7,15 @@
  * module's lazy chunk (`DeferredMcpStatusReadout`).
  */
 import { Link } from 'react-router-dom'
-import { useSessionMcp } from '@/api/hooks'
 import type { McpServerState } from '@/api/types'
 import { settingsSectionPath } from '@/shell/navDefs'
 import { McpServerList } from './McpServerList'
+import { useMcpServers } from './useMcpServers'
 
 interface Props {
   sessionId: string
   account: string
   live: McpServerState[] | null
-}
-
-const NO_SERVERS: McpServerState[] = []
-
-/** The session's MCP servers: live `mcpStatus` events win; the GET snapshot
- *  (fetched only while there is no live status) fills in until the first one. */
-function useMcpServers(sessionId: string, live: McpServerState[] | null): McpServerState[] {
-  const snapshot = useSessionMcp(sessionId, live == null)
-  return live ?? snapshot.data?.servers ?? NO_SERVERS
 }
 
 /** The server list plus the `Manage →` link into Settings → MCP. */

@@ -25,3 +25,13 @@ def test_remote_roundtrip_keeps_branch_and_cwd():
     r = SessionRecord.from_dict(_rec(branch="feat/x", cwd="/w").to_dict())
     d = _record_to_dict(r, repo=None)
     assert (d["branch"], d["cwd"]) == ("feat/x", "/w")
+
+
+def test_payload_empty_branch_is_null():
+    d = _record_to_dict(_rec(branch=""), repo=None)
+    assert d["branch"] is None
+
+
+def test_payload_empty_cwd_is_null():
+    d = _record_to_dict(_rec(cwd=""), repo=None)
+    assert d["cwd"] is None

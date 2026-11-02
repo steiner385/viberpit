@@ -75,7 +75,7 @@ function makeRuntime(blocks: Block[]): SessionRuntime {
     toolDetailMode: 'auto',
     thinkingCollapsed: true,
     connectionState: 'connected',
-    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW,
     hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
@@ -103,7 +103,7 @@ function makeEmptyRuntime(): SessionRuntime {
     toolDetailMode: 'auto',
     thinkingCollapsed: true,
     connectionState: 'connected',
-    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW,
     hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
@@ -278,10 +278,10 @@ describe('SessionBody — capability-gated surfaces', () => {
     setSession({ engine: 'codex', host: 'rocky', reasoningEffort: 'high' })
     setElementWidth(1200)
     try {
-      renderBody(<SessionBody rt={{ ...makeRuntime([]), commands: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW }} />)
+      renderBody(<SessionBody rt={{ ...makeRuntime([]), commands: [] }} />)
       const env = within(await screen.findByRole('region', { name: 'Environment' }))
-      expect(env.getByText('Agent').nextElementSibling).toHaveTextContent('Codex')
-      expect(env.getByText('Host').nextElementSibling).toHaveTextContent('rocky')
+      expect(env.getByTestId('env-agent')).toHaveTextContent('Codex')
+      expect(env.getByTestId('env-host')).toHaveTextContent('rocky')
       // The model and effort pickers live in the composer's prompt row.
       expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
       expect(screen.queryByLabelText('Select model')).toBeNull()

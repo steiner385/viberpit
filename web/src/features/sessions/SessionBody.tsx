@@ -12,6 +12,8 @@ import { Tabs } from '@/ui/Tabs'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionToolbar } from './SessionToolbar'
 import { useRailCollapsed } from './rail/railPreference'
+import { railNeedsAttention } from './rail/railAttention'
+import { useMcpServers } from './useMcpServers'
 import { useContainerMinWidth } from '@/lib/useContainerMinWidth'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
 import { SessionPlaceholder } from '@/features/sessions/transcript/SessionPlaceholder'
@@ -73,6 +75,11 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   const [rowRef, wide] = useContainerMinWidth<HTMLDivElement>(RAIL_MIN_REM)
   const [railCollapsed, toggleRail] = useRailCollapsed()
   const railId = useId()
+  // The rail's at-a-glance signal while it is out of sight (Details tab, or a
+  // collapsed rail): background work running, a failed sub-agent, an MCP
+  // server failed or needing auth.
+  const mcpServers = useMcpServers(rt.sessionId, rt.state.mcpServers)
+  const railAttention = railNeedsAttention({ backgroundWork: rt.backgroundWork, subAgents: rt.subAgents, mcpServers })
 
   // A view that is not listed falls back to the conversation. Details is listed
   // only where there is no rail column to hold the cards.
@@ -158,7 +165,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         subAgentCount={runningSubAgents}
         viewMode={rt.viewMode}
         onSelectViewMode={rt.setViewMode}
-        rail={wide ? { collapsed: railCollapsed, onToggle: toggleRail, controls: railId } : null}
+        rail={wide ? { collapsed: railCollapsed, onToggle: toggleRail, controls: railId, attention: railAttention } : null}
       />
 
       {/* The row: tabs + the active view, beside the rail column on a wide pane.
@@ -176,7 +183,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                 { id: 'conversation', label: 'Conversation' },
                 ...(hasChanges ? [{ id: 'changes', label: 'Changes' }] : []),
                 ...(browserEnabled ? [{ id: 'browser', label: 'Browser' }] : []),
-                ...(!wide ? [{ id: 'details', label: 'Details' }] : []),
+                ...(!wide ? [{ id: 'details', label: 'Details', attention: railAttention }] : []),
               ]}
               value={view}
               onChange={(id) => setView(id as SessionView)}

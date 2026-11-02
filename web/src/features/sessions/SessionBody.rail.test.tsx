@@ -13,10 +13,10 @@ import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
 import { setElementWidth, resetElementWidth } from '@/test/elementWidth'
 import { RAIL_COLLAPSED_KEY } from './rail/railPreference'
 
-const { diffHook } = vi.hoisted(() => ({ diffHook: vi.fn() }))
+const { diffHook, mcpHook } = vi.hoisted(() => ({ diffHook: vi.fn(), mcpHook: vi.fn() }))
 
 vi.mock('@/api/hooks', () => ({
-  useSessionMcp: vi.fn(() => ({ data: undefined })),
+  useSessionMcp: mcpHook,
   usePermissionRules: vi.fn(() => ({ data: [] })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
@@ -70,6 +70,7 @@ describe('SessionBody — session rail', () => {
   beforeEach(() => {
     window.localStorage.clear()
     diffHook.mockReset().mockReturnValue({ data: undefined, refetch: vi.fn() })
+    mcpHook.mockReset().mockReturnValue({ data: undefined })
   })
   afterEach(() => resetElementWidth())
 
@@ -125,6 +126,22 @@ describe('SessionBody — session rail', () => {
       expect(rt.onPlainPrompt).toHaveBeenCalledWith('/compact', [])
     })
 
+    it('a collapsed rail toggle carries the attention dot when background work runs', () => {
+      window.localStorage.setItem(RAIL_COLLAPSED_KEY, 'true')
+      const backgroundWork = { rows: [{ toolUseId: 't1', kind: 'shell' as const, description: 'npm test', status: 'running' as const, live: true }], wakeup: false, wakeupAt: null }
+      renderBody(makeRuntime({ backgroundWork }))
+      expect(screen.getByRole('button', { name: 'Show details (needs attention)' })).toBeInTheDocument()
+      expect(screen.getByTestId('rail-toggle-attention')).toBeInTheDocument()
+    })
+
+    it('a collapsed rail toggle reads the MCP snapshot when there is no live status', () => {
+      window.localStorage.setItem(RAIL_COLLAPSED_KEY, 'true')
+      mcpHook.mockReturnValue({ data: { servers: [{ name: 'gh', status: 'needs-auth', error: null, toolCount: null, scope: null }] } })
+      renderBody()
+      expect(mcpHook).toHaveBeenCalledWith('s1', true)
+      expect(screen.getByRole('button', { name: 'Show details (needs attention)' })).toBeInTheDocument()
+    })
+
     it('feeds the Environment card from the session record', async () => {
       renderBody()
       const env = await screen.findByRole('region', { name: 'Environment' })
@@ -147,6 +164,21 @@ describe('SessionBody — session rail', () => {
       const panel = document.getElementById('tab-panel-details')!
       expect(panel).toHaveAttribute('role', 'tabpanel')
       for (const name of CARDS) expect(await within(panel).findByRole('region', { name })).toBeInTheDocument()
+    })
+
+    it('the Details tab carries the attention dot when an MCP server has failed', () => {
+      const rt = makeRuntime()
+      rt.state.mcpServers = [{ name: 'gh', status: 'failed', error: 'ENOENT', toolCount: null, scope: null }]
+      renderBody(rt)
+      const details = screen.getByRole('tab', { name: 'Details (needs attention)' })
+      expect(details.querySelector('.bg-warning')).not.toBeNull()
+      // Live status wins: no snapshot fetch.
+      expect(mcpHook).toHaveBeenCalledWith('s1', false)
+    })
+
+    it('the Details tab has no dot when all is clear', () => {
+      renderBody()
+      expect(screen.getByRole('tab', { name: 'Details' }).querySelector('.bg-warning')).toBeNull()
     })
 
     it('?view=details opens the Details tab directly', async () => {

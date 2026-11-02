@@ -252,7 +252,7 @@ def _record_to_dict(
         "reasoningEffort": record.reasoning_effort,
         "repo": record.repo if repo is _UNSET else repo,
         # Worktree branch and path: the session rail shows them without a second fetch.
-        "branch": getattr(record, "branch", None),
+        "branch": getattr(record, "branch", None) or None,
         "cwd": getattr(record, "cwd", None) or None,
         # Fleet host that ran this session. None for pre-fleet sessions and for
         # deployments whose endpoint is not in an operator-managed registry.

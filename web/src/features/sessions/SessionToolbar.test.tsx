@@ -31,7 +31,7 @@ describe('SessionToolbar', () => {
 
   it('shows the rail toggle when there is a rail: Hide details while expanded', () => {
     const onToggle = vi.fn()
-    render(<SessionToolbar {...base} rail={{ collapsed: false, onToggle, controls: 'rail-id' }} />)
+    render(<SessionToolbar {...base} rail={{ collapsed: false, onToggle, controls: 'rail-id', attention: false }} />)
     const toggle = screen.getByRole('button', { name: 'Hide details' })
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(toggle).toHaveAttribute('aria-controls', 'rail-id')
@@ -40,7 +40,7 @@ describe('SessionToolbar', () => {
   })
 
   it('reads Show details while collapsed', () => {
-    render(<SessionToolbar {...base} rail={{ collapsed: true, onToggle: () => {}, controls: 'rail-id' }} />)
+    render(<SessionToolbar {...base} rail={{ collapsed: true, onToggle: () => {}, controls: 'rail-id', attention: false }} />)
     const toggle = screen.getByRole('button', { name: 'Show details' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     // Nothing to control while the rail is unmounted.
@@ -48,8 +48,23 @@ describe('SessionToolbar', () => {
   })
 
   it('gives the rail toggle a 44px floor on coarse pointers', () => {
-    render(<SessionToolbar {...base} rail={{ collapsed: false, onToggle: () => {}, controls: 'rail-id' }} />)
+    render(<SessionToolbar {...base} rail={{ collapsed: false, onToggle: () => {}, controls: 'rail-id', attention: false }} />)
     expect(screen.getByRole('button', { name: 'Hide details' }))
       .toHaveClass('min-h-11', '[@media(hover:hover)]:min-h-0', 'min-w-11', '[@media(hover:hover)]:min-w-0')
+  })
+
+  it('puts the attention dot on the collapsed toggle and names it', () => {
+    render(<SessionToolbar {...base} rail={{ collapsed: true, onToggle: () => {}, controls: 'rail-id', attention: true }} />)
+    const toggle = screen.getByRole('button', { name: 'Show details (needs attention)' })
+    expect(toggle.querySelector('[data-testid="rail-toggle-attention"]')).not.toBeNull()
+  })
+
+  it('shows no dot on an expanded rail (the cards show the cause) or without attention', () => {
+    const { rerender } = render(<SessionToolbar {...base} rail={{ collapsed: false, onToggle: () => {}, controls: 'rail-id', attention: true }} />)
+    expect(screen.getByRole('button', { name: 'Hide details' })).toBeInTheDocument()
+    expect(screen.queryByTestId('rail-toggle-attention')).toBeNull()
+    rerender(<SessionToolbar {...base} rail={{ collapsed: true, onToggle: () => {}, controls: 'rail-id', attention: false }} />)
+    expect(screen.getByRole('button', { name: 'Show details' })).toBeInTheDocument()
+    expect(screen.queryByTestId('rail-toggle-attention')).toBeNull()
   })
 })

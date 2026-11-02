@@ -7,7 +7,6 @@
  * Was `SessionView.meta.test.tsx`. `SessionView` is deleted (Task 18 / Item 2);
  * the pane the shell actually renders is `MainPaneSession`, and it reads the
  * runtime from the provider `PageHost` mounts, so the harness supplies one.
- * Every assertion is unchanged.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'

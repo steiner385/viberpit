@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { SessionBody } from './SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { Block } from '@/session/reducer'
+import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
 
 // Mirror the same stubs as SessionBody.test.tsx
 vi.mock('@/api/hooks', () => ({
@@ -54,7 +55,7 @@ function makeRuntime(
     toolDetailMode: 'auto',
     thinkingCollapsed: true,
     connectionState: 'connected',
-    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW,
     hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
