@@ -146,6 +146,18 @@ describe('PermissionCard', () => {
     expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
   })
 
+  it('hides Allow for this session when the server would degrade it to allow-once', () => {
+    render(<PermissionCard block={{ ...bashPerm, sessionGrantEffective: false }} onDecision={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /^Allow for this session/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Allow Bash/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Deny Bash/i })).toBeInTheDocument()
+  })
+
+  it('keeps Allow for this session when the server says it takes effect', () => {
+    render(<PermissionCard block={{ ...bashPerm, sessionGrantEffective: true }} onDecision={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()
+  })
+
   it('shows Allow for this session in auto mode', () => {
     render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
     expect(screen.getByRole('button', { name: /^Allow for this session/i })).toBeInTheDocument()

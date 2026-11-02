@@ -1498,6 +1498,7 @@ class CodexAgentDriver:
                 ev.tool_kind(tool),
                 tool_input,
                 rule_suggestions=self._reg.suggestions_for(perm_id),
+                session_grant_effective=self._reg.session_grant_effective_for(perm_id),
             )
         )
         await self._emit_status()
@@ -1633,6 +1634,7 @@ class CodexAgentDriver:
                     arguments,
                     always_allowed=always_allowed,
                     rule_suggestions=self._reg.suggestions_for(perm_id),
+                session_grant_effective=self._reg.session_grant_effective_for(perm_id),
                 )
             )
             await self._emit_status()

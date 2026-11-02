@@ -1000,7 +1000,8 @@ class ClaudeAgentDriver:
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode"), always_allowed=always_allowed,
                 items=items, parent_tool_use_id=pid,
-                rule_suggestions=self._reg.suggestions_for(perm_id)))
+                rule_suggestions=self._reg.suggestions_for(perm_id),
+                session_grant_effective=self._reg.session_grant_effective_for(perm_id)))
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
         allowed = await fut

@@ -1114,6 +1114,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # Missing = an older daemon: never offer "Always allow" blind.
                         always_allowed=p.get("always_allowed", False),
                         rule_suggestions=p.get("suggestions") or [],
+                        # Missing = an older daemon: assume the grant degrades.
+                        session_grant_effective=p.get("session_grant_effective", False),
                         parent_tool_use_id=p.get("parent_tool_use_id"),
                     ).to_wire(), "sessionId": session_id})
 
