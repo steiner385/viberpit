@@ -19,7 +19,7 @@ from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.engine import AgentEngine
 from server.sessions.fleet_orchestrator import _PER_SESSION, FleetOrchestrator
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.remote import DIFF_RPC_TIMEOUT, RemoteOrchestrator
+from server.sessions.remote import WORKTREE_RPC_TIMEOUT, RemoteOrchestrator
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 from server.tests.ipc_harness import serve_daemon_uds
@@ -175,7 +175,7 @@ async def test_remote_forwards_same_kwargs() -> None:
     assert await ro.session_diff(SID, summary=True, ignore_whitespace=True) == {"files": []}
     assert client.calls == [("session_diff",
                              {"session_id": SID, "summary": True, "ignore_whitespace": True},
-                             DIFF_RPC_TIMEOUT)]
+                             WORKTREE_RPC_TIMEOUT)]
 
 
 @pytest.mark.asyncio

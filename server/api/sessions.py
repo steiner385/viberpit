@@ -2085,7 +2085,8 @@ async def session_file_content(
     try:
         return await _get_orchestrator(request).session_file(session_id, path=path)
     except worktree_files.FileAccessError as exc:
-        raise HTTPException(status_code=_FILE_ACCESS_STATUS[exc.code],
+        # An unexpected code fails safe as a 400, never a 500.
+        raise HTTPException(status_code=_FILE_ACCESS_STATUS.get(exc.code, 400),
                             detail={"code": exc.code}) from exc
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")

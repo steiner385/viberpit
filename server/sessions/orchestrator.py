@@ -19907,13 +19907,25 @@ class SessionOrchestrator:
             return None
         return [s.to_wire() for s in await d.mcp_status()]
 
+    def _worktree_record(self, session_id: str) -> SessionRecord:
+        """``record()`` for the worktree reads (diff, file list, file read). An unknown
+        session is an expected refusal there — the Changes and Files panes ask for
+        closed and archived sessions — so its KeyError gains ``error_data``: the daemon
+        then logs it at INFO instead of auto-filing a WARNING issue. The type stays
+        ``KeyError`` so every RemoteOrchestrator build still matches its ``err_type``."""
+        try:
+            return self.record(session_id)
+        except KeyError as exc:
+            exc.error_data = {"code": "SESSION_NOT_FOUND"}  # type: ignore[attr-defined]
+            raise
+
     async def session_diff(self, session_id: str, *, summary: bool = False,
                            ignore_whitespace: bool = False) -> dict:
         """The ``SessionDiff`` of the session's worktree from its base to the working
         tree (D-4 Changes pane). ``KeyError`` for an unknown session; a session with no
         cwd, or one that is not a git work tree, answers the empty diff. Runs off the
         event loop: the bounded git calls can take seconds."""
-        rec = self.record(session_id)
+        rec = self._worktree_record(session_id)
         return await asyncio.to_thread(worktree_diff.session_diff, rec.cwd or "",
                                        summary=summary, ignore_whitespace=ignore_whitespace)
 
@@ -19922,7 +19934,7 @@ class SessionOrchestrator:
         """``{files, truncated}`` of the session's worktree, fuzzy-filtered by ``q``
         (D-7 @-files and Files tab). ``KeyError`` for an unknown session; no cwd, or a
         cwd that is not a git work tree, lists nothing. Runs off the event loop."""
-        rec = self.record(session_id)
+        rec = self._worktree_record(session_id)
         return await asyncio.to_thread(worktree_files.list_files, rec.cwd or "",
                                        q=q, limit=limit)
 
@@ -19931,7 +19943,7 @@ class SessionOrchestrator:
         worktree (D-7 Files tab). ``KeyError`` for an unknown session;
         ``FileAccessError`` (``PATH_OUTSIDE_WORKTREE`` / ``FILE_NOT_FOUND``) for a
         refused read. Runs off the event loop."""
-        rec = self.record(session_id)
+        rec = self._worktree_record(session_id)
         return await asyncio.to_thread(worktree_files.read_file, rec.cwd or "", path)
 
     async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:

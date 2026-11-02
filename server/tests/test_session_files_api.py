@@ -5,6 +5,7 @@ run on the host that owns it — and a refused read keeps its ``FileAccessError`
 across the RPC hop, so the edge still answers 400/404 with that code."""
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -21,7 +22,7 @@ from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.engine import AgentEngine
 from server.sessions.fleet_orchestrator import _PER_SESSION, FleetOrchestrator
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.remote import FILES_RPC_TIMEOUT, RemoteOrchestrator
+from server.sessions.remote import WORKTREE_RPC_TIMEOUT, RemoteOrchestrator
 from server.sessions.types import SessionRecord
 from server.sessions.worktree_files import (
     FILE_NOT_FOUND,
@@ -168,6 +169,15 @@ def test_no_cwd_content_is_404_with_code() -> None:
     assert r.json()["detail"]["code"] == FILE_NOT_FOUND
 
 
+def test_unexpected_access_code_fails_safe_as_400(repo: Path) -> None:
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c, \
+            patch.object(SessionOrchestrator, "session_file",
+                         side_effect=FileAccessError("SOMETHING_NEW")):
+        r = c.get(f"/api/sessions/{SID}/files/content", params={"path": "a"}, headers=_H)
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "SOMETHING_NEW"
+
+
 def test_content_unknown_session_404(repo: Path) -> None:
     with patch.dict(os.environ, _ENV), _client(str(repo)) as c:
         r = c.get("/api/sessions/nope/files/content", params={"path": "notes.md"},
@@ -194,18 +204,18 @@ def test_requires_identity(repo: Path, url: str) -> None:
 ])
 def test_daemon_without_the_rpc_is_daemon_outdated_409(repo: Path, method: str,
                                                         url: str) -> None:
-    c = _client(str(repo))
-    with patch.object(SessionOrchestrator, method,
-                      side_effect=DaemonError("UnknownMethod", method)):
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c, \
+            patch.object(SessionOrchestrator, method,
+                         side_effect=DaemonError("UnknownMethod", method)):
         r = c.get(url, headers=_H)
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "daemon_outdated"
 
 
 def test_other_daemon_errors_keep_the_app_mapping(repo: Path) -> None:
-    c = _client(str(repo))
-    with patch.object(SessionOrchestrator, "session_file",
-                      side_effect=DaemonError("RuntimeError", "boom")):
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c, \
+            patch.object(SessionOrchestrator, "session_file",
+                         side_effect=DaemonError("RuntimeError", "boom")):
         r = c.get(f"/api/sessions/{SID}/files/content?path=a", headers=_H)
     assert r.status_code == 409
     assert r.json() == {"detail": "boom"}
@@ -232,8 +242,8 @@ async def test_remote_forwards_same_kwargs() -> None:
     await ro.session_files(SID, q="ap", limit=7)
     await ro.session_file(SID, path="a/b.py")
     assert client.calls == [
-        ("session_files", {"session_id": SID, "q": "ap", "limit": 7}, FILES_RPC_TIMEOUT),
-        ("session_file", {"session_id": SID, "path": "a/b.py"}, FILES_RPC_TIMEOUT),
+        ("session_files", {"session_id": SID, "q": "ap", "limit": 7}, WORKTREE_RPC_TIMEOUT),
+        ("session_file", {"session_id": SID, "path": "a/b.py"}, WORKTREE_RPC_TIMEOUT),
     ]
 
 
@@ -265,10 +275,13 @@ async def test_remote_does_not_trust_an_unknown_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rpc_round_trip_runs_on_the_daemon(repo: Path) -> None:
+async def test_rpc_round_trip_runs_on_the_daemon(
+        repo: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Over the real daemon RPC: the daemon's orchestrator lists and reads from its own
     record's cwd; refusals keep their FileAccessError code; an unknown session comes
-    back as a KeyError."""
+    back as a KeyError. None of those expected refusals logs a WARNING ``rpc.error``
+    on the daemon (WARNING auto-files an issue)."""
+    caplog.set_level(logging.INFO, logger="server.ipc.daemon")
     app = create_daemon_app()
     orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                                usage_fn=lambda name: None)
@@ -288,12 +301,19 @@ async def test_rpc_round_trip_runs_on_the_daemon(repo: Path) -> None:
                 await ro.session_files("nope")
             with pytest.raises(KeyError):
                 await ro.session_file("nope", path="notes.md")
+            with pytest.raises(KeyError):
+                await ro.session_diff("nope")
         finally:
             await client.aclose()
     assert listed == {"files": [{"path": "src/app.py"}], "truncated": False}
     assert content["text"] == "# notes\n" and content["path"] == "notes.md"
     assert outside.value.code == PATH_OUTSIDE_WORKTREE
     assert missing.value.code == FILE_NOT_FOUND
+    rpc_errors = [r for r in caplog.records
+                  if r.name == "server.ipc.daemon" and "rpc.error" in r.getMessage()]
+    assert len(rpc_errors) == 5  # 2 FileAccessError + 3 unknown-session KeyError
+    assert all(r.levelno == logging.INFO for r in rpc_errors), \
+        [(r.levelname, r.getMessage()) for r in rpc_errors]
 
 
 def test_file_access_error_is_an_expected_daemon_refusal() -> None:
