@@ -430,3 +430,58 @@ def test_numstat_timeout_is_not_a_clean_tree(
     d = session_diff(str(repo))
     assert d["files"] == [] and d["truncated"] is True
     assert d["head"] == _git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_repo_textconv_helper_never_runs(repo: Path, tmp_path: Path) -> None:
+    marker = tmp_path / "textconv-ran"
+    _git(repo, "config", "diff.foo.textconv", f"touch {marker} && cat")
+    (repo / ".gitattributes").write_text("*.txt diff=foo\n")
+    _commit(repo, "attrs")
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    for summary in (False, True):
+        files = _by_path(session_diff(str(repo), summary=summary))
+        assert not marker.exists()
+        assert files["keep.txt"]["additions"] == 1
+    (h,) = _by_path(session_diff(str(repo)))["keep.txt"]["hunks"]  # the raw change
+    assert h["lines"][-1] == {"kind": "add", "oldNo": None, "newNo": 21, "text": "tail"}
+    assert not marker.exists()
+    # The fixture is live: plain git diff WOULD run the helper.
+    _git(repo, "diff", "HEAD")
+    assert marker.exists()
+
+
+def test_git_env_disables_system_config_and_hooks(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (repo / "keep.txt").write_text("changed\n")
+    seen: list[tuple[list[str], dict[str, str]]] = []
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def run(args, *a, **kw):  # type: ignore[no-untyped-def]
+        seen.append((list(args), kw["env"]))
+        return real_run(args, *a, **kw)
+
+    def popen(args, *a, **kw):  # type: ignore[no-untyped-def]
+        seen.append((list(args), kw["env"]))
+        return real_popen(args, *a, **kw)
+
+    monkeypatch.setattr(worktree_diff.subprocess, "run", run)
+    monkeypatch.setattr(worktree_diff.subprocess, "Popen", popen)
+    session_diff(str(repo))
+    assert any("-U3" in args for args, _ in seen)  # the streamed patch fetch was seen too
+    for args, env in seen:
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert "core.hooksPath=/dev/null" in args
+        if "diff" in args:
+            assert "--no-textconv" in args and "--no-ext-diff" in args
+
+
+def test_internal_key_error_is_not_surfaced_as_key_error(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*a, **kw):  # type: ignore[no-untyped-def]
+        raise KeyError("x")
+
+    monkeypatch.setattr(worktree_diff, "_parse_name_status", boom)
+    (repo / "keep.txt").write_text("changed\n")
+    with pytest.raises(RuntimeError) as info:
+        session_diff(str(repo))
+    assert not isinstance(info.value, KeyError)

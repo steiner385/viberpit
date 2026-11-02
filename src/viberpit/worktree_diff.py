@@ -17,6 +17,11 @@ Work is bounded: at most ``MAX_FILES`` files get hunks, patch output is streamed
 cut once it passes the remaining budget plus one file's cap, and untracked files are
 read for line counts only up to ``MAX_TOTAL_BYTES`` in total. Whenever something is
 left unread, ``truncated`` is true and the totals are **lower bounds**.
+
+Git runs inside an agent-controlled worktree in a credential-holding daemon, so repo
+config cannot run helpers here: no textconv, no external diff, no fsmonitor, no hooks,
+no system config. Residual: configured ``filter.*`` clean drivers (e.g. git-lfs) still
+run when git re-hashes a stat-dirty file; they are user-installed, not repo-supplied.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ _REPO_ENV_VARS = (
 _GIT_GLOBAL = (
     "--no-optional-locks", "--literal-pathspecs",
     "-c", "core.quotePath=false", "-c", "core.fsmonitor=false",
-    "-c", "diff.suppressBlankEmpty=false",
+    "-c", "core.hooksPath=/dev/null", "-c", "diff.suppressBlankEmpty=false",
 )
 # Explicit prefixes override diff.noprefix / mnemonicPrefix / srcPrefix / dstPrefix.
 _DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "-M",
@@ -61,6 +66,7 @@ class _GitTimeout(Exception):
 def _env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _REPO_ENV_VARS}
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
 
 
@@ -337,6 +343,16 @@ def _resolve_base(top: str) -> tuple[str | None, str | None, str]:
 
 def session_diff(cwd: str, *, summary: bool = False,
                  ignore_whitespace: bool = False) -> dict[str, Any]:
+    """The ``SessionDiff`` (camelCase) of ``cwd`` from its base to the working tree;
+    see :func:`_session_diff`. Never raises ``KeyError``: callers map that to
+    "session not found", so an internal bug must not masquerade as a 404."""
+    try:
+        return _session_diff(cwd, summary=summary, ignore_whitespace=ignore_whitespace)
+    except KeyError as exc:
+        raise RuntimeError(f"session diff failed: {exc!r}") from exc
+
+
+def _session_diff(cwd: str, *, summary: bool, ignore_whitespace: bool) -> dict[str, Any]:
     """The ``SessionDiff`` (camelCase) of ``cwd`` from its base to the working tree.
 
     A ``cwd`` that is missing or not a git work tree yields an empty diff. ``summary``
