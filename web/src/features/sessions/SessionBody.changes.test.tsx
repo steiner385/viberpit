@@ -1,7 +1,8 @@
 /**
  * D-4: the session's Changes tab. Listed (after Conversation, before Browser)
  * only when the diff summary has files; `?view=changes` selects it; the summary
- * is refetched when a turn ends (`busy` goes false) and when the tab opens.
+ * is refetched when a turn ends (`busy` goes false) and when the tab is opened —
+ * not when `?view=changes` resolves on load (that is the mount fetch: one request).
  */
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -121,13 +122,40 @@ describe('SessionBody — Changes tab', () => {
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Changes', 'Browser'])
   })
 
-  it('opens from ?view=changes and refetches the summary when it does', async () => {
+  it('opens from ?view=changes without refetching the summary it just loaded', async () => {
     x11(false)
     serve(WITH_FILES)
     renderBody(makeRuntime(), '/sessions/s1?view=changes')
     expect(await screen.findByTestId('changes-tab-stub')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Changes' })).toHaveAttribute('aria-selected', 'true')
-    expect(refetch).toHaveBeenCalled()
+    expect(refetch).not.toHaveBeenCalled()
+  })
+
+  it('refetches the summary when the tab is opened', async () => {
+    x11(false)
+    serve(WITH_FILES)
+    renderBody(makeRuntime())
+    expect(refetch).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('tab', { name: 'Changes' }))
+    await screen.findByTestId('changes-tab-stub')
+    expect(refetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('fetches the summary ONCE on a ?view=changes page load (real QueryClient)', async () => {
+    x11(false)
+    const actual = await vi.importActual<typeof import('@/api/hooks')>('@/api/hooks')
+    vi.mocked(useSessionDiff).mockImplementation(actual.useSessionDiff)
+    const { api } = await import('@/api/client')
+    const get = vi.spyOn(api, 'get').mockResolvedValue(WITH_FILES)
+    const summaryCalls = () => get.mock.calls.filter(([url]) => url === '/sessions/s1/diff?summary=1').length
+    renderBody(makeRuntime(), '/sessions/s1?view=changes')
+    expect(await screen.findByTestId('changes-tab-stub')).toBeInTheDocument()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(summaryCalls()).toBe(1)
+    // A real open (away and back) still refreshes it.
+    await userEvent.click(screen.getByRole('tab', { name: 'Conversation' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Changes' }))
+    await waitFor(() => expect(summaryCalls()).toBe(2))
   })
 
   it('falls back to Conversation for ?view=changes with nothing changed', async () => {

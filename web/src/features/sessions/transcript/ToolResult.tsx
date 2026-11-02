@@ -51,7 +51,9 @@ const MAX_LINES = 200
 /**
  * An Edit/Write/MultiEdit result. The diff is reconstructed from the call's
  * `input` — the result payload only carries the success/error message. A Codex
- * change carries no text, so it lists the changed files instead.
+ * change carries no text, so it lists the changed files instead. A MultiEdit's
+ * `edits[]` is not rendered (a pre-existing gap): only top-level
+ * `old_string`/`new_string`/`content` are read.
  */
 function EditResult({ input, ok }: { input: Record<string, unknown>; ok: boolean }) {
   const diff = useMemo(() => toolInputToFileDiff(input), [input])

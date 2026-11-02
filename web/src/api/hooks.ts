@@ -1227,10 +1227,15 @@ export function useSessionDiff(
   { summary = false, ignoreWhitespace = false, busy }: Partial<SessionDiffFlags> & { busy?: boolean } = {},
 ) {
   const qc = useQueryClient()
-  const wasBusy = useRef(busy)
+  // `busy` as last seen FOR THIS `id`: switching sessions must not read the previous
+  // session's running turn ending as this one's.
+  const wasBusy = useRef<{ id: string; busy: boolean | undefined }>({ id, busy })
   useEffect(() => {
-    if (wasBusy.current && busy === false) void qc.invalidateQueries({ queryKey: QK.sessionDiff(id) })
-    wasBusy.current = busy
+    const prev = wasBusy.current
+    if (prev.id === id && prev.busy && busy === false) {
+      void qc.invalidateQueries({ queryKey: QK.sessionDiff(id) })
+    }
+    wasBusy.current = { id, busy }
   }, [busy, id, qc])
 
   const params = new URLSearchParams()
@@ -1242,6 +1247,9 @@ export function useSessionDiff(
     queryFn: async () => asSessionDiff(
       await api.get<unknown>(`/sessions/${encodeURIComponent(id)}/diff${qs ? `?${qs}` : ''}`)),
     enabled: !!id,
+    // Refreshed by turn ends and tab opens only (see above); focusing the window
+    // is neither, and each fetch hashes the worktree on the owning host.
+    refetchOnWindowFocus: false,
     // Flipping "Hide whitespace" changes the key; keep showing the same
     // session's previous diff until the new one lands — never another session's.
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),

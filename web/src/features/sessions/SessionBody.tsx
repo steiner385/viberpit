@@ -6,7 +6,7 @@
  * top bar or composer.
  */
 
-import { useState, useEffect, lazy, Suspense, type ReactNode } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { Tabs } from '@/ui/Tabs'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
@@ -72,10 +72,17 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const showTabs = hasChanges || browserEnabled
 
   // Opening the tab refreshes the summary too (the pane itself fetches the full diff).
+  // Keyed on the REQUESTED view changing to Changes after mount — a click on the tab
+  // or the header chip. Not on `view`: with `?view=changes` in the URL, `view` only
+  // resolves to Changes once the mount fetch has landed (it lists the tab), so that
+  // refetched the just-fetched summary and every page load asked for it twice.
   const { refetch: refetchDiffSummary } = diffSummary
+  const prevRequestedView = useRef(requestedView)
   useEffect(() => {
-    if (view === 'changes') void refetchDiffSummary({ cancelRefetch: false })
-  }, [view, refetchDiffSummary])
+    const opened = requestedView === 'changes' && prevRequestedView.current !== 'changes'
+    prevRequestedView.current = requestedView
+    if (opened) void refetchDiffSummary({ cancelRefetch: false })
+  }, [requestedView, refetchDiffSummary])
 
   useEffect(() => {
     let cancelled = false

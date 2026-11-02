@@ -4,12 +4,13 @@
  *
  * - the flags map onto `summary=1` / `ignoreWhitespace=1`;
  * - nothing polls: a settled summary is not fetched again on its own;
- * - a turn ending (`busy` true → false) refetches it.
+ * - a turn ending (`busy` true → false) refetches it — never a session switch;
+ * - focusing the window does not refetch it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import React from 'react'
 import { renderHook, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query'
 import { useSessionDiff } from './hooks'
 
 vi.mock('./client', () => ({
@@ -64,6 +65,42 @@ describe('useSessionDiff', () => {
 
     rerender({ busy: false })
     await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('useSessionDiff — what is not a turn end', () => {
+  it('does not read a session switch as the new session\'s turn ending', async () => {
+    // Cached data never goes stale here, so only an invalidation could fetch again.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+    const { result, rerender } = renderHook(
+      ({ id, busy }: { id: string; busy: boolean }) => useSessionDiff(id, { summary: true, busy }),
+      { wrapper, initialProps: { id: 's2', busy: false } },
+    )
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    rerender({ id: 's1', busy: true })
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+    // Back to s2, idle: s1's running turn did not end in s2.
+    rerender({ id: 's2', busy: false })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(vi.mocked(api.get).mock.calls.map((c) => c[0])).toEqual([
+      '/sessions/s2/diff?summary=1', '/sessions/s1/diff?summary=1',
+    ])
+  })
+
+  it('does not refetch when the window regains focus', async () => {
+    const { result } = renderHook(() => useSessionDiff('s1', { summary: true }), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    try {
+      focusManager.setFocused(false)
+      focusManager.setFocused(true)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(api.get).toHaveBeenCalledTimes(1)
+    } finally {
+      focusManager.setFocused(undefined)
+    }
   })
 })
 
