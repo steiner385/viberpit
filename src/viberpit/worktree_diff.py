@@ -79,19 +79,26 @@ def _git(cwd: str, *args: str) -> bytes | None:
     return r.stdout if r.returncode == 0 else None
 
 
-def _git_bounded(cwd: str, args: list[str], limit: int) -> tuple[bytes, bool]:
-    """Stream git's stdout, killing it once more than ``limit`` bytes have arrived (or
-    on timeout). Returns ``(data, complete)``; a failed run is ``(b"", True)``."""
+def _git_bounded(cwd: str, args: list[str], limit: int,
+                 block_cap: int) -> tuple[bytes, str]:
+    """Stream a ``git diff`` patch, reading at most ``limit + 1`` bytes.
+
+    Returns ``(data, status)``: ``"ok"`` (git exited 0 after EOF), ``"cut"`` (output
+    passed ``limit``, or the ``diff --git`` block being read passed ``block_cap``; git
+    is killed and the last block of ``data`` is partial), or ``"failed"`` (timeout,
+    non-zero exit, or spawn error; the last block may be partial too).
+    """
     try:
         proc = subprocess.Popen(
             ["git", "-C", cwd, *_GIT_GLOBAL, *args],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=_env(),
         )
     except OSError:
-        return b"", True
+        return b"", "failed"
     assert proc.stdout is not None
     buf = bytearray()
-    complete = True
+    status = "ok"
+    block_start = scanned = 0
     deadline = time.monotonic() + _GIT_TIMEOUT_S
     sel = selectors.DefaultSelector()
     sel.register(proc.stdout, selectors.EVENT_READ)
@@ -99,24 +106,32 @@ def _git_bounded(cwd: str, args: list[str], limit: int) -> tuple[bytes, bool]:
         while True:
             left = deadline - time.monotonic()
             if left <= 0 or not sel.select(left):
-                complete = False
+                status = "failed"
                 break
-            chunk = os.read(proc.stdout.fileno(), 65536)
+            chunk = os.read(proc.stdout.fileno(), min(65536, limit + 1 - len(buf)))
             if not chunk:
                 break
             buf += chunk
-            if len(buf) > limit:
-                complete = False
+            nxt = buf.rfind(b"\ndiff --git ", max(scanned - 12, 0))
+            if nxt >= 0:
+                block_start = nxt + 1
+            scanned = len(buf)
+            if len(buf) > limit or len(buf) - block_start > block_cap:
+                status = "cut"
                 break
+        if status == "ok":
+            try:
+                if proc.wait(timeout=max(deadline - time.monotonic(), 0)) != 0:
+                    status = "failed"
+            except subprocess.TimeoutExpired:
+                status = "failed"
     finally:
         sel.close()
         if proc.poll() is None:
             proc.kill()
         proc.stdout.close()
         proc.wait()
-    if complete and proc.returncode != 0:
-        return b"", True
-    return bytes(buf), complete
+    return bytes(buf), status
 
 
 def _text(b: bytes) -> str:
@@ -373,35 +388,44 @@ def session_diff(cwd: str, *, summary: bool = False,
     blocks: dict[bytes, bytes] = {}   # complete patch blocks not yet consumed
     partial: dict[bytes, int] = {}    # header -> bytes seen before a fetch was cut
     tried: set[bytes] = set()         # headers a fetch has started from
+    files: list[dict[str, Any]] = []
+    truncated = len(combined) > MAX_FILES
+    budget = MAX_TOTAL_BYTES          # hunk payload handed out
+    patch_left = MAX_TOTAL_BYTES      # patch bytes read across every fetch
+    untracked_left = MAX_TOTAL_BYTES  # untracked bytes read for line counts
+    fetching = True                   # False once a fetch failed or patch_left ran out
 
     def fetch_from(header: bytes) -> None:
+        """Fetch the batch starting at ``header``. A block cut for exceeding the
+        per-file cap is a ``tooLarge`` file and the next file fetches afresh; a fetch
+        that fails, or exhausts ``patch_left``, ends fetching for this call."""
+        nonlocal patch_left, fetching
         tried.add(header)
         i = position[header]
         specs = sorted({os.fsdecode(p) for pr in to_fetch[i:i + _PATCH_BATCH] for p in pr})
-        data, complete = _git_bounded(
+        data, status = _git_bounded(
             top, ["diff", *_DIFF_OPTS, *ws, "-U3", rev, "--", *specs],
-            max(budget, 0) + MAX_FILE_PATCH_BYTES)
+            patch_left, MAX_FILE_PATCH_BYTES)
+        patch_left -= len(data)
         parts = _split_patch(data)
-        if not complete and parts:
+        if status != "ok" and parts:
             cut_header, cut_block = parts.pop()
             partial[cut_header] = len(cut_block)
         blocks.update(parts)
+        if status == "failed" or patch_left <= 0:
+            fetching = False
 
-    files: list[dict[str, Any]] = []
-    truncated = len(combined) > MAX_FILES
-    budget = MAX_TOTAL_BYTES
-    read_left = MAX_TOTAL_BYTES
     for idx, (path, entry, pair) in enumerate(combined):
         want = not summary and idx < MAX_FILES and budget >= 0
         if entry is None:
-            got = (_untracked(top, path, want_hunks=want, read_left=read_left)
+            got = (_untracked(top, path, want_hunks=want, read_left=untracked_left)
                    if idx < MAX_FILES else None)
             if got is None:  # listed unread: counts unknown
                 files.append(_file(path, None, "added", 0, 0, False))
                 truncated = True
                 continue
             f, size, consumed = got
-            read_left -= consumed
+            untracked_left -= consumed
             if size > budget:
                 f["hunks"], truncated, budget = [], True, -1
             else:
@@ -414,19 +438,19 @@ def session_diff(cwd: str, *, summary: bool = False,
             if oversized(f):
                 f["tooLarge"] = True
             else:
-                # A block cut short only because earlier output filled the fetch is
-                # re-fetched starting from this file.
-                if (header not in blocks and header not in tried and header in position
-                        and partial.get(header, 0) <= MAX_FILE_PATCH_BYTES):
-                    partial.pop(header, None)
+                if (fetching and header not in blocks and header not in partial
+                        and header not in tried and header in position):
                     fetch_from(header)
                 cut = partial.pop(header, None)
-                block = blocks.pop(header, b"")
-                if (cut or 0) > MAX_FILE_PATCH_BYTES or len(block) > MAX_FILE_PATCH_BYTES:
+                block = blocks.pop(header, None)
+                if (cut or 0) > MAX_FILE_PATCH_BYTES or len(block or b"") > MAX_FILE_PATCH_BYTES:
                     f["tooLarge"] = True
-                elif cut is not None or len(block) > budget:
+                elif block is None and (cut is not None or not fetching):
+                    # Never fetched whole: the fetch failed or the read budget ran out.
                     truncated, budget = True, -1
-                else:
+                elif block is not None and len(block) > budget:
+                    truncated, budget = True, -1
+                elif block is not None:
                     budget -= len(block)
                     f["hunks"] = _parse_hunks(block)
         files.append(f)

@@ -311,49 +311,95 @@ def test_custom_diff_prefix_config_still_maps_hunks(repo: Path) -> None:
     assert len(_by_path(session_diff(str(repo)))["keep.txt"]["hunks"]) == 1
 
 
-def test_single_huge_line_is_too_large_with_bounded_read(
+def _spy_fetches(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], int, str]]:
+    """Record (pathspecs, bytes returned, status) for every real patch fetch."""
+    calls: list[tuple[list[str], int, str]] = []
+    real = worktree_diff._git_bounded
+
+    def spy(cwd: str, args: list[str], limit: int, block_cap: int) -> tuple[bytes, str]:
+        data, status = real(cwd, args, limit, block_cap)
+        calls.append((args[args.index("--") + 1:], len(data), status))
+        return data, status
+
+    monkeypatch.setattr(worktree_diff, "_git_bounded", spy)
+    return calls
+
+
+def test_single_huge_line_is_cut_at_file_cap_and_next_file_refetched(
         repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (repo / "bundle.min.js").write_text("a" * (1 << 20) + "\n")
+    (repo / "bundle.min.js").write_text("a" * (4 << 20) + "\n")
     (repo / "zz.txt").write_text("z\n")
     _commit(repo, "bundle")
     _git(repo, "push", "-q", "origin", "HEAD:main")
     _git(repo, "fetch", "-q", "origin")
-    (repo / "bundle.min.js").write_text("b" * (1 << 20) + "\n")
+    (repo / "bundle.min.js").write_text("b" * (4 << 20) + "\n")
     (repo / "zz.txt").write_text("zz\n")
-    seen: list[int] = []
-    real = worktree_diff._git_bounded
-
-    def spy(cwd: str, args: list[str], limit: int) -> tuple[bytes, bool]:
-        data, complete = real(cwd, args, limit)
-        seen.append(len(data))
-        return data, complete
-
-    monkeypatch.setattr(worktree_diff, "_git_bounded", spy)
-    files = _by_path(session_diff(str(repo)))
+    calls = _spy_fetches(monkeypatch)
+    d = session_diff(str(repo))
+    files = _by_path(d)
     assert files["bundle.min.js"]["tooLarge"] is True
     assert files["bundle.min.js"]["hunks"] == []
     assert (files["bundle.min.js"]["additions"], files["bundle.min.js"]["deletions"]) == (1, 1)
-    assert len(files["zz.txt"]["hunks"]) == 1  # a later file in the cut batch still lands
-    limit = worktree_diff.MAX_TOTAL_BYTES + MAX_FILE_PATCH_BYTES
-    assert seen and max(seen) <= limit + 65536  # one read chunk past the limit at most
+    # The ~8 MiB patch was killed one read chunk past the per-file cap ...
+    assert calls[0][2] == "cut"
+    assert MAX_FILE_PATCH_BYTES < calls[0][1] <= MAX_FILE_PATCH_BYTES + 65536
+    # ... and the next file was fetched afresh and still lands.
+    assert calls[1][0] == ["zz.txt"] and calls[1][2] == "ok"
+    assert len(files["zz.txt"]["hunks"]) == 1
+    assert d["truncated"] is False
+    assert sum(n for _, n, _ in calls) <= worktree_diff.MAX_TOTAL_BYTES
+
+
+def test_total_patch_read_is_capped_across_fetches(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worktree_diff, "MAX_TOTAL_BYTES", 3000)
+    for i in range(10):
+        (repo / f"t{i}.txt").write_text("".join(f"line {j}\n" for j in range(60)))
+    _commit(repo, "ten")
+    calls = _spy_fetches(monkeypatch)
+    d = session_diff(str(repo))
+    assert d["truncated"] is True
+    assert len(calls) == 1 and calls[0][2] == "cut"
+    assert calls[0][1] <= 3001
+    with_hunks = [f for f in d["files"] if f["hunks"]]
+    assert 0 < len(with_hunks) < 10
+    assert d["additions"] == 600  # numstat totals are unaffected
+
+
+def test_failed_fetch_truncates_once_without_refetch_loop(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for i in range(5):
+        (repo / f"f{i}.txt").write_text("x\n")
+    calls: list[list[str]] = []
+
+    def dead(cwd: str, args: list[str], limit: int, block_cap: int) -> tuple[bytes, str]:
+        calls.append(args)
+        return b"", "failed"
+
+    _commit(repo, "five")
+    monkeypatch.setattr(worktree_diff, "_git_bounded", dead)
+    d = session_diff(str(repo))
+    assert len(calls) == 1
+    assert d["truncated"] is True
+    assert all(f["hunks"] == [] for f in d["files"])
+    assert d["additions"] == 5
+
+
+def test_nonzero_git_exit_is_a_failed_fetch(tmp_path: Path) -> None:
+    data, status = worktree_diff._git_bounded(str(tmp_path), ["diff", "--no-such-flag"],
+                                              1 << 20, MAX_FILE_PATCH_BYTES)
+    assert (data, status) == (b"", "failed")
 
 
 def test_line_count_precheck_skips_fetch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (repo / "many.txt").write_text("".join(f"{i}\n" for i in range(MAX_FILE_PATCH_BYTES // 2 + 1)))
     (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
     _commit(repo, "many lines")
-    specs: list[list[str]] = []
-    real = worktree_diff._git_bounded
-
-    def spy(cwd: str, args: list[str], limit: int) -> tuple[bytes, bool]:
-        specs.append(args[args.index("--") + 1:])
-        return real(cwd, args, limit)
-
-    monkeypatch.setattr(worktree_diff, "_git_bounded", spy)
+    calls = _spy_fetches(monkeypatch)
     files = _by_path(session_diff(str(repo)))
     assert files["many.txt"]["tooLarge"] is True and files["many.txt"]["hunks"] == []
     assert files["many.txt"]["additions"] == MAX_FILE_PATCH_BYTES // 2 + 1
-    assert all("many.txt" not in s for s in specs)
+    assert calls and all("many.txt" not in specs for specs, _, _ in calls)
     assert len(files["keep.txt"]["hunks"]) == 1
 
 
