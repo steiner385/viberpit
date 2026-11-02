@@ -490,7 +490,10 @@ def test_managed_lists_the_capacity_env_flags():
 def _client_mode_values() -> set[str]:
     """The `value:` strings in web/src/session/permissionModes.ts — the client's list."""
     src = (REPO_ROOT / "web" / "src" / "session" / "permissionModes.ts").read_text()
-    return set(re.findall(r"value:\s*'([^']+)'", src))
+    # Only the settable-defaults array: the same file also derives SESSION_MODE_OPTIONS,
+    # which adds the session-only 'plan' (D-1) — not a default the server accepts.
+    block = src.split("export const PERMISSION_MODES", 1)[1].split("] as const", 1)[0]
+    return set(re.findall(r"value:\s*'([^']+)'", block))
 
 
 def test_accepted_permission_modes_match_client_list():
