@@ -2,16 +2,28 @@ import { useState, useId } from 'react'
 import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-interface Props { text: string; defaultCollapsed: boolean }
+interface Props {
+  text: string
+  defaultCollapsed: boolean
+  /** The runtime's `viewModeEpoch`: a change drops the manual toggle so the
+   *  (new) default applies again — a view-mode change overrides a hand toggle. */
+  resetKey?: number
+}
 
 /**
  * Reasoning trace, rendered Claude-Code style: a compact, dim, italic one-liner
  * (a sparkle glyph + `Thinking`) that expands to the full text on click — no heavy
  * bordered box.
  */
-export function ThinkingBlock({ text, defaultCollapsed }: Props) {
-  // Honor the persisted default until the user manually toggles, then stick.
+export function ThinkingBlock({ text, defaultCollapsed, resetKey = 0 }: Props) {
+  // Honor the default until the user manually toggles, then stick — until the
+  // next view-mode change (during-render reset, like ToolCallCard's).
   const [userToggled, setUserToggled] = useState<boolean | null>(null)
+  const [prevResetKey, setPrevResetKey] = useState(resetKey)
+  if (prevResetKey !== resetKey) {
+    setPrevResetKey(resetKey)
+    setUserToggled(null)
+  }
   const open = userToggled ?? !defaultCollapsed
   const regionId = useId()
 

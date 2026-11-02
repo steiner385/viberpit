@@ -102,6 +102,7 @@ export function SubAgentReaderPage({ sessionId, agentId }: { sessionId: string; 
             turns={turns}
             toolDetailMode={rt.toolDetailMode}
             thinkingCollapsed={rt.thinkingCollapsed}
+            viewModeEpoch={rt.viewModeEpoch}
             onAnswer={rt.onAnswer}
           />
         )}

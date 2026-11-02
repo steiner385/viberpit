@@ -8,9 +8,10 @@
  * ## Why a bridge is needed at all
  *
  * The in-session gestures (← / Ctrl+Z → detach; Esc → stop a running turn, else
- * detach) need four things: `hasOpenAction` (is a permission or question card
- * unanswered), `busy` (is a turn running), a stop, and a detach that first
- * detaches the socket. All four belong to the session runtime, and the runtime
+ * detach; Ctrl/⌘+O → cycle the transcript view) need `hasOpenAction` (is a
+ * permission or question card unanswered), `busy` (is a turn running), a stop, a
+ * detach that first detaches the socket, and the view-mode cycle. All of them
+ * belong to the session runtime, and the runtime
  * provider is mounted by `PageHost`, BELOW the shell (deliberately: audit F2.3 scoped it there so
  * selecting a session stops remounting the whole shell). So the shell cannot read
  * it from context, and the router gives no way to pass a prop upwards.
@@ -43,6 +44,8 @@ export interface SessionGestures {
   denyOldestPermission: () => void
   /** Leave the session for the list (the click equivalent is Back). */
   onDetach: () => void
+  /** Advance the transcript view mode (Ctrl/⌘+O; the click equivalent is the View menu). */
+  onCycleView: () => void
 }
 
 /**

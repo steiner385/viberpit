@@ -20,6 +20,8 @@ interface Props {
   model?: string | null
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
+  /** The runtime's `viewModeEpoch` (see `Turn`). */
+  viewModeEpoch?: number
   /** Id of the live-streaming block (null when idle/replaying). */
   streamingBlockId?: string | null
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
@@ -60,7 +62,7 @@ interface Props {
  *  - scrolling near the top pages in older turns and the prior scroll anchor is
  *    restored so the viewport doesn't jump.
  */
-export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk, followSignal }: Props) {
+export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, viewModeEpoch, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk, followSignal }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Warm the markdown renderer the moment a transcript exists, rather than
@@ -169,6 +171,7 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
             isLastTurn={row.turn.id === lastTurnId}
             toolDetailMode={toolDetailMode}
             thinkingCollapsed={thinkingCollapsed}
+            viewModeEpoch={viewModeEpoch}
             // The open block only ever lives in the last turn; pass null to the
             // rest so their memoized render stays stable across deltas.
             streamingBlockId={row.turn.id === lastTurnId ? streamingBlockId : null}

@@ -117,6 +117,7 @@ function AssistantSheetBody() {
           model={rt.state.model}
           toolDetailMode={rt.toolDetailMode}
           thinkingCollapsed={rt.thinkingCollapsed}
+          viewModeEpoch={rt.viewModeEpoch}
           // Only the live-open block streams as plain text; during replay the open
           // id is meaningless (mirrors SessionBody's TranscriptView call).
           streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}

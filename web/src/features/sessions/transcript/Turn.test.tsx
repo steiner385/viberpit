@@ -1,5 +1,6 @@
 import { beforeAll, describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 const feedbackMutate = vi.fn()
 vi.mock('@/api/assistant', () => ({
@@ -288,5 +289,106 @@ describe('Turn share_artifact rendering', () => {
     expect(screen.getByText('PR #7')).toBeInTheDocument()
     // Only the two Reads are collapsible tool rows; the artifact has no details toggle.
     expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(2)
+  })
+})
+
+describe('Turn under a transcript view mode', () => {
+  const thinking = (id: string, text: string): Block => ({ kind: 'thinking', id, text })
+  const toggles = () => screen.getAllByRole('button', { name: /^thinking$/i })
+
+  it('a thinking block appended while streaming under Thinking renders open', () => {
+    const first = makeTurn([thinking('th-1', 'first')])
+    const { rerender } = render(
+      <Turn turn={first} isLastTurn toolDetailMode="auto" thinkingCollapsed={false} viewModeEpoch={1} onAnswer={noop} />,
+    )
+    const grown = makeTurn([thinking('th-1', 'first'), thinking('th-2', 'second')])
+    rerender(
+      <Turn turn={grown} isLastTurn toolDetailMode="auto" thinkingCollapsed={false} viewModeEpoch={1}
+        streamingBlockId="th-2" onAnswer={noop} />,
+    )
+    expect(toggles()).toHaveLength(2)
+    for (const t of toggles()) expect(t).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('a new epoch re-applies the mode default to a block the user toggled', async () => {
+    const user = userEvent.setup()
+    const turn = makeTurn([thinking('th-1', 'first')])
+    const { rerender } = render(
+      <Turn turn={turn} isLastTurn toolDetailMode="auto" thinkingCollapsed={false} viewModeEpoch={1} onAnswer={noop} />,
+    )
+    await user.click(toggles()[0])
+    expect(toggles()[0]).toHaveAttribute('aria-expanded', 'false')
+    rerender(
+      <Turn turn={turn} isLastTurn toolDetailMode="all-open" thinkingCollapsed={false} viewModeEpoch={2} onAnswer={noop} />,
+    )
+    expect(toggles()[0]).toHaveAttribute('aria-expanded', 'true')
+  })
+})
+
+describe('Turn message actions', () => {
+  it('renders one Message actions trigger per turn', () => {
+    render(
+      <Turn
+        turn={makeTurn([
+          { kind: 'text', id: 'a', text: 'one' }, tool('t1'), { kind: 'text', id: 'b', text: 'two' },
+        ])}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop}
+      />,
+    )
+    expect(screen.getAllByRole('button', { name: /^Message actions/ })).toHaveLength(1)
+  })
+
+  it('names the trigger by role: "your prompt" for a user turn, "reply" for an assistant turn', () => {
+    const { unmount } = render(
+      <Turn turn={{ id: 'u', role: 'user', blocks: [{ kind: 'text', id: 'a', text: 'hi' }] }}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop} />,
+    )
+    expect(screen.getByRole('button', { name: /^Message actions/ })).toHaveAccessibleName('Message actions — your prompt')
+    unmount()
+    render(
+      <Turn turn={makeTurn([{ kind: 'text', id: 'a', text: 'hi' }])}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop} />,
+    )
+    expect(screen.getByRole('button', { name: /^Message actions/ })).toHaveAccessibleName('Message actions — reply')
+  })
+
+  it('pins the trigger to the turn root\'s top-right corner, with no layout wrapper', () => {
+    const { container } = render(
+      <Turn turn={makeTurn([{ kind: 'text', id: 'a', text: 'hi' }])}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop} />,
+    )
+    const root = container.firstElementChild as HTMLElement
+    const trigger = screen.getByRole('button', { name: /^Message actions/ })
+    expect(root).toHaveClass('relative')
+    expect(trigger.parentElement).toBe(root)
+    expect(trigger).toHaveClass('absolute', 'right-0', 'top-0', 'opacity-0', 'pointer-coarse:opacity-100')
+  })
+
+  it('reveals only on its OWN turn\'s hover/focus — a nested sub-agent turn does not leak', () => {
+    // Tailwind's `group-hover/<name>` matches ANY hovered ancestor group, which an
+    // outer turn always is for a nested one. The reveal is a direct-child selector
+    // instead, so each trigger must be its own turn root's child and carry no
+    // ancestor-group variant. (jsdom cannot evaluate :hover, so this asserts the
+    // structure the selector depends on.)
+    const task: Block = {
+      kind: 'tool', id: 'task1', toolId: 'task1', name: 'Task', toolKind: 'unknown',
+      input: { subagent_type: 'Explore', description: 'x' }, result: { ok: true, payload: { content: 'done' } },
+    }
+    render(
+      <Turn turn={makeTurn([{ kind: 'text', id: 'a', text: 'outer' }, task])}
+        isLastTurn={false} toolDetailMode="all-open" thinkingCollapsed onAnswer={noop}
+        subAgents={{ task1: { openBlockId: null, turns: [
+          { id: 'sa1', role: 'assistant', blocks: [{ kind: 'text', id: 'sa1:t', text: 'inner' }] },
+        ] } }}
+      />,
+    )
+    const triggers = screen.getAllByRole('button', { name: /^Message actions/, hidden: true })
+    expect(triggers).toHaveLength(2)
+    for (const t of triggers) {
+      expect(t.parentElement).toHaveClass('relative', 'px-4', 'py-2')
+      expect(t).toHaveClass('[:hover>&]:opacity-100', '[:focus-within>&]:opacity-100')
+      expect(t.className).not.toMatch(/group-(hover|focus)/)
+    }
+    expect(triggers[0].parentElement).not.toBe(triggers[1].parentElement)
   })
 })

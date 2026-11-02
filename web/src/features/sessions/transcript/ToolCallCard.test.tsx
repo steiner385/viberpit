@@ -275,6 +275,19 @@ describe('ToolCallCard', () => {
       expect(screen.getByRole('button', { name: /tool details/i })).toHaveAttribute('aria-expanded', 'true')
     })
 
+    it('a manual toggle sticks until resetKey changes, which re-applies the mode default', async () => {
+      const user = userEvent.setup()
+      const { rerender } = render(<ToolCallCard block={bashBlockWithResult} density="line" toolDetailMode="all-open" resetKey={1} />)
+      const btn = () => screen.getByRole('button', { name: /toggle tool details/i })
+      await user.click(btn())
+      expect(btn()).toHaveAttribute('aria-expanded', 'false')
+      rerender(<ToolCallCard block={bashBlockWithResult} density="line" toolDetailMode="all-open" resetKey={1} />)
+      expect(btn()).toHaveAttribute('aria-expanded', 'false')
+      // Same toolDetailMode, new epoch (e.g. Verbose → Normal → … landing on all-open again).
+      rerender(<ToolCallCard block={bashBlockWithResult} density="line" toolDetailMode="all-open" resetKey={2} />)
+      expect(btn()).toHaveAttribute('aria-expanded', 'true')
+    })
+
     it('toolDetailMode="all-closed" overrides defaultResultOpen and keeps the panel shut', () => {
       render(<ToolCallCard block={bashBlockWithResult} density="line" defaultResultOpen toolDetailMode="all-closed" />)
       expect(screen.getByRole('button', { name: /tool details/i })).toHaveAttribute('aria-expanded', 'false')

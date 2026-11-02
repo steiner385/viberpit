@@ -18,6 +18,7 @@ import { NoticeCard } from './NoticeCard'
 import { ArtifactCard } from './ArtifactCard'
 import { BlockRow } from './BlockRow'
 import { TurnFeedback } from './TurnFeedback'
+import { MessageActions } from './MessageActions'
 import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
 
 interface Props {
@@ -25,6 +26,9 @@ interface Props {
   isLastTurn: boolean
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
+  /** The runtime's `viewModeEpoch` — every block's `resetKey` (a view-mode change
+   *  re-applies the mode's defaults over manual toggles). */
+  viewModeEpoch?: number
   /** Id of the block currently being streamed live (defers diagram rendering);
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
@@ -55,7 +59,7 @@ interface Props {
 const PROSE_MEASURE = 'max-w-[70ch]'
 
 export const Turn = memo(function Turn({
-  turn, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
+  turn, isLastTurn, toolDetailMode, thinkingCollapsed, viewModeEpoch = 0, streamingBlockId = null,
   onAnswer, subAgents, sessionModel, variant = 'session', onAsk,
 }: Props) {
   const isUser = turn.role === 'user'
@@ -78,7 +82,9 @@ export const Turn = memo(function Turn({
     // whole pane. The reading measure lives on the prose block (`PROSE_MEASURE`
     // below) — when it sat here (#2529/#2535) a wide pane rendered every tool
     // card into ~574px at the left and left the right two thirds blank.
-    <div className="px-4 py-2">
+    //
+    // `relative` anchors the Message actions trigger (below) in the top-right corner.
+    <div className="relative px-4 py-2">
       {isUser && turn.context && <PromptContextChip context={turn.context} />}
       {/* Positive attribution for a prompt a person actually typed. The automated
           case carries its own caption inside AutomatedPrompt, so this renders only
@@ -99,6 +105,7 @@ export const Turn = memo(function Turn({
                 isLiveTail={isLiveTail}
                 toolDetailMode={toolDetailMode}
                 thinkingCollapsed={thinkingCollapsed}
+                resetKey={viewModeEpoch}
                 subAgents={subAgents}
                 sessionModel={sessionModel}
               />
@@ -133,10 +140,10 @@ export const Turn = memo(function Turn({
               ? <AutomatedPrompt origin={turn.origin} images={block.images} />
               : <UserBubble images={block.images} />}</BlockRow>
           case 'thinking':
-            return <BlockRow key={block.id} ts={rowTs}><ThinkingBlock text={block.text} defaultCollapsed={thinkingCollapsed} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><ThinkingBlock text={block.text} defaultCollapsed={thinkingCollapsed} resetKey={viewModeEpoch} /></BlockRow>
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <BlockRow key={block.id} ts={rowTs}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} subThread={subAgents?.[block.toolId]} sessionModel={sessionModel} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} resetKey={viewModeEpoch} subThread={subAgents?.[block.toolId]} sessionModel={sessionModel} /></BlockRow>
           case 'question':
             // A LIVE open question is rendered by the pinned PendingQuestionPanel
             // above the composer — omit it inline to avoid a duplicate. Historical
@@ -182,6 +189,14 @@ export const Turn = memo(function Turn({
           'assistant'); other transcript readers (the session page, the archived
           reader) never show it. */}
       {variant === 'assistant' && !isUser && <TurnFeedback turnId={turn.id} />}
+      {/* One per-message menu per turn (renders nothing when the turn has nothing to
+          act on), pinned to the turn's top-right corner so it takes no layout space.
+          It is a DIRECT child of this root — its hover/focus reveal keys off that, so
+          a nested sub-agent turn's trigger stays hidden while only the outer turn is
+          hovered. The 28px trigger sits in the right gutter: the turn's 16px padding
+          plus a bubble's 16px inner padding, so it never covers prompt text; the
+          right-aligned caption rows above a prompt are inset (`pr-3`) to clear it. */}
+      <MessageActions turn={turn} className="absolute right-0 top-0" />
       {/* A prompt the user has sent that no server echo has confirmed yet. The `user`
           echo adopts the turn and clears `pending`, so this note disappears the moment
           the real turn exists — no separate teardown. */}
@@ -204,7 +219,7 @@ function PromptContextChip({ context }: { context: PromptContext }) {
   const label = sessionTitle ?? navDefForPath(context.route)?.label
   if (!label) return null
   return (
-    <div className="flex justify-end pb-1">
+    <div className="flex justify-end pb-1 pr-3">
       <span className="rounded-full border border-edge px-2 py-0.5 text-2xs text-ink-muted">
         on {label}
       </span>
@@ -219,7 +234,7 @@ function PromptContextChip({ context }: { context: PromptContext }) {
  */
 function YouCaption() {
   return (
-    <div className="flex justify-end pb-1">
+    <div className="flex justify-end pb-1 pr-3">
       <span className="inline-flex items-center gap-1 text-2xs text-ink-muted">
         <User size={10} aria-hidden="true" />
         You

@@ -58,6 +58,8 @@ interface Props {
   /** Optional export control (e.g. ExportMenu) rendered in the right cluster.
    *  SessionMeta stays free of @/api imports — the caller provides the node. */
   exportSlot?: React.ReactNode
+  /** Optional transcript view-mode control (ViewModeMenu), rendered just before export. */
+  viewModeSlot?: React.ReactNode
   /** Optional session actions (archive / ⋮ menu) rendered at the end of the right
    *  cluster. Mobile (SessionView) passes its SessionActions here so they share
    *  this strip's status line instead of needing a row of their own; desktop omits
@@ -82,7 +84,7 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, subAgentsSupported = true, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, accounts, accountPinned, onSelectAccount, onUnpin }: Props) {
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, subAgentsSupported = true, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, viewModeSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, accounts, accountPinned, onSelectAccount, onUnpin }: Props) {
   const [panel, setPanel] = useState<'agents' | 'background' | null>(null)
   const now = useNow(1000, backgroundWork.wakeupAt != null)
   // `now` is 0 until the first tick; a countdown against 0 would flash a huge number.
@@ -231,12 +233,13 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
 
         </div>
 
-        {/* Right cluster: live status (folded-in StatusBar) + export + session
+        {/* Right cluster: live status (folded-in StatusBar) + view mode + export + session
             actions (archive/⋮) + sub-agents toggle. Outside the fold: this is
             what a narrow pane keeps on its one visible row. */}
-        {(statusSlot || exportSlot || actionsSlot || agentCount > 0 || bgSummary) && (
+        {(statusSlot || viewModeSlot || exportSlot || actionsSlot || agentCount > 0 || bgSummary) && (
           <div className="ml-auto flex items-center gap-2">
             {statusSlot}
+            {viewModeSlot}
             {exportSlot}
             {actionsSlot}
             {agentCount > 0 && (

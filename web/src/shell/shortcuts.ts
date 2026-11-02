@@ -387,6 +387,17 @@ export const SHORTCUTS: Shortcut[] = [
     description: 'Deny the oldest pending permission request', group: 'in-session',
     match: cmdOrCtrl((e) => e.key === '.'),
     when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen && c.hasDeniablePermission },
+  // Transcript view mode (sub-spec D §4): Normal → Thinking → Verbose → Normal.
+  // Fires while typing in the session composer — a chord is not a character —
+  // but never from any OTHER text entry (the list search, the docked assistant
+  // composer …), the same focused-element rule as `insession.stop`. Ctrl+O / ⌘O
+  // (the browser's "open file") is not browser-reserved, so the dispatcher's
+  // preventDefault keeps the file picker shut. Shift is excluded: Ctrl/⌘+Shift+O
+  // is Chrome's Bookmark Manager and must reach the browser untouched.
+  { id: 'insession.cycleView', keys: 'Ctrl+O', keysMac: '⌘O', description: 'Cycle the transcript view (Normal, Thinking, Verbose)',
+    group: 'in-session',
+    match: cmdOrCtrl((e) => !e.shiftKey && (e.key === 'o' || e.key === 'O')),
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen && !focusInOtherTextEntry(c.active) },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
   // session). All three are reserved by the browser's own UI — see the
   // "NOT BOUND, and why" block at the top of this array for the evidence.

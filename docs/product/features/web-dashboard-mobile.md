@@ -98,6 +98,18 @@ home, and replaced the ad-hoc `lib/useMediaQuery.ts` call sites with the single
 `useViewport()` reader. The session transcript is a live view bridged over WebSocket, not a
 raw PTY dump — there is no terminal emulator in the tree.
 
+**Transcript view modes and message actions** — the session meta strip shows `View: <Mode>`,
+cycled with Ctrl/⌘+O:
+- **Normal** uses your Settings defaults (tool detail, thinking collapsed).
+- **Thinking** expands thinking blocks.
+- **Verbose** expands every tool result and the thinking blocks too.
+
+The mode is per session and resets to Normal when you open another session. Changing the mode
+resets any blocks you opened or closed by hand. Ctrl+O does not fire from text fields other than
+the session composer. Each turn also has a `Message actions` menu, shown on hover or focus and
+always on touch; **Copy as Markdown** copies the assistant turn's prose, or your prompt, to the
+clipboard.
+
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a
 model tier and a refined prompt, shown as the "Refined:" chip with Accept / Discard.
