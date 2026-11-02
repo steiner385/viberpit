@@ -329,6 +329,19 @@ describe('SessionSocket', () => {
     expect(sent).toEqual({ type: 'permissionResponse', sessionId: 'sess-1', permId: 'perm-1', decision: 'allow' })
   })
 
+  it('socket.permissionResponse carries a deny message on the frame', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.permissionResponse('sess-1', 'perm-1', 'deny', 'split step 3')
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({
+      type: 'permissionResponse', sessionId: 'sess-1', permId: 'perm-1', decision: 'deny', message: 'split step 3',
+    })
+  })
+
   // ── Inbound: individual session event (non-batch) ─────────────────────────
 
   it('a direct session event frame fires sessionEvent callback', () => {

@@ -266,6 +266,23 @@ describe('useSessionRuntime.onDecision (permission) — reject on closed socket 
     expect(notices.map((n) => n.text)).toEqual(['Always allowed Bash: ls'])
   })
 
+  it('passes a deny message through to the permissionResponse frame', () => {
+    mockPermissionResponse.mockReturnValue(true)
+    const { result } = renderHook(() => useSessionRuntime('psess5'), { wrapper })
+    seedPermission(result)
+    act(() => { result.current.onDecision('perm-1', 'deny', 'split step 3') })
+    expect(mockPermissionResponse).toHaveBeenCalledWith('psess5', 'perm-1', 'deny', 'split step 3')
+    expect(permExists(result)).toBe(false)
+  })
+
+  it('sends no message argument when none was given', () => {
+    mockPermissionResponse.mockReturnValue(true)
+    const { result } = renderHook(() => useSessionRuntime('psess6'), { wrapper })
+    seedPermission(result)
+    act(() => { result.current.onDecision('perm-1', 'deny') })
+    expect(mockPermissionResponse.mock.calls[0]).toEqual(['psess6', 'perm-1', 'deny'])
+  })
+
   it('leaves no record when the send was rejected (nothing was decided)', () => {
     mockPermissionResponse.mockReturnValue(false)
     const { result } = renderHook(() => useSessionRuntime('psess4'), { wrapper })

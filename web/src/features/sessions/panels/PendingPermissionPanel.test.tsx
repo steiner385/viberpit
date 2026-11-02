@@ -32,7 +32,7 @@ describe('PendingPermissionPanel', () => {
     )
     // The actionable card — role="group" "Permission request" — is rendered in the panel.
     expect(screen.getByRole('group', { name: /permission request/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^allow/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^allow(?! for this session)/i })).toBeInTheDocument()
   })
 
   it('exposes role="region" with accessible name "Pending permission"', () => {
@@ -58,7 +58,7 @@ describe('PendingPermissionPanel', () => {
     render(
       <PendingPermissionPanel turns={[turn(perm('p1'))]} onDecision={onDecision} />,
     )
-    fireEvent.click(screen.getByRole('button', { name: /^allow/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^allow(?! for this session)/i }))
     expect(onDecision).toHaveBeenCalledWith('p1', 'allow')
   })
 

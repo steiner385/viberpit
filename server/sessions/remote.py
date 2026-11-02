@@ -887,9 +887,12 @@ class RemoteOrchestrator:
     async def cancel_queued(self, session_id, index):
         return await self._client.call("cancel_queued", session_id=session_id, index=index)
 
-    async def resolve_permission(self, session_id, perm_id, decision, identity):
+    async def resolve_permission(self, session_id, perm_id, decision, identity,
+                                 message: str | None = None):
+        # ``message`` only when set: an older daemon's handler has no such parameter.
+        extra = {} if message is None else {"message": message}
         return await self._client.call("resolve_permission", session_id=session_id, perm_id=perm_id,
-                                        decision=decision, identity=identity)
+                                        decision=decision, identity=identity, **extra)
 
     async def answer_question(self, session_id, question_id, selected, identity, mode="option"):
         return await self._client.call("answer_question", session_id=session_id, question_id=question_id,

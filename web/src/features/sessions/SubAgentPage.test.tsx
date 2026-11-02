@@ -116,7 +116,7 @@ describe('SubAgentReaderPage', () => {
       ],
     }
     view()
-    fireEvent.click(screen.getByRole('button', { name: /^Allow / }))
+    fireEvent.click(screen.getByRole('button', { name: /^Allow (?!for this session)/ }))
     expect(onDecision).toHaveBeenCalledWith('p1', 'allow')
   })
 

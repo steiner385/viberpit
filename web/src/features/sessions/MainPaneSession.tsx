@@ -46,6 +46,7 @@ import { SessionBody } from '@/features/sessions/SessionBody'
 import { CommandResultOverlay } from '@/features/sessions/composer/CommandResultOverlay'
 import { useSessionGestures } from '@/shell/sessionGestures'
 import { statusTier } from '@/session/statusTier'
+import { selectOldestDeniablePermId } from '@/session/selectors'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { SessionHeader } from './SessionHeader'
 
@@ -90,11 +91,12 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
   }
 
   // The keyboard half is the shell's single listener (`shell/useShortcuts`); this
-  // publishes what it cannot see from up there — whether a card is unanswered,
-  // whether a turn is running (Esc then stops it), and a detach that drops the
-  // socket first. Registering rather than
+  // publishes what it cannot see from up there — whether a card is unanswered
+  // (and which permission ⌘. would deny), whether a turn is running (Esc then
+  // stops it), and a detach that drops the socket first. Registering rather than
   // listening is what makes ← / Esc / Ctrl+Z one implementation with the rest of
   // the app's keys instead of a sixth window listener.
+  const deniablePermId = selectOldestDeniablePermId(rt.state.turns)
   useSessionGestures({
     hasOpenAction: rt.hasOpenAction,
     // The composer's own Stop-button predicate, so Esc stops exactly when Stop shows.
@@ -103,6 +105,8 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
       rt.onInterrupt()
       toast('Stopped · Esc')
     },
+    hasDeniablePermission: deniablePermId !== null,
+    denyOldestPermission: () => { if (deniablePermId !== null) rt.onDecision(deniablePermId, 'deny') },
     onDetach: () => leave(onDetach),
   })
 

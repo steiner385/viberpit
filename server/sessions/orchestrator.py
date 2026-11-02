@@ -103,7 +103,9 @@ from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
-from server.sessions.claude_driver import ACLOSE_BUDGET_S, ClaudeAgentDriverFactory
+from server.sessions.claude_driver import (
+    ACLOSE_BUDGET_S, DENY_COMMENT_PROMPT_PREFIX, ClaudeAgentDriverFactory,
+)
 from server.sessions.engine import (
     EFFORT_UNCHANGED,
     AgentCapabilities,
@@ -21271,17 +21273,37 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         return None if rec is None else (rec.repo, rec.cwd)
 
-    async def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
+    async def resolve_permission(self, session_id, perm_id, decision, identity,
+                                 message: str | None = None) -> bool:
         """Decide a pending permission / plan card.
 
         Live path first, unchanged. If no live waiter took it AND a restart orphaned
         a permission or plan approval for this session, the decision is delivered as
         the next turn's prompt (``orphaned_answer_prompt``) — the same fallback a
         question gets in :meth:`answer_question` (#2922).
+
+        ``message`` (validated by ``session_actions.resolve_permission``: deny only,
+        trimmed, non-empty) is the user's guidance with a deny. A Claude card hands it
+        to the model as the deny reason. An engine-managed (Codex) card's approval
+        protocol has no text field, so the deny is applied and the message follows as
+        the next user prompt through :meth:`send_prompt`, led by
+        ``DENY_COMMENT_PROMPT_PREFIX`` (no origin: the operator wrote it).
         """
         d = self._drivers.get(session_id)
-        if d is not None and d.resolve_permission(perm_id, decision, identity):
-            return True
+        if d is not None:
+            if message is None:
+                ok = d.resolve_permission(perm_id, decision, identity)
+            else:
+                relay = self._registry.is_engine_managed(perm_id)
+                ok = d.resolve_permission(perm_id, decision, identity, message=message)
+                if ok and relay:
+                    sent = await self.send_prompt(
+                        session_id, f"{DENY_COMMENT_PROMPT_PREFIX}{message}")
+                    if sent != "sent":
+                        log.info("resolve_permission: deny message not delivered "
+                                 "session=%s perm=%s result=%r", session_id, perm_id, sent)
+            if ok:
+                return True
         kind = self.orphaned_interaction(session_id)
         if kind not in ("permission", "plan") or decision not in ("allow", "always", "deny"):
             return False
@@ -21297,7 +21319,7 @@ class SessionOrchestrator:
             log.info("orphaned_answer: could not name the tool for %s", session_id,
                      exc_info=True)
         return await self._deliver_orphaned_answer(session_id, kind, decision, identity,
-                                                   tool=tool)
+                                                   tool=tool, comment=message)
 
     def orphaned_interaction(self, session_id: str) -> str | None:
         """The kind of human-facing ask a restart orphaned for this session, or None.
@@ -21333,7 +21355,8 @@ class SessionOrchestrator:
 
     async def _deliver_orphaned_answer(self, session_id: str, kind: str,
                                        answer: list[str] | str, identity: str, *,
-                                       tool: str | None = None) -> bool:
+                                       tool: str | None = None,
+                                       comment: str | None = None) -> bool:
         """Send the user's response to a restart-orphaned ask as the next turn's prompt.
 
         The rearm ``_rearm_session`` deferred while the ask was orphaned is folded in
@@ -21357,7 +21380,8 @@ class SessionOrchestrator:
                      exc_info=True)
         tasks = [OpenBgTask.from_dict(x) for x in (snap or []) if isinstance(x, dict)]
         context = await self._rearm_text(session_id, tasks)
-        prompt = orphaned_answer_prompt(kind, answer, tool=tool, context=context)
+        prompt = orphaned_answer_prompt(kind, answer, tool=tool, context=context,
+                                        comment=comment)
         result = await self.send_prompt(session_id, prompt, replayable=False)
         if result != "sent":
             log.warning("orphaned_answer: send_prompt returned %r for %s", result, session_id)

@@ -26,6 +26,7 @@ function ctx(over: Partial<ShortcutContext> = {}): ShortcutContext {
   return {
     overlayOpen: false,
     hasOpenAction: false,
+    hasDeniablePermission: false,
     sessionOpen: false,
     sessionBusy: false,
     inSessions: true,
@@ -54,7 +55,7 @@ const headerAction = (e: KeyboardLike) => matchShortcut(e, inGroup('list-mode-he
 const SHELL_HANDLED = [
   'app.help', 'app.assistant',
   'compose.help', 'compose.nav', 'insession.stop', 'insession.detach', 'insession.detachEsc',
-  'insession.forceDetach',
+  'insession.forceDetach', 'insession.denyPermission',
 ]
 const shellRow = (e: KeyboardLike, c: ShortcutContext) =>
   matchShortcut(e, (s) => SHELL_HANDLED.includes(s.id), c)?.id
@@ -152,7 +153,7 @@ const KEY_BY_GLYPH: Record<string, string> = {
 
 function keyForGlyph(glyph: string): string | null {
   if (glyph in KEY_BY_GLYPH) return KEY_BY_GLYPH[glyph]
-  if (/^[a-z?;/]$/.test(glyph)) return glyph // 'c', 'r', 'a', 'd', '?', ';', '/'
+  if (/^[a-z?;/.]$/.test(glyph)) return glyph // 'c', 'r', 'a', 'd', '?', ';', '/', '.'
   return null
 }
 
@@ -391,8 +392,13 @@ describe('shortcutAllowed', () => {
 
   it('no shipped row is unreachable under a fully-permissive context', () => {
     // Two permissive contexts, idle and busy: the Esc rows split on `sessionBusy`
-    // by design (stop vs detach), so no ONE context reaches both.
-    const permissive = [ctx({ sessionOpen: true }), ctx({ sessionOpen: true, sessionBusy: true })]
+    // by design (stop vs detach), so no ONE context reaches both. A pending
+    // deniable permission is part of "permissive": it is the positive fact
+    // `insession.denyPermission` needs, and no row treats it as a blocker.
+    const permissive = [
+      ctx({ sessionOpen: true, hasDeniablePermission: true }),
+      ctx({ sessionOpen: true, sessionBusy: true, hasDeniablePermission: true }),
+    ]
     for (const s of SHORTCUTS) {
       expect(permissive.some((c) => shortcutAllowed(s, c)), `${s.id}`).toBe(true)
     }
@@ -658,6 +664,23 @@ describe('matchShortcut — the shell scope', () => {
     expect(shellRow(ev({ key: 'z', ctrlKey: true }), ctx())).toBeUndefined()
     // Cmd+Z is the platform's undo, not a detach.
     expect(shellRow(ev({ key: 'z', metaKey: true }), ctx({ sessionOpen: true }))).toBeUndefined()
+  })
+
+  it('⌘. and Ctrl+. deny a pending permission — through a focused composer, never in kiosk or under an overlay', () => {
+    const carded = ctx({ sessionOpen: true, hasOpenAction: true, hasDeniablePermission: true })
+    expect(shellRow(ev({ key: '.', metaKey: true }), carded)).toBe('insession.denyPermission')
+    expect(shellRow(ev({ key: '.', ctrlKey: true }), carded)).toBe('insession.denyPermission')
+    // A chord is not a character: it fires while the composer holds a draft.
+    expect(shellRow(ev({ key: '.', ctrlKey: true }), { ...carded, yieldsToTextEntry: true, active: input }))
+      .toBe('insession.denyPermission')
+    // No deniable card (none, or only a plan card — `hasOpenAction` without `hasDeniablePermission`).
+    expect(shellRow(ev({ key: '.', ctrlKey: true }), ctx({ sessionOpen: true }))).toBeUndefined()
+    expect(shellRow(ev({ key: '.', ctrlKey: true }), ctx({ sessionOpen: true, hasOpenAction: true }))).toBeUndefined()
+    expect(shellRow(ev({ key: '.', ctrlKey: true }), { ...carded, interactive: false })).toBeUndefined()
+    expect(shellRow(ev({ key: '.', ctrlKey: true }), { ...carded, overlayOpen: true })).toBeUndefined()
+    expect(shellRow(ev({ key: '.', ctrlKey: true }), { ...carded, sessionOpen: false })).toBeUndefined()
+    // Bare `.` is a character.
+    expect(shellRow(ev({ key: '.' }), carded)).toBeUndefined()
   })
 
   // ── the app-global chords (Task 5) ─────────────────────────────────────────

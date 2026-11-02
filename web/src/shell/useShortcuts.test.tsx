@@ -636,6 +636,75 @@ describe('Alt+Shift+M / I / E open the prompt row menus', () => {
   })
 })
 
+// ── ⌘. / Ctrl+. — deny the oldest pending permission (D-2) ──────────────────
+
+/** Deliver permission cards into the open session, oldest first. */
+async function deliverCards(cards: { permId: string; plan: boolean }[]): Promise<void> {
+  await act(async () => {
+    const emit = (frame: Record<string, unknown>) =>
+      handlers['sessionEvent']?.forEach((cb) => cb(frame))
+    emit({ type: 'replayComplete' })
+    emit({ type: 'turnStart', turnId: 't1' })
+    for (const c of cards) {
+      emit({
+        type: 'permissionRequest', permId: c.permId, turnId: 't1',
+        tool: 'bash', toolKind: 'bash', input: { command: `ls ${c.permId}` }, plan: c.plan,
+      })
+    }
+  })
+}
+
+describe('⌘. / Ctrl+. denies the oldest pending permission', () => {
+  beforeEach(() => { socket.permissionResponse.mockClear() })
+
+  it('denies only the OLDEST of two cards — even with the composer focused', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await deliverCards([{ permId: 'perm-1', plan: false }, { permId: 'perm-2', plan: false }])
+    await user.click(composer())
+    await user.type(composer(), 'wip')
+    await user.keyboard('{Control>}.{/Control}')
+    expect(socket.permissionResponse).toHaveBeenCalledTimes(1)
+    expect(socket.permissionResponse).toHaveBeenCalledWith('s1', 'perm-1', 'deny')
+    expect(composer()).toHaveValue('wip')
+  })
+
+  it('on ⌘. too', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await deliverCards([{ permId: 'perm-1', plan: false }])
+    await user.keyboard('{Meta>}.{/Meta}')
+    expect(socket.permissionResponse).toHaveBeenCalledWith('s1', 'perm-1', 'deny')
+  })
+
+  it('does nothing — and claims nothing — with no card pending', async () => {
+    await renderSession()
+    composer().focus()
+    const notPrevented = fireEvent.keyDown(composer(), { key: '.', ctrlKey: true })
+    expect(notPrevented).toBe(true)
+    expect(socket.permissionResponse).not.toHaveBeenCalled()
+  })
+
+  it('skips a plan card — a plan step is not a permission to deny', async () => {
+    await renderSession()
+    await deliverCards([{ permId: 'plan-1', plan: true }])
+    composer().focus()
+    const notPrevented = fireEvent.keyDown(composer(), { key: '.', ctrlKey: true })
+    expect(notPrevented).toBe(true)
+    expect(socket.permissionResponse).not.toHaveBeenCalled()
+  })
+
+  it('denies the permission card behind an older plan card, never the plan', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await deliverCards([{ permId: 'plan-1', plan: true }, { permId: 'perm-2', plan: false }])
+    await user.click(composer())
+    await user.keyboard('{Control>}.{/Control}')
+    expect(socket.permissionResponse).toHaveBeenCalledTimes(1)
+    expect(socket.permissionResponse).toHaveBeenCalledWith('s1', 'perm-2', 'deny')
+  })
+})
+
 // ── an open menu owns Escape ─────────────────────────────────────────────────
 
 describe('Escape closes an open menu instead of detaching', () => {

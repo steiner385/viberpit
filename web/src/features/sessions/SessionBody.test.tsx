@@ -74,7 +74,7 @@ function makeRuntime(blocks: Block[]): SessionRuntime {
     thinkingCollapsed: true,
     connectionState: 'connected',
     title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
-    hasOpenAction: false, hasOpenPermission: false,
+    hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
     onInterrupt: vi.fn(), onSetMode: vi.fn(), onCancelQueued: vi.fn(),
@@ -102,7 +102,7 @@ function makeEmptyRuntime(): SessionRuntime {
     thinkingCollapsed: true,
     connectionState: 'connected',
     title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
-    hasOpenAction: false, hasOpenPermission: false,
+    hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
     onInterrupt: vi.fn(), onSetMode: vi.fn(), onCancelQueued: vi.fn(),
@@ -300,7 +300,7 @@ describe('SessionBody — capability-gated surfaces', () => {
     expect(screen.getByTestId('pending-permission-panel')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Allow Bash: pytest -q$/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Deny Bash: pytest -q$/ })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /^Always allow Bash: pytest -q$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Allow for this session: Bash: pytest -q$/ }))
     expect(rt.onDecision).toHaveBeenCalledWith('p1', 'always')
   })
 

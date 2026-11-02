@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from './selectors'
+import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents, selectOldestDeniablePermId } from './selectors'
 import { initialTranscript } from './reducer'
 import type { Turn, TranscriptState, SubThread } from './reducer'
 
@@ -118,5 +118,22 @@ describe('selectVisibleTurns / selectVisibleSubAgents', () => {
     const s = make({ replaying: true, turns: liveTurns, staleTurns: [], subAgents: liveSubs, staleSubAgents: {} })
     expect(selectVisibleTurns(s)).toBe(liveTurns)
     expect(selectVisibleSubAgents(s)).toBe(liveSubs)
+  })
+})
+
+describe('selectOldestDeniablePermId', () => {
+  const perm = (permId: string, plan: boolean) => ({
+    kind: 'permission' as const, id: permId, permId, tool: 'Bash', toolKind: 'bash' as const, input: {}, plan,
+  })
+  const turn = (id: string, blocks: Turn['blocks']): Turn => ({ id, role: 'assistant', blocks })
+
+  it('returns the oldest non-plan permission in arrival order, skipping plan cards', () => {
+    const turns = [turn('t1', [perm('plan-1', true)]), turn('t2', [perm('p2', false), perm('p3', false)])]
+    expect(selectOldestDeniablePermId(turns)).toBe('p2')
+  })
+
+  it('is null with no permission, or only a plan card', () => {
+    expect(selectOldestDeniablePermId([])).toBeNull()
+    expect(selectOldestDeniablePermId([turn('t1', [perm('plan-1', true)])])).toBeNull()
   })
 })

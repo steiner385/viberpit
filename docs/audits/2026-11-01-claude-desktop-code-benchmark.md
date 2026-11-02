@@ -64,13 +64,13 @@ Full inventories, with an evidence tag on every item:
 | 3 Composer | 23.5 / 29 | 81% |
 | 4 Commands & config | 9 / 15 | 60% |
 | 5 Settings | 3.5 / 8 | 44% |
-| 6 User feedback | 14.5 / 19 | 76% |
+| 6 User feedback | 17 / 19 | 89% |
 | 7 Lifecycle & branching | 13.5 / 25 | 54% |
 | 8 Code review & dev | 3 / 12 | 25% |
 | 9 Shortcuts & a11y | 6 / 8 | 75% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **104 / 161** | **65%** |
-| **Target completion** (excl. rejected rows) | **101.5 / 151** | **67%** |
+| **Overall (weighted)** | **106.5 / 161** | **66%** |
+| **Target completion** (excl. rejected rows) | **104 / 151** | **69%** |
 
 ### 1 Shell & IA
 
@@ -151,9 +151,9 @@ Full inventories, with an evidence tag on every item:
 
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
-| Permission card: once / this session / always / deny | 3 | ◐ | no 'this session' scope |
+| Permission card: once / this session / always / deny | 3 | ✅ |  |
 | AskUserQuestion card | 3 | ✅ | multi-question batching |
-| Plan approval with comments | 2 | ◐ | Approve & run / Keep planning |
+| Plan approval with comments | 2 | ✅ | overall comment; per-step comments reuse D-5 line comments |
 | Per-session status (working / waiting / review-ready) | 3 | ✅ |  |
 | OS / push notifications with actions | 2 | ✅ | Web Push |
 | Context meter + 'auto-compacts soon' | 2 | ◐ | % only |
@@ -222,42 +222,40 @@ Full inventories, with an evidence tag on every item:
 | 8 | CLAUDE.md / memory-file editor | 4 Commands & config | 2 |
 | 9 | Edit & resend a previous message | 7 Lifecycle & branching | 2 |
 | 10 | Integrated terminal | 8 Code review & dev | 2 |
-| 11 | Permission card: once / this session / always / deny | 6 User feedback | 1.5 |
-| 12 | Group/sort by project, folder, branch, status, env, date, PR | 1 Shell & IA | 1 |
-| 13 | Pin / star sessions | 1 Shell & IA | 1 |
-| 14 | Read / unread marking | 1 Shell & IA | 1 |
-| 15 | Session rail: Changes / Context / Environment / Tasks cards | 1 Shell & IA | 1 |
-| 16 | View modes Normal / Verbose / Thinking (Ctrl+O) | 2 Transcript | 1 |
-| 17 | Clickable file paths (open / attach as context) | 2 Transcript | 1 |
-| 18 | In-transcript search | 2 Transcript | 1 |
-| 19 | Effort picker in session | 3 Composer | 1 |
-| 20 | Fast-mode toggle | 3 Composer | 1 |
-| 21 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
-| 22 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
-| 23 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
-| 24 | Output styles | 4 Commands & config | 1 |
-| 25 | Worktree location / policy | 5 Settings | 1 |
-| 26 | Presets / environments selectable at new session | 5 Settings | 1 |
-| 27 | Sandbox settings | 5 Settings | 1 |
-| 28 | Plan approval with comments | 6 User feedback | 1 |
-| 29 | Context meter + 'auto-compacts soon' | 6 User feedback | 1 |
-| 30 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
-| 31 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 32 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
-| 33 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 34 | Inline tool diffs | 8 Code review & dev | 1 |
-| 35 | Files pane (view / edit) | 8 Code review & dev | 1 |
-| 36 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 37 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 38 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
-| 39 | Jump between prompts | 9 Shortcuts & a11y | 1 |
-| 40 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 41 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
-| 42 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 43 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
-| 44 | Notification levels per event type | 5 Settings | 0.5 |
-| 45 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 46 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 11 | Group/sort by project, folder, branch, status, env, date, PR | 1 Shell & IA | 1 |
+| 12 | Pin / star sessions | 1 Shell & IA | 1 |
+| 13 | Read / unread marking | 1 Shell & IA | 1 |
+| 14 | Session rail: Changes / Context / Environment / Tasks cards | 1 Shell & IA | 1 |
+| 15 | View modes Normal / Verbose / Thinking (Ctrl+O) | 2 Transcript | 1 |
+| 16 | Clickable file paths (open / attach as context) | 2 Transcript | 1 |
+| 17 | In-transcript search | 2 Transcript | 1 |
+| 18 | Effort picker in session | 3 Composer | 1 |
+| 19 | Fast-mode toggle | 3 Composer | 1 |
+| 20 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
+| 21 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
+| 22 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
+| 23 | Output styles | 4 Commands & config | 1 |
+| 24 | Worktree location / policy | 5 Settings | 1 |
+| 25 | Presets / environments selectable at new session | 5 Settings | 1 |
+| 26 | Sandbox settings | 5 Settings | 1 |
+| 27 | Context meter + 'auto-compacts soon' | 6 User feedback | 1 |
+| 28 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
+| 29 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
+| 30 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
+| 31 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
+| 32 | Inline tool diffs | 8 Code review & dev | 1 |
+| 33 | Files pane (view / edit) | 8 Code review & dev | 1 |
+| 34 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
+| 35 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 36 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
+| 37 | Jump between prompts | 9 Shortcuts & a11y | 1 |
+| 38 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 39 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
+| 40 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 41 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
+| 42 | Notification levels per event type | 5 Settings | 0.5 |
+| 43 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 44 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

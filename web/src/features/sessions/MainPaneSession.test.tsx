@@ -263,7 +263,7 @@ describe('MainPaneSession', () => {
       // allow/deny controls — not a "scroll up to respond" banner.
       const panel = screen.getByTestId('pending-permission-panel')
       expect(panel).toBeInTheDocument()
-      expect(within(panel).getByRole('button', { name: /^allow/i })).toBeInTheDocument()
+      expect(within(panel).getByRole('button', { name: /^allow(?! for this session)/i })).toBeInTheDocument()
     })
     expect(screen.queryByText(/scroll up to respond/i)).not.toBeInTheDocument()
   })
@@ -284,10 +284,10 @@ describe('MainPaneSession', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /^allow/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^allow(?! for this session)/i })).toBeInTheDocument()
     })
 
-    await user.click(screen.getByRole('button', { name: /^allow/i }))
+    await user.click(screen.getByRole('button', { name: /^allow(?! for this session)/i }))
 
     expect(mockPermissionResponse).toHaveBeenCalledWith('s1', 'perm-1', 'allow')
 

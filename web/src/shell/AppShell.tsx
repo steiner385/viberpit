@@ -319,6 +319,7 @@ function AppShellInner() {
         // handler, outside render.
         overlayOpen: overlayIsOpen(),
         hasOpenAction: gestures.current?.hasOpenAction ?? false,
+        hasDeniablePermission: gestures.current?.hasDeniablePermission ?? false,
         // "A session is open" means a session's gestures are registered — not
         // that the URL has an `:id`. A route can match before the pane mounts,
         // and a detach row that fires with nothing to detach would swallow
@@ -346,6 +347,7 @@ function AppShellInner() {
       'insession.modeMenu': () => promptMenus.current?.openMode(),
       'insession.modelMenu': () => promptMenus.current?.openModel(),
       'insession.effortMenu': () => promptMenus.current?.openEffort(),
+      'insession.denyPermission': () => gestures.current?.denyOldestPermission(),
     },
   )
 
