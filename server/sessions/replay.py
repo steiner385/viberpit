@@ -281,6 +281,7 @@ def _build_events(path: str) -> tuple[list, object | None]:
     live in separate sidecar files that ``_subagent_events`` reconstructs."""
     out: list = []
     meta_event = None
+    tool_use_entries: set = set()   # assistant entry uuids carrying a tool_use block
     for o in _read_jsonl(path):
         if o.get("isSidechain"):
             continue
@@ -343,6 +344,10 @@ def _build_events(path: str) -> tuple[list, object | None]:
                 # long sessions — the status strip needs the model after re-attach.
                 meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
+            if any(b.get("type") == "tool_use" for b in content):
+                # Read off the raw blocks, not the emitted events: a signal tool or
+                # AskUserQuestion emits no ToolCall but is still a dangling tool_use.
+                tool_use_entries.add(uuid)
             # Per-turn model, mirroring the live translator, so replayed/historical
             # sessions show the model-switch divider when the model changes mid-session.
             if model:
@@ -354,10 +359,11 @@ def _build_events(path: str) -> tuple[list, object | None]:
     # the single shared reconstruction path, so every consumer (replay_window /
     # transcript_events / export / replay_events) inherits it and the drop_incomplete
     # tail-trim below anchors on the deduped last user entry.
-    return _with_turn_anchors(_collapse_recovery_resend_dupes(out)), meta_event
+    return (_with_turn_anchors(_collapse_recovery_resend_dupes(out), tool_use_entries),
+            meta_event)
 
 
-def _with_turn_anchors(out: list) -> list:
+def _with_turn_anchors(out: list, tool_use_entries: set) -> list:
     """Insert one ``TurnAnchor`` per LOGICAL turn, mirroring the live translator (D-8).
 
     A logical turn runs from one human prompt (a ``UserMessage`` — harness entries and
@@ -369,7 +375,9 @@ def _with_turn_anchors(out: list) -> list:
     turn: `_window` slices pages on TurnStart/TurnEnd boundaries, and an anchor outside
     them would ride along with the neighbouring page. For the same reason the trailing
     in-progress turn's anchor is trimmed with it by ``drop_incomplete_turn``. A prompt
-    with no assistant entry after it (an interrupt) gets none."""
+    with no assistant entry after it (an interrupt) gets none, and so does a turn whose
+    last entry carries a tool_use (in *tool_use_entries*): the inclusive cut would fork
+    from a dangling tool_use — the live translator's rule."""
     anchored: dict[int, ev.TurnAnchor] = {}   # TurnEnd index -> the anchor it closes
     last: tuple[int, ev.TurnAnchor] | None = None
     for i, e in enumerate(out):
@@ -378,7 +386,8 @@ def _with_turn_anchors(out: list) -> list:
                 anchored[last[0]] = last[1]
             last = None
         elif isinstance(e, ev.TurnEnd) and e.src_uuid:
-            last = (i, ev.TurnAnchor(e.turn_id, e.src_uuid))
+            last = (None if e.src_uuid in tool_use_entries
+                    else (i, ev.TurnAnchor(e.turn_id, e.src_uuid)))
     if last is not None:
         anchored[last[0]] = last[1]
     if not anchored:

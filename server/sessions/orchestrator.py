@@ -163,7 +163,7 @@ from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
     ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
-    RESUME_ELIGIBLE_STATUSES, is_assistant, is_assistant_kind,
+    RESUME_ELIGIBLE_STATUSES, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
 )
 from server.auth.identity import OPEN_LAN_IDENTITY
 from server.sessions.usage_stall import is_usage_stalled
@@ -17313,12 +17313,25 @@ class SessionOrchestrator:
         path = await asyncio.to_thread(self.transcript_path, session_id)
         if not path:
             return None
+        try:
+            st = await asyncio.to_thread(os.stat, path)
+        except OSError:
+            return None
+        stamp = (path, st.st_size, st.st_mtime_ns)
+        if rec.turn_anchors_rebuilt_at == stamp:
+            # Already merged from this exact transcript, and nothing was evicted then:
+            # a re-parse could only give the same answer.
+            return None
         rebuilt = await asyncio.to_thread(transcript_turn_anchors, path)
-        live = dict(rec.turn_anchors)
+        live_only = {t: a for t, a in rec.turn_anchors.items() if t not in rebuilt}
         for tid, anchor in rebuilt.items():
             rec.record_turn_anchor(tid, anchor)
-        for tid, anchor in live.items():    # live (stream-id) anchors stay the newest
+        for tid, anchor in live_only.items():   # live (stream-id) anchors stay the newest
             rec.record_turn_anchor(tid, anchor)
+        # Only a lossless merge may short-circuit later misses: past the cap the record
+        # dropped old turns, which a later lookup can still reach by re-parsing.
+        lossless = len(rebuilt) + len(live_only) <= TURN_ANCHOR_CAP
+        rec.turn_anchors_rebuilt_at = stamp if lossless else None
         return rebuilt.get(turn_id)
 
     def _refresh_background_work(self, session_id: str) -> None:

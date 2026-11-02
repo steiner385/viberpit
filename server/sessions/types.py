@@ -211,6 +211,10 @@ class SessionRecord:
     # to_dict/from_dict, never a DB column: the fork RPC resolves a turn on the owner
     # daemon, which is the process holding both this map and the transcript.
     turn_anchors: dict[str, str] = field(default_factory=dict)
+    # (path, size, mtime_ns) of the transcript last merged into turn_anchors without
+    # eviction, so a lookup miss against an unchanged transcript skips the re-parse.
+    # Same daemon-local lifetime as turn_anchors.
+    turn_anchors_rebuilt_at: tuple[str, int, int] | None = None
 
     def record_turn_anchor(self, turn_id: str, uuid: str) -> None:
         """Remember *turn_id*'s anchor as the newest, evicting the oldest past the cap."""

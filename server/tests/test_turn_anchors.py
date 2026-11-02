@@ -298,3 +298,100 @@ def test_resolve_finds_an_anchor_older_than_the_record_bound(tmp_path):
     o = _orch(rec, _jsonl(tmp_path / "s.jsonl", rows))
     assert asyncio.run(o.resolve_turn_anchor("s1", "a0")) == "a0"
     assert len(rec.turn_anchors) == TURN_ANCHOR_CAP
+
+
+# ── Fix round 1: never anchor on a dangling tool_use; cheap repeated misses ──
+
+def test_live_turn_ending_on_a_tool_use_entry_gets_no_anchor():
+    # Interrupted mid-tool (or max_turns / error_during_execution): the last top-level
+    # entry is a tool_use with no result. `--resume-session-at` cuts inclusively, so a
+    # fork there would start from a dangling tool_use — no anchor.
+    out = _feed([f.stream_start(uuid="se-1"),
+                 f.assistant(TextBlock(text="Reading."), uuid="a1"),
+                 f.tool_use("tc1", "Read", {"file_path": "a.py"}, uuid="a2"),
+                 f.result(uuid="res", subtype="error_during_execution", is_error=True)])
+    assert _anchors(out) == []
+
+
+def test_live_signal_tool_call_as_last_entry_also_gets_no_anchor():
+    out = _feed([f.stream_start(uuid="se-1"),
+                 f.assistant(TextBlock(text="done"), uuid="a1"),
+                 f.tool_use("tc1", "mcp__viberpit__mark_complete", {}, uuid="a2"),
+                 f.result(uuid="res")])
+    assert _anchors(out) == []
+
+
+def test_live_tool_loop_ending_in_text_anchors_on_the_text_entry():
+    out = _feed([f.stream_start(uuid="se-1"),
+                 f.tool_use("tc1", "Read", {"file_path": "a.py"}, uuid="a1"),
+                 f.user_tool_result("tc1", "x"),
+                 f.assistant(TextBlock(text="Read it."), uuid="a2"),
+                 f.result(uuid="res")])
+    assert [a.uuid for a in _anchors(out)] == ["a2"]
+
+
+def _tool_use_tail_rows() -> list[dict]:
+    return [
+        {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "uuid": "a1", "message": {"model": "claude", "content": [
+            {"type": "text", "text": "ok"}]}},
+        {"type": "user", "uuid": "u2", "message": {"role": "user", "content": "next"}},
+        {"type": "assistant", "uuid": "b1", "message": {"model": "claude", "content": [
+            {"type": "text", "text": "Reading."}]}},
+        {"type": "assistant", "uuid": "b2", "message": {"model": "claude", "content": [
+            {"type": "tool_use", "id": "tc1", "name": "Read", "input": {}}]}},
+        {"type": "user", "uuid": "u3", "message": {"role": "user", "content": "third"}},
+        {"type": "assistant", "uuid": "c1", "message": {"model": "claude", "content": [
+            {"type": "tool_use", "id": "tc2", "name": "mcp__viberpit__mark_complete",
+             "input": {}}]}},
+    ]
+
+
+def test_replay_turn_ending_on_a_tool_use_entry_gets_no_anchor(tmp_path):
+    path = _jsonl(tmp_path / "s.jsonl", _tool_use_tail_rows())
+    # b-turn ends on a plain tool_use; c-turn on a signal tool (which emits no ToolCall).
+    assert [a.uuid for a in _anchors(_parse(path, None))] == ["a1"]
+
+
+def test_replay_tool_loop_ending_in_text_still_anchors_on_the_text_entry(tmp_path):
+    # _transcript_rows: thinking, Task tool_use, tool_result, final text a3.
+    path = _jsonl(tmp_path / "s.jsonl", _transcript_rows())
+    assert [a.uuid for a in _anchors(_parse(path, None))] == ["a3", "b1"]
+
+
+def test_repeated_misses_against_an_unchanged_transcript_parse_once(tmp_path, monkeypatch):
+    import server.sessions.orchestrator as orch_mod
+    calls: list[str] = []
+    real = orch_mod.transcript_turn_anchors
+
+    def counting(p):
+        calls.append(p)
+        return real(p)
+    monkeypatch.setattr(orch_mod, "transcript_turn_anchors", counting)
+    rec = _rec()
+    tpath = tmp_path / "s.jsonl"
+    path = _jsonl(tpath, _transcript_rows())
+    o = _orch(rec, path)
+
+    async def run():
+        assert await o.resolve_turn_anchor("s1", "nope-1") is None
+        assert await o.resolve_turn_anchor("s1", "nope-2") is None
+        assert len(calls) == 1
+        # The transcript grows → the next miss re-parses.
+        rows = _transcript_rows() + [{"type": "assistant", "uuid": "c9", "message": {
+            "model": "claude", "content": [{"type": "text", "text": "new"}]}}]
+        _jsonl(tpath, rows)
+        assert await o.resolve_turn_anchor("s1", "c9") == "c9"
+        assert len(calls) == 2
+    asyncio.run(run())
+
+
+def test_merge_keeps_live_order_and_live_entries_newest(tmp_path):
+    rec = _rec()
+    rec.record_turn_anchor("a3", "a3")         # merged by an earlier rebuild
+    rec.record_turn_anchor("se-2", "b1")       # live id for the b1 turn
+    o = _orch(rec, _jsonl(tmp_path / "s.jsonl", _transcript_rows()))
+    asyncio.run(o.resolve_turn_anchor("s1", "missing"))
+    # Rebuilt ids in transcript order, then live-only ids — re-recording "a3" as a
+    # "live" entry would have pushed it behind b1.
+    assert list(rec.turn_anchors) == ["a3", "b1", "se-2"]

@@ -49,8 +49,9 @@ class Translator:
         # would throw the signal away. Cleared only by `_reset()`, at turn end.
         self._turn_signals: dict[str, dict] = {}
         # The turn's fork anchor (D-8): the uuid of the LAST top-level consolidated
-        # AssistantMessage. Only that uuid matches a transcript entry — the stream
-        # events that open the turn carry uuids the CLI never journals. Turn-scoped.
+        # AssistantMessage, or None when that message carries a tool_use. Only that
+        # uuid matches a transcript entry — the stream events that open the turn carry
+        # uuids the CLI never journals. Turn-scoped.
         self._anchor_uuid: str | None = None
         # Task sub-agents: CLI task id -> the spawning Task tool-use id. Lives for the
         # translator's lifetime, NOT the turn: a background sub-agent's notices arrive
@@ -254,8 +255,14 @@ class Translator:
             # marker for their own sub-objective — exclude them. Reset per top-level
             # message so only the FINAL top-level message's text is matched.
             if pid is None:
+                # An entry carrying a tool_use is never a fork point: the cut is
+                # inclusive, so a turn that ENDS on one (interrupt, max_turns,
+                # error_during_execution) would fork from a dangling tool_use. Clear,
+                # so only a later tool-free entry re-anchors the turn.
                 src = getattr(msg, "uuid", None)
-                if isinstance(src, str) and src:
+                if any(isinstance(b, ToolUseBlock) for b in msg.content):
+                    self._anchor_uuid = None
+                elif isinstance(src, str) and src:
                     self._anchor_uuid = src
                 # The CLI emits ONE AssistantMessage per content block, all sharing the
                 # API `message_id`: [text] then [tool_use]. Resetting per SDK message
