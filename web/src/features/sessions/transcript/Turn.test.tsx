@@ -324,3 +324,17 @@ describe('Turn under a transcript view mode', () => {
     expect(toggles()[0]).toHaveAttribute('aria-expanded', 'true')
   })
 })
+
+describe('Turn message actions', () => {
+  it('renders one Message actions trigger per turn', () => {
+    render(
+      <Turn
+        turn={makeTurn([
+          { kind: 'text', id: 'a', text: 'one' }, tool('t1'), { kind: 'text', id: 'b', text: 'two' },
+        ])}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop}
+      />,
+    )
+    expect(screen.getAllByRole('button', { name: 'Message actions' })).toHaveLength(1)
+  })
+})

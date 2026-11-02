@@ -18,6 +18,7 @@ import { NoticeCard } from './NoticeCard'
 import { ArtifactCard } from './ArtifactCard'
 import { BlockRow } from './BlockRow'
 import { TurnFeedback } from './TurnFeedback'
+import { MessageActions } from './MessageActions'
 import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
 
 interface Props {
@@ -81,7 +82,7 @@ export const Turn = memo(function Turn({
     // whole pane. The reading measure lives on the prose block (`PROSE_MEASURE`
     // below) — when it sat here (#2529/#2535) a wide pane rendered every tool
     // card into ~574px at the left and left the right two thirds blank.
-    <div className="px-4 py-2">
+    <div className="group px-4 py-2">
       {isUser && turn.context && <PromptContextChip context={turn.context} />}
       {/* Positive attribution for a prompt a person actually typed. The automated
           case carries its own caption inside AutomatedPrompt, so this renders only
@@ -186,6 +187,9 @@ export const Turn = memo(function Turn({
           'assistant'); other transcript readers (the session page, the archived
           reader) never show it. */}
       {variant === 'assistant' && !isUser && <TurnFeedback turnId={turn.id} />}
+      {/* One per-message menu per turn (hidden when the turn has nothing to act on):
+          the user lane on the right for a prompt, beside the feedback thumbs otherwise. */}
+      <div className={isUser ? 'flex justify-end' : 'flex'}><MessageActions turn={turn} /></div>
       {/* A prompt the user has sent that no server echo has confirmed yet. The `user`
           echo adopts the turn and clears `pending`, so this note disappears the moment
           the real turn exists — no separate teardown. */}
