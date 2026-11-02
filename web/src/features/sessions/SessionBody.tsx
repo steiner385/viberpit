@@ -6,7 +6,7 @@
  * that. Rendered by `MainPaneSession`. Does NOT render the header or composer.
  */
 
-import { useState, useEffect, useRef, useId, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo, useRef, useId, lazy, Suspense } from 'react'
 import { cn } from '@/lib/utils'
 import { Tabs } from '@/ui/Tabs'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
@@ -32,6 +32,8 @@ import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserT
 import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { useFileTarget, useSessionView, type SessionView } from './sessionView'
+import { FileRefContext, type FileRefActions } from '@/features/sessions/transcript/fileRefContext'
+import { useComposerAttach } from '@/shell/sessionGestures'
 
 /** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
 const ChangesTab = lazy(() => import('@/features/sessions/diff/ChangesTab'))
@@ -74,7 +76,15 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   const diffSummary = useSessionDiff(rt.sessionId, { summary: true, busy })
   const hasChanges = (diffSummary.data?.files.length ?? 0) > 0
   // The Files tab (D-7) reads the session's worktree, so it needs one.
-  const hasFiles = !!sessionRecord?.cwd
+  const cwd = sessionRecord?.cwd
+  const hasFiles = !!cwd
+  // Transcript paths under the cwd open the Files tab and attach to the dock
+  // composer (D-7, `transcript/PathRef`); without a cwd they stay click-to-copy.
+  const attachMention = useComposerAttach()
+  const fileRefActions = useMemo<FileRefActions | null>(
+    () => (cwd ? { cwd, openFile: setFile, attachMention } : null),
+    [cwd, setFile, attachMention],
+  )
 
   // The rail is a column on a pane of 64rem or more — the pane's own width, so
   // the pushed assistant drawer folds it into Details like a narrow window does.
@@ -223,23 +233,25 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                     onRetry={rt.reattach}
                   />
                 ) : (
-                  <TranscriptView
-                    turns={rt.state.turns}
-                    rotations={rt.state.rotations}
-                    model={rt.state.model}
-                    toolDetailMode={rt.toolDetailMode}
-                    thinkingCollapsed={rt.thinkingCollapsed}
-                    viewModeEpoch={rt.viewModeEpoch}
-                    // Only the live-open block streams as plain text; during replay the open
-                    // id is meaningless, so suppress it and render everything as markdown.
-                    streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
-                    onAnswer={rt.onAnswer}
-                    subAgents={rt.state.subAgents}
-                    earliestTurn={rt.state.earliestTurn}
-                    loadingOlder={rt.state.loadingOlder}
-                    onLoadOlder={rt.onLoadOlder}
-                    followSignal={rt.state.pendingSentSeq}
-                  />
+                  <FileRefContext.Provider value={fileRefActions}>
+                    <TranscriptView
+                      turns={rt.state.turns}
+                      rotations={rt.state.rotations}
+                      model={rt.state.model}
+                      toolDetailMode={rt.toolDetailMode}
+                      thinkingCollapsed={rt.thinkingCollapsed}
+                      viewModeEpoch={rt.viewModeEpoch}
+                      // Only the live-open block streams as plain text; during replay the open
+                      // id is meaningless, so suppress it and render everything as markdown.
+                      streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
+                      onAnswer={rt.onAnswer}
+                      subAgents={rt.state.subAgents}
+                      earliestTurn={rt.state.earliestTurn}
+                      loadingOlder={rt.state.loadingOlder}
+                      onLoadOlder={rt.onLoadOlder}
+                      followSignal={rt.state.pendingSentSeq}
+                    />
+                  </FileRefContext.Provider>
                 )}
 
                 {/* Prominent "waiting for Claude" indicator shown below the last turn */}

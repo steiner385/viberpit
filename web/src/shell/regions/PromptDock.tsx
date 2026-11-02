@@ -12,7 +12,7 @@ import { setLastRepo } from '@/lib/lastRepo'
 import { isPendingSessionId } from '@/lib/pendingSessions'
 import { NAV_BY_ID } from '@/shell/navDefs'
 import { useOpenSessionId } from '@/shell/openSessionId'
-import { usePromptRowMenusRegistration } from '@/shell/sessionGestures'
+import { useComposerAttachRegistration, usePromptRowMenusRegistration } from '@/shell/sessionGestures'
 import { sessionOpenState } from '@/session/sessionNavState'
 import type { SessionListState } from '@/features/sessions/useSessionListState'
 import { createSessionFailureMessage, describeCreateSessionFailure } from '@/features/sessions/createSessionFailure'
@@ -126,7 +126,9 @@ function LiveComposer() {
   const rt = useSessionRuntimeContext()
   // The prompt row's keyboard openers go to the shell's one dispatcher (`shell/sessionGestures`).
   const promptRowMenus = usePromptRowMenusRegistration()
-  return <SessionComposer rt={rt} promptRowMenus={promptRowMenus} />
+  // A transcript path's "Attach as @" writes into this draft (D-7, same bridge).
+  const attachRef = useComposerAttachRegistration()
+  return <SessionComposer rt={rt} promptRowMenus={promptRowMenus} attachRef={attachRef} />
 }
 
 /**

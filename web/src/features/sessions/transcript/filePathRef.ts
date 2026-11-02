@@ -34,3 +34,50 @@ export function isFilePathRef(text: string): boolean {
 
   return hasExtension || hasSeparator
 }
+
+/** A transcript path reference split into the path and its optional 1-based `:line[:col]`. */
+export interface FilePathRef {
+  path: string
+  line?: number
+  col?: number
+}
+
+/**
+ * `isFilePathRef`'s token, parsed: `src/a.ts:12:4` → `{path: 'src/a.ts', line: 12, col: 4}`.
+ * Null for anything `isFilePathRef` rejects. A `:0` line or col reads as absent.
+ */
+export function parseFilePathRef(text: string): FilePathRef | null {
+  if (!isFilePathRef(text)) return null
+  const suffix = text.match(LINE_SUFFIX)?.[0] ?? ''
+  const [line, col] = suffix.split(':').slice(1).map(Number)
+  const ref: FilePathRef = { path: text.slice(0, text.length - suffix.length) }
+  if (line > 0) {
+    ref.line = line
+    if (col > 0) ref.col = col
+  }
+  return ref
+}
+
+/**
+ * `path` as a worktree-relative, `/`-separated path when it names something
+ * under `cwd`, else null. An absolute path must sit below `cwd` on a segment
+ * boundary (`/repo-evil/x` is not under `/repo`); a relative one is taken as
+ * already worktree-relative. Any `..` or `~` segment, the cwd itself and a
+ * trailing-slash (directory) path are refused.
+ *
+ * A STRING check by design: the browser cannot realpath, and it only decides
+ * whether a transcript path is offered as a Files-tab link. The server enforces
+ * real containment (`worktree_rel`) when the file is read.
+ */
+export function worktreeRelativePath(path: string, cwd: string): string | null {
+  if (!cwd.startsWith('/') || path.endsWith('/')) return null
+  let rest = path
+  if (path.startsWith('/')) {
+    const root = cwd.replace(/\/+$/, '')
+    if (!path.startsWith(`${root}/`)) return null
+    rest = path.slice(root.length + 1)
+  }
+  const segments = rest.split('/').filter((s) => s !== '' && s !== '.')
+  if (segments.length === 0 || segments.some((s) => s === '..' || s.startsWith('~'))) return null
+  return segments.join('/')
+}

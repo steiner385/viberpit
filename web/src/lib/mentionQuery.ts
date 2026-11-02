@@ -23,3 +23,13 @@ function insideCode(before: string): boolean {
   const line = fences[fences.length - 1].split('\n').pop() ?? ''
   return (line.match(/`/g)?.length ?? 0) % 2 === 1
 }
+
+/**
+ * The `@` token for a worktree file: `@<path>`, or `@"<path>"` when the path holds
+ * whitespace — Claude Code's own parser reads `@"([^"]+)"` (and its file completer
+ * inserts that form), while a bare `@` token ends at the first space. The one
+ * spelling for both the composer's `@` menu and a transcript path's "Attach as @".
+ */
+export function fileMentionToken(path: string): string {
+  return /\s/.test(path) ? `@"${path}"` : `@${path}`
+}

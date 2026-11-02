@@ -7,7 +7,7 @@
  */
 
 import { useMemo, useCallback, type Ref } from 'react'
-import { Composer } from './Composer'
+import { Composer, type ComposerAttach } from './Composer'
 import type { MentionSource } from './MentionMenu'
 import { PromptRow, type PromptRowMenus } from './PromptRow'
 import { useMentionSessions } from './useMentionSessions'
@@ -32,9 +32,11 @@ interface Props {
   /** `@` session mentions for the AI assistant drawer (spec v2 §10.2), which stays
    *  sessions-only. A session composer builds its own Files + Sessions menu instead. */
   mentionSource?: MentionSource[]
+  /** The composer's attach handle (D-7: a transcript path's "Attach as @"). */
+  attachRef?: Ref<ComposerAttach>
 }
 
-export function SessionComposer({ rt, contextProvider, hideSessionControls = false, promptRowMenus, externalDraft, mentionSource }: Props) {
+export function SessionComposer({ rt, contextProvider, hideSessionControls = false, promptRowMenus, externalDraft, mentionSource, attachRef }: Props) {
   const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
   // D-7: a session composer `@`-mentions the other sessions (Sessions group) and, with
   // a cwd, its worktree files (Files group, first). An engine without a cwd gets the
@@ -75,6 +77,7 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
         fileMentionSessionId={hasCwd ? rt.sessionId : undefined}
         // The composer with session controls IS the session's; the assistant drawer hides them.
         sessionComposer={!hideSessionControls}
+        attachRef={attachRef}
       />
       {!hideSessionControls && <SessionPromptRow rt={rt} menuRef={promptRowMenus} />}
     </>

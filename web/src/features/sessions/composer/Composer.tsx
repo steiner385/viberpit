@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect, useId } from 'react'
+import { useRef, useState, useCallback, useEffect, useId, useImperativeHandle, type Ref } from 'react'
 import { Paperclip, X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -15,7 +15,7 @@ import { useDictationField } from '@/lib/useDictationField'
 import type { Command, QueuedItem, PromptContext } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
-import { mentionQueryAt } from '@/lib/mentionQuery'
+import { fileMentionToken, mentionQueryAt } from '@/lib/mentionQuery'
 import { SESSION_COMPOSER_ATTR } from '@/lib/detachKeyGuard'
 
 interface Props {
@@ -54,9 +54,18 @@ interface Props {
   /** This is the open session's composer (not the assistant drawer's): marks the
    *  textarea so Esc-stops-the-turn fires through its draft (`lib/detachKeyGuard`). */
   sessionComposer?: boolean
+  /** Imperative attach for a transcript path's "Attach as @" (D-7), handed to the
+   *  shell's bridge (`shell/sessionGestures`) by the dock's composer. */
+  attachRef?: Ref<ComposerAttach>
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false }: Props) {
+/** What the composer lets the transcript do to its draft (D-7). */
+export interface ComposerAttach {
+  /** Append `path`'s `@` mention to the draft and focus it, caret after the mention. */
+  attachFile: (path: string) => void
+}
+
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef }: Props) {
   const { replies, statusText: repliesStatus } = useQuickReplies()
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
@@ -223,14 +232,24 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     (session: MentionSource) => replaceMentionQuery(`[${session.title}](/sessions/${session.id}) `),
     [replaceMentionQuery],
   )
-  // A file goes in as `@<path> ` — the CLI resolves the path against the worktree. A
-  // path with whitespace is quoted, `@"<path>" `: Claude Code's own parser reads
-  // `@"([^"]+)"` (and its file completer inserts that form), while a bare `@` token
-  // ends at the first space.
+  // A file goes in as `@<path> ` — the CLI resolves the path against the worktree
+  // (quoted when it holds whitespace; see `fileMentionToken`).
   const insertFileMention = useCallback(
-    (path: string) => replaceMentionQuery(/\s/.test(path) ? `@"${path}" ` : `@${path} `),
+    (path: string) => replaceMentionQuery(`${fileMentionToken(path)} `),
     [replaceMentionQuery],
   )
+  // A transcript path's "Attach as @" appends the same token after the draft (one
+  // space from any text before it) and lands the caret after it.
+  useImperativeHandle(attachRef, () => ({
+    attachFile: (path: string) => {
+      const sep = text === '' || /\s$/.test(text) ? '' : ' '
+      const next = `${text}${sep}${fileMentionToken(path)} `
+      suggestedDraft.current = null
+      pendingCaretRef.current = next.length
+      setCaret(next.length)
+      setText(next)
+    },
+  }), [text])
 
   const runCommandFromText = useCallback((raw: string): boolean => {
     if (!raw.startsWith('/') || raw.includes('\n')) return false

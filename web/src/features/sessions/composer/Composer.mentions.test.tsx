@@ -3,7 +3,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, within, waitFor, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Composer } from './Composer'
+import { createRef } from 'react'
+import { Composer, type ComposerAttach } from './Composer'
 import { SessionComposer } from './SessionComposer'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 
@@ -193,5 +194,34 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     )
     await user.type(box(), '/ask @comp')
     expect(screen.getByRole('listbox', { name: /session mentions/i })).toHaveTextContent('Composer refactor')
+  })
+})
+
+// D-7: a transcript path's "Attach as @" reaches the dock composer through
+// `attachRef` (the shell bridge in `shell/sessionGestures`), with the same quoting
+// the `@` menu uses.
+describe('attachFile — a transcript path attached as @ (D-7)', () => {
+  it('appends @<path> after the draft, separated by one space', async () => {
+    const user = userEvent.setup()
+    const ref = createRef<ComposerAttach>()
+    render(<Composer {...defaults} attachRef={ref} />)
+    await user.type(box(), 'look at')
+    act(() => ref.current!.attachFile('src/a.ts'))
+    expect(box()).toHaveValue('look at @src/a.ts ')
+    expect(box()).toHaveFocus()
+  })
+
+  it('quotes a path with whitespace, like the @ menu', () => {
+    const ref = createRef<ComposerAttach>()
+    render(<Composer {...defaults} attachRef={ref} />)
+    act(() => ref.current!.attachFile('docs/a b.md'))
+    expect(box()).toHaveValue('@"docs/a b.md" ')
+  })
+
+  it('the SessionComposer forwards it to the Composer', () => {
+    const ref = createRef<ComposerAttach>()
+    render(<SessionComposer rt={fakeRuntime('me')} attachRef={ref} />)
+    act(() => ref.current!.attachFile('src/a.ts'))
+    expect(box()).toHaveValue('@src/a.ts ')
   })
 })

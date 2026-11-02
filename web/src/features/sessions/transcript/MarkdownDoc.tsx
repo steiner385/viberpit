@@ -10,7 +10,7 @@ import 'katex/dist/katex.min.css'
 import { MermaidDiagram } from './MermaidDiagram'
 import 'highlight.js/styles/github-dark.css'
 import { isFilePathRef } from './filePathRef'
-import { CopyablePath } from './CopyablePath'
+import { PathRef } from './PathRef'
 import { ResultImage } from './ResultImages'
 
 interface Props { children: string; streaming?: boolean }
@@ -65,14 +65,15 @@ export function MarkdownDoc({ children, streaming = false }: Props) {
       }
       return <pre {...props}>{children}</pre>
     },
-    // Make path-like INLINE code spans clickable to copy. Fenced blocks
+    // Make path-like INLINE code spans clickable: a link to the Files tab under
+    // the live session's cwd, else click-to-copy (see `PathRef`). Fenced blocks
     // arrive as highlighted element arrays (not a string), so the
     // typeof guard restricts this to inline code only — no `inline`
     // prop exists in react-markdown v10.
     code: ({ node, children, ...props }) => {
       void node
       if (typeof children === 'string' && isFilePathRef(children)) {
-        return <CopyablePath text={children} />
+        return <PathRef text={children} />
       }
       return <code {...props}>{children}</code>
     },
