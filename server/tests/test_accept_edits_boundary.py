@@ -26,8 +26,8 @@ def repo(tmp_path):
     return root
 
 
-def _inside(path, cwd, key="file_path"):
-    return write_target_inside_worktree({key: str(path)}, None if cwd is None else str(cwd))
+def _inside(path, cwd, key="file_path", tool="Write"):
+    return write_target_inside_worktree(tool, {key: str(path)}, None if cwd is None else str(cwd))
 
 
 # ------------------------------------------------------------------ helper: inside
@@ -47,8 +47,22 @@ def test_relative_target_resolves_against_cwd(repo):
 
 
 def test_notebook_path_key_is_read(repo):
-    assert _inside(repo / "nb.ipynb", repo, key="notebook_path") is True
-    assert _inside("/etc/nb.ipynb", repo, key="notebook_path") is False
+    assert _inside(repo / "nb.ipynb", repo, key="notebook_path", tool="NotebookEdit") is True
+    assert _inside("/etc/nb.ipynb", repo, key="notebook_path", tool="NotebookEdit") is False
+
+
+def test_path_key_is_chosen_by_tool(repo):
+    # notebook_path is only NotebookEdit's key; file_path is every other tool's.
+    assert _inside(repo / "nb.ipynb", repo, key="notebook_path", tool="Write") is False
+    assert _inside(repo / "a.py", repo, key="file_path", tool="NotebookEdit") is False
+
+
+def test_ambiguous_path_keys_are_outside(repo):
+    evil = {"file_path": "a.py", "notebook_path": "/etc/evil"}
+    assert write_target_inside_worktree("NotebookEdit", evil, str(repo)) is False
+    assert write_target_inside_worktree("Write", evil, str(repo)) is False
+    same = {"file_path": str(repo / "n.ipynb"), "notebook_path": str(repo / "n.ipynb")}
+    assert write_target_inside_worktree("NotebookEdit", same, str(repo)) is True
 
 
 # ------------------------------------------------------------------ helper: outside
@@ -68,10 +82,20 @@ def test_nested_parent_escape_is_outside(repo):
     assert _inside(f"{repo}/sub/../../x", repo) is False
 
 
-def test_dotdot_through_missing_directory_is_outside(repo):
-    # `missing` does not exist, so the `..` sits in the unresolved remainder: rejected.
+def test_any_dotdot_component_is_outside(repo):
+    # The CLI may normalise `..` lexically while realpath resolves symlinks first, so
+    # the two readings can disagree about the side of the boundary: never trusted.
     assert _inside(f"{repo}/missing/../a.py", repo) is False
+    assert _inside(f"{repo}/sub/../a.py", repo) is False
     assert _inside("missing/../../x", repo) is False
+
+
+def test_dotdot_that_realpath_keeps_inside_but_lexically_escapes(tmp_path, repo):
+    # realpath(<repo>/deep/../../outside) = <repo>/a/outside (inside); a lexical
+    # normalisation gives <tmp>/outside (outside). Must not be auto-approved.
+    (repo / "a" / "b").mkdir(parents=True)
+    (repo / "deep").symlink_to(repo / "a" / "b")
+    assert _inside(f"{repo}/deep/../../outside", repo) is False
 
 
 def test_sibling_with_shared_prefix_is_outside(tmp_path, repo):
@@ -86,10 +110,14 @@ def test_absolute_path_elsewhere_is_outside(repo):
 
 
 def test_missing_or_non_string_target_is_outside(repo):
-    assert write_target_inside_worktree({}, str(repo)) is False
-    assert write_target_inside_worktree({"file_path": ""}, str(repo)) is False
-    assert write_target_inside_worktree({"file_path": 3}, str(repo)) is False
-    assert write_target_inside_worktree({"file_path": "a\x00b"}, str(repo)) is False
+    assert write_target_inside_worktree("Write", {}, str(repo)) is False
+    assert write_target_inside_worktree("Write", {"file_path": ""}, str(repo)) is False
+    assert write_target_inside_worktree("Write", {"file_path": 3}, str(repo)) is False
+    assert write_target_inside_worktree("Write", {"file_path": "a\x00b"}, str(repo)) is False
+
+
+def test_worktree_root_itself_is_not_inside(repo):
+    assert _inside(repo, repo) is False
 
 
 # ------------------------------------------------------------------ helper: symlinks
@@ -150,6 +178,19 @@ def test_symlink_into_git_is_excluded(repo):
     assert _inside(repo / "hooks" / "config", repo) is False
 
 
+@pytest.mark.parametrize("rel", [
+    ".claude/settings.json", ".claude/settings.local.json", ".claude", ".mcp.json", ".envrc",
+    ".husky/pre-commit", ".vscode/settings.json", ".gitconfig", ".gitmodules", ".bashrc",
+    ".zshrc", ".zshenv", ".profile", ".bash_profile", ".yarnrc", ".yarnrc.yml", ".pnp.cjs",
+    ".ripgreprc", ".claude.json", ".npmrc", ".env", "sub/.envrc", "sub/.claude/x.md",
+    ".devcontainer/devcontainer.json", ".pre-commit-config.yaml", ".MCP.JSON",
+])
+def test_protected_paths_inside_cwd_are_outside(repo, rel):
+    # The CLI escalates these in-cwd writes even under acceptEdits; approving them
+    # here would undo its safety check.
+    assert _inside(repo / rel, repo) is False
+
+
 def test_git_lookalike_names_are_inside(repo):
     assert _inside(repo / ".gitignore", repo) is True
     assert _inside(repo / ".github" / "workflows" / "ci.yml", repo) is True
@@ -200,6 +241,34 @@ def test_accept_edits_git_pends_a_card(repo):
     pid, verdict = _req(PermissionRegistry(), "Write",
                         {"file_path": str(repo / ".git" / "config")}, cwd=str(repo))
     assert pid is not None and verdict is None
+
+
+@pytest.mark.parametrize("rel", [".claude/settings.json", ".mcp.json", ".envrc",
+                                 ".husky/pre-commit"])
+def test_accept_edits_protected_in_cwd_pends_a_card(repo, rel):
+    pid, verdict = _req(PermissionRegistry(), "Write", {"file_path": str(repo / rel)},
+                        cwd=str(repo))
+    assert pid is not None and verdict is None
+
+
+def test_accept_edits_ambiguous_notebook_pends_a_card(repo):
+    pid, verdict = _req(PermissionRegistry(), "NotebookEdit",
+                        {"file_path": "a.py", "notebook_path": "/etc/evil"}, cwd=str(repo))
+    assert pid is not None and verdict is None
+
+
+def test_account_memory_auto_allow_keys_path_by_tool(tmp_path, repo, monkeypatch):
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
+    mem = str(tmp_path / "home" / "cfg" / "acct" / "projects" / "-enc" / "memory" / "n.md")
+    # A memory path smuggled in the key the tool does not honour must not auto-allow.
+    for tool, inp in [("NotebookEdit", {"file_path": mem, "notebook_path": "/etc/evil"}),
+                      ("NotebookEdit", {"file_path": mem}),
+                      ("Write", {"notebook_path": mem, "file_path": "/etc/evil"})]:
+        pid, verdict = _req(PermissionRegistry(), tool, inp, mode="interactive", cwd=str(repo))
+        assert pid is not None and verdict is None, (tool, inp)
+    pid, verdict = _req(PermissionRegistry(), "NotebookEdit", {"notebook_path": mem},
+                        mode="interactive", cwd=str(repo))
+    assert pid is None and verdict is True
 
 
 def test_accept_edits_without_cwd_pends_a_card(repo):
@@ -259,7 +328,7 @@ def test_accept_edits_inside_does_not_consult_rules(repo):
 def test_account_memory_write_outside_cwd_still_auto_approved(tmp_path, repo, monkeypatch):
     monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
     mem = str(tmp_path / "home" / "cfg" / "acct" / "projects" / "-enc" / "memory" / "n.md")
-    assert write_target_inside_worktree({"file_path": mem}, str(repo)) is False
+    assert write_target_inside_worktree("Write", {"file_path": mem}, str(repo)) is False
     pid, verdict = _req(PermissionRegistry(), "Write", {"file_path": mem}, cwd=str(repo))
     assert pid is None and verdict is True
 
@@ -331,3 +400,19 @@ def test_claude_driver_passes_cwd_to_registry(tmp_path, repo):
     assert isinstance(inside, PermissionResultAllow)
     assert len(pending) == 1
     assert isinstance(outside, PermissionResultDeny)
+
+
+# ------------------------------------------------------------------ shared resolution
+
+
+def test_rule_matcher_uses_the_same_tool_keyed_resolution(repo):
+    from server.permission_rules.patterns import matches, parse
+
+    p = parse("Edit(**)")
+    cwd = str(repo)
+    assert matches(p, "Write", {"file_path": str(repo / "a.py")}, cwd) is True
+    assert matches(p, "NotebookEdit", {"file_path": "a.py", "notebook_path": "/etc/evil"},
+                   cwd) is False
+    assert matches(p, "NotebookEdit", {"file_path": "a.py"}, cwd) is False
+    assert matches(p, "Write", {"file_path": "~/notes.txt"}, cwd) is False
+    assert matches(p, "Write", {"file_path": str(repo / ".gitmodules")}, cwd) is False

@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 from viberpit import paths as _paths
 from server.mcp_spec import is_mcp_tool
-from server.permission_rules.patterns import NEVER_RULED_TOOLS, unwrap_shell
+from server.permission_rules.patterns import (
+    NEVER_RULED_TOOLS, is_protected_path, tool_path_arg, unwrap_shell, worktree_rel_path,
+)
 
 if TYPE_CHECKING:
     from server.permission_rules.gate import StandingRuleGate
@@ -110,49 +112,21 @@ def _is_account_memory_path(file_path) -> bool:
     return len(parts) >= 5 and parts[1] == "projects" and parts[3] == "memory"
 
 
-def write_target_inside_worktree(input: Mapping[str, Any], cwd: str | None) -> bool:
-    """True when a file-write tool's target lies inside the session worktree *cwd*
-    (and outside every ``.git``) — the boundary ``acceptEdits`` auto-approves within (#3217).
+def write_target_inside_worktree(tool: str, input: Mapping[str, Any], cwd: str | None) -> bool:
+    """True when a file-write tool's target lies inside the session worktree *cwd* and
+    is not a protected path — the boundary ``acceptEdits`` auto-approves within (#3217).
 
     Fails closed: anything not provably inside answers False, and the caller then
     falls through to the standing-rule check and a card (never an outright deny).
-
-    * The target is ``input["file_path"]`` (``input["notebook_path"]`` for
-      NotebookEdit); a relative target resolves against *cwd*. A leading ``~`` is
-      never expanded or trusted.
-    * Symlinks are resolved with ``os.path.realpath`` on the nearest EXISTING ancestor
-      (``lexists``, so a dangling link resolves to the target it would create); the
-      not-yet-existing remainder is appended verbatim and may not contain ``..``.
-    * Containment is ``os.path.commonpath`` on realpaths — never a string prefix, so
-      ``/repo-evil`` is not inside ``/repo``.
-    * Any ``.git`` component below the worktree (a directory, a linked worktree's
-      ``.git`` file, a nested repo's ``.git``) is outside.
+    Containment is ``patterns.worktree_rel_path`` — the same resolution standing rules
+    use (tool-keyed path, realpath + commonpath, no ``..``/``~``/NUL, no cwd = None).
+    ``patterns.is_protected_path`` then excludes ``.git`` and every file the Claude CLI
+    itself escalates even under ``acceptEdits`` (``.claude/**``, ``.mcp.json``,
+    ``.envrc``, ``.husky/**``, shell rc files, …): the CLI only asks about an in-cwd
+    write when it hits that list, so approving it here would undo the escalation.
     """
-    if not cwd:
-        return False
-    raw = input.get("file_path") or input.get("notebook_path")
-    if not isinstance(raw, str) or not raw or "\x00" in raw or raw.startswith("~"):
-        return False
-    base = os.path.realpath(cwd)
-    probe = os.path.join(cwd, raw)
-    remainder: list[str] = []
-    while not os.path.lexists(probe):
-        head, tail = os.path.split(probe)
-        if head == probe:  # reached the filesystem root without an existing ancestor
-            return False
-        if tail:
-            remainder.append(tail)
-        probe = head
-    if ".." in remainder:
-        return False
-    target = os.path.join(os.path.realpath(probe), *reversed(remainder))
-    try:
-        if os.path.commonpath([target, base]) != base:
-            return False
-    except ValueError:
-        return False
-    rel = os.path.relpath(target, base)
-    return not any(part.casefold() == ".git" for part in rel.split(os.sep))
+    rel = worktree_rel_path(tool, input, cwd)
+    return rel is not None and not is_protected_path(rel)
 
 
 class PermissionRegistry:
@@ -315,8 +289,7 @@ class PermissionRegistry:
         # so they are pure bookkeeping noise the user should never have to approve.
         # Unlike a standing rule, "ask each time" does not apply here —
         # there is no user-facing action to ask about.
-        if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
-                input.get("file_path") or input.get("notebook_path")):
+        if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(tool_path_arg(tool, input)):
             return None, _resolved(True), True
         # Auto-allow MCP tools (`mcp__<server>__<tool>`) in EVERY mode, including
         # "interactive".  The operator opted into trusting MCP unconditionally, so a
@@ -337,14 +310,15 @@ class PermissionRegistry:
             return None, _resolved(True), True
         if mode == "acceptEdits" and tool in _FILE_WRITE_TOOLS:
             # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit) ONLY inside the
-            # session worktree *cwd*, never into its `.git` (#3217); every other tool
-            # still prompts. The default for unattended automation sessions (issue
-            # #750): an agent editing its own worktree proceeds without a human, while
-            # a write anywhere else (~/.bashrc, another repo, .git/hooks) and
+            # session worktree *cwd*, never to a protected path (`.git`, `.claude/**`,
+            # `.mcp.json`, `.envrc`, `.husky/**`, …) (#3217); every other tool still
+            # prompts. The default for unattended automation sessions (issue #750): an
+            # agent editing its own worktree proceeds without a human, while a write
+            # anywhere else (~/.bashrc, another repo, .git/hooks, .claude/settings) and
             # shell/network calls — a materially larger blast radius — remain gated.
             # Outside the boundary this falls through to the standing-rule check and
             # a card below; it never denies outright.
-            if write_target_inside_worktree(input, cwd):
+            if write_target_inside_worktree(tool, input, cwd):
                 return None, _resolved(True), True
             log.info("perm.accept_edits.outside_worktree session=%s tool=%s", session_id, tool)
         # A standing "always allow" rule is checked in EVERY mode, including interactive:

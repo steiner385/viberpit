@@ -12,10 +12,11 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import PurePosixPath
+from typing import Any
 from urllib.parse import urlsplit
 
 from viberpit.brand import MCP_TOOL_PREFIXES
@@ -31,6 +32,16 @@ PROTECTED_PATHS = frozenset(
         "**/.aws/**", "**/.gnupg/**", "**/.npmrc", "**/.pypirc", "**/.netrc", "**/.bashrc",
         "**/.zshrc", "**/.profile", "**/*.pem", "**/*.key", "**/id_rsa*", "**/id_ed25519*",
         "**/credentials*", "**/.docker/config.json", "**/.kube/**", "**/.pgpass", "**/secrets/**",
+        # The Claude CLI's own escalate-even-in-acceptEdits lists (2.1.316, files + dirs, #3217):
+        "**/.gitconfig", "**/.gitmodules", "**/.bash_profile", "**/.zprofile", "**/.zshenv",
+        "**/.zlogin", "**/.zlogout", "**/.bash_login", "**/.bash_aliases", "**/.bash_logout",
+        "**/.ripgreprc", "**/.claude.json", "**/.yarnrc", "**/.yarnrc.yml", "**/.pnp.cjs",
+        "**/.pnp.loader.mjs", "**/.pnpmfile.cjs", "**/bunfig.toml", "**/.bunfig.toml",
+        "**/.bazelrc", "**/.bazelversion", "**/.bazeliskrc", "**/.pre-commit-config.yaml",
+        "**/lefthook.yml", "**/.lefthook.yml", "**/lefthook.yaml", "**/.lefthook.yaml",
+        "**/gradle-wrapper.properties", "**/maven-wrapper.properties", "**/.devcontainer.json",
+        "**/pyrightconfig.json", "**/.claude", "**/.cargo/**", "**/.devcontainer/**",
+        "**/.yarn/**", "**/.mvn/**", "**/.config/git/**",
     }
 )  # fmt: skip
 #: Prompts no standing rule may ever answer, in any mode: plan approval and clarifying questions
@@ -222,10 +233,37 @@ def is_protected_path(rel: str) -> bool:
     return any(rx.fullmatch(rel) for rx in _protected_regexes())
 
 
-def _rel_path(input: dict, cwd: str | None) -> str | None:
-    """Worktree-relative POSIX path, or None when absent or outside cwd."""
-    raw = input.get("file_path") or input.get("notebook_path") or input.get("path")
-    if not cwd or not raw or not isinstance(raw, str):
+def tool_path_arg(tool: str, input: Mapping[str, Any]) -> str | None:
+    """The single path a file tool targets, keyed by TOOL: ``notebook_path`` for
+    NotebookEdit, ``file_path`` for everything else. None when absent, not a non-empty
+    string, or ambiguous — the input also carries the other key with a different value,
+    so whichever one the tool actually honours could be the unchecked one (#3217)."""
+    key, other = (("notebook_path", "file_path") if tool == "NotebookEdit"
+                  else ("file_path", "notebook_path"))
+    raw = input.get(key)
+    if not isinstance(raw, str) or not raw:
+        return None
+    alt = input.get(other)
+    if alt is not None and alt != raw:
+        return None
+    return raw
+
+
+def worktree_rel_path(tool: str, input: Mapping[str, Any], cwd: str | None) -> str | None:
+    """Worktree-relative POSIX path of a file tool's target, or None when absent,
+    ambiguous, outside cwd, or the worktree root itself.
+
+    Fails closed (None) on a NUL byte, a leading ``~`` (the CLI expands it to $HOME) and
+    any ``..`` component: the CLI may normalise ``..`` lexically before the kernel
+    resolves symlinks, so the two readings of such a path can disagree about which side
+    of the worktree it lands on. Otherwise symlinks are resolved with ``realpath``
+    (a dangling link resolves to the target it would create) and containment is
+    ``commonpath`` — never a string prefix, so ``/repo-evil`` is not inside ``/repo``.
+    """
+    raw = tool_path_arg(tool, input)
+    if not cwd or raw is None or "\x00" in raw or raw.startswith("~"):
+        return None
+    if ".." in raw.split(os.sep):
         return None
     base = os.path.realpath(cwd)
     path = os.path.realpath(os.path.join(base, raw))
@@ -273,8 +311,8 @@ def _hostname(input: dict) -> str | None:
     return host.lower() if host else None
 
 
-def _covers(p: Pattern, input: dict, cwd: str | None) -> bool:
-    rel = _rel_path(input, cwd)
+def _covers(p: Pattern, tool: str, input: dict, cwd: str | None) -> bool:
+    rel = worktree_rel_path(tool, input, cwd)
     if rel is None or is_protected_path(rel):
         return False
     return p.kind == "bare" or path_spec_matches(p.spec or "", rel)
@@ -298,9 +336,9 @@ def matches(p: Pattern, tool: str, input: dict, cwd: str | None) -> bool:
     if not _tool_in_scope(p, tool):
         return False
     if p.kind == "bare":
-        return tool not in PATH_TOOLS or _covers(p, input, cwd)
+        return tool not in PATH_TOOLS or _covers(p, tool, input, cwd)
     if p.kind == "path":
-        return _covers(p, input, cwd)
+        return _covers(p, tool, input, cwd)
     return False
 
 
@@ -418,7 +456,7 @@ def _suggest_candidates(tool: str, input: dict, cwd: str | None) -> list[str]:
             out.append(f"Bash({words[0]}:*)")
         return list(dict.fromkeys(out))
     if tool in PATH_TOOLS:
-        rel = _rel_path(input, cwd)
+        rel = worktree_rel_path(tool, input, cwd)
         if rel is None:
             return []
         head = "Read" if tool == "Read" else "Edit"
