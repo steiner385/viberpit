@@ -2098,7 +2098,7 @@ class ClaudeAgentDriver:
         return task_id
 
     async def set_permission_mode(self, mode: str):
-        # Plan mode is a temporary overlay. A REST (`POST /sessions/{id}/mode`), WS
+        # Plan mode is a temporary overlay. A REST (`POST /sessions/{id}/permission-mode`), WS
         # or assistant `set_permission_mode` caller turns it OFF by sending the
         # 'default' sentinel; treat that as "return to the mode the session had
         # before plan" rather than the SDK 'default' engine, which

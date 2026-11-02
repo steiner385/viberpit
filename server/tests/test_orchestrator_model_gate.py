@@ -1060,10 +1060,10 @@ def test_set_model_default_with_ungated_inherited_default_applies(tmp_path):
 # D-1 — re-selecting the RUNNING model is not a switch.
 #
 # The prompt row's effort picker re-sends the session's current model with a new
-# effort. If that model is gated, re-running the approval policy would park a
-# fresh approval for the model already running and drop the effort. Same model
-# (None and "default" are the same choice) skips the gate; a different gated
-# model still parks.
+# effort. If that model is gated, parking would hold a fresh approval for the
+# model already running and drop the effort. The same EXPLICIT model never parks,
+# but a block still raises; None/"default" get no exemption (the inherited default
+# may have moved onto a gated model); a different gated model still parks.
 # ---------------------------------------------------------------------------
 
 
@@ -1115,16 +1115,43 @@ def test_same_gated_model_with_effort_skips_the_gate(tmp_path):
     assert row.reasoning_effort == "high"
 
 
-def test_default_and_none_are_the_same_model_for_the_gate(tmp_path):
+def test_default_gets_no_same_model_exemption(tmp_path):
     # The session runs on the inherited default (model None) and that default is
-    # gated: re-sending "default" with an effort is not a switch.
+    # now gated: re-sending "default" would move the binary onto it, so it parks.
     rec, driver, row = _same_model_effort_run(
         tmp_path, current=None, requested="default", pin="claude-fable-5-1[1m]")
 
-    assert rec.pending_model is None
-    assert row.pending_model is None
-    assert driver.set_model_calls == [("default", "high")]
-    assert rec.reasoning_effort == "high"
+    assert rec.pending_model == "claude-fable-5-1[1m]"
+    assert row.pending_model == "claude-fable-5-1[1m]"
+    assert driver.set_model_calls == []
+
+
+def test_same_model_that_is_now_blocked_still_raises(tmp_path):
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                await _set_global_action("block")
+                driver = _EffortRecordingDriver(turn_active=False)
+                rec = _running_orch(orch, driver, model="fable")
+                raised = None
+                try:
+                    await orch.set_model_for_session(
+                        rec.id, "fable", identity="user@x", reasoning_effort="high")
+                except ModelBlockedError as exc:
+                    raised = exc
+                return raised, rec, driver
+            finally:
+                await orch.stop()
+
+        raised, rec, driver = asyncio.run(_run())
+
+    assert isinstance(raised, ModelBlockedError)
+    assert driver.set_model_calls == []
+    assert rec.reasoning_effort is None
 
 
 def test_different_gated_model_with_effort_still_parks(tmp_path):
