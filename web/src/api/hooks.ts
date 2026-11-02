@@ -72,6 +72,7 @@ import { useSessionSocket } from '@/ws/client'
 import { extractMutationErrorMessage } from './queryClient'
 import type { SessionEvent } from '@/session/events'
 import type { SessionDiff } from '@/features/sessions/diff/types'
+import type { SessionFileContent, SessionFileList } from '@/features/sessions/files/types'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
 import { reconcileFlight } from '@/lib/promptFlight'
@@ -153,6 +154,10 @@ export const QK = {
    *  variant (summary / full × whitespace), which is what a turn end invalidates. */
   sessionDiff: (id: string, opts?: SessionDiffFlags) =>
     opts ? ['session-diff', id, opts] as const : ['session-diff', id] as const,
+  /** A session's worktree file list for one query; bare `(id)` covers every query. */
+  sessionFiles: (id: string, q?: string) =>
+    q !== undefined ? ['session-files', id, q] as const : ['session-files', id] as const,
+  sessionFile: (id: string, path: string) => ['session-file', id, path] as const,
 }
 
 /**
@@ -1253,6 +1258,42 @@ export function useSessionDiff(
     // Flipping "Hide whitespace" changes the key; keep showing the same
     // session's previous diff until the new one lands — never another session's.
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),
+  })
+}
+
+/**
+ * The files in a session's worktree (D-7) — the Files tab's search and the
+ * composer's `@` menu. `q` is the server's fuzzy filter; empty lists the most
+ * recently modified first. The caller debounces `q`; while a new query is in
+ * flight the same session's previous matches stay up, so the list does not
+ * blank between keystrokes. Like the diff: no cwd is `files: []`, an unknown
+ * session a 404 (a 4xx fails fast), and nothing refetches on window focus —
+ * each fetch walks the worktree on the owning host.
+ */
+export function useSessionFiles(id: string, q: string, { enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery<SessionFileList>({
+    queryKey: QK.sessionFiles(id, q),
+    queryFn: () => api.get<SessionFileList>(
+      `/sessions/${encodeURIComponent(id)}/files?q=${encodeURIComponent(q)}`),
+    enabled: enabled && !!id,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),
+  })
+}
+
+/**
+ * One file of a session's worktree (D-7 Files tab): `{path, text, binary,
+ * truncated, size}`. Off until there is a `path`. A path outside the worktree
+ * is a 400 `PATH_OUTSIDE_WORKTREE`, a missing file a 404 `FILE_NOT_FOUND` —
+ * both fail fast and the viewer says which. No refetch on window focus.
+ */
+export function useSessionFile(id: string, path: string | null) {
+  return useQuery<SessionFileContent>({
+    queryKey: QK.sessionFile(id, path ?? ''),
+    queryFn: () => api.get<SessionFileContent>(
+      `/sessions/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path ?? '')}`),
+    enabled: !!id && !!path,
+    refetchOnWindowFocus: false,
   })
 }
 

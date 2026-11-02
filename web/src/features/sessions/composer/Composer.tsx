@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
+import { useRef, useState, useCallback, useEffect, useId, useImperativeHandle, type Ref } from 'react'
 import { Paperclip, X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -9,12 +9,13 @@ import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
 import { MentionMenu, type MentionMenuHandle, type MentionSource } from './MentionMenu'
+import { FileMentionMenu } from './FileMentionMenu'
 import { MicButton } from './MicButton'
 import { useDictationField } from '@/lib/useDictationField'
 import type { Command, QueuedItem, PromptContext } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
-import { mentionQueryAt } from '@/lib/mentionQuery'
+import { fileMentionToken, mentionQueryAt } from '@/lib/mentionQuery'
 import { SESSION_COMPOSER_ATTR } from '@/lib/detachKeyGuard'
 
 interface Props {
@@ -43,16 +44,28 @@ interface Props {
    *  each time — even identical text twice in a row — so the effect re-fires; the user
    *  can still edit or clear it before sending. */
   externalDraft?: { text: string } | null
-  /** `@` mentions the composer can insert as `[title](/sessions/<id>)`. Only supplied
-   *  by the AI assistant drawer — a coding session's Composer never sees this prop, so
-   *  typing `@` there is plain text. */
+  /** `@` session mentions the composer can insert as `[title](/sessions/<id>)`. With
+   *  neither this nor `fileMentionSessionId`, typing `@` is plain text. */
   mentionSource?: MentionSource[]
+  /** The session whose worktree files the `@` menu offers (D-7), inserted as `@<path> `.
+   *  Only the session composer supplies it, and only for a session with a `cwd`; the
+   *  assistant drawer stays sessions-only. */
+  fileMentionSessionId?: string
   /** This is the open session's composer (not the assistant drawer's): marks the
    *  textarea so Esc-stops-the-turn fires through its draft (`lib/detachKeyGuard`). */
   sessionComposer?: boolean
+  /** Imperative attach for a transcript path's "Attach as @" (D-7), handed to the
+   *  shell's bridge (`shell/sessionGestures`) by the dock's composer. */
+  attachRef?: Ref<ComposerAttach>
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, sessionComposer = false }: Props) {
+/** What the composer lets the transcript do to its draft (D-7). */
+export interface ComposerAttach {
+  /** Append `path`'s `@` mention to the draft and focus it, caret after the mention. */
+  attachFile: (path: string) => void
+}
+
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef }: Props) {
   const { replies, statusText: repliesStatus } = useQuickReplies()
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
@@ -105,10 +118,12 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const pickingCommand = typingCommand && text !== dismissedSlashAt
   const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
-  // `@` session mentions (assistant drawer only — mentionSource is absent for a
-  // coding session's Composer). Mutually exclusive with the slash palette: a
-  // message starting with `/` is a command line, not prose with a mention in it.
-  const mentionQuery = !typingCommand && mentionSource ? mentionQueryAt(text, caretPos) : null
+  // `@` mentions: sessions (assistant drawer; session composer) and worktree files
+  // (session composer with a cwd). Off only while a slash command's NAME is being
+  // typed — the palette owns the keyboard then. A command's ARGS may hold `@path`
+  // (Claude Code resolves it there too), so `/review @src/foo.ts` opens the menu.
+  const mentionsOn = mentionSource !== undefined || fileMentionSessionId !== undefined
+  const mentionQuery = !typingCommand && mentionsOn ? mentionQueryAt(text, caretPos) : null
   // The `@` position the current query is anchored to — Esc records it here so the
   // SAME mention attempt stays dismissed across further keystrokes; a fresh `@`
   // elsewhere has a different start and reopens. Cleared in handleChange (not an
@@ -116,6 +131,12 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const mentionStart = mentionQuery !== null ? caretPos - mentionQuery.length - 1 : null
   const [dismissedMentionAt, setDismissedMentionAt] = useState<number | null>(null)
   const pickingMention = mentionQuery !== null && mentionStart !== dismissedMentionAt
+  // The textarea keeps focus while the menu is up, so it carries the listbox's ARIA:
+  // aria-controls / aria-activedescendant (the highlighted option) while it is shown.
+  const mentionListboxId = useId()
+  const [mentionActiveId, setMentionActiveId] = useState<string | undefined>(undefined)
+  const [mentionVisible, setMentionVisible] = useState(false)
+  const mentionExpanded = pickingMention && mentionVisible
 
   const ghost =
     !isWorking && text === '' && suggestions && suggestions.length > 0
@@ -184,7 +205,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     // A dismissed mention only stays dismissed for its OWN query; once there is no
     // active query at all (the user moved on), clear the marker so the next `@`
     // — even at the same buffer position — opens normally.
-    if (mentionSource && dismissedMentionAt !== null && mentionQueryAt(value, nextCaret) === null) {
+    if (mentionsOn && dismissedMentionAt !== null && mentionQueryAt(value, nextCaret) === null) {
       setDismissedMentionAt(null)
     }
     // Any edit ends a palette dismissal, so backspacing to the dismissed text reopens it.
@@ -196,18 +217,39 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   }
 
   // Replace the active `@query` (from its `@` up to the caret) with the mention
-  // link and land the caret right after the inserted `) ` — mirrors the ghost
+  // token and land the caret right after its trailing space — mirrors the ghost
   // suggestion's prefill() in spirit, but at an arbitrary offset rather than the end.
-  const insertMention = useCallback((session: MentionSource) => {
+  const replaceMentionQuery = useCallback((inserted: string) => {
     const query = mentionQueryAt(text, caretPos)
     if (query === null) return
     const start = caretPos - query.length - 1
-    const inserted = `[${session.title}](/sessions/${session.id}) `
     const newCaret = start + inserted.length
     pendingCaretRef.current = newCaret
     setCaret(newCaret)
     setText(text.slice(0, start) + inserted + text.slice(caretPos))
   }, [text, caretPos])
+  const insertMention = useCallback(
+    (session: MentionSource) => replaceMentionQuery(`[${session.title}](/sessions/${session.id}) `),
+    [replaceMentionQuery],
+  )
+  // A file goes in as `@<path> ` — the CLI resolves the path against the worktree
+  // (quoted when it holds whitespace; see `fileMentionToken`).
+  const insertFileMention = useCallback(
+    (path: string) => replaceMentionQuery(`${fileMentionToken(path)} `),
+    [replaceMentionQuery],
+  )
+  // A transcript path's "Attach as @" appends the same token after the draft (one
+  // space from any text before it) and lands the caret after it.
+  useImperativeHandle(attachRef, () => ({
+    attachFile: (path: string) => {
+      const sep = text === '' || /\s$/.test(text) ? '' : ' '
+      const next = `${text}${sep}${fileMentionToken(path)} `
+      suggestedDraft.current = null
+      pendingCaretRef.current = next.length
+      setCaret(next.length)
+      setText(next)
+    },
+  }), [text])
 
   const runCommandFromText = useCallback((raw: string): boolean => {
     if (!raw.startsWith('/') || raw.includes('\n')) return false
@@ -413,20 +455,41 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             onDismiss={() => setDismissedSlashAt(text)}
           />
         )}
-        {pickingMention && (
+        {pickingMention && (fileMentionSessionId !== undefined ? (
+          <FileMentionMenu
+            ref={mentionRef}
+            sessionId={fileMentionSessionId}
+            sessions={mentionSource ?? []}
+            query={mentionQuery ?? ''}
+            onSelect={insertMention}
+            onSelectFile={insertFileMention}
+            onDismiss={() => setDismissedMentionAt(mentionStart)}
+            onActiveChange={setMentionActiveId}
+            listboxId={mentionListboxId}
+            onVisibleChange={setMentionVisible}
+          />
+        ) : (
           <MentionMenu
             ref={mentionRef}
             sessions={mentionSource ?? []}
             query={mentionQuery ?? ''}
             onSelect={insertMention}
             onDismiss={() => setDismissedMentionAt(mentionStart)}
+            onActiveChange={setMentionActiveId}
+            listboxId={mentionListboxId}
+            onVisibleChange={setMentionVisible}
           />
-        )}
+        ))}
         <div className="relative flex-1 @max-md:basis-full">
           <textarea
             ref={textareaRef}
             aria-label="Message"
             {...(sessionComposer ? { [SESSION_COMPOSER_ATTR]: '' } : {})}
+            // No aria-expanded: axe (aria-allowed-attr) rejects it on a textbox, and making
+            // the textarea a combobox would change its role for every consumer.
+            aria-autocomplete={mentionsOn ? 'list' : undefined}
+            aria-controls={mentionExpanded ? mentionListboxId : undefined}
+            aria-activedescendant={mentionExpanded ? mentionActiveId : undefined}
             value={text}
             onChange={handleChange}
             onKeyDown={handleKeyDown}

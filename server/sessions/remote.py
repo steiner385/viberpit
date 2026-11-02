@@ -21,6 +21,7 @@ from server.sessions.engine import (
     parse_agent_engine,
 )
 from server.sessions.orchestrator import ModelBlockedError
+from server.sessions import worktree_files
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -51,10 +52,11 @@ USAGE_RPC_TIMEOUT = 3.0
 # case (the origin-only fetch and the assess_model timeout already cap it).
 SPAWN_RPC_TIMEOUT = 90.0
 
-# The session diff (D-4) runs several sequential git calls in the daemon, each bounded
-# at 30s by viberpit.worktree_diff, so a slow worktree can outlast the 30s client
-# default. It is a read: timing out only costs the user a retry.
-DIFF_RPC_TIMEOUT = 90.0
+# Worktree reads on the owning daemon: the session diff (D-4) runs several sequential
+# git calls, the D-7 file list a worktree probe plus one streamed, capped
+# ``git ls-files`` — each bounded at 30s by viberpit.worktree_diff — so a slow worktree
+# can outlast the 30s client default. They are reads: timing out only costs a retry.
+WORKTREE_RPC_TIMEOUT = 90.0
 
 # Materialization apply (#992): its own budget because it is not spawn-shaped at all.
 # The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
@@ -867,12 +869,41 @@ class RemoteOrchestrator:
         """Proxy session_diff to the daemon that owns the worktree. An unknown session
         crosses the RPC as a DaemonError; re-raise it as the orchestrator's KeyError."""
         try:
-            return await self._client.call("session_diff", timeout=DIFF_RPC_TIMEOUT,
+            return await self._client.call("session_diff", timeout=WORKTREE_RPC_TIMEOUT,
                                            session_id=session_id, summary=summary,
                                            ignore_whitespace=ignore_whitespace)
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
+            raise
+
+    async def session_files(self, session_id, *, q: str = "",
+                            limit: int = worktree_files.DEFAULT_LIST_LIMIT) -> dict:
+        """Proxy session_files to the daemon that owns the worktree; an unknown session
+        is re-raised as the orchestrator's KeyError."""
+        try:
+            return await self._client.call("session_files", timeout=WORKTREE_RPC_TIMEOUT,
+                                           session_id=session_id, q=q, limit=limit)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
+    async def session_file(self, session_id, *, path: str) -> dict:
+        """Proxy session_file to the daemon that owns the worktree. An unknown session is
+        re-raised as KeyError and a refused read as FileAccessError with the code from
+        the envelope's ``data`` — only the codes the edge maps; anything else stays a
+        DaemonError rather than being invented into a 400/404."""
+        try:
+            return await self._client.call("session_file", timeout=WORKTREE_RPC_TIMEOUT,
+                                           session_id=session_id, path=path)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            code = (exc.data or {}).get("code")
+            if exc.err_type == "FileAccessError" and code in (
+                    worktree_files.PATH_OUTSIDE_WORKTREE, worktree_files.FILE_NOT_FOUND):
+                raise worktree_files.FileAccessError(code) from exc
             raise
 
     async def mcp_reconnect(self, session_id, server: str):

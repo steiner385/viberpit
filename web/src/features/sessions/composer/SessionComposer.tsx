@@ -7,9 +7,10 @@
  */
 
 import { useMemo, useCallback, type Ref } from 'react'
-import { Composer } from './Composer'
+import { Composer, type ComposerAttach } from './Composer'
 import type { MentionSource } from './MentionMenu'
 import { PromptRow, type PromptRowMenus } from './PromptRow'
+import { useMentionSessions } from './useMentionSessions'
 import { deriveHistory } from '@/session/history'
 import { useEngineCapabilities, useGenerateSuggestions, useModels, useSessions } from '@/api/hooks'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
@@ -28,13 +29,22 @@ interface Props {
   promptRowMenus?: Ref<PromptRowMenus>
   /** Prefill the draft from outside the composer (e.g. a NoticeCard's "Ask about it"). */
   externalDraft?: { text: string } | null
-  /** `@` mentions the composer can insert (spec v2 §10.2). Only the AI assistant
-   *  drawer supplies this — see Composer's own doc on the prop. */
+  /** `@` session mentions for the AI assistant drawer (spec v2 §10.2), which stays
+   *  sessions-only. A session composer builds its own Files + Sessions menu instead. */
   mentionSource?: MentionSource[]
+  /** The composer's attach handle (D-7: a transcript path's "Attach as @"). */
+  attachRef?: Ref<ComposerAttach>
 }
 
-export function SessionComposer({ rt, contextProvider, hideSessionControls = false, promptRowMenus, externalDraft, mentionSource }: Props) {
+export function SessionComposer({ rt, contextProvider, hideSessionControls = false, promptRowMenus, externalDraft, mentionSource, attachRef }: Props) {
   const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
+  // D-7: a session composer `@`-mentions the other sessions (Sessions group) and, with
+  // a cwd, its worktree files (Files group, first). An engine without a cwd gets the
+  // sessions-only menu and never queries files. The assistant drawer (no session
+  // controls) keeps its own sessions-only list.
+  const { data: sessions } = useSessions()
+  const hasCwd = !hideSessionControls && !!sessions?.find((s) => s.id === rt.sessionId)?.cwd
+  const otherSessions = useMentionSessions(rt.sessionId)
   const genSuggestions = useGenerateSuggestions()
   const onPrompt = useCallback(
     (text: string, attachmentIds: string[], context?: PromptContext, replySource?: 'suggested') => {
@@ -63,9 +73,11 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
         history={history}
         sessionId={rt.sessionId}
         externalDraft={externalDraft}
-        mentionSource={mentionSource}
+        mentionSource={hideSessionControls ? mentionSource : otherSessions}
+        fileMentionSessionId={hasCwd ? rt.sessionId : undefined}
         // The composer with session controls IS the session's; the assistant drawer hides them.
         sessionComposer={!hideSessionControls}
+        attachRef={attachRef}
       />
       {!hideSessionControls && <SessionPromptRow rt={rt} menuRef={promptRowMenus} />}
     </>

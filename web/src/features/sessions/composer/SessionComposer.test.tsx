@@ -60,12 +60,14 @@ describe('SessionComposer (shared mobile/desktop wiring)', () => {
 describe('SessionComposer mentionSource wiring (spec v2 §10.2)', () => {
   it('forwards mentionSource so the assistant drawer can @ mention a session', async () => {
     const user = userEvent.setup()
-    renderComposer(fakeRuntime(), [{ id: 's2', title: 'Fix the flaky test' }])
+    // The assistant drawer is the composer without session controls; a session
+    // composer builds its own Files + Sessions menu instead (Composer.mentions.test).
+    renderComposer(fakeRuntime(), [{ id: 's2', title: 'Fix the flaky test' }], true)
     await user.type(screen.getByLabelText('Message'), '@fi')
     expect(screen.getByRole('listbox', { name: /session mentions/i })).toHaveTextContent('Fix the flaky test')
   })
 
-  it('a coding session (no mentionSource) never shows the mention menu', async () => {
+  it('a coding session with no other sessions and no cwd shows no mention menu', async () => {
     const user = userEvent.setup()
     renderComposer(fakeRuntime())
     await user.type(screen.getByLabelText('Message'), '@fi')

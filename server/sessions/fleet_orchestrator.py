@@ -207,6 +207,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     "stop_subagent", "mcp_status_for", "mcp_reconnect", "mcp_toggle",
     # The diff reads the session's worktree, which lives on its owning host.
     "session_diff",
+    # So do the D-7 file list and file read.
+    "session_files", "session_file",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",

@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DiffRenderer } from './DiffRenderer'
-import { PATH_LANGUAGES, languageForPath, registeredLanguages } from './diffHighlight'
+import { registeredLanguages } from './diffHighlight'
+import { PATH_LANGUAGES, languageForPath } from './pathLanguages'
 import type { DiffLine, FileDiff } from './types'
 
 const ctx = (oldNo: number, newNo: number, text: string): DiffLine => ({ kind: 'context', oldNo, newNo, text })

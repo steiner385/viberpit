@@ -21,7 +21,8 @@ vi.mock('@/api/hooks', () => ({
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useAccounts: vi.fn(() => ({ data: [{ name: 'acct' }] })),
-  useSessions: vi.fn(() => ({ data: [{ id: 's1', accountName: 'acct', status: 'idle', branch: 'feat/x', cwd: '/w/x' }] })),
+  // No cwd: a cwd lists the Files tab (D-7), and these tests count the strip's tabs.
+  useSessions: vi.fn(() => ({ data: [{ id: 's1', accountName: 'acct', status: 'idle', branch: 'feat/x' }] })),
   useEngineCapabilities: vi.fn(() => undefined),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

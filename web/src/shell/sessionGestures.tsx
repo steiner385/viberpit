@@ -29,7 +29,9 @@
  * `onDetach` identity change, which is every render of `MainPaneSession`.
  */
 import * as React from 'react'
+import { toast } from 'sonner'
 import type { PromptRowMenus } from '@/features/sessions/composer/PromptRow'
+import type { ComposerAttach } from '@/features/sessions/composer/Composer'
 
 export interface SessionGestures {
   /** A permission or question card is waiting for an answer. */
@@ -69,15 +71,51 @@ const PromptRowMenusContext = React.createContext<React.RefObject<PromptRowMenus
   null,
 )
 
+/**
+ * The dock composer's attach handle (D-7): a transcript path's "Attach as @"
+ * writes into the composer's draft. Same shape of problem as the menus above —
+ * the transcript (`SessionBody`, in `app.main`) and the composer (`PromptDock`)
+ * are siblings — so the same bridge. Null current means no composer is mounted
+ * (see `useComposerAttach`).
+ */
+const ComposerAttachContext = React.createContext<React.RefObject<ComposerAttach | null> | null>(
+  null,
+)
+
 /** The shell's side: owns the refs both halves share. */
 export function SessionGestureProvider({ children }: { children: React.ReactNode }) {
   const ref = React.useRef<SessionGestures | null>(null)
   const menus = React.useRef<PromptRowMenus | null>(null)
+  const attach = React.useRef<ComposerAttach | null>(null)
   return (
     <SessionGestureContext.Provider value={ref}>
-      <PromptRowMenusContext.Provider value={menus}>{children}</PromptRowMenusContext.Provider>
+      <PromptRowMenusContext.Provider value={menus}>
+        <ComposerAttachContext.Provider value={attach}>{children}</ComposerAttachContext.Provider>
+      </PromptRowMenusContext.Provider>
     </SessionGestureContext.Provider>
   )
+}
+
+/** The dock composer's side: the ref to pass as `SessionComposer`'s `attachRef`.
+ *  Undefined outside the shell. */
+export function useComposerAttachRegistration(): React.RefObject<ComposerAttach | null> | undefined {
+  return React.useContext(ComposerAttachContext) ?? undefined
+}
+
+/**
+ * The transcript's side: attach `path` to the open session's composer draft as
+ * `@path`. Undefined outside the shell (no composer can exist), so a caller can
+ * leave the action out; inside it with no composer mounted, an attach toasts an
+ * error rather than doing nothing.
+ */
+export function useComposerAttach(): ((path: string) => void) | undefined {
+  const ref = React.useContext(ComposerAttachContext)
+  const attach = React.useCallback((path: string) => {
+    // No composer mounted (the dock is hidden) — say so rather than drop the click.
+    if (ref?.current) ref.current.attachFile(path)
+    else toast.error('No message box to attach to')
+  }, [ref])
+  return ref ? attach : undefined
 }
 
 /** The shell's read handle for the prompt row's menus (see `PromptRowMenusContext`). */
