@@ -8,10 +8,7 @@ import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import type { FileTarget } from '../sessionView'
 import FileViewer from './FileViewer'
 import { TextAction } from './TextAction'
-import { MAX_SCAN_ENTRIES } from './types'
-
-/** The same debounce the composer's `@` menu gives the same query. */
-const SEARCH_DEBOUNCE_MS = 120
+import { FILE_SEARCH_DEBOUNCE_MS, MAX_SCAN_ENTRIES } from './types'
 
 /**
  * The session's Files tab (D-7): a read-only look at the worktree. A search box
@@ -62,7 +59,7 @@ function FileList({ sessionId, open, onOpen, className }: {
   className?: string
 }) {
   const [query, setQuery] = useState('')
-  const q = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS)
+  const q = useDebouncedValue(query.trim(), FILE_SEARCH_DEBOUNCE_MS)
   const { data, error, isError, refetch } = useSessionFiles(sessionId, q)
 
   let body

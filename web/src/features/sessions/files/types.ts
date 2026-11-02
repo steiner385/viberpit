@@ -23,3 +23,7 @@ export type SessionFileContent = {
 
 export const MAX_SCAN_ENTRIES = 20_000
 export const MAX_READ_BYTES = 512 * 1024
+
+/** The debounce on a files query typed by the user — the Files tab's search box and
+ *  the composer's `@` menu ask the same endpoint at the same pace. */
+export const FILE_SEARCH_DEBOUNCE_MS = 120

@@ -16,10 +16,9 @@
  * here so it can call `useSessionRuntimeContext()` — the provider's own descendant,
  * not the component that renders the provider.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
-import { useSessions } from '@/api/hooks'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import {
   createSessionFailureMessage,
@@ -27,6 +26,7 @@ import {
 } from '@/features/sessions/createSessionFailure'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
+import { useMentionSessions } from '@/features/sessions/composer/useMentionSessions'
 import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanner'
 import { PendingPermissionPanel } from '@/features/sessions/panels/PendingPermissionPanel'
 import { PendingQuestionPanel } from '@/features/sessions/panels/PendingQuestionPanel'
@@ -83,11 +83,7 @@ function AssistantSheetBody() {
 
   // `@` session mentions (spec v2 §10.2): only the assistant drawer's composer gets
   // this — a coding session's Composer never receives mentionSource at all.
-  const { data: sessions } = useSessions()
-  const mentionSource = useMemo(
-    () => (sessions ?? []).map((s) => ({ id: s.id, title: s.name })),
-    [sessions],
-  )
+  const mentionSource = useMentionSessions()
 
   // Publish this turn's liveness to `DrawerHost` so Escape can interrupt it before
   // closing the drawer, instead of abandoning an in-flight assistant turn silently.
