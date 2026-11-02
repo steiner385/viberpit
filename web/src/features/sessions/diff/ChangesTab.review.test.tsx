@@ -223,4 +223,16 @@ describe('ChangesTab review focus', () => {
     await user.click(within(second).getByRole('button', { name: 'Delete' }))
     expect(header()).toHaveFocus()
   })
+
+  it('deleting a top-of-file card with no following card and no gutter focuses the file header', async () => {
+    const user = userEvent.setup()
+    // Line 99 is not in the diff: the card is stale, at the top of the file, with no gutter button.
+    seed([{ id: 'gone', anchor: { path: 'src/app.ts', side: 'new', start: 99, end: 99 }, quote: ['zzz'], body: 'lost' }])
+    renderTab()
+    const card = await screen.findByRole('article', { name: /comment on line 99/i })
+    expect(card).toHaveTextContent(/outdated/i)
+    await user.click(within(card).getByRole('button', { name: 'Delete' }))
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+    expect(header()).toHaveFocus()
+  })
 })

@@ -41,7 +41,7 @@ export interface DiffDecorations {
  *
  * Line numbers and hunk headers are dimmed with a translucent text colour, not
  * `opacity` — an opacity layer is a stacking context, and would paint over a
- * touch gutter's extended hit area (`review/LineCommentGutter`).
+ * touch gutter's hit area where it extends over the numbers (`review/LineCommentGutter`).
  *
  * Colours come from the app's one highlight.js theme: the frame is `.hljs` and
  * add/del rows are `.hljs-addition` / `.hljs-deletion`, so diff and code-block

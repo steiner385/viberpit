@@ -11,14 +11,13 @@ import { lineKey } from './diffAnchors'
  * focus; a solid fill marks the hovered button and the selected range.
  *
  * Touch (`pointer: coarse` — the ONE media feature gating both): the glyph is
- * always shown, and an invisible `::before` extends the hit area to 44×44
- * (docs/ACCESSIBILITY.md §4) — 12px above and below, 24px rightward over the
- * line numbers (never leftward, where the scrolling frame would clip it).
- * Layering, so the extension claims only empty space: the hit area paints at
- * the positioned (`z-auto`) layer — over the plain rows, numbers and hunk
- * headers (the renderer dims them by colour, not `opacity`, which would be a
- * stacking context over it) — while every glyph and comment slot is
- * `z-raised`, so a neighbour's hit area never steals a tap on either.
+ * always shown, and an invisible `::before` widens the hit area to 44px —
+ * 24px rightward over the line numbers (never leftward, where the scrolling
+ * frame would clip it) — at the row's own height. No vertical extension: rows
+ * are a contiguous 20px, so a taller area would overlap the next row's and a
+ * tap on a line number could open the wrong line (docs/ACCESSIBILITY.md §4,
+ * the dense-gutter exception). The renderer dims the numbers by colour, not
+ * `opacity`, which would be a stacking context painting over the extension.
  *
  * `side` names the line: `Comment on line N` (new side), `Comment on removed
  * line N` (old side); `noun` replaces "line" (the plan card's `step line`).
@@ -42,7 +41,7 @@ export default function LineCommentGutter({ line, side, noun = 'line', selected,
       onClick={onClick}
       className={cn(
         'relative inline-flex h-5 w-5 shrink-0 select-none items-center justify-center rounded-sm text-xs leading-none',
-        "pointer-coarse:before:absolute pointer-coarse:before:-inset-y-3 pointer-coarse:before:left-0 pointer-coarse:before:-right-6 pointer-coarse:before:content-['']",
+        "pointer-coarse:before:absolute pointer-coarse:before:inset-y-0 pointer-coarse:before:left-0 pointer-coarse:before:-right-6 pointer-coarse:before:content-['']",
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
         selected
           ? 'bg-accent text-accent-ink'
@@ -52,7 +51,7 @@ export default function LineCommentGutter({ line, side, noun = 'line', selected,
           ),
       )}
     >
-      <span aria-hidden="true" className="relative z-raised inline-flex h-full w-full items-center justify-center">+</span>
+      <span aria-hidden="true">+</span>
     </button>
   )
 }

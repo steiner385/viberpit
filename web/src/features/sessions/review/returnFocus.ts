@@ -31,6 +31,16 @@ export function gutterButton(root: Element, side: Side, n: number): HTMLElement 
 }
 
 /**
+ * The last resort for a flow inside one file's section of the Changes tab: that
+ * file's header (`[data-file]` / `[data-file-header]`), else the tab's own root
+ * (`[data-review-root]`, focusable). Null outside the tab (a bare diff).
+ */
+export function fileOrTabFallback(el: Element): HTMLElement | null {
+  return el.closest('[data-file]')?.querySelector<HTMLElement>('[data-file-header]')
+    ?? el.closest<HTMLElement>('[data-review-root]')
+}
+
+/**
  * Where focus goes after deleting comment `id`: the next card's Edit button, in
  * reading order, else `fallback`. Call it BEFORE the delete renders — the next
  * card is found now; it is keyed, so it is the same node after. A card mid-edit

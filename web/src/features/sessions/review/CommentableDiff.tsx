@@ -5,7 +5,7 @@ import type { DiffHunk } from '../diff/types'
 import CommentEditor, { CommentCard, StaleAnchor } from './CommentEditor'
 import { anchorMatches, lineKey, lineKeys, lineNo, onSide, quoteOf, type Side } from './diffAnchors'
 import LineCommentGutter, { GutterSpacer } from './LineCommentGutter'
-import { afterDelete, gutterButton, useReturnFocus } from './returnFocus'
+import { afterDelete, fileOrTabFallback, gutterButton, useReturnFocus } from './returnFocus'
 import type { CommentAnchor, LineComment } from './reviewComments'
 
 /**
@@ -43,7 +43,8 @@ interface Props extends Omit<ComponentProps<typeof DiffRenderer>, 'decorations' 
  *
  * Focus returns to the range's gutter button when the editor closes (Save or
  * Cancel), and after a delete to the next card's Edit button, else the deleted
- * comment's gutter button.
+ * comment's gutter button, else (a stale or past-cap card) the file's header,
+ * else the Changes tab itself.
  *
  * Lives in the Changes tab's chunk; the transcript's inline diffs use the bare
  * renderer and never load it.
@@ -89,7 +90,8 @@ export default function CommentableDiff({ comments, onAddComment, onEditComment,
     <CommentCard key={c.id} comment={c} stale={stale}
                  onEdit={(b) => onEditComment(c.id, b)}
                  onDelete={() => {
-                   returnFocus(afterDelete(root.current, c.id, (r) => gutterButton(r, c.anchor.side, c.anchor.end)))
+                   returnFocus(afterDelete(root.current, c.id,
+                     (r) => gutterButton(r, c.anchor.side, c.anchor.end) ?? fileOrTabFallback(r)))
                    onDeleteComment(c.id)
                  }} />
   ), [onEditComment, onDeleteComment, root, returnFocus])
@@ -173,12 +175,11 @@ export default function CommentableDiff({ comments, onAddComment, onEditComment,
  * left edge and capped at the frame's visible width (`100cqw` — a `%` would
  * resolve against the `w-max` unified rows, and a long comment would widen
  * them past a phone's screen), so a wide diff scrolled sideways never carries
- * them out of view or clips them. `z-raised` keeps a touch gutter's hit area
- * (`LineCommentGutter`) from reaching over the cards.
+ * them out of view or clips them.
  */
 function Slot({ children }: { children: ReactNode }) {
   return (
-    <div data-comment-slot className="sticky left-0 z-raised w-full min-w-0 max-w-[min(100cqw,40rem)] space-y-1 px-2 py-1">
+    <div data-comment-slot className="sticky left-0 w-full min-w-0 max-w-[min(100cqw,40rem)] space-y-1 px-2 py-1">
       {children}
     </div>
   )

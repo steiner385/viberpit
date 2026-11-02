@@ -113,7 +113,7 @@ export default function ChangesTab({ sessionId, onSendReview }: {
   }
 
   return (
-    <div ref={root} tabIndex={-1} className="flex h-full min-h-0 min-w-0 flex-col focus:outline-none" data-testid="changes-tab">
+    <div ref={root} tabIndex={-1} data-review-root className="flex h-full min-h-0 min-w-0 flex-col focus:outline-none" data-testid="changes-tab">
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-edge bg-canvas px-3 py-1">
         <div role="group" aria-label="Diff layout" className="flex rounded-md border border-edge">
           {(['unified', 'split'] as const).map((mode) => (
@@ -264,7 +264,7 @@ function FileSection({ file, view, open, onToggle, truncated, comments, review }
 }) {
   const name = file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path
   return (
-    <section className="min-w-0 rounded-md border border-edge">
+    <section data-file className="min-w-0 rounded-md border border-edge">
       <button
         type="button"
         data-file-header

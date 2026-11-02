@@ -123,25 +123,21 @@ test.describe('Sessions list-controls touch targets — desktop mouse', () => {
 /**
  * D-5: the Changes tab's per-line comment gutter. Its visible glyph is the same
  * 20px square on every pointer, so a diff row stays one 20px line; on a coarse
- * pointer an invisible `::before` widens the HIT area to 44×44 (12px above and
- * below, 24px rightward over the line numbers) and the glyph is always shown,
- * since a touch screen has no hover to reveal it.
+ * pointer an invisible `::before` widens the HIT area to 44px (rightward over
+ * the line numbers) at the row's own height — taller would overlap the next
+ * row and misdirect taps (docs/ACCESSIBILITY.md §4) — and the glyph is always
+ * shown, since a touch screen has no hover to reveal it.
  */
 const CHANGES_SID = 'touch-changes'
 const CHANGES_DIFF = {
-  base: '0123456789abcdef0123456789abcdef01234567', head: null, additions: 3, deletions: 1, truncated: false,
+  base: '0123456789abcdef0123456789abcdef01234567', head: null, additions: 2, deletions: 1, truncated: false,
   files: [{
-    path: 'src/a.ts', oldPath: null, status: 'modified', additions: 3, deletions: 1, binary: false, tooLarge: false,
-    // The middle hunk is ONE line between two hunk headers, so no neighbour's hit
-    // area reaches into the 44px box measured around it.
+    path: 'src/a.ts', oldPath: null, status: 'modified', additions: 2, deletions: 1, binary: false, tooLarge: false,
     hunks: [
       { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, header: '', lines: [
         { kind: 'context', oldNo: 1, newNo: 1, text: 'keep' },
         { kind: 'del', oldNo: 2, newNo: null, text: 'old' },
         { kind: 'add', oldNo: null, newNo: 2, text: 'new' },
-      ] },
-      { oldStart: 10, oldLines: 0, newStart: 10, newLines: 1, header: '', lines: [
-        { kind: 'add', oldNo: null, newNo: 10, text: 'ten' },
       ] },
       { oldStart: 20, oldLines: 1, newStart: 20, newLines: 2, header: '', lines: [
         { kind: 'context', oldNo: 20, newNo: 20, text: 'twenty' },
@@ -178,13 +174,13 @@ async function expectNoPageOverflow(page: Page) {
 test.describe('Changes tab comment gutter — phone, coarse pointer', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
 
-  test('rows stay one line tall; each gutter glyph is visible with a 44×44 hit area', async ({ page }) => {
+  test('rows stay one line tall; each gutter has a 44px-wide, row-high hit area that never reaches a neighbour', async ({ page }) => {
     await openChanges(page)
     const buttons = page.getByRole('button', { name: /^Comment on (removed )?line \d+$/ })
     await expect(buttons.first()).toBeVisible()
     expect(await buttons.count()).toBeGreaterThanOrEqual(5)
 
-    // Row height unchanged by the touch target: one 20px line (≤ 24px).
+    // (c) Row height unchanged by the touch target: one 20px line (≤ 24px).
     for (const row of await page.locator('[data-diff-row]').all()) {
       expect((await targetBox(row)).height).toBeLessThanOrEqual(24)
     }
@@ -196,36 +192,22 @@ test.describe('Changes tab comment gutter — phone, coarse pointer', () => {
       expect(await b.evaluate((el) => getComputedStyle(el).opacity)).toBe('1')
     }
 
-    // The hit area: points 11px past the glyph still land on the button —
-    // 12px above, 12px below, 24px to the right: 44×44 in all.
-    const target = page.getByRole('button', { name: 'Comment on line 10' })
-    const g = await targetBox(target)
-    const cx = g.x + g.width / 2
-    const cy = g.y + g.height / 2
-    const probes: Array<[number, number]> = [
-      [cx, g.y - 11], // above
-      [cx, g.y + g.height + 11], // below
-      [g.x + g.width + 23, cy], // right (over the line numbers)
-      [g.x + 1, g.y - 11], // top-left corner of the 44px box
-      [g.x + g.width + 23, g.y + g.height + 11], // bottom-right corner
-    ]
-    for (const [x, y] of probes) {
-      const hit = await page.evaluate(([px, py]) => {
-        const el = document.elementFromPoint(px, py)
-        return el?.closest('button')?.getAttribute('aria-label') ?? null
-      }, [x, y])
-      expect(hit, `hit at (${x}, ${y})`).toBe('Comment on line 10')
-    }
+    const hitAt = (x: number, y: number) => page.evaluate(([px, py]) =>
+      document.elementFromPoint(px, py)?.closest('button')?.getAttribute('aria-label') ?? null, [x, y])
 
-    // In a dense stack, every visible glyph still owns its own centre: the next
-    // row's hit area reaches up over it but paints beneath it.
-    for (const b of await buttons.all()) {
-      const box = await targetBox(b)
-      const label = await b.getAttribute('aria-label')
-      const hit = await page.evaluate(([px, py]) =>
-        document.elementFromPoint(px, py)?.closest('button')?.getAttribute('aria-label') ?? null,
-      [box.x + box.width / 2, box.y + box.height - 2])
-      expect(hit).toBe(label)
+    // (a) A middle row of a dense stack (`removed line 2`, between `line 1` and
+    // `line 2`) and the first row: taps across the row's line-number column —
+    // its top, middle and bottom third — land on THAT row's button, never a
+    // neighbour's. The first row's area is not clipped by the frame either.
+    for (const label of ['Comment on removed line 2', 'Comment on line 1']) {
+      const g = await targetBox(page.getByRole('button', { name: label, exact: true }))
+      for (const x of [g.x + g.width + 4, g.x + g.width + 12, g.x + g.width + 20]) {
+        for (const y of [g.y + 2, g.y + g.height / 2, g.y + g.height - 2]) {
+          expect(await hitAt(x, y), `${label} at (${x}, ${y})`).toBe(label)
+        }
+      }
+      // (b) The hit area is at least 44px wide: its far edge still hits.
+      expect(await hitAt(g.x + 43, g.y + g.height / 2)).toBe(label)
     }
 
     await expectNoPageOverflow(page)

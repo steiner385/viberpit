@@ -51,7 +51,7 @@ export default function PlanStepLines({ text, comments, onChange }: {
               <span className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]">{line}</span>
             </div>
             {(saved.length > 0 || open === n) && (
-              <div className="relative z-raised my-1 ml-2 flex min-w-0 flex-col gap-1">
+              <div className="my-1 ml-2 flex min-w-0 flex-col gap-1">
                 {saved.map((c) => (
                   <CommentCard key={c.id} comment={c}
                     onEdit={(body) => onChange(comments.map((x) => (x.id === c.id ? { ...x, body } : x)))}
