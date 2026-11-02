@@ -1,11 +1,14 @@
 from __future__ import annotations
 import asyncio, logging, os, uuid as _uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from viberpit import paths as _paths
 from server.mcp_spec import is_mcp_tool
-from server.permission_rules.patterns import NEVER_RULED_TOOLS, unwrap_shell
+from server.permission_rules.patterns import (
+    NEVER_RULED_TOOLS, is_protected_path, tool_path_arg, unwrap_shell, worktree_rel_path,
+)
 
 if TYPE_CHECKING:
     from server.permission_rules.gate import StandingRuleGate
@@ -109,6 +112,23 @@ def _is_account_memory_path(file_path) -> bool:
     return len(parts) >= 5 and parts[1] == "projects" and parts[3] == "memory"
 
 
+def write_target_inside_worktree(tool: str, input: Mapping[str, Any], cwd: str | None) -> bool:
+    """True when a file-write tool's target lies inside the session worktree *cwd* and
+    is not a protected path — the boundary ``acceptEdits`` auto-approves within (#3217).
+
+    Fails closed: anything not provably inside answers False, and the caller then
+    falls through to the standing-rule check and a card (never an outright deny).
+    Containment is ``patterns.worktree_rel_path`` — the same resolution standing rules
+    use (tool-keyed path, realpath + commonpath, no ``..``/``~``/NUL, no cwd = None).
+    ``patterns.is_protected_path`` then excludes ``.git`` and every file the Claude CLI
+    itself escalates even under ``acceptEdits`` (``.claude/**``, ``.mcp.json``,
+    ``.envrc``, ``.husky/**``, shell rc files, …): the CLI only asks about an in-cwd
+    write when it hits that list, so approving it here would undo the escalation.
+    """
+    rel = worktree_rel_path(tool, input, cwd)
+    return rel is not None and not is_protected_path(rel)
+
+
 class PermissionRegistry:
     """
     Lifecycle invariant: pending permission Futures are resolved to False ONLY by
@@ -201,7 +221,8 @@ class PermissionRegistry:
         return list(rec.get("suggestions") or []) if rec else []
 
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, identity,
-                      items: list[str] | None = None, parent_tool_use_id: str | None = None):
+                      items: list[str] | None = None, parent_tool_use_id: str | None = None,
+                      cwd: str | None = None):
         # Our own MCP server (`mcp__viberpit__*`, and `mcp__ccswitch__*` from
         # before the rebrand) is the app talking to
         # itself, not a third-party integration trusted unconditionally like the
@@ -268,8 +289,7 @@ class PermissionRegistry:
         # so they are pure bookkeeping noise the user should never have to approve.
         # Unlike a standing rule, "ask each time" does not apply here —
         # there is no user-facing action to ask about.
-        if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
-                input.get("file_path") or input.get("notebook_path")):
+        if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(tool_path_arg(tool, input)):
             return None, _resolved(True), True
         # Auto-allow MCP tools (`mcp__<server>__<tool>`) in EVERY mode, including
         # "interactive".  The operator opted into trusting MCP unconditionally, so a
@@ -289,12 +309,20 @@ class PermissionRegistry:
             # they are not on the DANGEROUS denylist.
             return None, _resolved(True), True
         if mode == "acceptEdits" and tool in _FILE_WRITE_TOOLS:
-            # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit); every other
-            # tool still prompts. Mirrors the SDK's acceptEdits semantics and is the
-            # default for unattended automation sessions (issue #750): an agent editing
-            # its own worktree proceeds without a human, while shell/network calls — a
+            # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit) ONLY inside the
+            # session worktree *cwd*, never to a protected path (`.git`, `.claude/**`,
+            # `.mcp.json`, `.envrc`, `.husky/**`, …) (#3217); every other tool still
+            # prompts. acceptEdits is a human-chosen mode, or comes from an account pin
+            # or a global default. The CLI approves ordinary in-worktree edits itself, so
+            # only out-of-worktree writes and the CLI-escalated dangerous paths reach this
+            # branch, and the boundary decides those: a write anywhere else (~/.bashrc,
+            # another repo, .git/hooks, .claude/settings) and shell/network calls — a
             # materially larger blast radius — remain gated.
-            return None, _resolved(True), True
+            # Outside the boundary this falls through to the standing-rule check and
+            # a card below; it never denies outright.
+            if write_target_inside_worktree(tool, input, cwd):
+                return None, _resolved(True), True
+            log.info("perm.accept_edits.outside_worktree session=%s tool=%s", session_id, tool)
         # A standing "always allow" rule is checked in EVERY mode, including interactive:
         # it is an explicit human decision (spec 2026-10-11 §3.1), unlike the old
         # per-session grant cache that "ask each time" overrode. Only reached where a

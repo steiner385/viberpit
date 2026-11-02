@@ -994,7 +994,7 @@ class ClaudeAgentDriver:
         perm_id, fut, always_allowed = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, identity=self.identity,
-            items=items, parent_tool_use_id=pid)
+            items=items, parent_tool_use_id=pid, cwd=self.cwd)
         if perm_id is not None:
             self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),

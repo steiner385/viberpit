@@ -61,7 +61,13 @@ exception (see Standing rules).
   truth: `interactive` (prompt every call), `auto` (auto-approve everything except a dangerous
   denylist — Bash/Edit/Write/MultiEdit/NotebookEdit/WebFetch/WebSearch), `allowlist` (auto-approve
   read-only Read/Grep/Glob/LS, prompt the rest), `full-auto` (auto-approve all incl. shell),
-  `acceptEdits` (auto-approve file writes, prompt shell/network), and `bypassPermissions`.
+  `acceptEdits` (auto-approve Edit/Write/MultiEdit/NotebookEdit only when the target resolves inside the
+  session worktree and is not a protected path such as `.git`, `.claude/**`, `.mcp.json`, shell rc
+  files or `.envrc` (`PROTECTED_PATHS`); for Claude sessions, protected entries not on the CLI's own
+  escalation list (e.g. `.env`, `*.pem`, `secrets/**`, `credentials*`) are approved by the CLI itself
+  and never reach ViberPit; a protected target can never be covered by a standing rule, so it shows a
+  card every time; paths with `..` or `~` fall through to standing rules and a
+  permission card, as do shell/network calls), and `bypassPermissions`.
   `permissions.py::PermissionRegistry` enforces these; `to_sdk_permission_mode()` maps them onto the
   SDK's own `default`/`plan`/`acceptEdits`/`bypassPermissions` (#758, #232, #200/#84 auto-memory).
 - **Permission card and plan approval (D-2).** A non-plan card offers Allow once, Allow for this
