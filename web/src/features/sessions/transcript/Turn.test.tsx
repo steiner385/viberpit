@@ -1,5 +1,6 @@
 import { beforeAll, describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 const feedbackMutate = vi.fn()
 vi.mock('@/api/assistant', () => ({
@@ -288,5 +289,38 @@ describe('Turn share_artifact rendering', () => {
     expect(screen.getByText('PR #7')).toBeInTheDocument()
     // Only the two Reads are collapsible tool rows; the artifact has no details toggle.
     expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(2)
+  })
+})
+
+describe('Turn under a transcript view mode', () => {
+  const thinking = (id: string, text: string): Block => ({ kind: 'thinking', id, text })
+  const toggles = () => screen.getAllByRole('button', { name: /^thinking$/i })
+
+  it('a thinking block appended while streaming under Thinking renders open', () => {
+    const first = makeTurn([thinking('th-1', 'first')])
+    const { rerender } = render(
+      <Turn turn={first} isLastTurn toolDetailMode="auto" thinkingCollapsed={false} viewModeEpoch={1} onAnswer={noop} />,
+    )
+    const grown = makeTurn([thinking('th-1', 'first'), thinking('th-2', 'second')])
+    rerender(
+      <Turn turn={grown} isLastTurn toolDetailMode="auto" thinkingCollapsed={false} viewModeEpoch={1}
+        streamingBlockId="th-2" onAnswer={noop} />,
+    )
+    expect(toggles()).toHaveLength(2)
+    for (const t of toggles()) expect(t).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('a new epoch re-applies the mode default to a block the user toggled', async () => {
+    const user = userEvent.setup()
+    const turn = makeTurn([thinking('th-1', 'first')])
+    const { rerender } = render(
+      <Turn turn={turn} isLastTurn toolDetailMode="auto" thinkingCollapsed={false} viewModeEpoch={1} onAnswer={noop} />,
+    )
+    await user.click(toggles()[0])
+    expect(toggles()[0]).toHaveAttribute('aria-expanded', 'false')
+    rerender(
+      <Turn turn={turn} isLastTurn toolDetailMode="all-open" thinkingCollapsed={false} viewModeEpoch={2} onAnswer={noop} />,
+    )
+    expect(toggles()[0]).toHaveAttribute('aria-expanded', 'true')
   })
 })

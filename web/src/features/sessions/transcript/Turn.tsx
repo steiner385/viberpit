@@ -25,6 +25,9 @@ interface Props {
   isLastTurn: boolean
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
+  /** The runtime's `viewModeEpoch` — every block's `resetKey` (a view-mode change
+   *  re-applies the mode's defaults over manual toggles). */
+  viewModeEpoch?: number
   /** Id of the block currently being streamed live (defers diagram rendering);
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
@@ -55,7 +58,7 @@ interface Props {
 const PROSE_MEASURE = 'max-w-[70ch]'
 
 export const Turn = memo(function Turn({
-  turn, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
+  turn, isLastTurn, toolDetailMode, thinkingCollapsed, viewModeEpoch = 0, streamingBlockId = null,
   onAnswer, subAgents, sessionModel, variant = 'session', onAsk,
 }: Props) {
   const isUser = turn.role === 'user'
@@ -99,6 +102,7 @@ export const Turn = memo(function Turn({
                 isLiveTail={isLiveTail}
                 toolDetailMode={toolDetailMode}
                 thinkingCollapsed={thinkingCollapsed}
+                resetKey={viewModeEpoch}
                 subAgents={subAgents}
                 sessionModel={sessionModel}
               />
@@ -133,10 +137,10 @@ export const Turn = memo(function Turn({
               ? <AutomatedPrompt origin={turn.origin} images={block.images} />
               : <UserBubble images={block.images} />}</BlockRow>
           case 'thinking':
-            return <BlockRow key={block.id} ts={rowTs}><ThinkingBlock text={block.text} defaultCollapsed={thinkingCollapsed} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><ThinkingBlock text={block.text} defaultCollapsed={thinkingCollapsed} resetKey={viewModeEpoch} /></BlockRow>
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <BlockRow key={block.id} ts={rowTs}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} subThread={subAgents?.[block.toolId]} sessionModel={sessionModel} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} resetKey={viewModeEpoch} subThread={subAgents?.[block.toolId]} sessionModel={sessionModel} /></BlockRow>
           case 'question':
             // A LIVE open question is rendered by the pinned PendingQuestionPanel
             // above the composer — omit it inline to avoid a duplicate. Historical

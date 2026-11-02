@@ -9,6 +9,8 @@ interface ToolGroupProps {
   toolDetailMode: ToolDetailMode
   /** Persisted default for whether thinking blocks start collapsed (threaded to nested sub-agent turns). */
   thinkingCollapsed?: boolean
+  /** The runtime's `viewModeEpoch`, passed to each row as `resetKey`. */
+  resetKey?: number
   /** Sub-agent threads keyed by the spawning Task toolId (for nested rendering). */
   subAgents?: Record<string, SubThread>
   /** The session's current model — threaded to badge subagents on a different model. */
@@ -22,7 +24,7 @@ interface ToolGroupProps {
  * global `toolDetailMode` force-opens/closes every result panel; in 'auto' only
  * the live tail's most recent tool auto-opens its output.
  */
-export function ToolGroup({ tools, isLiveTail, toolDetailMode, thinkingCollapsed, subAgents, sessionModel }: ToolGroupProps) {
+export function ToolGroup({ tools, isLiveTail, toolDetailMode, thinkingCollapsed, resetKey, subAgents, sessionModel }: ToolGroupProps) {
   return (
     <div className="my-0.5">
       {tools.map((t, i) => (
@@ -32,6 +34,7 @@ export function ToolGroup({ tools, isLiveTail, toolDetailMode, thinkingCollapsed
           density="line"
           toolDetailMode={toolDetailMode}
           thinkingCollapsed={thinkingCollapsed}
+          resetKey={resetKey}
           defaultResultOpen={isLiveTail && i === tools.length - 1}
           subThread={subAgents?.[t.toolId]}
           sessionModel={sessionModel}

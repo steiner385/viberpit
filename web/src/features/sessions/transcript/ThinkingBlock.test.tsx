@@ -60,3 +60,33 @@ describe('ThinkingBlock defaultCollapsed', () => {
     expect(screen.getByRole('button', { name: /thinking/i })).toHaveAttribute('aria-expanded', 'true')
   })
 })
+
+describe('ThinkingBlock resetKey (a view-mode change)', () => {
+  const toggle = () => screen.getByRole('button', { name: /thinking/i })
+
+  it('is closed under Normal and opens when the epoch bumps to Thinking', () => {
+    const { rerender } = render(<ThinkingBlock text="t" defaultCollapsed={true} resetKey={0} />)
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+    rerender(<ThinkingBlock text="t" defaultCollapsed={false} resetKey={1} />)
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('a manual toggle survives a re-render with the same epoch', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<ThinkingBlock text="t" defaultCollapsed={false} resetKey={1} />)
+    await user.click(toggle())
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+    rerender(<ThinkingBlock text="t more" defaultCollapsed={false} resetKey={1} />)
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('a manual collapse sticks until the next epoch, which re-applies the mode default', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<ThinkingBlock text="t" defaultCollapsed={false} resetKey={1} />)
+    await user.click(toggle())
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+    // Thinking → Verbose: both open thinking, so only the epoch changes.
+    rerender(<ThinkingBlock text="t" defaultCollapsed={false} resetKey={2} />)
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true')
+  })
+})

@@ -27,6 +27,7 @@ import type { UsageWindow, RulePreview, GrantResult, RuleScope } from '@/api/typ
 import { api, apiErrorCode, apiErrorDetail } from '@/api/client'
 import { usageWindows } from '@/lib/usageWindows'
 import type { ToolDetailMode } from '@/session/groupBlocks'
+import { nextViewMode, resolveViewMode, type TranscriptViewMode } from '@/session/viewMode'
 import { fetchOlderTurns } from '@/api/transcript'
 
 // Dispatch payload for attached images: the DB-backed attachment ids.
@@ -44,8 +45,17 @@ export interface SessionRuntime {
   mode: string
   /** Requested change awaiting a native acknowledgement; never the effective mode. */
   pendingMode?: string | null
+  /** Resolved from the Settings through the current `viewMode` (`session/viewMode.ts`). */
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
+  /** The transcript view mode — per session, never persisted, Normal on every session open. */
+  viewMode: TranscriptViewMode
+  setViewMode: (mode: TranscriptViewMode) => void
+  /** Advance Normal → Thinking → Verbose → Normal (Ctrl/⌘+O). */
+  cycleViewMode: () => void
+  /** Bumps on every view-mode change. Blocks take it as `resetKey`, so a mode change
+   *  re-applies the mode's defaults over a manual toggle; later toggles stick. */
+  viewModeEpoch: number
   connectionState: ConnectionState
   /** Re-send the attach frame for this session (used to recover a stuck load). */
   reattach: () => void
@@ -505,8 +515,26 @@ export function useSessionRuntime(
   // Account: the session record's account, overridden by the latest rotation.
   const { data: accounts } = useAccounts()
   const { data: appSettings } = useSettings()
-  const toolDetailMode: ToolDetailMode = appSettings?.defaultToolDetail ?? 'auto'
-  const thinkingCollapsed = appSettings?.thinkingCollapsed ?? true
+  // The view mode is keyed by session id (like `modeState` above), so opening a
+  // different session reads as Normal without an effect. The epoch is not reset:
+  // it only has to differ from the last value a mounted block saw.
+  const [viewModeState, setViewModeState] = useState<{ sessionId: string; mode: TranscriptViewMode; epoch: number }>(
+    { sessionId, mode: 'normal', epoch: 0 },
+  )
+  const viewMode: TranscriptViewMode = viewModeState.sessionId === sessionId ? viewModeState.mode : 'normal'
+  const changeViewMode = useCallback((next: (current: TranscriptViewMode) => TranscriptViewMode) => {
+    setViewModeState((v) => {
+      const current = v.sessionId === sessionId ? v.mode : 'normal'
+      const mode = next(current)
+      return mode === current ? v : { sessionId, mode, epoch: v.epoch + 1 }
+    })
+  }, [sessionId])
+  const setViewMode = useCallback((m: TranscriptViewMode) => changeViewMode(() => m), [changeViewMode])
+  const cycleViewMode = useCallback(() => changeViewMode(nextViewMode), [changeViewMode])
+  const { toolDetailMode, thinkingCollapsed } = resolveViewMode(viewMode, {
+    defaultToolDetail: appSettings?.defaultToolDetail ?? 'auto',
+    thinkingCollapsed: appSettings?.thinkingCollapsed ?? true,
+  })
 
   // Re-attach when this session leaves a PRE-SPAWN state (`pending_approval` /
   // `queued`) while the view is open. The mount-time attach above ran BEFORE the
@@ -628,6 +656,10 @@ export function useSessionRuntime(
     pendingMode,
     toolDetailMode,
     thinkingCollapsed,
+    viewMode,
+    setViewMode,
+    cycleViewMode,
+    viewModeEpoch: viewModeState.epoch,
     connectionState,
     reattach,
     title,

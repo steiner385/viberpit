@@ -16,6 +16,7 @@ import { StatusBar } from './StatusBar'
 import { SessionRulesReadout } from './SessionRulesReadout'
 import { DeferredMcpStatusReadout } from './DeferredMcpStatusReadout'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
+import { ViewModeMenu } from '@/features/sessions/transcript/ViewModeMenu'
 import { SessionPlaceholder } from '@/features/sessions/transcript/SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
 import { CondensingProgress } from '@/features/sessions/transcript/CondensingProgress'
@@ -100,6 +101,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
           mcpSlot={<DeferredMcpStatusReadout sessionId={rt.sessionId} account={rt.account} live={rt.state.mcpServers} />}
           rulesSlot={<SessionRulesReadout sessionId={rt.sessionId} />}
+          viewModeSlot={<ViewModeMenu mode={rt.viewMode} onSelect={rt.setViewMode} />}
           exportSlot={<ExportMenu sessionId={rt.sessionId} />}
           actionsSlot={actionsSlot}
           accounts={accounts.map((a) => ({ name: a.name, nickname: a.nickname }))}
@@ -150,6 +152,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 model={rt.state.model}
                 toolDetailMode={rt.toolDetailMode}
                 thinkingCollapsed={rt.thinkingCollapsed}
+                viewModeEpoch={rt.viewModeEpoch}
                 // Only the live-open block streams as plain text; during replay the open
                 // id is meaningless, so suppress it and render everything as markdown.
                 streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}

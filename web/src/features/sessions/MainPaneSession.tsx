@@ -108,6 +108,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
     hasDeniablePermission: deniablePermId !== null,
     denyOldestPermission: () => { if (deniablePermId !== null) rt.onDecision(deniablePermId, 'deny') },
     onDetach: () => leave(onDetach),
+    onCycleView: rt.cycleViewMode,
   })
 
   return (

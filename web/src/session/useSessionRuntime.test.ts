@@ -584,3 +584,32 @@ describe('useSessionRuntime rule callbacks', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['permission-rules'] })
   })
 })
+
+describe('useSessionRuntime transcript view mode', () => {
+  it('starts Normal; set/cycle change it and bump the epoch each time', () => {
+    const { result } = renderHook(() => useSessionRuntime('vsess1'), { wrapper })
+    expect(result.current.viewMode).toBe('normal')
+    const e0 = result.current.viewModeEpoch
+    act(() => { result.current.cycleViewMode() })
+    expect(result.current.viewMode).toBe('thinking')
+    expect(result.current.thinkingCollapsed).toBe(false)
+    expect(result.current.viewModeEpoch).toBe(e0 + 1)
+    act(() => { result.current.setViewMode('verbose') })
+    expect(result.current.viewMode).toBe('verbose')
+    expect(result.current.toolDetailMode).toBe('all-open')
+    expect(result.current.viewModeEpoch).toBe(e0 + 2)
+    act(() => { result.current.cycleViewMode() })
+    expect(result.current.viewMode).toBe('normal')
+  })
+
+  it('resets to Normal when a different session opens', () => {
+    const { result, rerender } = renderHook(({ id }) => useSessionRuntime(id), {
+      wrapper, initialProps: { id: 'vsess2' },
+    })
+    act(() => { result.current.setViewMode('verbose') })
+    expect(result.current.viewMode).toBe('verbose')
+    rerender({ id: 'vsess3' })
+    expect(result.current.viewMode).toBe('normal')
+    expect(result.current.toolDetailMode).not.toBe('all-open')
+  })
+})

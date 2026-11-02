@@ -25,6 +25,9 @@ interface Props {
   toolDetailMode?: ToolDetailMode
   /** Persisted default for whether thinking blocks start collapsed (threaded to nested sub-agent turns). */
   thinkingCollapsed?: boolean
+  /** The runtime's `viewModeEpoch`: a change drops a manual result toggle and
+   *  re-applies the mode default (also threaded to nested sub-agent turns). */
+  resetKey?: number
   /** When this is a Task tool, the spawned sub-agent's own thread (rendered nested). */
   subThread?: SubThread
   /** The session's current model — used to badge a subagent running on a different model. */
@@ -63,7 +66,7 @@ function toolDisplayName(kind: ToolKind, name: string): string {
  * `_tool_shape`). Reading only `file_path` summarised every Codex edit as an
  * empty string, so both shapes are read here.
  */
-export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, thinkingCollapsed = true, subThread, sessionModel }: Props) {
+export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, thinkingCollapsed = true, resetKey = 0, subThread, sessionModel }: Props) {
   const [argsOpen, setArgsOpen] = useState(false)
   // The global toggle force-overrides the per-row default; 'auto' (or no mode)
   // falls back to defaultResultOpen so only the live tail's latest tool opens.
@@ -72,11 +75,12 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
     : toolDetailMode === 'all-closed' ? false
     : defaultResultOpen
   const [resultOpen, setResultOpen] = useState(modeResultOpen)
-  // Re-sync to the mode default when the global toggle flips (during-render reset),
-  // mirroring ToolGroup's old pattern so expand/collapse-all stays uniform.
-  const [prevMode, setPrevMode] = useState(toolDetailMode)
-  if (prevMode !== toolDetailMode) {
-    setPrevMode(toolDetailMode)
+  // Re-sync to the mode default when the global toggle flips or the view mode
+  // changes (during-render reset), so expand/collapse-all stays uniform and a
+  // view-mode change overrides a manual toggle even when the detail mode is unchanged.
+  const [prevMode, setPrevMode] = useState({ toolDetailMode, resetKey })
+  if (prevMode.toolDetailMode !== toolDetailMode || prevMode.resetKey !== resetKey) {
+    setPrevMode({ toolDetailMode, resetKey })
     setResultOpen(modeResultOpen)
   }
   const [subOpen, setSubOpen] = useState(false)
@@ -152,6 +156,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
                   isLastTurn={false}
                   toolDetailMode={toolDetailMode ?? 'auto'}
                   thinkingCollapsed={thinkingCollapsed}
+                  viewModeEpoch={resetKey}
                   onAnswer={() => {}}
                 />
               ))}
@@ -235,6 +240,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
                 isLastTurn={false}
                 toolDetailMode={toolDetailMode ?? 'auto'}
                 thinkingCollapsed={thinkingCollapsed}
+                viewModeEpoch={resetKey}
                 onAnswer={() => {}}
               />
             ))}

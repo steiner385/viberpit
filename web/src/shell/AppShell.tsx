@@ -348,6 +348,7 @@ function AppShellInner() {
       'insession.modelMenu': () => promptMenus.current?.openModel(),
       'insession.effortMenu': () => promptMenus.current?.openEffort(),
       'insession.denyPermission': () => gestures.current?.denyOldestPermission(),
+      'insession.cycleView': () => gestures.current?.onCycleView(),
     },
   )
 

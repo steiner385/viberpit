@@ -705,6 +705,67 @@ describe('⌘. / Ctrl+. denies the oldest pending permission', () => {
   })
 })
 
+// ── Ctrl/⌘+O cycles the transcript view mode ─────────────────────────────────
+
+describe('Ctrl/⌘+O cycles the transcript view mode', () => {
+  const viewTrigger = () => screen.getByRole('button', { name: /^View:/ })
+
+  it('cycles Normal → Thinking → Verbose → Normal on the open session', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    expect(viewTrigger()).toHaveAccessibleName('View: Normal')
+    railLink().focus()
+    await user.keyboard('{Control>}o{/Control}')
+    expect(viewTrigger()).toHaveAccessibleName('View: Thinking')
+    await user.keyboard('{Meta>}o{/Meta}')
+    expect(viewTrigger()).toHaveAccessibleName('View: Verbose')
+    await user.keyboard('{Control>}o{/Control}')
+    expect(viewTrigger()).toHaveAccessibleName('View: Normal')
+  })
+
+  it('still cycles while typing in the session composer, and keeps the draft', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    await user.type(composer(), 'wip')
+    const ev = new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, bubbles: true, cancelable: true })
+    act(() => { composer().dispatchEvent(ev) })
+    expect(ev.defaultPrevented).toBe(true)
+    expect(viewTrigger()).toHaveAccessibleName('View: Thinking')
+    expect(composer().value).toBe('wip')
+  })
+
+  it('does nothing with the assistant drawer open over the session', async () => {
+    renderApp({ path: '/sessions/s1?drawer=assistant', mode: 'desktop' })
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /assistant/i })).toHaveAttribute('aria-modal', 'true'))
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'o', ctrlKey: true, bubbles: true, cancelable: true })
+    expect(screen.getByRole('button', { name: /^View:/, hidden: true })).toHaveAccessibleName('View: Normal')
+  })
+
+  it('does nothing from another text entry (the list search); the session composer still cycles', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    await user.type(search, 'abc')
+    const fromSearch = new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, bubbles: true, cancelable: true })
+    act(() => { search.dispatchEvent(fromSearch) })
+    expect(fromSearch.defaultPrevented).toBe(false)
+    expect(viewTrigger()).toHaveAccessibleName('View: Normal')
+    await user.click(composer())
+    await user.keyboard('{Control>}o{/Control}')
+    expect(viewTrigger()).toHaveAccessibleName('View: Thinking')
+  })
+
+  it('does nothing without a session open', async () => {
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    const ev = new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, bubbles: true, cancelable: true })
+    act(() => { railLink().dispatchEvent(ev) })
+    expect(ev.defaultPrevented).toBe(false)
+  })
+})
+
 // ── an open menu owns Escape ─────────────────────────────────────────────────
 
 describe('Escape closes an open menu instead of detaching', () => {
