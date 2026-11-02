@@ -125,8 +125,8 @@ from server.sessions.failure import classify as classify_failure
 from server.sessions.failure import log_level as failure_log_level
 from server.sessions.model_policy import quota_model
 from server.sessions import orphan_cli as _orphan_cli
-from server.sessions.orphaned_asks import (CLOSE_REASON_RESTART, orphaned_answer_prompt,
-                                           orphaned_ask_kind)
+from server.sessions.orphaned_asks import (CLOSE_REASON_RESTART, QUESTION_MODE_AUTOPILOT,
+                                           orphaned_answer_prompt, orphaned_ask_kind)
 from server.sessions.draft_hold_guard import DraftReadyGrants, SessionGrants
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
@@ -15768,7 +15768,8 @@ class SessionOrchestrator:
                 selected = ([] if opt is None else
                             [str(opt.get("label", "")) if isinstance(opt, dict) else str(opt)])
                 ok = bool(await self.answer_question(
-                    session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
+                    session_id, stuck["question_id"], selected, SYSTEM_IDENTITY,
+                    QUESTION_MODE_AUTOPILOT))
             elif act == "nudge" and decision.prompt:
                 if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
                     return False

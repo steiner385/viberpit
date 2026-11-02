@@ -425,7 +425,7 @@ def test_apply_answer_passes_the_option_label_not_the_option_dict(tmp_path):
         assert await orch._autopilot_apply(
             "s1", Decision(action="answer", answer_index=1),
             _question_ctx("Q1", opts)) is True
-        assert seen == [("Q1", ["Option B"], "option")]
+        assert seen == [("Q1", ["Option B"], "autopilot")]
     asyncio.run(run())
 
 

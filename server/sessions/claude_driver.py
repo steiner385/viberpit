@@ -37,7 +37,9 @@ from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
                      AgentDriverFactory, AgentEngine, _EffortUnchanged)
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
-from .orphaned_asks import (CLOSE_REASON_RESTART, QUESTION_MODE_INTERRUPTED,
+from .orphaned_asks import (AUTOPILOT_ANSWER_PREFIX, CLOSE_REASON_RESTART,
+                            QUESTION_MODE_AUTOPILOT,
+                            QUESTION_MODE_INTERRUPTED,
                             RESTART_ASK_MESSAGE)
 from .questions import QuestionRegistry
 from .sdk_contract import is_turn_message
@@ -753,6 +755,8 @@ class ClaudeAgentDriver:
     def _format_answer_message(q_text: str, selected: list[str], mode: str) -> str:
         """Single-question deny-message body, framed by answer mode."""
         answer_str = ", ".join(selected)
+        if mode == QUESTION_MODE_AUTOPILOT:
+            return f"{AUTOPILOT_ANSWER_PREFIX} {q_text} → {answer_str}"
         if mode == "chat":
             return f"[User wants to discuss rather than pick an option] {answer_str}"
         if mode == "freeform":
@@ -763,6 +767,8 @@ class ClaudeAgentDriver:
     def _format_answer_line(q_text: str, selected: list[str], mode: str) -> str:
         """Per-question line for the multi-question deny message, framed by mode."""
         answer_str = ", ".join(selected)
+        if mode == QUESTION_MODE_AUTOPILOT:
+            return f"- {q_text} → (autopilot's pick, not the owner's) {answer_str}"
         if mode == "chat":
             return f"- {q_text} → (discussing) {answer_str}"
         if mode == "freeform":
@@ -852,7 +858,10 @@ class ClaudeAgentDriver:
                 msg = self._format_answer_message(q_text, selected, mode)
         else:
             all_dismissed = all(a is None for a in answers)
-            prefix = "[User dismissed the question UI]" if all_dismissed else "[User answered via the question UI]"
+            prefix = ("[User dismissed the question UI]" if all_dismissed
+                      else AUTOPILOT_ANSWER_PREFIX if any(
+                          a is not None and a[1] == QUESTION_MODE_AUTOPILOT for a in answers)
+                      else "[User answered via the question UI]")
             lines = [prefix]
             for q_obj, answer in zip(questions_list, answers):
                 q_text = q_obj.get("question") or ""

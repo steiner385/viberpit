@@ -1543,3 +1543,14 @@ def test_emit_error_puts_errorevent():
     err2 = next(e for e in out2 if isinstance(e, ev.ErrorEvent))
     assert err2.code == "turn_dropped_cap"
     assert err2.turn_id == "turn"  # _turn() fallback when _last_turn_id is empty
+
+
+def test_autopilot_answer_is_not_framed_as_the_owners():
+    """#3216: an autopilot-chosen answer must not read as 'User answered'."""
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.orphaned_asks import QUESTION_MODE_AUTOPILOT
+    one = ClaudeAgentDriver._format_answer_message("Wait?", ["Yes"], QUESTION_MODE_AUTOPILOT)
+    assert "autopilot" in one.lower() and "NOT decided" in one
+    assert "[User answered" not in one
+    line = ClaudeAgentDriver._format_answer_line("Wait?", ["Yes"], QUESTION_MODE_AUTOPILOT)
+    assert "autopilot" in line and "not the owner's" in line

@@ -77,7 +77,8 @@ class QuestionRegistry:
         """Resolve a pending question with the user's selection and answer mode.
 
         ``mode`` is one of "option" (picked a predefined option), "freeform"
-        (typed their own answer to this question), or "chat" (chose to discuss
+        (typed their own answer to this question), "autopilot" (the automation loop
+        picked it, #3216), or "chat" (chose to discuss
         rather than pick). The future resolves to the tuple ``(selected, mode)``;
         ``deny_all`` instead resolves to ``None`` (dismissed sentinel).
 
