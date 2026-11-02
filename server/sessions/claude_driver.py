@@ -2373,8 +2373,11 @@ class ClaudeAgentDriver:
         self._mcp_tool_calls = {}
         self._start_mcp_settle()
 
-    def resolve_permission(self, perm_id, decision, identity) -> bool:
-        return self._reg.resolve(perm_id, decision, identity)
+    def resolve_permission(self, perm_id, decision, identity,
+                           message: str | None = None) -> bool:
+        # A deny ``message`` becomes this card's deny reason, which ``_can_use_tool``
+        # returns to the model as ``PermissionResultDeny(message=...)``.
+        return self._reg.resolve(perm_id, decision, identity, message=message)
 
     async def automation_work_stopped(self) -> bool:
         """Close an observed terminal execution, never infer stop from UI status.

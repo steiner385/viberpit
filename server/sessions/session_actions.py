@@ -316,9 +316,28 @@ async def grant_always(
     return {"rule": rule.to_wire(), "resolvedPermIds": resolved}
 
 
+#: Longest deny message (the plan card's "Keep planning" comment) a decision may carry.
+DENY_MESSAGE_MAX = 4000
+
+
+def _deny_message(decision: str, message: str | None) -> str | None:
+    """Validate a decision's optional message: trimmed, blank means none, deny only,
+    at most :data:`DENY_MESSAGE_MAX` characters."""
+    message = (message or "").strip() or None
+    if message is None:
+        return None
+    if decision != "deny":
+        raise ActionError("MESSAGE_REQUIRES_DENY",
+                          "A message can only accompany a deny decision.", 400)
+    if len(message) > DENY_MESSAGE_MAX:
+        raise ActionError("MESSAGE_TOO_LONG",
+                          f"The message is longer than {DENY_MESSAGE_MAX} characters.", 400)
+    return message
+
+
 async def resolve_permission(
     orch, db, *, session_id: str, perm_id: str, decision: str, identity: str,
-    via: str | None = None,
+    via: str | None = None, message: str | None = None,
 ) -> dict:
     """Answer a pending permission card. ``decision`` is one of allow/deny/always.
 
@@ -328,7 +347,13 @@ async def resolve_permission(
     suggestion (or with the rules kill switch off) it degrades to a plain ``"allow"``, except
     on an engine-managed (Codex) card, where it passes through unchanged and becomes the
     engine's own session-scoped accept. A card that is not pending passes it through to
-    today's 404/403 handling."""
+    today's 404/403 handling.
+
+    ``message`` is optional guidance sent with a ``deny`` (spec 2026-11-01 §6): the
+    model sees it as the deny reason, or — on an engine whose approval protocol has no
+    text — as the next user prompt. It is forwarded only when non-blank, so a caller
+    without one reaches the orchestrator (and an older daemon) exactly as before."""
+    message = _deny_message(decision, message)
     if decision == "always":
         if via == "assistant":
             raise ActionError(
@@ -350,7 +375,11 @@ async def resolve_permission(
                 return {"ok": True}
             if not card.get("engine_managed"):
                 decision = "allow"
-    ok = await orch.resolve_permission(session_id, perm_id, decision, identity)
+    if message is None:
+        ok = await orch.resolve_permission(session_id, perm_id, decision, identity)
+    else:
+        ok = await orch.resolve_permission(session_id, perm_id, decision, identity,
+                                           message=message)
     await orch.note_user_interaction(session_id)
     await _audit(db, "permission." + decision, identity,
                  {"sessionId": session_id, "permId": perm_id}, via)

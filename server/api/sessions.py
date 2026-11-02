@@ -1913,6 +1913,8 @@ async def send_session_prompt(
 
 class PermissionResponseRequest(BaseModel):
     decision: str
+    #: Optional guidance with a ``deny`` (validated in session_actions.resolve_permission).
+    message: str | None = None
 
 
 class QuestionAnswerRequest(BaseModel):
@@ -2054,7 +2056,7 @@ async def resolve_session_permission(
     try:
         return await session_actions.resolve_permission(
             orch, db, session_id=session_id, perm_id=perm_id,
-            decision=body.decision, identity=identity, via=via)
+            decision=body.decision, identity=identity, via=via, message=body.message)
     except ActionError as exc:
         return _action_error_response(exc)
 

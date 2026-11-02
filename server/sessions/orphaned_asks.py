@@ -114,7 +114,8 @@ def _plan_body(decision: object) -> str:
 
 
 def orphaned_answer_prompt(kind: str, answer: list[str] | str, *,
-                           tool: str | None = None, context: str | None = None) -> str:
+                           tool: str | None = None, context: str | None = None,
+                           comment: str | None = None) -> str:
     """The prompt that delivers a user's response to an ask a restart orphaned.
 
     ``kind`` is :func:`orphaned_ask_kind`'s answer. ``answer`` is the selection for a
@@ -133,6 +134,10 @@ def orphaned_answer_prompt(kind: str, answer: list[str] | str, *,
     turn is held back so it cannot consume the card (#2922), and is folded in here
     so the user's answer is the one turn that carries both.
 
+    ``comment`` is the user's message with a deny (the plan card's "Keep planning"
+    guidance); the live path hands it to the model as the deny reason, so the
+    orphaned path carries it right after the decision.
+
     A question's ``answer`` comes straight off client JSON (server/bridge/ws.py
     takes it from the frame unvalidated), so every entry is coerced with ``str()``
     — a non-string entry used to raise TypeError out of the WS message loop and
@@ -148,7 +153,10 @@ def orphaned_answer_prompt(kind: str, answer: list[str] | str, *,
         body = _plan_body(answer)
     else:
         raise ValueError(f"unknown orphaned ask kind {kind!r}")
-    parts = [body, _DISOWN_NOTE]
+    parts = [body]
+    if comment and comment.strip():
+        parts.append(f"My comment: {comment.strip()}")
+    parts.append(_DISOWN_NOTE)
     if context and context.strip():
         parts.append(f"{_CONTEXT_HEADER}\n{context.strip()}")
     return "\n\n".join(parts)

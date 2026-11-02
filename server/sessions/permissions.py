@@ -361,7 +361,19 @@ class PermissionRegistry:
                                                                always_allowed)}
         return pid, fut
 
-    def resolve(self, perm_id, decision, identity) -> bool:
+    def is_engine_managed(self, perm_id: str) -> bool:
+        """True when *perm_id* is a pending :meth:`request_external` card. Its future
+        carries only the raw decision into the engine's own approval protocol, so a
+        deny message cannot ride it (see :meth:`resolve`)."""
+        rec = self._pending.get(perm_id)
+        return bool(rec and rec.get("raw_decision"))
+
+    def resolve(self, perm_id, decision, identity, message: str | None = None) -> bool:
+        """Settle *perm_id* with *decision*. ``message`` on a ``deny`` of an ordinary
+        (Claude) card is recorded as that card's deny reason — the same per-perm store
+        :meth:`deny_all` uses — so the awaiting ``can_use_tool`` hands it to the model
+        as ``PermissionResultDeny(message=...)``. An engine-managed card cannot carry
+        it (:meth:`is_engine_managed`); the orchestrator delivers it as a prompt."""
         rec = self._pending.get(perm_id)
         if rec is None:
             return False
@@ -383,6 +395,8 @@ class PermissionRegistry:
         if decision in ("allow", "always"):
             self._record_draft_ready_grant(rec)
         if not rec["future"].done():
+            if decision == "deny" and message and not raw:
+                self._deny_reasons[perm_id] = (rec["session_id"], message)
             rec["future"].set_result(decision if raw else decision == "allow")
         return True
 

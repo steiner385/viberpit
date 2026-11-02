@@ -1537,8 +1537,13 @@ class CodexAgentDriver:
             return False
         return self._manager.generation_for(self.account) == pending.generation
 
-    def resolve_permission(self, perm_id: str, decision: str, identity: str) -> bool:
-        return self._reg.resolve(perm_id, decision, identity)
+    def resolve_permission(self, perm_id: str, decision: str, identity: str,
+                           message: str | None = None) -> bool:
+        # The app-server's approval response is a bare decision (``_decline``): it has
+        # no text field, so the registry cannot attach ``message`` to an engine-managed
+        # card. SessionOrchestrator.resolve_permission delivers it as the next user
+        # prompt instead.
+        return self._reg.resolve(perm_id, decision, identity, message=message)
 
     # -- client-declared tools (assistant threads + coding-session tools) ----
 

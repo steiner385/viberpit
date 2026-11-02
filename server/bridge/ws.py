@@ -2234,6 +2234,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
+                    # Optional deny guidance; a non-string is dropped, not trusted.
+                    deny_message = msg.get("message")
+                    if not isinstance(deny_message, str):
+                        deny_message = None
                     # The helper records its audit event unconditionally (matching the
                     # pre-extraction behaviour: a rejected decision still leaves an
                     # audit trail), so it must run to completion — and therefore
@@ -2248,7 +2252,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                 # "always" writes a standing rule: a local process
                                 # holding this socket is not the UI (#2980).
                                 via=(human_gate_via(websocket)
-                                     if decision == "always" else via))
+                                     if decision == "always" else via),
+                                message=deny_message)
                         except ActionError as exc:
                             action_error = exc
                     if action_error is not None:
