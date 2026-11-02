@@ -7,7 +7,7 @@ type PermissionBlock = Extract<Block, { kind: 'permission' }>
 
 interface Props {
   turns: Turn[]
-  onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
+  onDecision: (permId: string, decision: 'allow' | 'deny' | 'always', message?: string) => void
   /** Standing-rule wiring, passed straight to the card (see PermissionCard). */
   hasRepo?: boolean
   onPreviewRule?: ComponentProps<typeof PermissionCard>['onPreviewRule']

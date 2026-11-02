@@ -108,6 +108,22 @@ export function selectRunningSubAgentCount(turns: Turn[], threads?: Record<strin
   return selectSubAgents(turns, threads).filter((a) => a.status === 'running').length
 }
 
+// ── Oldest deniable permission (⌘. / Ctrl+.) ──────────────────────────────────
+
+/**
+ * The permId ⌘. / Ctrl+. denies: the OLDEST pending permission card in arrival
+ * order, or null. Plan cards are skipped — a plan step is a review gate, not a
+ * permission to refuse — so a session with only a plan card has nothing to deny.
+ */
+export function selectOldestDeniablePermId(turns: Turn[]): string | null {
+  for (const t of turns) {
+    for (const b of t.blocks) {
+      if (b.kind === 'permission' && !b.plan) return b.permId
+    }
+  }
+  return null
+}
+
 // ── Background work (#2635) ───────────────────────────────────────────────────
 
 export type BackgroundWorkKind = 'shell' | 'monitor' | 'terminal' | 'workflow' | 'task'

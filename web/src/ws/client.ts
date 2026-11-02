@@ -411,8 +411,10 @@ export class SessionSocket {
       ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}), ...(replySource ? { replySource } : {}), interrupt: true })
   }
 
-  permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always'): boolean {
-    return this._sendControl({ type: 'permissionResponse', sessionId, permId, decision })
+  /** `message` rides only with `deny` (the server 400s it on a grant): the operator's
+   *  note on why — a plan card's "keep planning" comment. */
+  permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always', message?: string): boolean {
+    return this._sendControl({ type: 'permissionResponse', sessionId, permId, decision, ...(message ? { message } : {}) })
   }
 
   /** Returns true if the answer was actually written to an open socket. When the
@@ -1062,7 +1064,7 @@ export function useSessionSocket(channel: SocketChannel = 'route') {
   const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext, replySource?: 'suggested') => socket.prompt(sessionId, text, attachmentIds, context, replySource), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
   const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[], replySource?: 'suggested') => socket.interruptAndPrompt(sessionId, text, attachmentIds, replySource), [socket])
-  const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
+  const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always', message?: string) => socket.permissionResponse(sessionId, permId, decision, message), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
   const cancelQueued        = useCallback((sessionId: string, index: number) => socket.cancelQueued(sessionId, index), [socket])

@@ -85,7 +85,8 @@ export interface SessionRuntime {
   armedQuestionId: string | null
   /** True when a question is armed for chat — the composer shows a "Reply" affordance. */
   chatArmed: boolean
-  onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
+  /** `message` (deny only): the operator's note to the agent — a plan card's comment. */
+  onDecision: (permId: string, decision: 'allow' | 'deny' | 'always', message?: string) => void
   /** Dry-run a standing-rule pattern for a pending card. The server owns matching, risk and copy. */
   onPreviewRule: (permId: string, pattern: string, scope: RuleScope) => Promise<RulePreview>
   /** Grant a standing rule from a pending card. Resolves the card locally on success; rejects with
@@ -298,8 +299,8 @@ export function useSessionRuntime(
   // (permissionResponse returns false and emits NOT_CONNECTED, surfaced as a banner),
   // so we must keep the card interactive rather than falsely marking it resolved (#505).
   const onDecision = useCallback(
-    (permId: string, decision: 'allow' | 'deny' | 'always') => {
-      if (permissionResponse(sessionId, permId, decision)) {
+    (permId: string, decision: 'allow' | 'deny' | 'always', message?: string) => {
+      if (permissionResponse(sessionId, permId, decision, ...(message === undefined ? [] : [message]))) {
         // Carry the decision so the reducer leaves a record where the card was.
         dispatch({ type: '_resolvePermission', permId, decision })
         // A session-wide 'always' can mint a standing rule server-side; refresh the lists.

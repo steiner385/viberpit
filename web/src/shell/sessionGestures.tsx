@@ -37,6 +37,10 @@ export interface SessionGestures {
   busy: boolean
   /** Stop the running turn (the click equivalent is the composer's Stop). */
   onStop: () => void
+  /** A non-plan permission card is waiting — what ⌘. / Ctrl+. would deny. */
+  hasDeniablePermission: boolean
+  /** Deny the oldest pending non-plan permission card (the click equivalent is its Deny). */
+  denyOldestPermission: () => void
   /** Leave the session for the list (the click equivalent is Back). */
   onDetach: () => void
 }

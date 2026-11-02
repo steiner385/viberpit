@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { Block } from '@/session/reducer'
 import type { RulePreview, RuleScope } from '@/api/types'
 import { AlwaysAllowDialog } from './AlwaysAllowDialog'
@@ -8,12 +8,17 @@ import { toolLabel, toolDetail } from '@/session/toolSummary'
 
 type PermBlock = Extract<Block, { kind: 'permission' }>
 type Decision = 'allow' | 'deny' | 'always'
-/** A card button: 'session' sends the `always` decision; 'chooser' opens the standing-rule dialog. */
-type CardAction = 'allow' | 'deny' | 'session' | 'chooser'
+/** A card button: 'session' sends the `always` decision; 'chooser' opens the standing-rule dialog;
+ *  'keepPlanning' (plan cards) opens the optional comment field rather than answering. */
+type CardAction = 'allow' | 'deny' | 'session' | 'chooser' | 'keepPlanning'
+
+/** The server's cap on a deny message (`MESSAGE_TOO_LONG` past it). */
+const MAX_PLAN_COMMENT = 4000
 
 interface Props {
   block: PermBlock
-  onDecision: (permId: string, decision: Decision) => void
+  /** `message` only ever rides with `deny` — a plan card's "keep planning" comment. */
+  onDecision: (permId: string, decision: Decision, message?: string) => void
   /** Standing-rule wiring. All three present → "Always allow…" opens the chooser; otherwise
    *  (sub-agent page, assistant drawer) it falls back to the direct session-wide decision. */
   hasRepo?: boolean
@@ -49,6 +54,15 @@ const tertiaryBtn = cn(
 
 export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGrantRule }: Props) {
   const [chooserOpen, setChooserOpen] = useState(false)
+  // Plan cards: Keep planning opens an inline, optional comment instead of answering at once.
+  const [commenting, setCommenting] = useState(false)
+  const [comment, setComment] = useState('')
+  const commentId = useId()
+  const commentRef = useRef<HTMLTextAreaElement | null>(null)
+  const keepPlanningRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    if (commenting) commentRef.current?.focus()
+  }, [commenting])
   const label = toolLabel(block.tool, block.toolKind, block.input)
   // The whole request, not the 60-char gist: a command the operator cannot read
   // is a command they approve blind.
@@ -67,19 +81,36 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
   // Ordered actions matching the rendered buttons; digit/arrow indices map here.
   // Plan cards keep their own two-button layout. A grantable permission card is
   // Allow once · Allow for this session · [Always allow… when the chooser is available] · Deny.
-  const actions: CardAction[] = block.plan || !canAlwaysAllow
-    ? ['allow', 'deny']
+  const actions: CardAction[] = block.plan
+    ? ['allow', 'keepPlanning']
+    : !canAlwaysAllow ? ['allow', 'deny']
     : rules ? ['allow', 'session', 'chooser', 'deny'] : ['allow', 'session', 'deny']
 
   const activate = (a: CardAction) => {
     if (a === 'chooser') setChooserOpen(true)
+    else if (a === 'keepPlanning') setCommenting(true)
     else onDecision(block.permId, a === 'session' ? 'always' : a)
+  }
+
+  // A blank comment is "Keep planning" exactly as it was: a bare deny, no message key.
+  const sendKeepPlanning = () => {
+    const note = comment.trim()
+    if (note) onDecision(block.permId, 'deny', note)
+    else onDecision(block.permId, 'deny')
+  }
+  const cancelComment = () => {
+    setCommenting(false)
+    setComment('')
+    keepPlanningRef.current?.focus()
   }
 
   const kb = useCardKeyboard({
     count: actions.length,
     onActivate: (i) => activate(actions[i]),
   })
+
+  // Keep planning needs its own ref too (focus returns to it on Cancel), so its roving props are split.
+  const keepItem = kb.itemProps(1)
 
   // `A` opens the chooser from anywhere inside the card (not from a text field).
   const onCardKeyDown = (e: React.KeyboardEvent) => {
@@ -140,8 +171,11 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
               aria-label={`Approve & run ${label}`} className={primaryBtn}>
               Approve & run
             </button>
-            <button type="button" {...kb.itemProps(1)} onClick={() => onDecision(block.permId, 'deny')}
-              aria-label={`Keep planning ${label}`} className={secondaryBtn}>
+            <button type="button" tabIndex={keepItem.tabIndex}
+              ref={(el) => { keepItem.ref(el); keepPlanningRef.current = el }}
+              onClick={() => activate('keepPlanning')}
+              aria-label={`Keep planning ${label}`} aria-expanded={commenting}
+              aria-controls={commenting ? commentId : undefined} className={secondaryBtn}>
               Keep planning
             </button>
           </>
@@ -172,6 +206,44 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
           </>
         )}
       </div>
+
+      {block.plan && commenting && (
+        // Outside the roving-button row, and a TEXTAREA: the card's digit/arrow/A
+        // handlers all ignore text-field targets, so typing here never answers the card.
+        <div className="mt-3 flex flex-col gap-2">
+          <label htmlFor={commentId} className="text-xs font-medium text-ink">
+            What should change?
+          </label>
+          <textarea
+            id={commentId}
+            ref={commentRef}
+            rows={3}
+            maxLength={MAX_PLAN_COMMENT}
+            placeholder="Optional"
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            onKeyDown={(e) => {
+              // Esc closes the field; preventDefault keeps the shell's Esc (detach) off it.
+              if (e.key === 'Escape') {
+                e.preventDefault(); e.stopPropagation()
+                cancelComment()
+              }
+            }}
+            className={cn(
+              'w-full resize-y rounded border border-edge-strong bg-surface px-2.5 py-2 text-sm text-ink',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+            )}
+          />
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <button type="button" onClick={sendKeepPlanning} className={secondaryBtn}>
+              Send & keep planning
+            </button>
+            <button type="button" onClick={cancelComment} className={tertiaryBtn}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
     {rules && (
       // Outside the card div: a portaled dialog's key events bubble through the React tree,

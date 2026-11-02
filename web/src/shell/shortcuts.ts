@@ -39,6 +39,9 @@ export interface ShortcutContext {
   overlayOpen: boolean
   /** A permission or question card is waiting for an answer. */
   hasOpenAction: boolean
+  /** A NON-plan permission card is waiting — one ⌘. / Ctrl+. can deny. A plan
+   *  step is not a permission to deny, so a plan card alone leaves this false. */
+  hasDeniablePermission: boolean
   /** A session is open (`/sessions/:id`). */
   sessionOpen: boolean
   /** The open session has a turn running — the composer's Stop button is showing. */
@@ -376,6 +379,14 @@ export const SHORTCUTS: Shortcut[] = [
     group: 'in-session',
     match: (e) => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyE',
     when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen },
+  // Desktop's ⌘. — deny the OLDEST pending permission card. A chord, not a
+  // character, so it fires with the composer focused (no `yieldsToTextEntry`).
+  // Plan cards are skipped (`hasDeniablePermission` excludes them); with nothing to
+  // deny the row does not match, so the key is left unclaimed.
+  { id: 'insession.denyPermission', keys: 'Ctrl+.', keysMac: '⌘.',
+    description: 'Deny the oldest pending permission request', group: 'in-session',
+    match: cmdOrCtrl((e) => e.key === '.'),
+    when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen && c.hasDeniablePermission },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
   // session). All three are reserved by the browser's own UI — see the
   // "NOT BOUND, and why" block at the top of this array for the evidence.

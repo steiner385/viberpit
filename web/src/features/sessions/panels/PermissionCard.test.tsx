@@ -226,14 +226,23 @@ describe('PermissionCard', () => {
     expect(onDecision).not.toHaveBeenCalled()
   })
 
-  it('plan variant: digit 1 allows, 2 denies', async () => {
+  it('plan variant: digit 1 approves, 2 opens the comment field without answering', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    await user.keyboard('2')
+    expect(onDecision).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: /what should change/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Approve & run/i }))
+    expect(onDecision).toHaveBeenCalledWith(planPerm.permId, 'allow')
+  })
+
+  it('plan variant: digit 1 approves', async () => {
     const user = userEvent.setup()
     const onDecision = vi.fn()
     render(<PermissionCard block={planPerm} onDecision={onDecision} />)
     await user.keyboard('1')
     expect(onDecision).toHaveBeenCalledWith(planPerm.permId, 'allow')
-    await user.keyboard('2')
-    expect(onDecision).toHaveBeenCalledWith(planPerm.permId, 'deny')
   })
 
   it('lists batch items on the card', () => {
@@ -334,5 +343,73 @@ describe('PermissionCard — readable request, honest weighting', () => {
       />,
     )
     expect(screen.getByRole('listitem')).not.toHaveClass('truncate')
+  })
+})
+
+describe('PermissionCard — plan comments (Keep planning)', () => {
+  const field = () => screen.getByRole('textbox', { name: /what should change/i })
+
+  it('Keep planning opens an optional comment field and answers nothing yet', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    expect(screen.queryByRole('textbox', { name: /what should change/i })).toBeNull()
+    await user.click(screen.getByRole('button', { name: /^Keep planning/i }))
+    expect(field()).toHaveFocus()
+    expect(onDecision).not.toHaveBeenCalled()
+  })
+
+  it('Send & keep planning denies with the comment as the message', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    await user.click(screen.getByRole('button', { name: /^Keep planning/i }))
+    await user.type(field(), 'split step 3')
+    await user.click(screen.getByRole('button', { name: /^Send & keep planning/i }))
+    expect(onDecision).toHaveBeenCalledTimes(1)
+    expect(onDecision).toHaveBeenCalledWith(planPerm.permId, 'deny', 'split step 3')
+  })
+
+  it('a blank or whitespace comment denies with no message — exactly as Keep planning did before', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    await user.click(screen.getByRole('button', { name: /^Keep planning/i }))
+    await user.type(field(), '   ')
+    await user.click(screen.getByRole('button', { name: /^Send & keep planning/i }))
+    expect(onDecision).toHaveBeenCalledTimes(1)
+    expect(onDecision.mock.calls[0]).toEqual([planPerm.permId, 'deny'])
+  })
+
+  it('Cancel closes the field without answering', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    await user.click(screen.getByRole('button', { name: /^Keep planning/i }))
+    await user.type(field(), 'never mind')
+    await user.click(screen.getByRole('button', { name: /^Cancel/i }))
+    expect(screen.queryByRole('textbox', { name: /what should change/i })).toBeNull()
+    expect(onDecision).not.toHaveBeenCalled()
+  })
+
+  it('Esc in the field cancels without answering', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    await user.click(screen.getByRole('button', { name: /^Keep planning/i }))
+    await user.type(field(), 'hmm')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('textbox', { name: /what should change/i })).toBeNull()
+    expect(onDecision).not.toHaveBeenCalled()
+  })
+
+  it('typing digits in the field never triggers the card digit shortcuts', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    await user.click(screen.getByRole('button', { name: /^Keep planning/i }))
+    await user.type(field(), '1 2')
+    expect(field()).toHaveValue('1 2')
+    expect(onDecision).not.toHaveBeenCalled()
   })
 })
