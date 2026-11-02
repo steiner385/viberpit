@@ -55,16 +55,16 @@ MAX_FILES = 300
 MAX_FILE_PATCH_BYTES = 262144
 MAX_TOTAL_BYTES = 2097152
 
-_BINARY_SNIFF_BYTES = 8192
+BINARY_SNIFF_BYTES = 8192
 _PATCH_BATCH = 64
-_GIT_TIMEOUT_S = 30
+GIT_TIMEOUT_S = 30
 # Environment that would point git at some other repository than ``cwd``'s.
 _REPO_ENV_VARS = (
     "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
     "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 )
 # Pin every config knob that could reshape the output or run repo-supplied programs.
-_GIT_GLOBAL = (
+GIT_GLOBAL = (
     "--no-optional-locks", "--literal-pathspecs",
     "-c", "core.quotePath=false", "-c", "core.fsmonitor=false",
     "-c", "core.hooksPath=/dev/null", "-c", "diff.suppressBlankEmpty=false",
@@ -83,31 +83,40 @@ _HUNK_RE = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 _STATUS = {"A": "added", "D": "deleted", "R": "renamed"}
 
 
-class _GitTimeout(Exception):
-    """A git call ran past ``_GIT_TIMEOUT_S`` — distinct from failure, so a hung git
+class GitTimeout(Exception):
+    """A git call ran past ``GIT_TIMEOUT_S`` — distinct from failure, so a hung git
     never reads as a clean tree."""
 
 
-def _env() -> dict[str, str]:
+def git_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _REPO_ENV_VARS}
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
 
 
-def _git(cwd: str, *args: str) -> bytes | None:
-    """Run git in ``cwd``; stdout bytes, or None on failure (raises ``_GitTimeout``).
+def run_git(cwd: str, *args: str) -> bytes | None:
+    """Run git in ``cwd``; stdout bytes, or None on failure (raises ``GitTimeout``).
     Bytes, not text (unlike ``worktrees._run``): paths and contents need not be UTF-8."""
     try:
         r = subprocess.run(
-            ["git", "-C", cwd, *_GIT_GLOBAL, *args],
-            capture_output=True, env=_env(), timeout=_GIT_TIMEOUT_S, check=False,
+            ["git", "-C", cwd, *GIT_GLOBAL, *args],
+            capture_output=True, env=git_env(), timeout=GIT_TIMEOUT_S, check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise _GitTimeout from exc
+        raise GitTimeout from exc
     except OSError:
         return None
     return r.stdout if r.returncode == 0 else None
+
+
+def worktree_top(cwd: str) -> str | None:
+    """The top level of ``cwd``'s git work tree, or None when ``cwd`` is empty, missing
+    or not inside a work tree (raises ``GitTimeout``)."""
+    if not cwd or not os.path.isdir(cwd):
+        return None
+    out = run_git(cwd, "rev-parse", "--show-toplevel")
+    return os.fsdecode(out.rstrip(b"\n")) if out else None
 
 
 def _git_bounded(cwd: str, args: list[str], limit: int,
@@ -121,8 +130,8 @@ def _git_bounded(cwd: str, args: list[str], limit: int,
     """
     try:
         proc = subprocess.Popen(
-            ["git", "-C", cwd, *_GIT_GLOBAL, *args],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=_env(),
+            ["git", "-C", cwd, *GIT_GLOBAL, *args],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_env(),
         )
     except OSError:
         return b"", "failed"
@@ -130,7 +139,7 @@ def _git_bounded(cwd: str, args: list[str], limit: int,
     buf = bytearray()
     status = "ok"
     block_start = scanned = 0
-    deadline = time.monotonic() + _GIT_TIMEOUT_S
+    deadline = time.monotonic() + GIT_TIMEOUT_S
     sel = selectors.DefaultSelector()
     sel.register(proc.stdout, selectors.EVENT_READ)
     try:
@@ -179,15 +188,15 @@ def _filter_overrides(top: str) -> tuple[str, ...]:
     """``-c`` args neutralising every filter driver defined in an untrusted scope.
 
     Raises ``_UnsafeConfig`` when a driver name cannot be spliced into a ``-c`` key
-    (``=``, newline, NUL) or the config cannot be read; ``_GitTimeout`` on timeout."""
+    (``=``, newline, NUL) or the config cannot be read; ``GitTimeout`` on timeout."""
     try:
         r = subprocess.run(
-            ["git", "-C", top, *_GIT_GLOBAL, "config", "--show-scope", "--includes",
+            ["git", "-C", top, *GIT_GLOBAL, "config", "--show-scope", "--includes",
              "--name-only", "-z", "--get-regexp", r"^filter\."],
-            capture_output=True, env=_env(), timeout=_GIT_TIMEOUT_S, check=False,
+            capture_output=True, env=git_env(), timeout=GIT_TIMEOUT_S, check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise _GitTimeout from exc
+        raise GitTimeout from exc
     except OSError as exc:
         raise _UnsafeConfig("git config unreadable") from exc
     if r.returncode == 1:  # no filter.* keys anywhere
@@ -365,7 +374,7 @@ def _untracked(top: str, path: bytes, *, want_hunks: bool,
                 os.close(fd)
                 return _file(path, None, "added", 0, 0, False), 0, 0
             with os.fdopen(fd, "rb") as fh:
-                head = fh.read(_BINARY_SNIFF_BYTES)
+                head = fh.read(BINARY_SNIFF_BYTES)
                 if b"\0" in head:
                     return _file(path, None, "added", 0, 0, True), 0, len(head)
                 if want_hunks and size <= MAX_FILE_PATCH_BYTES:
@@ -382,7 +391,7 @@ def _untracked(top: str, path: bytes, *, want_hunks: bool,
     except OSError:
         return _file(path, None, "added", 0, 0, False), 0, 0
     assert data is not None
-    if b"\0" in data[:_BINARY_SNIFF_BYTES]:
+    if b"\0" in data[:BINARY_SNIFF_BYTES]:
         return _file(path, None, "added", 0, 0, True), 0, len(data)
     rows = data.split(b"\n")
     if rows and rows[-1] == b"":
@@ -406,15 +415,15 @@ def _untracked(top: str, path: bytes, *, want_hunks: bool,
 
 def _resolve_base(top: str) -> tuple[str | None, str | None, str]:
     """(reported base, head, rev to diff from)."""
-    out = _git(top, "rev-parse", "--verify", "-q", "HEAD")
+    out = run_git(top, "rev-parse", "--verify", "-q", "HEAD")
     head = _text(out).strip() if out else None
     if head is None:  # unborn branch: everything is new
-        empty = _git(top, "hash-object", "-t", "tree", os.devnull)
+        empty = run_git(top, "hash-object", "-t", "tree", os.devnull)
         return None, None, _text(empty or b"").strip()
-    out = _git(top, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
+    out = run_git(top, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")
     default = _text(out).strip() if out else ""
     if default:
-        out = _git(top, "merge-base", "HEAD", default)
+        out = run_git(top, "merge-base", "HEAD", default)
         if out:
             base = _text(out).strip()
             return base, head, base
@@ -441,25 +450,22 @@ def _session_diff(cwd: str, *, summary: bool, ignore_whitespace: bool) -> dict[s
     or past the read budget are listed unread with zero counts, and a git timeout
     yields ``files: []``.
     """
-    if not cwd or not os.path.isdir(cwd):
-        return _empty()
     base: str | None = None
     head: str | None = None
     try:
-        out = _git(cwd, "rev-parse", "--show-toplevel")
-        if not out:
+        top = worktree_top(cwd)
+        if top is None:
             return _empty()
-        top = os.fsdecode(out.rstrip(b"\n"))
         base, head, rev = _resolve_base(top)
         if not rev:
             return _empty(base, head)
         # Every call that may hash working-tree files runs with these overrides.
         cfg = _filter_overrides(top)
         ws = ("-w",) if ignore_whitespace else ()
-        numstat = _git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
-        names = _git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
-        untracked = _git(top, *cfg, "ls-files", "--others", "--exclude-standard", "-z")
-    except (_GitTimeout, _UnsafeConfig):
+        numstat = run_git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
+        names = run_git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
+        untracked = run_git(top, *cfg, "ls-files", "--others", "--exclude-standard", "-z")
+    except (GitTimeout, _UnsafeConfig):
         return _empty(base, head, truncated=True)
     if numstat is None or names is None:
         return _empty(base, head)

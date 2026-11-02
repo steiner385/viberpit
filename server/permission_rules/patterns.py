@@ -250,8 +250,15 @@ def tool_path_arg(tool: str, input: Mapping[str, Any]) -> str | None:
 
 
 def worktree_rel_path(tool: str, input: Mapping[str, Any], cwd: str | None) -> str | None:
-    """Worktree-relative POSIX path of a file tool's target, or None when absent,
-    ambiguous, outside cwd, or the worktree root itself.
+    """Worktree-relative POSIX path of a file tool's target (see :func:`worktree_rel`),
+    or None when absent, ambiguous, outside cwd, or the worktree root itself."""
+    raw = tool_path_arg(tool, input)
+    return None if raw is None else worktree_rel(raw, cwd)
+
+
+def worktree_rel(raw: str, cwd: str | None) -> str | None:
+    """Worktree-relative POSIX path of ``raw`` (relative to ``cwd``, or absolute), or
+    None when empty, outside cwd, or the worktree root itself.
 
     Fails closed (None) on a NUL byte, a leading ``~`` (the CLI expands it to $HOME) and
     any ``..`` component: the CLI may normalise ``..`` lexically before the kernel
@@ -260,8 +267,7 @@ def worktree_rel_path(tool: str, input: Mapping[str, Any], cwd: str | None) -> s
     (a dangling link resolves to the target it would create) and containment is
     ``commonpath`` — never a string prefix, so ``/repo-evil`` is not inside ``/repo``.
     """
-    raw = tool_path_arg(tool, input)
-    if not cwd or raw is None or "\x00" in raw or raw.startswith("~"):
+    if not cwd or not raw or "\x00" in raw or raw.startswith("~"):
         return None
     if ".." in raw.split(os.sep):
         return None
