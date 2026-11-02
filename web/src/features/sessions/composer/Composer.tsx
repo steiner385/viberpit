@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
+import { useRef, useState, useCallback, useEffect, useId } from 'react'
 import { Paperclip, X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -110,10 +110,11 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
   // `@` mentions: sessions (assistant drawer; session composer) and worktree files
-  // (session composer with a cwd). Never on a slash-command line — a message starting
-  // with `/` is a command and its args, not prose with a mention in it.
+  // (session composer with a cwd). Off only while a slash command's NAME is being
+  // typed — the palette owns the keyboard then. A command's ARGS may hold `@path`
+  // (Claude Code resolves it there too), so `/review @src/foo.ts` opens the menu.
   const mentionsOn = mentionSource !== undefined || fileMentionSessionId !== undefined
-  const mentionQuery = !slash && mentionsOn ? mentionQueryAt(text, caretPos) : null
+  const mentionQuery = !typingCommand && mentionsOn ? mentionQueryAt(text, caretPos) : null
   // The `@` position the current query is anchored to — Esc records it here so the
   // SAME mention attempt stays dismissed across further keystrokes; a fresh `@`
   // elsewhere has a different start and reopens. Cleared in handleChange (not an
@@ -121,8 +122,12 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const mentionStart = mentionQuery !== null ? caretPos - mentionQuery.length - 1 : null
   const [dismissedMentionAt, setDismissedMentionAt] = useState<number | null>(null)
   const pickingMention = mentionQuery !== null && mentionStart !== dismissedMentionAt
-  // The highlighted option's id, mirrored onto the focused textarea.
+  // The textarea keeps focus while the menu is up, so it carries the listbox's ARIA:
+  // aria-controls / aria-activedescendant (the highlighted option) while it is shown.
+  const mentionListboxId = useId()
   const [mentionActiveId, setMentionActiveId] = useState<string | undefined>(undefined)
+  const [mentionVisible, setMentionVisible] = useState(false)
+  const mentionExpanded = pickingMention && mentionVisible
 
   const ghost =
     !isWorking && text === '' && suggestions && suggestions.length > 0
@@ -218,8 +223,14 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     (session: MentionSource) => replaceMentionQuery(`[${session.title}](/sessions/${session.id}) `),
     [replaceMentionQuery],
   )
-  // A file goes in as `@<path> ` — the CLI resolves the path against the worktree.
-  const insertFileMention = useCallback((path: string) => replaceMentionQuery(`@${path} `), [replaceMentionQuery])
+  // A file goes in as `@<path> ` — the CLI resolves the path against the worktree. A
+  // path with whitespace is quoted, `@"<path>" `: Claude Code's own parser reads
+  // `@"([^"]+)"` (and its file completer inserts that form), while a bare `@` token
+  // ends at the first space.
+  const insertFileMention = useCallback(
+    (path: string) => replaceMentionQuery(/\s/.test(path) ? `@"${path}" ` : `@${path} `),
+    [replaceMentionQuery],
+  )
 
   const runCommandFromText = useCallback((raw: string): boolean => {
     if (!raw.startsWith('/') || raw.includes('\n')) return false
@@ -435,6 +446,8 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             onSelectFile={insertFileMention}
             onDismiss={() => setDismissedMentionAt(mentionStart)}
             onActiveChange={setMentionActiveId}
+            listboxId={mentionListboxId}
+            onVisibleChange={setMentionVisible}
           />
         ) : (
           <MentionMenu
@@ -444,6 +457,8 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             onSelect={insertMention}
             onDismiss={() => setDismissedMentionAt(mentionStart)}
             onActiveChange={setMentionActiveId}
+            listboxId={mentionListboxId}
+            onVisibleChange={setMentionVisible}
           />
         ))}
         <div className="relative flex-1 @max-md:basis-full">
@@ -451,7 +466,11 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             ref={textareaRef}
             aria-label="Message"
             {...(sessionComposer ? { [SESSION_COMPOSER_ATTR]: '' } : {})}
-            aria-activedescendant={pickingMention ? mentionActiveId : undefined}
+            // No aria-expanded: axe (aria-allowed-attr) rejects it on a textbox, and making
+            // the textarea a combobox would change its role for every consumer.
+            aria-autocomplete={mentionsOn ? 'list' : undefined}
+            aria-controls={mentionExpanded ? mentionListboxId : undefined}
+            aria-activedescendant={mentionExpanded ? mentionActiveId : undefined}
             value={text}
             onChange={handleChange}
             onKeyDown={handleKeyDown}

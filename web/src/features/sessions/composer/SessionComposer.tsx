@@ -36,9 +36,10 @@ interface Props {
 
 export function SessionComposer({ rt, contextProvider, hideSessionControls = false, promptRowMenus, externalDraft, mentionSource }: Props) {
   const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
-  // D-7: a session composer `@`-mentions its worktree files (Files group) and the other
-  // sessions (Sessions group) — but only with a cwd; an engine without one has no
-  // files, so no menu. The assistant drawer (no session controls) keeps its own list.
+  // D-7: a session composer `@`-mentions the other sessions (Sessions group) and, with
+  // a cwd, its worktree files (Files group, first). An engine without a cwd gets the
+  // sessions-only menu and never queries files. The assistant drawer (no session
+  // controls) keeps its own sessions-only list.
   const { data: sessions } = useSessions()
   const hasCwd = !hideSessionControls && !!sessions?.find((s) => s.id === rt.sessionId)?.cwd
   const otherSessions = useMentionSessions(rt.sessionId)
@@ -70,7 +71,7 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
         history={history}
         sessionId={rt.sessionId}
         externalDraft={externalDraft}
-        mentionSource={hasCwd ? otherSessions : mentionSource}
+        mentionSource={hideSessionControls ? mentionSource : otherSessions}
         fileMentionSessionId={hasCwd ? rt.sessionId : undefined}
         // The composer with session controls IS the session's; the assistant drawer hides them.
         sessionComposer={!hideSessionControls}

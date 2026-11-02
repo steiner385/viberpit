@@ -94,7 +94,42 @@ describe('MentionMenu — Files group (D-7)', () => {
   it('shows a loading row while the first file results are in flight', () => {
     render(<MentionMenu sessions={[]} files={undefined} filesLoading query="" onSelect={vi.fn()} onSelectFile={vi.fn()} onDismiss={vi.fn()} />)
     expect(screen.getByRole('group', { name: 'Files' })).toHaveTextContent(/searching files/i)
-    expect(screen.queryAllByRole('option')).toHaveLength(0)
+    // The loading row is a disabled option, never a pickable one.
+    const [row] = screen.getAllByRole('option')
+    expect(row).toHaveAttribute('aria-disabled', 'true')
+    expect(row).toHaveTextContent(/searching files/i)
+  })
+
+  it('Enter/Tab while files load with nothing to pick are consumed, never passed on', () => {
+    const onSelect = vi.fn()
+    const onSelectFile = vi.fn()
+    const ref = createRef<MentionMenuHandle>()
+    render(<MentionMenu ref={ref} sessions={SESSIONS} files={undefined} filesLoading query="zzz" onSelect={onSelect} onSelectFile={onSelectFile} onDismiss={vi.fn()} />)
+    expect(ref.current!.handleKeyDown(key('Enter'))).toBe(true)
+    expect(ref.current!.handleKeyDown(key('Tab'))).toBe(true)
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(onSelectFile).not.toHaveBeenCalled()
+  })
+
+  it('arriving file results keep a highlight the user moved', () => {
+    const onSelect = vi.fn()
+    const ref = createRef<MentionMenuHandle>()
+    const props = { sessions: SESSIONS, query: '', onSelect, onSelectFile: vi.fn(), onDismiss: vi.fn() }
+    const { rerender } = render(<MentionMenu ref={ref} {...props} files={['a.ts']} />)
+    act(() => { ref.current!.handleKeyDown(key('ArrowDown')) }) // a.ts -> 'Fix the login bug'
+    rerender(<MentionMenu ref={ref} {...props} files={['a.ts', 'b.ts', 'c.ts']} />)
+    expect(screen.getByRole('option', { name: 'Fix the login bug' })).toHaveAttribute('aria-selected', 'true')
+    ref.current!.handleKeyDown(key('Enter'))
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }))
+  })
+
+  it('a new query re-highlights the top option', () => {
+    const ref = createRef<MentionMenuHandle>()
+    const props = { sessions: SESSIONS, files: FILES, onSelect: vi.fn(), onSelectFile: vi.fn(), onDismiss: vi.fn() }
+    const { rerender } = render(<MentionMenu ref={ref} {...props} query="" />)
+    act(() => { ref.current!.handleKeyDown(key('ArrowDown')) })
+    rerender(<MentionMenu ref={ref} {...props} query="f" />)
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-selected', 'true')
   })
 
   it('reports the active option id for aria-activedescendant', () => {

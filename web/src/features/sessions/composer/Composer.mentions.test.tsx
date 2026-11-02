@@ -1,7 +1,7 @@
 // `@` mentions in the SESSION composer (D-7): worktree files (async, debounced) in a
 // Files group above a Sessions group. The assistant drawer stays sessions-only.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, within, waitFor, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Composer } from './Composer'
 import { SessionComposer } from './SessionComposer'
@@ -15,17 +15,19 @@ const SESSIONS = [
 const FILES = ['src/Composer.tsx', 'src/composer/util.ts']
 // One stable object, like react-query's structurally-shared `data`.
 const FILE_LIST = { files: FILES.map((path) => ({ path })), truncated: false }
+const LOADED = { data: FILE_LIST, isFetching: false }
+const LOADING = { data: undefined, isFetching: true }
 
-// Every call's (id, q, enabled) — the debounce test reads the enabled q's.
-const filesCalls: Array<{ id: string; q: string; enabled: boolean }> = []
+// What an enabled files query returns; a test can swap it (loading, other paths).
+let filesResponse: { data: typeof FILE_LIST | undefined; isFetching: boolean } = LOADED
+// Every call's (id, q, enabled, at) — the debounce test reads the enabled q's.
+const filesCalls: Array<{ id: string; q: string; enabled: boolean; at: number }> = []
 
 vi.mock('@/api/hooks', () => ({
   useSessions: () => ({ data: SESSIONS }),
   useSessionFiles: (id: string, q: string, { enabled = true }: { enabled?: boolean } = {}) => {
-    filesCalls.push({ id, q, enabled })
-    return enabled
-      ? { data: FILE_LIST, isFetching: false }
-      : { data: undefined, isFetching: false }
+    filesCalls.push({ id, q, enabled, at: Date.now() })
+    return enabled ? filesResponse : { data: undefined, isFetching: false }
   },
   useGenerateSuggestions: () => ({ mutateAsync: vi.fn() }),
   useEngineCapabilities: () => undefined,
@@ -43,8 +45,9 @@ function fakeRuntime(sessionId: string): SessionRuntime {
 
 const defaults = { status: { state: 'idle', count: 0 }, onPrompt: vi.fn(), onInterrupt: vi.fn() }
 const box = () => screen.getByRole('textbox', { name: /message/i })
+const enabledQs = () => [...new Set(filesCalls.filter((c) => c.enabled).map((c) => c.q))]
 
-beforeEach(() => { filesCalls.length = 0 })
+beforeEach(() => { filesCalls.length = 0; filesResponse = LOADED; vi.clearAllMocks() })
 
 describe('session composer @ menu — files and sessions (D-7)', () => {
   it('@comp lists Files above Sessions, and leaves the current session out', async () => {
@@ -72,6 +75,17 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     expect(screen.queryByRole('listbox', { name: /mentions/i })).not.toBeInTheDocument()
   })
 
+  it('a path with whitespace goes in quoted, @"<path>" — the CLI\'s quoted @ form', async () => {
+    const user = userEvent.setup()
+    const spaced = { files: [{ path: 'docs/My Notes.md' }], truncated: false }
+    filesResponse = { data: spaced, isFetching: false }
+    render(<SessionComposer rt={fakeRuntime('me')} />)
+    await user.type(box(), '@notes')
+    await screen.findByRole('option', { name: 'docs/My Notes.md' })
+    await user.keyboard('{Enter}')
+    expect(box()).toHaveValue('@"docs/My Notes.md" ')
+  })
+
   it('choosing a session keeps today\'s [title](/sessions/<id>) token', async () => {
     const user = userEvent.setup()
     render(<SessionComposer rt={fakeRuntime('me')} />)
@@ -81,21 +95,44 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     expect(box()).toHaveValue('[Composer refactor](/sessions/sess-2) ')
   })
 
-  it('the textarea points aria-activedescendant at the highlighted option', async () => {
+  it('while open, the textarea owns the listbox: aria-controls/autocomplete/activedescendant', async () => {
     const user = userEvent.setup()
     render(<SessionComposer rt={fakeRuntime('me')} />)
+    // aria-expanded is deliberately absent: axe's aria-allowed-attr rejects it on a textbox.
+    expect(box()).not.toHaveAttribute('aria-expanded')
+    expect(box()).not.toHaveAttribute('aria-controls')
     await user.type(box(), '@comp')
-    const first = await screen.findByRole('option', { name: 'src/Composer.tsx' })
+    const listbox = await screen.findByRole('listbox', { name: /mentions/i })
+    const first = within(listbox).getByRole('option', { name: 'src/Composer.tsx' })
     await waitFor(() => expect(box()).toHaveAttribute('aria-activedescendant', first.id))
+    expect(listbox.id).not.toBe('')
+    expect(box()).toHaveAttribute('aria-controls', listbox.id)
+    expect(box()).toHaveAttribute('aria-autocomplete', 'list')
     await user.keyboard('{Escape}')
     expect(box()).not.toHaveAttribute('aria-activedescendant')
+    expect(box()).not.toHaveAttribute('aria-controls')
   })
 
-  it('does not open inside a slash command', async () => {
+  it('Enter while files are still loading (no session match) sends nothing and keeps the menu open', async () => {
+    const user = userEvent.setup()
+    filesResponse = LOADING
+    const rt = fakeRuntime('me')
+    render(<SessionComposer rt={rt} />)
+    await user.type(box(), '@zzz')
+    expect(screen.getByRole('listbox', { name: /mentions/i })).toHaveTextContent(/searching files/i)
+    await user.keyboard('{Enter}')
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(box()).toHaveValue('@zzz')
+    expect(screen.getByRole('listbox', { name: /mentions/i })).toBeInTheDocument()
+  })
+
+  it('opens in a slash command\'s args — /review @src/… (Claude Code takes @path there)', async () => {
     const user = userEvent.setup()
     render(<SessionComposer rt={fakeRuntime('me')} />)
     await user.type(box(), '/review @comp')
-    expect(screen.queryByRole('listbox', { name: /mentions/i })).not.toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Files' })).toBeInTheDocument()
+    await user.keyboard('{Enter}')
+    expect(box()).toHaveValue('/review @src/Composer.tsx ')
   })
 
   it('does not open inside a code span', async () => {
@@ -105,21 +142,33 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     expect(screen.queryByRole('listbox', { name: /mentions/i })).not.toBeInTheDocument()
   })
 
-  it('debounces the files query: fast typing asks for "" then the settled query only', async () => {
-    const user = userEvent.setup()
-    render(<Composer {...defaults} fileMentionSessionId="me" />)
-    await user.type(box(), '@comp')
-    await waitFor(() => expect(filesCalls.some((c) => c.enabled && c.q === 'comp')).toBe(true))
-    const asked = [...new Set(filesCalls.filter((c) => c.enabled).map((c) => c.q))]
-    expect(asked).toEqual(['', 'comp'])
+  describe('debounce (fake timers)', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('fast typing issues at most one files query per 120 ms', () => {
+      render(<Composer {...defaults} fileMentionSessionId="me" />)
+      // A keystroke every 30 ms — four inside one debounce window.
+      for (const v of ['@', '@c', '@co', '@com', '@comp']) {
+        fireEvent.change(box(), { target: { value: v, selectionStart: v.length } })
+        act(() => { vi.advanceTimersByTime(30) })
+      }
+      expect(enabledQs()).toEqual([''])
+      act(() => { vi.advanceTimersByTime(120) })
+      expect(enabledQs()).toEqual(['', 'comp'])
+      const firstAt = (q: string) => filesCalls.find((c) => c.enabled && c.q === q)!.at
+      expect(firstAt('comp') - firstAt('')).toBeGreaterThanOrEqual(120)
+    })
   })
 
-  it('a session with no cwd gets no Files group (and no menu at all)', async () => {
+  it('a session with no cwd gets a sessions-only menu — no Files group, no files query', async () => {
     const user = userEvent.setup()
     render(<SessionComposer rt={fakeRuntime('nocwd')} />)
     await user.type(box(), '@comp')
+    const listbox = screen.getByRole('listbox', { name: /session mentions/i })
+    expect(within(listbox).getByRole('option', { name: 'Composer refactor' })).toBeInTheDocument()
+    expect(within(listbox).queryByText('No worktree')).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Files' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('listbox', { name: /mentions/i })).not.toBeInTheDocument()
     expect(filesCalls.some((c) => c.enabled)).toBe(false)
   })
 
@@ -134,5 +183,15 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     expect(within(listbox).getByText('Composer refactor')).toBeInTheDocument()
     expect(within(listbox).queryByRole('group', { name: 'Files' })).not.toBeInTheDocument()
     expect(filesCalls.some((c) => c.enabled)).toBe(false)
+  })
+
+  it('the assistant composer follows the same slash rule: mentions open in command args', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionComposer rt={fakeRuntime('me')} hideSessionControls
+        mentionSource={[{ id: 'sess-2', title: 'Composer refactor' }]} />,
+    )
+    await user.type(box(), '/ask @comp')
+    expect(screen.getByRole('listbox', { name: /session mentions/i })).toHaveTextContent('Composer refactor')
   })
 })

@@ -27,6 +27,11 @@ interface Props {
   /** The highlighted option's DOM id (undefined when none) — the textarea, which
    *  keeps focus, mirrors it as `aria-activedescendant`. */
   onActiveChange?: (id: string | undefined) => void
+  /** The listbox's DOM id, owned by the textarea for `aria-controls`. */
+  listboxId?: string
+  /** Whether the listbox is actually rendered (it hides with nothing to show) — the
+   *  textarea's `aria-expanded`. */
+  onVisibleChange?: (visible: boolean) => void
 }
 
 const MAX_PER_GROUP = 8
@@ -36,7 +41,7 @@ type Item =
   | { kind: 'session'; key: string; label: string; session: MentionSource }
 
 export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function MentionMenu(
-  { sessions, files, filesLoading = false, query, onSelect, onSelectFile, onDismiss, onActiveChange }, ref,
+  { sessions, files, filesLoading = false, query, onSelect, onSelectFile, onDismiss, onActiveChange, listboxId, onVisibleChange }, ref,
 ) {
   const grouped = files !== undefined || filesLoading
   const fileItems = useMemo<Item[]>(
@@ -53,12 +58,16 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
   // One flat order for the keyboard: Files first, then Sessions.
   const items = useMemo(() => [...fileItems, ...sessionItems], [fileItems, sessionItems])
 
-  const [sel, setSel] = useState(0)
-  // A new query or a fresh batch of file results re-highlights the top option, so the
-  // highlight never silently shifts to a different item under the user.
-  useEffect(() => { setSel(0) }, [query, fileItems])
-  // Clamp for the render between a shrink and that reset.
-  const active = Math.min(sel, items.length - 1)
+  // The highlight is held by item KEY, not index: file results arriving after the user
+  // moved it (debounced, async) must not shift it onto a different item. A new query
+  // re-highlights the top; a highlighted item that drops out falls back to the top.
+  const [selKey, setSelKey] = useState<string | null>(null)
+  useEffect(() => { setSelKey(null) }, [query])
+  const found = selKey === null ? -1 : items.findIndex((it) => it.key === selKey)
+  const active = items.length === 0 ? -1 : Math.max(found, 0)
+  const visible = items.length > 0 || filesLoading
+  useEffect(() => { onVisibleChange?.(visible) }, [visible, onVisibleChange])
+  useEffect(() => () => onVisibleChange?.(false), [onVisibleChange])
 
   const baseId = useId()
   const optionId = (i: number) => `${baseId}-opt-${i}`
@@ -74,16 +83,22 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
     return {
       handleKeyDown(e: React.KeyboardEvent): boolean {
         if (e.key === 'Escape') { e.preventDefault(); onDismiss(); return true }
-        if (items.length === 0) return false
-        if (e.key === 'ArrowDown') { e.preventDefault(); setSel((active + 1) % items.length); return true }
-        if (e.key === 'ArrowUp')   { e.preventDefault(); setSel((active - 1 + items.length) % items.length); return true }
-        if (e.key === 'Enter' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); pick(items[active]); return true }
+        const selects = e.key === 'Enter' || (e.key === 'Tab' && !e.shiftKey)
+        if (items.length === 0) {
+          // Files still loading and nothing to pick yet: the menu is up, so Enter/Tab
+          // must not fall through and send the half-typed `@query`.
+          if (filesLoading && selects) { e.preventDefault(); return true }
+          return false
+        }
+        if (e.key === 'ArrowDown') { e.preventDefault(); setSelKey(items[(active + 1) % items.length].key); return true }
+        if (e.key === 'ArrowUp')   { e.preventDefault(); setSelKey(items[(active - 1 + items.length) % items.length].key); return true }
+        if (selects) { e.preventDefault(); pick(items[active]); return true }
         return false
       },
     }
-  }, [items, active, onSelect, onSelectFile, onDismiss])
+  }, [items, active, filesLoading, onSelect, onSelectFile, onDismiss])
 
-  if (items.length === 0 && !filesLoading) return null
+  if (!visible) return null
 
   const renderOption = (item: Item, i: number) => (
     <button
@@ -92,7 +107,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
       type="button"
       role="option"
       aria-selected={i === active}
-      onMouseEnter={() => setSel(i)}
+      onMouseEnter={() => setSelKey(item.key)}
       onClick={() => (item.kind === 'file' ? onSelectFile?.(item.path) : onSelect(item.session))}
       className={cn(
         'block w-full truncate px-3 py-2 text-left text-sm',
@@ -112,6 +127,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
   return (
     <div
       role="listbox"
+      id={listboxId}
       aria-label={grouped ? 'File and session mentions' : 'Session mentions'}
       className={cn(
         'max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:rounded-b-none max-sm:rounded-t-xl',
@@ -127,7 +143,15 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
             <div role="group" aria-labelledby={`${baseId}-files`}>
               {groupLabel(`${baseId}-files`, 'Files')}
               {fileItems.length === 0 && (
-                <div className="px-3 py-2 text-sm text-ink-muted" aria-live="polite">Searching files…</div>
+                <div
+                  role="option"
+                  aria-disabled="true"
+                  aria-selected={false}
+                  aria-live="polite"
+                  className={cn('px-3 py-2 text-sm text-ink-muted', TOUCH_FLOOR)}
+                >
+                  Searching files…
+                </div>
               )}
               {fileItems.map((item, i) => renderOption(item, i))}
             </div>
