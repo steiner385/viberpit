@@ -110,6 +110,23 @@ the session composer. Each turn also has a `Message actions` menu, shown on hove
 always on touch; **Copy as Markdown** copies the assistant turn's prose, or your prompt, to the
 clipboard.
 
+**Changes tab and inline diffs** — each session has a Changes tab next to Conversation, listed when
+the session's worktree differs from its base.
+- **Base:** the merge-base with origin's default branch. With no recorded `origin/HEAD`, the tab
+  shows uncommitted changes only.
+- **Contents:** committed, uncommitted and untracked changes.
+- **Controls:** a Unified/Split toggle (unified below 1024px, split from 1024px; remembered per
+  browser), Hide whitespace, and Previous change / Next change.
+- **Notices:** truncated, binary and too-large files are flagged.
+
+A `+N −M` chip in the session header opens the tab. It refreshes when a turn ends and when the tab
+opens, and never polls. Edit and Write diffs in the transcript use the same renderer, with syntax
+highlighting loaded lazily. The server side is
+`GET /api/sessions/{id}/diff?summary=1&ignoreWhitespace=1`, computed on the host that owns the
+session. It is read-only (it never touches the index) and runs git hardened: textconv, ext-diff,
+system config and hooks are disabled, and filter drivers defined in the repo or worktree config
+are neutralised.
+
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a
 model tier and a refined prompt, shown as the "Refined:" chip with Accept / Discard.

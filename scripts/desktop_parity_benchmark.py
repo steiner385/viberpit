@@ -95,8 +95,8 @@ D=[
  ("Scheduled tasks / routines",1,"P","Delivery automations"),
 ]),
 ("8 Code review & dev",[
- ("Changes pane: aggregate diff, unified/split, line comments",3,"N",""),
- ("Inline tool diffs",2,"P","rebuilt from tool input, no highlighting"),
+ ("Changes pane: aggregate diff, unified/split, line comments",3,"P","line comments → D-5"),
+ ("Inline tool diffs",2,"Y","shared DiffRenderer, highlighted"),
  ("Files pane (view / edit)",1,"N",""),
  ("PR viewer: checks, threads, merge, auto-merge",2,"P","Pipeline page + PR pills + Fix"),
  ("Preview browser with dev-server detection",2,"P","VNC Browser tab, no dev-server detect"),
