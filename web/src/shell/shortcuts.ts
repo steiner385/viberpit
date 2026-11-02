@@ -392,10 +392,11 @@ export const SHORTCUTS: Shortcut[] = [
   // but never from any OTHER text entry (the list search, the docked assistant
   // composer …), the same focused-element rule as `insession.stop`. Ctrl+O / ⌘O
   // (the browser's "open file") is not browser-reserved, so the dispatcher's
-  // preventDefault keeps the file picker shut.
+  // preventDefault keeps the file picker shut. Shift is excluded: Ctrl/⌘+Shift+O
+  // is Chrome's Bookmark Manager and must reach the browser untouched.
   { id: 'insession.cycleView', keys: 'Ctrl+O', keysMac: '⌘O', description: 'Cycle the transcript view (Normal, Thinking, Verbose)',
     group: 'in-session',
-    match: cmdOrCtrl((e) => e.key === 'o' || e.key === 'O'),
+    match: cmdOrCtrl((e) => !e.shiftKey && (e.key === 'o' || e.key === 'O')),
     when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen && !focusInOtherTextEntry(c.active) },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
   // session). All three are reserved by the browser's own UI — see the

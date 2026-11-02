@@ -683,6 +683,14 @@ describe('matchShortcut — the shell scope', () => {
     expect(shellRow(ev({ key: '.' }), carded)).toBeUndefined()
   })
 
+  it('⌘O and Ctrl+O cycle the view, but ⌘⇧O / Ctrl+Shift+O (Chrome Bookmark Manager) is left to the browser', () => {
+    const cycle = (e: KeyboardLike) => matchShortcut(e, (s) => s.id === 'insession.cycleView', ctx({ sessionOpen: true }))?.id
+    expect(cycle(ev({ key: 'o', ctrlKey: true }))).toBe('insession.cycleView')
+    expect(cycle(ev({ key: 'o', metaKey: true }))).toBe('insession.cycleView')
+    expect(cycle(ev({ key: 'O', ctrlKey: true, shiftKey: true }))).toBeUndefined()
+    expect(cycle(ev({ key: 'O', metaKey: true, shiftKey: true }))).toBeUndefined()
+  })
+
   // ── the app-global chords (Task 5) ─────────────────────────────────────────
 
   it('⌘/ and Ctrl+/ both reach the app-global help row, on either platform', () => {

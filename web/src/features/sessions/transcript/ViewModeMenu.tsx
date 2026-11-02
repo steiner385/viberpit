@@ -17,7 +17,10 @@ export interface ViewModeMenuProps {
 export function ViewModeMenu({ mode, onSelect }: ViewModeMenuProps) {
   const anchorRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
-  const label = `View: ${viewModeLabel(mode)}`
+  const modeLabel = viewModeLabel(mode)
+  // The accessible name is "View: <Mode>" at every width; below `md` the visible
+  // "View: " prefix drops so the trigger fits the phone meta strip on one line.
+  const label = `View: ${modeLabel}`
 
   return (
     <>
@@ -29,12 +32,12 @@ export function ViewModeMenu({ mode, onSelect }: ViewModeMenuProps) {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'inline-flex items-center gap-1 rounded-md px-2 py-0.5 min-h-7 text-xs text-ink-muted',
+          'inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 min-h-7 text-xs text-ink-muted',
           'hover:bg-edge active:bg-edge-strong',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
         )}
       >
-        {label}
+        <span><span className="hidden md:inline">View: </span>{modeLabel}</span>
         <ChevronDown size={12} aria-hidden="true" />
       </button>
       <Menu

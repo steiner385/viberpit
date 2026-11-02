@@ -82,7 +82,9 @@ export const Turn = memo(function Turn({
     // whole pane. The reading measure lives on the prose block (`PROSE_MEASURE`
     // below) — when it sat here (#2529/#2535) a wide pane rendered every tool
     // card into ~574px at the left and left the right two thirds blank.
-    <div className="group px-4 py-2">
+    //
+    // `relative` anchors the Message actions trigger (below) in the top-right corner.
+    <div className="relative px-4 py-2">
       {isUser && turn.context && <PromptContextChip context={turn.context} />}
       {/* Positive attribution for a prompt a person actually typed. The automated
           case carries its own caption inside AutomatedPrompt, so this renders only
@@ -187,9 +189,14 @@ export const Turn = memo(function Turn({
           'assistant'); other transcript readers (the session page, the archived
           reader) never show it. */}
       {variant === 'assistant' && !isUser && <TurnFeedback turnId={turn.id} />}
-      {/* One per-message menu per turn (hidden when the turn has nothing to act on):
-          the user lane on the right for a prompt, beside the feedback thumbs otherwise. */}
-      <div className={isUser ? 'flex justify-end' : 'flex'}><MessageActions turn={turn} /></div>
+      {/* One per-message menu per turn (renders nothing when the turn has nothing to
+          act on), pinned to the turn's top-right corner so it takes no layout space.
+          It is a DIRECT child of this root — its hover/focus reveal keys off that, so
+          a nested sub-agent turn's trigger stays hidden while only the outer turn is
+          hovered. The 28px trigger sits in the right gutter: the turn's 16px padding
+          plus a bubble's 16px inner padding, so it never covers prompt text; the
+          right-aligned caption rows above a prompt are inset (`pr-3`) to clear it. */}
+      <MessageActions turn={turn} className="absolute right-0 top-0" />
       {/* A prompt the user has sent that no server echo has confirmed yet. The `user`
           echo adopts the turn and clears `pending`, so this note disappears the moment
           the real turn exists — no separate teardown. */}
@@ -212,7 +219,7 @@ function PromptContextChip({ context }: { context: PromptContext }) {
   const label = sessionTitle ?? navDefForPath(context.route)?.label
   if (!label) return null
   return (
-    <div className="flex justify-end pb-1">
+    <div className="flex justify-end pb-1 pr-3">
       <span className="rounded-full border border-edge px-2 py-0.5 text-2xs text-ink-muted">
         on {label}
       </span>
@@ -227,7 +234,7 @@ function PromptContextChip({ context }: { context: PromptContext }) {
  */
 function YouCaption() {
   return (
-    <div className="flex justify-end pb-1">
+    <div className="flex justify-end pb-1 pr-3">
       <span className="inline-flex items-center gap-1 text-2xs text-ink-muted">
         <User size={10} aria-hidden="true" />
         You

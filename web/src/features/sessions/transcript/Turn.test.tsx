@@ -335,6 +335,60 @@ describe('Turn message actions', () => {
         isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop}
       />,
     )
-    expect(screen.getAllByRole('button', { name: 'Message actions' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /^Message actions/ })).toHaveLength(1)
+  })
+
+  it('names the trigger by role: "your prompt" for a user turn, "reply" for an assistant turn', () => {
+    const { unmount } = render(
+      <Turn turn={{ id: 'u', role: 'user', blocks: [{ kind: 'text', id: 'a', text: 'hi' }] }}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop} />,
+    )
+    expect(screen.getByRole('button', { name: /^Message actions/ })).toHaveAccessibleName('Message actions — your prompt')
+    unmount()
+    render(
+      <Turn turn={makeTurn([{ kind: 'text', id: 'a', text: 'hi' }])}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop} />,
+    )
+    expect(screen.getByRole('button', { name: /^Message actions/ })).toHaveAccessibleName('Message actions — reply')
+  })
+
+  it('pins the trigger to the turn root\'s top-right corner, with no layout wrapper', () => {
+    const { container } = render(
+      <Turn turn={makeTurn([{ kind: 'text', id: 'a', text: 'hi' }])}
+        isLastTurn={false} toolDetailMode="auto" thinkingCollapsed onAnswer={noop} />,
+    )
+    const root = container.firstElementChild as HTMLElement
+    const trigger = screen.getByRole('button', { name: /^Message actions/ })
+    expect(root).toHaveClass('relative')
+    expect(trigger.parentElement).toBe(root)
+    expect(trigger).toHaveClass('absolute', 'right-0', 'top-0', 'opacity-0', 'pointer-coarse:opacity-100')
+  })
+
+  it('reveals only on its OWN turn\'s hover/focus — a nested sub-agent turn does not leak', () => {
+    // Tailwind's `group-hover/<name>` matches ANY hovered ancestor group, which an
+    // outer turn always is for a nested one. The reveal is a direct-child selector
+    // instead, so each trigger must be its own turn root's child and carry no
+    // ancestor-group variant. (jsdom cannot evaluate :hover, so this asserts the
+    // structure the selector depends on.)
+    const task: Block = {
+      kind: 'tool', id: 'task1', toolId: 'task1', name: 'Task', toolKind: 'unknown',
+      input: { subagent_type: 'Explore', description: 'x' }, result: { ok: true, payload: { content: 'done' } },
+    }
+    render(
+      <Turn turn={makeTurn([{ kind: 'text', id: 'a', text: 'outer' }, task])}
+        isLastTurn={false} toolDetailMode="all-open" thinkingCollapsed onAnswer={noop}
+        subAgents={{ task1: { openBlockId: null, turns: [
+          { id: 'sa1', role: 'assistant', blocks: [{ kind: 'text', id: 'sa1:t', text: 'inner' }] },
+        ] } }}
+      />,
+    )
+    const triggers = screen.getAllByRole('button', { name: /^Message actions/, hidden: true })
+    expect(triggers).toHaveLength(2)
+    for (const t of triggers) {
+      expect(t.parentElement).toHaveClass('relative', 'px-4', 'py-2')
+      expect(t).toHaveClass('[:hover>&]:opacity-100', '[:focus-within>&]:opacity-100')
+      expect(t.className).not.toMatch(/group-(hover|focus)/)
+    }
+    expect(triggers[0].parentElement).not.toBe(triggers[1].parentElement)
   })
 })
