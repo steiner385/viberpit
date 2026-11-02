@@ -199,6 +199,7 @@ class InProcessOrchestratorAdapter:
     async def pending_permissions(self, session_id): return await _maybe_await(self._orch._registry.pending(session_id))
     async def active_session_count(self): return await _maybe_await(self._orch.active_session_count())
     async def mcp_status_for(self, *a, **k): return await _maybe_await(self._orch.mcp_status_for(*a, **k))
+    async def session_diff(self, *a, **k): return await _maybe_await(self._orch.session_diff(*a, **k))
     async def mcp_reconnect(self, *a, **k): return await _maybe_await(self._orch.mcp_reconnect(*a, **k))
     async def mcp_toggle(self, *a, **k): return await _maybe_await(self._orch.mcp_toggle(*a, **k))
     async def reconnect_mcp_everywhere(self, *a, **k): return await _maybe_await(self._orch.reconnect_mcp_everywhere(*a, **k))

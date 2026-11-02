@@ -313,6 +313,9 @@ def register_orchestrator_rpc(app, orch) -> None:
     # Methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
         "probe_mcp", "mcp_status_for", "reconnect_mcp_everywhere",
+        # D-4 Changes pane: a camelCase dict of JSON scalars, computed on the daemon
+        # that owns the session's worktree.
+        "session_diff",
         "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",

@@ -19,7 +19,7 @@ import re
 from datetime import datetime
 from typing import Any, Literal, TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -1988,6 +1988,27 @@ async def session_mcp_status(
     if servers is None:
         raise HTTPException(status_code=404, detail={"code": "SESSION_NOT_LIVE"})
     return {"servers": servers}
+
+
+@router.get("/{session_id}/diff")
+async def session_diff(
+    session_id: str,
+    request: Request,
+    summary: bool = False,
+    ignore_whitespace: bool = Query(False, alias="ignoreWhitespace"),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """The session worktree's diff from its base to the working tree (D-4 Changes pane).
+
+    Computed on the daemon that owns the session. ``summary`` drops every hunk (the
+    header chip's cheap poll); ``ignoreWhitespace`` is ``git diff -w``. No cwd, or a
+    cwd that is not a git work tree, is 200 with ``files: []``; unknown session 404.
+    """
+    try:
+        return await _get_orchestrator(request).session_diff(
+            session_id, summary=summary, ignore_whitespace=ignore_whitespace)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
 
 
 @router.post("/{session_id}/mcp/{server}/reconnect")

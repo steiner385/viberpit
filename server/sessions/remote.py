@@ -51,6 +51,11 @@ USAGE_RPC_TIMEOUT = 3.0
 # case (the origin-only fetch and the assess_model timeout already cap it).
 SPAWN_RPC_TIMEOUT = 90.0
 
+# The session diff (D-4) runs several sequential git calls in the daemon, each bounded
+# at 30s by viberpit.worktree_diff, so a slow worktree can outlast the 30s client
+# default. It is a read: timing out only costs the user a retry.
+DIFF_RPC_TIMEOUT = 90.0
+
 # Materialization apply (#992): its own budget because it is not spawn-shaped at all.
 # The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
 # one createIssue per issue (an epic plus every task in the plan), then the batched
@@ -856,6 +861,19 @@ class RemoteOrchestrator:
 
     async def mcp_status_for(self, session_id):
         return await self._client.call("mcp_status_for", session_id=session_id)
+
+    async def session_diff(self, session_id, *, summary: bool = False,
+                           ignore_whitespace: bool = False) -> dict:
+        """Proxy session_diff to the daemon that owns the worktree. An unknown session
+        crosses the RPC as a DaemonError; re-raise it as the orchestrator's KeyError."""
+        try:
+            return await self._client.call("session_diff", timeout=DIFF_RPC_TIMEOUT,
+                                           session_id=session_id, summary=summary,
+                                           ignore_whitespace=ignore_whitespace)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
 
     async def mcp_reconnect(self, session_id, server: str):
         """The daemon answers an error-shaped dict (exceptions do not survive the RPC hop
