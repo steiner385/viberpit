@@ -1,0 +1,210 @@
+import { memo, useEffect, useMemo, useState } from 'react'
+import { cn } from '@/lib/utils'
+import { loadDiffHighlight, loadedDiffHighlight } from './highlightChunk'
+import type { DiffHunk, DiffLine, FileDiff } from './types'
+
+export type DiffViewMode = 'unified' | 'split'
+
+interface Props {
+  file: FileDiff
+  view: DiffViewMode
+  /** Render at most this many diff lines, then a "show all" button. Unset = everything. */
+  maxLines?: number
+  /** Extra classes on the frame — the frame is the scroll container, so a height cap goes here. */
+  className?: string
+}
+
+/**
+ * One file's diff — the shared renderer behind both the transcript's inline
+ * Edit/Write results and the Changes pane.
+ *
+ * Unified draws each line once with old/new numbers and a +/- gutter. Split
+ * pairs each run of deletions with the run of additions that follows it, row by
+ * row, so a changed line sits beside its replacement; the side a run is short
+ * on gets an empty cell. Context lines appear on both sides.
+ *
+ * Colours come from the app's one highlight.js theme: the frame is `.hljs` and
+ * add/del rows are `.hljs-addition` / `.hljs-deletion`, so diff and code-block
+ * colours always agree. Syntax highlighting is loaded on demand (see
+ * `diffHighlight.ts`); until it arrives, and for files with no known language,
+ * the lines are plain text.
+ */
+export const DiffRenderer = memo(function DiffRenderer({ file, view, maxLines, className }: Props) {
+  const [showAll, setShowAll] = useState(false)
+  const highlight = useHighlighter(file.path)
+
+  const total = useMemo(() => file.hunks.reduce((n, h) => n + h.lines.length, 0), [file])
+  const hunks = useMemo(
+    () => (showAll || maxLines == null ? file.hunks : limitHunks(file.hunks, maxLines)),
+    [file, showAll, maxLines],
+  )
+  const anchored = useMemo(() => isAnchored(file.hunks), [file])
+  const numWidth = useMemo(() => `${String(maxLineNo(file.hunks)).length}ch`, [file])
+  const shown = hunks.reduce((n, h) => n + h.lines.length, 0)
+
+  const body = useMemo(() => {
+    const cell = (line: DiffLine | null, side: 'old' | 'new' | null) => (
+      <LineCell line={line} side={side} anchored={anchored} numWidth={numWidth} highlight={highlight} split={view === 'split'} />
+    )
+    return hunks.map((h, i) => (
+      <div key={i}>
+        {anchored && (
+          <div className="px-2 py-0.5 opacity-60 select-none" data-hunk-header>
+            {hunkHeader(h)}
+          </div>
+        )}
+        {view === 'unified'
+          ? h.lines.map((l, j) => (
+            <div key={j} data-diff-row data-kind={l.kind} className={cn('flex min-h-5', rowClass(l.kind))}>
+              {cell(l, null)}
+            </div>
+          ))
+          : splitRows(h.lines).map(([left, right], j) => (
+            <div key={j} data-diff-row className="grid grid-cols-2">
+              {cell(left, 'old')}
+              {cell(right, 'new')}
+            </div>
+          ))}
+      </div>
+    ))
+  }, [hunks, view, anchored, numWidth, highlight])
+
+  if (file.binary || file.tooLarge) {
+    return (
+      <div className={cn('hljs rounded bg-canvas p-2 text-xs text-ink', className)}>
+        {file.binary ? 'Binary file — no text diff.' : 'Diff too large to display.'}
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn('hljs overflow-auto rounded bg-canvas text-xs leading-5 font-mono text-ink', className)}>
+      <div className={cn('min-w-full py-1', view === 'unified' && 'w-max')}>{body}</div>
+      {shown < total && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="px-3 py-1 text-xs text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          show all {total} lines
+        </button>
+      )}
+    </div>
+  )
+})
+
+interface CellProps {
+  line: DiffLine | null
+  /** Split view: which column this cell is. Unified: null (one cell per row, both numbers). */
+  side: 'old' | 'new' | null
+  anchored: boolean
+  numWidth: string
+  highlight: ((text: string) => string) | null
+  split: boolean
+}
+
+function LineCell({ line, side, anchored, numWidth, highlight, split }: CellProps) {
+  const num = (attr: 'data-old-no' | 'data-new-no', n: number | null | undefined) =>
+    anchored && (
+      <span {...{ [attr]: '' }} className="shrink-0 select-none px-1 text-right opacity-60" style={{ minWidth: numWidth }}>
+        {n ?? ''}
+      </span>
+    )
+  const content = line && <Code text={line.text} highlight={highlight} />
+  const sign = line && (
+    <span data-sign className="shrink-0 select-none pr-1">{line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '}</span>
+  )
+  const code = (
+    <span className={cn('min-w-0 pr-2', split ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}>{content}</span>
+  )
+
+  if (side === null) {
+    return <>{num('data-old-no', line?.oldNo)}{num('data-new-no', line?.newNo)}{sign}{code}</>
+  }
+  return (
+    <div
+      data-side={side}
+      data-kind={line ? line.kind : 'empty'}
+      className={cn('flex min-h-5 min-w-0', line && rowClass(line.kind), side === 'new' && 'border-l border-edge')}
+    >
+      {line && num(side === 'old' ? 'data-old-no' : 'data-new-no', side === 'old' ? line.oldNo : line.newNo)}
+      {sign}
+      {code}
+    </div>
+  )
+}
+
+function Code({ text, highlight }: { text: string; highlight: ((text: string) => string) | null }) {
+  // highlight.js escapes the source; its only markup is its own token spans.
+  if (highlight) return <span dangerouslySetInnerHTML={{ __html: highlight(text) }} />
+  return <>{text}</>
+}
+
+/** Fallback washes sit in Tailwind's layer, so the unlayered theme classes win once the theme CSS is loaded. */
+function rowClass(kind: DiffLine['kind']): string | undefined {
+  if (kind === 'add') return 'hljs-addition bg-success-wash'
+  if (kind === 'del') return 'hljs-deletion bg-danger-wash'
+  return undefined
+}
+
+/** The line highlighter for `path`, or null while it loads / for plain text. */
+function useHighlighter(path: string): ((text: string) => string) | null {
+  const [mod, setMod] = useState(loadedDiffHighlight)
+  useEffect(() => {
+    if (!path || mod) return
+    let live = true
+    void loadDiffHighlight().then((m) => { if (live && m) setMod(m) })
+    return () => { live = false }
+  }, [path, mod])
+  return useMemo(() => (path && mod ? mod.highlighterFor(path) : null), [path, mod])
+}
+
+function hunkHeader(h: DiffHunk): string {
+  return `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@${h.header ? ` ${h.header}` : ''}`
+}
+
+/** Line numbers exist only for a diff taken against a real file (not a tool call's fragment). */
+function isAnchored(hunks: DiffHunk[]): boolean {
+  return hunks.some((h) => h.lines.some((l) => l.oldNo != null || l.newNo != null))
+}
+
+function maxLineNo(hunks: DiffHunk[]): number {
+  let max = 0
+  for (const h of hunks) for (const l of h.lines) max = Math.max(max, l.oldNo ?? 0, l.newNo ?? 0)
+  return max
+}
+
+/** The first `max` lines across hunks, dropping hunks that start past the cut. */
+function limitHunks(hunks: DiffHunk[], max: number): DiffHunk[] {
+  const out: DiffHunk[] = []
+  let left = max
+  for (const h of hunks) {
+    if (left <= 0) break
+    out.push(h.lines.length <= left ? h : { ...h, lines: h.lines.slice(0, left) })
+    left -= h.lines.length
+  }
+  return out
+}
+
+/**
+ * Split-view rows: context lines on both sides; each run of deletions paired
+ * row by row with the run of additions right after it, the shorter run padded
+ * with null (an empty cell).
+ */
+function splitRows(lines: DiffLine[]): Array<[DiffLine | null, DiffLine | null]> {
+  const rows: Array<[DiffLine | null, DiffLine | null]> = []
+  let i = 0
+  while (i < lines.length) {
+    if (lines[i].kind === 'context') {
+      rows.push([lines[i], lines[i]])
+      i++
+      continue
+    }
+    const dels: DiffLine[] = []
+    const adds: DiffLine[] = []
+    while (i < lines.length && lines[i].kind === 'del') dels.push(lines[i++])
+    while (i < lines.length && lines[i].kind === 'add') adds.push(lines[i++])
+    for (let k = 0; k < Math.max(dels.length, adds.length); k++) rows.push([dels[k] ?? null, adds[k] ?? null])
+  }
+  return rows
+}
