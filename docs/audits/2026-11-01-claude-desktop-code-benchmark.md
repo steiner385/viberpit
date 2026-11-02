@@ -66,11 +66,11 @@ Full inventories, with an evidence tag on every item:
 | 5 Settings | 3.5 / 8 | 44% |
 | 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 13.5 / 25 | 54% |
-| 8 Code review & dev | 8 / 12 | 67% |
+| 8 Code review & dev | 7.5 / 12 | 62% |
 | 9 Shortcuts & a11y | 6 / 8 | 75% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **120.5 / 161** | **75%** |
-| **Target completion** (excl. rejected rows) | **118 / 151** | **78%** |
+| **Overall (weighted)** | **120 / 161** | **75%** |
+| **Target completion** (excl. rejected rows) | **117.5 / 151** | **78%** |
 
 ### 1 Shell & IA
 
@@ -184,7 +184,7 @@ Full inventories, with an evidence tag on every item:
 |---|:-:|:-:|---|
 | Changes pane: aggregate diff, unified/split, line comments | 3 | ✅ |  |
 | Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted; MultiEdit edits[] not rendered |
-| Files pane (view / edit) | 1 | ✅ | read-only by design (D1) |
+| Files pane (view / edit) | 1 | ◐ | read-only viewer; edit rejected (D1), content search not yet |
 | PR viewer: checks, threads, merge, auto-merge | 2 | ◐ | Pipeline page + PR pills + Fix |
 | Preview browser with dev-server detection | 2 | ◐ | VNC Browser tab, no dev-server detect |
 | Integrated terminal | 2 | ❌ |  · *rejected for target* |
@@ -247,6 +247,7 @@ Full inventories, with an evidence tag on every item:
 | 33 | Notification levels per event type | 5 Settings | 0.5 |
 | 34 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
 | 35 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 36 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

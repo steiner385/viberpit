@@ -20,6 +20,9 @@ interface Props {
   files?: string[]
   /** The first file results are still in flight — the Files group shows a loading row. */
   filesLoading?: boolean
+  /** The file rows answer an earlier query (the debounce or the fetch for the typed
+   *  one has not caught up): they show dimmed, and Enter/Tab wait rather than pick. */
+  filesStale?: boolean
   query: string
   onSelect: (session: MentionSource) => void
   onSelectFile?: (path: string) => void
@@ -41,7 +44,7 @@ type Item =
   | { kind: 'session'; key: string; label: string; session: MentionSource }
 
 export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function MentionMenu(
-  { sessions, files, filesLoading = false, query, onSelect, onSelectFile, onDismiss, onActiveChange, listboxId, onVisibleChange }, ref,
+  { sessions, files, filesLoading = false, filesStale = false, query, onSelect, onSelectFile, onDismiss, onActiveChange, listboxId, onVisibleChange }, ref,
 ) {
   const grouped = files !== undefined || filesLoading
   const fileItems = useMemo<Item[]>(
@@ -84,19 +87,19 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
       handleKeyDown(e: React.KeyboardEvent): boolean {
         if (e.key === 'Escape') { e.preventDefault(); onDismiss(); return true }
         const selects = e.key === 'Enter' || (e.key === 'Tab' && !e.shiftKey)
-        if (items.length === 0) {
-          // Files still loading and nothing to pick yet: the menu is up, so Enter/Tab
-          // must not fall through and send the half-typed `@query`.
-          if (filesLoading && selects) { e.preventDefault(); return true }
-          return false
-        }
+        // Files still loading, or the rows on screen answer an older query: the menu
+        // is up, so Enter/Tab must neither fall through and send the half-typed
+        // `@query` nor insert a file that the typed query never matched.
+        const waiting = filesLoading || (filesStale && fileItems.length > 0)
+        if (waiting && selects) { e.preventDefault(); return true }
+        if (items.length === 0) return false
         if (e.key === 'ArrowDown') { e.preventDefault(); setSelKey(items[(active + 1) % items.length].key); return true }
         if (e.key === 'ArrowUp')   { e.preventDefault(); setSelKey(items[(active - 1 + items.length) % items.length].key); return true }
         if (selects) { e.preventDefault(); pick(items[active]); return true }
         return false
       },
     }
-  }, [items, active, filesLoading, onSelect, onSelectFile, onDismiss])
+  }, [items, fileItems.length, active, filesLoading, filesStale, onSelect, onSelectFile, onDismiss])
 
   if (!visible) return null
 
@@ -113,6 +116,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
         'block w-full truncate px-3 py-2 text-left text-sm',
         TOUCH_FLOOR,
         item.kind === 'file' && 'font-mono text-xs',
+        item.kind === 'file' && filesStale && 'text-ink-muted',
         i === active ? 'bg-accent-wash' : 'hover:bg-surface-raised',
       )}
     >
@@ -140,7 +144,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, Props>(function Mention
       {grouped ? (
         <>
           {(fileItems.length > 0 || filesLoading) && (
-            <div role="group" aria-labelledby={`${baseId}-files`}>
+            <div role="group" aria-labelledby={`${baseId}-files`} aria-busy={filesLoading || filesStale || undefined}>
               {groupLabel(`${baseId}-files`, 'Files')}
               {fileItems.length === 0 && (
                 <div

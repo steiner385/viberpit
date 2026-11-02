@@ -18,9 +18,12 @@ const FILES = ['src/Composer.tsx', 'src/composer/util.ts']
 const FILE_LIST = { files: FILES.map((path) => ({ path })), truncated: false }
 const LOADED = { data: FILE_LIST, isFetching: false }
 const LOADING = { data: undefined, isFetching: true }
+type FilesResponse = { data: typeof FILE_LIST | undefined; isFetching: boolean; isPlaceholderData?: boolean }
 
-// What an enabled files query returns; a test can swap it (loading, other paths).
-let filesResponse: { data: typeof FILE_LIST | undefined; isFetching: boolean } = LOADED
+// What an enabled files query returns; a test can swap it (loading, other paths), or
+// answer per query (`filesFor`).
+let filesResponse: FilesResponse = LOADED
+let filesFor: ((q: string) => FilesResponse) | null = null
 // Every call's (id, q, enabled, at) — the debounce test reads the enabled q's.
 const filesCalls: Array<{ id: string; q: string; enabled: boolean; at: number }> = []
 
@@ -28,7 +31,8 @@ vi.mock('@/api/hooks', () => ({
   useSessions: () => ({ data: SESSIONS }),
   useSessionFiles: (id: string, q: string, { enabled = true }: { enabled?: boolean } = {}) => {
     filesCalls.push({ id, q, enabled, at: Date.now() })
-    return enabled ? filesResponse : { data: undefined, isFetching: false }
+    if (!enabled) return { data: undefined, isFetching: false }
+    return filesFor ? filesFor(q) : filesResponse
   },
   useGenerateSuggestions: () => ({ mutateAsync: vi.fn() }),
   useEngineCapabilities: () => undefined,
@@ -47,8 +51,11 @@ function fakeRuntime(sessionId: string): SessionRuntime {
 const defaults = { status: { state: 'idle', count: 0 }, onPrompt: vi.fn(), onInterrupt: vi.fn() }
 const box = () => screen.getByRole('textbox', { name: /message/i })
 const enabledQs = () => [...new Set(filesCalls.filter((c) => c.enabled).map((c) => c.q))]
+// The Files rows answer the typed query: the debounce settled and the fetch landed.
+const filesSettled = () => waitFor(() =>
+  expect(screen.getByRole('group', { name: 'Files' })).not.toHaveAttribute('aria-busy'))
 
-beforeEach(() => { filesCalls.length = 0; filesResponse = LOADED; vi.clearAllMocks() })
+beforeEach(() => { filesCalls.length = 0; filesResponse = LOADED; filesFor = null; vi.clearAllMocks() })
 
 describe('session composer @ menu — files and sessions (D-7)', () => {
   it('@comp lists Files above Sessions, and leaves the current session out', async () => {
@@ -70,6 +77,7 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     render(<SessionComposer rt={fakeRuntime('me')} />)
     await user.type(box(), 'look at @comp')
     await screen.findByRole('option', { name: 'src/Composer.tsx' })
+    await filesSettled()
     await user.keyboard('{Enter}')
     expect(box()).toHaveValue('look at @src/Composer.tsx ')
     expect((box() as HTMLTextAreaElement).selectionStart).toBe('look at @src/Composer.tsx '.length)
@@ -83,6 +91,7 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     render(<SessionComposer rt={fakeRuntime('me')} />)
     await user.type(box(), '@notes')
     await screen.findByRole('option', { name: 'docs/My Notes.md' })
+    await filesSettled()
     await user.keyboard('{Enter}')
     expect(box()).toHaveValue('@"docs/My Notes.md" ')
   })
@@ -92,6 +101,7 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     render(<SessionComposer rt={fakeRuntime('me')} />)
     await user.type(box(), '@comp')
     await screen.findByRole('option', { name: 'Composer refactor' })
+    await filesSettled()
     await user.keyboard('{ArrowDown}{ArrowDown}{Enter}')
     expect(box()).toHaveValue('[Composer refactor](/sessions/sess-2) ')
   })
@@ -127,11 +137,40 @@ describe('session composer @ menu — files and sessions (D-7)', () => {
     expect(screen.getByRole('listbox', { name: /mentions/i })).toBeInTheDocument()
   })
 
+  it('Enter on the previous query\'s rows (results not caught up) inserts nothing and sends nothing', async () => {
+    const user = userEvent.setup()
+    const RECENT = { files: [{ path: 'docs/recent.md' }], truncated: false }
+    // `@` lists the recent files; `comp` is still in flight, so react-query keeps the
+    // recent rows up as placeholder data.
+    filesFor = (q) => (q === ''
+      ? { data: RECENT, isFetching: false }
+      : { data: RECENT, isFetching: true, isPlaceholderData: true })
+    const rt = fakeRuntime('me')
+    render(<SessionComposer rt={rt} />)
+    await user.type(box(), '@')
+    await screen.findByRole('option', { name: 'docs/recent.md' })
+    // Typed fast: Enter lands inside the debounce window, before `comp` is even asked.
+    await user.type(box(), 'comp{Enter}')
+    expect(box()).toHaveValue('@comp')
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    // Debounce settled, fetch still in flight (placeholder rows): still waits.
+    await waitFor(() => expect(enabledQs()).toContain('comp'))
+    expect(screen.getByRole('group', { name: 'Files' })).toHaveAttribute('aria-busy', 'true')
+    await user.keyboard('{Enter}')
+    await user.keyboard('{Tab}')
+    expect(box()).toHaveValue('@comp')
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(screen.getByRole('listbox', { name: /mentions/i })).toBeInTheDocument()
+    // The stale rows are dimmed.
+    expect(screen.getByRole('option', { name: 'docs/recent.md' })).toHaveClass('text-ink-muted')
+  })
+
   it('opens in a slash command\'s args — /review @src/… (Claude Code takes @path there)', async () => {
     const user = userEvent.setup()
     render(<SessionComposer rt={fakeRuntime('me')} />)
     await user.type(box(), '/review @comp')
     expect(await screen.findByRole('group', { name: 'Files' })).toBeInTheDocument()
+    await filesSettled()
     await user.keyboard('{Enter}')
     expect(box()).toHaveValue('/review @src/Composer.tsx ')
   })

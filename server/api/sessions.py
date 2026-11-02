@@ -2035,11 +2035,6 @@ def _raise_worktree_read_error(exc: DaemonError, what: str) -> NoReturn:
     ) from exc
 
 
-# Longest ``q`` the file list ranks: a fuzzy subsequence match is O(len(q) * paths), so
-# an unbounded query is a cheap way to burn daemon CPU (D-7).
-MAX_FILES_QUERY_CHARS = 256
-
-
 @router.get("/{session_id}/files")
 async def session_files(
     session_id: str,
@@ -2050,13 +2045,13 @@ async def session_files(
     _identity: str = Depends(current_identity),
 ) -> dict:
     """``{files: [{path}], truncated}`` in the session's worktree (D-7 @-files menu and
-    Files tab), computed on the daemon that owns it. ``q`` is a fuzzy filter (cut to
-    ``MAX_FILES_QUERY_CHARS``); empty lists the most recently modified first. No cwd,
-    or a non-git cwd, is 200 with no files; unknown session 404; an old daemon 409
-    ``daemon_outdated``."""
+    Files tab), computed on the daemon that owns it. ``q`` is a fuzzy filter, cut to
+    ``worktree_files.MAX_QUERY_CHARS`` (the ranker's bound) before the RPC; empty lists
+    the most recently modified first. No cwd, or a non-git cwd, is 200 with no files;
+    unknown session 404; an old daemon 409 ``daemon_outdated``."""
     try:
         return await _get_orchestrator(request).session_files(
-            session_id, q=q[:MAX_FILES_QUERY_CHARS], limit=limit)
+            session_id, q=q[:worktree_files.MAX_QUERY_CHARS], limit=limit)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:

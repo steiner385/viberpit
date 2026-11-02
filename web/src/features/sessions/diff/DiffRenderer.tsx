@@ -1,6 +1,6 @@
-import { Fragment, memo, useEffect, useMemo, useState, type HTMLAttributes, type ReactNode } from 'react'
+import { Fragment, memo, useMemo, useState, type HTMLAttributes, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
-import { loadDiffHighlight, loadedDiffHighlight } from './highlightChunk'
+import { useHighlighter } from './highlightChunk'
 import type { DiffHunk, DiffLine, FileDiff } from './types'
 
 export type DiffViewMode = 'unified' | 'split'
@@ -248,23 +248,4 @@ export function LineNumber({ n, width, className, ...rest }: {
       {n ?? ''}
     </span>
   )
-}
-
-/**
- * The line highlighter for `path`, or null while it loads / for plain text.
- * Shared by `DiffRenderer` and the Files tab's viewer (D-7), so both colour a
- * file the same way and load highlight.js through the one lazy chunk.
- */
-// A hook beside the components: the Files tab's viewer (D-7) imports these from
-// this module, so the diff renderer's chunk is not split in two for it.
-// eslint-disable-next-line react-refresh/only-export-components
-export function useHighlighter(path: string): ((text: string) => string) | null {
-  const [mod, setMod] = useState(loadedDiffHighlight)
-  useEffect(() => {
-    if (!path || mod) return
-    let live = true
-    void loadDiffHighlight().then((m) => { if (live && m) setMod(m) })
-    return () => { live = false }
-  }, [path, mod])
-  return useMemo(() => (path && mod ? mod.highlighterFor(path) : null), [path, mod])
 }

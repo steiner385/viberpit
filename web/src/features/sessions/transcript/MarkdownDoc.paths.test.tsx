@@ -53,6 +53,15 @@ describe('transcript file paths (D-7)', () => {
     expect(ctx.openFile).not.toHaveBeenCalled()
   })
 
+  it('under a subdirectory cwd, an absolute path opens cwd-relative — as the CLI and the server resolve it', async () => {
+    const user = userEvent.setup()
+    const ctx = renderWith('see `/repo/pkg/src/a.ts:3` and `/repo/top.ts`', { cwd: '/repo/pkg' })!
+    await user.click(screen.getByRole('button', { name: 'Open /repo/pkg/src/a.ts:3 in Files' }))
+    expect(ctx.openFile).toHaveBeenCalledWith('src/a.ts', 3)
+    // Above the cwd: the server refuses the read, so it is never offered as a link.
+    expect(screen.queryByRole('button', { name: 'Open /repo/top.ts in Files' })).toBeNull()
+  })
+
   it('a sibling directory sharing the cwd prefix stays copy-only', () => {
     renderWith('see `/repo-evil/x.ts`', {})
     expect(screen.queryByRole('button', { name: /in Files/ })).toBeNull()

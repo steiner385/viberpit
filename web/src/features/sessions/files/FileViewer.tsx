@@ -3,7 +3,8 @@ import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/rea
 import { cn } from '@/lib/utils'
 import { useSessionFile } from '@/api/hooks'
 import { ApiRequestError, apiErrorDetail } from '@/api/client'
-import { HighlightedCode, LineNumber, useHighlighter } from '../diff/DiffRenderer'
+import { HighlightedCode, LineNumber } from '../diff/DiffRenderer'
+import { useHighlighter } from '../diff/highlightChunk'
 import { TextAction } from './TextAction'
 import { MAX_READ_BYTES } from './types'
 
@@ -11,6 +12,12 @@ import { MAX_READ_BYTES } from './types'
 const ROW_PX = 20
 /** Columns a tab advances: the browser's default `tab-size`, which the width estimate assumes. */
 const TAB_COLS = 8
+/**
+ * Longest line highlighted, in chars. A minified bundle can be one 512 KiB line:
+ * highlight.js on it would stall the tab when the row mounts, so a longer line
+ * renders as plain text, and the width estimate counts no line past it.
+ */
+const MAX_HIGHLIGHT_LINE_CHARS = 5000
 
 /**
  * The Files tab's read-only viewer (D-7): one worktree file, line-numbered and
@@ -123,7 +130,7 @@ function FileLines({ path, text, line }: { path: string; text: string; line: num
               text={lines[item.index]}
               start={item.start}
               numWidth={numWidth}
-              highlight={highlight}
+              highlight={lines[item.index].length > MAX_HIGHLIGHT_LINE_CHARS ? null : highlight}
               target={n === target}
               rowRef={n === target ? focusOnMount : undefined}
             />
@@ -155,7 +162,7 @@ const Row = memo(function Row({ n, text, start, numWidth, highlight, target, row
         // An accent box, not a fill: the frame is the highlight theme's own dark
         // background in both app themes, and a tint would cut the token colours'
         // contrast. It doubles as the focus indicator, so focus adds no outline.
-        target && 'ring-2 ring-accent focus:outline-none',
+        target && 'ring-2 ring-inset ring-accent focus:outline-none',
       )}
       style={{ transform: `translateY(${start}px)` }}
     >
@@ -195,15 +202,20 @@ function splitLines(text: string): string[] {
   return lines
 }
 
-/** The widest line in monospace columns, a tab counted at `TAB_COLS`. */
+/**
+ * The widest line in monospace columns, a tab counted at `TAB_COLS`, clamped to
+ * `MAX_HIGHLIGHT_LINE_CHARS` columns: past that a line overflows the row (the frame
+ * still scrolls to it) rather than sizing every row to a megabyte-wide box.
+ */
 function widestColumns(lines: string[]): number {
   let widest = 0
   for (const l of lines) {
+    if (l.length >= MAX_HIGHLIGHT_LINE_CHARS) return MAX_HIGHLIGHT_LINE_CHARS
     let tabs = 0
     for (let i = l.indexOf('\t'); i !== -1; i = l.indexOf('\t', i + 1)) tabs++
     widest = Math.max(widest, l.length + tabs * (TAB_COLS - 1))
   }
-  return widest
+  return Math.min(widest, MAX_HIGHLIGHT_LINE_CHARS)
 }
 
 function kib(bytes: number): string {

@@ -49,6 +49,7 @@ import selectors
 import stat
 import subprocess
 import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 MAX_FILES = 300
@@ -119,6 +120,61 @@ def worktree_top(cwd: str) -> str | None:
     return os.fsdecode(out.rstrip(b"\n")) if out else None
 
 
+_READ_CHUNK = 65536
+
+
+def stream_git(cwd: str, args: Sequence[str], consume: Callable[[bytes], bool],
+               read_size: Callable[[], int] = lambda: _READ_CHUNK) -> str:
+    """Run hardened git in ``cwd`` and feed its stdout to ``consume`` chunk by chunk.
+
+    The one streaming loop behind every bounded git read (the diff patch fetch, the
+    D-7 file listing): a selector wait against a single ``GIT_TIMEOUT_S`` deadline,
+    reads of at most ``read_size()`` bytes, and git killed and reaped however it ends.
+    ``consume`` returns True to stop early.
+
+    Returns ``"ok"`` (EOF and exit 0), ``"cut"`` (``consume`` stopped it; git is
+    killed), ``"timeout"`` (the deadline passed, while reading or waiting for exit),
+    or ``"failed"`` (spawn error or non-zero exit).
+    """
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", cwd, *GIT_GLOBAL, *args],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_env(),
+        )
+    except OSError:
+        return "failed"
+    assert proc.stdout is not None
+    status = "ok"
+    deadline = time.monotonic() + GIT_TIMEOUT_S
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0 or not sel.select(left):
+                status = "timeout"
+                break
+            chunk = os.read(proc.stdout.fileno(), read_size())
+            if not chunk:
+                break
+            if consume(chunk):
+                status = "cut"
+                break
+        if status == "ok":
+            try:
+                if proc.wait(timeout=max(deadline - time.monotonic(), 0)) != 0:
+                    status = "failed"
+            except subprocess.TimeoutExpired:
+                status = "timeout"
+    finally:
+        sel.close()
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdout.close()
+        proc.wait()
+    return status
+
+
 def _git_bounded(cwd: str, args: list[str], limit: int,
                  block_cap: int) -> tuple[bytes, str]:
     """Stream a ``git diff`` patch, reading at most ``limit + 1`` bytes.
@@ -128,50 +184,21 @@ def _git_bounded(cwd: str, args: list[str], limit: int,
     is killed and the last block of ``data`` is partial), or ``"failed"`` (timeout,
     non-zero exit, or spawn error; the last block may be partial too).
     """
-    try:
-        proc = subprocess.Popen(
-            ["git", "-C", cwd, *GIT_GLOBAL, *args],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_env(),
-        )
-    except OSError:
-        return b"", "failed"
-    assert proc.stdout is not None
     buf = bytearray()
-    status = "ok"
     block_start = scanned = 0
-    deadline = time.monotonic() + GIT_TIMEOUT_S
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
-    try:
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0 or not sel.select(left):
-                status = "failed"
-                break
-            chunk = os.read(proc.stdout.fileno(), min(65536, limit + 1 - len(buf)))
-            if not chunk:
-                break
-            buf += chunk
-            nxt = buf.rfind(b"\ndiff --git ", max(scanned - 12, 0))
-            if nxt >= 0:
-                block_start = nxt + 1
-            scanned = len(buf)
-            if len(buf) > limit or len(buf) - block_start > block_cap:
-                status = "cut"
-                break
-        if status == "ok":
-            try:
-                if proc.wait(timeout=max(deadline - time.monotonic(), 0)) != 0:
-                    status = "failed"
-            except subprocess.TimeoutExpired:
-                status = "failed"
-    finally:
-        sel.close()
-        if proc.poll() is None:
-            proc.kill()
-        proc.stdout.close()
-        proc.wait()
-    return bytes(buf), status
+
+    def consume(chunk: bytes) -> bool:
+        nonlocal block_start, scanned
+        buf.extend(chunk)
+        nxt = buf.rfind(b"\ndiff --git ", max(scanned - 12, 0))
+        if nxt >= 0:
+            block_start = nxt + 1
+        scanned = len(buf)
+        return len(buf) > limit or len(buf) - block_start > block_cap
+
+    status = stream_git(cwd, args, consume,
+                        lambda: min(_READ_CHUNK, limit + 1 - len(buf)))
+    return bytes(buf), "failed" if status == "timeout" else status
 
 
 _FILTER_KEY_RE = re.compile(rb"^filter\.(.+)\.[^.]+$", re.DOTALL)
@@ -369,7 +396,7 @@ def _untracked(top: str, path: bytes, *, want_hunks: bool,
             # The agent can swap the path after the lstat: a FIFO opened blocking would
             # park this worker thread, so open non-blocking, never through a symlink,
             # and read only what is still a regular file.
-            fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 os.close(fd)
                 return _file(path, None, "added", 0, 0, False), 0, 0

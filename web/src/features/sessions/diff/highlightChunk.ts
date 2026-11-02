@@ -1,3 +1,5 @@
+import { useEffect, useMemo, useState } from 'react'
+
 /**
  * The one import expression that names the diff highlighter's chunk. Every
  * loader goes through here so a second spelling of the specifier cannot drift
@@ -21,4 +23,20 @@ export function loadDiffHighlight(): Promise<Highlighter | null> {
     return null
   })
   return pending
+}
+
+/**
+ * The line highlighter for `path`, or null while it loads / for plain text.
+ * Shared by `DiffRenderer` and the Files tab's viewer (D-7), so both colour a
+ * file the same way and load highlight.js through the one lazy chunk.
+ */
+export function useHighlighter(path: string): ((text: string) => string) | null {
+  const [mod, setMod] = useState(loadedDiffHighlight)
+  useEffect(() => {
+    if (!path || mod) return
+    let live = true
+    void loadDiffHighlight().then((m) => { if (live && m) setMod(m) })
+    return () => { live = false }
+  }, [path, mod])
+  return useMemo(() => (path && mod ? mod.highlighterFor(path) : null), [path, mod])
 }

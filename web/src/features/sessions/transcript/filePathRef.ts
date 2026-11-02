@@ -61,11 +61,12 @@ export function parseFilePathRef(text: string): FilePathRef | null {
 }
 
 /**
- * `path` as a worktree-relative, `/`-separated path when it names something
- * under `cwd`, else null. An absolute path must sit below `cwd` on a segment
- * boundary (`/repo-evil/x` is not under `/repo`); a relative one is taken as
- * already worktree-relative. Any `..` or `~` segment, the cwd itself and a
- * trailing-slash (directory) path are refused.
+ * `path` as a cwd-relative, `/`-separated path when it names something under
+ * `cwd`, else null — the form the Files tab reads, as the CLI resolves `@path`
+ * against the session cwd (a subdirectory session included). An absolute path
+ * must sit below `cwd` on a segment boundary (`/repo-evil/x` is not under
+ * `/repo`); a relative one is taken as already cwd-relative. Any `..` or `~`
+ * segment, the cwd itself and a trailing-slash (directory) path are refused.
  *
  * `isFilePathRef` is deliberately loose (it only gates click-to-copy), so a
  * LINK needs more: a relative token without a `/` must end in a known file

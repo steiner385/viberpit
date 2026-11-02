@@ -169,9 +169,10 @@ ways into it from the composer and the transcript.
   Identifiers, versions, `host:port`, Windows paths and paths outside the worktree stay copy-only, as do
   the archived reader, sub-agent page and assistant.
 - **Server:** `GET /api/sessions/{id}/files?q=&limit=` and `GET /api/sessions/{id}/files/content?path=`
-  are computed on the session's host. Reads are capped at 512 KiB, refuse `.git` and anything outside the
-  worktree, and are opened without following symlinks. An unknown session is an expected refusal, logged
-  at INFO, not filed as an auto-error.
+  are computed on the session's host. Paths are relative to the session's cwd, as the CLI resolves `@path`,
+  so a session started in a subdirectory sees only the files beneath it. Reads are capped at 512 KiB,
+  refuse `.git` and anything outside the cwd, and links that escape the worktree are refused. An unknown
+  session is an expected refusal, logged at INFO, not filed as an auto-error.
 
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a

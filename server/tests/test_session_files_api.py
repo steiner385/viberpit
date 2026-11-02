@@ -26,7 +26,9 @@ from server.sessions.remote import WORKTREE_RPC_TIMEOUT, RemoteOrchestrator
 from server.sessions.types import SessionRecord
 from server.sessions.worktree_files import (
     FILE_NOT_FOUND,
+    MAX_QUERY_CHARS,
     PATH_OUTSIDE_WORKTREE,
+    SESSION_NOT_FOUND,
     FileAccessError,
 )
 from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -108,8 +110,9 @@ def test_limit_out_of_range_is_422(repo: Path, limit: int) -> None:
     assert r.status_code == 422
 
 
-def test_query_is_clamped_to_256_chars(repo: Path) -> None:
-    """An over-long ``q`` is cut at the endpoint before it reaches the ranking."""
+def test_query_is_clamped_to_64_chars(repo: Path) -> None:
+    """An over-long ``q`` is cut at the endpoint, to the ranker's own bound, before it
+    reaches the daemon."""
     seen: list[str] = []
 
     async def fake(self, session_id, *, q="", limit=50):
@@ -120,7 +123,8 @@ def test_query_is_clamped_to_256_chars(repo: Path) -> None:
             patch.object(SessionOrchestrator, "session_files", fake):
         r = c.get(f"/api/sessions/{SID}/files", params={"q": "a" * 5000}, headers=_H)
     assert r.status_code == 200
-    assert seen == ["a" * 256]
+    assert MAX_QUERY_CHARS == 64
+    assert seen == ["a" * 64]
 
 
 def test_no_cwd_lists_nothing() -> None:
@@ -299,6 +303,8 @@ async def test_rpc_round_trip_runs_on_the_daemon(
                 await ro.session_file(SID, path="gone.txt")
             with pytest.raises(KeyError):
                 await ro.session_files("nope")
+            with pytest.raises(KeyError) as local_miss:
+                await orch.session_files("nope")
             with pytest.raises(KeyError):
                 await ro.session_file("nope", path="notes.md")
             with pytest.raises(KeyError):
@@ -312,6 +318,7 @@ async def test_rpc_round_trip_runs_on_the_daemon(
     rpc_errors = [r for r in caplog.records
                   if r.name == "server.ipc.daemon" and "rpc.error" in r.getMessage()]
     assert len(rpc_errors) == 5  # 2 FileAccessError + 3 unknown-session KeyError
+    assert local_miss.value.error_data == {"code": SESSION_NOT_FOUND}  # type: ignore[attr-defined]
     assert all(r.levelno == logging.INFO for r in rpc_errors), \
         [(r.levelname, r.getMessage()) for r in rpc_errors]
 

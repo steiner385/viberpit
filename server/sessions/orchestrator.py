@@ -19916,7 +19916,7 @@ class SessionOrchestrator:
         try:
             return self.record(session_id)
         except KeyError as exc:
-            exc.error_data = {"code": "SESSION_NOT_FOUND"}  # type: ignore[attr-defined]
+            exc.error_data = {"code": worktree_files.SESSION_NOT_FOUND}  # type: ignore[attr-defined]
             raise
 
     async def session_diff(self, session_id: str, *, summary: bool = False,

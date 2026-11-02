@@ -62,6 +62,20 @@ describe('FileViewer', () => {
     await waitFor(() => expect(document.querySelector('[data-line="1"] .hljs-keyword')).not.toBeNull())
   })
 
+  it('a line over 5,000 chars renders plain (never highlighted) and does not widen the frame past 5,000 columns', async () => {
+    const long = `const big = "${'a'.repeat(6000)}"`
+    serve(200, file(`export const a = 1\n${long}\n`))
+    renderViewer()
+    // Line 1 still highlights, so the highlighter has loaded by the time we look at line 2.
+    await waitFor(() => expect(document.querySelector('[data-line="1"] .hljs-keyword')).not.toBeNull())
+    const row = document.querySelector('[data-line="2"]')!
+    expect(row).toHaveTextContent(long)
+    expect(row.querySelector('[class^="hljs-"]')).toBeNull()
+    // The inner box is sized for the clamped width: 1 digit + 5,000 columns.
+    const inner = row.parentElement as HTMLElement
+    expect(inner.style.width).toBe('calc(5001ch + 1rem)')
+  })
+
   it('windows a large file instead of mounting every line', async () => {
     serve(200, file(Array.from({ length: 5000 }, (_, i) => `x${i}`).join('\n')))
     renderViewer()

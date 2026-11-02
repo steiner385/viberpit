@@ -16,10 +16,22 @@ export const FileMentionMenu = forwardRef<MentionMenuHandle, Props>(function Fil
   { sessionId, query, ...rest }, ref,
 ) {
   const q = useDebouncedValue(query, FILE_SEARCH_DEBOUNCE_MS)
-  // Previous results stay up while typing (the hook keeps placeholder data per session).
-  const { data, isFetching } = useSessionFiles(sessionId, q)
+  // Previous results stay up while typing (the hook keeps placeholder data per session),
+  // but they answer an older query until the debounce settles and the fetch lands:
+  // stale, so Enter/Tab wait instead of inserting a file the typed query never matched.
+  const { data, isFetching, isPlaceholderData } = useSessionFiles(sessionId, q)
+  const stale = !!isPlaceholderData || q !== query
   // A failed lookup degrades to an empty Files group (hidden), never a broken menu.
   // Memoised: a new array each render would reset the menu's highlight every render.
   const files = useMemo(() => data?.files.map((f) => f.path) ?? [], [data])
-  return <MentionMenu ref={ref} {...rest} query={query} files={files} filesLoading={!data && isFetching} />
+  return (
+    <MentionMenu
+      ref={ref}
+      {...rest}
+      query={query}
+      files={files}
+      filesLoading={!data && isFetching}
+      filesStale={stale}
+    />
+  )
 })
