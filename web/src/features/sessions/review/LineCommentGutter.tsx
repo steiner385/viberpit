@@ -13,18 +13,21 @@ import { cn } from '@/lib/utils'
  * (`GutterSpacer`) so split columns stay aligned.
  *
  * `side` names the line: `Comment on line N` (new side), `Comment on removed
- * line N` (old side). Ships in the Changes tab's chunk (via `CommentableDiff`).
+ * line N` (old side); `noun` replaces "line" (the plan card's `step line`).
+ * Ships in the Changes tab's chunk (via `CommentableDiff`) and the plan card's
+ * lazy `PlanStepLines` chunk.
  */
-export default function LineCommentGutter({ line, side, selected, onClick }: {
+export default function LineCommentGutter({ line, side, noun = 'line', selected, onClick }: {
   line: number
   side: 'old' | 'new'
+  noun?: string
   selected: boolean
   onClick: (e: MouseEvent<HTMLButtonElement>) => void
 }) {
   return (
     <button
       type="button"
-      aria-label={side === 'old' ? `Comment on removed line ${line}` : `Comment on line ${line}`}
+      aria-label={side === 'old' ? `Comment on removed ${noun} ${line}` : `Comment on ${noun} ${line}`}
       aria-pressed={selected}
       onClick={onClick}
       className={cn(

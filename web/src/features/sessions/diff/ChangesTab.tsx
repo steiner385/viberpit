@@ -352,3 +352,7 @@ function useChangeNavigation(listRef: React.RefObject<HTMLDivElement | null>) {
     el.scrollIntoView({ block: 'center' })
   }, [listRef])
 }
+
+/** The plan card's lazy per-step comment view rides this chunk, beside the gutter and editor it reuses
+ *  (`PermissionCard` imports it from here; a chunk of its own would regroup the shared chunks). */
+export { default as PlanStepLines } from '../review/PlanStepLines'

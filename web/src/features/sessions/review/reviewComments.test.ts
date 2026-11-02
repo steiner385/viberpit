@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  composePlanFeedback,
   composeReviewPrompt,
   newCommentId,
   sortComments,
@@ -78,21 +77,6 @@ describe('composeReviewPrompt', () => {
         '',
         'Address each comment, then summarize what you changed.',
       ].join('\n'),
-    )
-  })
-})
-
-describe('composePlanFeedback', () => {
-  const step = (n: number, q: string, body: string) => c(null, 'new', n, n, [q], body)
-  it('overall only', () => {
-    expect(composePlanFeedback('  hi  ', [])).toBe('hi')
-  })
-  it('steps only has no leading blank line', () => {
-    expect(composePlanFeedback('', [step(2, 'Do X', ' no ')])).toBe('On the plan:\n- line 2: "Do X" — no')
-  })
-  it('both', () => {
-    expect(composePlanFeedback('Overall', [step(1, 'A', 'a'), step(3, 'C', 'c')])).toBe(
-      'Overall\n\nOn the plan:\n- line 1: "A" — a\n- line 3: "C" — c',
     )
   })
 })
