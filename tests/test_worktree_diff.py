@@ -485,3 +485,102 @@ def test_internal_key_error_is_not_surfaced_as_key_error(
     with pytest.raises(RuntimeError) as info:
         session_diff(str(repo))
     assert not isinstance(info.value, KeyError)
+
+
+def _filter_fixture(repo: Path, tmp_path: Path, var: str) -> Path:
+    """A repo-local ``filter.x.<var>`` that touches a marker, selected for ``*.txt``,
+    with a stat-dirty, content-changed tracked ``.txt``."""
+    marker = tmp_path / f"filter-{var}-ran"
+    (repo / ".gitattributes").write_text("*.txt filter=x\n")
+    _commit(repo, "attrs")  # committed before the filter exists: no marker yet
+    _git(repo, "config", f"filter.x.{var}", f"touch {marker}; cat")
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    os.utime(repo / "ws.txt")  # stat-dirty, unchanged content: forces a re-hash
+    assert not marker.exists()
+    return marker
+
+
+@pytest.mark.parametrize("var", ["clean", "process"])
+def test_repo_local_filter_driver_never_runs(repo: Path, tmp_path: Path, var: str) -> None:
+    marker = _filter_fixture(repo, tmp_path, var)
+    for summary in (False, True):
+        files = _by_path(session_diff(str(repo), summary=summary))
+        assert not marker.exists(), summary
+        assert files["keep.txt"]["additions"] == 1
+    if var == "clean":
+        # The fixture is live: plain git diff DOES run a local clean driver.
+        _git(repo, "diff", "HEAD")
+        assert marker.exists()
+    else:
+        # A bogus long-running process driver makes plain git fail, but still runs it.
+        env = {**os.environ, **_GIT_ENV}
+        subprocess.run(["git", "-C", str(repo), "diff", "HEAD"], capture_output=True, env=env)
+        assert marker.exists()
+
+
+def test_worktree_scope_filter_driver_never_runs(repo: Path, tmp_path: Path) -> None:
+    marker = tmp_path / "wt-filter-ran"
+    (repo / ".gitattributes").write_text("*.txt filter=w\n")
+    _commit(repo, "attrs")
+    _git(repo, "config", "extensions.worktreeConfig", "true")
+    _git(repo, "config", "--worktree", "filter.w.clean", f"touch {marker}; cat")
+    assert "filter.w.clean" not in (repo / ".git" / "config").read_text()
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    session_diff(str(repo))
+    assert not marker.exists()
+    _git(repo, "diff", "HEAD")
+    assert marker.exists()
+
+
+def test_unsafe_filter_driver_name_fails_closed(repo: Path) -> None:
+    _git(repo, "config", "filter.a=b.clean", "true")
+    (repo / "keep.txt").write_text("changed\n")
+    d = session_diff(str(repo))
+    assert d["files"] == [] and d["truncated"] is True
+
+
+def test_global_filter_driver_is_not_overridden(
+        repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "global-filter-ran"
+    global_cfg = tmp_path / "global.gitconfig"
+    global_cfg.write_text(f'[filter "g"]\n\tclean = touch {marker}; cat\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_cfg))
+    (repo / ".gitattributes").write_text("*.txt filter=g\n")
+    _commit(repo, "attrs")
+    _git(repo, "config", "filter.x.clean", "cat")  # a local one, to prove the split
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    marker.unlink(missing_ok=True)
+    seen: list[list[str]] = []
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def run(args, *a, **kw):  # type: ignore[no-untyped-def]
+        seen.append(list(args))
+        return real_run(args, *a, **kw)
+
+    def popen(args, *a, **kw):  # type: ignore[no-untyped-def]
+        seen.append(list(args))
+        return real_popen(args, *a, **kw)
+
+    monkeypatch.setattr(worktree_diff.subprocess, "run", run)
+    monkeypatch.setattr(worktree_diff.subprocess, "Popen", popen)
+    session_diff(str(repo))
+    diff_calls = [a for a in seen if "diff" in a]
+    assert diff_calls
+    for args in diff_calls:
+        assert not any(a.startswith("filter.g.") for a in args)
+        assert "filter.x.clean=" in args and "filter.x.required=false" in args
+    assert marker.exists()  # the global driver still ran on the re-hash
+
+
+def test_filter_driver_from_local_include_never_runs(repo: Path, tmp_path: Path) -> None:
+    marker = tmp_path / "include-filter-ran"
+    inc = tmp_path / "inc.gitconfig"
+    inc.write_text(f'[filter "inc"]\n\tclean = touch {marker}; cat\n')
+    (repo / ".gitattributes").write_text("*.txt filter=inc\n")
+    _commit(repo, "attrs")
+    _git(repo, "config", "include.path", str(inc))
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    session_diff(str(repo))
+    assert not marker.exists()
+    _git(repo, "diff", "HEAD")
+    assert marker.exists()

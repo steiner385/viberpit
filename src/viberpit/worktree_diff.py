@@ -20,8 +20,11 @@ left unread, ``truncated`` is true and the totals are **lower bounds**.
 
 Git runs inside an agent-controlled worktree in a credential-holding daemon, so repo
 config cannot run helpers here: no textconv, no external diff, no fsmonitor, no hooks,
-no system config. Residual: configured ``filter.*`` clean drivers (e.g. git-lfs) still
-run when git re-hashes a stat-dirty file; they are user-installed, not repo-supplied.
+no system config, and every ``filter.<name>`` driver defined in the repo-local or
+per-worktree config scope (which the agent can write) is neutralised with empty
+``clean``/``smudge``/``process`` and ``required=false``; a name that cannot be safely
+spliced into ``-c`` fails closed. Global-scope drivers (e.g. git-lfs from
+``git lfs install``) still run when git re-hashes a stat-dirty file.
 """
 
 from __future__ import annotations
@@ -138,6 +141,54 @@ def _git_bounded(cwd: str, args: list[str], limit: int,
         proc.stdout.close()
         proc.wait()
     return bytes(buf), status
+
+
+_FILTER_KEY_RE = re.compile(rb"^filter\.(.+)\.[^.]+$", re.DOTALL)
+# Scopes an agent cannot write from inside its worktree. Anything else that defines a
+# filter driver (local, worktree, or an unknown scope) is neutralised.
+_TRUSTED_SCOPES = {b"global", b"system", b"command"}
+
+
+class _UnsafeConfig(Exception):
+    """A repo-scope filter driver name cannot be neutralised safely via ``-c``."""
+
+
+def _filter_overrides(top: str) -> tuple[str, ...]:
+    """``-c`` args neutralising every filter driver defined in an untrusted scope.
+
+    Raises ``_UnsafeConfig`` when a driver name cannot be spliced into a ``-c`` key
+    (``=``, newline, NUL) or the config cannot be read; ``_GitTimeout`` on timeout."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", top, *_GIT_GLOBAL, "config", "--show-scope", "--includes",
+             "--name-only", "-z", "--get-regexp", r"^filter\."],
+            capture_output=True, env=_env(), timeout=_GIT_TIMEOUT_S, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _GitTimeout from exc
+    except OSError as exc:
+        raise _UnsafeConfig("git config unreadable") from exc
+    if r.returncode == 1:  # no filter.* keys anywhere
+        return ()
+    if r.returncode != 0:
+        raise _UnsafeConfig("git config unreadable")
+    toks = r.stdout.split(b"\0")
+    names: set[bytes] = set()
+    for scope, key in zip(toks[0::2], toks[1::2]):
+        if scope in _TRUSTED_SCOPES:
+            continue
+        m = _FILTER_KEY_RE.match(key)
+        if m is None:
+            raise _UnsafeConfig("unparseable filter key")
+        names.add(m.group(1))
+    args: list[str] = []
+    for raw in sorted(names):
+        if any(c in raw for c in (b"=", b"\n", b"\r", b"\0")):
+            raise _UnsafeConfig("unsafe filter driver name")
+        name = os.fsdecode(raw)
+        for var in ("clean=", "smudge=", "process=", "required=false"):
+            args += ["-c", f"filter.{name}.{var}"]
+    return tuple(args)
 
 
 def _text(b: bytes) -> str:
@@ -373,11 +424,13 @@ def _session_diff(cwd: str, *, summary: bool, ignore_whitespace: bool) -> dict[s
         base, head, rev = _resolve_base(top)
         if not rev:
             return _empty(base, head)
+        # Every call that may hash working-tree files runs with these overrides.
+        cfg = _filter_overrides(top)
         ws = ("-w",) if ignore_whitespace else ()
-        numstat = _git(top, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
-        names = _git(top, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
-        untracked = _git(top, "ls-files", "--others", "--exclude-standard", "-z")
-    except _GitTimeout:
+        numstat = _git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
+        names = _git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
+        untracked = _git(top, *cfg, "ls-files", "--others", "--exclude-standard", "-z")
+    except (_GitTimeout, _UnsafeConfig):
         return _empty(base, head, truncated=True)
     if numstat is None or names is None:
         return _empty(base, head)
@@ -420,7 +473,7 @@ def _session_diff(cwd: str, *, summary: bool, ignore_whitespace: bool) -> dict[s
         i = position[header]
         specs = sorted({os.fsdecode(p) for pr in to_fetch[i:i + _PATCH_BATCH] for p in pr})
         data, status = _git_bounded(
-            top, ["diff", *_DIFF_OPTS, *ws, "-U3", rev, "--", *specs],
+            top, [*cfg, "diff", *_DIFF_OPTS, *ws, "-U3", rev, "--", *specs],
             patch_left, MAX_FILE_PATCH_BYTES)
         patch_left -= len(data)
         parts = _split_patch(data)
