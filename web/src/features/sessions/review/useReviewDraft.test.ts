@@ -50,4 +50,28 @@ describe('useReviewDraft', () => {
     sessionStorage.setItem('viberpit.reviewDraft:s1', '{"a":1}')
     expect(renderHook(() => useReviewDraft('s1')).result.current.comments).toEqual([])
   })
+
+  it('drops malformed entries from a stored draft, keeping the well-formed ones', () => {
+    const good = mk('ok')
+    sessionStorage.setItem('viberpit.reviewDraft:s1', JSON.stringify([
+      good,
+      null,
+      'text',
+      { id: 'no-anchor', quote: ['x'], body: 'b' },
+      { ...mk('bad-side'), anchor: { path: 'a.ts', side: 'both', start: 1, end: 1 } },
+      { ...mk('bad-quote'), quote: [1] },
+      { ...mk('bad-body'), body: 3 },
+      { ...mk('plan'), anchor: { path: null, side: 'new', start: 2, end: 2 } },
+    ]))
+    const { result } = renderHook(() => useReviewDraft('s1'))
+    expect(result.current.comments.map((c) => c.id)).toEqual(['ok', 'plan'])
+  })
+
+  it('writes storage only after commit, never from inside a state updater', () => {
+    const { result } = renderHook(() => useReviewDraft('s1'))
+    act(() => result.current.add(mk('1')))
+    expect(JSON.parse(sessionStorage.getItem('viberpit.reviewDraft:s1') ?? '[]')).toHaveLength(1)
+    act(() => result.current.clear())
+    expect(sessionStorage.getItem('viberpit.reviewDraft:s1')).toBeNull()
+  })
 })

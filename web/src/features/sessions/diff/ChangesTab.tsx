@@ -1,8 +1,13 @@
 import { useCallback, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useSessionDiff } from '@/api/hooks'
 import { useViewport } from '@/shell/useViewport'
-import { DiffRenderer, type DiffViewMode } from './DiffRenderer'
+import CommentableDiff from '../review/CommentableDiff'
+import { CommentCard } from '../review/CommentEditor'
+import { composeReviewPrompt, newCommentId, type CommentAnchor, type LineComment } from '../review/reviewComments'
+import { useReviewDraft } from '../review/useReviewDraft'
+import type { DiffViewMode } from './DiffRenderer'
 import { getDiffViewPreference, setDiffViewPreference } from './diffViewPreference'
 import type { FileDiff } from './types'
 
@@ -26,14 +31,28 @@ const UNPRESSED = 'text-ink-muted hover:bg-surface-raised hover:text-ink'
  * the entry. It fetches the FULL diff (hunks included) when it mounts, which is
  * the "refetch when the tab opens"; a turn ending invalidates it through the
  * summary hook's `busy` edge in `SessionBody`.
+ *
+ * Line comments (D-5) collect in a per-session draft; the review bar sends them
+ * as ONE prompt through `onSendReview` — the runtime's `onPrompt`, the function
+ * the composer's Send and Queue call, so a busy session queues it exactly as a
+ * typed prompt would be (the server queues behind the live turn).
  */
-export default function ChangesTab({ sessionId }: { sessionId: string }) {
+export default function ChangesTab({ sessionId, onSendReview }: {
+  sessionId: string
+  onSendReview: (text: string, attachmentIds: string[]) => void
+}) {
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false)
   const { data, isError, refetch } = useSessionDiff(sessionId, { ignoreWhitespace })
   const [view, setView] = useDiffView()
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const listRef = useRef<HTMLDivElement>(null)
   const goToChange = useChangeNavigation(listRef)
+  const draft = useReviewDraft(sessionId)
+  const review: ReviewHandlers = {
+    add: (anchor, quote, body) => draft.add({ id: newCommentId(), anchor, quote, body }),
+    edit: draft.update,
+    remove: draft.remove,
+  }
 
   const toggle = (path: string) => setCollapsed((prev) => {
     const next = new Set(prev)
@@ -56,6 +75,10 @@ export default function ChangesTab({ sessionId }: { sessionId: string }) {
   }
 
   const hasHunks = data.files.some((f) => f.hunks.length > 0)
+  const paths = new Set(data.files.map((f) => f.path))
+  // A comment whose file left the diff (reverted, or hidden by the whitespace
+  // toggle) is still in the draft and still sent — so it stays visible.
+  const orphans = draft.comments.filter((c) => !paths.has(c.anchor.path ?? ''))
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="changes-tab">
@@ -104,6 +127,14 @@ export default function ChangesTab({ sessionId }: { sessionId: string }) {
             Diff truncated — files past the limit are listed without their changes, and the totals are lower bounds.
           </p>
         )}
+        {orphans.length > 0 && (
+          <section aria-label="Comments on files no longer changed" className="space-y-1">
+            {orphans.map((c) => (
+              <CommentCard key={c.id} comment={c} stale showPath
+                           onEdit={(b) => draft.update(c.id, b)} onDelete={() => draft.remove(c.id)} />
+            ))}
+          </section>
+        )}
         {data.files.map((f) => (
           <FileSection
             key={f.path}
@@ -112,15 +143,71 @@ export default function ChangesTab({ sessionId }: { sessionId: string }) {
             open={!collapsed.has(f.path)}
             onToggle={() => toggle(f.path)}
             truncated={data.truncated}
+            comments={draft.comments.filter((c) => c.anchor.path === f.path)}
+            review={review}
           />
         ))}
       </div>
+
+      {draft.comments.length > 0 && (
+        <ReviewBar comments={draft.comments} onDiscard={draft.clear} onSend={() => {
+          const n = draft.comments.length
+          onSendReview(composeReviewPrompt(draft.comments), [])
+          draft.clear()
+          toast.success(`Sent ${countLabel(n)}`)
+        }} />
+      )}
     </div>
   )
 }
 
-function FileSection({ file, view, open, onToggle, truncated }: {
+type ReviewHandlers = {
+  add: (anchor: CommentAnchor, quote: string[], body: string) => void
+  edit: (id: string, body: string) => void
+  remove: (id: string) => void
+}
+
+const countLabel = (n: number) => `${n} comment${n === 1 ? '' : 's'}`
+
+/**
+ * Shown while the draft has comments: the count, Discard all, Send to Claude.
+ * Discard confirms in place (Discard / Keep) rather than through `ConfirmDialog`:
+ * importing the dialog into this lazy chunk regroups shared chunks onto the
+ * critical path (+0.8 kB initialJs against a ceiling with no headroom).
+ */
+function ReviewBar({ comments, onDiscard, onSend }: {
+  comments: readonly LineComment[]; onDiscard: () => void; onSend: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const n = countLabel(comments.length)
+  return (
+    <div role="region" aria-label="Review comments"
+         className="flex shrink-0 flex-wrap items-center gap-2 border-t border-edge bg-surface px-3 py-1">
+      {confirming ? (
+        <>
+          <span role="alert" className="min-w-0 flex-1 text-sm text-ink">{`Discard ${n}? They won’t be sent.`}</span>
+          <button type="button" autoFocus onClick={() => setConfirming(false)} className={cn(CONTROL, UNPRESSED)}>Keep</button>
+          <button type="button" onClick={() => { setConfirming(false); onDiscard() }}
+                  className={cn(CONTROL, 'bg-danger-strong px-3 text-on-strong hover:bg-danger-strong/90')}>
+            Discard
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="min-w-0 flex-1 text-sm text-ink">{n}</span>
+          <button type="button" onClick={() => setConfirming(true)} className={cn(CONTROL, UNPRESSED)}>Discard all</button>
+          <button type="button" onClick={onSend} className={cn(CONTROL, 'bg-accent px-3 text-accent-ink hover:bg-accent/90')}>
+            Send to Claude
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+function FileSection({ file, view, open, onToggle, truncated, comments, review }: {
   file: FileDiff; view: DiffViewMode; open: boolean; onToggle: () => void; truncated: boolean
+  comments: LineComment[]; review: ReviewHandlers
 }) {
   const name = file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path
   return (
@@ -143,12 +230,14 @@ function FileSection({ file, view, open, onToggle, truncated }: {
           <span className="text-danger">−{file.deletions}</span>
         </span>
       </button>
-      {open && <FileBody file={file} view={view} truncated={truncated} />}
+      {open && <FileBody file={file} view={view} truncated={truncated} comments={comments} review={review} />}
     </section>
   )
 }
 
-function FileBody({ file, view, truncated }: { file: FileDiff; view: DiffViewMode; truncated: boolean }) {
+function FileBody({ file, view, truncated, comments, review }: {
+  file: FileDiff; view: DiffViewMode; truncated: boolean; comments: LineComment[]; review: ReviewHandlers
+}) {
   // Binary and too-large files carry the renderer's own notice.
   if (file.hunks.length === 0 && !file.binary && !file.tooLarge) {
     return (
@@ -158,7 +247,19 @@ function FileBody({ file, view, truncated }: { file: FileDiff; view: DiffViewMod
     )
   }
   // Keyed per file: the renderer's "show all" state must not carry to another file.
-  return <DiffRenderer key={file.path} file={file} view={view} maxLines={MAX_LINES} className="border-t border-edge" />
+  return (
+    <CommentableDiff
+      key={file.path}
+      file={file}
+      view={view}
+      maxLines={MAX_LINES}
+      className="border-t border-edge"
+      comments={comments}
+      onAddComment={review.add}
+      onEditComment={review.edit}
+      onDeleteComment={review.remove}
+    />
+  )
 }
 
 /** Unified below 1024px, split from 1024px, unless the user has chosen — then their choice, per browser. */

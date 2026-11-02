@@ -297,7 +297,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           return (
             <div id="tab-panel-changes" role="tabpanel" aria-labelledby="tab-changes" className="flex-1 min-h-0 min-w-0">
               <Suspense fallback={<div className="h-full w-full" aria-busy="true" />}>
-                <ChangesTab sessionId={rt.sessionId} />
+                <ChangesTab sessionId={rt.sessionId} onSendReview={rt.onPrompt} />
               </Suspense>
             </div>
           )

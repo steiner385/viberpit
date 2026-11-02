@@ -41,7 +41,10 @@ const DIFF = {
   ],
 }
 
-async function openSession(page: Page, width: number) {
+/** Every frame the page sent over the session socket, parsed. */
+type Frame = { type: string; sessionId?: string; text?: string }
+
+async function openSession(page: Page, width: number, sent: Frame[] = []) {
   await page.setViewportSize({ width, height: 900 })
   await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
   await page.route('**/api/sessions', (route) => route.fulfill({ json: [{
@@ -55,7 +58,9 @@ async function openSession(page: Page, width: number) {
     route.fulfill({ json: summary ? { ...DIFF, files: DIFF.files.map((f) => ({ ...f, hunks: [] })) } : DIFF })
   })
   await page.routeWebSocket('**/ws', (ws) => ws.onMessage((msg) => {
-    if (JSON.parse(msg.toString()).type === 'attach') ws.send(wire(replayFrame(sid, [], { totalTurns: 0 })))
+    const frame = JSON.parse(msg.toString()) as Frame
+    sent.push(frame)
+    if (frame.type === 'attach') ws.send(wire(replayFrame(sid, [], { totalTurns: 0 })))
   }))
   await page.goto('/')
   await page.getByRole('button', { name: /open session changes tab/i }).click()
@@ -93,4 +98,34 @@ test('Next change focuses the first change run', async ({ page }) => {
   await page.getByRole('tab', { name: 'Changes' }).click()
   await page.getByRole('button', { name: 'Next change' }).click()
   await expect(page.locator('[data-diff-row]:focus')).toContainText('const a = 1')
+})
+
+test('comment a line, send, and the prompt frame carries the composed review', async ({ page }) => {
+  const sent: Frame[] = []
+  await openSession(page, 390, sent)
+  await page.getByRole('tab', { name: 'Changes' }).click()
+  const row = page.locator('[data-diff-row]', { hasText: 'const a = 2' })
+  await row.hover()
+  await row.getByRole('button', { name: 'Comment on line 2' }).click()
+  await page.getByRole('textbox', { name: 'Comment' }).fill('Why two?')
+  await page.keyboard.press('Control+Enter')
+  await expect(page.getByRole('article', { name: 'Comment on line 2' })).toContainText('Why two?')
+  await noOverflow(page)
+  const bar = page.getByRole('region', { name: 'Review comments' })
+  await expect(bar).toContainText('1 comment')
+  await bar.getByRole('button', { name: 'Send to Claude' }).click()
+  const path = DIFF.files[0].path
+  await expect.poll(() => sent.find((f) => f.type === 'prompt')).toEqual(expect.objectContaining({
+    sessionId: sid,
+    text: [
+      'Review comments on the current changes (1):',
+      '',
+      `1. \`${path}\` line 2:`,
+      '   > const a = 2',
+      '   Why two?',
+      '',
+      'Address each comment, then summarize what you changed.',
+    ].join('\n'),
+  }))
+  await expect(bar).toBeHidden()
 })

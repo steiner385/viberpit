@@ -1,13 +1,25 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { storageKey } from '@/lib/storageKey'
 import type { LineComment } from './reviewComments'
 
 const draftKey = (sessionId: string) => storageKey(`reviewDraft:${sessionId}`)
 
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
+
+/** Storage is user-writable and outlives code versions: keep only well-formed entries. */
+function isLineComment(v: unknown): v is LineComment {
+  if (!isRecord(v) || !isRecord(v.anchor)) return false
+  const { path, side, start, end } = v.anchor
+  return typeof v.id === 'string' && typeof v.body === 'string'
+    && Array.isArray(v.quote) && v.quote.every((l) => typeof l === 'string')
+    && (path === null || typeof path === 'string') && (side === 'new' || side === 'old')
+    && Number.isInteger(start) && Number.isInteger(end)
+}
+
 function load(sessionId: string): LineComment[] {
   try {
     const parsed: unknown = JSON.parse(window.sessionStorage.getItem(draftKey(sessionId)) ?? '[]')
-    return Array.isArray(parsed) ? (parsed as LineComment[]) : []
+    return Array.isArray(parsed) ? parsed.filter(isLineComment) : []
   } catch {
     return []
   }
@@ -32,13 +44,12 @@ export function useReviewDraft(sessionId: string) {
     setState(current)
   }
 
+  // Persist after commit, keyed on the state's own session — never from inside an updater.
+  useEffect(() => save(state.sessionId, state.comments), [state.sessionId, state.comments])
+
   const commit = useCallback(
     (next: (prev: LineComment[]) => LineComment[]) => {
-      setState((s) => {
-        const comments = next(s.sessionId === sessionId ? s.comments : load(sessionId))
-        save(sessionId, comments)
-        return { sessionId, comments }
-      })
+      setState((s) => ({ sessionId, comments: next(s.sessionId === sessionId ? s.comments : load(sessionId)) }))
     },
     [sessionId],
   )
