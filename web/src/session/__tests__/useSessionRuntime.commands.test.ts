@@ -33,7 +33,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 import { useSessionRuntime } from '@/session/useSessionRuntime'
-import { api } from '@/api/client'
+import { api, ApiRequestError } from '@/api/client'
 
 // useSessionRuntime invalidates permission-rules after a grant, so it needs a client.
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -74,9 +74,22 @@ describe('runtime commands', () => {
     const post = vi.spyOn(api, 'post').mockResolvedValue({ ok: true, restarted: false })
     const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     await act(async () => result.current.onSetModel('gpt-5', 'now', 'high'))
-    expect(post).toHaveBeenCalledWith('/sessions/s1/model', { model: 'gpt-5', effort: 'high' })
+    expect(post).toHaveBeenCalledWith('/sessions/s1/model', { model: 'gpt-5', effort: 'high', when: 'now' })
     expect(command).not.toHaveBeenCalled()
     expect(result.current.model).toBe('gpt-5')
+    await act(async () => result.current.onSetModel('gpt-5', 'after_turn', 'low'))
+    expect(post).toHaveBeenLastCalledWith('/sessions/s1/model', { model: 'gpt-5', effort: 'low', when: 'after_turn' })
+    post.mockRestore()
+  })
+
+  it("a refused effort change shows the server's own message when it sends one", async () => {
+    const post = vi.spyOn(api, 'post').mockRejectedValue(new ApiRequestError(400, {
+      detail: { code: 'unsupported_reasoning_effort', message: 'reasoning effort is not supported by agent engine: claude_code' },
+    }))
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    await act(async () => result.current.onSetModel('opus', 'now', 'high'))
+    expect(result.current.state.error?.code).toBe('unsupported_reasoning_effort')
+    expect(result.current.state.error?.message).toBe('reasoning effort is not supported by agent engine: claude_code')
     post.mockRestore()
   })
 

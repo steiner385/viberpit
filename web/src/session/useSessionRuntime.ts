@@ -24,7 +24,7 @@ import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWin
 import { QK, useSessions, useAccounts, useSettings } from '@/api/hooks'
 import { isPreSpawnStatus } from '@/api/types'
 import type { UsageWindow, RulePreview, GrantResult, RuleScope } from '@/api/types'
-import { api, apiErrorCode } from '@/api/client'
+import { api, apiErrorCode, apiErrorDetail } from '@/api/client'
 import { usageWindows } from '@/lib/usageWindows'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
@@ -564,16 +564,15 @@ export function useSessionRuntime(
       return
     }
     // The `/model` slash command has no effort slot; the HTTP route is the same
-    // `session_actions.set_model` path with one. It always switches 'now' (the
-    // route's default) — the effort picker only ever asks for that.
-    api.post(`/sessions/${sessionId}/model`, { model, effort })
+    // `session_actions.set_model` path with one, and takes the same `when`.
+    api.post(`/sessions/${sessionId}/model`, { model, effort, when })
       .then(() => qc.invalidateQueries({ queryKey: QK.sessions }))
       .catch((err: unknown) => {
         setModelOverride(null)
         dispatch({
           type: 'error',
           code: apiErrorCode(err) ?? 'effort_not_set',
-          message: `Couldn't set reasoning effort to ${effort}.`,
+          message: apiErrorDetail(err).message ?? `Couldn't set reasoning effort to ${effort}.`,
         })
       })
   }, [sessionId, command, recordModel, qc])

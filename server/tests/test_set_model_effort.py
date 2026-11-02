@@ -73,6 +73,27 @@ def test_effort_sent_reaches_set_model_for_session():
                            "reasoning_effort": "high"}]
 
 
+def test_effort_after_turn_reaches_set_model_for_session():
+    """A busy effort pick must not interrupt and replay the running turn."""
+    client, fake = _make_client(AgentEngine.CODEX)
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post(f"/api/sessions/{_SID}/model",
+                        json={"model": "gpt-5", "effort": "high", "when": "after_turn"},
+                        headers=_H)
+    assert r.status_code == 200, r.text
+    assert fake.calls == [{"sid": _SID, "model": "gpt-5", "when": "after_turn",
+                           "reasoning_effort": "high"}]
+
+
+def test_unknown_when_is_rejected():
+    client, fake = _make_client(AgentEngine.CODEX)
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post(f"/api/sessions/{_SID}/model",
+                        json={"model": "gpt-5", "when": "later"}, headers=_H)
+    assert r.status_code == 422
+    assert fake.calls == []
+
+
 def test_effort_omitted_leaves_effort_unchanged():
     client, fake = _make_client(AgentEngine.CODEX)
     with patch.dict(os.environ, _ENV), client:

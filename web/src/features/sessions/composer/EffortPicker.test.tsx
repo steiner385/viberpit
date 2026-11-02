@@ -78,11 +78,21 @@ describe('PromptRow effort gating', () => {
     expect(effortTrigger()).toHaveTextContent('medium')
   })
 
-  it("selecting high calls onSetModel(currentModel, 'now', 'high')", async () => {
+  it("an idle pick of high calls onSetModel(currentModel, 'now', 'high')", async () => {
     const rt = fakeRuntime()
     render(<PromptRow rt={rt} session={{ engine: 'codex' }} models={CODEX_MODELS} caps={CODEX_CAPS} />)
     await userEvent.click(effortTrigger()!)
     await userEvent.click(screen.getByRole('menuitemradio', { name: /^high/ }))
     expect(rt.onSetModel).toHaveBeenCalledWith('gpt-5', 'now', 'high')
+  })
+
+  it("a busy pick applies after the turn: it never interrupts the running turn", async () => {
+    const rt = fakeRuntime({ state: { status: { state: 'working', count: 0 } } } as unknown as Partial<SessionRuntime>)
+    render(<PromptRow rt={rt} session={{ engine: 'codex' }} models={CODEX_MODELS} caps={CODEX_CAPS} />)
+    await userEvent.click(effortTrigger()!)
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /^high/ }))
+    expect(rt.onSetModel).toHaveBeenCalledWith('gpt-5', 'after_turn', 'high')
+    // No stop-now / after-turn dialog for an effort change.
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

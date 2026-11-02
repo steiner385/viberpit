@@ -1929,6 +1929,9 @@ class SetModelRequest(BaseModel):
     #: Engine-native reasoning effort (Codex) to apply with the switch. Omitted ⇒
     #: the session's effort is left exactly where it was.
     effort: str | None = None
+    #: How a switch lands on a busy session: "now" stops and replays the running
+    #: turn, "after_turn" lets it finish (the effort picker's busy choice).
+    when: Literal["now", "after_turn"] = "now"
 
 
 def _action_error_response(exc: ActionError) -> JSONResponse:
@@ -2109,8 +2112,8 @@ async def set_session_model(
     effort = body.effort if body.effort is not None else EFFORT_UNCHANGED
     try:
         return await session_actions.set_model(
-            orch, db, session_id=session_id, model=body.model, identity=identity, via=via,
-            effort=effort)
+            orch, db, session_id=session_id, model=body.model, when=body.when,
+            identity=identity, via=via, effort=effort)
     except ActionError as exc:
         return _action_error_response(exc)
 

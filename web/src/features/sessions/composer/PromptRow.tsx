@@ -52,6 +52,7 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: Pr
   const efforts = chosenModel?.reasoningEfforts ?? []
   const showEffort = canUseEngine(caps, 'reasoningEffort') && efforts.length > 0
   const effort = session?.reasoningEffort ?? chosenModel?.defaultReasoningEffort ?? null
+  const busy = statusTier(rt.state.status.state) === 'busy'
 
   useImperativeHandle(menuRef, () => ({
     openMode: () => setOpenMenu('mode'),
@@ -76,7 +77,7 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: Pr
         pending={rt.modelPending}
         models={models}
         engine={session?.engine}
-        busy={statusTier(rt.state.status.state) === 'busy'}
+        busy={busy}
         canSteer={caps?.steer === true}
         onSelect={(id, when) => rt.onSetModel(id, when)}
         open={openMenu === 'model'}
@@ -86,7 +87,9 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: Pr
         <EffortPicker
           effort={effort}
           efforts={efforts}
-          onSelect={(next) => rt.onSetModel(rt.model ?? 'default', 'now', next)}
+          // A busy pick lands after the turn: an effort change never stops and
+          // replays the running turn (no dialog — there is nothing to choose).
+          onSelect={(next) => rt.onSetModel(rt.model ?? 'default', busy ? 'after_turn' : 'now', next)}
           open={openMenu === 'effort'}
           onOpenChange={menuOpener('effort')}
         />
