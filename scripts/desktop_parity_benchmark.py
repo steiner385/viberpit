@@ -18,7 +18,7 @@ D=[
  ("Split view / tiled panes",2,"N","umbrella spec non-goal"),
  ("Pop session into own window",1,"P","every session is a URL; no layout restore"),
  ("Archived view + unarchive",2,"Y",""),
- ("Session rail: Changes / Context / Environment / Tasks cards",2,"P","meta strip has ctx, host, bg tasks; no Changes"),
+ ("Session rail: Changes / Context / Environment / Tasks cards",2,"P","meta strip has ctx, host, bg tasks; Changes chip in header; rail → D-6"),
 ]),
 ("2 Transcript",[
  ("Streaming markdown + code highlight",3,"Y","GFM, KaTeX, Mermaid"),
@@ -96,7 +96,7 @@ D=[
 ]),
 ("8 Code review & dev",[
  ("Changes pane: aggregate diff, unified/split, line comments",3,"P","line comments → D-5"),
- ("Inline tool diffs",2,"Y","shared DiffRenderer, highlighted"),
+ ("Inline tool diffs",2,"Y","shared DiffRenderer, highlighted; MultiEdit edits[] not rendered"),
  ("Files pane (view / edit)",1,"N",""),
  ("PR viewer: checks, threads, merge, auto-merge",2,"P","Pipeline page + PR pills + Fix"),
  ("Preview browser with dev-server detection",2,"P","VNC Browser tab, no dev-server detect"),

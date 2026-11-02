@@ -84,7 +84,7 @@ Full inventories, with an evidence tag on every item:
 | Split view / tiled panes | 2 | ❌ | umbrella spec non-goal · *rejected for target* |
 | Pop session into own window | 1 | ◐ | every session is a URL; no layout restore · *rejected for target* |
 | Archived view + unarchive | 2 | ✅ |  |
-| Session rail: Changes / Context / Environment / Tasks cards | 2 | ◐ | meta strip has ctx, host, bg tasks; no Changes |
+| Session rail: Changes / Context / Environment / Tasks cards | 2 | ◐ | meta strip has ctx, host, bg tasks; Changes chip in header; rail → D-6 |
 
 ### 2 Transcript
 
@@ -183,7 +183,7 @@ Full inventories, with an evidence tag on every item:
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | Changes pane: aggregate diff, unified/split, line comments | 3 | ◐ | line comments → D-5 |
-| Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted |
+| Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted; MultiEdit edits[] not rendered |
 | Files pane (view / edit) | 1 | ❌ |  |
 | PR viewer: checks, threads, merge, auto-merge | 2 | ◐ | Pipeline page + PR pills + Fix |
 | Preview browser with dev-server detection | 2 | ◐ | VNC Browser tab, no dev-server detect |
