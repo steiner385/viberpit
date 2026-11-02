@@ -124,8 +124,10 @@ opens, and never polls. Edit and Write diffs in the transcript use the same rend
 highlighting loaded lazily. The server side is
 `GET /api/sessions/{id}/diff?summary=1&ignoreWhitespace=1`, computed on the host that owns the
 session. It is read-only (it never touches the index) and runs git hardened: textconv, ext-diff,
-system config and hooks are disabled, and filter drivers defined in the repo or worktree config
-are neutralised.
+system config and hooks are disabled, submodules are not entered, and filter drivers defined in
+the repo or worktree config are neutralised. That leaves a window where a config rewritten mid-diff
+can still run a driver, and global-scope drivers (e.g. git-lfs) are trusted; the write boundary in
+#3217 closes both.
 
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a

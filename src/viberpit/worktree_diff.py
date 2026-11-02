@@ -23,8 +23,20 @@ config cannot run helpers here: no textconv, no external diff, no fsmonitor, no 
 no system config, and every ``filter.<name>`` driver defined in the repo-local or
 per-worktree config scope (which the agent can write) is neutralised with empty
 ``clean``/``smudge``/``process`` and ``required=false``; a name that cannot be safely
-spliced into ``-c`` fails closed. Global-scope drivers (e.g. git-lfs from
-``git lfs install``) still run when git re-hashes a stat-dirty file.
+spliced into ``-c`` fails closed. Submodules are never entered
+(``--ignore-submodules=dirty``), so a submodule's own config cannot run one either.
+
+Two residuals are accepted; both need the agent to write config files outside its
+working files, and the write boundary of #3217 (auto-approved writes confined to the
+worktree, never ``.git`` or ``$HOME``) is what closes them:
+
+- **TOCTOU.** The overrides are computed from a config read that precedes the diff
+  calls; a repo or worktree config rewritten in between (a new driver name) can still
+  run a driver.
+- **Global scope is trusted.** Global-scope drivers (e.g. git-lfs from
+  ``git lfs install``) run when git re-hashes a stat-dirty file. That assumes nothing
+  untrusted writes ``~/.gitconfig`` or the global attributes file — a same-user agent
+  that can write them controls every git call the daemon makes.
 """
 
 from __future__ import annotations
@@ -32,6 +44,7 @@ from __future__ import annotations
 import os
 import re
 import selectors
+import stat
 import subprocess
 import time
 from typing import Any
@@ -55,10 +68,17 @@ _GIT_GLOBAL = (
     "-c", "core.hooksPath=/dev/null", "-c", "diff.suppressBlankEmpty=false",
 )
 # Explicit prefixes override diff.noprefix / mnemonicPrefix / srcPrefix / dstPrefix.
+# ``--ignore-submodules=dirty`` stops git spawning ``git status`` inside each
+# submodule (whose own ``.git/modules/<name>/config`` filter drivers would run here,
+# out of reach of ``_filter_overrides``); pointer changes are still reported, and
+# ``--submodule=short`` overrides ``diff.submodule=log|diff``, which would also read
+# into the submodule.
 _DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "-M",
-              "--src-prefix=a/", "--dst-prefix=b/")
+              "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=dirty",
+              "--submodule=short")
 _HUNK_RE = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
-_STATUS = {"A": "added", "D": "deleted", "R": "renamed", "C": "added"}
+# ``-M`` overrides ``diff.renames=copies``, so no copy (``C``) status ever appears.
+_STATUS = {"A": "added", "D": "deleted", "R": "renamed"}
 
 
 class _GitTimeout(Exception):
@@ -247,7 +267,7 @@ def _parse_numstat(out: bytes) -> list[tuple[bytes, bytes | None, int | None, in
             continue
         adds, dels, path = tok.split(b"\t", 2)
         old = None
-        if not path:  # rename/copy: the two paths follow as their own tokens
+        if not path:  # rename: the two paths follow as their own tokens
             old, path = toks[i], toks[i + 1]
             i += 2
         a = None if adds == b"-" else int(adds)
@@ -267,7 +287,7 @@ def _parse_name_status(out: bytes) -> dict[bytes, str]:
         if not tok:
             continue
         letter = chr(tok[0])
-        if letter in "RC":
+        if letter == "R":
             status[toks[i + 1]] = letter
             i += 2
         else:
@@ -324,10 +344,10 @@ def _untracked(top: str, path: bytes, *, want_hunks: bool,
     full = os.path.join(os.fsencode(top), path)
     try:
         st = os.lstat(full)
-        if os.path.islink(full):
+        if stat.S_ISLNK(st.st_mode):
             data: bytes | None = os.readlink(full)
             size = len(data or b"")
-        elif os.path.isfile(full):
+        elif stat.S_ISREG(st.st_mode):
             size = st.st_size
             data = None
         else:
@@ -335,7 +355,14 @@ def _untracked(top: str, path: bytes, *, want_hunks: bool,
         if size > read_left:
             return None
         if data is None:
-            with open(full, "rb") as fh:
+            # The agent can swap the path after the lstat: a FIFO opened blocking would
+            # park this worker thread, so open non-blocking, never through a symlink,
+            # and read only what is still a regular file.
+            fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                os.close(fd)
+                return _file(path, None, "added", 0, 0, False), 0, 0
+            with os.fdopen(fd, "rb") as fh:
                 head = fh.read(_BINARY_SNIFF_BYTES)
                 if b"\0" in head:
                     return _file(path, None, "added", 0, 0, True), 0, len(head)
@@ -514,8 +541,9 @@ def _session_diff(cwd: str, *, summary: bool, ignore_whitespace: bool) -> dict[s
                 block = blocks.pop(header, None)
                 if (cut or 0) > MAX_FILE_PATCH_BYTES or len(block or b"") > MAX_FILE_PATCH_BYTES:
                     f["tooLarge"] = True
-                elif block is None and (cut is not None or not fetching):
-                    # Never fetched whole: the fetch failed or the read budget ran out.
+                elif block is None:
+                    # Never fetched whole: the fetch failed, the read budget ran out,
+                    # or it completed without this file's block (an unmapped header).
                     truncated, budget = True, -1
                 elif block is not None and len(block) > budget:
                     truncated, budget = True, -1

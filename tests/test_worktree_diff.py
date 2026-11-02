@@ -385,6 +385,26 @@ def test_failed_fetch_truncates_once_without_refetch_loop(
     assert d["additions"] == 5
 
 
+def test_completed_fetch_missing_a_block_truncates(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    (repo / "ws.txt").write_text("alpha\nbeta\ngamma\n")
+    real = worktree_diff._git_bounded
+
+    def drop_keep(cwd: str, args: list[str], limit: int, block_cap: int) -> tuple[bytes, str]:
+        data, status = real(cwd, args, limit, block_cap)
+        assert status == "ok"
+        kept = [b for h, b in worktree_diff._split_patch(data) if b"keep.txt" not in h]
+        return b"".join(kept), status
+
+    monkeypatch.setattr(worktree_diff, "_git_bounded", drop_keep)
+    d = session_diff(str(repo))
+    files = _by_path(d)
+    assert files["keep.txt"]["hunks"] == []
+    assert d["truncated"] is True  # not a silent "no hunks"
+    assert files["keep.txt"]["additions"] == 1  # numstat counts are unaffected
+
+
 def test_nonzero_git_exit_is_a_failed_fetch(tmp_path: Path) -> None:
     data, status = worktree_diff._git_bounded(str(tmp_path), ["diff", "--no-such-flag"],
                                               1 << 20, MAX_FILE_PATCH_BYTES)
@@ -584,3 +604,86 @@ def test_filter_driver_from_local_include_never_runs(repo: Path, tmp_path: Path)
     assert not marker.exists()
     _git(repo, "diff", "HEAD")
     assert marker.exists()
+
+
+def _submodule_fixture(repo: Path, tmp_path: Path) -> tuple[Path, Path]:
+    """A committed submodule ``sub`` whose own config (``.git/modules/sub/config``)
+    defines a marker-touching ``filter.evil.clean`` selected for every file, with a
+    stat-dirty file inside the submodule and a changed superproject file."""
+    marker = tmp_path / "submodule-filter-ran"
+    subsrc = tmp_path / "subsrc"
+    subsrc.mkdir()
+    _git(subsrc, "init", "-q", "-b", "main")
+    (subsrc / "inner.txt").write_text("inner\n")
+    _commit(subsrc, "inner")
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+         str(subsrc), "sub")
+    _commit(repo, "add sub")
+    sub = repo / "sub"
+    (sub / ".gitattributes").write_text("* filter=evil\n")
+    _commit(sub, "attrs")  # before the filter exists: no marker yet
+    _git(repo, "add", "sub")
+    _commit(repo, "bump sub")
+    modcfg = repo / ".git" / "modules" / "sub" / "config"
+    assert modcfg.exists()
+    _git(sub, "config", "filter.evil.clean", f"touch {marker}; cat")
+    os.utime(sub / "inner.txt")  # stat-dirty, unchanged content: forces a re-hash
+    (repo / "keep.txt").write_text((repo / "keep.txt").read_text() + "tail\n")
+    assert not marker.exists()
+    return marker, sub
+
+
+def test_submodule_config_filter_driver_never_runs(repo: Path, tmp_path: Path) -> None:
+    marker, _ = _submodule_fixture(repo, tmp_path)
+    for summary in (False, True):
+        files = _by_path(session_diff(str(repo), summary=summary))
+        assert not marker.exists(), summary
+        assert files["keep.txt"]["additions"] == 1
+    # The fixture is live: plain git diff DOES run the submodule's clean driver.
+    _git(repo, "diff", "HEAD")
+    assert marker.exists()
+
+
+def test_submodule_pointer_change_is_still_reported(repo: Path, tmp_path: Path) -> None:
+    _, sub = _submodule_fixture(repo, tmp_path)
+    _git(repo, "push", "-q", "origin", "HEAD:main")  # the submodule is in the base
+    _git(repo, "fetch", "-q", "origin")
+    (sub / "more.txt").write_text("more\n")
+    _git(sub, "-c", "filter.evil.clean=cat", "add", "-A")
+    _git(sub, "commit", "-q", "-m", "more")
+    files = _by_path(session_diff(str(repo)))
+    assert files["sub"]["status"] == "modified"
+    assert (files["sub"]["additions"], files["sub"]["deletions"]) == (1, 1)
+
+
+def test_fifo_swapped_in_after_lstat_never_blocks(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    regular = tmp_path / "regular.txt"
+    regular.write_text("hello\n")
+    fifo = tmp_path / "pipe.txt"
+    os.mkfifo(fifo)
+    real_lstat, real_stat = os.lstat, os.stat
+
+    def swap(real):  # type: ignore[no-untyped-def]
+        def by_path(p, *a, **kw):  # type: ignore[no-untyped-def]
+            # Path checks saw a regular file; by the open, a FIFO sits at the path.
+            return real(regular if os.fsdecode(p) == str(fifo) else p, *a, **kw)
+        return by_path
+
+    monkeypatch.setattr(worktree_diff.os, "lstat", swap(real_lstat))
+    monkeypatch.setattr(worktree_diff.os, "stat", swap(real_stat))
+    result: list[object] = []
+    t = threading.Thread(target=lambda: result.append(worktree_diff._untracked(
+        str(tmp_path), b"pipe.txt", want_hunks=True, read_left=1 << 20)), daemon=True)
+    t.start()
+    t.join(5)
+    if t.is_alive():  # unblock the stuck open before failing
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        t.join(5)
+        pytest.fail("_untracked blocked opening a FIFO")
+    got = result[0]
+    assert got is not None
+    f, size, consumed = got  # type: ignore[misc]
+    assert (f["path"], f["additions"], f["hunks"], size, consumed) == ("pipe.txt", 0, [], 0, 0)
