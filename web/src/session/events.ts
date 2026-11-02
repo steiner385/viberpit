@@ -26,6 +26,11 @@ export type PromptOriginKind = 'autopilot' | 'completion' | 'assistant' | 'autom
 export interface PromptOrigin    { kind: PromptOriginKind; label?: string; inferred?: boolean }
 export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin }
 export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null; parentToolUseId?: string | null; turnIndex?: number | null }
+// The CLI transcript uuid a finished turn can be forked from (D-8): its LAST top-level
+// assistant entry. Sent once per turn just before its turnEnd, live and on replay; a turn
+// without one (interrupted before any reply, or an engine without anchors) is not forkable.
+// Mirrors TurnAnchor (server/sessions/events.py).
+export interface EvTurnAnchor    { type: 'turnAnchor';    turnId: string; uuid: string }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
@@ -90,7 +95,7 @@ export interface EvBackgroundTaskStarted { type: 'backgroundTaskStarted'; toolUs
 export interface EvBackgroundTaskEnded   { type: 'backgroundTaskEnded';   toolUseId: string; taskId: string; status: 'completed' | 'failed' | 'stopped'; ts?: number }
 
 export type SessionEvent =
-  | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
+  | EvUser | EvTurnStart | EvTurnAnchor | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvPermissionResolved | EvQuestion | EvQuestionResolved
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
   | EvSuggestions | EvCondensing | EvContextUsage | EvMcpStatus | EvRecovering | EvNotice
@@ -121,7 +126,7 @@ export interface Command {
 // Keyed by every SessionEvent['type']: `Record` makes the compiler reject a new event
 // type that is not listed here, so the set below can never silently fall behind the union.
 const SESSION_EVENT_TYPE_FLAGS: Record<SessionEvent['type'], true> = {
-  user: true, turnStart: true, turnEnd: true, textDelta: true, thinkingDelta: true,
+  user: true, turnStart: true, turnAnchor: true, turnEnd: true, textDelta: true, thinkingDelta: true,
   toolCall: true, toolResult: true, permissionRequest: true, permissionResolved: true,
   question: true, questionResolved: true, sessionMeta: true, turnModel: true, title: true,
   status: true, replayReset: true, replayComplete: true, error: true, queueUpdate: true,

@@ -53,6 +53,10 @@ AUTO_ARCHIVE_OPT_OUT_CREATE = "create-opt-out"
 # than opting out at dispatch or by unarchiving. Same truthy gate, no new branch.
 AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE = "session-toggle"
 
+# How many turns' fork anchors (D-8) a SessionRecord keeps in memory. Older turns
+# still resolve: SessionOrchestrator.resolve_turn_anchor rebuilds from the transcript.
+TURN_ANCHOR_CAP = 500
+
 
 @dataclass
 class SessionRecord:
@@ -200,6 +204,20 @@ class SessionRecord:
     # can still populate the composer's command palette instead of showing an
     # empty autocomplete. None until the session has been live once.
     command_catalog: list | None = None
+    # Fork anchors (D-8): turn id -> the CLI transcript uuid that turn can be forked
+    # from, fed live by the driver's TurnAnchor events and merged from the transcript
+    # on a lookup miss (SessionOrchestrator.resolve_turn_anchor). Insertion-ordered and
+    # bounded to the newest TURN_ANCHOR_CAP turns. Daemon-local ONLY — NOT in
+    # to_dict/from_dict, never a DB column: the fork RPC resolves a turn on the owner
+    # daemon, which is the process holding both this map and the transcript.
+    turn_anchors: dict[str, str] = field(default_factory=dict)
+
+    def record_turn_anchor(self, turn_id: str, uuid: str) -> None:
+        """Remember *turn_id*'s anchor as the newest, evicting the oldest past the cap."""
+        self.turn_anchors.pop(turn_id, None)
+        self.turn_anchors[turn_id] = uuid
+        while len(self.turn_anchors) > TURN_ANCHOR_CAP:
+            del self.turn_anchors[next(iter(self.turn_anchors))]
 
     @property
     def updated_at_iso(self) -> str | None:

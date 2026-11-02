@@ -64,7 +64,7 @@ _STATUS_TRACE = os.environ.get("VIBERPIT_STATUS_TRACE", "false").lower() in ("1"
 # WS attach path (_emit_live_extras); buffering them would double-emit.
 _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
                  ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
-                 ev.TurnEnd, ev.ErrorEvent,
+                 ev.TurnAnchor, ev.TurnEnd, ev.ErrorEvent,
                  # The turn's asks and their resolutions ride the attach snapshot too, so
                  # a mid-turn reattach re-delivers a pending permission/question AT ITS
                  # PLACE in the turn — after the prompt and the content that led to it —
@@ -323,6 +323,7 @@ class ClaudeAgentDriver:
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
+                 on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None,
                  resumed_after_restart: bool = False):
@@ -393,6 +394,9 @@ class ClaudeAgentDriver:
         # four (seen 2026-09-12: header chip said 4 agents, card showed none).
         self._on_sub_agents_changed = on_sub_agents_changed
         self._on_background_work_changed = on_background_work_changed
+        # Fired (synchronously) with (session id, turn id, transcript uuid) for each
+        # TurnAnchor (D-8), so the orchestrator keeps SessionRecord.turn_anchors live.
+        self._on_turn_anchor = on_turn_anchor
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
@@ -1600,6 +1604,12 @@ class ClaudeAgentDriver:
                     except Exception:  # noqa: BLE001 - a snapshot refresh must never break the pump
                         log.debug("driver.on_background_work_changed failed session=%s",
                                   self.session_id, exc_info=True)
+            if isinstance(e, ev.TurnAnchor) and self._on_turn_anchor is not None:
+                try:
+                    self._on_turn_anchor(self.session_id, e.turn_id, e.uuid)
+                except Exception:  # noqa: BLE001 - recording an anchor must never break the pump
+                    log.debug("driver.on_turn_anchor failed session=%s", self.session_id,
+                              exc_info=True)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
             self._note_progress(e)
@@ -2580,6 +2590,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,
+            on_turn_anchor=config.on_turn_anchor,
             on_record_condense_ms=config.on_record_condense_ms,
             get_condense_estimate=config.get_condense_estimate,
             on_recoverable_failure=config.on_recoverable_failure,

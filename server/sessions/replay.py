@@ -354,7 +354,54 @@ def _build_events(path: str) -> tuple[list, object | None]:
     # the single shared reconstruction path, so every consumer (replay_window /
     # transcript_events / export / replay_events) inherits it and the drop_incomplete
     # tail-trim below anchors on the deduped last user entry.
-    return _collapse_recovery_resend_dupes(out), meta_event
+    return _with_turn_anchors(_collapse_recovery_resend_dupes(out)), meta_event
+
+
+def _with_turn_anchors(out: list) -> list:
+    """Insert one ``TurnAnchor`` per LOGICAL turn, mirroring the live translator (D-8).
+
+    A logical turn runs from one human prompt (a ``UserMessage`` — harness entries and
+    tool results emit none) to the next. Its anchor is its LAST top-level assistant
+    entry: every TurnEnd here is top-level (sidechain entries are skipped above), and a
+    replayed entry's turn id IS its uuid, so the anchor is ``TurnAnchor(uuid, uuid)``.
+
+    Placed immediately BEFORE that entry's TurnEnd so it lies strictly inside the entry's
+    turn: `_window` slices pages on TurnStart/TurnEnd boundaries, and an anchor outside
+    them would ride along with the neighbouring page. For the same reason the trailing
+    in-progress turn's anchor is trimmed with it by ``drop_incomplete_turn``. A prompt
+    with no assistant entry after it (an interrupt) gets none."""
+    anchored: dict[int, ev.TurnAnchor] = {}   # TurnEnd index -> the anchor it closes
+    last: tuple[int, ev.TurnAnchor] | None = None
+    for i, e in enumerate(out):
+        if isinstance(e, ev.UserMessage):
+            if last is not None:
+                anchored[last[0]] = last[1]
+            last = None
+        elif isinstance(e, ev.TurnEnd) and e.src_uuid:
+            last = (i, ev.TurnAnchor(e.turn_id, e.src_uuid))
+    if last is not None:
+        anchored[last[0]] = last[1]
+    if not anchored:
+        return out
+    res: list = []
+    for i, e in enumerate(out):
+        if i in anchored:
+            res.append(anchored[i])
+        res.append(e)
+    return res
+
+
+def transcript_turn_anchors(path: str) -> dict[str, str]:
+    """Every turn anchor in the transcript at *path*, ``{turnId: uuid}`` in transcript
+    order — the rebuild source for ``SessionRecord.turn_anchors`` once a reload or a
+    daemon restart has left the record without the live ones. Whole-file and
+    synchronous: wrap it in ``asyncio.to_thread`` on the event loop. A missing file
+    yields ``{}``."""
+    try:
+        events, _meta = _build_events(path)
+    finally:
+        _trim_heap_after(path)
+    return {e.turn_id: e.uuid for e in events if isinstance(e, ev.TurnAnchor)}
 
 
 def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | None = None,

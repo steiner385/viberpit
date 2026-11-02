@@ -132,7 +132,7 @@ from server.sessions.draft_hold_guard import DraftReadyGrants, SessionGrants
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
-from server.sessions.replay import replay_events
+from server.sessions.replay import replay_events, transcript_turn_anchors
 from server.sessions import status as _status_mod
 from server.sessions.suggestions import (
     SuggestionService, build_codex_suggest_prompt, last_turn_context, parse_suggestions,
@@ -2845,6 +2845,7 @@ class SessionOrchestrator:
             on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
+            on_turn_anchor=self._record_turn_anchor,
             on_record_condense_ms=self._record_condense_ms,
             get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
@@ -17286,6 +17287,39 @@ class SessionOrchestrator:
         except Exception:
             log.debug("bg_work.snapshot_failed sid=%s", session_id, exc_info=True)
             return EMPTY_BACKGROUND_WORK
+
+    def _record_turn_anchor(self, session_id: str, turn_id: str, anchor: str) -> None:
+        """Driver ``on_turn_anchor`` callback: keep the turn's fork anchor (D-8) on the
+        in-memory record. A record-less session (torn down mid-turn) is ignored."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.record_turn_anchor(turn_id, anchor)
+
+    async def resolve_turn_anchor(self, session_id: str, turn_id: str) -> str | None:
+        """The CLI transcript uuid turn *turn_id* can be forked from, or None (D-8).
+
+        The record answers first. On a miss — a turn id from a replay (the browser
+        reloaded, so it holds transcript uuids rather than the live stream ids), a
+        record a daemon restart rebuilt empty, or a turn older than the record's bound —
+        the anchors are rebuilt from the transcript and merged into the record, and the
+        FULL rebuild is consulted, so no settled turn is unreachable. Only engines with
+        a transcript (Claude) can answer; everything else is None."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        hit = rec.turn_anchors.get(turn_id)
+        if hit is not None:
+            return hit
+        path = await asyncio.to_thread(self.transcript_path, session_id)
+        if not path:
+            return None
+        rebuilt = await asyncio.to_thread(transcript_turn_anchors, path)
+        live = dict(rec.turn_anchors)
+        for tid, anchor in rebuilt.items():
+            rec.record_turn_anchor(tid, anchor)
+        for tid, anchor in live.items():    # live (stream-id) anchors stay the newest
+            rec.record_turn_anchor(tid, anchor)
+        return rebuilt.get(turn_id)
 
     def _refresh_background_work(self, session_id: str) -> None:
         """Driver ``on_background_work_changed`` callback: a background shell/Monitor

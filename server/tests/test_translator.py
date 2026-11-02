@@ -19,7 +19,8 @@ def test_simple_turn():
             f.result(session_id="s1", uuid="t1")]
     tr, out = _run(msgs)
     assert tr.session_id == "s1"
-    assert [type(e).__name__ for e in out] == ["TurnStart", "TextDelta", "TextDelta", "TurnModel", "TurnEnd"]
+    assert [type(e).__name__ for e in out] == ["TurnStart", "TextDelta", "TextDelta", "TurnModel",
+                                                "TurnAnchor", "TurnEnd"]
     assert out[1].text == "Hello " and out[1].turn_id == out[0].turn_id == "t1"
 
 def test_init_emits_session_meta_with_model():
