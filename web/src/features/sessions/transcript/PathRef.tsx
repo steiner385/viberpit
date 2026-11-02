@@ -21,10 +21,17 @@ export function PathRef({ text }: { text: string }) {
   const ref = parseFilePathRef(text)
   const rel = actions && ref ? worktreeRelativePath(ref.path, actions.cwd) : null
   if (!actions || !ref || rel === null) return <CopyablePath text={text} />
-  return <FileLink text={text} rel={rel} line={ref.line ?? null} actions={actions} />
+  return <FileLink text={text} path={ref.path} rel={rel} line={ref.line ?? null} actions={actions} />
 }
 
-function FileLink({ text, rel, line, actions }: { text: string; rel: string; line: number | null; actions: FileRefActions }) {
+function FileLink({ text, path, rel, line, actions }: {
+  text: string
+  /** The path as written, without its `:line[:col]` — what Copy path copies. */
+  path: string
+  rel: string
+  line: number | null
+  actions: FileRefActions
+}) {
   const anchorRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
   const { attachMention } = actions
@@ -45,7 +52,7 @@ function FileLink({ text, rel, line, actions }: { text: string; rel: string; lin
   }, [open, attachMention])
   const onSelect = async (id: string) => {
     if (id === 'attach') { pendingAttach.current = rel; return }
-    if (await copyText(text)) toast('Copied')
+    if (await copyText(path)) toast('Copied')
     else toast.error("Couldn't copy")
   }
 

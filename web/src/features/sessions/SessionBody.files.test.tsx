@@ -32,7 +32,8 @@ vi.mock('@/features/sessions/transcript/TranscriptView', () => ({
   },
 }))
 
-const { sessionsHook } = vi.hoisted(() => ({ sessionsHook: vi.fn() }))
+const { sessionsHook, toastError } = vi.hoisted(() => ({ sessionsHook: vi.fn(), toastError: vi.fn() }))
+vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: toastError }) }))
 
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: vi.fn(() => ({ data: undefined })),
@@ -168,5 +169,19 @@ describe('SessionBody — transcript path links (D-7)', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'attach' }))
     expect(attachFile).toHaveBeenCalledWith('src/a.ts')
+  })
+
+  it('Attach as @ with no dock composer mounted says so instead of doing nothing', () => {
+    withCwd('/w/x')
+    toastError.mockClear()
+    render(
+      <MemoryRouter>
+        <SessionGestureProvider>
+          <SessionBody rt={makeRuntime([TURN])} />
+        </SessionGestureProvider>
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'attach' }))
+    expect(toastError).toHaveBeenCalledWith('No message box to attach to')
   })
 })

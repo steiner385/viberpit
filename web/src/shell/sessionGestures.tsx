@@ -29,6 +29,7 @@
  * `onDetach` identity change, which is every render of `MainPaneSession`.
  */
 import * as React from 'react'
+import { toast } from 'sonner'
 import type { PromptRowMenus } from '@/features/sessions/composer/PromptRow'
 import type { ComposerAttach } from '@/features/sessions/composer/Composer'
 
@@ -75,7 +76,7 @@ const PromptRowMenusContext = React.createContext<React.RefObject<PromptRowMenus
  * writes into the composer's draft. Same shape of problem as the menus above —
  * the transcript (`SessionBody`, in `app.main`) and the composer (`PromptDock`)
  * are siblings — so the same bridge. Null current means no composer is mounted
- * and an attach does nothing.
+ * (see `useComposerAttach`).
  */
 const ComposerAttachContext = React.createContext<React.RefObject<ComposerAttach | null> | null>(
   null,
@@ -104,11 +105,16 @@ export function useComposerAttachRegistration(): React.RefObject<ComposerAttach 
 /**
  * The transcript's side: attach `path` to the open session's composer draft as
  * `@path`. Undefined outside the shell (no composer can exist), so a caller can
- * leave the action out rather than offer one that does nothing.
+ * leave the action out; inside it with no composer mounted, an attach toasts an
+ * error rather than doing nothing.
  */
 export function useComposerAttach(): ((path: string) => void) | undefined {
   const ref = React.useContext(ComposerAttachContext)
-  const attach = React.useCallback((path: string) => ref?.current?.attachFile(path), [ref])
+  const attach = React.useCallback((path: string) => {
+    // No composer mounted (the dock is hidden) — say so rather than drop the click.
+    if (ref?.current) ref.current.attachFile(path)
+    else toast.error('No message box to attach to')
+  }, [ref])
   return ref ? attach : undefined
 }
 

@@ -58,12 +58,26 @@ describe('transcript file paths (D-7)', () => {
     expect(screen.queryByRole('button', { name: /in Files/ })).toBeNull()
   })
 
+  it.each([
+    'app.state.sessions', 'asyncio.sleep', '1.2.3', 'v2.1', 'localhost:8080/api', '127.0.0.1:8787/api/x',
+    'C:/repo/a.ts',
+  ])('%j is copy-only, not a Files link', (token) => {
+    renderWith(`see \`${token}\``, {})
+    expect(screen.queryByRole('button', { name: /in Files/ })).toBeNull()
+  })
+
+  it.each(['src/a.ts', 'README.md', 'pyproject.toml'])('%j is a Files link', (token) => {
+    renderWith(`see \`${token}\``, {})
+    expect(screen.getByRole('button', { name: `Open ${token} in Files` })).toBeInTheDocument()
+  })
+
   it('the menu copies the path', async () => {
     const user = userEvent.setup()
     renderWith('see `/repo/src/a.ts:12`', { attachMention: vi.fn() })
     await user.click(screen.getByRole('button', { name: 'More actions for /repo/src/a.ts:12' }))
     await user.click(screen.getByRole('menuitem', { name: 'Copy path' }))
-    expect(writeText).toHaveBeenCalledWith('/repo/src/a.ts:12')
+    // The path only — the `:line` suffix is not part of it.
+    expect(writeText).toHaveBeenCalledWith('/repo/src/a.ts')
   })
 
   it('Attach as @ hands the worktree-relative path to the composer', async () => {

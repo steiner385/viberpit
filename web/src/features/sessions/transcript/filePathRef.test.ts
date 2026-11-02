@@ -59,6 +59,10 @@ describe('worktreeRelativePath', () => {
     ['src/a.ts', '/repo', 'src/a.ts'],
     ['./src/a.ts', '/repo', 'src/a.ts'],
     ['README.md', '/repo', 'README.md'],
+    ['pyproject.toml', '/repo', 'pyproject.toml'],
+    ['notes.TXT', '/repo', 'notes.TXT'],
+    ['uv.lock', '/repo', 'uv.lock'],
+    ['/repo/data/x.unknownext', '/repo', 'data/x.unknownext'], // has a `/`: extension not needed
   ])('%j under %j is %j', (path, cwd, want) => {
     expect(worktreeRelativePath(path, cwd)).toBe(want)
   })
@@ -73,6 +77,18 @@ describe('worktreeRelativePath', () => {
     ['~/notes.md', '/repo'],
     ['src/', '/repo'],
     ['/repo/src/a.ts', ''],
+    // Fix round 1: dotted identifiers, versions and host:port are not files.
+    ['app.state.sessions', '/repo'],
+    ['asyncio.sleep', '/repo'],
+    ['self.cwd', '/repo'],
+    ['1.2.3', '/repo'],
+    ['v2.1', '/repo'],
+    ['localhost:8080/api', '/repo'],
+    ['127.0.0.1:8787/api/x', '/repo'],
+    // Windows-style paths stay copy-only.
+    ['src\\a.ts', '/repo'],
+    ['C:/repo/a.ts', '/repo'],
+    ['c:a.ts', '/repo'],
   ])('%j under %j is not a worktree file', (path, cwd) => {
     expect(worktreeRelativePath(path, cwd)).toBeNull()
   })
