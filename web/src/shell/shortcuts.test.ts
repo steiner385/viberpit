@@ -15,7 +15,7 @@ import {
   type Shortcut,
   type ShortcutContext,
 } from './shortcuts'
-import { SESSION_COMPOSER_ATTR } from '@/lib/detachKeyGuard'
+import { SESSION_COMPOSER_ATTR, textEntryClaimsKey } from '@/lib/detachKeyGuard'
 
 function ev(over: Partial<KeyboardLike>): KeyboardLike {
   return { key: '', code: '', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...over }
@@ -601,11 +601,22 @@ describe('matchShortcut — the shell scope', () => {
     expect(shellRow(ev({ key: 'Escape' }),
       ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: true, active: composer })))
       .toBe('insession.stop')
-    // …but any OTHER text entry that claims Esc keeps it: no stop, no detach.
+    // …and from the EMPTY session composer, or with focus on the page itself.
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, active: composer })))
+      .toBe('insession.stop')
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, active: document.body })))
+      .toBe('insession.stop')
+    // Any OTHER text entry keeps Esc — with text or EMPTY. Each fixture's
+    // `yieldsToTextEntry` is what the shell would compute for that field: an
+    // empty field does not claim Esc, so the focused element itself must block.
     const search = document.createElement('input')
     search.type = 'search'
     expect(shellRow(ev({ key: 'Escape' }),
-      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: true, active: search })))
+      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: textEntryClaimsKey(ev({ key: 'Escape' }), search), active: search })))
+      .toBeUndefined()
+    search.value = 'abc'
+    expect(shellRow(ev({ key: 'Escape' }),
+      ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: textEntryClaimsKey(ev({ key: 'Escape' }), search), active: search })))
       .toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, hasOpenAction: true })))
       .toBeUndefined()

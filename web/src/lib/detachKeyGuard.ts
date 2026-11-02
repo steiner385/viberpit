@@ -80,14 +80,24 @@ export function isFormControl(el: Element | null): boolean {
 /**
  * Marks the open SESSION's composer textarea (not the assistant drawer's, which
  * shares the `Message` label). Esc-stops-the-turn fires through this one field's
- * draft — Desktop stops regardless of what is typed — and yields to every other
- * text entry that claims Esc (list search, rename, …).
+ * draft — Desktop stops regardless of what is typed — and never from any other
+ * text entry (list search, rename, …), empty or not.
  */
 export const SESSION_COMPOSER_ATTR = 'data-session-composer'
 
 /** True ⇒ `el` is the open session's composer textarea. */
 export function isSessionComposer(el: Element | null): boolean {
   return el?.hasAttribute(SESSION_COMPOSER_ATTR) ?? false
+}
+
+/**
+ * True ⇒ focus is in a text entry OTHER than the session composer — with text
+ * or empty. Esc-stops-the-turn never fires from there: keyed on the focused
+ * element, not on `textEntryClaimsKey`, because an EMPTY field does not claim
+ * Esc and a turn must not stop from an empty search or rename box either.
+ */
+export function focusInOtherTextEntry(el: Element | null): boolean {
+  return asTextEntry(el) !== null && !isSessionComposer(el)
 }
 
 /** True ⇒ the key belongs to the focused text entry; do NOT detach. */
