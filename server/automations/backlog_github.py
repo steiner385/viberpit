@@ -25,6 +25,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Iterable, Literal
 
 from viberpit import brand, gitrepos
@@ -388,7 +389,7 @@ def _issue_crossref_pr_nodes(ref: str, *, gh_run: GhRun) -> list[dict] | None:
         f"    issue(number: {int(number)}) {{\n"
         "      timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], last: 50) {\n"
         "        nodes { ... on CrossReferencedEvent { source { ... on PullRequest {\n"
-        "          number url title state isDraft headRefName\n"
+        "          number url title state isDraft headRefName mergedAt\n"
         "          autoMergeRequest { enabledAt }\n"
         "          repository { nameWithOwner }\n"
         "          closingIssuesReferences(first: 50) {\n"
@@ -435,7 +436,24 @@ def _pr_closes_ref(src: dict, repo: str, number: int) -> bool:
     )
 
 
-def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
+def _merged_before(src: dict, cutoff: datetime | None) -> bool:
+    """True when *src* is a PR that merged before *cutoff* (#3216). Unknown either
+    way (no cutoff, no or unparseable ``mergedAt``) answers False: keep the PR."""
+    if cutoff is None or src.get("state") != "MERGED":
+        return False
+    try:
+        at = datetime.fromisoformat(str(src.get("mergedAt") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return _aware(at) < cutoff
+
+
+def _aware(at: datetime) -> datetime:
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def find_referencing_pr(ref: str, *, merged_after: str | None = None,
+                        gh_run: GhRun = gitrepos._run_gh):
     """The best same-repo PR cross-referencing issue *ref*, or ``None``.
 
     The runner's sessions don't reliably record their branch (shared-clone
@@ -452,6 +470,12 @@ def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
     earlier one. CLOSED-unmerged and cross-repo references are ignored — a
     drive-by mention from a closed PR must never read as "PR closed unmerged →
     give up". Any gh failure or unparseable payload returns ``None``.
+
+    ``merged_after`` (an ISO time — the runner passes its claim's ``claimed_at``)
+    drops a PR that merged BEFORE it: that PR belongs to an earlier claim, already
+    closed out. Without the cut a ``Refs``-left-open issue re-read the same old PR
+    as every new claim's work, so each claim "merged", re-ran the close-out and
+    re-queued the issue (cairnea/KinDash#20202: PR #20343 three times, #3216).
     """
     from server.github.pr_status import PullRequestInfo
 
@@ -459,6 +483,11 @@ def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
     srcs = _issue_crossref_pr_nodes(ref, gh_run=gh_run)
     if not srcs:
         return None
+    try:
+        cutoff = _aware(datetime.fromisoformat(merged_after)) if merged_after else None
+    except ValueError:
+        cutoff = None
+    srcs = [s for s in srcs if not _merged_before(s, cutoff)]
 
     def _best(candidates: list[dict]):
         merged_pr = open_pr = None

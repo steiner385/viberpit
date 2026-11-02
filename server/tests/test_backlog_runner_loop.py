@@ -4427,6 +4427,45 @@ def test_a_hand_back_with_a_recheck_time_waits_then_returns_to_the_pool(tmp_path
     asyncio.run(run())
 
 
+def test_a_time_gated_investigation_waits_instead_of_converting(tmp_path):
+    """#3216 (problems 2-3): an investigation that finds its report blocked on a time
+    gate hands back with ``recheck_at``. That parks the row until then — no owner
+    hand-off, no ``converted`` exit that would re-queue it as an implement claim on an
+    unmet gate — and the evidence hold is left in place for the next investigation."""
+    async def run():
+        until = "2026-11-03T12:00:00+00:00"
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_recheck.db",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
+             "no_pr_note": None},
+            wall_clock=lambda: datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc),
+            session_hand_back="gate not met: 2 of 3 green runs",
+            session_recheck_at=until)
+
+        assert rec.needs_humans == [] and rec.hold_releases == []
+        assert await ctx.list_events(kind="investigated") == []
+        st = await ctx.get_target_state("o/r#1")
+        assert st["recheck_wait"] == {"until": until} and st["gave_up"] is True
+
+    asyncio.run(run())
+
+
+def test_an_investigation_hand_back_without_a_recheck_time_takes_its_exit(tmp_path):
+    """No ``recheck_at``: the ordinary investigation settle still decides — here the
+    evidence hold is untouched and no note was left, so it is handed to the owner."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_hb_norecheck.db",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
+             "no_pr_note": None},
+            session_hand_back="needs owner access")
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        assert "recheck_wait" not in (await ctx.get_target_state("o/r#1") or {})
+
+    asyncio.run(run())
+
+
 def test_an_awaiting_decision_ending_is_neither_a_bounce_nor_a_hand_off(tmp_path):
     """Spec §6: the session drafted options and parked its issue on a ``decision``
     hold only an accept can lift. So the sweep finalises ``no_pr`` with cause

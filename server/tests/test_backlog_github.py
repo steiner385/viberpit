@@ -251,6 +251,27 @@ def test_find_referencing_pr_prefers_merged_and_filters_repo():
     assert "11467" in flat
 
 
+def test_find_referencing_pr_ignores_a_pr_merged_before_the_claim():
+    """#3216: a PR that merged before this claim began is an earlier claim's, already
+    closed out — re-reading it made every new claim of a left-open issue "merge" the
+    same old PR (cairnea/KinDash#20202: #20343 three times)."""
+    from server.automations.backlog_github import find_referencing_pr
+    old = {**_pr_node(20343, "MERGED"), "mergedAt": "2026-11-02T15:10:00Z"}
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_timeline_stdout([old]))})
+
+    assert find_referencing_pr("o/r#3", merged_after="2026-11-02T15:40:00+00:00",
+                               gh_run=fake) is None
+    # A PR merged after the claim is this claim's work; no cutoff keeps the old one.
+    assert find_referencing_pr("o/r#3", merged_after="2026-11-02T15:00:00+00:00",
+                               gh_run=fake).number == 20343
+    assert find_referencing_pr("o/r#3", gh_run=fake).number == 20343
+    # Only merged PRs are cut: an older OPEN one is still the claim's to report.
+    still_open = FakeGh({("api", "graphql"): _proc(stdout=_timeline_stdout(
+        [old, _pr_node(20400, "OPEN")]))})
+    assert find_referencing_pr("o/r#3", merged_after="2026-11-02T15:40:00+00:00",
+                               gh_run=still_open).number == 20400
+
+
 def test_find_referencing_pr_open_maps_draft_and_auto_merge():
     from server.automations.backlog_github import find_referencing_pr
     fake = FakeGh({("api", "graphql"): _proc(

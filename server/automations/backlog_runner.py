@@ -2713,6 +2713,14 @@ class BacklogRunnerLoop:
                 # each kind's own path, and hoisting the check above them would
                 # settle a decision for a session still mid-turn.
                 return
+            reason = await self._hand_back_reason(target, st)
+            if reason is not None and await self._park_until_recheck(target, st, reason):
+                # An investigation that found the report blocked on a time gate (three
+                # consecutive green runs, a deploy) handed back with when to look again
+                # (#3216). Its evidence hold stays, so the next dispatch after the wait
+                # is another investigation — never an implement claim on a gate the
+                # investigation itself said was unmet.
+                return
             await self._settle_investigation(target, st)
             return
         info = await self._pr_status_for(target)
@@ -3133,35 +3141,50 @@ class BacklogRunnerLoop:
         ``owner_action`` hold carrying the session's reason, which — unlike a live session
         — survives the session being archived. Answers whether it handled the target.
         """
-        if self._session_hand_back is None:
+        reason = await self._hand_back_reason(target, st)
+        if reason is None:
             return False
+        if await self._park_until_recheck(target, st, reason):
+            return True
+        await self._give_up(target, st, reason, outcome={
+            "outcome": "no_pr", "cause": "session handed back",
+            "fallback": self._outcome_fallback(st)})
+        return True
+
+    async def _hand_back_reason(self, target: str, st: dict) -> "str | None":
+        """``session handed back: <reason>`` when the dispatch's session ended on
+        ``hand_back``, else None. Never raises: a failed read is "did not hand back"."""
+        if self._session_hand_back is None:
+            return None
         sid = st.get("session_id")
         try:
             raw = await self._session_hand_back(sid)
         except Exception:  # noqa: BLE001 - a read failure must not stall the sweep
             log.warning("backlog_runner.session_hand_back_failed target=%s session=%s",
                         target, sid, exc_info=True)
-            return False
+            return None
         if raw is None:
-            return False
+            return None
         safe = _reason_from_note(raw)
-        reason = f"session handed back: {safe}" if safe else "session handed back"
+        return f"session handed back: {safe}" if safe else "session handed back"
+
+    async def _park_until_recheck(self, target: str, st: dict, reason: str) -> bool:
+        """Park a handed-back dispatch as a timed ``recheck_wait`` when its session
+        named a still-future ``recheck_at`` (#3216). A time gate is a wait, not an
+        owner hold: no hold is written or cleared, and the row lifts itself at that
+        time. Answers whether it parked the target."""
         until = await self._recheck_at(st)
-        if until is not None:
-            # A time gate with a known re-check time: a timed wait, not an owner hold.
-            parked = {**st, "claimed": False, "gave_up": True, "held": True,
-                      "reason": f"{reason}; re-check at {until}",
-                      "recheck_wait": {"until": until}}
-            if await self._write_state(target, st, parked, outcome={
-                    "outcome": "no_pr", "cause": "session handed back",
-                    "fallback": self._outcome_fallback(st)}):
-                await self._ctx.emit("info", f"{target}: {reason} — not re-dispatched "
-                                     f"until {until}", kind="recheck_wait", target=target,
-                                     detail={"until": until})
-            return True
-        await self._give_up(target, st, reason, outcome={
-            "outcome": "no_pr", "cause": "session handed back",
-            "fallback": self._outcome_fallback(st)})
+        if until is None:
+            return False
+        parked = {**st, "claimed": False, "gave_up": True, "held": True,
+                  "reason": f"{reason}; re-check at {until}",
+                  "recheck_wait": {"until": until}}
+        if await self._write_state(target, st, parked, outcome={
+                "outcome": "no_pr", "cause": "session handed back",
+                "fallback": self._outcome_fallback(st)}):
+            await self._ctx.emit("info", f"{target}: {reason} — not re-dispatched "
+                                 f"until {until}", kind="recheck_wait", target=target,
+                                 detail={"until": until})
         return True
 
     async def _recheck_at(self, st: dict) -> "str | None":
