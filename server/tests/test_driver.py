@@ -112,7 +112,7 @@ class _ModeRecorder:
 
 
 def test_exiting_plan_restores_pre_plan_permission_mode():
-    """The web plan toggle sends the 'default' sentinel to turn plan OFF. Exiting
+    """A REST/WS/assistant caller sends the 'default' sentinel to turn plan OFF. Exiting
     plan must return the session to the mode it had BEFORE plan (here full-auto),
     NOT collapse to the SDK 'default' engine — which the registry treats as
     "prompt on every dangerous tool", silently breaking a full-auto session."""

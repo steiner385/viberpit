@@ -49,6 +49,20 @@ describe('ModePicker', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
+  it('selecting the current mode is a no-op', async () => {
+    const { onSelect } = renderPicker({ mode: 'full-auto' })
+    await userEvent.click(screen.getByRole('button', { name: /mode/i }))
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /^Full auto/ }))
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it("re-picking Ask from the SDK 'default' sentinel is a no-op too", async () => {
+    const { onSelect } = renderPicker({ mode: 'default' })
+    await userEvent.click(screen.getByRole('button', { name: /mode/i }))
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /^Ask/ }))
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
   it('shows "Mode change pending" as a status while a change is pending', () => {
     renderPicker({ mode: 'auto', pendingMode: 'plan' })
     expect(screen.getByRole('status')).toHaveTextContent('Mode change pending')

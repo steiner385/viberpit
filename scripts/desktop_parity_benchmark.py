@@ -47,7 +47,7 @@ D=[
  ("Prompt history (↑/↓ + Ctrl+R search)",1,"P","↑/↓ only"),
  ("Suggested next prompt (Tab)",1,"Y",""),
  ("Dictation",1,"Y","server STT + Web Speech"),
- ("Usage ring in prompt row",1,"Y",""),
+ ("Usage ring in prompt row",1,"Y","context only; plan usage → D-6"),
 ]),
 ("4 Commands & config",[
  ("Engine slash-command passthrough",3,"Y",""),

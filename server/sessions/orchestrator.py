@@ -23752,8 +23752,17 @@ class SessionOrchestrator:
         from server.sessions.model_policy import (
             INHERITED_DEFAULT_REASON, launch_model, resolve_model_policy)
         gate_model = launch_model(model, engine=_engine)
-        async with db_session() as _db:
-            _policy = await resolve_model_policy(_db, model=gate_model, account=_account)
+        # Re-selecting the model the session already runs on is not a switch (e.g. an
+        # effort-only pick from the prompt row re-sends the current model): it skips
+        # the gate, so it can never park an approval for the running model and drop
+        # the effort riding along. None and "default" both mean the inherited default.
+        _same_model = record is not None and (
+            (record.model or "default") == (model or "default"))
+        _policy = "allow"
+        if not _same_model:
+            async with db_session() as _db:
+                _policy = await resolve_model_policy(
+                    _db, model=gate_model, account=_account)
         if _policy == "block":
             raise ModelBlockedError(gate_model)
         if _policy == "require_approval":
@@ -23801,7 +23810,12 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         if record is not None:
             record.model = model
-            record.model_pending = pending
+            # model_pending means "a DIFFERENT model is waiting for the turn to end"
+            # (the UI's "after this turn"). Re-sending the running model (an effort-
+            # only pick) queues no model change: it never raises the flag, only keeps
+            # one an earlier real switch raised while that turn is still running.
+            record.model_pending = (
+                (record.model_pending and pending) if _same_model else pending)
             if not isinstance(reasoning_effort, _EffortUnchanged):
                 record.reasoning_effort = reasoning_effort
         # Same "only pass what changed" discipline as `_set_driver_model` above, and

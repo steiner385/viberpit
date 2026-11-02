@@ -1054,3 +1054,84 @@ def test_set_model_default_with_ungated_inherited_default_applies(tmp_path):
     assert driver.set_model_calls == ["default"]
     assert rec.model == "default"
     assert rec.pending_model is None
+
+
+# ---------------------------------------------------------------------------
+# D-1 — re-selecting the RUNNING model is not a switch.
+#
+# The prompt row's effort picker re-sends the session's current model with a new
+# effort. If that model is gated, re-running the approval policy would park a
+# fresh approval for the model already running and drop the effort. Same model
+# (None and "default" are the same choice) skips the gate; a different gated
+# model still parks.
+# ---------------------------------------------------------------------------
+
+
+class _EffortRecordingDriver(_RecordingDriver):
+    async def set_model(self, m, effort=None):
+        self.set_model_calls.append((m, effort))
+        self.model = m
+
+
+def _same_model_effort_run(tmp_path, *, current, requested, pin=None):
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+        if pin is not None:
+            _pin_shared_default(tmp_path, pin)
+
+        async def _run():
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                sid = "s-live"
+                async with db_session() as db:
+                    db.add(DbSession(id=sid, name="n", account_name="alpha",
+                                     engine_session_id="c1", status="idle",
+                                     cwd="/tmp", model=current))
+                driver = _EffortRecordingDriver(turn_active=False)
+                rec = _running_orch(orch, driver, session_id=sid, model=current)
+                await orch.set_model_for_session(
+                    sid, requested, identity="user@x", reasoning_effort="high")
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == sid))).scalar_one()
+                return rec, driver, row
+            finally:
+                await orch.stop()
+
+        return asyncio.run(_run())
+
+
+def test_same_gated_model_with_effort_skips_the_gate(tmp_path):
+    rec, driver, row = _same_model_effort_run(
+        tmp_path, current="fable", requested="fable")
+
+    assert rec.pending_model is None
+    assert row.pending_model is None
+    assert driver.set_model_calls == [("fable", "high")]
+    assert rec.model == "fable"
+    assert rec.reasoning_effort == "high"
+    assert row.reasoning_effort == "high"
+
+
+def test_default_and_none_are_the_same_model_for_the_gate(tmp_path):
+    # The session runs on the inherited default (model None) and that default is
+    # gated: re-sending "default" with an effort is not a switch.
+    rec, driver, row = _same_model_effort_run(
+        tmp_path, current=None, requested="default", pin="claude-fable-5-1[1m]")
+
+    assert rec.pending_model is None
+    assert row.pending_model is None
+    assert driver.set_model_calls == [("default", "high")]
+    assert rec.reasoning_effort == "high"
+
+
+def test_different_gated_model_with_effort_still_parks(tmp_path):
+    rec, driver, row = _same_model_effort_run(
+        tmp_path, current="opus", requested="fable")
+
+    assert rec.pending_model == "fable"
+    assert row.pending_model == "fable"
+    assert rec.model == "opus"
+    assert driver.set_model_calls == []

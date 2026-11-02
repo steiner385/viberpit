@@ -119,7 +119,7 @@ Full inventories, with an evidence tag on every item:
 | Prompt history (↑/↓ + Ctrl+R search) | 1 | ◐ | ↑/↓ only · *rejected for target* |
 | Suggested next prompt (Tab) | 1 | ✅ |  |
 | Dictation | 1 | ✅ | server STT + Web Speech |
-| Usage ring in prompt row | 1 | ✅ |  |
+| Usage ring in prompt row | 1 | ✅ | context only; plan usage → D-6 |
 
 ### 4 Commands & config
 

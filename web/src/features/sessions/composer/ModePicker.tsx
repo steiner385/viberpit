@@ -75,7 +75,8 @@ export function ModePicker({ mode, pendingMode = null, options, onSelect, open, 
         label="Permission mode"
         items={options.map((o) => ({ id: o.value, label: o.label, group: o.group, selected: o.value === current }))}
         groups={GROUPS}
-        onSelect={(id) => onSelect(id as SessionMode)}
+        // Re-picking the checked mode is a no-op, like the model and effort pickers.
+        onSelect={(id) => { if (id !== current) onSelect(id as SessionMode) }}
       />
     </span>
   )

@@ -25,7 +25,7 @@ app-server has since been replaced gets a decline, because the process that
 asked is gone and the new one never asked.
 
 **Never widen silently.** ``set_permission_mode`` receives unvalidated strings
-(the web plan toggle sends ``plan``/``default`` straight through), and the Codex
+(REST, WS and assistant callers pass ``plan``/``default`` straight through), and the Codex
 sandbox is fixed for the life of a thread. An unmapped mode is refused and the
 narrower profile kept; a sandbox change is applied at a turn boundary with a
 verified native resume or transcript fork, and failure refuses the switch rather than running
@@ -1314,9 +1314,10 @@ class CodexAgentDriver:
     async def set_permission_mode(self, mode: str) -> None:
         """Apply a ViberPit permission mode, or refuse it.
 
-        This entry point is unvalidated end to end — the web plan toggle sends
-        ``plan``/``default`` directly, and the REST route does not check the
-        value — so an arbitrary string genuinely arrives here. An unmapped one
+        This entry point is unvalidated end to end — the REST route, the WS frame
+        and the assistant's ``set_permission_mode`` tool pass ``plan``/``default``
+        straight through without checking the value — so an arbitrary string
+        genuinely arrives here. An unmapped one
         is refused and surfaced, keeping the profile the session already has,
         because the alternative (a default) is how a session ends up with more
         authority than its mode name promises.

@@ -43,6 +43,13 @@ describe('ModelPicker', () => {
     expect(screen.getByLabelText('Model switch pending')).toHaveTextContent(/after this turn/i)
   })
 
+  it('shows no "after this turn" when no model change is queued (an effort-only pick)', () => {
+    // A busy effort pick re-sends the running model; the server leaves
+    // modelPending false for it (set_model_for_session, D-1), so nothing shows.
+    renderPicker({ chosen: 'opus', live: 'claude-opus-4-8', pending: false })
+    expect(screen.queryByLabelText('Model switch pending')).toBeNull()
+  })
+
   it('marks the chosen model checked', async () => {
     renderPicker()
     await userEvent.click(trigger())

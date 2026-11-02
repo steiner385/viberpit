@@ -313,6 +313,55 @@ async def test_switch_now_clears_an_earlier_pending_switch():
     assert rec.model == "sonnet"
 
 
+class _EffortFakeDriver(_FakeDriver):
+    async def set_model(self, m, effort=None):
+        self.calls.append(("set_model", m, effort))
+        self.model = m
+
+
+def _effort_orch(driver, *, model):
+    orch, rec, persisted = _mini_orch(driver, last_prompt="p")
+    rec.model = model
+
+    async def _persist(sid, m, reasoning_effort=None):
+        persisted[sid] = (m, reasoning_effort)
+    orch._persist_model = _persist  # type: ignore[attr-defined]
+    return orch, rec, persisted
+
+
+@pytest.mark.asyncio
+async def test_effort_only_pick_on_busy_session_is_not_a_pending_switch():
+    # The prompt row's effort picker re-sends the running model with an effort and
+    # when="after_turn" on a busy session. No model change is queued, so the UI must
+    # not say "after this turn" (D-1).
+    driver = _EffortFakeDriver(turn_active=True)
+    orch, rec, persisted = _effort_orch(driver, model="opus")
+    await _init_mini_db()
+
+    await orch.set_model_for_session("s1", "opus", when="after_turn",
+                                     reasoning_effort="high")
+
+    assert driver.calls == [("set_model", "opus", "high")]
+    assert rec.model_pending is False
+    assert rec.reasoning_effort == "high"
+    assert persisted == {"s1": ("opus", "high")}
+
+
+@pytest.mark.asyncio
+async def test_effort_only_pick_keeps_an_earlier_pending_model_switch():
+    driver = _EffortFakeDriver(turn_active=True)
+    orch, rec, _ = _effort_orch(driver, model="opus")
+    await _init_mini_db()
+    await orch.set_model_for_session("s1", "sonnet", when="after_turn")
+    assert rec.model_pending is True
+
+    await orch.set_model_for_session("s1", "sonnet", when="after_turn",
+                                     reasoning_effort="high")
+
+    assert rec.model_pending is True
+    assert rec.model == "sonnet"
+
+
 def test_pending_switch_settles_when_the_turn_ends():
     orch, rec, _ = _mini_orch(_FakeDriver(turn_active=True))
     rec.model_pending = True
