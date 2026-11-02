@@ -230,7 +230,7 @@ def test_the_signal_tool_names_come_from_the_spec_registry():
                                  if s.tool_class is ToolClass.SIGNAL}
     assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "set_hold",
                                  "propose_decision", "share_artifact", "request_model",
-                                 "reply_to_child"}
+                                 "reply_to_child", "rename_self"}
     assert TURN_SIGNAL_NAMES < SIGNAL_TOOL_NAMES
     assert TURN_SIGNAL_NAMES == {"mark_complete", "mark_no_pr", "hand_back",
                                  "request_model"}

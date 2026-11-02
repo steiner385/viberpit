@@ -75,6 +75,8 @@ _BLURBS: dict[str, str] = {
     "share_artifact": ("you have a link, URL, local path or image the user must see — a "
                        "PR, a report, a screenshot — so it is never lost in prose or a "
                        "collapsed tool result."),
+    "rename_self": ("this session's scope has changed and its board title no longer "
+                       "says what it is doing."),
     "request_model": "you want to run the rest of the work on a different model tier.",
     "dispatch_session": "you need a linked child session the user can steer independently.",
     "reply_to_child": ("a child session handed back or stopped and you can answer, "

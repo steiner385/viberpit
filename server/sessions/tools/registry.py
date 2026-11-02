@@ -48,6 +48,11 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # deliberately ABSENT from TURN_SIGNAL_NAMES: the card is the whole feature, so
     # both transcript builders must render the call, live and on replay.
     ToolSpec("share_artifact", ToolClass.SIGNAL, "Share a link, path or image with the user"),
+    # SIGNAL: it moves the title the user sees on the board and nothing else — the same
+    # write as the user's own PATCH rename — so an unattended session whose scope has
+    # drifted can retitle itself without a card nobody is there to answer (#3214). Absent
+    # from TURN_SIGNAL_NAMES: the ordinary ToolCall card is the transcript's record.
+    ToolSpec("rename_self", ToolClass.SIGNAL, "Rename this session"),
     # MUTATION: it creates a session the user sees on the board. Gated on its
     # annotation by the permission layer, exactly like the assistant drawer's
     # create_session: our own MUTATION tools raise a card in EVERY session mode
@@ -121,6 +126,7 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     question is a product choice), and mounting one without the other leaves only
     ``hand_back`` for the half that is missing. ``share_artifact`` rides
     unconditionally too: every session that can finish has deliverables to show.
+    ``rename_self`` rides with it: any session whose scope drifts can retitle itself.
 
     ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
     offers a call whose result is silently dropped (no engine capability to honour it).
@@ -128,7 +134,7 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     if not signalling_tools:
         return ()
     names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision",
-             "share_artifact"]
+             "share_artifact", "rename_self"]
     if self_model_switch:
         names.append("request_model")
     return tuple(names)

@@ -2147,7 +2147,8 @@ class SessionOrchestrator:
             note_shared_pr=functools.partial(self._note_shared_pr, session_id),
             # Read-only view: `request_draft_ready` reports the grant the registry
             # recorded when the user allowed its card (draft_hold_guard).
-            draft_ready_granted=self._ready_grants(session_id).has)
+            draft_ready_granted=self._ready_grants(session_id).has,
+            rename=functools.partial(self.rename_session, session_id))
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
