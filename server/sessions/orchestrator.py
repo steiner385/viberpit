@@ -103,7 +103,9 @@ from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
-from server.sessions.claude_driver import ACLOSE_BUDGET_S, ClaudeAgentDriverFactory
+from server.sessions.claude_driver import (
+    ACLOSE_BUDGET_S, DENY_COMMENT_PROMPT_PREFIX, ClaudeAgentDriverFactory,
+)
 from server.sessions.engine import (
     EFFORT_UNCHANGED,
     AgentCapabilities,
@@ -21284,8 +21286,8 @@ class SessionOrchestrator:
         trimmed, non-empty) is the user's guidance with a deny. A Claude card hands it
         to the model as the deny reason. An engine-managed (Codex) card's approval
         protocol has no text field, so the deny is applied and the message follows as
-        the next user prompt through :meth:`send_prompt` (no origin: the operator
-        wrote it).
+        the next user prompt through :meth:`send_prompt`, led by
+        ``DENY_COMMENT_PROMPT_PREFIX`` (no origin: the operator wrote it).
         """
         d = self._drivers.get(session_id)
         if d is not None:
@@ -21295,7 +21297,8 @@ class SessionOrchestrator:
                 relay = self._registry.is_engine_managed(perm_id)
                 ok = d.resolve_permission(perm_id, decision, identity, message=message)
                 if ok and relay:
-                    sent = await self.send_prompt(session_id, message)
+                    sent = await self.send_prompt(
+                        session_id, f"{DENY_COMMENT_PROMPT_PREFIX}{message}")
                     if sent != "sent":
                         log.info("resolve_permission: deny message not delivered "
                                  "session=%s perm=%s result=%r", session_id, perm_id, sent)

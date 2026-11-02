@@ -149,6 +149,20 @@ PROMPT_STEER_DENY_PREFIX = (
     "it is still needed.]"
 )
 
+# Prefix on the deny reason a card deny WITH a comment hands the model (the plan card's
+# "Keep planning" guidance, a Desktop-style deny message; PermissionRegistry.resolve
+# records it). Same reasoning as PROMPT_STEER_DENY_PREFIX: a bare comment as the deny
+# reason reads as "stop", so it has to say the user is steering, not ending the turn.
+USER_DENY_COMMENT_PREFIX = (
+    "[The user declined this and said the following. Follow their guidance and "
+    "continue — for a plan, keep planning and revise it.]"
+)
+
+# Lead-in on the user prompt that carries a deny comment on an engine whose approval
+# protocol has no text field (Codex; SessionOrchestrator.resolve_permission). It is
+# the operator's own message, so it stays short and in the first person.
+DENY_COMMENT_PROMPT_PREFIX = "Re the request I just declined: "
+
 
 async def _aiter_one(message: dict):
     yield message
@@ -1004,8 +1018,9 @@ class ClaudeAgentDriver:
         if allowed:
             return PermissionResultAllow()
         # A deny raised by `send_prompt` carries the user's own words (see
-        # PROMPT_STEER_DENY_PREFIX); a card deny or a Stop carries nothing and keeps
-        # the generic string.
+        # PROMPT_STEER_DENY_PREFIX), as does a card deny with a comment (see
+        # USER_DENY_COMMENT_PREFIX); a plain card deny or a Stop carries nothing and
+        # keeps the generic string.
         return PermissionResultDeny(
             message=self._reg.take_deny_reason(perm_id) or "denied by user")
 

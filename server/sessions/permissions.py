@@ -370,7 +370,8 @@ class PermissionRegistry:
 
     def resolve(self, perm_id, decision, identity, message: str | None = None) -> bool:
         """Settle *perm_id* with *decision*. ``message`` on a ``deny`` of an ordinary
-        (Claude) card is recorded as that card's deny reason — the same per-perm store
+        (Claude) card is recorded, framed by ``claude_driver.USER_DENY_COMMENT_PREFIX``
+        so it does not read as "stop", as that card's deny reason — the same per-perm store
         :meth:`deny_all` uses — so the awaiting ``can_use_tool`` hands it to the model
         as ``PermissionResultDeny(message=...)``. An engine-managed card cannot carry
         it (:meth:`is_engine_managed`); the orchestrator delivers it as a prompt."""
@@ -396,7 +397,9 @@ class PermissionRegistry:
             self._record_draft_ready_grant(rec)
         if not rec["future"].done():
             if decision == "deny" and message and not raw:
-                self._deny_reasons[perm_id] = (rec["session_id"], message)
+                from server.sessions.claude_driver import USER_DENY_COMMENT_PREFIX
+                self._deny_reasons[perm_id] = (
+                    rec["session_id"], f"{USER_DENY_COMMENT_PREFIX}\n{message}")
             rec["future"].set_result(decision if raw else decision == "allow")
         return True
 
@@ -476,8 +479,9 @@ class PermissionRegistry:
         return n
 
     def take_deny_reason(self, perm_id: str | None) -> str | None:
-        """Pop the reason :meth:`deny_all` recorded for *perm_id* (None if there is
-        none). Popping is what stops a reason from ever attaching to a later,
+        """Pop the reason recorded for *perm_id* — by :meth:`deny_all` (a steer/Stop
+        reason) or by :meth:`resolve` (a card deny's framed user comment) — or None if
+        there is none. Popping is what stops a reason from ever attaching to a later,
         unrelated denial of the same session."""
         if perm_id is None:
             return None

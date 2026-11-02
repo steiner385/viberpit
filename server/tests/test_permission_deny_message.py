@@ -18,7 +18,10 @@ import pytest
 from claude_agent_sdk import PermissionResultDeny
 
 from server.sessions import session_actions as sa
-from server.sessions.claude_driver import ClaudeAgentDriver
+from server.sessions.claude_driver import (
+    DENY_COMMENT_PROMPT_PREFIX, PROMPT_STEER_DENY_PREFIX, USER_DENY_COMMENT_PREFIX,
+    ClaudeAgentDriver,
+)
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.orphaned_asks import orphaned_answer_prompt
 from server.sessions.permissions import PermissionRegistry
@@ -91,7 +94,9 @@ def test_claude_deny_with_message_reaches_the_model():
     ok, result, orch = _run_claude_deny(COMMENT)
     assert ok is True
     assert isinstance(result, PermissionResultDeny)
-    assert COMMENT in result.message
+    # Framed so the model reads the user steering, not a bare "stop" (cf. #1504).
+    assert result.message.startswith(USER_DENY_COMMENT_PREFIX)
+    assert result.message == f"{USER_DENY_COMMENT_PREFIX}\n{COMMENT}"
     # Read back exactly once — nothing left to attach to a later, unrelated deny.
     assert orch._registry._deny_reasons == {}
 
@@ -114,6 +119,26 @@ def test_registry_ignores_a_message_on_allow():
 
     allowed, reasons = asyncio.run(run())
     assert allowed is True and reasons == {}
+
+
+def test_deny_all_and_steer_reasons_are_not_reframed():
+    """Only a card comment gets USER_DENY_COMMENT_PREFIX; a deny_all reason (a Stop
+    reason, or a prompt steer carrying PROMPT_STEER_DENY_PREFIX) is stored verbatim."""
+    steer = f"{PROMPT_STEER_DENY_PREFIX}\nuse sqlite"
+
+    async def run():
+        reg = PermissionRegistry()
+        out = []
+        for reason in ("stopped by user", steer):
+            pid, fut, _ = await reg.request("s1", "t", "Bash", {"command": "ls"},
+                                            mode="interactive", denylist=set(),
+                                            identity="me")
+            assert reg.deny_all("s1", reason=reason) == 1
+            assert await fut is False
+            out.append(reg.take_deny_reason(pid))
+        return out
+
+    assert asyncio.run(run()) == ["stopped by user", steer]
 
 
 # ── Codex: approval protocol carries no text → deny, then a user prompt ──────
@@ -144,7 +169,7 @@ def test_codex_deny_with_message_denies_then_sends_the_comment_as_a_user_prompt(
     assert decision == "deny"                       # the engine still gets its decline
     orch.send_prompt.assert_awaited_once()
     args, kwargs = orch.send_prompt.call_args
-    assert args == ("s1", COMMENT)
+    assert args == ("s1", f"{DENY_COMMENT_PROMPT_PREFIX}{COMMENT}")
     # User-sourced: no origin marker, so it renders (and reads to the model) as the
     # operator speaking.
     assert kwargs.get("origin") is None
