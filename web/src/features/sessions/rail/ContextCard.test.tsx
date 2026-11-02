@@ -73,6 +73,19 @@ describe('ContextCard', () => {
     expect(screen.getByRole('img', { name: 'Context 37% used' })).toBeInTheDocument()
   })
 
+  it('at danger the meter and the ring carry the same number; only the ring adds the suffix', () => {
+    render(<ContextCard {...base} contextPct={8} />, { wrapper: Wrapper })
+    expect(screen.getByRole('meter')).toHaveAccessibleName('Context 92% used')
+    expect(screen.getByRole('meter')).toHaveAttribute('aria-valuenow', '92')
+    render(
+      <PromptRow rt={{
+        mode: 'default', pendingMode: null, onSetMode: () => {}, model: null, liveModel: null, modelPending: false,
+        onSetModel: () => {}, contextPct: 8, state: { status: { state: 'idle' } },
+      } as never} />,
+    )
+    expect(screen.getByRole('img', { name: 'Context 92% used · auto-compacts soon' })).toBeInTheDocument()
+  })
+
   it('shows no compact warning outside danger', () => {
     render(<ContextCard {...base} contextPct={20} />, { wrapper: Wrapper })
     expect(screen.queryByText('Auto-compacts soon')).toBeNull()

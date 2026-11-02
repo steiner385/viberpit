@@ -4,6 +4,7 @@
  * and in the rail's Environment card.
  */
 import { Pin } from 'lucide-react'
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 
 export interface AccountSwitcherProps {
   account: string
@@ -16,7 +17,9 @@ export interface AccountSwitcherProps {
 
 /** Focus ring, plus the coarse-pointer touch floor (docs/ACCESSIBILITY.md §4):
  *  44px where `hover: hover` does not match, unchanged under a mouse. */
-const CONTROL = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent min-h-11 [@media(hover:hover)]:min-h-0'
+const CONTROL = `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${TOUCH_FLOOR}`
+/** The icon-only Unpin button needs the width floor too (the `ListSearchInput` idiom). */
+const ICON_WIDTH_FLOOR = 'min-w-11 [@media(hover:hover)]:min-w-0'
 
 export function AccountSwitcher({ account, accounts, accountPinned, onSelectAccount, onUnpin }: AccountSwitcherProps) {
   return (
@@ -38,7 +41,7 @@ export function AccountSwitcher({ account, accounts, accountPinned, onSelectAcco
           onClick={onUnpin}
           aria-label="Unpin account"
           title="Pinned — auto-rotation off. Click to unpin."
-          className={`inline-flex items-center justify-center text-warning rounded ${CONTROL}`}
+          className={`inline-flex items-center justify-center text-warning rounded ${CONTROL} ${ICON_WIDTH_FLOOR}`}
         >
           <Pin size={14} aria-hidden="true" />
         </button>

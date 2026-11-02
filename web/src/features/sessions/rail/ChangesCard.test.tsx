@@ -62,15 +62,23 @@ describe('ChangesCard', () => {
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
-  it('a 404 (no data) shows "No changes yet"', () => {
-    diffHook.mockReturnValue({ data: undefined, isError: true })
+  it('while the first fetch is pending, does not claim "No changes yet"', () => {
+    diffHook.mockReturnValue({ data: undefined, isPending: true, isError: false })
+    render(<ChangesCard sessionId="s1" busy={false} onOpenChanges={() => {}} />)
+    expect(screen.queryByText('No changes yet')).toBeNull()
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Changes' })).toBeNull()
+  })
+
+  it('a 404 (error, no data) shows "No changes yet"', () => {
+    diffHook.mockReturnValue({ data: undefined, isPending: false, isError: true })
     render(<ChangesCard sessionId="s1" busy={false} onOpenChanges={() => {}} />)
     expect(screen.getByText('No changes yet')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open Changes' })).toBeNull()
   })
 
   it('an empty diff shows "No changes yet"', () => {
-    diffHook.mockReturnValue({ data: diff([]) })
+    diffHook.mockReturnValue({ data: diff([]), isPending: false, isError: false })
     render(<ChangesCard sessionId="s1" busy={false} onOpenChanges={() => {}} />)
     expect(screen.getByText('No changes yet')).toBeInTheDocument()
   })

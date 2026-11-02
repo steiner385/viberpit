@@ -46,6 +46,13 @@ describe('EnvironmentCard', () => {
     expect(onUnpin).toHaveBeenCalledTimes(1)
   })
 
+  it('gives the account controls a 44px floor on coarse pointers, width too for the icon-only Unpin', () => {
+    render(<EnvironmentCard {...base} accountPinned />)
+    const unpin = screen.getByRole('button', { name: 'Unpin account' })
+    expect(unpin).toHaveClass('min-h-11', '[@media(hover:hover)]:min-h-0', 'min-w-11', '[@media(hover:hover)]:min-w-0')
+    expect(screen.getByLabelText('Switch account')).toHaveClass('min-h-11', '[@media(hover:hover)]:min-h-0')
+  })
+
   it('shows the engine only when it is not the default', () => {
     const { rerender } = render(<EnvironmentCard {...base} />)
     expect(screen.queryByText('Agent')).toBeNull()

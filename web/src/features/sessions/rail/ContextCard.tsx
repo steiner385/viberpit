@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { contextSeverity, contextUsedLabel, type ContextSeverity } from '@/lib/contextWindow'
 import { quotaWindowAriaLabel, quotaWindowTitle, windowLabel } from '@/lib/usageWindows'
 import { Button } from '@/ui/Button'
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import { DeferredMcpInlineList } from '../DeferredMcpStatusReadout'
 import { SessionRulesReadout } from '../SessionRulesReadout'
 import { RailCard } from './RailCard'
@@ -62,7 +63,7 @@ export function ContextCard({ sessionId, account, contextPct, quota, commands, m
                   variant="secondary"
                   size="sm"
                   onClick={onCompact}
-                  className="min-h-11 [@media(hover:hover)]:min-h-0"
+                  className={TOUCH_FLOOR}
                 >
                   Compact now
                 </Button>
@@ -79,17 +80,17 @@ export function ContextCard({ sessionId, account, contextPct, quota, commands, m
       {quota && quota.length > 0 && (
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span className="text-ink-muted">Quota</span>
-          <ul aria-label="Account quota" className="contents">
-          {quota.map((w) => (
-            <li
-              key={w.key}
-              className="tabular-nums text-ink"
-              title={quotaWindowTitle(w)}
-              aria-label={quotaWindowAriaLabel(w)}
-            >
-              {windowLabel(w)} {w.pct}%
-            </li>
-          ))}
+          <ul aria-label="Account quota" className="flex flex-wrap gap-x-3 gap-y-1">
+            {quota.map((w) => (
+              <li
+                key={w.key}
+                className="tabular-nums text-ink"
+                title={quotaWindowTitle(w)}
+                aria-label={quotaWindowAriaLabel(w)}
+              >
+                {windowLabel(w)} {w.pct}%
+              </li>
+            ))}
           </ul>
         </div>
       )}

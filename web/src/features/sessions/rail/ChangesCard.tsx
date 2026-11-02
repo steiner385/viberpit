@@ -6,6 +6,8 @@
  */
 import { useSessionDiff } from '@/api/hooks'
 import { Button } from '@/ui/Button'
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
+import { cn } from '@/lib/utils'
 import { DiffCounts } from '../diff/DiffCounts'
 import { RailCard, RailEmpty } from './RailCard'
 
@@ -20,12 +22,15 @@ interface Props {
 }
 
 export function ChangesCard({ sessionId, busy, onOpenChanges }: Props) {
-  const { data } = useSessionDiff(sessionId, { summary: true, busy })
+  const { data, isError } = useSessionDiff(sessionId, { summary: true, busy })
   const files = data?.files ?? []
 
   return (
     <RailCard title="Changes">
-      {data == null || files.length === 0 ? (
+      {data == null && !isError ? (
+        // First fetch still in flight: "No changes yet" would be a claim we can't make.
+        <RailEmpty>Loading…</RailEmpty>
+      ) : data == null || files.length === 0 ? (
         <RailEmpty>No changes yet</RailEmpty>
       ) : (
         <>
@@ -50,7 +55,7 @@ export function ChangesCard({ sessionId, busy, onOpenChanges }: Props) {
             variant="secondary"
             size="sm"
             onClick={onOpenChanges}
-            className="min-h-11 self-start [@media(hover:hover)]:min-h-0"
+            className={cn('self-start', TOUCH_FLOOR)}
           >
             Open Changes
           </Button>

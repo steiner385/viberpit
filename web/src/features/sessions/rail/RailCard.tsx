@@ -6,11 +6,11 @@ import { useId, type ReactNode } from 'react'
 import { Card } from '@/ui/Card'
 import { SectionHeading } from '@/ui/SectionHeading'
 
-export function RailCard({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+export function RailCard({ title, children }: { title: string; children: ReactNode }) {
   const id = useId()
   return (
     <Card as="section" padding="sm" aria-labelledby={id} className="flex min-w-0 flex-col gap-2 text-xs">
-      <SectionHeading id={id} actions={actions}>{title}</SectionHeading>
+      <SectionHeading id={id}>{title}</SectionHeading>
       {children}
     </Card>
   )
