@@ -146,4 +146,30 @@ describe('ContextCard', () => {
     expect(q).toHaveTextContent('18%')
     expect(screen.getByLabelText(/session usage: 42%/)).toBeInTheDocument()
   })
+
+  it('titles each quota window with its limit and reset', () => {
+    const windows = [
+      { key: 'session', label: 'session', pct: 42, resetsAt: '2026-06-19T14:30:00.000Z', durationSeconds: 18000 },
+      { key: 'weekly', label: 'weekly', pct: 18, resetsAt: null, durationSeconds: 604800 },
+    ] as UsageWindow[]
+    render(<ContextCard {...base} quota={windows} />, { wrapper: Wrapper })
+    const sess = screen.getByText(/sess 42%/i)
+    expect(sess.getAttribute('title')).toMatch(/session limit/i)
+    expect(sess.getAttribute('title')).toMatch(/resets/i)
+    const wk = screen.getByText(/wk 18%/i)
+    expect(wk.getAttribute('title')).toMatch(/weekly limit/i)
+    expect(wk.getAttribute('title')).toMatch(/no active window/i)
+  })
+
+  it('renders exactly one readout for a single-window provider, and none without quota', () => {
+    const { rerender } = render(
+      <ContextCard {...base} quota={[{ key: 'premium', label: 'premium-req', pct: 20, resetsAt: null }] as UsageWindow[]} />,
+      { wrapper: Wrapper },
+    )
+    const q = screen.getByRole('list', { name: 'Account quota' })
+    expect(q.querySelectorAll('li')).toHaveLength(1)
+    expect(q).toHaveTextContent('prem 20%')
+    rerender(<ContextCard {...base} quota={null} />)
+    expect(screen.queryByRole('list', { name: 'Account quota' })).toBeNull()
+  })
 })

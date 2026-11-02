@@ -1,7 +1,7 @@
 /**
  * Rail card: work running alongside the main turn — the session's sub-agents
  * (only when its engine spawns them) and its background shells / Monitors /
- * wakeup, each rendered inline with the same lists the status strip pops over.
+ * wakeup, each rendered inline (`SubAgentList`, `BackgroundWorkList`).
  */
 import type { BackgroundWorkView, SubAgent } from '@/session/selectors'
 import { BackgroundWorkList } from '../BackgroundWorkList'

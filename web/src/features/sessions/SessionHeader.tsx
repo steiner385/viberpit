@@ -38,9 +38,9 @@
  * The cluster is desktop-only (`hidden md:`) and every value truncates, so a
  * long alias cannot starve the title.
  *
- * ## Why the pill is here as well as in the meta strip
+ * ## Why the pill is here as well as in the toolbar
  *
- * `SessionBody`'s meta strip carries a `StatusBar` — the live, `aria-live`
+ * `SessionBody`'s toolbar (`SessionToolbar`) carries a `StatusBar` — the live, `aria-live`
  * status LINE (working spinner, sub-agent phrase, connection note). The pill is
  * the at-a-glance tier badge for the header, and both read the same
  * `session/statusTier` table, so they cannot disagree: one source, two

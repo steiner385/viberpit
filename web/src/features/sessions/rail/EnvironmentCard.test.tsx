@@ -37,6 +37,15 @@ describe('EnvironmentCard', () => {
     expect(onSelect).toHaveBeenCalledWith('home')
   })
 
+  it('labels an account option with its nickname but keeps the slug as its value', () => {
+    render(<EnvironmentCard {...base} account="home" />)
+    const select = screen.getByLabelText('Switch account') as HTMLSelectElement
+    expect(select).toHaveValue('home')
+    expect(Array.from(select.options).find((o) => o.value === 'home')?.text).toBe('tony@home')
+    // No nickname: the slug is the label.
+    expect(Array.from(select.options).find((o) => o.value === 'work')?.text).toBe('work')
+  })
+
   it('shows Unpin only when pinned, and it calls onUnpin', () => {
     const onUnpin = vi.fn()
     const { rerender } = render(<EnvironmentCard {...base} onUnpin={onUnpin} />)

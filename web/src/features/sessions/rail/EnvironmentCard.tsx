@@ -1,6 +1,6 @@
 /**
  * Rail card: where the session runs — the agent (non-default engines only),
- * the account (switch / unpin, the same handlers as the status strip), the
+ * the account (switch / unpin, through `AccountSwitcher`), the
  * runner host, the display, the git branch and worktree, and the session's PRs.
  */
 import type { AgentEngine, PullRequestInfo } from '@/api/types'

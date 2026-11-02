@@ -1,7 +1,7 @@
 /**
  * The session's account select plus its Unpin button — the one control for
- * moving a live session to another account. Shown in the session status strip
- * and in the rail's Environment card.
+ * moving a live session to another account. Shown in the session rail's
+ * Environment card.
  */
 import { Pin } from 'lucide-react'
 import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'

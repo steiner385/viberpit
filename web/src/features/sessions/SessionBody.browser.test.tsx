@@ -5,11 +5,13 @@
 
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { SessionBody } from './SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
+import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
+import { setElementWidth, resetElementWidth } from '@/test/elementWidth'
 
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -33,9 +35,8 @@ vi.mock('@/features/sessions/browser/BrowserTab', () => ({
 // Stub the hooks so SessionBody's query calls return safe empty data
 // without firing real fetch requests (which would conflict with the spied fetch).
 vi.mock('@/api/hooks', () => ({
-  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin.
   useSessionMcp: vi.fn(() => ({ data: undefined })),
-  // Per-session standing rules readout (SessionBody → SessionMeta rulesSlot).
   usePermissionRules: vi.fn(() => ({ data: [] })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
@@ -52,7 +53,6 @@ vi.mock('@/api/hooks', () => ({
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
-  // Unpin account button (SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -76,6 +76,7 @@ function makeRuntime(): SessionRuntime {
     toggleToolDetail: vi.fn(),
     connectionState: 'connected',
     title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    commands: [], backgroundWork: EMPTY_BACKGROUND_WORK_VIEW,
     hasOpenAction: false,
     armedQuestionId: null, chatArmed: false,
     onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
@@ -139,7 +140,10 @@ describe('SessionBody — Browser tab gating', () => {
     })
   })
 
+  // On a wide pane (no Details tab) the conversation alone has no strip.
   it('conversation container has no role=tabpanel when browser feature is disabled (fetch rejects)', async () => {
+    setElementWidth(1200)
+    onTestFinished(resetElementWidth)
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('Network error'))
     renderWithQuery(<SessionBody rt={makeRuntime()} />)
     // Wait for the fetch to settle (browserEnabled stays false)
@@ -150,7 +154,10 @@ describe('SessionBody — Browser tab gating', () => {
     expect(screen.queryByRole('tabpanel')).toBeNull()
   })
 
+  // On a wide pane (no Details tab) the conversation alone has no strip.
   it('conversation container has no role=tabpanel when metrics report disabled', async () => {
+    setElementWidth(1200)
+    onTestFinished(resetElementWidth)
     vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ enabled: false }), {
         status: 200,

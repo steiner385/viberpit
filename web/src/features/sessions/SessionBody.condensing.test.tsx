@@ -7,9 +7,8 @@ import type { Block } from '@/session/reducer'
 
 // Mirror the same stubs as SessionBody.test.tsx
 vi.mock('@/api/hooks', () => ({
-  // In-session MCP readout (SessionBody → SessionMeta mcpSlot).
+  // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin.
   useSessionMcp: vi.fn(() => ({ data: undefined })),
-  // Per-session standing rules readout (SessionBody → SessionMeta rulesSlot).
   usePermissionRules: vi.fn(() => ({ data: [] })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
@@ -26,7 +25,6 @@ vi.mock('@/api/hooks', () => ({
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
-  // Unpin account button (SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -81,7 +79,7 @@ describe('SessionBody — condensing indicator', () => {
     // The font-medium label is unique to CondensingProgress (StatusBar uses working-shimmer class)
     expect(screen.getByText('Condensing context…', { selector: '.font-medium' })).toBeInTheDocument()
     // The bottom busy-tier renders CondensingProgress, not a WorkingIndicator;
-    // the StatusBar's own WorkingIndicator (inside SessionMeta) still renders a spinner,
+    // the StatusBar's own WorkingIndicator (inside SessionToolbar) still renders a spinner,
     // so there IS a working-spinner in the tree — but only from the status bar, not the bottom tier.
     // Confirm: the progressbar (bottom CondensingProgress) is present alongside the status-bar spinner.
     expect(screen.getAllByTestId('working-spinner')).toHaveLength(1) // only the StatusBar's spinner
