@@ -133,6 +133,27 @@ def test_requires_identity(repo: Path) -> None:
         assert c.get(f"/api/sessions/{SID}/diff").status_code == 401
 
 
+def test_daemon_without_the_rpc_is_daemon_outdated_409(repo: Path) -> None:
+    """A daemon older than the edge answers UnknownMethod: an explicit
+    ``daemon_outdated`` 409 (a 4xx the UI does not retry), not a bare
+    ``{"detail": "session_diff"}`` from the app-level DaemonError handler."""
+    c = _client(str(repo))
+    outdated = DaemonError("UnknownMethod", "session_diff")
+    with patch.object(SessionOrchestrator, "session_diff", side_effect=outdated):
+        r = c.get(f"/api/sessions/{SID}/diff?summary=1", headers=_H)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "daemon_outdated"
+
+
+def test_other_daemon_errors_keep_the_app_mapping(repo: Path) -> None:
+    c = _client(str(repo))
+    with patch.object(SessionOrchestrator, "session_diff",
+                      side_effect=DaemonError("RuntimeError", "boom")):
+        r = c.get(f"/api/sessions/{SID}/diff", headers=_H)
+    assert r.status_code == 409
+    assert r.json() == {"detail": "boom"}
+
+
 # --- RemoteOrchestrator / RPC / fleet ----------------------------------------
 
 class _RecordingClient:
