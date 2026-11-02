@@ -214,7 +214,7 @@ audit. Ordered by points closed per unit of risk, with dependencies first.
 | D-2 | Permission card four buttons (`scope=session`); plan comments | permission card, plan approval |
 | D-3 | Message menu: Copy as Markdown; view modes and Ctrl+O | copy, view modes |
 | D-4 | Diff endpoint + Changes tab + chip + rail Changes card + shared renderer for inline diffs | Changes pane, inline diffs |
-| D-5 | Line comments → one prompt | (completes Changes pane) |
+| D-5 | Line comments → one prompt; per-step plan comments land with the same line-comment component | (completes Changes pane) |
 | D-6 | Session rail (Context / Environment / Tasks) replacing `session.meta`; worktree and branch display and actions; context warnings | rail, worktree, context meter |
 | D-7 | File-list/read endpoints; `@` files + sessions; Files tab; clickable paths | `@` mentions, file paths, files pane |
 | D-8 | Verify fork against the binary → Fork from here + `/fork` | fork |

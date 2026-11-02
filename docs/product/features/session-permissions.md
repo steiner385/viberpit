@@ -64,6 +64,19 @@ exception (see Standing rules).
   `acceptEdits` (auto-approve file writes, prompt shell/network), and `bypassPermissions`.
   `permissions.py::PermissionRegistry` enforces these; `to_sdk_permission_mode()` maps them onto the
   SDK's own `default`/`plan`/`acceptEdits`/`bypassPermissions` (#758, #232, #200/#84 auto-memory).
+- **Permission card and plan approval (D-2).** A non-plan card offers Allow once, Allow for this
+  session, Always allow… and Deny; digits 1-4 follow that visual order. Allow for this session is
+  the existing `always` decision: it becomes a session-scope standing rule from the first server
+  suggestion (the engine's own session accept on Codex). Always allow… appears only when the
+  standing-rule chooser is available and opens at scope "This repo" when the session has a repo,
+  otherwise "This session". Cards that forbid standing grants show only Allow once and Deny.
+  Ctrl/⌘+. denies the oldest pending non-plan card in the open session (plan cards skipped;
+  inactive in kiosk mode and while an overlay is open). On a plan card, Keep planning opens an
+  optional "What should change?" field (Send & keep planning / Cancel; Esc cancels). The comment
+  rides with the deny: Claude receives it as the deny reason, Codex as the next user prompt; a
+  blank comment behaves as before. The permission decision (HTTP and WS) accepts an optional
+  `message`, honoured only with `deny`, trimmed and capped at 4000 characters (errors
+  `MESSAGE_REQUIRES_DENY`, `MESSAGE_TOO_LONG`).
 - **Standing rules ("always allow").** A rule is one pattern string stored in an auto-managed,
   scoped `PermissionProfile` (`always-allow:*`, hidden from the named-profile API) with a
   `PermissionRuleStats` row for id, author and hit counters. Code: `server/permission_rules/`

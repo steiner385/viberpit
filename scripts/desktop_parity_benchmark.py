@@ -70,9 +70,9 @@ D=[
  ("Sandbox settings",1,"N",""),
 ]),
 ("6 User feedback",[
- ("Permission card: once / this session / always / deny",3,"P","no 'this session' scope"),
+ ("Permission card: once / this session / always / deny",3,"Y",""),
  ("AskUserQuestion card",3,"Y","multi-question batching"),
- ("Plan approval with comments",2,"P","Approve & run / Keep planning"),
+ ("Plan approval with comments",2,"Y","overall comment; per-step comments reuse D-5 line comments"),
  ("Per-session status (working / waiting / review-ready)",3,"Y",""),
  ("OS / push notifications with actions",2,"Y","Web Push"),
  ("Context meter + 'auto-compacts soon'",2,"P","% only"),
