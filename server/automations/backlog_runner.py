@@ -615,6 +615,12 @@ SessionEnded = Callable[[str], Awaitable[bool]]
 # actually attempted. Gates the give-up path: a session that never ran must not
 # escalate its issue to ``needs-human`` (#1100).
 SessionRan = Callable[[str], Awaitable[bool]]
+# HAND-BACK settle: ``session_hand_back(session_id)`` -> the reason the dispatch's session
+# gave ``hand_back`` (it needs a person: a gate not yet met, an answer, a decision), or
+# ``None`` (never handed back, unwired seam, read error). Read from the durable
+# ``session.hand_back`` audit event, not ``Session.hand_back_reason``, which the next
+# status write clears — archiving the session must not reopen the issue to the runner.
+SessionHandBack = Callable[["str | None"], Awaitable["str | None"]]
 # Grouping-optimizer seam: recompute + persist the group plan from the live
 # backlog; returns the number of groups stored. MUST raise on a model/plan
 # failure (rather than storing an empty plan over a real backlog) so the loop
@@ -800,6 +806,7 @@ class BacklogRunnerLoop:
         session_resolution: SessionResolution | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
+        session_hand_back: SessionHandBack | None = None,
         session_work_stopped: SessionEnded | None = None,
         handoff: Callable[[str, dict, PullRequestInfo], Awaitable[bool]] | None = None,
         closeout_completed: Callable[[str, dict], Awaitable[bool]] | None = None,
@@ -879,6 +886,7 @@ class BacklogRunnerLoop:
         self._handoff = handoff
         self._session_work_stopped = session_work_stopped
         self._session_ran = session_ran             # (session_id) -> bool | None
+        self._session_hand_back = session_hand_back  # (session_id) -> reason | None
         self._pr_doctor_attempts_for = pr_doctor_attempts_for  # (repo#N) -> int | None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
@@ -2868,6 +2876,8 @@ class BacklogRunnerLoop:
             return
         if await self._settle_not_needed(target, st, attempts):
             return
+        if await self._settle_handed_back(target, st):
+            return
         previous = st.get("model")
         ladder_policy = self._policy_for(st.get("product"))
         top = top_tier(ladder_policy)
@@ -3090,6 +3100,33 @@ class BacklogRunnerLoop:
                 "fallback": self._outcome_fallback(st)}):
             await self._ctx.emit("info", f"{target}: no PR needed — {why}",
                                  kind=NOT_NEEDED_CAUSE, target=target)
+        return True
+
+    async def _settle_handed_back(self, target: str, st: dict) -> bool:
+        """Settle an implement dispatch whose session ended after ``hand_back`` with no PR
+        (#3216). A hand-back says the session needs a person — a time gate not yet met, an
+        answer, a decision — and a stronger model cannot supply any of those, so this never
+        climbs the ladder (which re-dispatched the same gated issue five times in 30
+        minutes). The item goes to the owner through the ordinary give-up: an
+        ``owner_action`` hold carrying the session's reason, which — unlike a live session
+        — survives the session being archived. Answers whether it handled the target.
+        """
+        if self._session_hand_back is None:
+            return False
+        sid = st.get("session_id")
+        try:
+            raw = await self._session_hand_back(sid)
+        except Exception:  # noqa: BLE001 - a read failure must not stall the sweep
+            log.warning("backlog_runner.session_hand_back_failed target=%s session=%s",
+                        target, sid, exc_info=True)
+            return False
+        if raw is None:
+            return False
+        safe = _reason_from_note(raw)
+        reason = f"session handed back: {safe}" if safe else "session handed back"
+        await self._give_up(target, st, reason, outcome={
+            "outcome": "no_pr", "cause": "session handed back",
+            "fallback": self._outcome_fallback(st)})
         return True
 
     async def _decision_hold_is_real(self, target: str, st: dict) -> bool:

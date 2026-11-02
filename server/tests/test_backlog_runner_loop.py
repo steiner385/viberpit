@@ -148,7 +148,8 @@ def build_loop(*, mode="on", config=None, clock=None,
                pr_doctor_attempts_fn=None, session_gone=None, session_absent=None,
                held: "Collection[str] | Mapping[str, str] | None" = None,
                escalate_raises=False,
-               investigation_state=None, session_resolution=None, model_quota_out=None):
+               investigation_state=None, session_resolution=None, model_quota_out=None,
+               session_hand_back=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -363,6 +364,8 @@ def build_loop(*, mode="on", config=None, clock=None,
                             if session_resolution is not None else None),
         release_investigation_hold=release_investigation_hold,
         session_ran=session_ran_probe if session_ran is not None else None,
+        session_hand_back=(None if session_hand_back is None
+                           else (lambda _sid: _async_value(session_hand_back))),
         pr_doctor_attempts_for=attempts_seam,
         close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
@@ -4376,6 +4379,26 @@ async def _sweep_after_ending(tmp_path, name: str, resolution, *, held=None,
     await _mark_session_ended(ctx, "o/r#1")
     await loop.tick()                        # sweep
     return loop, rec, ctx
+
+
+async def _async_value(value):
+    return value
+
+
+def test_a_handed_back_ending_hands_off_instead_of_climbing_the_ladder(tmp_path):
+    """#3216: a session that handed back (gate unmet) needs a person; a stronger model
+    cannot help. No rung — the owner_action hand-off survives the session's archive."""
+    async def run():
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "handed_back.db", None, held=(),
+            session_hand_back="gate not met: 2 of 3 green runs")
+        assert rec.escalations == []
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        assert "handed back: gate not met" in rec.needs_humans[0][1]
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "session handed back")]
+
+    asyncio.run(run())
 
 
 def test_an_awaiting_decision_ending_is_neither_a_bounce_nor_a_hand_off(tmp_path):
