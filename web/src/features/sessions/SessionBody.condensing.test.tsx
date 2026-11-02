@@ -24,6 +24,8 @@ vi.mock('@/api/hooks', () => ({
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
+  useSessionDiff: vi.fn(() => ({ data: undefined })),
   // Unpin account button (SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

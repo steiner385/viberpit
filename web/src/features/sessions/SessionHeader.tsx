@@ -51,7 +51,7 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
-import { useRenameSession, useSessions, useEngineCapabilities } from '@/api/hooks'
+import { useRenameSession, useSessions, useEngineCapabilities, useSessionDiff } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { StatusPill } from '@/features/accounts/UsageBadge'
 import { SessionGoalText } from '@/features/sessions/SessionGoalText'
@@ -61,6 +61,7 @@ import { engineBadge, tierLabel } from '@/session/modelName'
 import { useToastAnchor } from '@/shell/toastInsets'
 import { usePageTitle } from '@/shell/usePageTitle'
 import { RenameDialog } from './RenameDialog'
+import { DiffChip } from './diff/DiffChip'
 
 export interface SessionHeaderProps {
   sessionId: string
@@ -111,6 +112,9 @@ export function SessionHeader({
   const { data: sessions = [] } = useSessions()
   const record = sessions.find((s) => s.id === sessionId)
   const agent = engineBadge(record?.engine)
+  // The `+N −M` chip (D-4). Same query as `SessionBody`'s Changes tab, which
+  // owns the turn-end refetch; a 404 (ended/archived session) is no data.
+  const { data: diff } = useSessionDiff(sessionId, { summary: true })
   // The runtime's status starts at `idle` and, on a detached attach to a session
   // with no driver, nothing ever moves it — so an ended/complete session opened
   // from the list rendered a calm "Ready" here while its card said "Ended". A
@@ -230,6 +234,8 @@ export function SessionHeader({
       )}
 
       <StatusPill status={pillStatus} hideLabelNarrow />
+
+      {diff && <DiffChip additions={diff.additions} deletions={diff.deletions} truncated={diff.truncated} />}
 
       {hasNeighbors && (
         <button

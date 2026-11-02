@@ -71,6 +71,7 @@ import {
 import { useSessionSocket } from '@/ws/client'
 import { extractMutationErrorMessage } from './queryClient'
 import type { SessionEvent } from '@/session/events'
+import type { SessionDiff } from '@/features/sessions/diff/types'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
 import { reconcileFlight } from '@/lib/promptFlight'
@@ -148,6 +149,10 @@ export const QK = {
   health: (slug: string) => ['pm', 'health', slug] as const,
   outcomes: (workItemId: string) => ['pm', 'outcomes', workItemId] as const,
   capacity: ['capacity'] as const,
+  /** A session's worktree diff. Bare `(id)` is the prefix covering every
+   *  variant (summary / full × whitespace), which is what a turn end invalidates. */
+  sessionDiff: (id: string, opts?: SessionDiffFlags) =>
+    opts ? ['session-diff', id, opts] as const : ['session-diff', id] as const,
 }
 
 /**
@@ -1196,6 +1201,60 @@ export function useSessionTranscript(id: string, enabled: boolean, limit?: numbe
     enabled,
     staleTime: Infinity,
   })
+}
+
+/** The two query flags of `GET /sessions/{id}/diff`. */
+export interface SessionDiffFlags {
+  /** `summary=1`: files and counts with `hunks: []` — the chip's cheap read. */
+  summary: boolean
+  /** `ignoreWhitespace=1`: `git diff -w`. */
+  ignoreWhitespace: boolean
+}
+
+/**
+ * A session's worktree diff against its base (D-4) — the header's `+N −M` chip
+ * and the Changes tab. The endpoint 404s for an unknown, ended or archived
+ * session; the default retry policy fails a 4xx fast, so that reads as "no
+ * data" and the callers render nothing.
+ *
+ * Nothing polls. `busy` is the caller's "a turn is running" flag: when it goes
+ * true → false the turn has ended and the worktree may have changed, so every
+ * variant of this session's diff is invalidated — the summary, and the full
+ * diff too if the Changes tab has it mounted.
+ */
+export function useSessionDiff(
+  id: string,
+  { summary = false, ignoreWhitespace = false, busy }: Partial<SessionDiffFlags> & { busy?: boolean } = {},
+) {
+  const qc = useQueryClient()
+  const wasBusy = useRef(busy)
+  useEffect(() => {
+    if (wasBusy.current && busy === false) void qc.invalidateQueries({ queryKey: QK.sessionDiff(id) })
+    wasBusy.current = busy
+  }, [busy, id, qc])
+
+  const params = new URLSearchParams()
+  if (summary) params.set('summary', '1')
+  if (ignoreWhitespace) params.set('ignoreWhitespace', '1')
+  const qs = params.toString()
+  return useQuery<SessionDiff>({
+    queryKey: QK.sessionDiff(id, { summary, ignoreWhitespace }),
+    queryFn: async () => asSessionDiff(
+      await api.get<unknown>(`/sessions/${encodeURIComponent(id)}/diff${qs ? `?${qs}` : ''}`)),
+    enabled: !!id,
+    // Flipping "Hide whitespace" changes the key; keep showing the same
+    // session's previous diff until the new one lands — never another session's.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),
+  })
+}
+
+const NO_DIFF: SessionDiff = { base: null, head: null, files: [], additions: 0, deletions: 0, truncated: false }
+
+/** A body without a `files` array (an older server, a catch-all mock) reads as "no changes" rather
+ *  than as a diff whose counts are `undefined` — the chip would otherwise draw `+undefined`. */
+function asSessionDiff(body: unknown): SessionDiff {
+  if (typeof body !== 'object' || body === null || !Array.isArray((body as { files?: unknown }).files)) return NO_DIFF
+  return body as SessionDiff
 }
 
 /** Poll fast only while something is moving: a deploy in flight, or sessions still

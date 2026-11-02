@@ -1,0 +1,149 @@
+/**
+ * D-4: the session's Changes tab. Listed (after Conversation, before Browser)
+ * only when the diff summary has files; `?view=changes` selects it; the summary
+ * is refetched when a turn ends (`busy` goes false) and when the tab opens.
+ */
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
+import { queryResult } from '@/test/reactQuery'
+import type { SessionRuntime } from '@/session/useSessionRuntime'
+import type { SessionDiff } from './diff/types'
+import { SessionBody } from './SessionBody'
+
+vi.mock('@/features/sessions/diff/ChangesTab', () => ({
+  default: ({ sessionId }: { sessionId: string }) => <div data-testid="changes-tab-stub">Changes:{sessionId}</div>,
+}))
+
+vi.mock('@/api/hooks', () => ({
+  useSessionMcp: vi.fn(() => ({ data: undefined })),
+  usePermissionRules: vi.fn(() => ({ data: [] })),
+  useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
+  useModels: () => ({ data: [] }),
+  useAccounts: () => ({ data: [] }),
+  useSessions: () => ({ data: [] }),
+  useEngineOffers: vi.fn(() => []),
+  useEngineCapabilities: vi.fn(() => undefined),
+  useSessionsViewing: vi.fn(),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
+  useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
+  useSessionDiff: vi.fn(),
+}))
+
+import { useSessionDiff } from '@/api/hooks'
+
+const WITH_FILES: SessionDiff = {
+  base: 'abc', head: 'def', additions: 3, deletions: 1, truncated: false,
+  files: [{ path: 'a.ts', oldPath: null, status: 'modified', additions: 3, deletions: 1, binary: false, tooLarge: false, hunks: [] }],
+}
+const NO_FILES: SessionDiff = { ...WITH_FILES, files: [], additions: 0, deletions: 0 }
+
+const refetch = vi.fn()
+
+function serve(d: SessionDiff) {
+  vi.mocked(useSessionDiff).mockImplementation(() => queryResult(d, { refetch }))
+}
+
+function makeRuntime(status = 'idle'): SessionRuntime {
+  return {
+    sessionId: 's1',
+    state: {
+      turns: [], openBlockId: null, status: { state: status, count: 0 },
+      title: null, model: null, usage: null,
+      replaying: false, error: null, queued: [], rotations: [], latestSuggestions: [], subAgents: [],
+    },
+    mode: 'interactive', toolDetailMode: 'auto', toggleToolDetail: vi.fn(),
+    connectionState: 'connected',
+    title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
+    hasOpenAction: false, armedQuestionId: null, chatArmed: false,
+    onDecision: vi.fn(), onAnswer: vi.fn(), onChat: vi.fn(), onPrompt: vi.fn(),
+    onInterrupt: vi.fn(), onSetMode: vi.fn(), onCancelQueued: vi.fn(),
+  } as unknown as SessionRuntime
+}
+
+function renderBody(rt: SessionRuntime, path = '/sessions/s1') {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const ui = (r: SessionRuntime) => (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[path]}><SessionBody rt={r} /></MemoryRouter>
+    </QueryClientProvider>
+  )
+  const utils = render(ui(rt))
+  return { ...utils, rerenderWith: (r: SessionRuntime) => utils.rerender(ui(r)) }
+}
+
+function x11(enabled: boolean) {
+  vi.spyOn(global, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify(enabled ? { active_displays: 1 } : { enabled: false }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }),
+  )
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks()
+  refetch.mockReset()
+  vi.mocked(useSessionDiff).mockReset()
+})
+
+describe('SessionBody — Changes tab', () => {
+  it('is not listed when the summary has no files', async () => {
+    x11(false)
+    serve(NO_FILES)
+    renderBody(makeRuntime())
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled())
+    expect(screen.queryByRole('tab', { name: /changes/i })).toBeNull()
+    expect(screen.queryByRole('tablist')).toBeNull()
+  })
+
+  it('is listed when the summary has files, and opens the Changes pane', async () => {
+    x11(false)
+    serve(WITH_FILES)
+    renderBody(makeRuntime())
+    const tab = screen.getByRole('tab', { name: 'Changes' })
+    await userEvent.click(tab)
+    expect(await screen.findByTestId('changes-tab-stub')).toHaveTextContent('Changes:s1')
+  })
+
+  it('sits between Conversation and Browser', async () => {
+    x11(true)
+    serve(WITH_FILES)
+    renderBody(makeRuntime())
+    await screen.findByRole('tab', { name: /browser/i })
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Changes', 'Browser'])
+  })
+
+  it('opens from ?view=changes and refetches the summary when it does', async () => {
+    x11(false)
+    serve(WITH_FILES)
+    renderBody(makeRuntime(), '/sessions/s1?view=changes')
+    expect(await screen.findByTestId('changes-tab-stub')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Changes' })).toHaveAttribute('aria-selected', 'true')
+    expect(refetch).toHaveBeenCalled()
+  })
+
+  it('falls back to Conversation for ?view=changes with nothing changed', async () => {
+    x11(false)
+    serve(NO_FILES)
+    renderBody(makeRuntime(), '/sessions/s1?view=changes')
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled())
+    expect(screen.queryByTestId('changes-tab-stub')).toBeNull()
+  })
+
+  it('asks for the summary and passes busy so a turn end refetches it', () => {
+    x11(false)
+    serve(WITH_FILES)
+    const { rerenderWith } = renderBody(makeRuntime('working'))
+    expect(vi.mocked(useSessionDiff)).toHaveBeenLastCalledWith('s1', { summary: true, busy: true })
+    rerenderWith(makeRuntime('idle'))
+    expect(vi.mocked(useSessionDiff)).toHaveBeenLastCalledWith('s1', { summary: true, busy: false })
+  })
+})
