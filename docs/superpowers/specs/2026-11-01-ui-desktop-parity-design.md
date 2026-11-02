@@ -68,9 +68,9 @@ seams it needs, and the order to ship it in.
 |---|---|---|
 | `+` menu | attach file/photo · slash commands · presets | `[A-D16]` |
 | `@` | One menu with two groups. **Files** come from the session's worktree (fuzzy; inserted as `@path`, which the CLI resolves natively). **Sessions** are other sessions (a ViberPit reference). | `[A-D2]` |
-| Mode ▾ (⌘⇧M) | Changeable mid-session through the driver's live permission-mode switch; see §3.1. The in-session Plan toggle is removed. | `[A-D10]` |
-| Model ▾ (⌘⇧I) | Moves here from `session.meta`. The gated-model approval flow is unchanged. | `[A-D14]` |
-| Effort ▾ (⌘⇧E) | low / medium / high / max, changeable mid-session; only where the model supports it. | `[A-D14]` |
+| Mode ▾ (Alt+Shift+M) | Changeable mid-session through the driver's live permission-mode switch; see §3.1. The in-session Plan toggle is removed. | `[A-D10]` |
+| Model ▾ (Alt+Shift+I) | Moves here from `session.meta`. The gated-model approval flow is unchanged. | `[A-D14]` |
+| Effort ▾ (Alt+Shift+E) | low / medium / high / max, changeable mid-session; only where the model supports it. | `[A-D14]` |
 | ⚡ Fast | Toggle; shown only where the model and engine support it. | `[A-D14]` |
 | ◔ Usage ring | Wires the existing `ui/UsageRing.tsx` (context plus plan usage). Tap opens the Context card. | `[A-D14]` |
 | Send / Queue / Send now / Stop | Unchanged. | — |
@@ -148,7 +148,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 
 | Chord | Action |
 |---|---|
-| ⌘⇧M / ⌘⇧I / ⌘⇧E | mode / model / effort menus (fallback chord where the browser reserves one) |
+| Alt+Shift+M / I / E (⌥⇧ on Apple) | mode / model / effort menus. Desktop's ⌘⇧M/I/E is browser-reserved (Ctrl+Shift+I DevTools, ⌘/Ctrl+Shift+M profile menu), so this is the fallback chord; matched on `e.code`. |
 | ⌘⌥↑ / ⌘⌥↓ (Alt+↑/↓ on Linux/Windows) | jump to previous / next own prompt |
 | Alt+[ / Alt+] | previous / next session in list order |
 | ⌘⌥1–9 (Alt+1–9) | jump to the nth session; presets in the dispatch bar |
