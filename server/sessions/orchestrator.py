@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
 from viberpit import accounts as ccswitch_accounts
 from viberpit import brand
-from viberpit import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
+from viberpit import configdir, copilot as _copilot_mod, crypto, gitrepos, worktree_diff, worktrees
 from viberpit import oauth as _oauth
 from viberpit.accounts import (
     RefreshDeferred,
@@ -19852,6 +19852,16 @@ class SessionOrchestrator:
         if d is None:
             return None
         return [s.to_wire() for s in await d.mcp_status()]
+
+    async def session_diff(self, session_id: str, *, summary: bool = False,
+                           ignore_whitespace: bool = False) -> dict:
+        """The ``SessionDiff`` of the session's worktree from its base to the working
+        tree (D-4 Changes pane). ``KeyError`` for an unknown session; a session with no
+        cwd, or one that is not a git work tree, answers the empty diff. Runs off the
+        event loop: the bounded git calls can take seconds."""
+        rec = self.record(session_id)
+        return await asyncio.to_thread(worktree_diff.session_diff, rec.cwd or "",
+                                       summary=summary, ignore_whitespace=ignore_whitespace)
 
     async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
         """Reconnect one MCP server in a live session. ``LookupError`` when not live,

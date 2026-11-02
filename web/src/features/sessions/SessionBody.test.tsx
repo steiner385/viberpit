@@ -40,6 +40,8 @@ vi.mock('@/api/hooks', () => ({
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   // "Mark complete" / "Not done" on a handed-back session's pinned panel.
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
+  useSessionDiff: vi.fn(() => ({ data: undefined })),
   // Unpin account button (SessionBody → SessionMeta).
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

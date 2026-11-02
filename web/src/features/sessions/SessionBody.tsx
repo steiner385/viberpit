@@ -6,10 +6,9 @@
  * top bar or composer.
  */
 
-import { useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { Tabs } from '@/ui/Tabs'
-import { useSearchParamState } from '@/lib/useSearchParamState'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
 import { StatusBar } from './StatusBar'
@@ -30,18 +29,16 @@ import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
-import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete } from '@/api/hooks'
+import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { ExportMenu } from './ExportMenu'
+import { useSessionView, type SessionView } from './sessionView'
+
+/** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
+const ChangesTab = lazy(() => import('@/features/sessions/diff/ChangesTab'))
 
 /** Local alias: the shared gate now lives beside the hook that feeds it. */
 const can = canUseEngine
-
-/** The session's two views (`docs/PAGE-TABS.md` §2: a Workspace view toggle,
- *  stored in `?view=` rather than `?tab=` because it is not the page's
- *  partition by question). */
-const SESSION_VIEWS = ['conversation', 'browser'] as const
-type SessionView = (typeof SESSION_VIEWS)[number]
 
 export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSlot?: ReactNode }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns, rt.state.subAgents)
@@ -60,8 +57,32 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
   // a metrics object that does NOT have {enabled: false}.
   const [browserEnabled, setBrowserEnabled] = useState(false)
-  // Active view: 'conversation' (default) or 'browser', persisted in `?view=`.
-  const [view, setView] = useSearchParamState<SessionView>('view', SESSION_VIEWS, 'conversation')
+  // Active view, persisted in `?view=` (see `sessionView.ts`).
+  const [requestedView, setView] = useSessionView()
+
+  // The worktree diff summary (D-4): it lists the Changes tab, and the header's
+  // chip reads the same query. `busy` going false (a turn ended) refetches it.
+  const busy = statusTier(rt.state.status.state) === 'busy'
+  const diffSummary = useSessionDiff(rt.sessionId, { summary: true, busy })
+  const hasChanges = (diffSummary.data?.files.length ?? 0) > 0
+
+  // A view that is not listed falls back to the conversation.
+  const listed: Record<SessionView, boolean> = { conversation: true, changes: hasChanges, browser: browserEnabled }
+  const view: SessionView = listed[requestedView] ? requestedView : 'conversation'
+  const showTabs = hasChanges || browserEnabled
+
+  // Opening the tab refreshes the summary too (the pane itself fetches the full diff).
+  // Keyed on the REQUESTED view changing to Changes after mount — a click on the tab
+  // or the header chip. Not on `view`: with `?view=changes` in the URL, `view` only
+  // resolves to Changes once the mount fetch has landed (it lists the tab), so that
+  // refetched the just-fetched summary and every page load asked for it twice.
+  const { refetch: refetchDiffSummary } = diffSummary
+  const prevRequestedView = useRef(requestedView)
+  useEffect(() => {
+    const opened = requestedView === 'changes' && prevRequestedView.current !== 'changes'
+    prevRequestedView.current = requestedView
+    if (opened) void refetchDiffSummary({ cancelRefetch: false })
+  }, [requestedView, refetchDiffSummary])
 
   useEffect(() => {
     let cancelled = false
@@ -111,11 +132,17 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
         />
       </div>
 
-      {/* Conversation | Browser — only rendered when the X display is available. */}
-      {browserEnabled && (
+      {/* Conversation | Changes | Browser — Changes once the worktree differs from
+          its base, Browser when the X display is available; no strip for the
+          conversation alone. */}
+      {showTabs && (
         <Tabs
           label="Session view"
-          items={[{ id: 'conversation', label: 'Conversation' }, { id: 'browser', label: 'Browser' }]}
+          items={[
+            { id: 'conversation', label: 'Conversation' },
+            ...(hasChanges ? [{ id: 'changes', label: 'Changes' }] : []),
+            ...(browserEnabled ? [{ id: 'browser', label: 'Browser' }] : []),
+          ]}
           value={view}
           onChange={(id) => setView(id as SessionView)}
           panelId={(id) => `tab-panel-${id}`}
@@ -124,7 +151,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
       )}
 
       {/* Conversation panel content — defined once, rendered in either a plain div
-          or a tab-panel wrapper depending on whether browser tabs are active. */}
+          or a tab-panel wrapper depending on whether the tab strip is shown. */}
       {(() => {
         const conversationPanel = (
           <>
@@ -265,8 +292,19 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           </>
         )
 
+        /* Changes tab panel */
+        if (view === 'changes') {
+          return (
+            <div id="tab-panel-changes" role="tabpanel" aria-labelledby="tab-changes" className="flex-1 min-h-0 min-w-0">
+              <Suspense fallback={<div className="h-full w-full" aria-busy="true" />}>
+                <ChangesTab sessionId={rt.sessionId} />
+              </Suspense>
+            </div>
+          )
+        }
+
         /* Browser tab panel */
-        if (browserEnabled && view === 'browser') {
+        if (view === 'browser') {
           return (
             <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
               <DeferredBrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state}
@@ -275,9 +313,9 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           )
         }
 
-        /* Conversation tab panel — with tabpanel ARIA when browser tabs are shown,
-           plain wrapper div when browser is not available. */
-        const convoWrapperProps = browserEnabled
+        /* Conversation tab panel — with tabpanel ARIA when the tab strip is shown,
+           a plain wrapper div when it is not. */
+        const convoWrapperProps = showTabs
           ? {
               role: 'tabpanel' as const,
               id: 'tab-panel-conversation',

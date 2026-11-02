@@ -205,6 +205,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     "rename_session", "note_user_interaction", "set_autopilot_paused",
     "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
     "stop_subagent", "mcp_status_for", "mcp_reconnect", "mcp_toggle",
+    # The diff reads the session's worktree, which lives on its owning host.
+    "session_diff",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",

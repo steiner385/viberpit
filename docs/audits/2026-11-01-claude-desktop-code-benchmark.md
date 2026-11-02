@@ -66,11 +66,11 @@ Full inventories, with an evidence tag on every item:
 | 5 Settings | 3.5 / 8 | 44% |
 | 6 User feedback | 17 / 19 | 89% |
 | 7 Lifecycle & branching | 13.5 / 25 | 54% |
-| 8 Code review & dev | 3 / 12 | 25% |
+| 8 Code review & dev | 5.5 / 12 | 46% |
 | 9 Shortcuts & a11y | 6 / 8 | 75% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **109.5 / 161** | **68%** |
-| **Target completion** (excl. rejected rows) | **107 / 151** | **71%** |
+| **Overall (weighted)** | **112 / 161** | **70%** |
+| **Target completion** (excl. rejected rows) | **109.5 / 151** | **73%** |
 
 ### 1 Shell & IA
 
@@ -84,7 +84,7 @@ Full inventories, with an evidence tag on every item:
 | Split view / tiled panes | 2 | ❌ | umbrella spec non-goal · *rejected for target* |
 | Pop session into own window | 1 | ◐ | every session is a URL; no layout restore · *rejected for target* |
 | Archived view + unarchive | 2 | ✅ |  |
-| Session rail: Changes / Context / Environment / Tasks cards | 2 | ◐ | meta strip has ctx, host, bg tasks; no Changes |
+| Session rail: Changes / Context / Environment / Tasks cards | 2 | ◐ | meta strip has ctx, host, bg tasks; Changes chip in header; rail → D-6 |
 
 ### 2 Transcript
 
@@ -182,8 +182,8 @@ Full inventories, with an evidence tag on every item:
 
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
-| Changes pane: aggregate diff, unified/split, line comments | 3 | ❌ |  |
-| Inline tool diffs | 2 | ◐ | rebuilt from tool input, no highlighting |
+| Changes pane: aggregate diff, unified/split, line comments | 3 | ◐ | line comments → D-5 |
+| Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted; MultiEdit edits[] not rendered |
 | Files pane (view / edit) | 1 | ❌ |  |
 | PR viewer: checks, threads, merge, auto-merge | 2 | ◐ | Pipeline page + PR pills + Fix |
 | Preview browser with dev-server detection | 2 | ◐ | VNC Browser tab, no dev-server detect |
@@ -215,12 +215,12 @@ Full inventories, with an evidence tag on every item:
 | 1 | @-file mentions | 3 Composer | 3 |
 | 2 | Fork session (from here) | 7 Lifecycle & branching | 3 |
 | 3 | Rewind to message (with file restore, undo) | 7 Lifecycle & branching | 3 |
-| 4 | Changes pane: aggregate diff, unified/split, line comments | 8 Code review & dev | 3 |
-| 5 | ⌘K palette over sessions + branches | 1 Shell & IA | 2 |
-| 6 | Split view / tiled panes | 1 Shell & IA | 2 |
-| 7 | CLAUDE.md / memory-file editor | 4 Commands & config | 2 |
-| 8 | Edit & resend a previous message | 7 Lifecycle & branching | 2 |
-| 9 | Integrated terminal | 8 Code review & dev | 2 |
+| 4 | ⌘K palette over sessions + branches | 1 Shell & IA | 2 |
+| 5 | Split view / tiled panes | 1 Shell & IA | 2 |
+| 6 | CLAUDE.md / memory-file editor | 4 Commands & config | 2 |
+| 7 | Edit & resend a previous message | 7 Lifecycle & branching | 2 |
+| 8 | Integrated terminal | 8 Code review & dev | 2 |
+| 9 | Changes pane: aggregate diff, unified/split, line comments | 8 Code review & dev | 1.5 |
 | 10 | Group/sort by project, folder, branch, status, env, date, PR | 1 Shell & IA | 1 |
 | 11 | Pin / star sessions | 1 Shell & IA | 1 |
 | 12 | Read / unread marking | 1 Shell & IA | 1 |
@@ -241,19 +241,18 @@ Full inventories, with an evidence tag on every item:
 | 27 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
 | 28 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
 | 29 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 30 | Inline tool diffs | 8 Code review & dev | 1 |
-| 31 | Files pane (view / edit) | 8 Code review & dev | 1 |
-| 32 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 33 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 34 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
-| 35 | Jump between prompts | 9 Shortcuts & a11y | 1 |
-| 36 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 37 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
-| 38 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 39 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
-| 40 | Notification levels per event type | 5 Settings | 0.5 |
-| 41 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 42 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 30 | Files pane (view / edit) | 8 Code review & dev | 1 |
+| 31 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
+| 32 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 33 | Session switching by keyboard | 9 Shortcuts & a11y | 1 |
+| 34 | Jump between prompts | 9 Shortcuts & a11y | 1 |
+| 35 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 36 | Post-turn summary card (completed / ready for review) | 2 Transcript | 0.5 |
+| 37 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 38 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
+| 39 | Notification levels per event type | 5 Settings | 0.5 |
+| 40 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 41 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

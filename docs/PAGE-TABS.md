@@ -20,7 +20,7 @@ first tab that was a dumping ground of eight blocks. This document is that missi
 |---|---|
 | Standard page; detail pane in a list/detail chassis (product, capability, initiative, automation, CI repo) | **This standard.** |
 | Split page (Settings) | No tab strip (page contract §2.2). The rail is the partition; a section is organised in `SettingsGroup`s. A section with more than four groups or with two CRUD lists splits into **sibling sections**, governed by the settings redesign spec. |
-| Workspace page (Sessions, Pipeline) | The board is one surface. A `Tabs` strip there is a **selector** (Pipeline's repo strip) or a **view toggle** (the session's Conversation / Browser), not a partition by question. §7 mechanics still apply. |
+| Workspace page (Sessions, Pipeline) | The board is one surface. A `Tabs` strip there is a **selector** (Pipeline's repo strip) or a **view toggle** (the session's Conversation / Changes / Browser), not a partition by question. §7 mechanics still apply. |
 | Reader page (archived review, sub-agent view) | One document; no tabs. |
 | List column, scope segments | Scope is a route (`aria-current="page"` links), never `role="tab"`. |
 | Dialog, sheet, drawer | A single task. Never tabs inside a dialog. |

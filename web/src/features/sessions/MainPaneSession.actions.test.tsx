@@ -62,6 +62,8 @@ vi.mock('@/api/hooks', () => ({
   // Capability gate for engine-conditional controls; undefined = "unknown",
   // which every gate reads as "capability present".
   useEngineCapabilities: vi.fn(() => undefined),
+  // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
+  useSessionDiff: vi.fn(() => ({ data: undefined })),
   useSessionsViewing: vi.fn(),
   // useSessionNeighbors (added in mobile nav feature) calls useSessions internally.
   // Return an empty list so the chevrons stay hidden in these header-focused tests.

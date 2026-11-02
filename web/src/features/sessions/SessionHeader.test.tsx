@@ -19,7 +19,9 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QK } from '@/api/hooks'
+import type { SessionDiff } from './diff/types'
 import type { AgentCapabilities, EngineOffer, Session, SessionStatus } from '@/api/types'
 import { session as makeSession } from '@/test/factories'
 import { SessionHeader, type SessionHeaderProps } from './SessionHeader'
@@ -38,17 +40,27 @@ interface RenderOpts {
   sessions?: Session[]
   /** Seed `/api/config`'s engine report; omit for "the server has not answered". */
   engines?: EngineOffer[]
+  /** Seed the diff summary the `+N −M` chip reads. */
+  diff?: SessionDiff
 }
 
-function renderHeader({ props = {}, sessions = [session()], engines }: RenderOpts = {}) {
+/** The router location, so a test can see the chip switch `?view=`. */
+function Where() {
+  return <div data-testid="where">{useLocation().search}</div>
+}
+
+function renderHeader({ props = {}, sessions = [session()], engines, diff }: RenderOpts = {}) {
   const onBack = vi.fn()
   const onOpenSession = vi.fn()
   const onClosed = vi.fn()
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(QK.sessions, sessions)
   if (engines) qc.setQueryData(QK.config, { repoRoot: '/repo', engines })
+  if (diff) qc.setQueryData(QK.sessionDiff('sess-1', { summary: true, ignoreWhitespace: false }), diff)
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/sessions/sess-1']}>{children}<Where /></MemoryRouter>
+    </QueryClientProvider>
   )
   const utils = render(
     <SessionHeader
@@ -438,5 +450,29 @@ describe('SessionHeader — account rotation is capability-gated', () => {
     renderHeader({ props: { onRotate: vi.fn() } })
     await openActions()
     expect(screen.getByRole('menuitem', { name: /next best account/i })).toBeInTheDocument()
+  })
+})
+
+// ── the +N −M chip (D-4) ─────────────────────────────────────────────────────
+
+const summary = (additions: number, deletions: number): SessionDiff => ({
+  base: 'abc', head: 'def', additions, deletions, truncated: false,
+  files: additions + deletions > 0
+    ? [{ path: 'a.ts', oldPath: null, status: 'modified', additions, deletions, binary: false, tooLarge: false, hunks: [] }]
+    : [],
+})
+
+describe('SessionHeader — diff chip', () => {
+  it('is hidden with nothing changed', () => {
+    renderHeader({ diff: summary(0, 0) })
+    expect(screen.queryByRole('button', { name: /open changes/i })).toBeNull()
+  })
+
+  it('shows +N −M beside the status pill and opens the Changes tab', async () => {
+    renderHeader({ diff: summary(12, 1) })
+    const chip = screen.getByRole('button', { name: /open changes/i })
+    expect(chip).toHaveTextContent('+12 −1')
+    await userEvent.click(chip)
+    expect(screen.getByTestId('where')).toHaveTextContent('?view=changes')
   })
 })
