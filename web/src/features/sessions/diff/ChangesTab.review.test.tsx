@@ -179,3 +179,48 @@ describe('ChangesTab review bar', () => {
     expect(screen.getByRole('region', { name: 'Review comments' })).toHaveTextContent('1 comment')
   })
 })
+
+describe('ChangesTab review focus', () => {
+  const header = () => screen.getByRole('button', { name: /src\/app\.ts/ })
+
+  it('Send moves focus to the first file header once the bar is gone', async () => {
+    const user = userEvent.setup()
+    seed(SEEDED)
+    renderTab()
+    await user.click(screen.getByRole('button', { name: 'Send to Claude' }))
+    expect(screen.queryByRole('region', { name: 'Review comments' })).not.toBeInTheDocument()
+    expect(header()).toHaveFocus()
+  })
+
+  it('Discard all moves focus to the first file header once the bar is gone', async () => {
+    const user = userEvent.setup()
+    seed(SEEDED)
+    renderTab()
+    await user.click(screen.getByRole('button', { name: 'Discard all' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard' }))
+    expect(screen.queryByRole('region', { name: 'Review comments' })).not.toBeInTheDocument()
+    expect(header()).toHaveFocus()
+  })
+
+  it('with no files left, Send focuses the tab panel itself', async () => {
+    const user = userEvent.setup()
+    serve({ ...DIFF, files: [] })
+    seed([{ ...SEEDED[1], anchor: { ...SEEDED[1].anchor, path: 'src/gone.ts' } }])
+    renderTab()
+    await user.click(screen.getByRole('button', { name: 'Send to Claude' }))
+    expect(screen.getByTestId('changes-tab')).toHaveFocus()
+  })
+
+  it('deleting a comment on a file no longer changed focuses the next card, then the first file header', async () => {
+    const user = userEvent.setup()
+    const gone = (c: LineComment, path: string) => ({ ...c, anchor: { ...c.anchor, path } })
+    seed([gone(SEEDED[1], 'src/gone-a.ts'), gone(SEEDED[0], 'src/gone-b.ts')])
+    renderTab()
+    const orphans = screen.getByRole('region', { name: 'Comments on files no longer changed' })
+    const [first, second] = within(orphans).getAllByRole('article')
+    await user.click(within(first).getByRole('button', { name: 'Delete' }))
+    expect(within(second).getByRole('button', { name: 'Edit' })).toHaveFocus()
+    await user.click(within(second).getByRole('button', { name: 'Delete' }))
+    expect(header()).toHaveFocus()
+  })
+})

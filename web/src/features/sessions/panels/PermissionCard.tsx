@@ -250,11 +250,12 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
             )}
           />
-          {tooLong && (
-            <p role="status" className="text-xs font-medium text-danger">
-              {`Too long — ${feedback.length}/${PLAN_FEEDBACK_MAX}`}
-            </p>
-          )}
+          {/* The live region is always mounted and holds only the static "Too long", so it
+              announces once as the limit is crossed — not the count on every keystroke. */}
+          <p className={cn('text-xs font-medium text-danger', !tooLong && 'sr-only')}>
+            <span role="status">{tooLong ? 'Too long' : ''}</span>
+            {tooLong && <span>{` — ${feedback.length}/${PLAN_FEEDBACK_MAX}`}</span>}
+          </p>
           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <button type="button" onClick={sendKeepPlanning} disabled={tooLong}
               className={cn(secondaryBtn, 'disabled:cursor-not-allowed disabled:opacity-50')}>

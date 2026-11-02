@@ -4,11 +4,13 @@ import { cn } from '@/lib/utils'
 import { useSessionDiff } from '@/api/hooks'
 import { useViewport } from '@/shell/useViewport'
 import { Button } from '@/ui/Button'
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import { useConfirm } from '@/ui/useConfirm'
 import type { PromptSendResult } from '@/ws/client'
 import CommentableDiff from '../review/CommentableDiff'
 import { CommentCard } from '../review/CommentEditor'
 import { staleCommentIds } from '../review/diffAnchors'
+import { afterDelete, useReturnFocus } from '../review/returnFocus'
 import { composeReviewPrompt, newCommentId, type CommentAnchor, type LineComment } from '../review/reviewComments'
 import { useReviewDraft } from '../review/useReviewDraft'
 import type { DiffViewMode } from './DiffRenderer'
@@ -41,7 +43,8 @@ const UNPRESSED = 'text-ink-muted hover:bg-surface-raised hover:text-ink'
  * composer's own send/queue path (busy = queued behind the live turn, closed
  * socket = held for the reconnect) minus chat-arming, so a review is never
  * delivered as an armed question's answer. The draft clears only once the send
- * reports a stage; a throw keeps it.
+ * reports a stage; a throw keeps it. When the review bar goes (Send or Discard),
+ * focus moves to the first file's header — or this panel, with no files.
  */
 export default function ChangesTab({ sessionId, onSendReview }: {
   sessionId: string
@@ -61,6 +64,12 @@ export default function ChangesTab({ sessionId, onSendReview }: {
     remove,
   }), [addComment, update, remove])
   const byPath = useCommentsByPath(draft.comments)
+  const { root, returnFocus } = useReturnFocus<HTMLDivElement>()
+  const firstHeader = (r: HTMLDivElement) => r.querySelector<HTMLElement>('[data-file-header]') ?? r
+  const clearDraft = () => {
+    returnFocus(firstHeader)
+    draft.clear()
+  }
 
   const toggle = (path: string) => setCollapsed((prev) => {
     const next = new Set(prev)
@@ -97,14 +106,14 @@ export default function ChangesTab({ sessionId, onSendReview }: {
       toast.error('Couldn’t send the review — your comments are kept.')
       return
     }
-    draft.clear()
+    clearDraft()
     toast.success(stage === 'sent'
       ? `Sent ${countLabel(n)}`
       : `Queued ${countLabel(n)} — they send when the connection is back`)
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="changes-tab">
+    <div ref={root} tabIndex={-1} className="flex h-full min-h-0 min-w-0 flex-col focus:outline-none" data-testid="changes-tab">
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-edge bg-canvas px-3 py-1">
         <div role="group" aria-label="Diff layout" className="flex rounded-md border border-edge">
           {(['unified', 'split'] as const).map((mode) => (
@@ -154,7 +163,11 @@ export default function ChangesTab({ sessionId, onSendReview }: {
           <section aria-label="Comments on files no longer changed" className="space-y-1">
             {orphans.map((c) => (
               <CommentCard key={c.id} comment={c} stale showPath
-                           onEdit={(b) => draft.update(c.id, b)} onDelete={() => draft.remove(c.id)} />
+                           onEdit={(b) => draft.update(c.id, b)}
+                           onDelete={() => {
+                             returnFocus(afterDelete(root.current, c.id, firstHeader))
+                             draft.remove(c.id)
+                           }} />
             ))}
           </section>
         )}
@@ -173,7 +186,7 @@ export default function ChangesTab({ sessionId, onSendReview }: {
       </div>
 
       {draft.comments.length > 0 && (
-        <ReviewBar comments={draft.comments} onDiscard={draft.clear} onSend={send} />
+        <ReviewBar comments={draft.comments} onDiscard={clearDraft} onSend={send} />
       )}
     </div>
   )
@@ -245,9 +258,6 @@ function ReviewBar({ comments, onDiscard, onSend }: {
   )
 }
 
-/** The coarse-pointer 44px floor for a dense `Button size="sm"` (docs/ACCESSIBILITY.md §4). */
-const TOUCH_FLOOR = 'min-h-11 [@media(hover:hover)]:min-h-0'
-
 function FileSection({ file, view, open, onToggle, truncated, comments, review }: {
   file: FileDiff; view: DiffViewMode; open: boolean; onToggle: () => void; truncated: boolean
   comments: readonly LineComment[]; review: ReviewHandlers
@@ -257,6 +267,7 @@ function FileSection({ file, view, open, onToggle, truncated, comments, review }
     <section className="min-w-0 rounded-md border border-edge">
       <button
         type="button"
+        data-file-header
         aria-expanded={open}
         onClick={onToggle}
         title={name}

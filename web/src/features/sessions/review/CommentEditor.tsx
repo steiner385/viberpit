@@ -1,7 +1,9 @@
 import { useState, type KeyboardEvent } from 'react'
 import { Button } from '@/ui/Button'
 import { Textarea } from '@/ui/Textarea'
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import type { CommentAnchor, LineComment } from './reviewComments'
+import { useReturnFocus } from './returnFocus'
 
 /**
  * The review-comment editor and the saved-comment card (D-5). Presentational:
@@ -9,9 +11,8 @@ import type { CommentAnchor, LineComment } from './reviewComments'
  * Changes tab's chunk (and, lazily, the plan card's), never in the entry.
  *
  * Buttons are `Button size="sm"` with the coarse-pointer 44px floor
- * (docs/ACCESSIBILITY.md §4): dense inline controls on a mouse, full targets on touch.
+ * (`TOUCH_FLOOR`): dense inline controls on a mouse, full targets on touch.
  */
-const TOUCH_FLOOR = 'min-h-11 [@media(hover:hover)]:min-h-0'
 
 export default function CommentEditor({ initial = '', onSave, onCancel, onDraftChange }: {
   /** The starting text, or a function returning it (read once, at mount). */
@@ -35,7 +36,7 @@ export default function CommentEditor({ initial = '', onSave, onCancel, onDraftC
     }
   }
   return (
-    <div className="flex flex-col gap-2 font-sans">
+    <div className="flex min-w-0 flex-col gap-2 font-sans">
       <Textarea
         aria-label="Comment"
         placeholder="Leave a comment for Claude…"
@@ -71,7 +72,7 @@ export function StaleAnchor({ anchor, quote, stale, showPath }: {
     <>
       <p className="mb-1 text-xs text-ink-muted">
         {stale && <span className="mr-1 rounded-sm bg-warning-wash px-1 text-ink">Outdated</span>}
-        {showPath && <span className="mr-1 font-mono">{anchor.path}</span>}
+        {showPath && <span className="mr-1 break-all font-mono">{anchor.path}</span>}
         {rangeLabel(anchor)}
       </p>
       {stale && (
@@ -87,6 +88,11 @@ export function StaleAnchor({ anchor, quote, stale, showPath }: {
  * A saved comment: its body with Edit / Delete. `stale` marks one whose lines no
  * longer match the diff (still sent, marked `(outdated)`). `showPath` names the
  * file, for a comment whose file left the diff entirely.
+ *
+ * Fits its column on a phone (`min-w-0 max-w-full`, wrapping text). Closing an
+ * edit (Save or Cancel) returns focus to this card's Edit button; the caller of
+ * `onDelete` decides where focus goes after a delete (`returnFocus.afterDelete`),
+ * found through `data-comment-id` / `data-comment-edit`.
  */
 export function CommentCard({ comment, stale = false, showPath = false, onEdit, onDelete }: {
   comment: LineComment
@@ -96,22 +102,30 @@ export function CommentCard({ comment, stale = false, showPath = false, onEdit, 
   onDelete: () => void
 }) {
   const [editing, setEditing] = useState(false)
+  const { root, returnFocus } = useReturnFocus<HTMLElement>()
+  const close = () => {
+    returnFocus((card) => card.querySelector<HTMLElement>('[data-comment-edit]'))
+    setEditing(false)
+  }
   return (
     <article
+      ref={root}
+      data-comment-id={comment.id}
       aria-label={`Comment on ${rangeLabel(comment.anchor)}`}
-      className="rounded-md border border-edge bg-surface p-2 font-sans text-sm text-ink"
+      className="min-w-0 max-w-full rounded-md border border-edge bg-surface p-2 font-sans text-sm text-ink"
     >
       <StaleAnchor anchor={comment.anchor} quote={comment.quote} stale={stale} showPath={showPath} />
       {editing ? (
         <CommentEditor
           initial={comment.body}
-          onSave={(body) => { onEdit(body); setEditing(false) }}
-          onCancel={() => setEditing(false)}
+          onSave={(body) => { onEdit(body); close() }}
+          onCancel={close}
         />
       ) : (
-        <div className="flex items-start gap-2">
-          <p className="min-w-0 flex-1 whitespace-pre-wrap break-words">{comment.body}</p>
-          <Button type="button" variant="ghost" size="sm" className={TOUCH_FLOOR} onClick={() => setEditing(true)}>Edit</Button>
+        <div className="flex min-w-0 items-start gap-2">
+          <p className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]">{comment.body}</p>
+          <Button type="button" variant="ghost" size="sm" className={TOUCH_FLOOR} data-comment-edit
+                  onClick={() => setEditing(true)}>Edit</Button>
           <Button type="button" variant="ghost" size="sm" className={TOUCH_FLOOR} onClick={onDelete}>Delete</Button>
         </div>
       )}

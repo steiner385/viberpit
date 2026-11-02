@@ -10,6 +10,9 @@ interface Props {
   view: DiffViewMode
   /** Render at most this many diff lines, then a "show all" button. Unset = everything. */
   maxLines?: number
+  /** Controlled "show all" (with `onShowAll`) for a caller that must know what is drawn — `CommentableDiff`. Unset = the renderer's own. */
+  showAll?: boolean
+  onShowAll?: () => void
   /** Extra classes on the frame — the frame is the scroll container, so a height cap goes here. */
   className?: string
   /** Slots for an overlay such as line comments (`review/CommentableDiff`). Unset = the plain diff. */
@@ -36,14 +39,21 @@ export interface DiffDecorations {
  * row, so a changed line sits beside its replacement; the side a run is short
  * on gets an empty cell. Context lines appear on both sides.
  *
+ * Line numbers and hunk headers are dimmed with a translucent text colour, not
+ * `opacity` — an opacity layer is a stacking context, and would paint over a
+ * touch gutter's extended hit area (`review/LineCommentGutter`).
+ *
  * Colours come from the app's one highlight.js theme: the frame is `.hljs` and
  * add/del rows are `.hljs-addition` / `.hljs-deletion`, so diff and code-block
  * colours always agree. Syntax highlighting is loaded on demand (see
  * `diffHighlight.ts`); until it arrives, and for files with no known language,
  * the lines are plain text.
  */
-export const DiffRenderer = memo(function DiffRenderer({ file, view, maxLines, className, decorations: deco }: Props) {
-  const [showAll, setShowAll] = useState(false)
+export const DiffRenderer = memo(function DiffRenderer({
+  file, view, maxLines, showAll: shownAll, onShowAll, className, decorations: deco,
+}: Props) {
+  const [ownShowAll, setOwnShowAll] = useState(false)
+  const showAll = shownAll ?? ownShowAll
   const highlight = useHighlighter(file.path)
 
   const total = useMemo(() => file.hunks.reduce((n, h) => n + h.lines.length, 0), [file])
@@ -63,7 +73,7 @@ export const DiffRenderer = memo(function DiffRenderer({ file, view, maxLines, c
     return hunks.map((h, i) => (
       <div key={i}>
         {anchored && (
-          <div className="px-2 py-0.5 opacity-60 select-none" data-hunk-header>
+          <div className="px-2 py-0.5 text-current/60 select-none" data-hunk-header>
             {hunkHeader(h)}
           </div>
         )}
@@ -103,7 +113,7 @@ export const DiffRenderer = memo(function DiffRenderer({ file, view, maxLines, c
       {shown < total && (
         <button
           type="button"
-          onClick={() => setShowAll(true)}
+          onClick={() => { setOwnShowAll(true); onShowAll?.() }}
           className="px-3 py-1 text-xs text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           show all {total} lines
@@ -128,7 +138,7 @@ interface CellProps {
 function LineCell({ line, side, anchored, numWidth, highlight, split, lead }: CellProps) {
   const num = (attr: 'data-old-no' | 'data-new-no', n: number | null | undefined) =>
     anchored && (
-      <span {...{ [attr]: '' }} className="shrink-0 select-none px-1 text-right opacity-60" style={{ minWidth: numWidth }}>
+      <span {...{ [attr]: '' }} className="shrink-0 select-none px-1 text-right text-current/60" style={{ minWidth: numWidth }}>
         {n ?? ''}
       </span>
     )

@@ -18,9 +18,14 @@ export function lineNo(line: DiffLine, side: Side): number | null {
   return side === 'old' ? line.oldNo : line.newNo
 }
 
+/** The one `side:number` key for a line on a side — how comments, rows and gutter buttons find each other. */
+export function lineKey(side: Side, n: number | null): string {
+  return `${side}:${n}`
+}
+
 /** The `side:number` keys a line answers to — both sides for a context line. */
 export function lineKeys(line: DiffLine): string[] {
-  return (['old', 'new'] as const).filter((s) => onSide(line, s)).map((s) => `${s}:${lineNo(line, s)}`)
+  return (['old', 'new'] as const).filter((s) => onSide(line, s)).map((s) => lineKey(s, lineNo(line, s)))
 }
 
 /** The text of `side`'s lines `start..end` in one hunk. */

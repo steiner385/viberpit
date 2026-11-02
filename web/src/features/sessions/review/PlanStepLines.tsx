@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import CommentEditor, { CommentCard } from './CommentEditor'
 import LineCommentGutter, { GutterSpacer } from './LineCommentGutter'
+import { afterDelete, gutterButton, useReturnFocus } from './returnFocus'
 import { newCommentId, sortComments, type LineComment } from './reviewComments'
 
 /**
@@ -9,6 +10,11 @@ import { newCommentId, sortComments, type LineComment } from './reviewComments'
  * step comments and the open editor under their line. One line per comment —
  * no shift-range. Presentational over `comments`; the card owns the draft and
  * composes it with `composePlanFeedback`.
+ *
+ * Height-capped and scrollable like the plain request text it replaces, so a
+ * long plan never pushes the card's answer buttons off screen. Focus returns to
+ * the line's gutter button when its editor closes, and after a delete to the
+ * next card's Edit button, else that line's gutter button.
  *
  * Lazily loaded by `PermissionCard` only when comment mode opens: the plan
  * card is first-paint, so the gutter/editor must stay out of the entry chunk.
@@ -20,10 +26,15 @@ export default function PlanStepLines({ text, comments, onChange }: {
   onChange: (next: LineComment[]) => void
 }) {
   const [open, setOpen] = useState<number | null>(null)
+  const { root, returnFocus } = useReturnFocus<HTMLDivElement>()
   const lines = text.split('\n')
+  const close = (n: number) => {
+    returnFocus((r) => gutterButton(r, 'new', n))
+    setOpen(null)
+  }
   return (
-    <div aria-label="Plan" role="group"
-         className="rounded border border-warning/40 bg-surface px-1.5 py-2 font-mono text-xs leading-5 text-ink">
+    <div ref={root} aria-label="Plan" role="group"
+         className="max-h-48 overflow-y-auto overscroll-contain rounded border border-warning/40 bg-surface px-1.5 py-2 font-mono text-xs leading-5 text-ink">
       {lines.map((line, i) => {
         const n = i + 1
         const blank = line.trim() === ''
@@ -40,16 +51,19 @@ export default function PlanStepLines({ text, comments, onChange }: {
               <span className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]">{line}</span>
             </div>
             {(saved.length > 0 || open === n) && (
-              <div className="my-1 ml-2 flex flex-col gap-1">
+              <div className="relative z-raised my-1 ml-2 flex min-w-0 flex-col gap-1">
                 {saved.map((c) => (
                   <CommentCard key={c.id} comment={c}
                     onEdit={(body) => onChange(comments.map((x) => (x.id === c.id ? { ...x, body } : x)))}
-                    onDelete={() => onChange(comments.filter((x) => x.id !== c.id))} />
+                    onDelete={() => {
+                      returnFocus(afterDelete(root.current, c.id, (r) => gutterButton(r, 'new', n)))
+                      onChange(comments.filter((x) => x.id !== c.id))
+                    }} />
                 ))}
                 {open === n && (
                   <CommentEditor
                     key={n}
-                    onCancel={() => setOpen(null)}
+                    onCancel={() => close(n)}
                     onSave={(body) => {
                       onChange(sortComments([...comments, {
                         id: newCommentId(),
@@ -57,7 +71,7 @@ export default function PlanStepLines({ text, comments, onChange }: {
                         quote: [line.trim()],
                         body,
                       }]))
-                      setOpen(null)
+                      close(n)
                     }}
                   />
                 )}

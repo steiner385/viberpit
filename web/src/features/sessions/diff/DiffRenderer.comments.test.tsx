@@ -32,14 +32,15 @@ const FILE: FileDiff = {
 type Added = { anchor: CommentAnchor; quote: string[]; body: string }
 
 /** The renderer wired to a local comment list, like ChangesTab wires the draft. */
-function Harness({ file = FILE, view = 'unified', initial = [], onAdd }: {
-  file?: FileDiff; view?: DiffViewMode; initial?: LineComment[]; onAdd?: (a: Added) => void
+function Harness({ file = FILE, view = 'unified', initial = [], onAdd, maxLines }: {
+  file?: FileDiff; view?: DiffViewMode; initial?: LineComment[]; onAdd?: (a: Added) => void; maxLines?: number
 }) {
   const [comments, setComments] = useState<LineComment[]>(initial)
   return (
     <CommentableDiff
       file={file}
       view={view}
+      maxLines={maxLines}
       comments={comments}
       onAddComment={(anchor, quote, body) => {
         onAdd?.({ anchor, quote, body })
@@ -262,6 +263,103 @@ describe('DiffRenderer comments: stale anchors', () => {
     // At the top of the file: before the first diff row.
     const firstRow = container.querySelector('[data-diff-row]')!
     expect(card.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
+const comment = (id: string, n: number, quote: string, body: string): LineComment => ({
+  id, anchor: { path: 'src/app.ts', side: 'new', start: n, end: n }, quote: [quote], body,
+})
+
+describe('DiffRenderer comments: focus returns', () => {
+  it('Save of a new comment returns focus to the range\'s gutter button', async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+    const btn = (await gutter(3))[0]
+    await user.click(btn)
+    await user.type(await screen.findByRole('textbox', { name: /comment/i }), 'x{Control>}{Enter}{/Control}')
+    expect(screen.getByRole('button', { name: 'Comment on line 3' })).toHaveFocus()
+  })
+
+  it('Cancel (Esc) of a new comment returns focus to the range\'s gutter button', async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+    await user.click((await gutter(2))[0])
+    await user.keyboard('{Shift>}')
+    await user.click((await gutter(4))[0])
+    await user.keyboard('{/Shift}')
+    await screen.findByRole('textbox', { name: /comment/i })
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('button', { name: 'Comment on line 4' })).toHaveFocus()
+  })
+
+  it('Save and Cancel of an edit return focus to that card\'s Edit button', async () => {
+    const user = userEvent.setup()
+    render(<Harness initial={[comment('x', 2, 'TWO', 'first')]} />)
+    const card = await screen.findByRole('article', { name: /comment on line 2/i })
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+    await user.type(within(card).getByRole('textbox', { name: /comment/i }), ' more')
+    await user.click(within(card).getByRole('button', { name: 'Save' }))
+    expect(within(card).getByRole('button', { name: 'Edit' })).toHaveFocus()
+    await user.click(within(card).getByRole('button', { name: 'Edit' }))
+    await user.click(within(card).getByRole('button', { name: 'Cancel' }))
+    expect(within(card).getByRole('button', { name: 'Edit' })).toHaveFocus()
+  })
+
+  it('Delete focuses the next card\'s Edit button, and the last one\'s gutter button', async () => {
+    const user = userEvent.setup()
+    render(<Harness initial={[comment('a', 2, 'TWO', 'first'), comment('b', 3, 'THREE', 'second')]} />)
+    const first = await screen.findByRole('article', { name: /comment on line 2/i })
+    await user.click(within(first).getByRole('button', { name: 'Delete' }))
+    const second = screen.getByRole('article', { name: /comment on line 3/i })
+    expect(within(second).getByRole('button', { name: 'Edit' })).toHaveFocus()
+    await user.click(within(second).getByRole('button', { name: 'Delete' }))
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Comment on line 3' })).toHaveFocus()
+  })
+})
+
+describe('DiffRenderer comments: clicking the open line again', () => {
+  it('keeps the typed text (a later shift-extend remounts the editor with it)', async () => {
+    const user = userEvent.setup()
+    const onAdd = vi.fn()
+    render(<Harness onAdd={onAdd} />)
+    await user.click((await gutter(2))[0])
+    await user.type(await screen.findByRole('textbox', { name: /comment/i }), 'keep this')
+    await user.click((await gutter(2))[0])
+    await user.keyboard('{Shift>}')
+    await user.click((await gutter(4))[0])
+    await user.keyboard('{/Shift}')
+    const box = await screen.findByRole('textbox', { name: /comment/i })
+    expect(box).toHaveValue('keep this')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({
+      anchor: { path: 'src/app.ts', side: 'new', start: 2, end: 4 }, body: 'keep this',
+    }))
+  })
+})
+
+describe('DiffRenderer comments: past the render cap', () => {
+  it('after "show all", a comment past the cap renders inline and the editor opens in place', async () => {
+    const user = userEvent.setup()
+    // Cap 3 of the first hunk's 5 lines: line 22 (second hunk) is past it.
+    render(<Harness maxLines={3} initial={[comment('far', 22, 'twenty-two', 'past the cap')]} />)
+    const before = await screen.findByRole('article', { name: /comment on line 22/i })
+    const firstRow = document.querySelector('[data-diff-row]')!
+    // Capped: parked at the top of the file (not outdated — just not drawn).
+    expect(before.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(before).not.toHaveTextContent(/outdated/i)
+
+    await user.click(screen.getByRole('button', { name: /show all \d+ lines/ }))
+    const card = screen.getByRole('article', { name: /comment on line 22/i })
+    expect(card).not.toHaveTextContent(/outdated/i)
+    const row = screen.getByRole('button', { name: 'Comment on line 22' }).closest('[data-diff-row]')!
+    expect(row.nextElementSibling).toContainElement(card)
+
+    await user.click(screen.getByRole('button', { name: 'Comment on line 23' }))
+    const box = await screen.findByRole('textbox', { name: /comment/i })
+    const row23 = screen.getByRole('button', { name: 'Comment on line 23' }).closest('[data-diff-row]')!
+    expect(row23.nextElementSibling).toContainElement(box)
+    expect(box.closest('[data-comment-slot]')!.textContent).not.toMatch(/outdated/i)
   })
 })
 

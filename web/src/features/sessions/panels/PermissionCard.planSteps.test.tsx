@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PermissionCard } from './PermissionCard'
 import type { Block } from '@/session/reducer'
@@ -112,7 +112,8 @@ describe('PermissionCard — per-step plan comments (D-5)', () => {
     await openComments(user)
     fireEvent.change(overall(), { target: { value: 'x'.repeat(4001) } })
     expect(send()).toBeDisabled()
-    expect(screen.getByText('Too long — 4001/4000')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/^Too long$/)
+    expect(screen.getByText('— 4001/4000')).toBeInTheDocument()
     await user.click(send())
     expect(onDecision).not.toHaveBeenCalled()
   })
@@ -126,7 +127,7 @@ describe('PermissionCard — per-step plan comments (D-5)', () => {
     await commentOnLine(user, 1, 'ok')
     // 3990 + '\n\nOn the plan:\n' (15) + '- line 1: "1. Read the code" — ok' (33)
     expect(send()).toBeDisabled()
-    expect(screen.getByText('Too long — 4038/4000')).toBeInTheDocument()
+    expect(screen.getByText('— 4038/4000')).toBeInTheDocument()
   })
 
   it('Cancel sends nothing and drops the step comments', async () => {
@@ -167,5 +168,55 @@ describe('PermissionCard — per-step plan comments (D-5)', () => {
     const text = await screen.findByText(long)
     expect(text).toHaveClass('whitespace-pre-wrap', 'min-w-0')
     expect(text.className).toMatch(/overflow-wrap:anywhere|break-all/)
+  })
+
+  it('the "Too long" live region stays static while typing: announced once, the count outside it', async () => {
+    const user = userEvent.setup()
+    render(<PermissionCard block={planPerm} onDecision={vi.fn()} />)
+    await openComments(user)
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent('')
+    fireEvent.change(overall(), { target: { value: 'x'.repeat(4001) } })
+    expect(status).toHaveTextContent(/^Too long$/)
+    fireEvent.change(overall(), { target: { value: 'x'.repeat(4002) } })
+    // Same node, same text: no re-announcement per keystroke; the count updates beside it.
+    expect(screen.getByRole('status')).toBe(status)
+    expect(status).toHaveTextContent(/^Too long$/)
+    expect(status).not.toContainElement(screen.getByText('— 4002/4000'))
+  })
+
+  it('closing a step editor (Save or Cancel) returns focus to that line\'s gutter', async () => {
+    const user = userEvent.setup()
+    render(<PermissionCard block={planPerm} onDecision={vi.fn()} />)
+    await openComments(user)
+    await commentOnLine(user, 2, 'save me')
+    expect(screen.getByRole('button', { name: 'Comment on step line 2' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Comment on step line 3' }))
+    await user.click(within(screen.getByRole('group', { name: 'Plan' })).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Comment on step line 3' })).toHaveFocus()
+  })
+
+  it('editing a step comment returns focus to its Edit button; Delete to the next card, else the gutter', async () => {
+    const user = userEvent.setup()
+    render(<PermissionCard block={planPerm} onDecision={vi.fn()} />)
+    await openComments(user)
+    await commentOnLine(user, 1, 'one')
+    await commentOnLine(user, 3, 'three')
+    const [first, second] = screen.getAllByRole('article')
+    await user.click(within(first).getByRole('button', { name: 'Edit' }))
+    await user.click(within(first).getByRole('button', { name: 'Save' }))
+    expect(within(first).getByRole('button', { name: 'Edit' })).toHaveFocus()
+    await user.click(within(first).getByRole('button', { name: 'Delete' }))
+    expect(within(second).getByRole('button', { name: 'Edit' })).toHaveFocus()
+    await user.click(within(second).getByRole('button', { name: 'Delete' }))
+    expect(screen.getByRole('button', { name: 'Comment on step line 3' })).toHaveFocus()
+  })
+
+  it('the numbered plan is height-capped and scrolls, like the plain text it replaces', async () => {
+    const user = userEvent.setup()
+    render(<PermissionCard block={planPerm} onDecision={vi.fn()} />)
+    await openComments(user)
+    const plan = await screen.findByRole('group', { name: 'Plan' })
+    expect(plan).toHaveClass('max-h-48', 'overflow-y-auto')
   })
 })

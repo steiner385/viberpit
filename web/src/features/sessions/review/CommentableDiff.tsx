@@ -1,9 +1,11 @@
 import { useCallback, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { cn } from '@/lib/utils'
 import { DiffRenderer, type DiffDecorations } from '../diff/DiffRenderer'
 import type { DiffHunk } from '../diff/types'
 import CommentEditor, { CommentCard, StaleAnchor } from './CommentEditor'
-import { anchorMatches, lineKeys, lineNo, onSide, quoteOf, type Side } from './diffAnchors'
+import { anchorMatches, lineKey, lineKeys, lineNo, onSide, quoteOf, type Side } from './diffAnchors'
 import LineCommentGutter, { GutterSpacer } from './LineCommentGutter'
+import { afterDelete, gutterButton, useReturnFocus } from './returnFocus'
 import type { CommentAnchor, LineComment } from './reviewComments'
 
 /**
@@ -14,7 +16,7 @@ import type { CommentAnchor, LineComment } from './reviewComments'
  */
 type Selection = { side: Side; hunk: number; from: number; start: number; end: number; quote: string[] }
 
-interface Props extends Omit<ComponentProps<typeof DiffRenderer>, 'decorations'> {
+interface Props extends Omit<ComponentProps<typeof DiffRenderer>, 'decorations' | 'showAll' | 'onShowAll'> {
   /** This file's comments (anchor.path === file.path). Keep the array stable while it is unchanged. */
   comments: readonly LineComment[]
   onAddComment: (anchor: CommentAnchor, quote: string[], body: string) => void
@@ -36,25 +38,35 @@ interface Props extends Omit<ComponentProps<typeof DiffRenderer>, 'decorations'>
  * Side: in split view the column (left = `old`, right = `new`); in unified the
  * line's own — `old` for a removed line, `new` for an added or context line.
  *
+ * It owns the renderer's "show all" state, so what counts as past the cap is
+ * the renderer's own view of it: once expanded, every comment sits inline.
+ *
+ * Focus returns to the range's gutter button when the editor closes (Save or
+ * Cancel), and after a delete to the next card's Edit button, else the deleted
+ * comment's gutter button.
+ *
  * Lives in the Changes tab's chunk; the transcript's inline diffs use the bare
  * renderer and never load it.
  */
 export default function CommentableDiff({ comments, onAddComment, onEditComment, onDeleteComment, ...diff }: Props) {
   const { file, maxLines } = diff
   const [sel, setSel] = useState<Selection | null>(null)
+  const [showAll, setShowAll] = useState(false)
+  const { root, returnFocus } = useReturnFocus<HTMLDivElement>()
   // The editor's text, kept per keystroke without re-rendering: the editor remounts
   // when its row moves (a refetch), and a shift-extend keeps what was typed. Read
   // only by the editor's lazy initial state, never during this render.
   const typed = useRef('')
 
-  const shown = useMemo(() => (maxLines == null ? null : shownKeys(file.hunks, maxLines)), [file, maxLines])
+  const shown = useMemo(
+    () => (maxLines == null || showAll ? null : shownKeys(file.hunks, maxLines)), [file, maxLines, showAll])
 
   // Comments a row can hold, by `side:line`; the rest go to the top.
   const { placed, top } = useMemo(() => {
     const placed = new Map<string, LineComment[]>()
     const top: Array<{ c: LineComment; stale: boolean }> = []
     for (const c of comments) {
-      const key = `${c.anchor.side}:${c.anchor.end}`
+      const key = lineKey(c.anchor.side, c.anchor.end)
       const fresh = anchorMatches(file.hunks, c.anchor, c.quote)
       if (fresh && (shown === null || shown.has(key))) placed.set(key, [...(placed.get(key) ?? []), c])
       else top.push({ c, stale: !fresh })
@@ -70,26 +82,37 @@ export default function CommentableDiff({ comments, onAddComment, onEditComment,
     () => sel && { path: file.path, side: sel.side, start: sel.start, end: sel.end }, [sel, file.path])
   const editorInPlace = useMemo(
     () => sel !== null && editorAnchor !== null && anchorMatches(file.hunks, editorAnchor, sel.quote)
-      && (shown === null || shown.has(`${sel.side}:${sel.end}`)),
+      && (shown === null || shown.has(lineKey(sel.side, sel.end))),
     [sel, editorAnchor, file, shown])
 
   const card = useCallback((c: LineComment, stale = false) => (
     <CommentCard key={c.id} comment={c} stale={stale}
-                 onEdit={(b) => onEditComment(c.id, b)} onDelete={() => onDeleteComment(c.id)} />
-  ), [onEditComment, onDeleteComment])
+                 onEdit={(b) => onEditComment(c.id, b)}
+                 onDelete={() => {
+                   returnFocus(afterDelete(root.current, c.id, (r) => gutterButton(r, c.anchor.side, c.anchor.end)))
+                   onDeleteComment(c.id)
+                 }} />
+  ), [onEditComment, onDeleteComment, root, returnFocus])
 
-  const editor = useMemo(() => sel && editorAnchor && (
-    <CommentEditor
-      key="editor"
-      initial={() => typed.current}
-      onDraftChange={(t) => { typed.current = t }}
-      onCancel={() => setSel(null)}
-      onSave={(body) => {
-        onAddComment(editorAnchor, sel.quote, body)
-        setSel(null)
-      }}
-    />
-  ), [sel, editorAnchor, onAddComment])
+  const editor = useMemo(() => {
+    if (!sel || !editorAnchor) return null
+    const close = () => {
+      returnFocus((r) => gutterButton(r, sel.side, sel.end))
+      setSel(null)
+    }
+    return (
+      <CommentEditor
+        key="editor"
+        initial={() => typed.current}
+        onDraftChange={(t) => { typed.current = t }}
+        onCancel={close}
+        onSave={(body) => {
+          onAddComment(editorAnchor, sel.quote, body)
+          close()
+        }}
+      />
+    )
+  }, [sel, editorAnchor, onAddComment, returnFocus])
 
   const decorations = useMemo<DiffDecorations>(() => ({
     gutter: (line, column) => {
@@ -109,7 +132,10 @@ export default function CommentableDiff({ comments, onAddComment, onEditComment,
               side, hunk, from: extend ? sel.from : n, start, end,
               quote: quoteOf(file.hunks[hunk], side, start, end),
             })
-            if (!extend) typed.current = ''
+            // A fresh range on another row starts empty; a shift-extend, or a click on the
+            // row the editor is already under, keeps what was typed.
+            const sameRow = sel?.side === side && sel.hunk === hunk && sel.end === end
+            if (!extend && !sameRow) typed.current = ''
           }}
         />
       )
@@ -118,7 +144,7 @@ export default function CommentableDiff({ comments, onAddComment, onEditComment,
       // A split context row passes one line as both cells: dedupe its keys.
       const keys = [...new Set(cells.flatMap((l) => (l ? lineKeys(l) : [])))]
       const saved = keys.flatMap((k) => placed.get(k) ?? [])
-      const editing = sel !== null && editorInPlace && keys.includes(`${sel.side}:${sel.end}`)
+      const editing = sel !== null && editorInPlace && keys.includes(lineKey(sel.side, sel.end))
       if (saved.length === 0 && !editing) return null
       return <Slot>{saved.map((c) => card(c))}{editing && editor}</Slot>
     },
@@ -131,21 +157,31 @@ export default function CommentableDiff({ comments, onAddComment, onEditComment,
     </div>
   )
 
+  // `@container` on the scrolling frame: a slot inside it sizes to the frame's
+  // visible width (`cqw`), not to the wide unified rows it scrolls.
   return (
-    <>
+    <div ref={root} className="min-w-0">
       {(top.length > 0 || strayEditor) && <Slot>{top.map(({ c, stale }) => card(c, stale))}{strayEditor}</Slot>}
-      <DiffRenderer {...diff} decorations={decorations} />
-    </>
+      <DiffRenderer {...diff} className={cn('@container', diff.className)} decorations={decorations}
+                    showAll={showAll} onShowAll={() => setShowAll(true)} />
+    </div>
   )
 }
 
 /**
  * Comments and the editor under a row (or atop the file). Sticky to the frame's
- * left edge and capped in width, so a wide unified diff scrolled sideways never
- * carries them out of view.
+ * left edge and capped at the frame's visible width (`100cqw` — a `%` would
+ * resolve against the `w-max` unified rows, and a long comment would widen
+ * them past a phone's screen), so a wide diff scrolled sideways never carries
+ * them out of view or clips them. `z-raised` keeps a touch gutter's hit area
+ * (`LineCommentGutter`) from reaching over the cards.
  */
 function Slot({ children }: { children: ReactNode }) {
-  return <div data-comment-slot className="sticky left-0 w-full max-w-[min(100%,40rem)] space-y-1 px-2 py-1">{children}</div>
+  return (
+    <div data-comment-slot className="sticky left-0 z-raised w-full min-w-0 max-w-[min(100cqw,40rem)] space-y-1 px-2 py-1">
+      {children}
+    </div>
+  )
 }
 
 /** The keys of the first `max` lines — what the renderer draws under its cap. */
