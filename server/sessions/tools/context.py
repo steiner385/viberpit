@@ -53,6 +53,9 @@ class SessionToolContext:
     #: ``rename(name)``: bound to ``rename_self(session_id, …)``; the `rename_self`
     #: handler's ONE call (#3214). None when unwired (tests).
     rename: Callable[[str], Awaitable[None]] | None = None
+    #: ``note_recheck(iso)``: bound to the orchestrator's durable record of a hand-back's
+    #: ``recheck_at`` (#3216), read by the Backlog Runner. None when unwired (tests).
+    note_recheck: Callable[[str], Awaitable[None]] | None = None
 
 
 def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:

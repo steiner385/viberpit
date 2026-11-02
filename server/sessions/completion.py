@@ -12,6 +12,7 @@ form, so a parser that stopped accepting it would strand those sessions in
 """
 from __future__ import annotations
 import re
+from datetime import datetime, timedelta, timezone
 
 from viberpit import brand
 
@@ -340,6 +341,36 @@ def parse_hand_back(args: dict | None) -> dict:
             "reason must be one non-empty sentence naming exactly what you need from the "
             "user — a decision, a review, an approval, or information you do not have.")
     return {"reason": reason.strip()[:HAND_BACK_REASON_MAX]}
+
+
+#: Furthest ahead a hand-back may ask to be re-checked: a recheck is a cooldown, not a park.
+HAND_BACK_RECHECK_MAX_DAYS = 30
+
+
+def parse_recheck_at(args: dict | None, *, now: datetime | None = None) -> str | None:
+    """The optional ``recheck_at`` of a ``hand_back`` call as an aware-UTC ISO string.
+
+    ``hand_back`` says "I need something"; ``recheck_at`` adds "and nothing will change
+    before this time" — a time-gated issue (three green CI runs) the Backlog Runner
+    should leave alone until then (#3216). Absent → None. Malformed, already past, or
+    more than :data:`HAND_BACK_RECHECK_MAX_DAYS` out → ``ToolArgError``, so the session
+    corrects it rather than silently parking an issue for a year.
+    """
+    from server.mcp_spec import ToolArgError
+    raw = (args or {}).get("recheck_at")
+    if raw is None or raw == "":
+        return None
+    try:
+        at = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise ToolArgError("recheck_at must be an ISO-8601 timestamp, e.g. "
+                           "2026-11-03T12:00:00Z.") from None
+    at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if at <= now or at > now + timedelta(days=HAND_BACK_RECHECK_MAX_DAYS):
+        raise ToolArgError(f"recheck_at must be in the future and within "
+                           f"{HAND_BACK_RECHECK_MAX_DAYS} days.")
+    return at.astimezone(timezone.utc).isoformat()
 
 
 def parse_turn_signal(stem: str, args: dict | None) -> dict | None:

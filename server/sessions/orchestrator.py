@@ -1453,6 +1453,7 @@ class SessionOrchestrator:
             session_absent=self._backlog_session_absent,
             session_ran=self._backlog_session_ran,
             session_hand_back=self._backlog_session_hand_back,
+            session_recheck_at=self._backlog_session_recheck_at,
             session_work_stopped=self._automation_session_work_stopped,
             handoff=self._backlog_handoff,
             closeout_completed=self._backlog_closeout_completed,
@@ -2148,7 +2149,8 @@ class SessionOrchestrator:
             # Read-only view: `request_draft_ready` reports the grant the registry
             # recorded when the user allowed its card (draft_hold_guard).
             draft_ready_granted=self._ready_grants(session_id).has,
-            rename=functools.partial(self.rename_session, session_id))
+            rename=functools.partial(self.rename_session, session_id),
+            note_recheck=functools.partial(self._note_hand_back_recheck, session_id))
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
@@ -9088,6 +9090,30 @@ class SessionOrchestrator:
         for detail in rows:
             if isinstance(detail, dict) and detail.get("session_id") == session_id:
                 return str(detail.get("reason") or "") or "(no reason given)"
+        return None
+
+    async def _note_hand_back_recheck(self, session_id: str, recheck_at: str) -> None:
+        """Durably record a ``hand_back``'s ``recheck_at`` (#3216) for the Backlog Runner."""
+        async with db_session() as db:
+            await record_audit(db, "session.hand_back_recheck", SYSTEM_IDENTITY,
+                               {"session_id": session_id, "recheck_at": recheck_at},
+                               via="session")
+            await db.commit()
+
+    async def _backlog_session_recheck_at(self, session_id: str | None) -> str | None:
+        """The newest ``recheck_at`` session *session_id* handed back with, else None."""
+        from sqlalchemy import select as _select
+
+        from server.db.models import AuditEvent
+        if not session_id:
+            return None
+        async with db_session() as db:
+            rows = (await db.execute(_select(AuditEvent.detail).where(
+                AuditEvent.type == "session.hand_back_recheck").order_by(
+                    AuditEvent.at.desc()).limit(500))).scalars().all()
+        for detail in rows:
+            if isinstance(detail, dict) and detail.get("session_id") == session_id:
+                return str(detail.get("recheck_at") or "") or None
         return None
 
     async def _backlog_count_candidates(self) -> "tuple[int, int, int, dict | None]":

@@ -19,7 +19,7 @@ from server.sessions.child_sessions import ChildSessionLimit
 from server.sessions.completion import (FINISHED_STATE_CLAUSE, HAND_BACK_TURN_NOTE,
                                         NO_PR_RESOLUTIONS,
                                         STATUS_ONLY_CLAUSE, hand_back_visibility,
-                                        parse_hand_back, parse_mark_no_pr)
+                                        parse_hand_back, parse_mark_no_pr, parse_recheck_at)
 from server.sessions.permissions import MODE_WIDTH
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
@@ -207,13 +207,22 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "the session reads as calmly idle and nobody is alerted. "
                + STATUS_ONLY_CLAUSE +
                " Call `hand_back` in the same message as your question, and never in the "
-               "same turn as `mark_complete` or `mark_no_pr`. " + HAND_BACK_TURN_NOTE,
+               "same turn as `mark_complete` or `mark_no_pr`. recheck_at (optional): when the "
+               "only blocker is a time gate (e.g. 'three consecutive green CI runs'), the ISO-8601 "
+               "time (UTC, at most 30 days out) before which nothing can change — the Backlog "
+               "Runner then leaves the issue alone until then instead of re-dispatching it. "
+               + HAND_BACK_TURN_NOTE,
                {"type": "object",
-                "properties": {"reason": {"type": "string"}},
+                "properties": {"reason": {"type": "string"},
+                               "recheck_at": {"type": "string"}},
                 "required": ["reason"]})
     @guarded
     async def hand_back(args: dict[str, Any]) -> Any:
-        data: dict[str, Any] = {"acknowledged": True, **parse_hand_back(args),
+        parsed = parse_hand_back(args)
+        recheck_at = parse_recheck_at(args)
+        if recheck_at is not None and ctx.note_recheck is not None:
+            await ctx.note_recheck(recheck_at)
+        data: dict[str, Any] = {"acknowledged": True, **parsed,
                                 # The turn contract, every time (#2647): the ask is
                                 # shown now, the hand-back lands when the turn ends.
                                 "note": HAND_BACK_TURN_NOTE}
