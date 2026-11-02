@@ -29,6 +29,9 @@ from .registry import SESSION_TOOL_SPECS, mounted_names
 
 log = logging.getLogger(__name__)
 
+#: Bounds for a self-chosen session name (#3214).
+NAME_MIN, NAME_MAX = 3, 60
+
 #: The cross-signal framing every SIGNAL description opens with. One literal, three
 #: descriptions: whichever tool the model is reading, it sees the other two and what
 #: each does to the session. This is the distinction no single description could carry.
@@ -454,6 +457,26 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
         except ChildSessionLimit as e:
             raise ToolArgError(str(e)) from e
 
+    @spec_tool("rename_self",
+               "Retitle THIS session on the board. Call it when the session's scope has "
+               "evolved so far that its current name (see `session_context`) misleads — "
+               "e.g. an issue implementation that became a multi-day CI monitor. Do not "
+               "rename for cosmetic reasons or more than once for the same change. "
+               f"name: {NAME_MIN}-{NAME_MAX} chars, plain text. A rename pins the name: "
+               "auto-naming never overwrites it afterwards.",
+               {"type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"]})
+    @guarded
+    async def rename_self(args: dict[str, Any]) -> Any:
+        name = " ".join(str(args.get("name") or "").split())
+        if not NAME_MIN <= len(name) <= NAME_MAX:
+            raise ToolArgError(f"name must be {NAME_MIN}-{NAME_MAX} characters")
+        if ctx.rename is None:
+            raise ToolArgError("renaming is unavailable in this session")
+        await ctx.rename(name)
+        return {"name": name}
+
     @spec_tool("share_artifact",
                "Put a link, URL, local path or image IN FRONT OF THE USER as an "
                "always-visible card in the session transcript. Use it for every "
@@ -551,7 +574,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
                "propose_decision": propose_decision, "dispatch_session": dispatch_session,
                "reply_to_child": reply_to_child,
-               "share_artifact": share_artifact,
+               "share_artifact": share_artifact, "rename_self": rename_self,
                "request_draft_ready": request_draft_ready}
     from .roadmap import build_roadmap_tools
     by_name.update(build_roadmap_tools(ctx, spec_tool, guarded))
