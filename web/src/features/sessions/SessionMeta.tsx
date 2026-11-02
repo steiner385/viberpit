@@ -2,9 +2,9 @@
  * SessionMeta — the second-tier session status strip.
  *
  * Shows, glanceably: the agent (engine) when it is not the default one, current
- * account, runner host, remaining context, account quota (one readout per
- * provider window), and a toggle for the sub-agent list. The model and effort
- * pickers live in the composer's prompt row (`composer/PromptRow.tsx`).
+ * account, runner host, account quota (one readout per provider window), and a
+ * toggle for the sub-agent list. The model and effort pickers and the context
+ * usage ring live in the composer's prompt row (`composer/PromptRow.tsx`).
  * All values are pre-derived by the caller (SessionView); this component is
  * pure presentation — including the capability flags, which the caller reads
  * from the server's per-engine capability report rather than inferring here.
@@ -14,7 +14,6 @@ import { useNow } from '@/hooks/useNow'
 import { Pin, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
-import { contextSeverity } from '@/lib/contextWindow'
 import { EMPTY_BACKGROUND_WORK_VIEW, type BackgroundWorkView, type SubAgent, type SubAgentStatus } from '@/session/selectors'
 import { engineBadge } from '@/session/modelName'
 import { windowLabel } from '@/lib/usageWindows'
@@ -48,7 +47,6 @@ interface Props {
    *  not offer a control for it. Defaults to true so an unanswered capability
    *  report never removes a control that works today. */
   subAgentsSupported?: boolean
-  contextPct: number | null
   quota: UsageWindow[] | null
   subAgents: SubAgent[]
   /** Open background work (shells / Monitors / wakeup) for the "Background" chip (#2635). */
@@ -65,7 +63,7 @@ interface Props {
    *  this strip's status line instead of needing a row of their own; desktop omits
    *  it and keeps the actions in its own header. */
   actionsSlot?: React.ReactNode
-  /** In-session MCP readout (rendered right after ctx). */
+  /** In-session MCP readout (rendered right after the display readouts). */
   mcpSlot?: React.ReactNode
   /** Standing "Always allow" rules that apply to this session (rendered after the MCP readout). */
   rulesSlot?: React.ReactNode
@@ -76,8 +74,6 @@ interface Props {
   onUnpin?: () => void
 }
 
-const DASH = '—'
-
 /** Worst (highest) status drives the summary dot colour. */
 function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   if (subAgents.some((a) => a.status === 'failed')) return 'failed'
@@ -86,7 +82,7 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, subAgentsSupported = true, contextPct, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, accounts, accountPinned, onSelectAccount, onUnpin }: Props) {
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, displayFallbackReason = null, subAgentsSupported = true, quota, subAgents, backgroundWork = EMPTY_BACKGROUND_WORK_VIEW, statusSlot, exportSlot, actionsSlot, mcpSlot, rulesSlot, accounts, accountPinned, onSelectAccount, onUnpin }: Props) {
   const [panel, setPanel] = useState<'agents' | 'background' | null>(null)
   const now = useNow(1000, backgroundWork.wakeupAt != null)
   // `now` is 0 until the first tick; a countdown against 0 would flash a huge number.
@@ -97,7 +93,7 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
   // strip wrapped three rows deep — 114px of a phone's 844 before the transcript,
   // on top of the TopBar and the header. The live status, export, the session
   // actions and the sub-agent toggle stay on the one visible row; the identity
-  // and settings readouts (account, host, display, ctx, quota)
+  // and settings readouts (account, host, display, quota)
   // fold behind a "Details" toggle. Same mechanism as the list controls'
   // fold: this strip is a `@container`, `@max-md:` folds, `display: contents`
   // everywhere else so a wide pane's single row is untouched. Hidden, not
@@ -207,25 +203,6 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
             </span>
           </span>
         )}
-
-        {/* Remaining context */}
-        {(() => {
-          const sev = contextSeverity(contextPct)
-          const color = sev === 'danger'
-            ? 'text-danger'
-            : sev === 'warning'
-              ? 'text-warning'
-              : 'text-ink'
-          return (
-            <span className={cn('inline-flex items-center gap-1', color)} aria-label="Remaining context">
-              <span className="text-ink-muted">ctx</span>
-              <span className="font-medium tabular-nums">
-                {contextPct != null ? `${contextPct}%` : DASH}
-              </span>
-              {sev === 'danger' && <span className="opacity-70">· compacts soon</span>}
-            </span>
-          )
-        })()}
 
         {mcpSlot}
 

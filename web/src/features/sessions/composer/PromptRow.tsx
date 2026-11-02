@@ -1,6 +1,6 @@
 /**
  * PromptRow — the compact control row under the session composer (sub-spec D §3):
- * Mode ▾ · Model ▾ · Effort ▾ (the usage ring joins it later). It reads the live
+ * Mode ▾ · Model ▾ · Effort ▾ · usage ring. It reads the live
  * runtime directly; the session record, engine capabilities and model catalog are
  * passed in so capability-gated controls hide (never disable) themselves.
  */
@@ -14,6 +14,8 @@ import { statusTier } from '@/session/statusTier'
 import { ModePicker } from './ModePicker'
 import { ModelPicker } from './ModelPicker'
 import { EffortPicker } from './EffortPicker'
+import { UsageRing } from '@/ui/UsageRing'
+import { contextSeverity } from '@/lib/contextWindow'
 
 /** Imperative openers for the row's menus (the Alt+Shift+M / I / E shortcuts). */
 export interface PromptRowMenus {
@@ -25,7 +27,7 @@ export interface PromptRowMenus {
 type OpenMenu = 'mode' | 'model' | 'effort' | null
 
 export interface PromptRowProps {
-  rt: Pick<SessionRuntime, 'mode' | 'pendingMode' | 'onSetMode' | 'model' | 'liveModel' | 'modelPending' | 'onSetModel'> & {
+  rt: Pick<SessionRuntime, 'mode' | 'pendingMode' | 'onSetMode' | 'model' | 'liveModel' | 'modelPending' | 'onSetModel' | 'contextPct'> & {
     state: { status: { state: string } }
   }
   /** The open session's record (undefined until the list query answers). */
@@ -94,6 +96,20 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: Pr
           onOpenChange={menuOpener('effort')}
         />
       )}
+      {rt.contextPct != null && <ContextRing remainingPct={rt.contextPct} />}
     </div>
+  )
+}
+
+/** The context-window ring. `remainingPct` is the share still FREE (`rt.contextPct`). */
+function ContextRing({ remainingPct }: { remainingPct: number }) {
+  const usedPct = 100 - remainingPct
+  const label = `Context ${usedPct}% used${contextSeverity(remainingPct) === 'danger' ? ' · auto-compacts soon' : ''}`
+  // `title` on the wrapper: the ring is icon-sized, so the hover tooltip is how a
+  // sighted user reads the number the aria-label gives a screen reader.
+  return (
+    <span title={label} className="ml-auto inline-flex">
+      <UsageRing value={usedPct / 100} label={label} />
+    </span>
   )
 }

@@ -7,9 +7,9 @@
  *
  * ## Why a bridge is needed at all
  *
- * The in-session gestures (Esc / ← / Ctrl+Z → detach) need `hasOpenAction` — is
- * a permission or question card unanswered — and a detach that first detaches the
- * socket. Both belong to the session runtime, and the runtime provider is mounted
+ * The in-session gestures (← / Ctrl+Z → detach; Esc → stop a running turn, else
+ * detach) need `hasOpenAction` — is a permission or question card unanswered —
+ * whether a turn is running, a stop, and a detach that first detaches the socket. Both belong to the session runtime, and the runtime provider is mounted
  * by `PageHost`, BELOW the shell (deliberately: audit F2.3 scoped it there so
  * selecting a session stops remounting the whole shell). So the shell cannot read
  * it from context, and the router gives no way to pass a prop upwards.
@@ -31,6 +31,10 @@ import * as React from 'react'
 export interface SessionGestures {
   /** A permission or question card is waiting for an answer. */
   hasOpenAction: boolean
+  /** A turn is running — the composer's Stop button is showing. Esc stops it. */
+  busy: boolean
+  /** Stop the running turn (the click equivalent is the composer's Stop). */
+  onStop: () => void
   /** Leave the session for the list (the click equivalent is Back). */
   onDetach: () => void
 }

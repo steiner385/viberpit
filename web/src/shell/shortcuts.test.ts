@@ -26,6 +26,7 @@ function ctx(over: Partial<ShortcutContext> = {}): ShortcutContext {
     overlayOpen: false,
     hasOpenAction: false,
     sessionOpen: false,
+    sessionBusy: false,
     inSessions: true,
     interactive: true,
     active: null,
@@ -51,7 +52,8 @@ const headerAction = (e: KeyboardLike) => matchShortcut(e, inGroup('list-mode-he
  */
 const SHELL_HANDLED = [
   'app.help', 'app.assistant',
-  'compose.help', 'compose.nav', 'insession.detach', 'insession.forceDetach',
+  'compose.help', 'compose.nav', 'insession.stop', 'insession.detach', 'insession.detachEsc',
+  'insession.forceDetach',
 ]
 const shellRow = (e: KeyboardLike, c: ShortcutContext) =>
   matchShortcut(e, (s) => SHELL_HANDLED.includes(s.id), c)?.id
@@ -382,8 +384,11 @@ describe('shortcutAllowed', () => {
   })
 
   it('no shipped row is unreachable under a fully-permissive context', () => {
+    // Two permissive contexts, idle and busy: the Esc rows split on `sessionBusy`
+    // by design (stop vs detach), so no ONE context reaches both.
+    const permissive = [ctx({ sessionOpen: true }), ctx({ sessionOpen: true, sessionBusy: true })]
     for (const s of SHORTCUTS) {
-      expect(shortcutAllowed(s, ctx({ sessionOpen: true })), `${s.id}`).toBe(true)
+      expect(permissive.some((c) => shortcutAllowed(s, c)), `${s.id}`).toBe(true)
     }
   })
 })
@@ -576,13 +581,39 @@ describe('matchShortcut — the shell scope', () => {
 
   it('Esc and ← detach only with a session open, and yield to a card or a draft', () => {
     const open = ctx({ sessionOpen: true })
-    expect(shellRow(ev({ key: 'Escape' }), open)).toBe('insession.detach')
+    expect(shellRow(ev({ key: 'Escape' }), open)).toBe('insession.detachEsc')
     expect(shellRow(ev({ key: 'ArrowLeft' }), open)).toBe('insession.detach')
     expect(shellRow(ev({ key: 'Escape' }), ctx())).toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, hasOpenAction: true }))).toBeUndefined()
     expect(shellRow(ev({ key: 'ArrowLeft' }), ctx({ sessionOpen: true, hasOpenAction: true }))).toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, yieldsToTextEntry: true }))).toBeUndefined()
     expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, overlayOpen: true }))).toBeUndefined()
+  })
+
+  it('while a turn runs, Esc stops it — through a draft, but not through a card or an overlay; ← still detaches', () => {
+    const busy = ctx({ sessionOpen: true, sessionBusy: true })
+    expect(shellRow(ev({ key: 'Escape' }), busy)).toBe('insession.stop')
+    expect(shellRow(ev({ key: 'ArrowLeft' }), busy)).toBe('insession.detach')
+    // Desktop stops regardless of the draft (the draft is kept).
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, yieldsToTextEntry: true })))
+      .toBe('insession.stop')
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, hasOpenAction: true })))
+      .toBeUndefined()
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, overlayOpen: true })))
+      .toBeUndefined()
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionBusy: true }))).toBeUndefined()
+    // Kiosk is read-only: a wall display's keyboard must not stop a turn.
+    expect(shellRow(ev({ key: 'Escape' }), ctx({ sessionOpen: true, sessionBusy: true, interactive: false })))
+      .toBeUndefined()
+  })
+
+  it('the two Esc rows are mutually exclusive, so registry order never decides between them', () => {
+    const stop = SHORTCUTS.find((s) => s.id === 'insession.stop')!
+    const detachEsc = SHORTCUTS.find((s) => s.id === 'insession.detachEsc')!
+    for (const sessionBusy of [true, false]) {
+      const c = ctx({ sessionOpen: true, sessionBusy })
+      expect(shortcutAllowed(stop, c) && shortcutAllowed(detachEsc, c)).toBe(false)
+    }
   })
 
   it('Ctrl+Z force-detaches THROUGH an open card — the escape hatch — but not through a draft', () => {

@@ -41,6 +41,8 @@ export interface ShortcutContext {
   hasOpenAction: boolean
   /** A session is open (`/sessions/:id`). */
   sessionOpen: boolean
+  /** The open session has a turn running — the composer's Stop button is showing. */
+  sessionBusy: boolean
   /** The Sessions section is current. */
   inSessions: boolean
   /** Kiosk is read-only: nothing that mutates may fire. */
@@ -205,7 +207,7 @@ export const SHORTCUTS: Shortcut[] = [
   //     list renders, or cycling will navigate to a filtered-out session.
   //   · Starting a session is still reachable without a chord: the New Session
   //     button at the foot of the list column clears the open session, which
-  //     puts the dispatch bar in `app.dock`. Detach is still Esc / ←.
+  //     puts the dispatch bar in `app.dock`. Detach is still ← (and Esc while idle).
   // Pinned by "the un-bindable Desktop chords bind nothing" in shortcuts.test.ts.
   //
   // ── List mode — WIRED ────────────────────────────────────────────────
@@ -319,10 +321,28 @@ export const SHORTCUTS: Shortcut[] = [
   // `hasOpenAction` holds ← and Esc — an unanswered permission or question card
   // is answered first — but deliberately NOT Ctrl+Z, which is the force-detach
   // escape hatch that keeps the user from being trapped by a card.
-  { id: 'insession.detach', keys: '← / Esc', description: 'Detach back to the session list',
+  //
+  // Esc is split by `sessionBusy` (Desktop parity, sub-spec D §3): while a turn
+  // runs Esc STOPS it; while idle it detaches. ← always detaches. The two Esc rows
+  // carry mutually exclusive guards, so which one wins never depends on order.
+  //
+  // `insession.stop` deliberately does NOT yield to the composer's draft: Desktop
+  // stops regardless of what is typed, and the draft stays put. What it does
+  // yield to is anything that consumed Esc first — the slash palette and mention
+  // menu `preventDefault` it, and the dispatcher skips a prevented event.
+  { id: 'insession.stop', keys: 'Esc', description: 'Stop the running turn',
     group: 'in-session',
-    match: plain((e) => e.key === 'Escape' || e.key === 'ArrowLeft'),
+    match: plain((e) => e.key === 'Escape'),
+    // `interactive`: stopping a turn mutates, and kiosk is read-only.
+    when: (c) => c.interactive && c.sessionOpen && c.sessionBusy && !c.overlayOpen && !c.hasOpenAction },
+  { id: 'insession.detach', keys: '←', description: 'Detach back to the session list',
+    group: 'in-session',
+    match: plain((e) => e.key === 'ArrowLeft'),
     when: (c) => c.sessionOpen && !c.overlayOpen && !c.hasOpenAction && !c.yieldsToTextEntry },
+  { id: 'insession.detachEsc', keys: 'Esc', description: 'Detach back to the session list (no turn running)',
+    group: 'in-session',
+    match: plain((e) => e.key === 'Escape'),
+    when: (c) => c.sessionOpen && !c.sessionBusy && !c.overlayOpen && !c.hasOpenAction && !c.yieldsToTextEntry },
   { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list',
     group: 'in-session',
     // `ctrl()`, not an inline modifier test: this row spelled its own

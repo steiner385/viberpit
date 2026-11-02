@@ -87,4 +87,27 @@ describe('PromptRow', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Switch without stopping' }))
     expect(rt.onSetModel).toHaveBeenCalledWith('gpt-5-mini', 'after_turn')
   })
+
+  describe('usage ring', () => {
+    it('labels the share of the context window used', () => {
+      render(<PromptRow rt={fakeRuntime({ contextPct: 20 })} />)
+      expect(screen.getByRole('img', { name: 'Context 80% used' })).toBeInTheDocument()
+    })
+
+    it('warns that auto-compaction is near at the danger tier', () => {
+      render(<PromptRow rt={fakeRuntime({ contextPct: 5 })} />)
+      expect(screen.getByRole('img', { name: /^Context 95% used/ }))
+        .toHaveAccessibleName('Context 95% used · auto-compacts soon')
+    })
+
+    it('does not warn below the danger tier', () => {
+      render(<PromptRow rt={fakeRuntime({ contextPct: 20 })} />)
+      expect(screen.getByRole('img', { name: /^Context/ }).getAttribute('aria-label')).not.toMatch(/auto-compacts/)
+    })
+
+    it('is absent while no context reading exists', () => {
+      render(<PromptRow rt={fakeRuntime({ contextPct: null })} />)
+      expect(screen.queryByRole('img', { name: /^Context/ })).toBeNull()
+    })
+  })
 })

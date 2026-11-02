@@ -21,7 +21,6 @@ function Wrapper({ children }: { children: ReactNode }) {
 const baseProps = {
   sessionId: 's1',
   account: 'work-max',
-  contextPct: 78,
   quota: [
     { key: 'session', label: 'session', pct: 42, resetsAt: '2026-06-19T14:30:00.000Z', durationSeconds: 18000 },
     { key: 'weekly', label: 'weekly', pct: 18, resetsAt: null, durationSeconds: 604800 },
@@ -89,16 +88,6 @@ describe('SessionMeta', () => {
     const select = screen.getByLabelText('Switch account') as HTMLSelectElement
     const opt = Array.from(select.options).find((o) => o.value === 'work-max')
     expect(opt?.text).toBe('work-max')
-  })
-
-  it('shows remaining context percent', () => {
-    render(<SessionMeta {...baseProps} />)
-    expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('78%')
-  })
-
-  it('renders an em-dash for unknown context', () => {
-    render(<SessionMeta {...baseProps} contextPct={null} />)
-    expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('—')
   })
 
   it('shows account quota when present', () => {
@@ -177,19 +166,6 @@ describe('SessionMeta', () => {
     for (const cls of STATUS_TONE.stopped.split(' ')) {
       expect(dot).toHaveClass(cls)
     }
-  })
-
-  it('marks the ctx readout danger and shows hint when context nearly full', () => {
-    render(<SessionMeta {...baseProps} contextPct={5} />)
-    const ctx = screen.getByLabelText('Remaining context')
-    expect(ctx.className).toMatch(/danger/)
-    expect(screen.getByText(/compacts soon/i)).toBeInTheDocument()
-  })
-
-  it('stays calm with plenty of context remaining', () => {
-    render(<SessionMeta {...baseProps} contextPct={80} />)
-    const ctx = screen.getByLabelText('Remaining context')
-    expect(ctx.className).not.toMatch(/danger|warning/)
   })
 
   // ── session identity: agent, runner, reasoning effort (Task 5.3) ───────────

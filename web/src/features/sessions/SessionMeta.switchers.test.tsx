@@ -5,7 +5,7 @@ import { SessionMeta } from './SessionMeta'
 
 const base = {
   sessionId: 's1',
-  account: 'acct-a', contextPct: null, quota: null,
+  account: 'acct-a', quota: null,
   subAgents: [],
   accounts: [{ name: 'acct-a' }, { name: 'acct-b' }],
   accountPinned: false,

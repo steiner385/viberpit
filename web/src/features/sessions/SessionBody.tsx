@@ -94,7 +94,6 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           displayMode={sessionRecord?.displayMode}
           displayFallbackReason={sessionRecord?.displayFallbackReason}
           subAgentsSupported={can(caps, 'subagents')}
-          contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
           backgroundWork={rt.backgroundWork}

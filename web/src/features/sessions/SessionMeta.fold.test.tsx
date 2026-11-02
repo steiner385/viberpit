@@ -16,7 +16,7 @@ function renderMeta() {
     <MemoryRouter>
       <SessionMeta
         sessionId="s1" account="alice" host="rocky"
-        contextPct={81} quota={[{ key: 'session', label: 'session', pct: 4, resetsAt: null, durationSeconds: 18000 }]}
+        quota={[{ key: 'session', label: 'session', pct: 4, resetsAt: null, durationSeconds: 18000 }]}
         subAgents={[]} statusSlot={<span data-testid="status-slot">Working…</span>}
         exportSlot={<button type="button">Export</button>}
         actionsSlot={<button type="button">Archive</button>}
@@ -41,7 +41,6 @@ describe('SessionMeta — narrow-strip fold', () => {
     // Inside the fold: the readouts and settings.
     expect(within(fold).getByLabelText('Switch account')).toBeInTheDocument()
     expect(within(fold).getByLabelText('Runner host')).toBeInTheDocument()
-    expect(within(fold).getByLabelText('Remaining context')).toBeInTheDocument()
     expect(within(fold).getByLabelText('Account quota')).toBeInTheDocument()
     await userEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')

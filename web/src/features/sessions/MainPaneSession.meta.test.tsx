@@ -149,17 +149,23 @@ describe('MainPaneSession status strip', () => {
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default')
   })
 
-  it('shows remaining context after a turnEnd with usage', async () => {
-    renderPane()
+  it('shows context usage in the prompt row after a turnEnd with usage', async () => {
+    render(
+      <>
+        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />
+        <DockedComposer />
+      </>,
+      { wrapper },
+    )
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
-    // 50k of 200k used → 75% remaining
+    // 50k of 200k used → 25% used (75% remaining)
     emitSessionEvent({
       type: 'turnEnd', turnId: 't1',
       usage: { input_tokens: 10_000, output_tokens: 5, cache_read_input_tokens: 40_000 },
       costUsd: 0.2,
     })
     await waitFor(() => {
-      expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('75%')
+      expect(screen.getByRole('img', { name: 'Context 25% used' })).toBeInTheDocument()
     })
   })
 
