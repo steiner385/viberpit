@@ -26,6 +26,7 @@ from viberpit.selector import Picked
 from server.app import create_app
 from server.codex.capabilities import CODEX_CAPABILITIES
 from server.db import db_session, dispose_db, init_db
+from server.db.models import AuditEvent
 from server.db.models import Session as DbSession
 from server.ipc.client import DaemonClient, DaemonError
 from server.ipc.daemon import create_daemon_app
@@ -660,6 +661,96 @@ async def test_a_finished_operations_own_sessions_stay_fenced(env) -> None:
         assert await lineage_unowned(sid, parent_session_id=parent) is False
         with pytest.raises(StaleOwnership):
             await begin_session_execution(sid, parent_session_id=parent)
+
+
+# --- a fork never notifies, wakes or is steered by its source -----------------------
+
+class _SourceSpy:
+    """Replaces ``send_prompt`` / ``ensure_driver`` and records the session ids each
+    is called for, so a test can prove the source was never prompted or woken."""
+
+    def __init__(self, orch) -> None:
+        self.sent: list[str] = []
+        self.ensured: list[str] = []
+
+        async def send(sid, text, *a, **k):
+            self.sent.append(sid)
+            return "sent"
+
+        async def ensure(sid, *a, **k):
+            self.ensured.append(sid)
+            return object()
+        orch.send_prompt = send          # type: ignore[method-assign]
+        orch.ensure_driver = ensure      # type: ignore[method-assign]
+
+
+async def _settle() -> None:
+    for _ in range(30):                  # child notices are spawned tasks
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_a_forks_stops_never_notify_or_wake_its_source(env) -> None:
+    """Every child-stop path — the status callback (done, waiting, handed back),
+    archive and close — leaves the source alone, and a fork waiting on a question is
+    not escalated as a child with an unreachable parent."""
+    orch, _, src, *_ = env
+    archived = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    closed = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    spy = _SourceSpy(orch)
+    with patch.object(SessionOrchestrator, "_last_assistant_prose", return_value="m"), \
+            patch("server.sessions.orchestrator.push_mod.notify_event",
+                  new=mock.AsyncMock()) as push:
+        for status in ("done", "waiting_question", "in_progress", "handed_back"):
+            await orch._persist_status(archived, status)
+            await _settle()
+        # A finished source would take the escalation branch instead of the send.
+        orch._records[src.id].status = "complete"
+        await orch._persist_status(closed, "waiting_question")
+        await _settle()
+        orch._records[src.id].status = "idle"
+        await orch.archive_session(archived)
+        await orch.close_session(closed)
+        await _settle()
+    assert src.id not in spy.sent and src.id not in spy.ensured
+    assert not [c for c in push.await_args_list if "answer it directly" in c.args[2]]
+    async with db_session() as db:
+        audits = (await db.execute(select(AuditEvent.type))).scalars().all()
+    assert "session.child_escalated" not in audits
+
+
+@pytest.mark.asyncio
+async def test_boot_redelivery_skips_forks(env) -> None:
+    orch, _, src, *_ = env
+    stopped = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    stranded = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    orch._records[stopped].status = "handed_back"
+    orch._records[stopped].parent_notified_status = None
+    orch._records[stranded].status = "idle"
+    orch._records[stranded].interrupted_by_restart = True
+    spy = _SourceSpy(orch)
+    with patch.object(SessionOrchestrator, "_last_assistant_prose", return_value="m"):
+        assert await orch.redeliver_child_notices() == 0
+        await _settle()
+    assert spy.sent == [] and spy.ensured == []
+    assert src.id not in orch._pending_prompt_preambles
+
+
+@pytest.mark.asyncio
+async def test_the_source_cannot_reply_to_or_list_a_fork(env) -> None:
+    """reply_to_child refuses a fork with the same "not your child" refusal; the
+    source's session_context children leave forks out, while the cap still counts them."""
+    from server.sessions import child_sessions as cs
+    orch, _, src, *_ = env
+    child = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    orch._records[child].status = "handed_back"
+    spy = _SourceSpy(orch)
+    with pytest.raises(cs.ChildSessionLimit, match="not a child"):
+        await orch.reply_to_child_session(src.id, child_session_id=child,
+                                          message="pick A", identity="u@x")
+    assert spy.sent == [] and spy.ensured == []
+    assert orch.steerable_children_of(src.id) == []          # session_context's list
+    assert [c.id for c in orch.children_of(src.id)] == [child]   # the cap still counts it
 
 
 # --- restart durability and cancellation --------------------------------------------

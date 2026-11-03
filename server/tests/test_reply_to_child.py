@@ -33,6 +33,10 @@ def test_check_reply_refuses_a_stranger_a_gone_child_and_an_empty_message():
         cs.check_reply(parent_id="p1", child=None, child_id="c1", message="x")
     with pytest.raises(cs.ChildSessionLimit, match="not a child"):
         cs.check_reply(parent_id="p2", child=mine, child_id="c1", message="x")
+    fork = SimpleNamespace(parent_session_id="p1", status="handed_back", is_fork=True)
+    assert cs.steering_parent(fork) is None and cs.steering_parent(mine) == "p1"
+    with pytest.raises(cs.ChildSessionLimit, match="not a child"):   # D-8: never steered
+        cs.check_reply(parent_id="p1", child=fork, child_id="c1", message="x")
     for gone in ("ended", "archived"):
         with pytest.raises(cs.ChildSessionLimit, match=gone):
             cs.check_reply(parent_id="p1", child=SimpleNamespace(parent_session_id="p1", status=gone),

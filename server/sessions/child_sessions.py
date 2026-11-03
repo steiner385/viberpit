@@ -55,6 +55,18 @@ def check_limits(*, enabled: bool, parent_depth: int, live_children: int, cap: i
                                 f"(cap {cap}); wait for one to finish before dispatching another")
 
 
+def steering_parent(child: object | None) -> str | None:
+    """The session *child* reports its stops to and takes replies from: its parent —
+    except for a fork (D-8). A fork's ``parent_session_id`` links it to its source for
+    the sessions tree, the ownership lineage and the per-parent child cap, but a fork is
+    the user's own session: it never notifies or wakes the source, never escalates as a
+    child whose parent is unreachable, is not listed among the source's children and
+    cannot be steered by it. Every child-notice and parent-steering path asks this."""
+    if child is None or getattr(child, "is_fork", False) is True:
+        return None
+    return getattr(child, "parent_session_id", None) or None
+
+
 def notify_decision(status: str, notified: str | None) -> tuple[bool, str | None]:
     """Whether a child's new *status* is reported to the parent, and the guard value to
     persist afterwards (``Session.parent_notified_status``).
@@ -128,7 +140,7 @@ def check_reply(*, parent_id: str, child: object | None, child_id: str,
                 message: str) -> None:
     """Refuse a parent's reply the child cannot take (#2911). Raises ChildSessionLimit
     with the model-readable reason; returns None when the reply may be delivered."""
-    if child is None or getattr(child, "parent_session_id", None) != parent_id:
+    if steering_parent(child) != parent_id:
         raise ChildSessionLimit(f"{child_id} is not a child of this session; call "
                                 "session_context to list your children")
     status = getattr(child, "status", None)

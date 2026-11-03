@@ -2159,7 +2159,7 @@ class SessionOrchestrator:
                                              identity=identity),
             reply_child=functools.partial(self.reply_to_child_session, session_id,
                                           identity=identity),
-            children=lambda: self.children_of(session_id),
+            children=functools.partial(self.steerable_children_of, session_id),
             # What the user will actually see for a hand-back: the prose of the
             # message that carried the call, read off the live driver (lazily — the
             # driver is built after this overlay). None when there is none to ask.
@@ -6511,7 +6511,7 @@ class SessionOrchestrator:
         # A child that is closed is a stop its parent must hear about (child-session
         # spec §4.4); this path never reaches _persist_status, so decide here, BEFORE
         # the record is popped.
-        if record is not None and getattr(record, "parent_session_id", None):
+        if _cs.steering_parent(record):
             await self._child_stop_transition(record, "ended", None)
         record = self._records.pop(session_id, None)
         await self._cleanup_session_paths(session_id, record)
@@ -6893,7 +6893,7 @@ class SessionOrchestrator:
             )
         # Child sessions (spec §4.4): tell the parent about a stop transition. The
         # decision and the persisted guard live in child_sessions.notify_decision.
-        if rec is not None and getattr(rec, "parent_session_id", None):
+        if _cs.steering_parent(rec):
             await self._child_stop_transition(rec, status, hand_back_reason)
         if hand_back_reason and new_ask:
             log.info("session.hand_back sid=%s status=%s reason_len=%d",
@@ -17591,7 +17591,9 @@ class SessionOrchestrator:
             # so it counts toward dispatch_session's per-parent child cap like a
             # dispatched child (ruled: intended, documented with the D-8 product docs).
             # Unlike a dispatched child it is never registered into an automation
-            # operation: admission above refused any source a live automation owns.
+            # operation (admission above refused any source a live automation owns),
+            # and it never notifies, wakes or is steered by the source
+            # (child_sessions.steering_parent reads is_fork).
             await self._spawn_session(
                 child_id, name=fk.fork_title(rec.name), account=rec.account,
                 initial_prompt=None, cols=rec.cols, rows=rec.rows, cwd=fork_wt.cwd,
@@ -22014,6 +22016,12 @@ class SessionOrchestrator:
         return [r for r in self._records.values()
                 if getattr(r, "parent_session_id", None) == parent_id]
 
+    def steerable_children_of(self, parent_id: str) -> list:
+        """The children *parent_id* hears from and may steer (its ``session_context``
+        list): ``children_of`` minus forks, which are linked but never steered."""
+        return [r for r in self.children_of(parent_id)
+                if _cs.steering_parent(r) == parent_id]
+
     def child_depth(self, session_id: str) -> int:
         """0 for a root; 1 + the parent's depth otherwise (a missing parent counts as 1)."""
         depth, seen, cur = 0, set(), self._records.get(session_id)
@@ -22076,8 +22084,9 @@ class SessionOrchestrator:
         driver callback) and from ``archive_session`` / ``close_session``, which write
         their status directly and must call this BEFORE popping the record. The notice
         text is built here, synchronously, so a record popped a moment later cannot
-        starve the spawned delivery."""
-        parent_id = getattr(rec, "parent_session_id", None)
+        starve the spawned delivery. A fork never reaches its source
+        (``child_sessions.steering_parent``)."""
+        parent_id = _cs.steering_parent(rec)
         if not parent_id:
             return
         prior = getattr(rec, "parent_notified_status", None)
@@ -22218,7 +22227,7 @@ class SessionOrchestrator:
         n = 0
         enabled_hosts = await self._enabled_host_names()
         for rec in list(self._records.values()):
-            parent_id = getattr(rec, "parent_session_id", None)
+            parent_id = _cs.steering_parent(rec)     # never a fork's source
             if not parent_id or not self._owns_record(rec, enabled_hosts):
                 continue
             try:
@@ -25161,7 +25170,7 @@ class SessionOrchestrator:
         # spec §4.4); this path never reaches _persist_status, so decide here, BEFORE
         # the record is popped below.
         _child = self._records.get(session_id)
-        if _child is not None and getattr(_child, "parent_session_id", None):
+        if _cs.steering_parent(_child):
             await self._child_stop_transition(_child, "archived", None)
         # Remove from active records BEFORE driver.aclose() so the session
         # disappears from list_sessions() immediately and a background refetch
