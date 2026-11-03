@@ -1,7 +1,7 @@
 """Rewind to here (D-9): the session_rewinds table.
 
-Revision ID: 0094_session_rewinds
-Revises: 0093_session_fork_resume
+Revision ID: 0095_session_rewinds
+Revises: 0094_automation_operation_indexes
 
 One row per rewind of a session to an earlier prompt: the target, the transcript's
 pre-rewind byte length, the undo backup's dir and the host holding it, and the cut
@@ -11,8 +11,8 @@ is the reviewable record.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0094_session_rewinds"
-down_revision = "0093_session_fork_resume"
+revision = "0095_session_rewinds"
+down_revision = "0094_automation_operation_indexes"
 branch_labels = None
 depends_on = None
 

@@ -196,7 +196,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
     the rewind and deletes its backup. Archive deletes all of the session's backups. Undo is idempotent by
     `rewindId`. A partial restore keeps the backup and refuses `REWIND_FAILED` with the failed paths, so a retry
     can finish the job.
-  - **Persistence.** One `SessionRewind` row per rewind (migration `0094_session_rewinds`) holds the target, the
+  - **Persistence.** One `SessionRewind` row per rewind (migration `0095_session_rewinds`) holds the target, the
     transcript path and length, the backup dir, the host, the files restored, the prefill and the
     `created_at` / `undone_at` / `expired_at` stamps.
 - **Replay follows the active chain.** The dropped rows stay in the JSONL, so `replay.py` drops off-chain prompts,

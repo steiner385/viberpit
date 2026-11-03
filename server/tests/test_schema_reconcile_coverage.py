@@ -119,7 +119,7 @@ RECONCILE_EXEMPT: set[str] = {
     # no owner is undeliverable — so there is no synthesizable default.
     "assistant_notices.identity",   # required at insert; the watch owner's identity
     # session_rewinds (D-9): a NEW table (create_all builds it on dev SQLite; Alembic
-    # 0094_session_rewinds on prod). A rewind row without its session is meaningless,
+    # 0095_session_rewinds on prod). A rewind row without its session is meaningless,
     # so there is no synthesizable default.
     "session_rewinds.session_id",   # required at insert; the rewound session
 }
