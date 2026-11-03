@@ -132,7 +132,7 @@ from server.sessions.draft_hold_guard import DraftReadyGrants, SessionGrants
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
-from server.sessions.replay import replay_events, transcript_turn_anchors
+from server.sessions.replay import TranscriptAnchors, replay_events, transcript_anchor_facts
 from server.sessions import status as _status_mod
 from server.sessions.suggestions import (
     SuggestionService, build_codex_suggest_prompt, last_turn_context, parse_suggestions,
@@ -17415,19 +17415,17 @@ class SessionOrchestrator:
         hit = rec.turn_anchors.get(turn_id)
         if hit is not None:
             return hit
-        path = await asyncio.to_thread(self.transcript_path, session_id)
-        if not path:
+        stamp = await self._transcript_stamp(session_id)
+        if stamp is None:
             return None
-        try:
-            st = await asyncio.to_thread(os.stat, path)
-        except OSError:
-            return None
-        stamp = (path, st.st_size, st.st_mtime_ns)
         if rec.turn_anchors_rebuilt_at == stamp:
             # Already merged from this exact transcript, and nothing was evicted then:
             # a re-parse could only give the same answer.
             return None
-        rebuilt = await asyncio.to_thread(transcript_turn_anchors, path)
+        facts = await self._anchor_facts(session_id, stamp)
+        if facts is None:
+            return None
+        rebuilt = facts.anchors
         live_only = {t: a for t, a in rec.turn_anchors.items() if t not in rebuilt}
         for tid, anchor in rebuilt.items():
             rec.record_turn_anchor(tid, anchor)
@@ -17438,6 +17436,33 @@ class SessionOrchestrator:
         lossless = len(rebuilt) + len(live_only) <= TURN_ANCHOR_CAP
         rec.turn_anchors_rebuilt_at = stamp if lossless else None
         return rebuilt.get(turn_id)
+
+    async def _transcript_stamp(self, session_id: str) -> tuple[str, int, int] | None:
+        """``(path, size, mtime_ns)`` of *session_id*'s own transcript, or None."""
+        path = await asyncio.to_thread(self.transcript_path, session_id)
+        if not path:
+            return None
+        try:
+            st = await asyncio.to_thread(os.stat, path)
+        except OSError:
+            return None
+        return path, st.st_size, st.st_mtime_ns
+
+    async def _anchor_facts(self, session_id: str,
+                            stamp: tuple[str, int, int] | None = None
+                            ) -> TranscriptAnchors | None:
+        """``transcript_anchor_facts`` of *session_id*'s transcript, or None without one.
+        One slot remembers the last parse by ``stamp``, so a fork's anchor resolve and
+        its forkability check share one parse of an unchanged file."""
+        stamp = stamp or await self._transcript_stamp(session_id)
+        if stamp is None:
+            return None
+        cached = getattr(self, "_anchor_facts_slot", None)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        facts = await asyncio.to_thread(transcript_anchor_facts, stamp[0])
+        self._anchor_facts_slot = (stamp, facts)
+        return facts
 
     async def fork_session(self, session_id: str, *, at_turn_id: str | None, mode: str,
                            request_id: str, prefill: str | None = None,
@@ -17622,25 +17647,30 @@ class SessionOrchestrator:
         """Why ``--resume-session-at <anchor>`` would fail on *session_id*'s transcript,
         or None when the CLI can resume there (D-8).
 
-        The transcript's own anchor set (``transcript_turn_anchors``, the rule replay
-        uses) is the authority. It leaves out an entry at or before the last
-        compact_boundary, so a live anchor from before a later compaction is caught
-        here too (verification doc §1). An anchor missing from the set may only be
-        unflushed: the turn settled, but the CLI has not written its last entry yet. So
-        wait for that uuid to reach the transcript's tail, bounded by the driver's
-        flush grace, and then ask the set once more."""
+        Judged on the transcript's entries (``TranscriptAnchors``), not its per-turn
+        ``anchors``: a live anchor can sit mid-way through what replay merges into one
+        turn (a task-notification continuation) and is still a valid cut. Refused at
+        once when the entry is at or before the last compaction (verification doc §1)
+        or carries a dangling tool_use. Only an entry not in the file yet waits — the
+        turn settled but the CLI has not flushed it — for its uuid to reach the
+        transcript's tail, bounded by the driver's flush grace."""
         from server.sessions import claude_driver as _cd
-        path = await asyncio.to_thread(self.transcript_path, session_id)
-        if not path:
+        facts = await self._anchor_facts(session_id)
+        if facts is None:
             return "the source has no transcript"
-        if anchor in (await asyncio.to_thread(transcript_turn_anchors, path)).values():
-            return None
-        if not await _cd.wait_for_transcript_entry(path, anchor,
-                                                   grace=_cd._TRANSCRIPT_FLUSH_GRACE_S):
-            return "the turn's last entry has not reached the transcript"
-        if anchor in (await asyncio.to_thread(transcript_turn_anchors, path)).values():
-            return None
-        return "the CLI cannot resume at this turn (before the last compaction)"
+        if anchor not in facts.entries:
+            stamp = await self._transcript_stamp(session_id)
+            if stamp is None or not await _cd.wait_for_transcript_entry(
+                    stamp[0], anchor, grace=_cd._TRANSCRIPT_FLUSH_GRACE_S):
+                return "the turn's last entry is not in the transcript"
+            facts = await self._anchor_facts(session_id)
+            if facts is None or anchor not in facts.entries:
+                return "the turn's last entry is not in the transcript"
+        if anchor in facts.compacted:
+            return "the turn is before the last compaction, where the CLI cannot resume"
+        if anchor in facts.dangling:
+            return "the turn ends in an unanswered tool use"
+        return None
 
     async def _make_fork_worktree(self, source_cwd: str, source_id: str,
                                   dest: str) -> worktrees.ForkWorktreeInfo:

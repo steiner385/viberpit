@@ -16,7 +16,7 @@ from claude_agent_sdk import TextBlock, ThinkingBlock
 from server.sessions import events as ev
 from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.replay import _parse, replay_window, transcript_turn_anchors
+from server.sessions.replay import _parse, replay_window, transcript_anchor_facts
 from server.sessions.translator import Translator
 from server.sessions.types import TURN_ANCHOR_CAP, SessionRecord
 from server.sessions.engine import AgentEngine
@@ -136,10 +136,10 @@ def test_replay_yields_the_same_anchor_uuids_as_live(tmp_path):
         assert isinstance(nxt, ev.TurnEnd) and nxt.turn_id == a.turn_id
 
 
-def test_transcript_turn_anchors_maps_turn_ids_in_order(tmp_path):
+def test_transcript_anchor_facts_maps_turn_ids_in_order(tmp_path):
     path = _jsonl(tmp_path / "s.jsonl", _transcript_rows())
-    assert list(transcript_turn_anchors(path).items()) == [("a3", "a3"), ("b1", "b1")]
-    assert transcript_turn_anchors(str(tmp_path / "missing.jsonl")) == {}
+    assert list(transcript_anchor_facts(path).anchors.items()) == [("a3", "a3"), ("b1", "b1")]
+    assert transcript_anchor_facts(str(tmp_path / "missing.jsonl")).anchors == {}
 
 
 def test_drop_incomplete_turn_drops_the_open_turns_anchor(tmp_path):
@@ -362,12 +362,12 @@ def test_replay_tool_loop_ending_in_text_still_anchors_on_the_text_entry(tmp_pat
 def test_repeated_misses_against_an_unchanged_transcript_parse_once(tmp_path, monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls: list[str] = []
-    real = orch_mod.transcript_turn_anchors
+    real = orch_mod.transcript_anchor_facts
 
     def counting(p):
         calls.append(p)
         return real(p)
-    monkeypatch.setattr(orch_mod, "transcript_turn_anchors", counting)
+    monkeypatch.setattr(orch_mod, "transcript_anchor_facts", counting)
     rec = _rec()
     tpath = tmp_path / "s.jsonl"
     path = _jsonl(tpath, _transcript_rows())

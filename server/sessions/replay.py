@@ -273,8 +273,34 @@ def _collapse_recovery_resend_dupes(out: list) -> list:
     return [e for i, e in enumerate(out) if i not in drop]
 
 
+@dataclass(frozen=True)
+class TranscriptAnchors:
+    """What one parse of a transcript says about where it can be forked (D-8).
+
+    ``anchors`` is one fork anchor per LOGICAL turn, ``{turnId: uuid}`` in transcript
+    order, for the UI and ``SessionRecord.turn_anchors``. A live session anchors finer
+    than that: a background task-notification continuation is merged into the turn
+    before it on replay but is its own turn live. So whether ``--resume-session-at``
+    can cut at a uuid is answered by the entry sets, not by ``anchors``:
+    ``entries`` holds every top-level entry uuid in the file, ``dangling`` the
+    assistant entries carrying a tool_use, and ``compacted`` everything at or before
+    the last compact_boundary."""
+    anchors: dict[str, str] = field(default_factory=dict)
+    entries: frozenset[str] = frozenset()
+    dangling: frozenset[str] = frozenset()
+    compacted: frozenset[str] = frozenset()
+
+
 def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, object | None]:
-    """Parse the full main JSONL into (events, meta_event). No trimming.
+    """Parse the full main JSONL into (events, meta_event). No trimming. See
+    ``_parse_transcript``."""
+    events, meta_event, _facts = _parse_transcript(path, until_uuid)
+    return events, meta_event
+
+
+def _parse_transcript(path: str, until_uuid: str | None = None
+                      ) -> tuple[list, object | None, TranscriptAnchors]:
+    """Parse the full main JSONL into (events, meta_event, anchor facts). No trimming.
 
     Sub-agent (``isSidechain``) entries are skipped here: for Layout-A single-file
     transcripts this keeps their steps out of the main thread; for Layout-B they
@@ -287,9 +313,9 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
     out: list = []
     meta_event = None
     tool_use_entries: set = set()   # assistant entry uuids carrying a tool_use block
-    # Assistant entry uuids at or before the LAST compact_boundary: the CLI cannot
-    # resume at one (CLI 2.1.317 — see the D-8 verification doc §1, "Compaction").
-    assistant_uuids: list = []
+    # Every top-level entry uuid, and those at or before the LAST compact_boundary: the
+    # CLI cannot resume at one (CLI 2.1.317 — see the D-8 verification doc §1).
+    entry_uuids: set = set()
     pre_compaction: set = set()
     reached = until_uuid is None
     for o in _read_jsonl(path):
@@ -301,8 +327,10 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
             continue
         typ = o.get("type")
         if typ == "system" and o.get("subtype") == "compact_boundary":
-            pre_compaction.update(assistant_uuids)
+            pre_compaction.update(entry_uuids)
             continue
+        if o.get("uuid"):
+            entry_uuids.add(o["uuid"])
         msg = o.get("message") or {}
         content = _content_blocks(msg)
         uuid = o.get("uuid")
@@ -361,7 +389,6 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
                 # long sessions — the status strip needs the model after re-attach.
                 meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
-            assistant_uuids.append(uuid)
             if any(b.get("type") == "tool_use" for b in content):
                 # Read off the raw blocks, not the emitted events: a signal tool or
                 # AskUserQuestion emits no ToolCall but is still a dangling tool_use.
@@ -374,14 +401,18 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
     if not reached:
-        return [], None
+        return [], None, TranscriptAnchors()
     # Collapse the duplicate user turn a recovery resend leaves behind. Done here, in
     # the single shared reconstruction path, so every consumer (replay_window /
     # transcript_events / export / replay_events) inherits it and the drop_incomplete
     # tail-trim below anchors on the deduped last user entry.
-    return (_with_turn_anchors(_collapse_recovery_resend_dupes(out),
-                               tool_use_entries | pre_compaction),
-            meta_event)
+    events = _with_turn_anchors(_collapse_recovery_resend_dupes(out),
+                                tool_use_entries | pre_compaction)
+    facts = TranscriptAnchors(
+        anchors={e.turn_id: e.uuid for e in events if isinstance(e, ev.TurnAnchor)},
+        entries=frozenset(entry_uuids), dangling=frozenset(tool_use_entries),
+        compacted=frozenset(pre_compaction))
+    return events, meta_event, facts
 
 
 def _with_turn_anchors(out: list, unanchorable: set) -> list:
@@ -422,17 +453,16 @@ def _with_turn_anchors(out: list, unanchorable: set) -> list:
     return res
 
 
-def transcript_turn_anchors(path: str) -> dict[str, str]:
-    """Every turn anchor in the transcript at *path*, ``{turnId: uuid}`` in transcript
-    order — the rebuild source for ``SessionRecord.turn_anchors`` once a reload or a
-    daemon restart has left the record without the live ones. Whole-file and
-    synchronous: wrap it in ``asyncio.to_thread`` on the event loop. A missing file
-    yields ``{}``."""
+def transcript_anchor_facts(path: str) -> TranscriptAnchors:
+    """The fork facts of the transcript at *path* (see ``TranscriptAnchors``): its
+    ``anchors`` are the rebuild source for ``SessionRecord.turn_anchors`` once a reload
+    or a daemon restart has left the record without the live ones, and its entry sets
+    say whether a fork may cut at a uuid. Whole-file and synchronous: wrap it in
+    ``asyncio.to_thread`` on the event loop. A missing file yields empty facts."""
     try:
-        events, _meta = _build_events(path)
+        return _parse_transcript(path)[2]
     finally:
         _trim_heap_after(path)
-    return {e.turn_id: e.uuid for e in events if isinstance(e, ev.TurnAnchor)}
 
 
 def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | None = None,

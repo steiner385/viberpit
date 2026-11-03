@@ -939,6 +939,61 @@ async def test_an_anchor_that_never_reaches_the_transcript_is_refused_at_info(
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
+_TASK_NOTIFICATION = {"type": "user", "uuid": "tn-1", "message": {
+    "role": "user", "content": "<task-notification>\n<task-id>bg1</task-id>\n"
+    "<status>completed</status>\n</task-notification>"}}
+
+
+@pytest.mark.asyncio
+async def test_a_live_anchor_inside_a_merged_replay_turn_still_forks(env) -> None:
+    """Replay merges a background task-notification continuation into the turn before
+    it, so the transcript's per-turn anchors skip a1. Live, a1 was its own turn: the
+    cut there is valid. A compacted entry and an absent one are still refused."""
+    from server.sessions.replay import transcript_anchor_facts
+    orch, spawns, src, *_ = env
+    path = _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "a0", "r0")], tail=[
+        _COMPACT_BOUNDARY, *_rows("u1", "q1", "a1", "one"), _TASK_NOTIFICATION,
+        {"type": "assistant", "uuid": "a2", "message": {
+            "role": "assistant", "model": "m",
+            "content": [{"type": "text", "text": "two"}]}}])
+    assert transcript_anchor_facts(path).anchors == {"a2": "a2"}      # the premise
+    src.record_turn_anchor("t1", "a1")
+    out = await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert spawns.calls[-1]["extra_args"] == {"resume-session-at": "a1"}
+    assert orch.record(out["sessionId"]).fork_from == ("src-sdk", "a1")
+
+    src.record_turn_anchor("t0", "a0")
+    src.record_turn_anchor("tx", "never-written")
+    with patch("server.sessions.claude_driver._TRANSCRIPT_FLUSH_GRACE_S", 0.2):
+        for turn, why in (("t0", "compaction"), ("tx", "not in the transcript")):
+            with pytest.raises(fk.ForkError) as ei:
+                await _fork(orch, src.id, at_turn_id=turn, mode="reply")
+            assert ei.value.code == fk.TURN_NOT_FORKABLE and why in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_a_compacted_anchor_beyond_the_tail_is_refused_without_waiting(env) -> None:
+    """The entry is in the file, more than _TRANSCRIPT_TAIL_BYTES before its end: the
+    refusal comes from the same parse, never from a flush wait that cannot see it."""
+    from server.sessions import claude_driver as cd
+    orch, spawns, src, *_ = env
+    filler = {"type": "user", "uuid": "big", "message": {
+        "role": "user", "content": "x" * (cd._TRANSCRIPT_TAIL_BYTES + 4096)}}
+    _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "a-old", "r0")], tail=[
+        filler, _COMPACT_BOUNDARY, *_rows("u1", "q1", "a1", "r1")])
+    src.record_turn_anchor("t-old", "a-old")
+    before = len(spawns.calls)
+    waits = mock.AsyncMock(return_value=False)
+    started = time.monotonic()
+    with patch.object(cd, "wait_for_transcript_entry", waits):
+        with pytest.raises(fk.ForkError) as ei:
+            await _fork(orch, src.id, at_turn_id="t-old", mode="reply")
+    assert time.monotonic() - started < cd._TRANSCRIPT_FLUSH_GRACE_S
+    waits.assert_not_awaited()
+    assert ei.value.code == fk.TURN_NOT_FORKABLE and "compaction" in str(ei.value)
+    assert len(spawns.calls) == before
+
+
 # --- restart durability and cancellation --------------------------------------------
 
 @pytest.mark.asyncio

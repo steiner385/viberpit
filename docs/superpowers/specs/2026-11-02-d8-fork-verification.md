@@ -61,10 +61,11 @@ installed binary, the vendored SDK or ViberPit's code. Parent spec:
 
   The source file's sha256 was unchanged. The loader keeps only the chain from the last boundary on, so a
   pre-boundary uuid is "not found". A preserved one makes the CLI exit silently, which a driver would see as a dead
-  start. ViberPit therefore treats every top-level assistant entry at or before the last boundary as unanchorable
-  (`replay._build_events` → `_with_turn_anchors`). `fork_session` checks the requested anchor against the
-  transcript's own anchor set, so a live anchor recorded before a later compaction is refused with
-  `TURN_NOT_FORKABLE` too. The probe dir was removed afterwards.
+  start. ViberPit therefore treats every entry at or before the last boundary as unanchorable
+  (`replay._parse_transcript` → `_with_turn_anchors`, `TranscriptAnchors.compacted`). `fork_session` checks the
+  requested anchor against the transcript's entries, so a live anchor recorded before a later compaction is
+  refused with `TURN_NOT_FORKABLE` at once. Only an entry not yet in the file waits for the flush. The probe dir
+  was removed afterwards.
 
 ## 2. The Python SDK (`claude-agent-sdk==0.2.105`, pinned in `pyproject.toml:10`)
 

@@ -289,13 +289,15 @@ def test_no_turn_before_the_last_compaction_is_anchored(tmp_path):
     compact_boundary on CLI 2.1.317 (pre-boundary: "No message found"; inside the
     preserved segment: a silent exit), so those turns get no fork anchor (D-8)."""
     from server.sessions import events as ev
-    from server.sessions.replay import _window, transcript_turn_anchors
+    from server.sessions.replay import _window, transcript_anchor_facts
     rows = [json.loads(line) for line in open(_write_transcript(tmp_path, 4))]
     boundary = {"type": "system", "subtype": "compact_boundary", "uuid": "cb",
                 "parentUuid": None, "logicalParentUuid": "a1"}
     p = tmp_path / "c.jsonl"
     p.write_text("\n".join(json.dumps(o) for o in rows[:4] + [boundary] + rows[4:]))
-    assert transcript_turn_anchors(str(p)) == {"a2": "a2", "a3": "a3"}
+    facts = transcript_anchor_facts(str(p))
+    assert facts.anchors == {"a2": "a2", "a3": "a3"}
+    assert {"a0", "a1", "u0", "u1"} <= facts.compacted and not {"a2", "a3"} & facts.compacted
     w = _window(str(p), None, None)
     assert [e.uuid for e in w.events if isinstance(e, ev.TurnAnchor)] == ["a2", "a3"]
     assert _turn_ids(w) == ["a0", "a1", "a2", "a3"]     # history still replays
