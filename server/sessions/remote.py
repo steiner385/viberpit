@@ -1273,6 +1273,19 @@ class RemoteOrchestrator:
         r = await self._client.call("transcript_search_text", session_id=session_id)
         return r if isinstance(r, str) else ""
 
+    async def transcript_search(self, session_id: str, q: str, limit: int) -> dict:
+        """In-session transcript search (D-11), run on the daemon that owns the
+        session's replay. An unknown session is re-raised as the orchestrator's
+        KeyError; an old daemon's UnknownMethod stays a DaemonError (the route maps
+        it to ``daemon_outdated``)."""
+        try:
+            return await self._client.call("transcript_search", session_id=session_id,
+                                           q=q, limit=limit)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
     @rpc_deadline
     async def usage(self, name, *, timeout: float | None = None):
         try:

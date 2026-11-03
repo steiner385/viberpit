@@ -27079,6 +27079,41 @@ class SessionOrchestrator:
             e.to_wire() if hasattr(e, "to_wire") else e for e in window.events
         ])
 
+    async def transcript_search(self, session_id: str, q: str, limit: int) -> dict:
+        """In-session transcript search (D-11): ``{hits, truncated, totalTurns}``.
+
+        Walks the session's FULL replay (``transcript_window(limit=None)``), never the
+        JSONL: only the replay honours a rewind's cut and a fork's source, and its
+        TurnStarts are the cursor space the hits' ordinals must page in. Matching and
+        scope are ``search.search_events``. ``KeyError`` for a session this daemon has
+        neither a record nor a row for. Never raises otherwise: a replay that cannot be
+        read is the empty result, at INFO — the user sees "no matches", nothing broke.
+        """
+        from server.sessions.search import SEARCH_MAX_LIMIT, parse_terms, search_events
+
+        empty = {"hits": [], "truncated": False, "totalTurns": 0}
+        if (session_id not in self._records and session_id not in self._drivers
+                and await self._row_engine_ref(session_id) is None):
+            raise KeyError(f"No session with id {session_id}")
+        terms = parse_terms(q)
+        if not terms:
+            return empty
+        try:
+            # background=True: a replay timeout here is a search that found nothing,
+            # not a blank transcript, so it logs at INFO like every failure below.
+            window = await self.transcript_window(session_id, limit=None, background=True)
+        except Exception as exc:
+            log.info("session.transcript_search id=%s replay failed: %s",
+                     session_id, type(exc).__name__)
+            return empty
+        if window is None:
+            log.info("session.transcript_search id=%s no readable history", session_id)
+            return empty
+        hits, truncated = search_events(
+            [e.to_wire() if hasattr(e, "to_wire") else e for e in window.events],
+            terms, max(1, min(int(limit), SEARCH_MAX_LIMIT)))
+        return {"hits": hits, "truncated": truncated, "totalTurns": window.total_turns}
+
     def snapshot_deploy(self, *, path: str | None = None) -> dict:
         """SAVE step: record sessions with a live driver so a daemon-affecting restart
         can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle').

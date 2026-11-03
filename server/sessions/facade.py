@@ -184,6 +184,7 @@ class InProcessOrchestratorAdapter:
     # transcript_path cannot answer for an engine with no transcript file.
     async def has_transcript(self, *a, **k): return await _maybe_await(self._orch.has_transcript(*a, **k))
     async def transcript_search_text(self, *a, **k): return await _maybe_await(self._orch.transcript_search_text(*a, **k))
+    async def transcript_search(self, *a, **k): return await _maybe_await(self._orch.transcript_search(*a, **k))
     async def pending_questions(self, *a, **k): return await _maybe_await(self._orch.pending_questions(*a, **k))
     async def orphaned_interaction(self, *a, **k): return await _maybe_await(self._orch.orphaned_interaction(*a, **k))
     async def pop_pending_initial_prompt(self, *a, **k): return await _maybe_await(self._orch.pop_pending_initial_prompt(*a, **k))
