@@ -154,6 +154,7 @@ def test_stamped_turn_index_wins_over_counting():
         {"type": "turnStart", "turnId": "c0", "turnIndex": 0},
         {"type": "turnStart", "turnId": "c0b", "turnIndex": 0},
         {"type": "textDelta", "turnId": "c0b", "text": "needle"},
+        {"type": "turnEnd", "turnId": "c0b"},
         {"type": "user", "turnId": "u1", "text": "needle"},
         {"type": "turnStart", "turnId": "c1", "turnIndex": 1},
     ]
@@ -300,8 +301,10 @@ async def test_round_trips_over_the_owner_daemon_without_a_warning(tmp_path, iso
     _claude(orch, "s1", tmp_path)
     app = create_daemon_app()
     register_orchestrator_rpc(app, orch)
-    with caplog.at_level(logging.INFO), \
-            patch.object(orch, "transcript_source", return_value=(path, None)):
+    def source(sid):
+        return (path, None) if sid == "s1" else (None, None)
+
+    with caplog.at_level(logging.INFO), patch.object(orch, "transcript_source", source):
         async with serve_daemon_uds(app) as sock:
             client = DaemonClient(sock)
             try:
@@ -405,3 +408,107 @@ def test_route_does_not_collide_with_the_list_search(tmp_path):
 def test_route_requires_identity(tmp_path):
     client = _client(_orch(tmp_path))
     assert client.get("/api/sessions/s1/search?q=x").status_code == 401
+
+
+# --- review fixes: Codex steering, UTF-16 offsets, long matches, DB errors -------------
+
+def test_a_prompt_inside_an_open_turn_takes_that_turns_ordinal():
+    """A Codex steered prompt sits between a TurnStart and its TurnEnd."""
+    events = [
+        {"type": "user", "turnId": "i0", "text": "first"},
+        {"type": "turnStart", "turnId": "t0"},
+        {"type": "textDelta", "turnId": "t0", "text": "working"},
+        {"type": "user", "turnId": "i1", "text": "steer needle"},
+        {"type": "textDelta", "turnId": "t0", "text": "steered"},
+        {"type": "turnEnd", "turnId": "t0"},
+        {"type": "user", "turnId": "i2", "text": "next needle"},
+        {"type": "turnStart", "turnId": "t1"},
+    ]
+    assert [(h["turnId"], h["ordinal"]) for h in _hits(events, "needle")[0]] == [
+        ("i1", 0), ("i2", 1)]
+
+
+@pytest.mark.asyncio
+async def test_codex_steered_prompt_is_on_the_page_its_ordinal_names(tmp_path):
+    from server.codex.replay import CodexThreadReplay
+    turns = [
+        {"id": "t0", "status": "completed", "items": [
+            {"type": "userMessage", "id": "i0", "content": [{"type": "text", "text": "start"}]},
+            {"type": "agentMessage", "id": "a0", "text": "working"},
+            {"type": "userMessage", "id": "i1",
+             "content": [{"type": "text", "text": "steer needle"}]},
+            {"type": "agentMessage", "id": "a0b", "text": "steered"},
+        ]},
+        {"id": "t1", "status": "completed", "items": [
+            {"type": "userMessage", "id": "i2", "content": [{"type": "text", "text": "needle 2"}]},
+            {"type": "agentMessage", "id": "a1", "text": "done"},
+        ]},
+    ]
+    replay = CodexThreadReplay(_FakeThreadClient(turns), "thread-1", model="m")
+    full = await replay.window(limit=None)
+    hits, _ = search_events([e.to_wire() for e in full.events], ["needle"], 50)
+    assert [(h["snippet"], h["ordinal"]) for h in hits] == [("steer needle", 0), ("needle 2", 1)]
+    for h in hits:
+        page = await replay.window(before=h["ordinal"] + 1, limit=1)
+        assert page.earliest_turn == h["ordinal"]
+        assert any(isinstance(e, ev.UserMessage) and h["snippet"] in e.text
+                   for e in page.events), h
+
+
+def test_offsets_are_utf16_code_units():
+    """The client slices in JS: an astral emoji before the match is two code units."""
+    text = "\U0001F600\U0001F600 needle"
+    h = _hits([{"type": "user", "turnId": "u", "text": text}], "needle")[0][0]
+    assert h["snippet"] == text
+    assert (h["matchStart"], h["matchEnd"]) == (5, 11)
+    units = h["snippet"].encode("utf-16-le")
+    assert units[h["matchStart"] * 2:h["matchEnd"] * 2].decode("utf-16-le") == "needle"
+
+
+def test_a_match_longer_than_the_snippet_is_covered_whole():
+    term = "x" * 100
+    text = "head " + term + " tail " * 20
+    h = _hits([{"type": "user", "turnId": "u", "text": text}], term)[0][0]
+    assert h["snippet"][h["matchStart"]:h["matchEnd"]] == term
+    assert h["matchEnd"] <= len(h["snippet"])
+
+
+def test_a_character_that_lowercases_to_two_is_located_exactly():
+    # "İ".lower() is two code points, so lowered offsets drift from the text's.
+    text = "İİİ some words then Needle here"
+    h = _hits([{"type": "user", "turnId": "u", "text": text}], "needle")[0][0]
+    assert h["snippet"][h["matchStart"]:h["matchEnd"]] == "Needle"
+    h = _hits([{"type": "user", "turnId": "u", "text": "aİb"}], "i̇b")[0][0]
+    assert h["snippet"][h["matchStart"]:h["matchEnd"]] == "İb"
+
+
+@pytest.mark.asyncio
+async def test_a_db_error_on_the_existence_check_is_empty_not_404(tmp_path, isolated_db,
+                                                                  caplog):
+    orch = _orch(tmp_path)
+
+    class _Boom:
+        async def __aenter__(self):
+            raise RuntimeError("db down")
+
+        async def __aexit__(self, *a):
+            return False
+
+    with caplog.at_level(logging.INFO), \
+            patch.object(orch, "transcript_window", AsyncMock(return_value=None)), \
+            patch("server.sessions.orchestrator.db_session", lambda: _Boom()):
+        r = await orch.transcript_search("gone", "x", 10)
+    assert r == {"hits": [], "truncated": False, "totalTurns": 0}
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_a_found_replay_needs_no_extra_row_read(tmp_path, isolated_db):
+    """An archived session with history: the replay's own row read is the only one."""
+    orch = _orch(tmp_path)
+    window = ReplayWindow(events=[{"type": "user", "turnId": "u", "text": "x"}])
+    with patch.object(orch, "transcript_window", AsyncMock(return_value=window)), \
+            patch.object(orch, "_row_engine_ref", AsyncMock(return_value=None)) as ref:
+        r = await orch.transcript_search("archived", "x", 10)
+    assert len(r["hits"]) == 1
+    ref.assert_not_called()

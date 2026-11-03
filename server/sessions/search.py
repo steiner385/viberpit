@@ -154,27 +154,31 @@ _HIT_ROLES = {"user": "user", "textDelta": "assistant"}
 
 
 def _match_span(text: str, term: str) -> tuple[int, int]:
-    """Where *term* first occurs in *text*, case-insensitively, as offsets into *text*.
+    """Where *term* (already lowercase) first occurs in *text*, case-insensitively, as
+    offsets into *text*. The caller has established it occurs (``terms_match``).
 
-    ``str.lower`` keeps the length for almost all text, so its offsets are *text*'s;
-    for the rare character that lowercases to two (``İ``) fall back to a regex
-    search, which reports offsets in the original."""
+    ``str.lower`` keeps the length for almost all text, so its offsets are *text*'s.
+    A character that lowercases to two (``İ``) shifts them, so then each lowered
+    character is mapped back to the original it came from."""
     lowered = text.lower()
+    pos = lowered.find(term)
     if len(lowered) == len(text):
-        pos = lowered.find(term)
         return pos, pos + len(term)
-    m = re.search(re.escape(term), text, re.IGNORECASE)
-    return (m.start(), m.end()) if m else (0, 0)
+    origin = [i for i, c in enumerate(text) for _ in c.lower()]
+    return origin[pos], origin[pos + len(term) - 1] + 1
 
 
 def _snippet(text: str, start: int, end: int) -> tuple[str, int, int]:
     """``(snippet, matchStart, matchEnd)``: up to ``SNIPPET_CHARS`` of *text* around
     ``[start, end)``, trimmed to whole words, on one line (each whitespace character
-    becomes one space, so offsets survive)."""
+    becomes one space, so offsets survive). A match longer than ``SNIPPET_CHARS`` is
+    the snippet, whole. Offsets are code points here; see ``_utf16``."""
     n = len(text)
     lo, hi = 0, n
-    if n > SNIPPET_CHARS:
-        lo = max(0, start - max(0, (SNIPPET_CHARS - (end - start)) // 2))
+    if end - start >= SNIPPET_CHARS:
+        lo, hi = start, end
+    elif n > SNIPPET_CHARS:
+        lo = max(0, start - (SNIPPET_CHARS - (end - start)) // 2)
         hi = min(n, lo + SNIPPET_CHARS)
         lo = max(0, hi - SNIPPET_CHARS)
         if lo > 0 and not text[lo - 1].isspace():
@@ -193,6 +197,12 @@ def _snippet(text: str, start: int, end: int) -> tuple[str, int, int]:
     return re.sub(r"\s", " ", text[lo:hi]), start - lo, end - lo
 
 
+def _utf16(text: str, index: int) -> int:
+    """Code-point *index* into *text* as a UTF-16 code-unit offset: the client slices
+    the snippet in JS, where an astral character (an emoji) is two units."""
+    return index + sum(1 for c in text[:index] if ord(c) > 0xFFFF)
+
+
 def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], bool]:
     """In-session search over a FULL normalized replay (D-11): ``(hits, truncated)``.
 
@@ -206,7 +216,11 @@ def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], boo
     TurnStart's (``_window`` slices a prompt into the page of the turn after it; a
     trailing prompt with none after it takes the next ordinal). A TurnStart's stamped
     ``turnIndex`` wins; one without (a live-recorded turn) counts on from the last.
-    Sub-agent TurnStarts never move it. Past *limit* hits, ``truncated`` is True."""
+    Sub-agent TurnStarts never move it. A prompt inside an OPEN turn (after its
+    TurnStart, before its TurnEnd — a Codex steered prompt) belongs to that turn's
+    page, so it takes the current ordinal; a Claude TurnStart/TurnEnd pair always sits
+    in one entry, so its prompts are always between turns. Offsets are UTF-16 code
+    units. Past *limit* hits, ``truncated`` is True."""
     evs = [e for e in (events or ()) if isinstance(e, dict)]
     # Ordinal + id of each main-thread TurnStart, by position, so a prompt can look
     # ahead to the turn it belongs to.
@@ -220,10 +234,15 @@ def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], boo
     hits: list[dict] = []
     nxt = 0                        # index into `starts` of the first start after i
     current: tuple[int, str | None] = (0, None)
+    turn_open = False              # between a main-thread TurnStart and its TurnEnd
     for i, e in enumerate(evs):
         while nxt < len(starts) and starts[nxt][0] <= i:
             current = (starts[nxt][1], starts[nxt][2])
+            turn_open = True
             nxt += 1
+        if e.get("type") == "turnEnd" and not e.get("parentToolUseId"):
+            turn_open = False
+            continue
         found = searchable_event(e)
         if found is None or e.get("ownerPrefix"):
             continue
@@ -233,13 +252,17 @@ def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], boo
             continue
         if len(hits) >= limit:
             return hits, True
-        if role == "user":
+        if role == "user" and turn_open:
+            hit_ordinal = current[0]
+            turn_id = e.get("turnId")
+        elif role == "user":
             hit_ordinal = starts[nxt][1] if nxt < len(starts) else ordinal + 1
             turn_id = e.get("turnId")
         else:
             hit_ordinal = current[0]
             turn_id = e.get("turnId") or current[1]
         snippet, m_start, m_end = _snippet(text, *_match_span(text, terms[0]))
+        m_start, m_end = _utf16(snippet, m_start), _utf16(snippet, m_end)
         hits.append({"turnId": turn_id, "ordinal": hit_ordinal, "role": role,
                      "snippet": snippet, "matchStart": m_start, "matchEnd": m_end})
     return hits, False

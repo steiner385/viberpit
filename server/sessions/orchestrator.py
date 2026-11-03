@@ -27085,16 +27085,19 @@ class SessionOrchestrator:
         Walks the session's FULL replay (``transcript_window(limit=None)``), never the
         JSONL: only the replay honours a rewind's cut and a fork's source, and its
         TurnStarts are the cursor space the hits' ordinals must page in. Matching and
-        scope are ``search.search_events``. ``KeyError`` for a session this daemon has
-        neither a record nor a row for. Never raises otherwise: a replay that cannot be
-        read is the empty result, at INFO — the user sees "no matches", nothing broke.
+        scope are ``search.search_events``.
+
+        ``KeyError`` for a session this daemon has neither a record nor a row for —
+        asked only once the replay found nothing, so a session with history costs no
+        extra row read. Never raises otherwise: a replay that cannot be read, or an
+        existence check the DB cannot answer, is the empty result at INFO — the user
+        sees "no matches", never a 404 for a session that may well exist.
         """
+        from sqlalchemy import select as sa_select
+
         from server.sessions.search import SEARCH_MAX_LIMIT, parse_terms, search_events
 
         empty = {"hits": [], "truncated": False, "totalTurns": 0}
-        if (session_id not in self._records and session_id not in self._drivers
-                and await self._row_engine_ref(session_id) is None):
-            raise KeyError(f"No session with id {session_id}")
         terms = parse_terms(q)
         if not terms:
             return empty
@@ -27107,6 +27110,18 @@ class SessionOrchestrator:
                      session_id, type(exc).__name__)
             return empty
         if window is None:
+            if session_id not in self._records and session_id not in self._drivers:
+                try:
+                    async with db_session() as db:
+                        found = (await db.execute(
+                            sa_select(DbSession.id).where(DbSession.id == session_id)
+                        )).first()
+                except Exception as exc:
+                    log.info("session.transcript_search id=%s existence check failed: %s",
+                             session_id, type(exc).__name__)
+                    return empty
+                if found is None:
+                    raise KeyError(f"No session with id {session_id}")
             log.info("session.transcript_search id=%s no readable history", session_id)
             return empty
         hits, truncated = search_events(
