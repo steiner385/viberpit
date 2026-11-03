@@ -83,11 +83,18 @@ const ComposerAttachContext = React.createContext<React.RefObject<ComposerAttach
   null,
 )
 
-/** The open session's transcript scroll (Alt+↑ / Alt+↓, D-10). */
+/** The open session's transcript scroll (Alt+↑ / Alt+↓, D-10; ⌘F, D-11). */
 export interface TranscriptJump {
   /** Scroll to the previous / next own prompt relative to the topmost visible
    *  row; nothing past either end. Unpins stick-to-bottom, moves no focus. */
   jumpPrompt: (dir: 'prev' | 'next') => void
+  /** Scroll to the turn a transcript search hit names — by id (role-scoped), else
+   *  by ordinal — centred and held like a prompt jump. A turn older than the loaded
+   *  history is paged in first, contiguously, through the transcript's own
+   *  load-older path (at most 2000 turns back). */
+  scrollToTurn: (turnId: string, ordinal: number, role?: 'user' | 'assistant') => void
+  /** ⌘F: open the search bar, or refocus and select its query when already open. */
+  openSearch: () => void
 }
 
 /**

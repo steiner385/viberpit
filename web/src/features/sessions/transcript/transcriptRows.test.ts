@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { flattenRows, buildRenderRows, ownPromptRowIndex } from './transcriptRows'
-import type { Turn as TurnType, RotationMarker, RewindMarker } from '@/session/reducer'
+import { flattenRows, buildRenderRows, ownPromptRowIndex, searchHitRowIndex } from './transcriptRows'
+import type { Turn as TurnType, Turn, RotationMarker, RewindMarker } from '@/session/reducer'
 
 const turn = (id: string, model?: string | null): TurnType => ({ id, role: 'assistant', blocks: [], model })
 const rot = (afterTurnId: string | null): RotationMarker => ({ from: 'a', to: 'b', afterTurnId })
@@ -159,5 +159,42 @@ describe('ownPromptRowIndex — the Alt+↑ / Alt+↓ target', () => {
     expect(ownPromptRowIndex(rows, 1, 'prev')).toBeNull()
     expect(ownPromptRowIndex(rows, 6, 'next')).toBeNull()
     expect(ownPromptRowIndex([], 0, 'next')).toBeNull()
+  })
+})
+
+// ── ⌘F: which row a search hit lands on (D-11) ──────────────────────────────
+
+describe('searchHitRowIndex', () => {
+  const t = (id: string, role: 'user' | 'assistant', extra: Partial<Turn> = {}): Turn =>
+    ({ id, role, blocks: [{ kind: 'text', id: `${id}:x`, text: id }], ...extra })
+  // Rows: begin(0), u1(1), a1#5(2), u2(3), a2#6(4)
+  const turns = [t('u1', 'user'), t('a1', 'assistant', { ordinal: 5 }), t('u2', 'user'), t('a2', 'assistant', { ordinal: 6 })]
+  const rows = buildRenderRows(turns, [], { earliestTurn: 0 })
+
+  it('finds the turn by id and role', () => {
+    expect(searchHitRowIndex(rows, { turnId: 'u2', ordinal: 6, role: 'user' })).toBe(3)
+    expect(searchHitRowIndex(rows, { turnId: 'a1', ordinal: 5, role: 'assistant' })).toBe(2)
+  })
+
+  it('finds a Codex turn whose id was role-suffixed or kept as its engine id', () => {
+    const codex = [
+      t('c1#user', 'user'), t('c1', 'assistant', { ordinal: 0 }),
+      t('x', 'assistant', { ordinal: 1, engineTurnId: 'c2' }),
+    ]
+    const r = buildRenderRows(codex, [])
+    expect(searchHitRowIndex(r, { turnId: 'c1', ordinal: 0, role: 'user' })).toBe(0)
+    expect(searchHitRowIndex(r, { turnId: 'c1', ordinal: 0, role: 'assistant' })).toBe(1)
+    expect(searchHitRowIndex(r, { turnId: 'c2', ordinal: 1, role: 'assistant' })).toBe(2)
+  })
+
+  it('falls back to the ordinal when the id is not rendered', () => {
+    // An assistant hit → the turn holding that ordinal.
+    expect(searchHitRowIndex(rows, { turnId: 'gone', ordinal: 6, role: 'assistant' })).toBe(4)
+    // A user hit → the prompt that opened that ordinal's turn.
+    expect(searchHitRowIndex(rows, { turnId: 'gone', ordinal: 6, role: 'user' })).toBe(3)
+  })
+
+  it('is null when neither the id nor the ordinal is loaded', () => {
+    expect(searchHitRowIndex(rows, { turnId: 'gone', ordinal: 2, role: 'assistant' })).toBeNull()
   })
 })

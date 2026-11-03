@@ -100,6 +100,25 @@ export function focusInOtherTextEntry(el: Element | null): boolean {
   return asTextEntry(el) !== null && !isSessionComposer(el)
 }
 
+/**
+ * Marks the open SESSION's transcript pane — the scroller and the ⌘F search bar
+ * above it (`TranscriptView`, session variant only; the assistant drawer's is a
+ * different conversation).
+ */
+export const SESSION_TRANSCRIPT_ATTR = 'data-session-transcript'
+
+/**
+ * True ⇒ ⌘F / Ctrl+F may search the transcript from this focus (D-11): inside the
+ * transcript pane (its scroller takes focus on click, and the bar's own input is
+ * there), in the session composer, or nowhere (`document.body`). Anywhere else —
+ * another field, the list, a tab panel, a button in the chrome — the key is left
+ * to the browser's own find.
+ */
+export function focusAllowsTranscriptSearch(el: Element | null): boolean {
+  if (el === null || el === document.body || el === document.documentElement) return true
+  return isSessionComposer(el) || el.closest(`[${SESSION_TRANSCRIPT_ATTR}]`) !== null
+}
+
 /** The new-session prompt's id (`DispatchBar`) — the dock's textarea while no session is open. */
 export const DISPATCH_PROMPT_ID = 'dispatch-bar-prompt'
 

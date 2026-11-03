@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useContext } from 'react'
 import { User } from 'lucide-react'
 import type { Turn as TurnType, SubThread } from '@/session/reducer'
 import type { PromptContext } from '@/session/events'
@@ -20,6 +20,7 @@ import { BlockRow } from './BlockRow'
 import { TurnFeedback } from './TurnFeedback'
 import { MessageActions } from './MessageActions'
 import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
+import { TranscriptSearchContext, type SearchHighlight } from './search/TranscriptSearchContext'
 
 interface Props {
   turn: TurnType
@@ -76,6 +77,17 @@ export const Turn = memo(function Turn({
   const items = groupBlocks(visibleBlocks)
   const lastIdx = items.length - 1
 
+  // The transcript search (D-11): every prose block is marked; the current hit's
+  // stronger mark goes to this turn's FIRST text block holding the lead term — the
+  // server places a hit at the first term's first occurrence.
+  const search = useContext(TranscriptSearchContext)
+  const lead = search && search.currentTurnId === turn.id ? search.terms[0] : undefined
+  const currentBlockId = lead === undefined
+    ? null
+    : visibleBlocks.find((b) => b.kind === 'text' && b.text.toLowerCase().includes(lead))?.id ?? null
+  const highlightFor = (blockId: string): SearchHighlight | undefined =>
+    search ? { terms: search.terms, current: blockId === currentBlockId } : undefined
+
   // An empty turn (e.g. a turnStart with no content yet, or a turn whose only
   // tool was a skipped AskUserQuestion) must not render a padded gap.
   if (items.length === 0) return null
@@ -101,8 +113,11 @@ export const Turn = memo(function Turn({
         if (item.kind === 'toolGroup') {
           // The live tail is the final render item of the last turn.
           const isLiveTail = isLastTurn && idx === lastIdx
+          // Tool rows are never searched — and a sub-agent transcript nested in one
+          // renders `Turn` again, so the search is withdrawn for the whole subtree.
           return (
             <BlockRow key={item.tools[0].id} ts={rowTs}>
+              <TranscriptSearchContext.Provider value={null}>
               <ToolGroup
                 tools={item.tools}
                 isLiveTail={isLiveTail}
@@ -112,6 +127,7 @@ export const Turn = memo(function Turn({
                 subAgents={subAgents}
                 sessionModel={sessionModel}
               />
+              </TranscriptSearchContext.Provider>
             </BlockRow>
           )
         }
@@ -129,15 +145,15 @@ export const Turn = memo(function Turn({
               return (
                 <BlockRow key={block.id} ts={rowTs}>
                   <div className={PROSE_MEASURE}>
-                    <AssistantText text={block.text} streaming={block.id === streamingBlockId} />
+                    <AssistantText text={block.text} streaming={block.id === streamingBlockId} highlight={highlightFor(block.id)} />
                   </div>
                 </BlockRow>
               )
             // A prompt nobody typed leaves the right-aligned "you" lane entirely
             // rather than being re-tinted inside it (see AutomatedPrompt).
             return <BlockRow key={block.id} ts={rowTs}>{turn.origin
-              ? <AutomatedPrompt origin={turn.origin} text={block.text} />
-              : <UserBubble text={block.text} />}</BlockRow>
+              ? <AutomatedPrompt origin={turn.origin} text={block.text} highlight={highlightFor(block.id)} />
+              : <UserBubble text={block.text} highlight={highlightFor(block.id)} />}</BlockRow>
           case 'image':
             return <BlockRow key={block.id} ts={rowTs}>{turn.origin
               ? <AutomatedPrompt origin={turn.origin} images={block.images} />
@@ -146,7 +162,7 @@ export const Turn = memo(function Turn({
             return <BlockRow key={block.id} ts={rowTs}><ThinkingBlock text={block.text} defaultCollapsed={thinkingCollapsed} resetKey={viewModeEpoch} /></BlockRow>
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <BlockRow key={block.id} ts={rowTs}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} resetKey={viewModeEpoch} subThread={subAgents?.[block.toolId]} sessionModel={sessionModel} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><TranscriptSearchContext.Provider value={null}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} resetKey={viewModeEpoch} subThread={subAgents?.[block.toolId]} sessionModel={sessionModel} /></TranscriptSearchContext.Provider></BlockRow>
           case 'question':
             // A LIVE open question is rendered by the pinned PendingQuestionPanel
             // above the composer — omit it inline to avoid a duplicate. Historical

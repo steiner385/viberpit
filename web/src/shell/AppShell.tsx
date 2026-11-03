@@ -342,6 +342,7 @@ function AppShellInner() {
       interactive: mode !== 'kiosk',
       active,
       yieldsToTextEntry: textEntryClaimsKey(e, active),
+      transcriptOpen: transcriptJump.current !== null,
     }
   }
 
@@ -372,6 +373,7 @@ function AppShellInner() {
     'session.listNext': () => workspace.stepSession('next'),
     'transcript.promptPrev': () => transcriptJump.current?.jumpPrompt('prev'),
     'transcript.promptNext': () => transcriptJump.current?.jumpPrompt('next'),
+    'transcript.search': () => transcriptJump.current?.openSearch(),
   }
 
   // ── the ⌘K palette (D-10) ──

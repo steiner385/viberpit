@@ -3,8 +3,9 @@ import { cn } from '@/lib/utils'
 import type { ImageRef } from '@/lib/toolContent'
 import type { PromptOrigin } from '@/session/events'
 import { originLabel, originTitle } from '@/session/promptOrigin'
+import { HighlightedText, type SearchHighlight } from './search/TranscriptSearchContext'
 
-interface Props { origin: PromptOrigin; text?: string; images?: ImageRef[] }
+interface Props { origin: PromptOrigin; text?: string; images?: ImageRef[]; highlight?: SearchHighlight }
 
 /**
  * A prompt that entered the session without anyone typing it — an autopilot nudge, the
@@ -20,7 +21,7 @@ interface Props { origin: PromptOrigin; text?: string; images?: ImageRef[] }
  * The `Bot` glyph and the `info` tone are the same automation vocabulary the session
  * list's provenance marker uses (`SessionCard`), so the two surfaces teach each other.
  */
-export function AutomatedPrompt({ origin, text, images }: Props) {
+export function AutomatedPrompt({ origin, text, images, highlight }: Props) {
   return (
     <div
       data-testid="automated-prompt"
@@ -42,7 +43,7 @@ export function AutomatedPrompt({ origin, text, images }: Props) {
           <span className="font-normal text-ink-muted">· reconstructed</span>
         )}
       </div>
-      <div className="whitespace-pre-wrap text-sm text-ink">{text}</div>
+      <div className="whitespace-pre-wrap text-sm text-ink">{text !== undefined && <HighlightedText text={text} highlight={highlight} />}</div>
       {images && images.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {images.map((img, i) => (

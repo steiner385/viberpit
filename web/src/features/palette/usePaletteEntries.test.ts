@@ -11,7 +11,8 @@ import {
 
 const ctx = (over: Partial<ShortcutContext> = {}): ShortcutContext => ({
   overlayOpen: false, hasOpenAction: false, hasDeniablePermission: false, sessionOpen: false,
-  sessionBusy: false, inSessions: true, interactive: true, active: null, yieldsToTextEntry: false, ...over,
+  sessionBusy: false, inSessions: true, interactive: true, active: null, yieldsToTextEntry: false,
+  transcriptOpen: false, ...over,
 })
 
 const live = (id: string, over: Partial<Session> = {}): Session => ({
@@ -99,6 +100,20 @@ describe('buildPaletteEntries', () => {
     expect(settings.map((e) => e.label)).toEqual(SETTINGS_META.map((m) => m.label))
     settings.find((e) => e.label === 'Hooks')!.run!()
     expect(h.navigate).toHaveBeenCalledWith('/settings/hooks')
+  })
+
+  it('lists "Search this transcript" (⌘F) only while a session\'s transcript is open', () => {
+    const actions = { 'transcript.search': vi.fn() }
+    const label = (c: ShortcutContext) =>
+      inSection(buildPaletteEntries(host({ context: c, actions }), NO_DATA), 'actions').map((e) => e.label)
+    expect(label(ctx())).not.toContain('Search this conversation')
+    expect(label(ctx({ sessionOpen: true, transcriptOpen: false }))).not.toContain('Search this conversation')
+    const open = inSection(
+      buildPaletteEntries(host({ context: ctx({ sessionOpen: true, transcriptOpen: true }), actions }), NO_DATA), 'actions')
+    const entry = open.find((e) => e.label === 'Search this conversation')!
+    expect(entry).toBeDefined()
+    entry.run!()
+    expect(actions['transcript.search']).toHaveBeenCalled()
   })
 
   it('kiosk hides every section kiosk cannot reach, and every action whose `when` fails', () => {

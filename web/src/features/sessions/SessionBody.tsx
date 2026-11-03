@@ -247,6 +247,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                                      appliedRewindId={rt.state.rewind?.rewindId ?? null}
                                      onExpired={rt.dismissRewind}>
                       <TranscriptView
+                        sessionId={rt.sessionId}
                         turns={rt.state.turns}
                         rotations={rt.state.rotations}
                         rewind={rt.state.rewind}
