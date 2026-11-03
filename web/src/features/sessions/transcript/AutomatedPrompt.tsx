@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils'
 import type { ImageRef } from '@/lib/toolContent'
 import type { PromptOrigin } from '@/session/events'
 import { originLabel, originTitle } from '@/session/promptOrigin'
-import { HighlightedText, type SearchHighlight } from './search/TranscriptSearchContext'
+import type { SearchHighlight } from './search/TranscriptSearchContext'
 
 interface Props { origin: PromptOrigin; text?: string; images?: ImageRef[]; highlight?: SearchHighlight }
 
@@ -43,7 +43,7 @@ export function AutomatedPrompt({ origin, text, images, highlight }: Props) {
           <span className="font-normal text-ink-muted">· reconstructed</span>
         )}
       </div>
-      <div className="whitespace-pre-wrap text-sm text-ink">{text !== undefined && <HighlightedText text={text} highlight={highlight} />}</div>
+      <div className="whitespace-pre-wrap text-sm text-ink">{text !== undefined && (highlight ? highlight.kit.renderText(text, highlight) : text)}</div>
       {images && images.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {images.map((img, i) => (

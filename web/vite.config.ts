@@ -39,6 +39,29 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    // React (react, react-dom, scheduler, the JSX runtime) and lucide's icon core
+    // pinned into ONE named chunk. Without it, which chunk they live in depends on
+    // what every lazy chunk happens to import: the ⌘F search kit (D-11) imports
+    // only React, and that alone split React's JSX runtime out of the shared chunk
+    // into a preloaded chunk of its own, re-imported by ~30 chunks. Measured on the
+    // D-11 build: initial 300.4 → 300.1 kB gzip, entry 160.3 → 106.2 (React now
+    // ships in this chunk, preloaded, instead of in the entry). Only ever narrow
+    // this to modules every page needs — a group pulls its modules into the
+    // initial load.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: 'vendor-react',
+              test: /[\\/]node_modules[\\/](?:react|react-dom|scheduler)[\\/]|[\\/]node_modules[\\/]lucide-react[\\/]dist[\\/]esm[\\/](?:createLucideIcon|Icon|defaultAttributes|context|shared[\\/])/,
+            },
+          ],
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       '/api': {

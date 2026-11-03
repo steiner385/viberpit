@@ -1,4 +1,4 @@
-import { turnHoldsEngineTurn, type Turn as TurnType, type RotationMarker, type RewindMarker } from '@/session/reducer'
+import type { Turn as TurnType, RotationMarker, RewindMarker } from '@/session/reducer'
 import { statusTier } from '@/session/statusTier'
 import { changedFiles, lastLogicalTurn, summaryOutcome, type ChangedFile, type SummaryOutcome } from '@/session/turnSummary'
 
@@ -148,36 +148,4 @@ export function ownPromptRowIndex(rows: readonly RenderRow[], from: number, dir:
     if (row.kind === 'turn' && row.turn.role === 'user' && !row.turn.origin) return i
   }
   return null
-}
-
-/** What `searchHitRowIndex` needs of a transcript search hit (`api/transcript` `SearchHit`). */
-export interface SearchHitTarget {
-  turnId: string
-  ordinal: number
-  role: 'user' | 'assistant'
-}
-
-/**
- * The row a transcript search hit (D-11) lands on, or null when it is not loaded.
- *
- * By id first: the hit's `turnId` is the user message's id or the assistant turn's
- * id, matched role-scoped (`turnHoldsEngineTurn`, the reducer's own rule). Else by
- * ordinal — an id the client re-keyed (a Codex steering prompt's source uuid): an
- * assistant hit lands on the turn holding that ordinal, a user hit on the prompt
- * that opened it (the nearest user turn above), falling back to the turn itself.
- */
-export function searchHitRowIndex(rows: readonly RenderRow[], hit: SearchHitTarget): number | null {
-  const byId = rows.findIndex((r) => r.kind === 'turn' && turnHoldsEngineTurn(r.turn, hit.turnId, hit.role))
-  if (byId !== -1) return byId
-  const byOrdinal = rows.findIndex((r) => r.kind === 'turn' && r.turn.role === 'assistant' && r.turn.ordinal === hit.ordinal)
-  if (byOrdinal === -1) return null
-  if (hit.role === 'user') {
-    for (let i = byOrdinal - 1; i >= 0; i--) {
-      const r = rows[i]
-      if (r.kind !== 'turn') continue
-      if (r.turn.role === 'user') return i
-      if (r.turn.ordinal !== undefined && r.turn.ordinal !== hit.ordinal) break
-    }
-  }
-  return byOrdinal
 }

@@ -1,10 +1,18 @@
-import { afterEach, describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, screen, act } from '@testing-library/react'
 import { elementScroll, type Virtualizer, type VirtualizerOptions } from '@tanstack/react-virtual'
 import type { RefObject } from 'react'
 import { TranscriptView } from './TranscriptView'
 import type { Turn } from '@/session/reducer'
 import { SessionGestureProvider, useTranscriptJumpHandle, type TranscriptJump } from '@/shell/sessionGestures'
+import { loadSearchKit } from './search/loadSearchKit'
+
+// The jump's dead ends toast (D-11).
+const toastInfo = vi.hoisted(() => vi.fn())
+vi.mock('sonner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('sonner')>()
+  return { ...actual, toast: Object.assign(vi.fn(), actual.toast, { info: toastInfo }) }
+})
 
 type Opts = VirtualizerOptions<HTMLDivElement, Element>
 
@@ -365,6 +373,8 @@ describe('TranscriptView scrollToTurn', () => {
     return null
   }
 
+  beforeEach(() => { toastInfo.mockReset() })
+
   type ViewProps = Partial<React.ComponentProps<typeof TranscriptView>>
   function renderPaged(props: ViewProps) {
     const onLoadOlder = vi.fn()
@@ -379,11 +389,13 @@ describe('TranscriptView scrollToTurn', () => {
     let scrollToIndex = spy()
     const rerender = (p: ViewProps) => {
       view.rerender(tree({ ...props, ...p }))
-      // A rerender keeps the same virtualizer instance; re-spy only if it changed.
       if (!vi.isMockFunction(capturedVirtualizer!.scrollToIndex)) scrollToIndex = spy()
     }
-    const jump = (turnId: string, ordinal: number, role: 'user' | 'assistant' = 'assistant') =>
+    /** Start a jump and let the search kit (lazy) load — the jump runs once it has. */
+    const jump = async (turnId: string, ordinal: number, role: 'user' | 'assistant' = 'assistant') => {
       act(() => { handle!.current!.scrollToTurn(turnId, ordinal, role) })
+      await act(async () => { await loadSearchKit() })
+    }
     return { ...view, onLoadOlder, rerender, jump, scrollToIndex: () => scrollToIndex }
   }
 
@@ -393,18 +405,18 @@ describe('TranscriptView scrollToTurn', () => {
     return Array.from({ length: count }, (_, i) => getItemKey(i)).indexOf(`turn-${id}`)
   }
 
-  it('centres a loaded hit\'s row and holds it there, unpinned', () => {
+  it('centres a loaded hit\'s row and holds it there, unpinned', async () => {
     const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
-    t.jump('a2', 2)
+    await t.jump('a2', 2)
     expect(t.scrollToIndex()).toHaveBeenLastCalledWith(rowOf('a2'), { align: 'center' })
     expect(capturedVirtualizer!.shouldAdjustScrollPositionOnItemSizeChange).toBeDefined()
     expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeInTheDocument()
     expect(t.onLoadOlder).not.toHaveBeenCalled()
   })
 
-  it('holds every row above the hit — not just above the viewport — so a centred hit stays put', () => {
+  it('holds every row above the hit — not just above the viewport — so a centred hit stays put', async () => {
     const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
-    t.jump('a3', 3)
+    await t.jump('a3', 3)
     const v = capturedVirtualizer!
     const hold = v.shouldAdjustScrollPositionOnItemSizeChange!
     const target = rowOf('a3')
@@ -415,21 +427,15 @@ describe('TranscriptView scrollToTurn', () => {
     expect(hold(item(target + 1), -50, v)).toBe(false)
   })
 
-  it('a user hit lands on the prompt itself', () => {
+  it('a user hit lands on the prompt itself', async () => {
     const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
-    t.jump('u3', 3, 'user')
+    await t.jump('u3', 3, 'user')
     expect(t.scrollToIndex()).toHaveBeenLastCalledWith(rowOf('u3'), { align: 'center' })
   })
 
-  it('falls back to the ordinal when the hit\'s id is not a rendered turn', () => {
-    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
-    t.jump('renamed', 4)
-    expect(t.scrollToIndex()).toHaveBeenLastCalledWith(rowOf('a4'), { align: 'center' })
-  })
-
-  it('pages older history in through onLoadOlder until the hit is loaded, then scrolls to it', () => {
+  it('pages older history in through onLoadOlder until the hit is loaded, then scrolls to it', async () => {
     const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
-    t.jump('a3', 3)
+    await t.jump('a3', 3)
     expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
     expect(t.scrollToIndex()).not.toHaveBeenCalled()
 
@@ -447,27 +453,80 @@ describe('TranscriptView scrollToTurn', () => {
     expect(t.scrollToIndex()).toHaveBeenLastCalledWith(rowOf('a3'), { align: 'center' })
   })
 
-  it('stops paging when a page brings nothing (a failed fetch) rather than looping', () => {
+  it('Scroll to bottom mid-paging cancels the jump: no more pages, no yank back up', async () => {
     const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
-    t.jump('a3', 3)
+    await t.jump('a3', 3)
+    t.rerender({ loadingOlder: true }) // the first page is in flight…
+    fireEvent.click(screen.getByRole('button', { name: 'Scroll to bottom' })) // …the user takes over
+    t.rerender({ turns: exchanges(6, 12), earliestTurn: 6, loadingOlder: false })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+    // Even with the hit's turn loaded later, nothing scrolls to it.
+    t.rerender({ turns: exchanges(2, 12), earliestTurn: 2 })
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull()
+  })
+
+  it('a user scroll mid-paging cancels the jump too', async () => {
+    const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
+    await t.jump('a3', 3)
+    t.rerender({ loadingOlder: true })
+    await act(nextFrame)
+    const scroller = screen.getByTestId('transcript-scroll')
+    Object.defineProperty(scroller, 'scrollTop', { value: 500, writable: true, configurable: true })
+    fireEvent.scroll(scroller)
+    t.rerender({ turns: exchanges(2, 12), earliestTurn: 2, loadingOlder: false })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+  })
+
+  it('a page that brings nothing (a failed fetch) ends the jump, and says so', async () => {
+    const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
+    await t.jump('a3', 3)
     t.rerender({ loadingOlder: true })
     t.rerender({ loadingOlder: false }) // the fetch failed: earliestTurn unchanged
-    t.rerender({ turns: [...exchanges(10, 12)] }) // and any later render…
-    expect(t.onLoadOlder).toHaveBeenCalledTimes(1) // …does not ask again
+    t.rerender({ turns: [...exchanges(10, 12)] })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
     expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(toastInfo).toHaveBeenCalledTimes(1)
   })
 
-  it('never pages more than 2000 turns back', () => {
+  it('more than 2000 turns back is refused up front, and says so', async () => {
     const t = renderPaged({ turns: exchanges(2500, 2502), earliestTurn: 2500 })
-    t.jump('a5', 5)
+    await t.jump('a5', 5)
     expect(t.onLoadOlder).not.toHaveBeenCalled()
     expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(toastInfo).toHaveBeenCalledWith(expect.stringMatching(/too far back/))
   })
 
-  it('a hit at exactly 2000 turns back still pages', () => {
-    const t = renderPaged({ turns: exchanges(2005, 2006), earliestTurn: 2005 })
-    t.jump('a5', 5)
-    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+  it('a loaded hit with no row to land on says so instead of doing nothing', async () => {
+    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
+    await t.jump('gone', 9)
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(toastInfo).toHaveBeenCalledWith(expect.stringMatching(/find that match/))
+  })
+
+  it('centres a TALL turn on its current mark, not on the row\'s middle', async () => {
+    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
+    const v = capturedVirtualizer!
+    const scrollToOffset = vi.spyOn(v, 'scrollToOffset').mockImplementation(() => {})
+    const scroller = screen.getByTestId('transcript-scroll')
+    Object.defineProperty(scroller, 'clientHeight', { value: 400, configurable: true })
+    await t.jump('a2', 2)
+    // jsdom lays nothing out: stand in the hit's row — 2000px tall — with its
+    // current mark 100px below the row's top.
+    const index = rowOf('a2')
+    const row = document.createElement('div')
+    row.setAttribute('data-index', String(index))
+    row.getBoundingClientRect = () => ({ top: 1000, height: 2000 }) as DOMRect
+    const mark = document.createElement('mark')
+    mark.setAttribute('data-search-current', 'true')
+    mark.getBoundingClientRect = () => ({ top: 1100, height: 20 }) as DOMRect
+    row.appendChild(mark)
+    scroller.prepend(row)
+    await act(nextFrame)
+    await act(nextFrame)
+    const start = v.measurementsCache[index].start
+    expect(scrollToOffset).toHaveBeenLastCalledWith(start + 100 + 10 - 200)
   })
 })
 

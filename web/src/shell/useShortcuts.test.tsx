@@ -1079,6 +1079,19 @@ describe('⌘F / Ctrl+F opens the transcript search', () => {
     expect(app.path()).toBe('/sessions/s1')
   })
 
+  it('the ⌘K palette offers it with a transcript open — whatever had focus when ⌘K was pressed', async () => {
+    const user = userEvent.setup()
+    await renderTranscript()
+    // From the list search, where ⌘F itself is the browser's: the focus gate is the
+    // KEY's, so the palette (which has focus by the time the action runs) lists it.
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    press(search, { key: 'k', code: 'KeyK', ctrlKey: true })
+    const option = await screen.findByRole('option', { name: /Search this conversation/ })
+    await user.click(option)
+    expect(await screen.findByRole('searchbox', { name: 'Search this transcript' })).toBeInTheDocument()
+  })
+
   it('NOT from another text entry (the list search) — the browser finds instead', async () => {
     const user = userEvent.setup()
     await renderTranscript()

@@ -1,58 +1,81 @@
-/* eslint-disable react-refresh/only-export-components -- the context, its value
-   type and the one renderer that reads a block's highlight are one contract. */
 /**
- * The transcript search's render-time highlight (D-11).
+ * The transcript search's render-time highlight (D-11) — the EAGER half.
  *
- * `TranscriptView` provides the live query's terms and the turn holding the
- * current hit; `Turn` reads them and hands each prose block a `SearchHighlight`.
- * Only prose is highlighted — user prompts and assistant text/markdown. A tool
- * row re-provides `null` (`Turn`), so a sub-agent transcript nested in a tool card
- * never highlights: the server's search excludes sub-agent events, and a mark
- * there would be a hit the counter never counted.
+ * Only the context and its types live here: every function that finds or draws a
+ * match (`highlightRanges`, the plain-text and markdown renderers, the jump) is in
+ * the lazy search kit (`searchKit`), loaded with the ⌘F bar and handed down through
+ * this context as `kit`. A transcript nobody searches never downloads any of it;
+ * the eager renderers only null-check the context.
+ *
+ * `TranscriptView` provides the query's terms, the current hit and the kit; `Turn`
+ * reads them and hands each prose block a `SearchHighlight`. Only prose is
+ * highlighted — user prompts and assistant text/markdown. A tool row re-provides
+ * `null` (`Turn`), so a sub-agent transcript nested in a tool card never
+ * highlights: the server's search excludes sub-agent events.
  */
-import { createContext } from 'react'
-import { highlightSegments } from './highlightRanges'
+import { createContext, type ReactNode } from 'react'
+import type { Options } from 'react-markdown'
+
+/** A rehype plugin entry, as `MarkdownDoc` takes it. */
+export type RehypePluginEntry = NonNullable<Options['rehypePlugins']>[number]
+
+/** The search kit's render functions (`searchRender`), reached through the context. */
+export interface SearchRenderKit {
+  /** Plain text with its marks. */
+  renderText: (text: string, highlight: SearchHighlight) => ReactNode
+  /** The markdown text-node pass for `highlight`. */
+  rehypePlugin: (highlight: SearchHighlight) => RehypePluginEntry
+  /** How many marked runs of `text` hold the lead (first) term — the unit the
+   *  current hit is counted in. */
+  leadRuns: (text: string, terms: readonly string[]) => number
+}
+
+/** The current hit: the rendered turn it landed on, and which lead-term run in that
+ *  turn (0-based, across its prose blocks in order) is the match. */
+export interface SearchCurrent {
+  turnId: string
+  lead: number
+}
 
 export interface TranscriptSearchState {
-  /** The query's terms (`parseSearchTerms`), non-empty. */
+  /** The query's terms, non-empty. */
   terms: readonly string[]
-  /** The id of the rendered turn the current hit scrolled to, if any. */
-  currentTurnId: string | null
+  current: SearchCurrent | null
+  kit: SearchRenderKit
 }
 
 /** Null: no search is open, or this subtree is not searchable prose. */
 export const TranscriptSearchContext = createContext<TranscriptSearchState | null>(null)
 
-/** One prose block's highlight: the terms, and whether it holds the current hit. */
+/** One prose block's highlight. */
 export interface SearchHighlight {
   terms: readonly string[]
-  /** This block holds the current hit: its first lead-term mark is styled stronger. */
-  current: boolean
+  /** Which lead-term run IN THIS BLOCK is the current hit, or null for none. */
+  currentLead: number | null
+  kit: SearchRenderKit
 }
 
-/** Every match: a translucent warning tone, so it shows on every prose surface — the
- *  canvas, the accent-washed user bubble, the info-washed automated prompt and the
- *  warning-washed insight callout alike — in both themes. */
-export const MARK_CLASS = 'rounded-sm bg-warning/30 text-ink'
-/** The current hit: the solid strong tone with its on-strong ink (AA), so it stands
- *  out among the other marks. */
-export const MARK_CURRENT_CLASS = 'rounded-sm bg-warning-strong text-on-strong'
-/** Set on the current hit's `<mark>`, for tests and e2e to find it. */
-export const MARK_CURRENT_ATTR = 'data-search-current'
-
-/** Plain text with the search's marks — the user bubble, an automated prompt. */
-export function HighlightedText({ text, highlight }: { text: string; highlight?: SearchHighlight }) {
-  if (!highlight || highlight.terms.length === 0) return <>{text}</>
-  const segs = highlightSegments(text, highlight.terms)
-  const currentAt = highlight.current ? segs.findIndex((s) => s.mark && s.lead) : -1
-  return (
-    <>
-      {segs.map((seg, i) => {
-        if (!seg.mark) return seg.text
-        return i === currentAt
-          ? <mark key={i} className={MARK_CURRENT_CLASS} {...{ [MARK_CURRENT_ATTR]: 'true' }}>{seg.text}</mark>
-          : <mark key={i} className={MARK_CLASS}>{seg.text}</mark>
-      })}
-    </>
-  )
+/**
+ * Split a turn-level current lead across consecutive prose texts: the highlight for
+ * each, in order. Run `n` of the turn lands in the text holding it, re-counted from
+ * that text's own start.
+ */
+export function splitHighlight(
+  texts: readonly string[],
+  terms: readonly string[],
+  lead: number | null,
+  kit: SearchRenderKit,
+): SearchHighlight[] {
+  let left = lead
+  return texts.map((text) => {
+    if (left === null) return { terms, currentLead: null, kit }
+    const runs = kit.leadRuns(text, terms)
+    if (left < runs) {
+      const here = left
+      left = null
+      return { terms, currentLead: here, kit }
+    }
+    left -= runs
+    return { terms, currentLead: null, kit }
+  })
 }

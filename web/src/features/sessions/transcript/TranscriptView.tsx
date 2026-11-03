@@ -2,7 +2,7 @@ import { useRef, useEffect, useCallback, useMemo, useState, lazy, Suspense } fro
 import { toast } from 'sonner'
 import { fetchTranscriptSearch } from '@/api/transcript'
 import { useVirtualizer, elementScroll, type Virtualizer, type VirtualizerOptions } from '@tanstack/react-virtual'
-import type { Turn as TurnType, RotationMarker, RewindMarker, SubThread } from '@/session/reducer'
+import { turnHoldsEngineTurn, type Turn as TurnType, type RotationMarker, type RewindMarker, type SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
@@ -11,33 +11,23 @@ import { RewindDividerSlot } from '@/features/sessions/rewind/RewindDividerSlot'
 import { TurnSummaryCard, type TurnSummaryInputs } from './TurnSummaryCard'
 import { modelName } from '@/session/modelName'
 import { failedPrompts } from '@/session/rewindTarget'
-import { buildRenderRows, ownPromptRowIndex, searchHitRowIndex, type RenderRow, type SearchHitTarget } from './transcriptRows'
+import { buildRenderRows, ownPromptRowIndex, type RenderRow } from './transcriptRows'
 import { prefetchMarkdown } from './markdownChunk'
 import { useStickToBottom } from './useStickToBottom'
 import { ScrollToBottomButton } from './ScrollToBottomButton'
 import { useTranscriptJumpRegistration } from '@/shell/sessionGestures'
 import { SESSION_TRANSCRIPT_ATTR } from '@/lib/detachKeyGuard'
-import { TranscriptSearchContext, type TranscriptSearchState } from './search/TranscriptSearchContext'
-import { parseSearchTerms } from './search/highlightRanges'
+import { TranscriptSearchContext, type SearchCurrent, type TranscriptSearchState } from './search/TranscriptSearchContext'
+import { loadSearchKit, type SearchKitModule } from './search/loadSearchKit'
+import type { JumpRequest, PendingJump } from './search/searchKit'
 
-/** The ⌘F bar (D-11) — its own chunk: nothing needs it until someone searches. */
-const TranscriptSearchBar = lazy(() => import('./search/TranscriptSearchBar'))
+/** The ⌘F bar (D-11) — in the search kit's chunk: nothing needs it until someone
+ *  searches. The kit's renderers and jump logic load with it (`loadSearchKit`). */
+const TranscriptSearchBar = lazy(() => loadSearchKit().then((m) => ({ default: m.TranscriptSearchBar })))
 
 const TOP_THRESHOLD = 64
 /** How much of a row may peek in at the top before it counts as visible (prompt jumps). */
 const SLIVER_PX = 2
-/** How far back a search jump may page older history in (D-11): past this the hit
- *  is reported unreachable instead of pulling thousands of turns into the view. */
-const MAX_PAGED_TURNS = 2000
-
-/** A search jump waiting for its turn to be paged in (`scrollToTurn`). */
-interface PendingJump extends SearchHitTarget {
-  /** The `earliestTurn` the last `onLoadOlder` was asked from, and whether that
-   *  load has been seen in flight — a load that settles with `earliestTurn`
-   *  unchanged failed, and the jump gives up rather than asking forever. */
-  requestedAt: number | null
-  sawLoading: boolean
-}
 
 /**
  * While a prompt jump holds the view: compensate EVERY resize of a row above
@@ -48,14 +38,6 @@ interface PendingJump extends SearchHitTarget {
  */
 type HoldRule = NonNullable<Virtualizer<HTMLDivElement, Element>['shouldAdjustScrollPositionOnItemSizeChange']>
 const holdJumpedRow: HoldRule = (item, _delta, instance) => item.start < (instance.scrollOffset ?? 0)
-
-/**
- * A search jump's hold (D-11): compensate every resize of a row ABOVE the hit.
- * The hit is centred, so rows between the viewport's top and it are on screen —
- * `holdJumpedRow` would let them settle (a reply re-measured from its estimate)
- * and push the hit down, out of view on a short phone viewport.
- */
-const holdRowsAbove = (index: number): HoldRule => (item) => item.index < index
 
 interface Props {
   turns: TurnType[]
@@ -187,11 +169,24 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
 
   const totalSize = virtualizer.getTotalSize()
 
-  // End a prompt jump's hold (`holdJumpedRow`): on a user scroll, and wherever
-  // the view re-pins — the Scroll-to-bottom button and a send — so the library's
-  // own resize handling is back before the view follows new content down.
+  // A search jump in progress (D-11): paging toward its hit, or waiting for the
+  // hit's mark to render so a tall turn can be centred on it.
+  const pendingJumpRef = useRef<PendingJump | null>(null)
+  const markWaitRef = useRef<number | null>(null)
+  function cancelJump() {
+    pendingJumpRef.current = null
+    if (markWaitRef.current !== null) cancelAnimationFrame(markWaitRef.current)
+    markWaitRef.current = null
+  }
+
+  // The user took over — a user scroll, the Scroll-to-bottom button, a send, a
+  // prompt jump: end a jump's hold (`holdJumpedRow`, or a search jump's), so the
+  // library's own resize handling is back before the view follows new content
+  // down, and abandon a search jump still paging or centring, so it can never yank
+  // the view back up when its page lands.
   function releaseJumpHold() {
     virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined
+    cancelJump()
   }
   useEffect(releaseJumpHold, [followSignal, virtualizer])
 
@@ -211,36 +206,44 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchFocus, setSearchFocus] = useState(0)
   const [searchTerms, setSearchTerms] = useState<readonly string[]>([])
-  const [currentTurnId, setCurrentTurnId] = useState<string | null>(null)
+  const [current, setCurrent] = useState<SearchCurrent | null>(null)
+  // The search kit (lazy): the bar, the highlighters, the jump logic.
+  const [kit, setKit] = useState<SearchKitModule | null>(null)
   const restoreFocusRef = useRef<Element | null>(null)
-  const pendingJumpRef = useRef<PendingJump | null>(null)
   const searchState = useMemo<TranscriptSearchState | null>(
-    () => (searchOpen && searchTerms.length > 0 ? { terms: searchTerms, currentTurnId } : null),
-    [searchOpen, searchTerms, currentTurnId],
+    () => (searchOpen && kit && searchTerms.length > 0 ? { terms: searchTerms, current, kit: kit.renderKit } : null),
+    [searchOpen, kit, searchTerms, current],
   )
-  // A new query has no current hit until the next Enter / ↑ / ↓. Parsed here, not
-  // in the lazy bar, so the term parser stays in the chunk the highlighters share.
-  const onSearchQuery = useCallback((query: string) => {
-    setSearchTerms(parseSearchTerms(query))
-    setCurrentTurnId(null)
+  // A new query: no current hit, and a jump toward the old query's hit stops. (The
+  // bar reports a query's terms before auto-jumping to its newest hit.)
+  const onSearchTerms = useCallback((terms: readonly string[]) => {
+    setSearchTerms(terms)
+    setCurrent(null)
+    cancelJump()
   }, [])
 
   const runSearch = useCallback((q: string) => fetchTranscriptSearch(sessionId ?? '', q), [sessionId])
+  const onSearchError = useCallback((message: string) => { toast.error(message) }, [])
+
+  function ensureKit() {
+    if (!kit) void loadSearchKit().then(setKit, () => undefined)
+  }
 
   function openSearch() {
     if (!sessionId) return
     if (!searchOpen) {
       restoreFocusRef.current = document.activeElement
       setSearchOpen(true)
+      ensureKit()
     }
     setSearchFocus((n) => n + 1)
   }
 
   function closeSearch() {
-    pendingJumpRef.current = null
+    cancelJump()
     setSearchOpen(false)
     setSearchTerms([])
-    setCurrentTurnId(null)
+    setCurrent(null)
     // Back where ⌘F was pressed; from nowhere (the body), to the scroller, so a
     // second ⌘F still searches.
     const back = restoreFocusRef.current
@@ -249,69 +252,52 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
     else containerRef.current?.focus({ preventScroll: true })
   }
 
-  /**
-   * Advance the pending search jump: page one more older window in through
-   * `onLoadOlder` — always contiguously, from `earliestTurn`, never a page fetched
-   * at the hit's own ordinal (a non-contiguous page breaks the history merge) —
-   * or, once the hit's turn is loaded, centre it and hold it like a prompt jump.
-   */
-  function advanceJump() {
+  /** Run the pending search jump one step (`driveJump`, from the kit): a page, a
+   *  dead end, or the landing. A page is anchored like a scroll-triggered one, so a
+   *  page that lands after the jump was abandoned never shifts the view. */
+  function runJump() {
     const p = pendingJumpRef.current
-    if (!p) return
-    const earliest = earliestTurn ?? 0
-    if (earliest > p.ordinal) {
-      if (loadingOlder) {
-        p.sawLoading = true
-        return
-      }
-      if (p.requestedAt === earliest) {
-        // Asked from here already: still waiting for the load to start, or it
-        // settled without moving `earliestTurn` (a failed fetch) — give up.
-        if (p.sawLoading) pendingJumpRef.current = null
-        return
-      }
-      if (!onLoadOlder) {
-        pendingJumpRef.current = null
-        return
-      }
-      p.requestedAt = earliest
-      p.sawLoading = false
-      onLoadOlder()
-      return
-    }
-    pendingJumpRef.current = null
-    const index = searchHitRowIndex(rows, p)
-    if (index === null) return
-    const row = rows[index]
-    setCurrentTurnId(row.kind === 'turn' ? row.turn.id : null)
-    unpin()
-    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = holdRowsAbove(index)
-    virtualizer.scrollToIndex(index, { align: 'center' })
+    if (!p || !kit) return
+    const done = kit.driveJump(p, {
+      earliestTurn: earliestTurn ?? 0,
+      loadingOlder: !!loadingOlder,
+      rows,
+      holds: turnHoldsEngineTurn,
+      loadOlder: onLoadOlder && (() => {
+        const el = containerRef.current
+        if (el) prevScrollHeightRef.current = el.scrollHeight
+        onLoadOlder()
+      }),
+      notify: (message) => toast.info(message),
+      land: setCurrent,
+      unpin,
+      virtualizer,
+      scroller: containerRef.current,
+      markWait: markWaitRef,
+    })
+    if (done) pendingJumpRef.current = null
   }
-  // Each settled page (or a re-render with the hit now loaded) moves the jump on.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- advanceJump reads this render's props; these are what move it
-  useEffect(advanceJump, [earliestTurn, loadingOlder, rows])
 
   // The one search jump — the bar's Enter / ↑ / ↓ and the shell's handle both
-  // call this (`TranscriptJump.scrollToTurn`).
-  function scrollToTurn(turnId: string, ordinal: number, role: 'user' | 'assistant' = 'assistant') {
-    const earliest = earliestTurn ?? 0
-    if (earliest - ordinal > MAX_PAGED_TURNS) {
-      pendingJumpRef.current = null
-      toast.info('That match is too far back to load — scroll up to page it in')
-      return
-    }
-    pendingJumpRef.current = { turnId, ordinal, role, requestedAt: null, sawLoading: false }
+  // call this. The first jump loads the kit; the effect below runs it then.
+  function startJump(req: JumpRequest) {
+    cancelJump()
+    setCurrent(null)
+    pendingJumpRef.current = { ...req, startEarliest: earliestTurn ?? 0, requestedAt: null, sawLoading: false }
     // Unpinned while paging, or the pin would snap the view back to the bottom
     // under every prepended page.
     unpin()
-    advanceJump()
+    if (kit) runJump()
+    else ensureKit()
   }
 
   useTranscriptJumpRegistration({
-    scrollToTurn,
+    scrollToTurn: (turnId, ordinal, role) =>
+      startJump({ turnId, ordinal, role, rank: 0, dupRank: 0, terms: searchTerms }),
     openSearch,
     jumpPrompt: (dir) => {
+      // The user took over: a search jump still paging stops here.
+      cancelJump()
       // The topmost visible row from the scroller's LIVE scrollTop — never
       // `virtualizer.range` / `scrollOffset`, which only catch up when the
       // virtualizer handles the `scroll` event a frame after the view moves: a
@@ -359,6 +345,12 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
       prevScrollHeightRef.current = null
     }
   }, [turns, scrollProgrammatically])
+
+  // Each settled page (or a render with the hit now loaded, or the kit arriving)
+  // moves a search jump on. After the anchor effect above, so a page's anchor is
+  // applied before the jump scrolls.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- runJump reads this render's props; these are what move it
+  useEffect(runJump, [earliestTurn, loadingOlder, rows, kit])
 
   const virtualRows = virtualizer.getVirtualItems()
 
@@ -420,10 +412,12 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
         <Suspense fallback={null}>
           <TranscriptSearchBar
             search={runSearch}
+            earliestTurn={earliestTurn ?? 0}
             focusSignal={searchFocus}
             onClose={closeSearch}
-            onJump={(hit) => scrollToTurn(hit.turnId, hit.ordinal, hit.role)}
-            onQuery={onSearchQuery}
+            onJump={startJump}
+            onTerms={onSearchTerms}
+            onError={onSearchError}
           />
         </Suspense>
       )}

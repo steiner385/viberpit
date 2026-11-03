@@ -17,7 +17,9 @@ import {
   type Shortcut,
   type ShortcutContext,
 } from './shortcuts'
-import { DISPATCH_PROMPT_ID, SESSION_COMPOSER_ATTR, SESSION_TRANSCRIPT_ATTR, textEntryClaimsKey } from '@/lib/detachKeyGuard'
+import {
+  DISPATCH_PROMPT_ID, SESSION_COMPOSER_ATTR, SESSION_TRANSCRIPT_ATTR, focusAllowsTranscriptSearch, textEntryClaimsKey,
+} from '@/lib/detachKeyGuard'
 
 function ev(over: Partial<KeyboardLike>): KeyboardLike {
   return { key: '', code: '', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...over }
@@ -36,6 +38,7 @@ function ctx(over: Partial<ShortcutContext> = {}): ShortcutContext {
     active: null,
     yieldsToTextEntry: false,
     transcriptOpen: false,
+    transcriptSearchFocus: false,
     ...over,
   }
 }
@@ -463,8 +466,8 @@ describe('shortcutAllowed', () => {
     // `insession.denyPermission` needs, and no row treats it as a blocker. So is
     // an on-screen transcript (`transcript.search`, D-11).
     const permissive = [
-      ctx({ sessionOpen: true, hasDeniablePermission: true, transcriptOpen: true }),
-      ctx({ sessionOpen: true, sessionBusy: true, hasDeniablePermission: true, transcriptOpen: true }),
+      ctx({ sessionOpen: true, hasDeniablePermission: true, transcriptOpen: true, transcriptSearchFocus: true }),
+      ctx({ sessionOpen: true, sessionBusy: true, hasDeniablePermission: true, transcriptOpen: true, transcriptSearchFocus: true }),
     ]
     for (const s of SHORTCUTS) {
       expect(permissive.some((c) => shortcutAllowed(s, c)), `${s.id}`).toBe(true)
@@ -1153,7 +1156,8 @@ describe('transcript.search', () => {
   sessionComposer.setAttribute(SESSION_COMPOSER_ATTR, '')
   const otherInput = document.createElement('input')
   const chromeButton = document.createElement('button')
-  const open = (over: Partial<ShortcutContext> = {}) => ctx({ sessionOpen: true, transcriptOpen: true, ...over })
+  const open = (over: Partial<ShortcutContext> = {}) =>
+    ctx({ sessionOpen: true, transcriptOpen: true, transcriptSearchFocus: true, ...over })
   const f = (over: Partial<KeyboardLike> = {}) => ev({ key: 'f', code: 'KeyF', ctrlKey: true, ...over })
 
   it('matches ⌘F and Ctrl+F on the key the layout types, with KeyF only for a non-Latin layout', () => {
@@ -1175,17 +1179,17 @@ describe('transcript.search', () => {
     expect(shellRow(f({ altKey: true }), open())).toBeUndefined()
   })
 
-  it('fires from the transcript, the session composer, or nowhere', () => {
-    expect(shellRow(f(), open({ active: inPane }))).toBe('transcript.search')
-    expect(shellRow(f(), open({ active: pane }))).toBe('transcript.search')
-    expect(shellRow(f(), open({ active: sessionComposer, yieldsToTextEntry: false }))).toBe('transcript.search')
-    expect(shellRow(f(), open({ active: document.body }))).toBe('transcript.search')
-    expect(shellRow(f(), open({ active: null }))).toBe('transcript.search')
+  it('the focus scope: the transcript, the session composer, or nowhere', () => {
+    for (const el of [inPane, pane, sessionComposer, document.body, null]) {
+      expect(focusAllowsTranscriptSearch(el), String(el)).toBe(true)
+    }
+    for (const el of [otherInput, chromeButton]) expect(focusAllowsTranscriptSearch(el)).toBe(false)
   })
 
-  it('does not fire from any other focus — the browser\'s find keeps working there', () => {
-    expect(shellRow(f(), open({ active: otherInput }))).toBeUndefined()
-    expect(shellRow(f(), open({ active: chromeButton }))).toBeUndefined()
+  it('fires only when the KEY\'s focus is in scope — the per-event `transcriptSearchFocus`', () => {
+    expect(shellRow(f(), open())).toBe('transcript.search')
+    // Any other focus: neither matched nor prevented, so the browser's find works.
+    expect(shellRow(f(), open({ transcriptSearchFocus: false }))).toBeUndefined()
   })
 
   it('needs an open session WITH its transcript on screen, and no overlay', () => {

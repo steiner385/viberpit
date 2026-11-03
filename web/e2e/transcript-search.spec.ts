@@ -1,11 +1,17 @@
 /**
  * ⌘F transcript search (D-11) in a real browser.
  *
- * A 300-turn live session opens on its tail (turns 280–299, the WS replay); the one
- * hit sits at ordinal 5, far above the loaded history. Next must page older
- * history in through the transcript's own load-older path — contiguously, from
- * `earliestTurn`, never a page cut at the hit — then land the hit centred and
- * highlighted. jsdom can show none of that layout. Route-mocked: no backend.
+ * A 300-turn live session opens on its tail (turns 280–299, the WS replay). Two
+ * hits: the newest at ordinal 295 (loaded), the other at ordinal 5, far above the
+ * loaded history, in a reply taller than the viewport with the match near its top.
+ *
+ *  - Results land on the NEWEST hit (it is loaded — no paging while typing).
+ *  - Enter goes OLDER: it pages older history in through the transcript's own
+ *    load-older path — contiguously, from `earliestTurn`, never a page cut at the
+ *    hit — then centres the MATCH itself, not the tall turn's middle.
+ *  - Scroll to bottom mid-paging abandons the jump: no more pages, no yank.
+ *
+ * jsdom can show none of that layout. Route-mocked: no backend.
  */
 import { test, expect, type Page } from '@playwright/test'
 import { replayFrame, wire } from './fixtures/wsFrames'
@@ -17,12 +23,19 @@ const TOTAL = 300
 const TAIL = 20
 const PAGE = 20
 const HIT = 5
+const NEWEST = 295
 const NEEDLE = 'zebra'
+const TALL = 40
 
-/** Exchange n: the prompt, then a reply a few paragraphs tall, holding ordinal n. */
+const tallLine = `Reply ${HIT} is the one that mentions the ${NEEDLE}.`
+const newestLine = `Reply ${NEWEST} also names a ${NEEDLE}.`
+
+/** Exchange n: the prompt, then a reply holding ordinal n — a few paragraphs, or
+ *  (the hit at HIT) far taller than the viewport, its match in the second paragraph. */
 function exchange(n: number): SessionEvent[] {
-  const reply = Array.from({ length: 4 }, (_, p) => `Reply ${n}, paragraph ${p}.`)
-  if (n === HIT) reply[2] = `Reply ${n} is the one that mentions the ${NEEDLE}.`
+  const reply = Array.from({ length: n === HIT ? TALL : 4 }, (_, p) => `Reply ${n}, paragraph ${p}.`)
+  if (n === HIT) reply[1] = tallLine
+  if (n === NEWEST) reply[2] = newestLine
   return [
     { type: 'user', turnId: `u${n}`, text: `Prompt number ${n}` },
     { type: 'turnStart', turnId: `a${n}`, turnIndex: n },
@@ -32,8 +45,11 @@ function exchange(n: number): SessionEvent[] {
 }
 
 const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => from + i)
+const snippetHit = (n: number, line: string) =>
+  ({ turnId: `a${n}`, ordinal: n, role: 'assistant', snippet: line,
+     matchStart: line.indexOf(NEEDLE), matchEnd: line.indexOf(NEEDLE) + NEEDLE.length })
 
-async function mockApp(page: Page, width: number) {
+async function mockApp(page: Page, width: number, { pageDelayMs = 0 } = {}) {
   await page.setViewportSize({ width, height: width < 600 ? 844 : 900 })
   await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
   await page.route('**/api/sessions', (route) => route.fulfill({
@@ -51,21 +67,19 @@ async function mockApp(page: Page, width: number) {
 
   // Older pages, exactly as the server cuts them: the PAGE turns before `before`.
   const befores: number[] = []
-  await page.route(`**/api/sessions/${SID}/transcript?**`, (route) => {
+  await page.route(`**/api/sessions/${SID}/transcript?**`, async (route) => {
     const url = new URL(route.request().url())
     const before = Number(url.searchParams.get('before'))
     befores.push(before)
+    if (pageDelayMs) await new Promise((r) => setTimeout(r, pageDelayMs))
     const earliest = Math.max(0, before - PAGE)
-    route.fulfill({ json: { events: range(earliest, before).flatMap(exchange), earliestTurn: earliest, totalTurns: TOTAL } })
+    await route.fulfill({ json: { events: range(earliest, before).flatMap(exchange), earliestTurn: earliest, totalTurns: TOTAL } })
   })
   const searches: string[] = []
   await page.route(`**/api/sessions/${SID}/search?**`, (route) => {
     const q = new URL(route.request().url()).searchParams.get('q') ?? ''
     searches.push(q)
-    const hits = q.toLowerCase().includes(NEEDLE)
-      ? [{ turnId: `a${HIT}`, ordinal: HIT, role: 'assistant', snippet: `the one that mentions the ${NEEDLE}.`,
-           matchStart: 26, matchEnd: 31 }]
-      : []
+    const hits = q.toLowerCase().includes(NEEDLE) ? [snippetHit(HIT, tallLine), snippetHit(NEWEST, newestLine)] : []
     route.fulfill({ json: { hits, truncated: false, totalTurns: TOTAL } })
   })
 
@@ -84,42 +98,57 @@ async function mockApp(page: Page, width: number) {
 const sessionShown = (page: Page) =>
   expect(page.getByRole('button', { name: /back to session list/i })).toBeVisible()
 
+/** Open the long session, ⌘F from the clicked transcript, and search the needle. */
+async function openAndSearch(page: Page) {
+  await page.goto(`/sessions/${SID}`)
+  await sessionShown(page)
+  await expect(page.getByText(`Reply ${TOTAL - 1}, paragraph 3.`)).toBeVisible()
+  const scroller = page.getByTestId('transcript-scroll')
+  await scroller.click({ position: { x: 5, y: 5 } })
+  await page.keyboard.press('Control+f')
+  const input = page.getByRole('searchbox', { name: 'Search this transcript' })
+  await expect(input).toBeFocused()
+  await input.fill(NEEDLE)
+  return { scroller, input }
+}
+
+/** How far the current mark's centre sits from the scroller's. */
+async function markOffCentre(page: Page) {
+  const box = await page.getByTestId('transcript-scroll').boundingBox()
+  const mark = await page.locator('mark[data-search-current]').boundingBox()
+  if (!box || !mark) return Number.POSITIVE_INFINITY
+  return Math.abs((mark.y + mark.height / 2) - (box.y + box.height / 2))
+}
+
 for (const width of [1440, 390]) {
   test.describe(`at ${width}px`, () => {
-    test('⌘F searches, Next pages back to the hit at ordinal 5, centres and highlights it; Esc closes', async ({ page }) => {
+    test('results land on the newest hit; Enter pages back to the older one and centres its match; Esc closes', async ({ page }) => {
       const { befores, searches } = await mockApp(page, width)
-      await page.goto(`/sessions/${SID}`)
-      await sessionShown(page)
-      await expect(page.getByText(`Reply ${TOTAL - 1}, paragraph 3.`)).toBeVisible()
+      const { scroller, input } = await openAndSearch(page)
 
-      // From the transcript itself: a click leaves focus on the scroller.
-      const scroller = page.getByTestId('transcript-scroll')
-      await scroller.click({ position: { x: 5, y: 5 } })
-      await page.keyboard.press('Control+f')
-      const input = page.getByRole('searchbox', { name: 'Search this transcript' })
-      await expect(input).toBeFocused()
-
-      await input.fill(NEEDLE)
-      await expect(page.getByText('0 of 1')).toBeVisible()
+      // The newest hit is loaded: the answer lands on it, without paging.
+      await expect(page.getByText('2 of 2')).toBeVisible()
       expect(searches).toEqual([NEEDLE]) // debounced: one request for the whole word
+      // Page-rooted: a scroller-rooted locator inside `has:` would look for a scroller in the row.
+      const current = page.locator('mark[data-search-current]')
+      await expect(current).toBeVisible()
+      await expect(scroller.locator('[data-index]', { has: current })).toContainText(newestLine)
+      expect(befores).toEqual([])
 
+      // Enter goes older: paged back contiguously from the tail, one page at a time.
       await page.keyboard.press('Enter')
-      await expect(page.getByText('1 of 1')).toBeVisible()
-
-      // Paged back contiguously from the tail, one page at a time, down to the hit.
-      const current = scroller.locator('mark[data-search-current]')
-      await expect(current).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('1 of 2')).toBeVisible()
+      await expect(scroller.locator('[data-index]', { has: current })).toContainText(tallLine, { timeout: 15_000 })
       await expect(current).toHaveText(NEEDLE)
       const expected = range(0, (TOTAL - TAIL) / PAGE).map((i) => TOTAL - TAIL - i * PAGE).filter((b) => b > HIT)
       expect(befores).toEqual(expected)
 
-      // Centred: the hit's row straddles the scroller's middle.
-      await expect.poll(async () => {
-        const box = await scroller.boundingBox()
-        const row = await scroller.locator('[data-index]', { has: page.locator('mark[data-search-current]') }).boundingBox()
-        if (!box || !row) return Number.POSITIVE_INFINITY
-        return Math.abs((row.y + row.height / 2) - (box.y + box.height / 2))
-      }).toBeLessThan(80)
+      // The reply is far taller than the viewport and its match near its top: the
+      // MATCH is centred, not the reply's middle.
+      const row = await scroller.locator('[data-index]', { has: current }).boundingBox()
+      const box = await scroller.boundingBox()
+      expect(row!.height).toBeGreaterThan(box!.height)
+      await expect.poll(() => markOffCentre(page)).toBeLessThan(40)
       // Held there, unpinned, with the way back offered.
       await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
 
@@ -132,6 +161,22 @@ for (const width of [1440, 390]) {
     })
   })
 }
+
+test('Scroll to bottom mid-paging abandons the jump — no more pages, no yank, no stale current hit', async ({ page }) => {
+  const { befores } = await mockApp(page, 1440, { pageDelayMs: 400 })
+  const { scroller } = await openAndSearch(page)
+  await expect(page.getByText('2 of 2')).toBeVisible()
+  await page.keyboard.press('Enter') // older: starts paging toward ordinal 5
+  await expect.poll(() => befores.length).toBeGreaterThan(0)
+  await page.getByRole('button', { name: 'Scroll to bottom' }).click()
+  // The page in flight still lands; no further page is asked for.
+  await page.waitForTimeout(1500)
+  expect(befores.length).toBeLessThanOrEqual(2)
+  // Back at the bottom, and staying there; the old current hit was cleared.
+  await expect.poll(() => scroller.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThanOrEqual(2)
+  await expect(page.locator('mark[data-search-current]')).toHaveCount(0)
+  await expect(page.getByText(`Reply ${TOTAL - 1}, paragraph 3.`).first()).toBeVisible()
+})
 
 test('⌘F on the Files tab is left to the browser — not prevented, no bar', async ({ page }) => {
   await mockApp(page, 1440)

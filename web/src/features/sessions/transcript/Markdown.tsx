@@ -1,7 +1,6 @@
 import { Suspense, lazy } from 'react'
 import { loadMarkdownDoc } from './markdownChunk'
-import { HighlightedText, type SearchHighlight } from './search/TranscriptSearchContext'
-import { rehypeSearchHighlight } from './search/rehypeSearchHighlight'
+import type { SearchHighlight } from './search/TranscriptSearchContext'
 
 /**
  * The transcript's markdown renderer, loaded off the critical path (#1411).
@@ -39,12 +38,12 @@ interface Props {
 
 export function Markdown({ children, streaming = false, highlight }: Props) {
   return (
-    <Suspense fallback={<div className="whitespace-pre-wrap break-words"><HighlightedText text={children} highlight={highlight} /></div>}>
+    <Suspense fallback={<div className="whitespace-pre-wrap break-words">{highlight ? highlight.kit.renderText(children, highlight) : children}</div>}>
       <MarkdownDoc
         streaming={streaming}
-        // Built here, not imported by the lazy renderer, so the search code stays
-        // in this (eager) chunk instead of splitting into one of its own.
-        searchPlugin={highlight && highlight.terms.length > 0 ? [rehypeSearchHighlight, highlight] : undefined}
+        // The search kit's pass (lazy, with the ⌘F bar) — the renderer chunk
+        // imports none of the search code.
+        searchPlugin={highlight && highlight.terms.length > 0 ? highlight.kit.rehypePlugin(highlight) : undefined}
       >
         {children}
       </MarkdownDoc>

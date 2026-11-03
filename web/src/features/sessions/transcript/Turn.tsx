@@ -20,7 +20,7 @@ import { BlockRow } from './BlockRow'
 import { TurnFeedback } from './TurnFeedback'
 import { MessageActions } from './MessageActions'
 import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
-import { TranscriptSearchContext, type SearchHighlight } from './search/TranscriptSearchContext'
+import { TranscriptSearchContext, splitHighlight, type SearchHighlight } from './search/TranscriptSearchContext'
 
 interface Props {
   turn: TurnType
@@ -77,16 +77,16 @@ export const Turn = memo(function Turn({
   const items = groupBlocks(visibleBlocks)
   const lastIdx = items.length - 1
 
-  // The transcript search (D-11): every prose block is marked; the current hit's
-  // stronger mark goes to this turn's FIRST text block holding the lead term — the
-  // server places a hit at the first term's first occurrence.
+  // The transcript search (D-11): every prose block is marked; the current hit is
+  // the turn's `lead`-th lead-term run, counted across its text blocks in order.
   const search = useContext(TranscriptSearchContext)
-  const lead = search && search.currentTurnId === turn.id ? search.terms[0] : undefined
-  const currentBlockId = lead === undefined
-    ? null
-    : visibleBlocks.find((b) => b.kind === 'text' && b.text.toLowerCase().includes(lead))?.id ?? null
-  const highlightFor = (blockId: string): SearchHighlight | undefined =>
-    search ? { terms: search.terms, current: blockId === currentBlockId } : undefined
+  const highlightFor = (blockId: string): SearchHighlight | undefined => {
+    if (!search) return undefined
+    const prose = visibleBlocks.filter((b) => b.kind === 'text')
+    const lead = search.current?.turnId === turn.id ? search.current.lead : null
+    const split = splitHighlight(prose.map((b) => b.text), search.terms, lead, search.kit)
+    return split[prose.findIndex((b) => b.id === blockId)]
+  }
 
   // An empty turn (e.g. a turnStart with no content yet, or a turn whose only
   // tool was a skipped AskUserQuestion) must not render a padded gap.

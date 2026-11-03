@@ -12,7 +12,7 @@ import {
 const ctx = (over: Partial<ShortcutContext> = {}): ShortcutContext => ({
   overlayOpen: false, hasOpenAction: false, hasDeniablePermission: false, sessionOpen: false,
   sessionBusy: false, inSessions: true, interactive: true, active: null, yieldsToTextEntry: false,
-  transcriptOpen: false, ...over,
+  transcriptOpen: false, transcriptSearchFocus: false, ...over,
 })
 
 const live = (id: string, over: Partial<Session> = {}): Session => ({
@@ -107,9 +107,10 @@ describe('buildPaletteEntries', () => {
     const label = (c: ShortcutContext) =>
       inSection(buildPaletteEntries(host({ context: c, actions }), NO_DATA), 'actions').map((e) => e.label)
     expect(label(ctx())).not.toContain('Search this conversation')
-    expect(label(ctx({ sessionOpen: true, transcriptOpen: false }))).not.toContain('Search this conversation')
-    const open = inSection(
-      buildPaletteEntries(host({ context: ctx({ sessionOpen: true, transcriptOpen: true }), actions }), NO_DATA), 'actions')
+    expect(label(ctx({ sessionOpen: true, transcriptOpen: false, transcriptSearchFocus: true }))).not.toContain('Search this conversation')
+    // The palette's snapshot forces the key-only focus gate open (AppShell).
+    const open = inSection(buildPaletteEntries(
+      host({ context: ctx({ sessionOpen: true, transcriptOpen: true, transcriptSearchFocus: true }), actions }), NO_DATA), 'actions')
     const entry = open.find((e) => e.label === 'Search this conversation')!
     expect(entry).toBeDefined()
     entry.run!()

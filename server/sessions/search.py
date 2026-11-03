@@ -20,6 +20,7 @@ over one session's full replay, returning positioned hits instead of a yes/no.
 """
 from __future__ import annotations
 
+from collections import deque
 import json
 import re
 
@@ -220,7 +221,9 @@ def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], boo
     TurnStart, before its TurnEnd — a Codex steered prompt) belongs to that turn's
     page, so it takes the current ordinal; a Claude TurnStart/TurnEnd pair always sits
     in one entry, so its prompts are always between turns. Offsets are UTF-16 code
-    units. Past *limit* hits, ``truncated`` is True."""
+    units. Past *limit* hits the NEWEST *limit* are kept, in transcript order (the
+    reader starts at the bottom), and ``truncated`` is True — older matches exist.
+    The window is a bounded deque, and snippets are cut only for the kept hits."""
     evs = [e for e in (events or ()) if isinstance(e, dict)]
     # Ordinal + id of each main-thread TurnStart, by position, so a prompt can look
     # ahead to the turn it belongs to.
@@ -231,7 +234,9 @@ def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], boo
             stamped = e.get("turnIndex")
             ordinal = stamped if isinstance(stamped, int) else ordinal + 1
             starts.append((i, ordinal, e.get("turnId")))
-    hits: list[dict] = []
+    # (turnId, ordinal, role, text) per match; the snippet is built for survivors only.
+    kept: deque[tuple[str | None, int, str, str]] = deque(maxlen=max(limit, 0))
+    matched = 0
     nxt = 0                        # index into `starts` of the first start after i
     current: tuple[int, str | None] = (0, None)
     turn_open = False              # between a main-thread TurnStart and its TurnEnd
@@ -250,8 +255,7 @@ def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], boo
         role = _HIT_ROLES.get(typ)
         if role is None or not terms_match(terms, text):
             continue
-        if len(hits) >= limit:
-            return hits, True
+        matched += 1
         if role == "user" and turn_open:
             hit_ordinal = current[0]
             turn_id = e.get("turnId")
@@ -261,8 +265,11 @@ def search_events(events, terms: list[str], limit: int) -> tuple[list[dict], boo
         else:
             hit_ordinal = current[0]
             turn_id = e.get("turnId") or current[1]
+        kept.append((turn_id, hit_ordinal, role, text))
+    hits: list[dict] = []
+    for turn_id, hit_ordinal, role, text in kept:
         snippet, m_start, m_end = _snippet(text, *_match_span(text, terms[0]))
         m_start, m_end = _utf16(snippet, m_start), _utf16(snippet, m_end)
         hits.append({"turnId": turn_id, "ordinal": hit_ordinal, "role": role,
                      "snippet": snippet, "matchStart": m_start, "matchEnd": m_end})
-    return hits, False
+    return hits, matched > len(hits)

@@ -120,10 +120,12 @@ def test_match_at_the_very_start_and_end_of_a_long_text():
         assert len(h["snippet"]) <= 80
 
 
-def test_limit_sets_truncated():
+def test_limit_keeps_the_newest_hits_in_transcript_order():
+    """Past the limit the NEWEST hits are kept — the reader is at the bottom of the
+    transcript — still in transcript order; ``truncated`` means older matches exist."""
     events = [{"type": "user", "turnId": f"u{i}", "text": "needle"} for i in range(5)]
     hits, truncated = _hits(events, "needle", limit=3)
-    assert [h["turnId"] for h in hits] == ["u0", "u1", "u2"] and truncated is True
+    assert [h["turnId"] for h in hits] == ["u2", "u3", "u4"] and truncated is True
     hits, truncated = _hits(events, "needle", limit=5)
     assert len(hits) == 5 and truncated is False
     assert (SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT) == (200, 1000)
@@ -265,6 +267,7 @@ async def test_limit_is_clamped(tmp_path, isolated_db):
     with patch.object(orch, "transcript_window", AsyncMock(return_value=window)):
         r = await orch.transcript_search("s1", "x", 10_000)
     assert len(r["hits"]) == SEARCH_MAX_LIMIT and r["truncated"] is True
+    assert r["hits"][0]["turnId"] == "u5" and r["hits"][-1]["turnId"] == f"u{SEARCH_MAX_LIMIT + 4}"
 
 
 @pytest.mark.asyncio

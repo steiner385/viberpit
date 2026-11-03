@@ -11,13 +11,18 @@ vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
 import { Turn } from '../Turn'
 import type { Turn as TurnType, Block } from '@/session/reducer'
 import { prefetchMarkdown } from '../markdownChunk'
-import { TranscriptSearchContext, MARK_CURRENT_ATTR, type TranscriptSearchState } from './TranscriptSearchContext'
+import { TranscriptSearchContext, type TranscriptSearchState } from './TranscriptSearchContext'
+import { renderKit } from './searchRender'
+import { MARK_CURRENT_ATTR } from './searchMarks'
 
 beforeAll(() => prefetchMarkdown())
 
 const noop = () => {}
 
-function renderTurn(turn: TurnType, search: TranscriptSearchState | null) {
+type Search = { terms: string[]; current: TranscriptSearchState['current'] }
+
+function renderTurn(turn: TurnType, s: Search | null) {
+  const search: TranscriptSearchState | null = s && { ...s, kit: renderKit }
   return render(
     <TranscriptSearchContext.Provider value={search}>
       <Turn turn={turn} isLastTurn={false} toolDetailMode="all-open" thinkingCollapsed={false} onAnswer={noop} />
@@ -30,7 +35,7 @@ const marks = (root: HTMLElement) => Array.from(root.querySelectorAll('mark'))
 describe('transcript search highlight', () => {
   it('marks every occurrence in a user prompt, case-insensitively', () => {
     const turn: TurnType = { id: 'u1', role: 'user', blocks: [{ kind: 'text', id: 'u1:t', text: 'Deploy the Widget, then widget again' }] }
-    const { container } = renderTurn(turn, { terms: ['widget'], currentTurnId: null })
+    const { container } = renderTurn(turn, { terms: ['widget'], current: null })
     expect(marks(container).map((m) => m.textContent)).toEqual(['Widget', 'widget'])
     // No current hit in this turn → no stronger mark.
     expect(container.querySelector(`[${MARK_CURRENT_ATTR}]`)).toBeNull()
@@ -38,7 +43,7 @@ describe('transcript search highlight', () => {
 
   it('gives the current hit\'s first lead-term match the stronger style', () => {
     const turn: TurnType = { id: 'u1', role: 'user', blocks: [{ kind: 'text', id: 'u1:t', text: 'alpha beta alpha' }] }
-    const { container } = renderTurn(turn, { terms: ['alpha', 'beta'], currentTurnId: 'u1' })
+    const { container } = renderTurn(turn, { terms: ['alpha', 'beta'], current: { turnId: 'u1', lead: 0 } })
     const current = container.querySelectorAll(`[${MARK_CURRENT_ATTR}]`)
     expect(current).toHaveLength(1)
     expect(current[0].textContent).toBe('alpha')
@@ -48,7 +53,7 @@ describe('transcript search highlight', () => {
   it('marks assistant markdown prose but never a fenced code block or inline code', async () => {
     const text = 'The **widget** works.\n\n```ts\nconst widget = 1\n```\n\nCall `widget` now.'
     const turn: TurnType = { id: 'a1', role: 'assistant', blocks: [{ kind: 'text', id: 'a1:t', text }] }
-    const { container } = renderTurn(turn, { terms: ['widget'], currentTurnId: 'a1' })
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'a1', lead: 0 } })
     expect((await screen.findByText('widget', { selector: 'mark' })).tagName).toBe('MARK')
     const all = marks(container)
     expect(all).toHaveLength(1)
@@ -68,9 +73,35 @@ describe('transcript search highlight', () => {
       },
     ]
     const turn: TurnType = { id: 'a1', role: 'assistant', blocks }
-    const { container } = renderTurn(turn, { terms: ['widget'], currentTurnId: 'a1' })
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'a1', lead: 0 } })
     expect(container.textContent).toContain('widget')
     expect(marks(container)).toHaveLength(0)
+  })
+
+  it('the current hit is the turn\'s k-th lead run, counted across its prose blocks', () => {
+    // Two user text blocks: "widget" twice, then once. Lead 2 is the third — in block 2.
+    const turn: TurnType = {
+      id: 'u1', role: 'user', blocks: [
+        { kind: 'text', id: 'u1:a', text: 'one widget, two widget' },
+        { kind: 'text', id: 'u1:b', text: 'three widget' },
+      ],
+    }
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'u1', lead: 2 } })
+    const all = marks(container)
+    expect(all).toHaveLength(3)
+    const current = container.querySelectorAll(`[${MARK_CURRENT_ATTR}]`)
+    expect(current).toHaveLength(1)
+    expect(current[0]).toBe(all[2])
+  })
+
+  it('in markdown the k-th lead run is current too', async () => {
+    const turn: TurnType = { id: 'a1', role: 'assistant', blocks: [{ kind: 'text', id: 'a1:t', text: 'A widget, then *another widget*.' }] }
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'a1', lead: 1 } })
+    await screen.findAllByText('widget', { selector: 'mark' })
+    const all = marks(container)
+    expect(all).toHaveLength(2)
+    expect(all[1]).toHaveAttribute(MARK_CURRENT_ATTR, 'true')
+    expect(all[0]).not.toHaveAttribute(MARK_CURRENT_ATTR)
   })
 
   it('renders no marks when no search is open', () => {

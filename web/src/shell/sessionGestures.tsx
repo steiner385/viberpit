@@ -92,7 +92,7 @@ export interface TranscriptJump {
    *  by ordinal — centred and held like a prompt jump. A turn older than the loaded
    *  history is paged in first, contiguously, through the transcript's own
    *  load-older path (at most 2000 turns back). */
-  scrollToTurn: (turnId: string, ordinal: number, role?: 'user' | 'assistant') => void
+  scrollToTurn: (turnId: string, ordinal: number, role: 'user' | 'assistant') => void
   /** ⌘F: open the search bar, or refocus and select its query when already open. */
   openSearch: () => void
 }

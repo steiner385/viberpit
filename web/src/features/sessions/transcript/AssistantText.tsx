@@ -2,7 +2,7 @@ import { parseInsights } from './insights'
 import { hideHtmlComments } from './htmlComments'
 import { InsightCallout } from './InsightCallout'
 import { Markdown } from './Markdown'
-import type { SearchHighlight } from './search/TranscriptSearchContext'
+import { splitHighlight, type SearchHighlight } from './search/TranscriptSearchContext'
 
 interface Props {
   text: string
@@ -18,12 +18,10 @@ export function AssistantText({ text, streaming, highlight }: Props) {
   if (streaming) return <Markdown streaming highlight={highlight}>{visible}</Markdown>
 
   const segments = parseInsights(visible)
-  // The current hit's stronger mark belongs to the FIRST segment holding the lead
-  // term; every other segment gets plain marks.
-  const lead = highlight?.current ? highlight.terms[0] : undefined
-  const currentSeg = lead === undefined ? -1 : segments.findIndex((s) => s.text.toLowerCase().includes(lead))
-  const segHighlight = (i: number): SearchHighlight | undefined =>
-    highlight && { terms: highlight.terms, current: i === currentSeg }
+  // The block's current lead-term run, re-counted into the segment holding it.
+  const split = highlight
+    && splitHighlight(segments.map((s) => s.text), highlight.terms, highlight.currentLead, highlight.kit)
+  const segHighlight = (i: number): SearchHighlight | undefined => (split ? split[i] : undefined)
   return (
     <>
       {segments.map((seg, i) =>
