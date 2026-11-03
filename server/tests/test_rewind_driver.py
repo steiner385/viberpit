@@ -27,6 +27,7 @@ from server.sessions.rewind import (REWIND_BUSY, REWIND_CODES, REWIND_FAILED,
                                     ConversationRewind, RewindError, RewindPreview,
                                     map_cli_error)
 from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes.fake_sdk import result as fake_result
 
 U1 = "21203c3a-0000-4000-8000-000000000001"
 U2 = "0497e020-0000-4000-8000-000000000002"
@@ -657,3 +658,134 @@ def test_drain_failure_does_not_mask_the_body_error(caplog):
     assert held is False
     recs = [r for r in caplog.records if "dequeue after a failed rewind" in r.getMessage()]
     assert len(recs) == 1 and recs[0].levelno == logging.INFO
+
+
+def test_release_during_end_turn_settle_never_double_starts():
+    """The hold is released while ``_end_turn`` (which settled because of it) is
+    awaiting its settle bookkeeping. The release drains p1; ``_end_turn`` resuming
+    must not dequeue p2 on top of it — two pumps on one SDK cursor."""
+    clients: list = []
+    overlaps: list[bool] = []
+
+    async def go():
+        d = _driver(FakeControl(), clients=clients)
+        await d.start()
+        client = clients[0]
+        gate, in_settle = asyncio.Event(), asyncio.Event()
+        orig_usage = d._emit_context_usage
+
+        async def slow_usage():
+            in_settle.set()
+            await gate.wait()
+            await orig_usage()
+        orig_begin = d._begin_turn
+
+        async def begin(*a, **k):
+            # Another turn's pump still owns the cursor. (A pump dequeuing the next
+            # prompt at its own turn end is the normal chain, not an overlap.)
+            pump = d._pump
+            overlaps.append(pump is not None and not pump.done()
+                            and pump is not asyncio.current_task())
+            return await orig_begin(*a, **k)
+        # p1's turn stays open until the test says so, so its pump is still live when
+        # `_end_turn` resumes — the window where a second dequeue would overlap it.
+        p1_done = asyncio.Event()
+        orig_query = client.query
+        later: list[asyncio.Task] = []
+
+        async def query(prompt):
+            if "p1" not in prompt:
+                return await orig_query(prompt)
+            client.sent.append(prompt)
+
+            async def finish():
+                await p1_done.wait()
+                client._deliver([fake_result(uuid="p1-end")])
+            later.append(asyncio.create_task(finish()))
+        client.query = query  # type: ignore[method-assign]
+        d._emit_context_usage = slow_usage  # type: ignore[method-assign]
+        d._begin_turn = begin  # type: ignore[method-assign]
+        try:
+            hold = d.rewind_hold()
+            await hold.__aenter__()
+            d._turn_active = True                      # a CLI-initiated turn
+            await d.send_prompt("p1")
+            await d.send_prompt("p2")
+            end = asyncio.create_task(d._end_turn())
+            await in_settle.wait()
+            d._emit_context_usage = orig_usage  # type: ignore[method-assign]
+            await hold.__aexit__(None, None, None)     # released mid-settle
+            gate.set()
+            await end
+            assert not any(overlaps), "a turn was begun while another pump was live"
+            assert [q[0] for q in d._queue] == ["p2"], "p2 waits for p1's turn to end"
+            p1_done.set()
+            await _settle(d, client, 2)
+            await asyncio.gather(*later)
+            return list(client.sent), list(d._queue)
+        finally:
+            await d.aclose()
+    sent, queue = _run(go)
+    assert not any(overlaps), "a turn was begun while another pump was live"
+    assert len(sent) == 2 and "p1" in sent[0] and "p2" in sent[1]
+    assert queue == []
+
+
+def test_prompt_started_during_end_turn_settle_is_not_double_started():
+    """Sibling of the hold race, with no hold: a CLI-initiated turn settles with an
+    empty queue; during its settle awaits a prompt finds the driver idle and starts
+    (p1), and a second one queues (p2). ``_end_turn`` resuming must leave p2 to
+    p1's pump rather than begin it on top of p1."""
+    clients: list = []
+    overlaps: list[bool] = []
+
+    async def go():
+        d = _driver(FakeControl(), clients=clients)
+        await d.start()
+        client = clients[0]
+        gate, in_settle, p1_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        orig_usage, orig_begin, orig_query = d._emit_context_usage, d._begin_turn, client.query
+        later: list[asyncio.Task] = []
+
+        async def slow_usage():
+            in_settle.set()
+            await gate.wait()
+            await orig_usage()
+
+        async def begin(*a, **k):
+            pump = d._pump
+            overlaps.append(pump is not None and not pump.done()
+                            and pump is not asyncio.current_task())
+            return await orig_begin(*a, **k)
+
+        async def query(prompt):
+            if "p1" not in prompt:
+                return await orig_query(prompt)
+            client.sent.append(prompt)
+
+            async def finish():
+                await p1_done.wait()
+                client._deliver([fake_result(uuid="p1-end")])
+            later.append(asyncio.create_task(finish()))
+        d._emit_context_usage = slow_usage  # type: ignore[method-assign]
+        d._begin_turn = begin  # type: ignore[method-assign]
+        client.query = query  # type: ignore[method-assign]
+        try:
+            d._turn_active = True                      # a CLI-initiated turn
+            end = asyncio.create_task(d._end_turn())
+            await in_settle.wait()
+            d._emit_context_usage = orig_usage  # type: ignore[method-assign]
+            await d.send_prompt("p1")                  # driver looks idle: starts now
+            await d.send_prompt("p2")                  # p1 is live: queued
+            gate.set()
+            await end
+            assert not any(overlaps), "a turn was begun while another pump was live"
+            assert [q[0] for q in d._queue] == ["p2"]
+            p1_done.set()
+            await _settle(d, client, 2)
+            await asyncio.gather(*later)
+            return list(client.sent)
+        finally:
+            await d.aclose()
+    sent = _run(go)
+    assert len(sent) == 2 and "p1" in sent[0] and "p2" in sent[1]

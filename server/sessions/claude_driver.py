@@ -1731,7 +1731,12 @@ class ClaudeAgentDriver:
         # inside one settles here, and the hold's release dequeues in FIFO order.
         # Dequeuing now would hand the head to `_start_turn`, which re-queues it at
         # the tail under the hold while `_turn_active` stays set — stranding it.
-        if not self._queue or self._stream_ended or self._rewind_held:
+        # `deferred` is read ONCE, before any await: the hold can be released during
+        # the settle awaits below, and its release then owns the drain — dequeuing
+        # here as well would start a second pump on the one SDK cursor.
+        deferred = self._rewind_held
+        settled = not self._queue or self._stream_ended or deferred
+        if settled:
             self._turn_active = False
             self._turn_started_at = None
             self._turn_buffer = []
@@ -1756,6 +1761,17 @@ class ClaudeAgentDriver:
         # reopening the window.
         if self._stream_ended:
             return   # nothing to dequeue onto, nothing to listen to
+        if deferred:
+            # The rewind hold's release drains the queue; no suggestions for a turn
+            # the user is about to rewind past. The listener guards itself against a
+            # pump the release may already have started.
+            self._start_listener()
+            return
+        if settled and (self._turn_active or self._starting_turn):
+            # Another path started a turn during the settle awaits (a hold taken and
+            # released meanwhile, or a prompt that found the driver idle): it owns
+            # the cursor and the queue now.
+            return
         if self._queue and not self._rewind_held:
             next_text, next_images, next_context, next_origin = self._queue.pop(0)
             log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
