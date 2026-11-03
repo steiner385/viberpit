@@ -229,6 +229,18 @@ describe('Composer interrupt-and-send ("Send now")', () => {
     expect(textarea.value).toBe('keep me')
   })
 
+  it('Send now with a known slash command runs the command, never an interrupt (D-8 /fork)', () => {
+    const onInterruptAndPrompt = vi.fn().mockReturnValue(true)
+    const onCommand = vi.fn()
+    const commands = [{ name: 'fork', description: '', argumentHint: null, kind: 'client' as const, source: 'app' as const }]
+    renderComposer({ status: busy, onInterruptAndPrompt, onCommand, commands })
+    const textarea = type('/fork')
+    fireEvent.click(screen.getByRole('button', { name: /send now/i }))
+    expect(onCommand).toHaveBeenCalledWith('fork', '')
+    expect(onInterruptAndPrompt).not.toHaveBeenCalled()
+    expect(textarea.value).toBe('')
+  })
+
   it('Send now with an empty draft does nothing', () => {
     const onInterruptAndPrompt = vi.fn()
     renderComposer({ status: busy, onInterruptAndPrompt })

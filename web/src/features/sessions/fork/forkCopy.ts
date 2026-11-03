@@ -3,8 +3,8 @@
  * no imports, loaded on first use (`useForkFrom`) so it stays off the entry chunk.
  *
  * The codes are the server's (`server/sessions/fork.py:FORK_CODES`,
- * `viberpit/worktrees.py:FORK_WORKTREE_CODES`, and the shared `daemon_outdated`
- * and account 409s); a code missing here falls back to the server's own message.
+ * `viberpit/worktrees.py:FORK_WORKTREE_CODES`, `daemon_outdated` and the source
+ * account's usage 409); a code missing here falls back to the server's own message.
  */
 
 /** The success toast: the child's files are the source's worktree NOW, not at the cut. */
@@ -33,6 +33,8 @@ export const FORK_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   FORK_DISK_FULL: "Couldn't fork — the disk is full",
   FORK_FAILED: "Couldn't create the fork's worktree",
   daemon_outdated: 'The session runner needs an update before it can fork — try after the next rollout',
+  // Not `ALL_LIMITED_MESSAGE`: a fork runs on the SOURCE's account, so this is that
+  // one account at its ceiling, not "every account". `accounts_need_reauth` reads
+  // `REAUTH_MESSAGE` (createSessionFailure) — see `useForkFrom`.
   all_accounts_limited: "The session's account is at its usage ceiling — fork after it resets",
-  accounts_need_reauth: 'No usable accounts — one or more need re-authentication',
 }

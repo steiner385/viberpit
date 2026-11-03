@@ -12,6 +12,7 @@ import type { Turn } from '@/session/reducer'
 import { api, ApiRequestError } from '@/api/client'
 import { ForkProvider } from '@/features/sessions/fork/ForkProvider'
 import { storageKey } from '@/lib/storageKey'
+import { REAUTH_MESSAGE } from '@/features/sessions/createSessionFailure'
 
 const turn: Turn = {
   id: 't', role: 'assistant',
@@ -109,7 +110,8 @@ describe('MessageActions — Fork from here', () => {
     expect(post).toHaveBeenCalledWith('/sessions/src/fork', {
       atTurnId: 't1', mode: 'reply', requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
     })
-    expect(toast).toHaveBeenCalledWith('Forked — files start from the current worktree, not this message')
+    // The copy is a lazy chunk: the toast follows the navigation by one import.
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Forked — files start from the current worktree, not this message'))
     expect(localStorage.getItem(storageKey('draft.child-1'))).toBeNull()
   })
 
@@ -162,6 +164,15 @@ describe('MessageActions — Fork from here', () => {
       'An automation is running this session — fork it after the run finishes'))
     expect(toast).not.toHaveBeenCalled()
     expect(screen.queryByText(/open session/)).toBeNull()
+  })
+
+  it('says the shared no-usable-accounts line when every account needs a re-login', async () => {
+    vi.spyOn(api, 'post').mockRejectedValue(new ApiRequestError(409, {
+      error: { code: 'accounts_need_reauth', message: 'server text' },
+    }))
+    host(<MessageActions turn={reply1} />)
+    await chooseFork(/Message actions — reply/)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(REAUTH_MESSAGE))
   })
 
   it("falls back to the server's message for a code it does not map", async () => {

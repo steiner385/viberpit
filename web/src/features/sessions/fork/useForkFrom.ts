@@ -10,6 +10,7 @@ import { toast } from 'sonner'
 import { useForkSession } from '@/api/hooks'
 import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
+import { REAUTH_MESSAGE } from '@/features/sessions/createSessionFailure'
 import { seedSessionDraft } from '@/features/sessions/composer/useSessionDraft'
 import { latestReplyTarget, type ForkTarget } from '@/session/forkTarget'
 import { sessionPath } from '@/session/sessionNavState'
@@ -38,8 +39,11 @@ export function useForkFrom(sessionId: string): (target: ForkTarget) => Promise<
     } catch (err) {
       const { FORK_ERROR_MESSAGES, FORK_FAILED_FALLBACK } = await copy
       const code = apiErrorCode(err)
-      toast.error((code !== null ? FORK_ERROR_MESSAGES[code] : undefined)
-        ?? extractMutationErrorMessage(err, FORK_FAILED_FALLBACK))
+      // The no-usable-accounts line is create's (`REAUTH_MESSAGE`), shared, not copied:
+      // that module is already on the entry chunk (the dock's dispatch bar reads it).
+      const mapped = code === 'accounts_need_reauth' ? REAUTH_MESSAGE
+        : code !== null ? FORK_ERROR_MESSAGES[code] : undefined
+      toast.error(mapped ?? extractMutationErrorMessage(err, FORK_FAILED_FALLBACK))
     } finally {
       inFlight.current = false
     }
