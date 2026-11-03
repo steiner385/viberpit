@@ -51,7 +51,7 @@ D=[
 ]),
 ("4 Commands & config",[
  ("Engine slash-command passthrough",3,"Y",""),
- ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp"),
+ ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp /fork"),
  ("Plugins + marketplace browse/install",2,"P","enable/disable + detail; no marketplace"),
  ("Skills management",1,"Y",""),
  ("MCP servers + per-tool toggles",2,"P","servers, OAuth, scope; no per-tool toggles"),

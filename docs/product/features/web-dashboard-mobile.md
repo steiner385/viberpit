@@ -136,9 +136,18 @@ session whose conversation is the source's, cut at that message. The source is u
 - **Refusals:** a fork is refused with `FORK_OWNED_BY_AUTOMATION` while an automation owns the source. A fork
   also stays fenced for its whole life: it will not start while an automation re-claims its source
   ([#3230](https://github.com/steiner385/viberpit/issues/3230)). A repo whose local git config uses
-  `includeIf` is refused too (`FORK_UNSAFE_CONFIG`), as is a turn that is still running.
+  `includeIf` is refused too (`FORK_UNSAFE_CONFIG`). So is a turn that is still running, one the CLI has
+  not yet written to the transcript (the fork waits a few seconds first), and one from before the source's
+  last compaction, which the CLI cannot resume at (all `TURN_NOT_FORKABLE`).
+- **History:** the child shows the source's conversation up to the fork point straight away. Until its
+  first turn it reads the source's transcript, cut after the fork point; after that it reads its own,
+  which holds the same messages. A first-message fork starts empty.
 - **Lineage:** a fork's `parent_session_id` is the source, so it counts toward the source's live
-  [child sessions](../guides/child-sessions.md) and their `dispatch_session` cap.
+  [child sessions](../guides/child-sessions.md) and their `dispatch_session` cap. Otherwise it is
+  your own session, not the source's child:
+  - it never notifies or wakes the source when it stops;
+  - the source cannot `reply_to_child` it and does not see it in `session_context`;
+  - a fork waiting on you pushes like any session, not as an escalated child.
 - **Scope:** Claude only; Codex does not fork. The kill switch `VIBERPIT_FORK_ENABLED` (default on) hides the
   menu item and `/fork`, and the server refuses with `FORK_UNAVAILABLE`. The server side is
   `POST /api/sessions/{id}/fork`, run on the host that owns the session.
