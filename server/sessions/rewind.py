@@ -334,11 +334,13 @@ def tracked_since(jsonl_path: str, target_uuid: str, cwd: str) -> TrackedFiles:
                         frozenset(p for p, existed in tracked.items() if not existed))
 
 
-#: Row types a ``rewind_conversation`` appends (verification doc §3 and the second
-#: probe): a ``last-prompt`` row marked ``rewound`` with its ``cutUuid``, a plain
-#: ``last-prompt`` pointer re-stating the leaf, and ``cost-state``. None carries a
-#: ``uuid`` (they are not conversation entries).
-_REWIND_TAIL_TYPES = frozenset({"last-prompt", "cost-state"})
+#: Row types allowed past the pre-rewind length (none carries a ``uuid``; they are
+#: not conversation entries): what ``rewind_conversation`` appends (verification doc
+#: §3, second probe) — a ``last-prompt`` row marked ``rewound`` with its ``cutUuid``, a
+#: plain ``last-prompt`` pointer re-stating the leaf, ``cost-state`` — plus what an
+#: idle CLI appends when it exits (third probe): ``tools-used`` and ``cost-state``.
+#: Undo stops the client before its final check, so the exit rows are always there.
+_REWIND_TAIL_TYPES = frozenset({"last-prompt", "cost-state", "tools-used"})
 
 
 def tail_is_rewind_only(jsonl_path: str, offset: int) -> bool:
@@ -367,6 +369,27 @@ def tail_is_rewind_only(jsonl_path: str, offset: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def cut_applied(jsonl_path: str, offset: int, target_uuid: str) -> bool:
+    """Did a ``rewind_conversation`` to *target_uuid* land past byte *offset*? Its
+    first appended row is a ``last-prompt`` marked ``rewound`` whose ``cutUuid`` is the
+    target (verification doc §3). Used when the reply was lost and the client could
+    not be stopped to find out otherwise."""
+    try:
+        with open(jsonl_path, "rb") as fh:
+            fh.seek(offset)
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if (isinstance(row, dict) and row.get("type") == "last-prompt"
+                        and row.get("rewound") is True and row.get("cutUuid") == target_uuid):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def truncate_transcript(jsonl_path: str, length: int) -> None:

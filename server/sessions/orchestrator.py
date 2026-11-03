@@ -517,11 +517,25 @@ class RelaunchAsIs(Exception):
 class _RewindReset:
     """What ``_rewind_reset`` got to do (D-9): ``reached`` its hook with the client
     stopped, ``aborted`` there (a turn reached the transcript; nothing touched),
-    ``restore`` = the backup restore's result, ``relaunched`` the session."""
+    ``restore`` = the backup restore's result, ``truncated`` the transcript back to
+    its recorded length, ``relaunched`` the session."""
     reached: bool = False
     aborted: bool = False
     restore: Any = None
+    truncated: bool = False
     relaunched: bool = False
+
+
+@dataclass
+class _RewindApplied:
+    """One rewind's facts, for settling it (``_rewind_settled``) or rolling it back."""
+    rewind_id: str
+    target: str
+    to_turn_id: str
+    jsonl: str
+    jsonl_len: int | None
+    dest: Path | None
+    restored: list[str]
 
 
 class SessionLeaseHeld(RuntimeError):
@@ -17675,58 +17689,93 @@ class SessionOrchestrator:
                     conversation_unknown = exc.outcome_unknown
                     raise
         except BaseException:
+            applied = _RewindApplied(rewind_id=rewind_id, target=target, to_turn_id=to_turn_id,
+                                     jsonl=jsonl, jsonl_len=jsonl_len, dest=dest,
+                                     restored=restored)
             await self._rewind_roll_back(
-                rec, jsonl=jsonl, dest=dest, files_touched=files_touched,
-                jsonl_len=jsonl_len if conversation_unknown else None,
-                reset=files_unknown or conversation_unknown)
+                rec, applied, files_touched=files_touched,
+                cut_unknown=conversation_unknown, reset=files_unknown or conversation_unknown)
             raise
         conv = rw.ConversationRewind.from_cli(reply)
-        await self._record_rewind(rec.id, rewind_id, to_prompt_uuid=target,
-                                  to_turn_id=to_turn_id, jsonl_path=jsonl,
-                                  jsonl_len=jsonl_len, backup_dir=dest,
-                                  files_restored=restored, prefill=conv.prefill)
-        self.__dict__.setdefault("_rewind_undoable", {})[rec.id] = rewind_id
+        result = await self._rewind_settled(rec, _RewindApplied(
+            rewind_id=rewind_id, target=target, to_turn_id=to_turn_id, jsonl=jsonl,
+            jsonl_len=jsonl_len, dest=dest, restored=restored), prefill=conv.prefill)
+        log.info("session.rewind session=%s rewind=%s mode=%s target=%s files=%d",
+                 rec.id, rewind_id, mode, target, len(restored))
+        return result
+
+    async def _rewind_settled(self, rec: SessionRecord, a: _RewindApplied, *,
+                              prefill: str | None) -> dict:
+        """The bookkeeping of an applied rewind: the row (expiring earlier ones), the
+        undoable marker, the record's cut prompts (kept for an undo) and its last
+        prompt (never re-sent), the ``rewound`` event, the cached answer."""
+        await self._record_rewind(rec.id, a.rewind_id, to_prompt_uuid=a.target,
+                                  to_turn_id=a.to_turn_id, jsonl_path=a.jsonl,
+                                  jsonl_len=a.jsonl_len, backup_dir=a.dest,
+                                  files_restored=a.restored, prefill=prefill)
+        self.__dict__.setdefault("_rewind_undoable", {})[rec.id] = a.rewind_id
         # Kept so an undo can put the record's prompt uuids back (last_seen).
-        self.__dict__.setdefault("_rewind_cut_prompts", {})[rewind_id] = dict(rec.prompt_uuids)
-        self._forget_cut_prompts(rec, target)
+        self.__dict__.setdefault("_rewind_cut_prompts", {})[a.rewind_id] = dict(
+            rec.prompt_uuids)
+        self._forget_cut_prompts(rec, a.target)
         # The cut prompt must never be re-sent by a later restart or rotation.
         self._last_prompt.pop(rec.id, None)
         live = self._drivers.get(rec.id)
         if live is not None:
-            live.emit(ev.Rewound(rewind_id, to_turn_id, restored))
-        result = {"rewindId": rewind_id, "prefill": conv.prefill, "filesRestored": restored}
-        self.__dict__.setdefault("_rewind_results", {})[rewind_id] = result
-        log.info("session.rewind session=%s rewind=%s mode=%s target=%s files=%d",
-                 rec.id, rewind_id, mode, target, len(restored))
+            live.emit(ev.Rewound(a.rewind_id, a.to_turn_id, a.restored))
+        result = {"rewindId": a.rewind_id, "prefill": prefill, "filesRestored": a.restored}
+        self.__dict__.setdefault("_rewind_results", {})[a.rewind_id] = result
         return dict(result)
 
-    async def _rewind_roll_back(self, rec: SessionRecord, *, jsonl: str, dest: Path | None,
-                                files_touched: bool, jsonl_len: int | None,
-                                reset: bool) -> None:
-        """Put a failed rewind back where it started. Never raises over the caller's
-        error.
+    async def _rewind_roll_back(self, rec: SessionRecord, a: _RewindApplied, *,
+                                files_touched: bool, cut_unknown: bool, reset: bool) -> None:
+        """Put a failed rewind back where it started — or, when that is impossible,
+        into a state that is at least consistent and visible. Never raises over the
+        caller's error.
 
         When a state-changing request's reply never came (*reset*), the live CLI may
         have applied it: stop the client, restore the files and (for the cut,
-        *jsonl_len* set) truncate the transcript, then resume (``_rewind_reset``) — never
+        *cut_unknown*) truncate the transcript, then resume (``_rewind_reset``) — never
         restore under a live CLI. After a definite refusal the CLI changed nothing, so
-        the files are restored in place. A reset that never reached the restore (the
-        swap returned early) restores directly. The backup is dropped only once every
-        path is back; otherwise it is kept and the failure logged at WARNING."""
+        the files are restored in place.
+
+        If the reset never got the client stopped (the swap returned early), the
+        transcript decides: a ``rewound`` row for this target past the recorded length
+        means the cut WAS applied, so the rewind is settled as done (files stay
+        rewound, backup kept, undoable). Otherwise the files are restored directly and
+        the session is parked (``reassign_failed``) for the recovery sweep and the
+        dashboard. The backup is dropped only once every path is back; otherwise it is
+        kept and the failure logged at WARNING."""
         from server.sessions import rewind as rw
+        dest = a.dest
         result: rw.RestoreResult | None = None
         try:
             if reset:
                 out = await self._rewind_reset(
-                    rec, jsonl=jsonl, jsonl_len=jsonl_len,
+                    rec, jsonl=a.jsonl, jsonl_len=a.jsonl_len if cut_unknown else None,
                     backup_dir=str(dest) if files_touched and dest else None,
                     reason="rewind_rollback", check_tail=False)
-                if not out.relaunched:
+                result = out.restore
+                if out.reached and cut_unknown and not out.truncated:
+                    log.warning("session.rewind_rollback_untruncated session=%s — the "
+                                "transcript could not be cut back; backup kept", rec.id)
+                    return
+                if not out.reached and self._records.get(rec.id) is rec:
+                    if cut_unknown and a.jsonl_len is not None and await asyncio.to_thread(
+                            rw.cut_applied, a.jsonl, a.jsonl_len, a.target):
+                        await self._rewind_settled(rec, a, prefill=None)
+                        log.info("session.rewind_settled_after_lost_reply session=%s "
+                                 "rewind=%s — the transcript shows the cut applied",
+                                 rec.id, a.rewind_id)
+                        return
+                    if files_touched and dest is not None:
+                        result = await asyncio.to_thread(rw.restore_backup, dest)
+                    await self._pause_session(rec, reason=_REASSIGN_FAILED_PAUSE_REASON)
+                elif not out.reached and files_touched and dest is not None:
+                    result = await asyncio.to_thread(rw.restore_backup, dest)
+                elif not out.relaunched:
                     log.error("session.rewind_rollback_failed session=%s — the session "
                               "could not be resumed after the rollback", rec.id)
-                result = out.restore
-                if files_touched and dest is not None and not out.reached:
-                    result = await asyncio.to_thread(rw.restore_backup, dest)
             elif files_touched and dest is not None:
                 result = await asyncio.to_thread(rw.restore_backup, dest)
         except Exception:
@@ -17766,7 +17815,15 @@ class SessionOrchestrator:
             if backup_dir:
                 out.restore = await asyncio.to_thread(rw.restore_backup, Path(backup_dir))
             if jsonl_len is not None:
-                await asyncio.to_thread(rw.truncate_transcript, jsonl, jsonl_len)
+                # A failed truncation must not fail the swap (the session would be
+                # parked with its files already restored); it is reported instead.
+                try:
+                    await asyncio.to_thread(rw.truncate_transcript, jsonl, jsonl_len)
+                except (OSError, rw.RewindError) as exc:
+                    log.warning("session.rewind_truncate_failed session=%s path=%s: %s",
+                                rec.id, jsonl, exc)
+                else:
+                    out.truncated = True
 
         # A usage pause is not something a rewind or its undo resolves; the swap's own
         # status writes (the old client closing, the new one coming up idle) clear it,
@@ -17979,6 +18036,10 @@ class SessionOrchestrator:
             self._rewind_refuse(rec.id, rw.REWIND_FAILED, "the client could not be stopped")
         cwd = rec.cwd or ""
         restore = out.restore or rw.RestoreResult()
+        if row.jsonl_len is not None and not out.truncated:
+            # Files back, conversation still rewound: not undone. The row and backup
+            # stay, so retrying the undo (restore again, truncate again) finishes it.
+            raise rw.RewindError(rw.REWIND_FAILED, "the transcript could not be truncated")
         if not restore.ok:
             failed = [rw.display_path(cwd, p) if cwd else p for p in restore.failed]
             log.warning("session.rewind_undo_restore_incomplete session=%s rewind=%s "

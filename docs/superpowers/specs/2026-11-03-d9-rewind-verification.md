@@ -319,6 +319,34 @@ rewind_files U4 dry_run → filesChanged [] ; real → a.txt mode 0o600 → 0o64
 - The probe cwd was deleted. The probe transcript was left at
   `~/.claude/projects/-tmp-d9-rewind-spike2-*/785a0add-….jsonl`.
 
+## Third probe: rows an idle client appends (2026-11-03, no model)
+
+Why: undo stops the client and then checks that nothing past the pre-rewind length is a
+conversation entry before truncating. So it must know which rows a client writes with no turn.
+
+**Setup.**
+- Binary 2.1.317.
+- A copy of the second probe's transcript (`785a0add…`), resumed under a throwaway `CLAUDE_CONFIG_DIR`, `HOME` and
+  cwd, with `--resume <sid> --setting-sources ""`.
+- `ANTHROPIC_BASE_URL=http://127.0.0.1:9`, no credentials, and no prompt. Only control requests were sent.
+- Stdin was held open for 6 s, then closed.
+- Script: `/tmp/d9t4-probe-scripts/probe.py`. Log: `/tmp/d9-t4-probe.log`. The probe dirs were deleted.
+
+**Results** (no `assistant` frame was seen in any run):
+
+| run | control replies | rows appended to the transcript |
+|---|---|---|
+| idle, `initialize` only | success | `tools-used {type, tools, sessionId}`, `cost-state {…}` |
+| plus `set_permission_mode acceptEdits` | success | the same two rows |
+| plus `set_model haiku` | success | the same two rows |
+
+- The rows are written at exit. Neither carries a `uuid`. No `mode`, `atis-latch` or `ai-title` row appeared, and no
+  second transcript was created.
+- So an undo's tail allowlist must admit `tools-used`, along with the rewind's own `last-prompt` and `cost-state`
+  rows. Otherwise every undo would be refused once the client it stopped has exited.
+- Not covered: rows written by a client with live tool use, title generation or a real model turn. Those come with
+  `uuid`-bearing entries, which the allowlist refuses anyway.
+
 ## Gaps (not verified)
 
 1. **In-place `--resume-session-at` followed by a prompt** (the respawn alternative). This is no longer needed, because
