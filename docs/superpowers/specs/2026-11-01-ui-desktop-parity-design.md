@@ -114,9 +114,36 @@ labels.
   Copy path.
 - **Search** `[A-D13]`: ⌘F with focus in the transcript (falling through to the browser's find elsewhere). The
   search runs **server-side** over the full event log, so unloaded pages are found, with next/prev hits.
+  - **Shipped (D-11).** The `transcript.search` row (⌘F / Ctrl+F) matches on `e.key`, with the physical `KeyF`
+    only for non-Latin layouts, and Shift is excluded. It fires only with a session's transcript on screen (not on
+    the Files / Changes / Browser / Details tabs) and focus in the transcript pane, the session composer, or
+    nowhere. Anywhere else it is neither matched nor prevented, so the browser's find works. The focus test is a
+    per-key context fact, so the ⌘K palette offers "Search this conversation" whenever a transcript is open. The
+    transcript scroller takes focus on a click (`tabIndex={-1}`, no ring).
+  - The bar is lazy (its own chunk, with the highlighters and the jump) and sits at the top of the transcript
+    pane. It shows the query, `N of M` (`M+` when older matches were cut), Older / Newer buttons and ✕. Queries
+    are debounced 250 ms, need at least 2 characters, and stale responses are dropped. A failed search toasts
+    and reads "Search failed".
+  - **Newest first.** Results land on the newest hit, but only when it is already loaded: typing never pages.
+    Enter and ↑ go older, Shift+Enter and ↓ go newer, both wrapping; the count stays in transcript order. Esc
+    closes the bar and returns focus to where ⌘F was pressed.
+  - **Jumping.** A hit older than the loaded history pages older windows in contiguously through the
+    transcript's own load-older path, at most 2000 turns back. The hit's row is then centred and held; in a turn
+    taller than the viewport, the match itself is centred. The user taking over (a scroll, Scroll to bottom, a
+    send, a prompt jump, a new query) abandons a jump that is still paging. Dead ends toast.
+  - **Highlights.** Every term is marked in user prompts and assistant prose (never code, tools or thinking),
+    and the current hit is drawn stronger.
 - **Post-turn summary card** `[A-D13]`: completed / ready for review / blocked, with files changed and a
-  `+N −M` summary. It **subsumes** the "Likely complete" panel (`YourTurnPanel`); that branch is deleted in the
-  same PR.
+  `+N −M` summary. It **subsumes** the "Likely complete" panel.
+  - **Shipped (D-11).** The card is the transcript's tail row: after the last turn, before the rewind divider.
+    It shows once the session is not busy and its last reply has ended. The outcome uses `statusTier`'s labels:
+    `complete` / `ended` → **Complete**, `handed_back` → **Handed back** + the reason (and the "Likely complete"
+    line with **Mark complete** / **Not done**), `done` → **Your turn**, `needs_attention` → **Turn failed**,
+    `limited` → its label. `waiting_*` and `ready_review` show no card, because their own cards own the moment.
+    While busy with a hand-back reason it is the "Asked you" note. It lists up to 5 changed paths (`+K more`)
+    with `+N −M` when every path is counted (Codex and notebook paths are not), plus **Open Changes**. The
+    persistent live region announces the hand-off reason once.
+  - The pinned Your-turn panel was deleted in the same change. The list card's "Likely complete" pill stays.
 - **Inline diffs** `[A-D19]`: rendered by the Changes renderer (syntax-highlighted), with "Open in Changes".
   `transcript/DiffView.tsx` is replaced, not kept alongside.
 
@@ -310,7 +337,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | live `set_permission_mode` / effort / fast on the driver | prompt row |
 | `scope=session` rule creation from the card | permission card |
 | per-viewer read state — **shipped (D-10)** as `last_viewed_at`, not a seq (§7): table `session_views (identity, session_id, viewed_at)`; `GET /sessions` and `GET /sessions/archived` add `unread: bool` per row for the calling identity (one batched query; a lookup failure degrades to all-read rather than failing the list); `POST /sessions/{id}/viewed` → 204, stores `max(DB now, last_turn_at)`; `POST /sessions/{id}/unread` → 204, stores just before `last_turn_at` or drops the row with no turn yet; both 404 for an unknown session. Served by the edge from the DB, so no daemon RPC | read/unread |
-| `GET /sessions/{id}/search?q=` | transcript search |
+| `GET /sessions/{id}/search?q=&limit=` — **shipped (D-11)**: `{hits: [{turnId, ordinal, role, snippet, matchStart, matchEnd}], truncated, totalTurns}`. Every term must match, as a case-insensitive substring (the list search's `parse_terms` / `terms_match`), over user prompts and assistant text from the replay, which follows the active chain. Thinking, tool JSON and sub-agent events are excluded. `ordinal` is the turn's `?before=` cursor; a user prompt takes the next turn's ordinal, or its own open turn's when it was a mid-turn (Codex steering) prompt. `turnId` is the prompt's id for a user hit and the turn's for an assistant hit. `snippet` is ≤ 80 chars around the first term's first occurrence, with `matchStart`/`matchEnd` as UTF-16 offsets into it. Past `limit` (default 200, max 1000) the **newest** hits are kept in transcript order, and `truncated` means older matches exist. 400 `SEARCH_EMPTY`, 404 for an unknown session, 409 `daemon_outdated`; routed per session (RPC, fleet) | transcript search |
 | memory-file discovery (loaded `CLAUDE.md` set) + user-level write/sync | Context card, Settings › Memory |
 | MCP per-tool toggles, output styles, plugin marketplace ops | Settings |
 | `POST /sessions/{id}/move` `{host}` | Move to host |
