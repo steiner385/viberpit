@@ -11,8 +11,8 @@ type Opts = VirtualizerOptions<HTMLDivElement, Element>
 // Capture the options TranscriptView hands to useVirtualizer so a test can drive
 // the virtualizer's own scroll path (its scrollToFn) without real layout.
 let capturedOpts: Opts | null = null
-// …and the instance it returns, so a test can pin its visible range and spy on
-// scrollToIndex: jsdom lays nothing out, so the real range is not meaningful.
+// …and the instance it returns, so a test can read its row measurements and spy
+// on scrollToIndex: jsdom lays nothing out, so the scroll position is set by hand.
 let capturedVirtualizer: Virtualizer<HTMLDivElement, Element> | null = null
 vi.mock('@tanstack/react-virtual', async (importOriginal) => {
   const mod = await importOriginal<typeof import('@tanstack/react-virtual')>()
@@ -186,11 +186,30 @@ describe('TranscriptView jumpPrompt', () => {
     )
     const v = capturedVirtualizer!
     const scrollToIndex = vi.spyOn(v, 'scrollToIndex').mockImplementation(() => {})
-    /** Pretend row `top` is the topmost visible one. */
-    const showFrom = (top: number) => { v.range = { startIndex: top, endIndex: convo.length - 1 } }
+    const scroller = screen.getByTestId('transcript-scroll')
+    /** Put the scroller's LIVE scroll position at `top` px (jsdom lays nothing out). */
+    const scrollTo = (top: number) =>
+      Object.defineProperty(scroller, 'scrollTop', { value: top, writable: true, configurable: true })
+    /** Scroll so row `index` starts exactly at the top edge — the topmost visible row. */
+    const showFrom = (index: number) => scrollTo(v.measurementsCache[index].start)
     const jump = (dir: 'prev' | 'next') => act(() => { handle!.current!.jumpPrompt(dir) })
-    return { ...view, scrollToIndex, showFrom, jump }
+    return { ...view, scrollToIndex, scrollTo, showFrom, jump }
   }
+
+  // The root cause of the 9/40 keyboard-nav e2e failure: `virtualizer.range`
+  // and `scrollOffset` only catch up when the virtualizer handles the `scroll`
+  // event, a frame AFTER scrollTop moves. A key pressed inside that frame — key
+  // repeat, a quick double press — targeted from where the view WAS. The jump
+  // reads the scroller's live scrollTop instead.
+  it('targets from the LIVE scroll position, not the virtualizer\'s not-yet-updated range', () => {
+    const { scrollToIndex, showFrom, jump } = renderConvo()
+    const v = capturedVirtualizer!
+    showFrom(0) // the view is at p1…
+    v.range = { startIndex: 4, endIndex: 5 } // …but the range still says p2 (stale)
+    v.scrollOffset = v.measurementsCache[4].start
+    jump('next')
+    expect(scrollToIndex).toHaveBeenLastCalledWith(4, { align: 'start' })
+  })
 
   it('Alt+↑ goes to the previous own prompt above the topmost visible row', () => {
     const { scrollToIndex, showFrom, jump } = renderConvo()
@@ -255,14 +274,13 @@ describe('TranscriptView jumpPrompt', () => {
   // (fractional scroll offsets), and the range then reports IT as topmost — so
   // the next Alt+↓ re-targeted the prompt already at the top (seen in e2e).
   it('a sub-pixel sliver of the row above does not count as the topmost visible row', () => {
-    const { scrollToIndex, showFrom, jump } = renderConvo()
+    const { scrollToIndex, scrollTo, jump } = renderConvo()
     const v = capturedVirtualizer!
     const a2 = v.measurementsCache[3]
-    showFrom(3) // a2 "visible", but only its last half-pixel…
-    v.scrollOffset = a2.end - 0.5
+    scrollTo(a2.end - 0.5) // a2 "visible", but only its last half-pixel…
     jump('next') // …so p2 (4) is the top, and there is no own prompt after it
     expect(scrollToIndex).not.toHaveBeenCalled()
-    v.scrollOffset = a2.start + 10 // a2 genuinely in view: p2 is next
+    scrollTo(a2.start + 10) // a2 genuinely in view: p2 is next
     jump('next')
     expect(scrollToIndex).toHaveBeenLastCalledWith(4, { align: 'start' })
   })
@@ -286,7 +304,8 @@ describe('TranscriptView jumpPrompt', () => {
     )
     const v = capturedVirtualizer!
     vi.spyOn(v, 'scrollToIndex').mockImplementation(() => {})
-    v.range = { startIndex: 5, endIndex: 5 }
+    Object.defineProperty(screen.getByTestId('transcript-scroll'), 'scrollTop',
+      { value: v.measurementsCache[5].start, writable: true, configurable: true })
     act(() => { handle!.current!.jumpPrompt('prev') })
     expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeDefined()
     view.rerender(

@@ -299,6 +299,10 @@ const DISPLAY_ONLY_ROWS = [
 ]
 
 describe('shortcuts registry — integrity', () => {
+  // The reachability and reserved-chord cases switch platforms; restore it even
+  // when an assertion throws mid-loop, so no later case runs on the wrong one.
+  afterEach(() => setPlatform(ORIGINAL_PLATFORM))
+
   it('every row has a unique id', () => {
     const ids = SHORTCUTS.map((s) => s.id)
     expect(ids).toEqual([...new Set(ids)])
@@ -348,7 +352,6 @@ describe('shortcuts registry — integrity', () => {
         }
       }
     }
-    setPlatform(ORIGINAL_PLATFORM)
   })
 
   it('every row is documented — non-empty keys and description', () => {
@@ -1028,6 +1031,10 @@ describe('alt()', () => {
 // help sheet therefore promises nothing about them. A row here that did nothing
 // in a real browser would be a lie the sheet repeats every time it is opened.
 describe('the un-bindable Desktop chords bind nothing', () => {
+  // The reachability and reserved-chord cases switch platforms; restore it even
+  // when an assertion throws mid-loop, so no later case runs on the wrong one.
+  afterEach(() => setPlatform(ORIGINAL_PLATFORM))
+
   /** Maximally permissive: every guard satisfied, so a match would be the ROW
    *  existing, never a context accidentally blocking it. */
   const anywhere = ctx({ sessionOpen: true, inSessions: true, interactive: true })
@@ -1068,7 +1075,6 @@ describe('the un-bindable Desktop chords bind nothing', () => {
       // …and it is not selectable by a focused row or group header either.
       expect(matchShortcut(e, () => true), `${label} on ${platform}`).toBeUndefined()
     }
-    setPlatform(ORIGINAL_PLATFORM)
   })
 
   it('the prompt-row menu chords (Alt+Shift+M / I / E) are not in the browser-reserved set', () => {

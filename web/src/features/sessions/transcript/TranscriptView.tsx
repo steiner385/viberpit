@@ -153,22 +153,26 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
   useEffect(releaseJumpHold, [followSignal, virtualizer])
 
   // Alt+↑ / Alt+↓ (the shell's `transcript.promptPrev/Next`): scroll to the
-  // previous / next own prompt relative to the topmost VISIBLE row — the
-  // virtualizer's range, overscan excluded. Unpin first, or the pin would snap
-  // the view back to the bottom (`scrollToFn` above, and the spacer observer).
+  // previous / next own prompt relative to the topmost VISIBLE row. Unpin
+  // first, or the pin would snap the view back to the bottom (`scrollToFn`
+  // above, and the spacer observer).
   // The view then holds on the target until the user scrolls (`holdJumpedRow`).
   // Nothing past either end, and no focus moves: the user may be mid-draft.
   // Only the session transcript answers — the assistant drawer's is a different
   // conversation, and the shell only fires these with a session open.
   useTranscriptJumpRegistration({
     jumpPrompt: (dir) => {
-      const first = virtualizer.range?.startIndex
-      if (first === undefined) return
-      // A sliver of the row above (≤ SLIVER_PX, left by a fractional scroll
-      // offset after an align-start jump) is not "visible": counting it would
-      // make the next Alt+↓ re-target the prompt already at the top.
-      const above = virtualizer.measurementsCache[first]
-      const top = above && above.end - (virtualizer.scrollOffset ?? 0) <= SLIVER_PX ? first + 1 : first
+      // The topmost visible row from the scroller's LIVE scrollTop — never
+      // `virtualizer.range` / `scrollOffset`, which only catch up when the
+      // virtualizer handles the `scroll` event a frame after the view moves: a
+      // second press inside that frame (key repeat, a quick Alt+↑ then Alt+↓)
+      // would target from where the view WAS. `+ SLIVER_PX`: a sliver of the
+      // row above, left by a fractional offset after an align-start jump, is
+      // not "visible" — counting it would re-target the prompt already on top.
+      const el = containerRef.current
+      if (!el) return
+      const top = virtualizer.getVirtualItemForOffset(el.scrollTop + SLIVER_PX)?.index
+      if (top === undefined) return
       const target = ownPromptRowIndex(rows, top, dir)
       if (target === null) return
       unpin()
