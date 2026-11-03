@@ -291,6 +291,131 @@ class TranscriptAnchors:
     compacted: frozenset[str] = frozenset()
 
 
+class _ActiveChain:
+    """Which top-level transcript entries are on the conversation's ACTIVE chain (D-9).
+
+    A rewind (``rewind_conversation``) never deletes rows: it appends a ``last-prompt``
+    row whose ``leafUuid`` names the new leaf, and the CLI loads only the ``parentUuid``
+    chain ending there (docs/superpowers/specs/2026-11-03-d9-rewind-verification.md §3).
+    The dropped turns stay in the file, so replay must follow the same chain.
+
+    Fed every top-level entry and ``last-prompt`` row in file order, in the parse's one
+    pass; ``active()`` then walks the chain back once, and once more over the dropped
+    branches. The leaf is:
+
+    * the newest ``last-prompt`` row's ``leafUuid`` — ``null`` (a rewind to the first
+      prompt) leaves an empty chain — extended by every LATER entry that descends from
+      it. The CLI writes ``last-prompt`` rows routinely and they lag: one lands before
+      the reply's entries exist, so a turn in progress lies past the newest row;
+    * else the file's last entry (a transcript from before ``last-prompt`` rows);
+    * the cut entry itself for a D-8 ``until_uuid`` read.
+
+    A ``compact_boundary`` has ``parentUuid: null``; its ``logicalParentUuid`` carries
+    the chain across it, so compacted history stays on the chain as it always has. An
+    entry without a ``parentUuid`` key (a hand-written legacy row) chains to the entry
+    before it.
+
+    What is DROPPED is narrower than "off the walk": an off-chain human prompt and
+    everything under it. A rewind always cuts at a human prompt (it cannot split a tool
+    call), so that is exactly a rewound turn — or at a compaction's summary, whose
+    off-chain ``compact_boundary`` is dropped the same way.
+
+    The walk alone is not the conversation: the CLI parents a tool_result row on its
+    ``sourceToolAssistantUUID``, so with parallel tool calls all but one result hang off
+    the chain, as do attachment and system rows and the synthetic API-error replies
+    ViberPit has always shown. Off-chain rows under no off-chain prompt stay, so a
+    transcript with no rewind replays exactly as before (checked against ~100k real
+    transcripts). Two more shapes the CLI writes:
+
+    * a parent the file never wrote (the CLI's "phantom parent"): its loader falls back
+      to the entry before by timestamp; file order is that order;
+    * a parent written AFTER its child, so parents resolve once the file is read and
+      the drop is a walk over children, not a file-order sweep."""
+
+    __slots__ = ("_parents", "_before", "_roots", "_prev", "_has_leaf", "_reach", "_tip")
+
+    def __init__(self) -> None:
+        self._parents: dict[str, str | None] = {}   # as written; file order
+        self._before: dict[str, str | None] = {}    # the entry before, in file order
+        self._roots: set[str] = set()   # human prompts and compact boundaries
+        self._prev: str | None = None
+        self._has_leaf = False
+        self._reach: set[str | None] = set()   # the newest leaf and what descends from it
+        self._tip: str | None = None
+
+    def leaf_row(self, o: dict) -> None:
+        if "leafUuid" not in o:
+            return
+        leaf = o.get("leafUuid")
+        leaf = leaf if isinstance(leaf, str) else None
+        self._has_leaf = True
+        self._reach = {leaf}
+        self._tip = leaf
+
+    def entry(self, uuid: str, o: dict, content: list[dict]) -> None:
+        if "parentUuid" in o:
+            parent = o.get("parentUuid") or o.get("logicalParentUuid") or None
+        else:
+            parent = self._prev
+        parent = parent if isinstance(parent, str) else None
+        self._parents[uuid] = parent
+        self._before[uuid] = self._prev
+        self._prev = uuid
+        typ = o.get("type")
+        # A human prompt, not a tool's rows (its result, an image companion, meta
+        # context) — the line the CLI's loader draws.
+        prompt = typ == "user" and not (
+            o.get("isMeta") is True or o.get("turnCompanion") is True
+            or any(k in o for k in ("toolUseResult", "sourceToolAssistantUUID",
+                                    "sourceToolUseID"))
+            or any(b.get("type") == "tool_result" for b in content))
+        boundary = typ == "system" and o.get("subtype") == "compact_boundary"
+        if prompt or boundary:
+            self._roots.add(uuid)
+        message = typ in ("user", "assistant") or boundary
+        if self._has_leaf:
+            if parent not in self._reach:
+                return
+            self._reach.add(uuid)
+        # The tip moves on conversation messages only: a trailing attachment or system
+        # row stays as an off-chain row under it, never becomes the chain's end.
+        if message or self._tip is None:
+            self._tip = uuid
+
+    def _parent(self, uuid: str) -> str | None:
+        parent = self._parents[uuid]
+        if parent is not None and parent not in self._parents:
+            return self._before[uuid]           # a phantom parent
+        return parent
+
+    def active(self, until_uuid: str | None) -> set[str] | None:
+        """The uuids to replay, or None when that is every entry seen."""
+        tip = until_uuid if until_uuid is not None else self._tip
+        if tip is not None and tip not in self._parents:
+            tip = self._prev                 # a leaf this file does not hold: its last chain
+        chain: set[str] = set()
+        while tip is not None and tip not in chain:
+            chain.add(tip)
+            tip = self._parent(tip)
+        if self._parents.keys() <= chain:
+            return None
+        children: dict[str, list[str]] = {}
+        for uuid in self._parents:
+            parent = self._parent(uuid)
+            if parent is not None and uuid not in chain:
+                children.setdefault(parent, []).append(uuid)
+        todo = [u for u in self._roots if u not in chain]
+        dropped = set(todo)
+        while todo:
+            for child in children.get(todo.pop(), ()):
+                if child not in dropped:
+                    dropped.add(child)
+                    todo.append(child)
+        if not dropped:
+            return None
+        return {u for u in self._parents if u not in dropped}
+
+
 def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, object | None]:
     """Parse the full main JSONL into (events, meta_event). No trimming. See
     ``_parse_transcript``."""
@@ -309,7 +434,12 @@ def _parse_transcript(path: str, until_uuid: str | None = None
     *until_uuid* (D-8) reads the file only up to and including the entry with that
     uuid — the CLI's own inclusive ``--resume-session-at`` cut — so a fork child shows
     its source's history up to the fork point before its own transcript exists. An
-    *until_uuid* the file does not contain yields nothing: never the whole source."""
+    *until_uuid* the file does not contain yields nothing: never the whole source.
+
+    Only entries on the active chain (``_ActiveChain``) are emitted, and the anchor facts
+    describe that chain alone, so a rewound turn neither replays nor is a fork point.
+    The chain is known only once the file is read, so each entry's events are recorded
+    as a span of ``out`` and the rare off-chain spans are dropped afterwards."""
     out: list = []
     meta_event = None
     tool_use_entries: set = set()   # assistant entry uuids carrying a tool_use block
@@ -317,6 +447,9 @@ def _parse_transcript(path: str, until_uuid: str | None = None
     # CLI cannot resume at one (CLI 2.1.317 — see the D-8 verification doc §1).
     entry_uuids: set = set()
     pre_compaction: set = set()
+    chain = _ActiveChain()
+    # (uuid, index of its first event in `out`, is a compact_boundary) per entry.
+    spans: list[tuple[str | None, int, bool]] = []
     reached = until_uuid is None
     for o in _read_jsonl(path):
         if until_uuid is not None:
@@ -326,14 +459,21 @@ def _parse_transcript(path: str, until_uuid: str | None = None
         if o.get("isSidechain"):
             continue
         typ = o.get("type")
-        if typ == "system" and o.get("subtype") == "compact_boundary":
-            pre_compaction.update(entry_uuids)
+        if typ == "last-prompt":
+            chain.leaf_row(o)
             continue
-        if o.get("uuid"):
-            entry_uuids.add(o["uuid"])
+        uuid = o.get("uuid")
         msg = o.get("message") or {}
         content = _content_blocks(msg)
-        uuid = o.get("uuid")
+        if uuid and isinstance(uuid, str):
+            chain.entry(uuid, o, content)
+        if typ == "system" and o.get("subtype") == "compact_boundary":
+            spans.append((uuid, len(out), True))
+            pre_compaction.update(entry_uuids)
+            continue
+        spans.append((uuid, len(out), False))
+        if uuid:
+            entry_uuids.add(uuid)
         ts = _ts_ms(o)
         if typ == "user":
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
@@ -402,6 +542,10 @@ def _parse_transcript(path: str, until_uuid: str | None = None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
     if not reached:
         return [], None, TranscriptAnchors()
+    active = chain.active(until_uuid)
+    if active is not None:
+        out, entry_uuids, pre_compaction = _keep_active(out, spans, active)
+        tool_use_entries &= active
     # Collapse the duplicate user turn a recovery resend leaves behind. Done here, in
     # the single shared reconstruction path, so every consumer (replay_window /
     # transcript_events / export / replay_events) inherits it and the drop_incomplete
@@ -413,6 +557,27 @@ def _parse_transcript(path: str, until_uuid: str | None = None
         entries=frozenset(entry_uuids), dangling=frozenset(tool_use_entries),
         compacted=frozenset(pre_compaction))
     return events, meta_event, facts
+
+
+def _keep_active(out: list, spans: list[tuple[str | None, int, bool]], active: set[str]
+                 ) -> tuple[list, set, set]:
+    """Drop the events of entries off the active chain and recompute the entry sets
+    over what is left: (events, entry uuids, uuids at or before the last kept
+    compact_boundary). A uuid-less entry has no place on any chain and is kept."""
+    kept: list = []
+    entry_uuids: set = set()
+    pre_compaction: set = set()
+    for k, (uuid, start, boundary) in enumerate(spans):
+        if uuid and uuid not in active:
+            continue
+        if boundary:
+            pre_compaction.update(entry_uuids)
+            continue
+        if uuid:
+            entry_uuids.add(uuid)
+        end = spans[k + 1][1] if k + 1 < len(spans) else len(out)
+        kept.extend(out[start:end])
+    return kept, entry_uuids, pre_compaction
 
 
 def _with_turn_anchors(out: list, unanchorable: set) -> list:
