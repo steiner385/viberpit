@@ -40,20 +40,21 @@ function mockApi({ preview = PREVIEW as unknown, result = RESULT as unknown }: {
 }
 
 const setDraft = vi.fn()
-/** A stand-in dock composer registered on the shell's bridge. */
-function FakeComposer() {
+const onExpired = vi.fn()
+/** A stand-in dock composer registered on the shell's bridge, holding `draft`. */
+function FakeComposer({ draft }: { draft: string }) {
   const ref = useComposerAttachRegistration()
-  useEffect(() => { if (ref) ref.current = { attachFile: vi.fn(), setDraft } })
+  useEffect(() => { if (ref) ref.current = { attachFile: vi.fn(), setDraft, draftText: () => draft } })
   return null
 }
 
-function host(ui: ReactNode, { enabled = true, busy = false, composer = false } = {}) {
+function host(ui: ReactNode, { enabled = true, status = 'idle', composer = false, draft = '' } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <SessionGestureProvider>
-        <RewindProvider sessionId="s1" enabled={enabled} busy={busy}>{ui}</RewindProvider>
-        {composer && <FakeComposer />}
+        <RewindProvider sessionId="s1" enabled={enabled} status={status} onExpired={onExpired}>{ui}</RewindProvider>
+        {composer && <FakeComposer draft={draft} />}
       </SessionGestureProvider>
     </QueryClientProvider>,
   )
@@ -146,6 +147,36 @@ describe('Edit & resend', () => {
     await waitFor(() => expect(setDraft).toHaveBeenCalledWith('fix the bug'))
   })
 
+  it('warns that a non-empty draft will be replaced, and replaces it only on confirm', async () => {
+    mockApi()
+    host(<MessageActions turn={prompt} />, { composer: true, draft: 'half-written idea' })
+    await choose('Edit & resend')
+    expect(await screen.findByText('Your unsent draft will be replaced.')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(setDraft).not.toHaveBeenCalled()
+
+    await choose('Edit & resend')
+    await screen.findByText('Your unsent draft will be replaced.')
+    await userEvent.click(screen.getByRole('button', { name: 'Rewind and edit' }))
+    await waitFor(() => expect(setDraft).toHaveBeenCalledWith('fix the bug'))
+  })
+
+  it('says nothing about a draft when the composer is empty, or on a plain rewind', async () => {
+    mockApi()
+    host(<MessageActions turn={prompt} />, { composer: true, draft: '' })
+    await choose('Edit & resend')
+    await screen.findByText('src/a.ts')
+    expect(screen.queryByText('Your unsent draft will be replaced.')).toBeNull()
+  })
+
+  it('with no composer mounted, warns about a saved draft', async () => {
+    mockApi()
+    localStorage.setItem(storageKey('draft.s1'), JSON.stringify({ text: 'saved wip', attachments: [] }))
+    host(<MessageActions turn={prompt} />)
+    await choose('Edit & resend')
+    expect(await screen.findByText('Your unsent draft will be replaced.')).toBeTruthy()
+  })
+
   it('with no composer mounted, saves the prefill as the session draft', async () => {
     mockApi()
     host(<MessageActions turn={prompt} />)
@@ -160,11 +191,18 @@ describe('Edit & resend', () => {
 describe('gating', () => {
   beforeEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
 
-  it('disables both items while a turn runs', async () => {
-    host(<MessageActions turn={prompt} />, { busy: true })
+  it.each(['in_progress', 'waiting_input', 'waiting_question', 'ready_review'])(
+    'disables both items while the server would refuse (%s)', async (status) => {
+    host(<MessageActions turn={prompt} />, { status })
     await userEvent.click(screen.getByRole('button', { name: /Message actions — your prompt/ }))
     expect(screen.getByRole('menuitem', { name: 'Rewind to here' }).getAttribute('aria-disabled')).toBe('true')
     expect(screen.getByRole('menuitem', { name: 'Edit & resend' }).getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('leaves them enabled for a hand-back, which the server allows', async () => {
+    host(<MessageActions turn={prompt} />, { status: 'handed_back' })
+    await userEvent.click(screen.getByRole('button', { name: /Message actions — your prompt/ }))
+    expect(screen.getByRole('menuitem', { name: 'Rewind to here' }).getAttribute('aria-disabled')).toBeNull()
   })
 
   it('hides both items without the capability, or outside a live session', async () => {
@@ -203,12 +241,23 @@ describe('the rewind divider', () => {
       'Rewind undone — these files were left as they are: link/a.txt, b.txt'))
   })
 
-  it('says why an undo was refused', async () => {
+  it('an expired undo says so and drops the divider', async () => {
     vi.spyOn(api, 'post').mockRejectedValue(new ApiRequestError(409, { detail: { code: 'REWIND_UNDO_EXPIRED', message: 'x' } }))
     host(<RewindDividerSlot marker={marker} />)
     await userEvent.click(await screen.findByRole('button', { name: 'Undo rewind' }))
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
       "This rewind can't be undone any more — a message was sent since"))
+    expect(onExpired).toHaveBeenCalledWith('r1')
+  })
+
+  it('an undo that could not restore every file says to retry, lists them, and keeps the divider', async () => {
+    vi.spyOn(api, 'post').mockRejectedValue(new ApiRequestError(409, { detail: {
+      code: 'REWIND_FAILED', message: 'x', failed: ['src/a.ts', 'src/b.ts'] } }))
+    host(<RewindDividerSlot marker={marker} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Undo rewind' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't finish undoing — your backup is kept; try Undo again. Not restored: src/a.ts, src/b.ts"))
+    expect(onExpired).not.toHaveBeenCalled()
   })
 
   it('has no Undo where the session cannot rewind', async () => {
@@ -241,6 +290,17 @@ describe('useRewind(sessionId).start — the export Rewind & retry reuses', () =
     await screen.findByText('src/a.ts')
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await expect(done).resolves.toBeNull()
+  })
+
+  it('a REWIND_FAILED from the rewind itself keeps the rewind copy, not the undo one', async () => {
+    mockApi({ result: new ApiRequestError(409, { detail: { code: 'REWIND_FAILED', message: 'x', failed: ['a'] } }) })
+    let rewind: ReturnType<typeof useRewind> | null = null
+    host(<Harness onReady={(r) => { rewind = r }} />)
+    act(() => { void rewind!.start(prompt, { edit: false }) })
+    await screen.findByText('src/a.ts')
+    await userEvent.click(screen.getByRole('button', { name: 'Rewind' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't finish the rewind — some files may not have been restored"))
   })
 
   it('resolves null at once for a turn with no target', async () => {

@@ -22,6 +22,8 @@ export const REWIND_CONFIRM = 'Rewind'
 export const EDIT_CONFIRM = 'Rewind and edit'
 export const REWIND_LOADING = 'Checking what this rewind restores…'
 export const REWIND_NO_FILES = 'No files change.'
+/** Edit & resend over a composer that already holds text. */
+export const REWIND_REPLACES_DRAFT = 'Your unsent draft will be replaced.'
 
 /** `/rewind` with no prompt to rewind to. */
 export const REWIND_NOTHING = 'Nothing to rewind to yet'
@@ -34,9 +36,14 @@ export const undoSkipped = (paths: readonly string[]) =>
 export const REWIND_FAILED_FALLBACK = "Couldn't rewind this session"
 export const UNDO_FAILED_FALLBACK = "Couldn't undo the rewind"
 
+/** Undo's `REWIND_FAILED`: some files could not be restored; the backup is kept. */
+export const undoFailed = (paths: readonly string[]) =>
+  "Couldn't finish undoing — your backup is kept; try Undo again"
+  + (paths.length ? `. Not restored: ${paths.join(', ')}` : '')
+
 export const REWIND_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   REWIND_UNAVAILABLE: "This session can't be rewound right now",
-  REWIND_BUSY: 'Claude is working — rewind once this turn finishes',
+  REWIND_BUSY: "Claude is working or waiting on you — rewind once that's settled",
   REWIND_NO_CHECKPOINT: "Files can't be restored for this message",
   REWIND_STALE_TARGET: 'The session changed since this view loaded — reload it and try again',
   REWIND_TARGET_NOT_FOUND: "That message isn't in the session's current conversation",

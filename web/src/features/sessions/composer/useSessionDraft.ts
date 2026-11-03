@@ -30,6 +30,11 @@ function read(sessionId?: string): SessionDraft {
   }
 }
 
+/** Does session `sessionId` have unsent draft text saved (its composer not mounted)? */
+export function hasSessionDraft(sessionId: string): boolean {
+  return read(sessionId).text.trim() !== ''
+}
+
 /**
  * Write `text` as the draft of a session whose composer has not mounted yet — what
  * it then reads as `initial`. D-8 seeds a fork's composer with the message it was

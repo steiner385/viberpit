@@ -5,8 +5,9 @@ import * as copy from './rewindCopy'
 /** One error toast: `code`'s copy from `rewindCopy`, else the server's `message`, else
  *  the fallback. The caller reads both off the error (`useRewind:failRewind`), so this
  *  chunk needs none of the API modules. */
-export function toastRewindError(code: string | null, message: string, undo: boolean): void {
-  const mapped = code !== null ? copy.REWIND_ERROR_MESSAGES[code] : undefined
+export function toastRewindError(code: string | null, message: string, undo: boolean, failed: readonly string[]): void {
+  const mapped = undo && code === 'REWIND_FAILED' ? copy.undoFailed(failed)
+    : code !== null ? copy.REWIND_ERROR_MESSAGES[code] : undefined
   toast.error(mapped ?? (message || (undo ? copy.UNDO_FAILED_FALLBACK : copy.REWIND_FAILED_FALLBACK)))
 }
 

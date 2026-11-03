@@ -65,6 +65,8 @@ export interface ComposerAttach {
   attachFile: (path: string) => void
   /** Replace the draft with `text`, caret at its end — Edit & resend's prompt (D-9). */
   setDraft: (text: string) => void
+  /** The draft's current text (Edit & resend warns before replacing it). */
+  draftText: () => string
 }
 
 export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef }: Props) {
@@ -255,6 +257,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
         setDraft(`${text}${sep}${fileMentionToken(path)} `)
       },
       setDraft,
+      draftText: () => text,
     }
   }, [text])
 

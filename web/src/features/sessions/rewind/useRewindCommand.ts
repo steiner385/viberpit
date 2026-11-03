@@ -1,15 +1,15 @@
 /**
  * `/rewind` (D-9): the dock composer's onCommand opens a picker of the session's recent
  * prompts (newest first, at most 20) over the composer, and picking one runs Rewind to
- * here. Busy, or with no prompt to rewind to, it toasts and opens nothing. Only the
+ * here. Where the server would refuse (`rewindBlocked`: a turn running, a card
+ * pending), or with no prompt to rewind to, it toasts and opens nothing. Only the
  * catalog's `client` entry is ours (the server lists it only where the engine can
  * rewind), so anything else — and a `rewind` that is not ours — goes to the session.
  */
 import { createElement, Fragment, useCallback, useState, type ReactNode } from 'react'
 import type { Turn } from '@/session/reducer'
-import { recentRewindTargets } from '@/session/rewindTarget'
+import { recentRewindTargets, rewindBlocked } from '@/session/rewindTarget'
 import { turnMarkdown } from '@/session/turnMarkdown'
-import { statusTier } from '@/session/statusTier'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { RewindPicker, type PickerItem } from './RewindPicker'
 import { loadRewindFlow, useRewind } from './useRewind'
@@ -25,7 +25,7 @@ export function useRewindCommand(rt: SessionRuntime): RewindCommand {
   const [picking, setPicking] = useState<PickerItem[] | null>(null)
   const { commands, onCommand, state: { turns, status } } = rt
   const ours = commands.some((c) => c.name === 'rewind' && c.kind === 'client')
-  const busy = statusTier(status.state) === 'busy'
+  const busy = rewindBlocked(status.state)
   const handle = useCallback((name: string, args: string) => {
     if (name !== 'rewind' || !ours) { onCommand(name, args); return }
     const targets = recentRewindTargets(turns)

@@ -32,7 +32,7 @@ import * as React from 'react'
 import { toast } from 'sonner'
 import type { PromptRowMenus } from '@/features/sessions/composer/PromptRow'
 import type { ComposerAttach } from '@/features/sessions/composer/Composer'
-import { seedSessionDraft } from '@/features/sessions/composer/useSessionDraft'
+import { hasSessionDraft, seedSessionDraft } from '@/features/sessions/composer/useSessionDraft'
 
 export interface SessionGestures {
   /** A permission or question card is waiting for an answer. */
@@ -98,16 +98,19 @@ export function SessionGestureProvider({ children }: { children: React.ReactNode
 }
 
 /**
- * Edit & resend's side (D-9): put `text` in session `sessionId`'s composer — the
- * mounted dock composer when there is one, else its saved draft, which the composer
- * reads when it mounts (D-8's `seedSessionDraft`).
+ * Edit & resend's side (D-9): session `sessionId`'s composer draft — the mounted dock
+ * composer's when there is one, else its saved draft, which the composer reads when it
+ * mounts (D-8's `seedSessionDraft`). `has`: is there unsent text; `set`: replace it.
  */
-export function useComposerSetDraft(): (sessionId: string, text: string) => void {
+export function useComposerDraft(): { has: (sessionId: string) => boolean; set: (sessionId: string, text: string) => void } {
   const ref = React.useContext(ComposerAttachContext)
-  return React.useCallback((sessionId: string, text: string) => {
-    if (ref?.current) ref.current.setDraft(text)
-    else seedSessionDraft(sessionId, text)
-  }, [ref])
+  return React.useMemo(() => ({
+    has: (sessionId: string) => (ref?.current ? ref.current.draftText().trim() !== '' : hasSessionDraft(sessionId)),
+    set: (sessionId: string, text: string) => {
+      if (ref?.current) ref.current.setDraft(text)
+      else seedSessionDraft(sessionId, text)
+    },
+  }), [ref])
 }
 
 /** The dock composer's side: the ref to pass as `SessionComposer`'s `attachRef`.

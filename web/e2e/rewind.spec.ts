@@ -112,7 +112,7 @@ test('rewinding confirms from the dry run, cuts the turns, and Undo brings them 
   ])
 
   // The server's `rewound` event cuts the prompt and its reply; the divider takes their place.
-  socket().send(wire(liveFrame(sid, 0, [{ type: 'rewound', rewindId: 'rw-1', toTurnId: U2, filesRestored: RESULT.filesRestored }])))
+  socket().send(wire(liveFrame(sid, 0, [{ type: 'rewound', rewindId: 'rw-1', toTurnId: U2, promptUuid: U2, filesRestored: RESULT.filesRestored }])))
   const transcript = page.getByTestId('transcript-scroll')
   await expect(transcript.getByText('Rewound — 2 files restored')).toBeVisible()
   await expect(transcript.getByText('Second question')).toHaveCount(0)
@@ -156,7 +156,7 @@ test('a refused rewind says why', async ({ page }) => {
   await openMenu(page, 'Second question')
   await page.getByRole('menuitem', { name: 'Rewind to here' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Rewind' }).click()
-  await expect(page.getByText('Claude is working — rewind once this turn finishes')).toBeVisible()
+  await expect(page.getByText("Claude is working or waiting on you — rewind once that's settled")).toBeVisible()
 })
 
 test('/rewind picks a prompt and runs the same flow', async ({ page }) => {

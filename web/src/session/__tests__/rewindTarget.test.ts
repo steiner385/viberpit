@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { Turn } from '../reducer'
-import { recentRewindTargets, rewindTargetFor } from '../rewindTarget'
+import { recentRewindTargets, rewindBlocked, rewindTargetFor } from '../rewindTarget'
 
 const UUID = '0b9c7a52-6f1e-4c55-9d1e-2f3a4b5c6d7e'
 const user = (id: string, extra: Partial<Turn> = {}): Turn =>
@@ -34,4 +34,11 @@ describe('recentRewindTargets', () => {
     expect(got.at(-1)).toBe('h5')
     expect(got).not.toContain('no-target')
   })
+})
+
+describe('rewindBlocked — exactly the states the server refuses (driver.rewind_busy)', () => {
+  it.each(['in_progress', 'working', 'retrying', 'condensing', 'waiting_input', 'waiting_question', 'ready_review'])(
+    'blocks %s', (state) => expect(rewindBlocked(state)).toBe(true))
+  it.each(['idle', 'done', 'handed_back', 'needs_attention', 'limited', 'complete', 'pending_approval'])(
+    'allows %s', (state) => expect(rewindBlocked(state)).toBe(false))
 })

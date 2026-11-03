@@ -166,6 +166,7 @@ export interface TranscriptState {
   queued: QueuedItem[]           // prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
   rewind: RewindMarker | null   // the latest rewind's divider (D-9); survives replayReset
+  replayFor: string | null      // a rewind this view can't show without a fresh replay; the runtime re-attaches once per value
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
   backgroundTasks: Record<string, BackgroundTaskState>   // keyed by the launching tool-use id (#2635)
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
@@ -199,6 +200,7 @@ export const initialTranscript: TranscriptState = {
   queued: [],
   rotations: [],
   rewind: null,
+  replayFor: null,
   subAgents: {},
   backgroundTasks: {},
   latestSuggestions: [],
@@ -290,6 +292,7 @@ export type LocalAction =
   | { type: '_promptStage'; stage: PromptStage }
   | { type: '_promptHeld'; text: string }
   | { type: '_promptStalled' }
+  | { type: '_rewindExpired'; rewindId: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1233,10 +1236,19 @@ export function transcriptReducer(
     // ── rewound / rewindUndone (D-9) ──────────────────────────────────────────
     case 'rewound': {
       // Cut the target prompt and everything after it (and the rotations anchored
-      // there); the divider takes their place. A target this view does not hold cuts
-      // nothing — its next replay follows the server's cut chain.
-      const idx = findRoleTurnIdx(state.turns, ev.toTurnId, 'user')
-      const kept = idx === -1 ? state.turns : state.turns.slice(0, idx)
+      // there); the divider takes their place. The view may hold the prompt under the
+      // driver's id (live, with its `promptUuid`) or under the uuid (replayed), and the
+      // event names it by the id its sender held plus the uuid — so any of the turn's
+      // keys may match either. A view without the turn asks for a replay, which follows
+      // the server's cut chain, and shows no divider it could not place.
+      const keys = new Set([ev.toTurnId, ev.promptUuid])
+      let idx = -1
+      for (let i = state.turns.length - 1; i >= 0 && idx === -1; i--) {
+        const t = state.turns[i]
+        if (t.role === 'user' && (keys.has(t.id) || keys.has(t.engineTurnId) || keys.has(t.promptUuid))) idx = i
+      }
+      if (idx === -1) return { ...state, replayFor: `rewound:${ev.rewindId}` }
+      const kept = state.turns.slice(0, idx)
       const ids = new Set(kept.map((t) => t.id))
       return {
         ...state, turns: kept, openBlockId: null, latestSuggestions: [],
@@ -1245,7 +1257,13 @@ export function transcriptReducer(
       }
     }
     case 'rewindUndone':
-      // The cut turns come back with the replay the runtime asks for (`useSessionRuntime`).
+      // The cut turns come back with a replay (the runtime acts on `replayFor`).
+      return {
+        ...state, replayFor: `rewindUndone:${ev.rewindId}`,
+        rewind: state.rewind?.rewindId === ev.rewindId ? null : state.rewind,
+      }
+    case '_rewindExpired':
+      // The server refused the undo as expired (a stale divider, e.g. across a reconnect).
       return state.rewind?.rewindId === ev.rewindId ? { ...state, rewind: null } : state
 
     // ── turnEnd ───────────────────────────────────────────────────────────────

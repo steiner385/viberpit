@@ -9,7 +9,7 @@ import type { Rewind } from './useRewind'
  * A context for the same reason as D-8's `forkContext`.
  */
 export interface RewindActions extends Pick<Rewind, 'start' | 'undo'> {
-  /** A turn is running: the items show, disabled. */
+  /** The server would refuse now (`rewindBlocked`): the items show, disabled. */
   busy: boolean
 }
 

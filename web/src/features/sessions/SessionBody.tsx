@@ -240,7 +240,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                         "Rewind to here" / "Edit & resend" and the divider's Undo (D-9), where it can rewind. */}
                     <ForkProvider sessionId={rt.sessionId} turns={rt.state.turns}
                                   earliestTurn={rt.state.earliestTurn} enabled={can(caps, 'fork')}>
-                     <RewindProvider sessionId={rt.sessionId} enabled={can(caps, 'rewind')} busy={busy}>
+                     <RewindProvider sessionId={rt.sessionId} enabled={can(caps, 'rewind')}
+                                     status={rt.state.status.state} onExpired={rt.dismissRewind}>
                       <TranscriptView
                         turns={rt.state.turns}
                         rotations={rt.state.rotations}

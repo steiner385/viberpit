@@ -430,7 +430,8 @@ async def test_rewind_runs_in_order_records_emits_and_returns_the_prefill(
     assert row.backup_dir and Path(str(row.backup_dir)).is_dir()
     assert [e.to_wire() for e in emitted if isinstance(e, ev.Rewound)] == [
         {"type": "rewound", "rewindId": out["rewindId"], "toTurnId": "live-2",
-         "filesRestored": ["a.txt", "new.txt", "gone.txt"]}]
+         # The resolved CLI uuid too: a reloaded view holds this turn under it.
+         "promptUuid": U2, "filesRestored": ["a.txt", "new.txt", "gone.txt"]}]
     # The cut prompts are forgotten: the next last_seen is U1.
     assert list(env.src.prompt_uuids.values()) == [U1]
 

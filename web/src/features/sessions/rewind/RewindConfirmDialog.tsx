@@ -59,13 +59,16 @@ export default function RewindConfirmDialog({ request }: { request: RewindReques
       <span className="mt-2 block">{copy.REWIND_CAVEAT}</span>
     </>
   )
+  const replacesDraft = request.replacesDraft && (
+    <span className="mt-2 block font-medium text-ink">{copy.REWIND_REPLACES_DRAFT}</span>
+  )
   return (
     <ConfirmDialog
       open
       onClose={() => { if (!working.current) done(null) }}
       onConfirm={confirm}
       title={edit ? copy.EDIT_TITLE : copy.REWIND_TITLE}
-      description={description}
+      description={<>{description}{replacesDraft}</>}
       confirmLabel={edit ? copy.EDIT_CONFIRM : copy.REWIND_CONFIRM}
       tone="warning"
       busy={!preview}

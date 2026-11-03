@@ -142,10 +142,13 @@ class Rewound:
     """The session was rewound to the user turn *to_turn_id* (D-9): that prompt and
     every later turn were cut from the conversation, and *files_restored* (worktree-
     relative where they lie in it) were put back to the prompt's checkpoint. The rewind
-    is undoable (``RewindUndone``) until the next prompt."""
-    rewind_id: str; to_turn_id: str; files_restored: list[str] = field(default_factory=list)
+    is undoable (``RewindUndone``) until the next prompt. *prompt_uuid* is the CLI
+    uuid *to_turn_id* resolved to: a view that loaded the turn from a replay holds it
+    under that uuid, a live view under the driver's id, so a client matches either."""
+    rewind_id: str; to_turn_id: str; prompt_uuid: str
+    files_restored: list[str] = field(default_factory=list)
     def to_wire(self): return {"type": "rewound", "rewindId": self.rewind_id,
-                               "toTurnId": self.to_turn_id,
+                               "toTurnId": self.to_turn_id, "promptUuid": self.prompt_uuid,
                                "filesRestored": list(self.files_restored)}
 
 @dataclass

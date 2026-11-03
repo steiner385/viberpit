@@ -37,8 +37,10 @@ export interface EvTurnAnchor    { type: 'turnAnchor';    turnId: string; uuid: 
 export interface EvUserPromptUuid { type: 'userPromptUuid'; turnId: string; uuid: string }
 // The session was rewound to user turn `toTurnId` (D-9): that prompt and every later turn
 // were cut, and `filesRestored` (worktree-relative where they lie in it) were put back to
-// its checkpoint. Undoable until the next prompt. Mirrors Rewound (server/sessions/events.py).
-export interface EvRewound       { type: 'rewound';       rewindId: string; toTurnId: string; filesRestored: string[] }
+// its checkpoint. Undoable until the next prompt. `promptUuid` is the CLI uuid `toTurnId`
+// resolved to: a live view holds the turn under the driver's id, a reloaded one under the
+// uuid (absent from a pre-fix daemon). Mirrors Rewound (server/sessions/events.py).
+export interface EvRewound       { type: 'rewound';       rewindId: string; toTurnId: string; promptUuid?: string; filesRestored: string[] }
 // Rewind `rewindId` was undone: transcript and files are back as before it.
 // Mirrors RewindUndone (server/sessions/events.py).
 export interface EvRewindUndone  { type: 'rewindUndone';  rewindId: string }

@@ -32,8 +32,10 @@ describe('useSessionRuntime — rewindUndone', () => {
     const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     expect(attach).toHaveBeenCalledTimes(1) // the mount attach
     act(() => onEvent?.({ type: 'replayComplete', sessionId: 's1' }))
-    act(() => onEvent?.({ type: 'rewound', sessionId: 's1', rewindId: 'r1', toTurnId: 'u1', filesRestored: [] }))
+    act(() => onEvent?.({ type: 'user', sessionId: 's1', turnId: 'u1', text: 'hi' }))
+    act(() => onEvent?.({ type: 'rewound', sessionId: 's1', rewindId: 'r1', toTurnId: 'u1', promptUuid: 'P1', filesRestored: [] }))
     expect(result.current.state.rewind?.rewindId).toBe('r1')
+    expect(attach).toHaveBeenCalledTimes(1) // a cut it could make itself needs no replay
 
     act(() => onEvent?.({ type: 'rewindUndone', sessionId: 's1', rewindId: 'r1' }))
     expect(result.current.state.rewind).toBeNull()
@@ -42,6 +44,27 @@ describe('useSessionRuntime — rewindUndone', () => {
 
     act(() => onEvent?.({ type: 'rewindUndone', sessionId: 's1', rewindId: 'r1' }))
     expect(attach).toHaveBeenCalledTimes(2)
+  })
+
+  it('replays once, with no divider, for a rewind whose target this view does not hold', () => {
+    attach.mockClear()
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    act(() => onEvent?.({ type: 'replayComplete', sessionId: 's1' }))
+    const ev = { type: 'rewound', sessionId: 's1', rewindId: 'r2', toTurnId: 'x', promptUuid: 'y', filesRestored: [] }
+    act(() => onEvent?.(ev))
+    expect(result.current.state.rewind).toBeNull()
+    expect(attach).toHaveBeenCalledTimes(2)
+    act(() => onEvent?.(ev))
+    expect(attach).toHaveBeenCalledTimes(2)
+  })
+
+  it('dismissRewind drops the divider (the server said the undo expired)', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    act(() => onEvent?.({ type: 'replayComplete', sessionId: 's1' }))
+    act(() => onEvent?.({ type: 'user', sessionId: 's1', turnId: 'u1', text: 'hi' }))
+    act(() => onEvent?.({ type: 'rewound', sessionId: 's1', rewindId: 'r3', toTurnId: 'u1', promptUuid: 'P', filesRestored: [] }))
+    act(() => result.current.dismissRewind('r3'))
+    expect(result.current.state.rewind).toBeNull()
   })
 
   it("ignores another session's undo", () => {

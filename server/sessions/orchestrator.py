@@ -17722,7 +17722,7 @@ class SessionOrchestrator:
         self._last_prompt.pop(rec.id, None)
         live = self._drivers.get(rec.id)
         if live is not None:
-            live.emit(ev.Rewound(a.rewind_id, a.to_turn_id, a.restored))
+            live.emit(ev.Rewound(a.rewind_id, a.to_turn_id, a.target, a.restored))
         result = {"rewindId": a.rewind_id, "prefill": prefill, "filesRestored": a.restored}
         self.__dict__.setdefault("_rewind_results", {})[a.rewind_id] = result
         return dict(result)

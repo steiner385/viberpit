@@ -8,20 +8,24 @@
  */
 import { createElement, lazy, Suspense, useCallback, useRef, useState, type ReactNode } from 'react'
 import { useRewindSession, useUndoRewind, type RewindPreview, type RewindResult, type RewindMode } from '@/api/hooks'
-import { apiErrorCode } from '@/api/client'
+import { apiErrorCode, ApiRequestError } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
-import { useComposerSetDraft } from '@/shell/sessionGestures'
+import { useComposerDraft } from '@/shell/sessionGestures'
 import type { Turn } from '@/session/reducer'
 import { rewindTargetFor } from '@/session/rewindTarget'
 
 export const loadRewindFlow = () => import('./rewindFlow')
 const RewindConfirmDialog = lazy(() => loadRewindFlow().then((m) => ({ default: m.RewindConfirmDialog })))
 
-/** One error toast for a failed rewind or undo, with `rewindCopy`'s line for its code. */
-export function failRewind(err: unknown, undo = false): void {
+/** One error toast for a failed rewind or undo, with `rewindCopy`'s line for its code
+ *  (an undo's `REWIND_FAILED` lists the paths it could not restore). Returns the code. */
+export function failRewind(err: unknown, undo = false): string | null {
   const code = apiErrorCode(err)
   const message = extractMutationErrorMessage(err, '')
-  void loadRewindFlow().then((m) => m.toastRewindError(code, message, undo))
+  const detail = err instanceof ApiRequestError ? err.body.detail as { failed?: unknown } | undefined : undefined
+  const failed = Array.isArray(detail?.failed) ? detail.failed.map(String) : []
+  void loadRewindFlow().then((m) => m.toastRewindError(code, message, undo, failed))
+  return code
 }
 
 /** What the confirm dialog runs: one rewind, settled through `done` exactly once. */
@@ -32,6 +36,8 @@ export interface RewindRequest {
   rewind: (toTurnId: string, mode: RewindMode) => Promise<RewindResult>
   /** Put the cut prompt back in this session's composer (Edit & resend). */
   setDraft: (text: string) => void
+  /** Edit & resend over a non-empty draft: the confirm says it will be replaced. */
+  replacesDraft: boolean
   /** Toast a refusal (`failRewind`). */
   fail: (err: unknown) => void
   done: (result: RewindResult | null) => void
@@ -46,12 +52,13 @@ export interface Rewind {
   element: ReactNode
 }
 
-export function useRewind(sessionId: string): Rewind {
+/** `onExpired(rewindId)`: the server refused an undo as expired — drop its divider. */
+export function useRewind(sessionId: string, { onExpired }: { onExpired?: (rewindId: string) => void } = {}): Rewind {
   const [request, setRequest] = useState<RewindRequest | null>(null)
   const open = useRef(false)
   const { preview, rewind } = useRewindSession(sessionId)
   const { undo: postUndo } = useUndoRewind(sessionId)
-  const setDraft = useComposerSetDraft()
+  const draft = useComposerDraft()
 
   const start = useCallback((turn: Turn, { edit }: { edit: boolean }) => {
     const toTurnId = rewindTargetFor(turn)
@@ -59,19 +66,20 @@ export function useRewind(sessionId: string): Rewind {
     open.current = true
     return new Promise<RewindResult | null>((resolve) => setRequest({
       toTurnId, edit, preview, rewind, fail: failRewind,
-      setDraft: (text) => setDraft(sessionId, text),
+      setDraft: (text) => draft.set(sessionId, text),
+      replacesDraft: edit && draft.has(sessionId),
       done: (result) => { open.current = false; setRequest(null); resolve(result) },
     }))
-  }, [preview, rewind, setDraft, sessionId])
+  }, [preview, rewind, draft, sessionId])
 
   const undo = useCallback(async (rewindId: string) => {
     try {
       const { skipped } = await postUndo(rewindId)
       if (skipped.length) (await loadRewindFlow()).toastUndoSkipped(skipped)
     } catch (err) {
-      failRewind(err, true)
+      if (failRewind(err, true) === 'REWIND_UNDO_EXPIRED') onExpired?.(rewindId)
     }
-  }, [postUndo])
+  }, [postUndo, onExpired])
 
   const element = request && createElement(Suspense, { fallback: null },
     createElement(RewindConfirmDialog, { request }))

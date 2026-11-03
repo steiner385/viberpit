@@ -75,7 +75,15 @@ describe('useRewindCommand', () => {
     const { rt } = rtWith([ask(1), reply(1)], { state: 'working' })
     const run = mount(rt)
     run('rewind')
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Claude is working — rewind once this turn finishes'))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("Claude is working or waiting on you — rewind once that's settled"))
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it.each(['waiting_input', 'waiting_question'])('with a pending card (%s), toasts why and opens nothing', async (state) => {
+    const { rt } = rtWith([ask(1), reply(1)], { state })
+    const run = mount(rt)
+    run('rewind')
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("Claude is working or waiting on you — rewind once that's settled"))
     expect(screen.queryByRole('menu')).toBeNull()
   })
 

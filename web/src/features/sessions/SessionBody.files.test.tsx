@@ -159,7 +159,7 @@ describe('SessionBody — transcript path links (D-7)', () => {
     const attachFile = vi.fn()
     function DockStub() {
       const ref = useComposerAttachRegistration()
-      useEffect(() => { if (ref) ref.current = { attachFile, setDraft: vi.fn() } satisfies ComposerAttach })
+      useEffect(() => { if (ref) ref.current = { attachFile, setDraft: vi.fn(), draftText: () => '' } satisfies ComposerAttach })
       return null
     }
     render(

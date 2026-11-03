@@ -17,7 +17,8 @@ const exchange = (u: string, a: string): SessionEvent[] => [
 ]
 
 const live = reduce([{ type: 'replayComplete' }, ...exchange('u1', 'a1'), ...exchange('u2', 'a2'), ...exchange('u3', 'a3')])
-const REWOUND: SessionEvent = { type: 'rewound', rewindId: 'r1', toTurnId: 'u2', filesRestored: ['a.ts', 'b.ts'] }
+const REWOUND: SessionEvent = { type: 'rewound', rewindId: 'r1', toTurnId: 'u2', promptUuid: 'P2', filesRestored: ['a.ts', 'b.ts'] }
+const U2 = '22222222-2222-4222-8222-222222222222'
 
 describe('rewound', () => {
   it('cuts the target prompt and every later turn, and sets the divider', () => {
@@ -35,10 +36,25 @@ describe('rewound', () => {
     expect(s.rotations.map((r) => r.afterTurnId)).toEqual(['a1', null])
   })
 
-  it('cuts nothing for a target this view does not hold, but still shows the divider', () => {
-    const s = transcriptReducer(live, { ...REWOUND, toTurnId: 'elsewhere' })
-    expect(s.turns).toBe(live.turns)
+  it('cuts a live turn (driver id + promptUuid) for an event keyed by the uuid, from a reloaded view', () => {
+    const view = transcriptReducer(live, { type: 'userPromptUuid', turnId: 'u2', uuid: U2 })
+    const s = transcriptReducer(view, { ...REWOUND, toTurnId: U2, promptUuid: U2 })
+    expect(s.turns.map((t) => t.id)).toEqual(['u1', 'a1'])
     expect(s.rewind?.rewindId).toBe('r1')
+  })
+
+  it('cuts a replayed turn (id = uuid) for an event keyed by the live id, through its promptUuid', () => {
+    const replayed = reduce([{ type: 'replayComplete' }, ...exchange('u1', 'a1'), ...exchange(U2, 'a2')])
+    const s = transcriptReducer(replayed, { ...REWOUND, toTurnId: 'hex-live-id', promptUuid: U2 })
+    expect(s.turns.map((t) => t.id)).toEqual(['u1', 'a1'])
+    expect(s.rewind?.rewindId).toBe('r1')
+  })
+
+  it('for a target this view does not hold: no cut, no divider, asks for a replay', () => {
+    const s = transcriptReducer(live, { ...REWOUND, toTurnId: 'elsewhere', promptUuid: 'nowhere' })
+    expect(s.turns).toBe(live.turns)
+    expect(s.rewind).toBeNull()
+    expect(s.replayFor).toBe('rewound:r1')
   })
 
   it('never cuts at an assistant turn sharing the id', () => {
@@ -55,12 +71,21 @@ describe('rewound', () => {
 describe('the divider goes', () => {
   const rewound = transcriptReducer(live, REWOUND)
 
-  it('on rewindUndone for its rewind', () => {
-    expect(transcriptReducer(rewound, { type: 'rewindUndone', rewindId: 'r1' }).rewind).toBeNull()
+  it('on rewindUndone for its rewind, which also asks for a replay', () => {
+    const s = transcriptReducer(rewound, { type: 'rewindUndone', rewindId: 'r1' })
+    expect(s.rewind).toBeNull()
+    expect(s.replayFor).toBe('rewindUndone:r1')
   })
 
-  it('not on rewindUndone for another rewind', () => {
-    expect(transcriptReducer(rewound, { type: 'rewindUndone', rewindId: 'old' })).toBe(rewound)
+  it('not on rewindUndone for another rewind (which still asks for a replay)', () => {
+    const s = transcriptReducer(rewound, { type: 'rewindUndone', rewindId: 'old' })
+    expect(s.rewind?.rewindId).toBe('r1')
+    expect(s.replayFor).toBe('rewindUndone:old')
+  })
+
+  it('when the server says the undo expired', () => {
+    expect(transcriptReducer(rewound, { type: '_rewindExpired', rewindId: 'r1' }).rewind).toBeNull()
+    expect(transcriptReducer(rewound, { type: '_rewindExpired', rewindId: 'old' })).toBe(rewound)
   })
 
   it('on the next send from this view', () => {
