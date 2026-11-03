@@ -221,7 +221,7 @@ Each tone is a triple: a text value that is AA on `surface`, a `-wash` tint for 
 **Body Font:** system-ui (same stack)
 **Label/Mono Font:** ui-monospace (with Consolas, monospace), for inline code, `<pre>` blocks and `Kbd`
 
-**Character:** Deliberately anonymous. The system face at a small working size reads as an instrument, not a publication; hierarchy comes from weight (500 for labels and controls, 600 for every heading and numeral, 700 only for a glyph or word meant to be read from across a room) and from Graphite-versus-Slate ink, not from size jumps. Numerals are always `tabular-nums`. The brand sheet's Poppins, Inter and Caveat live only inside logo rasters.
+**Character:** Deliberately anonymous. The system face at a small working size reads as an instrument, not a publication; hierarchy comes from weight (500 for labels, controls and session-card titles, 600 for every heading and numeral, 700 only for a glyph or word meant to be read from across a room, with one exception: an unread session's card title) and from Graphite-versus-Slate ink, not from size jumps. Numerals are always `tabular-nums`. The brand sheet's Poppins, Inter and Caveat live only inside logo rasters.
 
 ### Hierarchy
 Every size is `calc(<rem> * var(--scale))`; `--scale` is 1 everywhere except the kiosk (1.25). Root is 16px/1.5.
@@ -238,6 +238,8 @@ Every size is `calc(<rem> * var(--scale))`; `--scale` is 1 everywhere except the
 **The Read Ink Rule.** Text a person reads is Slate Ink or Graphite (both ≥ 4.5:1). Pencil Grey (`ink-faint`) is for icons and decoration only. Placeholders are read, so they are Graphite at full opacity, set once in `@layer base`.
 
 **The Weight-Not-Size Rule.** Within a row or card, hierarchy is weight and ink, not size: title 14px/500 Slate, subtitle 12px Graphite. Size steps are reserved for page, section and numeral levels.
+
+**The Unread-Bold Rule.** A session card's title is 14px/500 (live, pending and archived alike). The one 700 at body size is that same title when the session is unread for the viewer: bold *is* the unread signal, so it must be a full weight step above the read title (600 would be too close, and Roboto renders 600 as 700 anyway, which is why the read title is 500, not 600). The open session's own card is never bold. Bold for unread complements the amber needs-you badge and never replaces it, and the open control's accessible name says "unread" so the state is not weight alone.
 
 ## Layout
 

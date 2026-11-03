@@ -65,8 +65,8 @@ vi.mock('@/api/hooks', () => ({
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
   useSessionsViewing: vi.fn(),
-  // useSessionNeighbors (added in mobile nav feature) calls useSessions internally.
-  // Return an empty list so the chevrons stay hidden in these header-focused tests.
+  // SessionHeader reads its session record (agent, account, host) from useSessions.
+  // An empty list is fine here: without the shell there is no list order, so no chevrons.
   useSessions: vi.fn(() => ({ data: [], isLoading: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -99,7 +99,6 @@ function renderPane({ onDetach, onClosed }: { onDetach: () => void; onClosed: ()
         sessionId="s1"
         onClosed={onClosed}
         onDetach={onDetach}
-        onOpenSession={vi.fn()}
       />
     </SessionRuntimeProvider>,
   )

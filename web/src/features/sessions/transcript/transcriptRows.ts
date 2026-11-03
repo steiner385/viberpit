@@ -100,3 +100,18 @@ export function flattenRows(turns: TurnType[], rotations: RotationMarker[]): Tra
     .forEach((r, i) => rows.push({ key: `rot-orphan-${i}`, kind: 'rotation', rot: r }))
   return rows
 }
+
+/**
+ * The nearest row strictly before (`prev`) or after (`next`) row `from` that is
+ * one of the user's OWN prompts — a user turn with no `origin`. A turn with an
+ * origin is a nudge nobody typed (autopilot, completion, the assistant), so the
+ * Alt+↑ / Alt+↓ prompt jump skips it. Null past either end.
+ */
+export function ownPromptRowIndex(rows: readonly RenderRow[], from: number, dir: 'prev' | 'next'): number | null {
+  const step = dir === 'next' ? 1 : -1
+  for (let i = from + step; i >= 0 && i < rows.length; i += step) {
+    const row = rows[i]
+    if (row.kind === 'turn' && row.turn.role === 'user' && !row.turn.origin) return i
+  }
+  return null
+}

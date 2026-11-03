@@ -1,11 +1,18 @@
-import type { Session } from '@/api/types'
+import type { PullRequestInfo, Session } from '@/api/types'
 import { TIER_RANK, TIER_LABEL } from './statusTier'
 import { triageTier, triageRank } from './triageTier'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp } from '@/lib/relativeTime'
 
-export type GroupBy = 'none' | 'repo' | 'status'
-export type SortBy = 'status' | 'lastActive' | 'age' | 'name'
+/**
+ * The live list's Group-by values — the ONE list: `LIVE_SPEC`, the persisted
+ * pref parser (`lib/sessionOrder`) and the controls' options all read it. The
+ * values are persisted, so append only; never rename one.
+ */
+export const GROUP_BY_VALUES = ['none', 'repo', 'status', 'branch', 'host', 'date', 'pr'] as const
+export type GroupBy = (typeof GROUP_BY_VALUES)[number]
+export const SORT_BY_VALUES = ['status', 'lastActive', 'age', 'name'] as const
+export type SortBy = (typeof SORT_BY_VALUES)[number]
 
 export interface SessionGroup<T = Session> {
   key: string
@@ -15,8 +22,10 @@ export interface SessionGroup<T = Session> {
 }
 
 export interface GroupDef<T> {
-  /** Map an item to its bucket. `order` sorts buckets (lower first); ties break on label. */
-  bucketOf: (item: T) => { key: string; label: string; order?: number }
+  /** Map an item to its bucket. `order` sorts buckets (lower first); ties break on label.
+   *  `now` is read once per ordering pass, so time-relative buckets (the date
+   *  grouping) agree across every item and tests can pin the clock. */
+  bucketOf: (item: T, now: Date) => { key: string; label: string; order?: number }
 }
 
 export interface OrderingConfig<T> {
@@ -50,21 +59,38 @@ const COMPARATORS: Record<SortBy, (a: Session, b: Session) => number> = {
 }
 
 /** Generic group+sort engine. Buckets via config.groupings[groupBy]; 'none' = flat. */
+/** The single group's key when nothing groups the list. */
+const UNGROUPED_KEY = 'all'
+
+/** The key of the group `orderItems` files `item` under — the same `bucketOf`,
+ *  so a caller can find an item's group (e.g. to expand it) even when the item
+ *  is filtered out of the groups it currently holds. */
+export function groupKeyOf<T>(
+  item: T,
+  groupBy: string,
+  config: OrderingConfig<T>,
+  now: Date = new Date(),
+): string {
+  const def = config.groupings[groupBy]
+  return groupBy === 'none' || !def ? UNGROUPED_KEY : def.bucketOf(item, now).key
+}
+
 export function orderItems<T>(
   items: readonly T[],
   groupBy: string,
   sortBy: string,
   config: OrderingConfig<T>,
+  now: Date = new Date(),
 ): SessionGroup<T>[] {
   if (items.length === 0) return []
   const sorted = [...items].sort(config.sorts[sortBy])
   const def = config.groupings[groupBy]
   if (groupBy === 'none' || !def) {
-    return [{ key: 'all', label: null, count: sorted.length, sessions: sorted }]
+    return [{ key: UNGROUPED_KEY, label: null, count: sorted.length, sessions: sorted }]
   }
   const buckets = new Map<string, { label: string; order: number; sessions: T[] }>()
   for (const it of sorted) {
-    const b = def.bucketOf(it)
+    const b = def.bucketOf(it, now)
     const cur = buckets.get(b.key) ?? { label: b.label, order: b.order ?? 0, sessions: [] }
     cur.sessions.push(it)
     buckets.set(b.key, cur)
@@ -77,7 +103,64 @@ export function orderItems<T>(
     .map(([key, b]) => ({ key, label: b.label, count: b.sessions.length, sessions: b.sessions }))
 }
 
-/** Live-session ordering: repo + status grouping, status/lastActive/age/name sorts. */
+/** A grouping by an optional string field: one alphabetical group per value,
+ *  then a trailing `missingLabel` group for null/blank. The missing key carries
+ *  a colon, which neither a git ref nor a host name can, so it never collides. */
+function byOptionalField(
+  field: (s: Session) => string | null | undefined,
+  missingKey: string,
+  missingLabel: string,
+): GroupDef<Session> {
+  return {
+    bucketOf: (s) => {
+      const v = field(s)?.trim()
+      return v ? { key: v, label: v, order: 0 } : { key: missingKey, label: missingLabel, order: 1 }
+    },
+  }
+}
+
+// Date buckets, by `updatedAt` in the viewer's local time. Bounds are local
+// midnights built with the Date constructor (not `now - n * 86_400_000`), so a
+// DST change cannot shift a bucket edge by an hour. A future timestamp (clock
+// skew) is Today; a missing or invalid one is Older.
+const DATE_BUCKETS = [
+  { key: 'date:today', label: 'Today', daysBack: 0 },
+  { key: 'date:yesterday', label: 'Yesterday', daysBack: 1 },
+  { key: 'date:previous-7-days', label: 'Previous 7 days', daysBack: 7 },
+] as const
+const DATE_OLDER = { key: 'date:older', label: 'Older' } as const
+
+function dateBucket(s: Session, now: Date): { key: string; label: string; order: number } {
+  const t = lastActiveMs(s.updatedAt)
+  if (t !== null) {
+    for (const [order, b] of DATE_BUCKETS.entries()) {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - b.daysBack)
+      if (t >= start.getTime()) return { key: b.key, label: b.label, order }
+    }
+  }
+  return { ...DATE_OLDER, order: DATE_BUCKETS.length }
+}
+
+// PR buckets, most advanced first: a session files under the lowest-ranked
+// state among its PRs (open beats draft, merged beats closed).
+const PR_BUCKETS: Record<PullRequestInfo['state'] | 'none', { label: string; order: number }> = {
+  open: { label: 'Open', order: 0 },
+  draft: { label: 'Draft', order: 1 },
+  merged: { label: 'Merged', order: 2 },
+  closed: { label: 'Closed', order: 3 },
+  none: { label: 'No PR', order: 4 },
+}
+
+function prBucket(s: Session): { key: string; label: string; order: number } {
+  let best: keyof typeof PR_BUCKETS = 'none'
+  for (const pr of s.prs ?? []) {
+    if (PR_BUCKETS[pr.state] && PR_BUCKETS[pr.state].order < PR_BUCKETS[best].order) best = pr.state
+  }
+  return { key: `pr:${best}`, ...PR_BUCKETS[best] }
+}
+
+/** Live-session ordering: repo/status/branch/host/date/PR grouping,
+ *  status/lastActive/age/name sorts. */
 export const LIVE_ORDERING: OrderingConfig<Session> = {
   idOf: (s) => s.id,
   groupings: {
@@ -93,7 +176,11 @@ export const LIVE_ORDERING: OrderingConfig<Session> = {
         return { key: tier, label: TIER_LABEL[tier], order: TIER_RANK[tier] }
       },
     },
-  },
+    branch: byOptionalField((s) => s.branch, 'branch:none', 'No branch'),
+    host: byOptionalField((s) => s.host, 'host:none', 'No host'),
+    date: { bucketOf: dateBucket },
+    pr: { bucketOf: prBucket },
+  } satisfies Record<Exclude<GroupBy, 'none'>, GroupDef<Session>>,
   sorts: COMPARATORS,
 }
 
@@ -102,8 +189,9 @@ export function orderSessions(
   sessions: readonly Session[],
   groupBy: GroupBy,
   sortBy: SortBy,
+  now: Date = new Date(),
 ): SessionGroup[] {
-  return orderItems(sessions, groupBy, sortBy, LIVE_ORDERING)
+  return orderItems(sessions, groupBy, sortBy, LIVE_ORDERING, now)
 }
 
 export type NavItem<T = Session> =

@@ -54,6 +54,10 @@ const LIVE_GROUP_OPTIONS: SelectOption<GroupBy>[] = [
   { value: 'none', label: 'None' },
   { value: 'repo', label: 'Project' },
   { value: 'status', label: 'Status' },
+  { value: 'branch', label: 'Branch' },
+  { value: 'host', label: 'Host' },
+  { value: 'date', label: 'Date' },
+  { value: 'pr', label: 'PR' },
 ]
 const LIVE_SORT_OPTIONS: SelectOption<SortBy>[] = [
   { value: 'status', label: 'Status tier' },

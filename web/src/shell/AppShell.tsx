@@ -19,11 +19,17 @@ import type { SessionListColumnProps } from '@/features/sessions/SessionListColu
 import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'
 import { useDeliveryWorkspace } from '@/features/delivery/useDeliveryWorkspace'
 import { isPendingSessionId } from '@/lib/pendingSessions'
+import { isPreSpawnStatus } from '@/api/types'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
+import { stepSessionId } from '@/session/listStep'
+import { NO_FILTERS, isFiltered } from '@/session/listFilters'
+import { groupKeyOf } from '@/session/ordering'
+import { LIVE_SPEC } from '@/session/useSessionOrdering'
 import {
   BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, listScopeForPath, readerRouteForPath, sessionPath,
+  type ListScope,
 } from '@/session/sessionNavState'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
@@ -34,9 +40,14 @@ import { useAttractCycle } from './useAttractCycle'
 import { useIdleCursor } from './useIdleCursor'
 import { useWakeLock } from './useWakeLock'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
-import { SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle } from './sessionGestures'
+import {
+  SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle, useTranscriptJumpHandle,
+} from './sessionGestures'
+import { SessionListNavProvider } from './sessionListNav'
+import { altDigit, type ShortcutContext } from './shortcuts'
 import { overlayIsOpen } from './useOverlayState'
-import { useShortcuts } from './useShortcuts'
+import { useShortcuts, type ShortcutHandlers } from './useShortcuts'
+import type { PaletteHost } from '@/features/palette/paletteHost'
 import { useToastAnchor } from './toastInsets'
 import { useAppBanners } from './useAppBanners'
 import { ViewportProvider, useViewport, type LayoutMode } from './useViewport'
@@ -68,8 +79,9 @@ import { WebVitalsCollector } from '@/obs/WebVitalsCollector'
  * ## What the shell owns, and why
  *
  * The Sessions list state (`useSessionListState`) is held HERE rather than in
- * `ContextList`, because `PromptDock` drives the same cursor: ↑/↓ and Alt+digit
- * typed at the prompt move the highlight the list column renders. One handle,
+ * `ContextList`, because `PromptDock` drives the same cursor: ↑/↓ typed at the
+ * prompt move the highlight the list column renders, and the shell's own
+ * Alt+[ / Alt+] / Alt+1–9 walk the list's order (`SessionListNavProvider`). One handle,
  * two regions — both old shells did the same and it is the reason the list and
  * the prompt never disagreed within a shell.
  *
@@ -311,46 +323,93 @@ function AppShellInner() {
   // keydown time.
   const gestures = useSessionGestureHandle()
   const promptMenus = usePromptRowMenusHandle()
-  useShortcuts(
-    (e) => {
-      const active = document.activeElement
-      return {
-        // `overlayIsOpen()`, not `useOverlayState()`: this runs in an event
-        // handler, outside render.
-        overlayOpen: overlayIsOpen(),
-        hasOpenAction: gestures.current?.hasOpenAction ?? false,
-        hasDeniablePermission: gestures.current?.hasDeniablePermission ?? false,
-        // "A session is open" means a session's gestures are registered — not
-        // that the URL has an `:id`. A route can match before the pane mounts,
-        // and a detach row that fires with nothing to detach would swallow
-        // Escape app-wide.
-        sessionOpen: gestures.current !== null,
-        sessionBusy: gestures.current?.busy ?? false,
-        inSessions: region.inSessions,
-        interactive: mode !== 'kiosk',
-        active,
-        yieldsToTextEntry: textEntryClaimsKey(e, active),
-      }
-    },
-    {
-      // Two rows, one drawer: `?` yields to a focused text entry (it is a
-      // character there), the ⌘/Ctrl chord does not. The guard is the
-      // difference, so the registry carries two rows and they share an effect.
-      'app.help': () => openDrawer('help'),
-      'app.assistant': () => openDrawer('assistant'),
-      'compose.help': () => openDrawer('help'),
-      'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
-      'insession.stop': () => gestures.current?.onStop(),
-      'insession.detach': () => gestures.current?.onDetach(),
-      'insession.detachEsc': () => gestures.current?.onDetach(),
-      'insession.forceDetach': () => gestures.current?.onDetach(),
-      'insession.modeMenu': () => promptMenus.current?.openMode(),
-      'insession.modelMenu': () => promptMenus.current?.openModel(),
-      'insession.effortMenu': () => promptMenus.current?.openEffort(),
-      'insession.denyPermission': () => gestures.current?.denyOldestPermission(),
-      'insession.cycleView': () => gestures.current?.onCycleView(),
-    },
-  )
+  const transcriptJump = useTranscriptJumpHandle()
+  const shortcutContext = (e: KeyboardEvent): ShortcutContext => {
+    const active = document.activeElement
+    return {
+      // `overlayIsOpen()`, not `useOverlayState()`: this runs in an event
+      // handler, outside render.
+      overlayOpen: overlayIsOpen(),
+      hasOpenAction: gestures.current?.hasOpenAction ?? false,
+      hasDeniablePermission: gestures.current?.hasDeniablePermission ?? false,
+      // "A session is open" means a session's gestures are registered — not
+      // that the URL has an `:id`. A route can match before the pane mounts,
+      // and a detach row that fires with nothing to detach would swallow
+      // Escape app-wide.
+      sessionOpen: gestures.current !== null,
+      sessionBusy: gestures.current?.busy ?? false,
+      inSessions: region.inSessions,
+      interactive: mode !== 'kiosk',
+      active,
+      yieldsToTextEntry: textEntryClaimsKey(e, active),
+    }
+  }
+
+  // The handlers that need no key event — the ⌘K palette runs these very
+  // functions as its Actions (`PaletteHost.actions`), so a palette action and
+  // its shortcut cannot drift. Rows sharing an effect share the FUNCTION, which
+  // is also how the palette lists ← / Esc / Ctrl+Z as one "detach".
+  //
+  // Two rows, one drawer: `?` yields to a focused text entry (it is a
+  // character there), the ⌘/Ctrl chord does not. The guard is the difference,
+  // so the registry carries two rows and they share an effect.
+  const openHelp = () => openDrawer('help')
+  const detach = () => gestures.current?.onDetach()
+  const actionHandlers: Record<string, () => void> = {
+    'app.help': openHelp,
+    'app.assistant': () => openDrawer('assistant'),
+    'compose.help': openHelp,
+    'insession.stop': () => gestures.current?.onStop(),
+    'insession.detach': detach,
+    'insession.detachEsc': detach,
+    'insession.forceDetach': detach,
+    'insession.modeMenu': () => promptMenus.current?.openMode(),
+    'insession.modelMenu': () => promptMenus.current?.openModel(),
+    'insession.effortMenu': () => promptMenus.current?.openEffort(),
+    'insession.denyPermission': () => gestures.current?.denyOldestPermission(),
+    'insession.cycleView': () => gestures.current?.onCycleView(),
+    'session.listPrev': () => workspace.stepSession('prev'),
+    'session.listNext': () => workspace.stepSession('next'),
+    'transcript.promptPrev': () => transcriptJump.current?.jumpPrompt('prev'),
+    'transcript.promptNext': () => transcriptJump.current?.jumpPrompt('next'),
+  }
+
+  // ── the ⌘K palette (D-10) ──
+  //
+  // Open ⇔ a context snapshot is held: the shell's context at the ⌘K keydown,
+  // taken before the palette itself counts as an overlay, which is what each
+  // Action's `when` is judged against — and the action handlers of that same
+  // render, so the snapshot and the functions it gates cannot disagree.
+  // `afterClose` runs an entry's effect once the palette has unmounted —
+  // passive cleanups (the focus trap's restore) run before this component's
+  // effects in the same commit — so an action that opens a menu or moves focus
+  // is not undone by the restore.
+  const [paletteOpen, setPaletteOpen] = React.useState<{
+    context: ShortcutContext
+    actions: Readonly<Record<string, () => void>>
+  } | null>(null)
+  const afterClose = React.useRef<(() => void) | null>(null)
+  React.useEffect(() => {
+    if (paletteOpen !== null || !afterClose.current) return
+    const run = afterClose.current
+    afterClose.current = null
+    run()
+  }, [paletteOpen])
+  const closePalette = React.useCallback((then?: () => void) => {
+    afterClose.current = then ?? null
+    setPaletteOpen(null)
+  }, [])
+
+  const keyHandlers: ShortcutHandlers = {
+    'app.palette': (e) => setPaletteOpen({
+      context: { ...shortcutContext(e), yieldsToTextEntry: false },
+      actions: actionHandlers,
+    }),
+    'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
+    // The row matched, so the digit is 1–9; `?? 0` only satisfies the type.
+    'session.jumpN': (e) => workspace.jumpToSession((altDigit(e) ?? 0) - 1),
+  }
+  useShortcuts(shortcutContext, { ...actionHandlers, ...keyHandlers })
 
   const phone = mode === 'phone'
   const listVisible = shows('app.list')
@@ -364,59 +423,99 @@ function AppShellInner() {
   // never on the chrome around it (`shell/toastInsets.ts`).
   const toastBandRef = useToastAnchor('band')
 
+  // A repo/branch from the palette narrows the ACTIVE list, so that list has to
+  // be on screen: anywhere else (another section, Archived, Background, a phone
+  // with a session open) goes to it.
+  const navigate = useNavigate()
+  const revealActiveList = () => {
+    if (!(listVisible && region.inSessions && listScopeForPath(pathname) === 'live')) navigate(SESSIONS_PATH)
+  }
+  // The host is MEMOIZED: the shell re-renders on every route change, list
+  // poll and session frame, and a fresh host would make the open palette
+  // re-build and re-prepare every entry each time. Its inputs are the open
+  // snapshot and the two list-derived values the entries read; the effects that
+  // need the CURRENT render's state (where the list is, what it filters) reach
+  // it through `paletteFx`, assigned after every commit.
+  const paletteFx = React.useRef({ workspace, revealActiveList })
+  React.useEffect(() => { paletteFx.current = { workspace, revealActiveList } })
+  const { paletteLive, repoFilterOptions } = workspace
+  const paletteHost = React.useMemo((): PaletteHost | null => {
+    if (!paletteOpen) return null
+    const offered = new Set(repoFilterOptions.map((o) => o.value))
+    return {
+      context: paletteOpen.context,
+      actions: paletteOpen.actions,
+      live: paletteLive,
+      openSession: (id, scope) => paletteFx.current.workspace.openFromPalette(id, scope),
+      openArchived: (id) => paletteFx.current.workspace.openArchived(id),
+      newSession: () => paletteFx.current.workspace.newSession(),
+      navigate,
+      canFilterRepo: (repo) => offered.has(repo),
+      filterRepo: (repo) => {
+        paletteFx.current.workspace.filterRepo(repo)
+        paletteFx.current.revealActiveList()
+      },
+      close: closePalette,
+    }
+  }, [paletteOpen, paletteLive, repoFilterOptions, navigate, closePalette])
+
   return (
-    <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
-      {shows('app.banners') && (
-        <BannerStack items={bannersForMode(workspace.banners, mode)} className="shrink-0 px-2 pt-2" />
-      )}
-      {shows('app.rail') && phone && <TopBar />}
+    // The list ORDER, for the open session's ‹ › chevrons — the same order
+    // Alt+[ / Alt+] walk above (`shell/sessionListNav`).
+    <SessionListNavProvider orderedIds={workspace.orderedIds} onOpen={workspace.openFromList}>
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
+        {shows('app.banners') && (
+          <BannerStack items={bannersForMode(workspace.banners, mode)} className="shrink-0 px-2 pt-2" />
+        )}
+        {shows('app.rail') && phone && <TopBar />}
 
-      <div className="flex min-h-0 flex-1">
-        {shows('app.rail') && !phone && <NavRail />}
+        <div className="flex min-h-0 flex-1">
+          {shows('app.rail') && !phone && <NavRail />}
 
-        {/* Desktop is master-detail: the list sits BESIDE the page. Everywhere
-            else the band is a column, so the list stacks above the dock — which
-            lives inside `app.main` and must stay under the content, never
-            beside it. */}
-        <div
-          ref={toastBandRef}
-          className={cn(
-            'flex min-w-0 min-h-0 flex-1',
-            mode === 'desktop' ? 'flex-row' : 'flex-col',
-          )}
-        >
-          {listVisible && (
-            <ContextList
-              column={listColumnFor(def?.id, {
-                sessions: workspace.list, roadmap: roadmap.list, delivery: delivery.list,
-              })}
+          {/* Desktop is master-detail: the list sits BESIDE the page. Everywhere
+              else the band is a column, so the list stacks above the dock — which
+              lives inside `app.main` and must stay under the content, never
+              beside it. */}
+          <div
+            ref={toastBandRef}
+            className={cn(
+              'flex min-w-0 min-h-0 flex-1',
+              mode === 'desktop' ? 'flex-row' : 'flex-col',
+            )}
+          >
+            {listVisible && (
+              <ContextList
+                column={listColumnFor(def?.id, {
+                  sessions: workspace.list, roadmap: roadmap.list, delivery: delivery.list,
+                })}
+              />
+            )}
+            <PageHost
+              pageHidden={pageHidden}
+              dock={shows('app.dock') ? <PromptDock {...workspace.dock} /> : undefined}
             />
-          )}
-          <PageHost
-            pageHidden={pageHidden}
-            dock={shows('app.dock') ? <PromptDock {...workspace.dock} /> : undefined}
-          />
+          </div>
+
+          {/* At ≥1280 this is an inline column beside the page; below it, an
+              overlay `Sheet` that portals out of the layout entirely. `DrawerHost`
+              owns that switch (`useViewport().drawerPushes`), so the shell places
+              it in the band either way. */}
+          {shows('app.drawer') && <DrawerHost />}
         </div>
 
-        {/* At ≥1280 this is an inline column beside the page; below it, an
-            overlay `Sheet` that portals out of the layout entirely. `DrawerHost`
-            owns that switch (`useViewport().drawerPushes`), so the shell places
-            it in the band either way. */}
-        {shows('app.drawer') && <DrawerHost />}
+        {shows('app.rail') && phone && <NavBar />}
+
+        {shows('app.overlays') && <Overlays palette={paletteHost} />}
+        {workspace.dialogs}
+        {/* Renders nothing. It sits inside the shell rather than in `main.tsx`
+            because a field vitals sample is attributed to a route and a width
+            tier, and both of those are router/`useViewport` state that only
+            exists below here (#1411). Not in the region matrix: it has no
+            geometry, and a kiosk display is the load least worth going
+            unmeasured. */}
+        <WebVitalsCollector />
       </div>
-
-      {shows('app.rail') && phone && <NavBar />}
-
-      {shows('app.overlays') && <Overlays />}
-      {workspace.dialogs}
-      {/* Renders nothing. It sits inside the shell rather than in `main.tsx`
-          because a field vitals sample is attributed to a route and a width
-          tier, and both of those are router/`useViewport` state that only
-          exists below here (#1411). Not in the region matrix: it has no
-          geometry, and a kiosk display is the load least worth going
-          unmeasured. */}
-      <WebVitalsCollector />
-    </div>
+    </SessionListNavProvider>
   )
 }
 
@@ -529,6 +628,88 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     [openSessionId, scope, orderedSessions, allOrderedSessions, navigate],
   )
 
+  /**
+   * Open `id` the way a list row click does: the pending-id guard (an optimistic
+   * placeholder has no server session to attach to), then `sessionPath`.
+   */
+  const openIn = React.useCallback(
+    (id: string, inScope: ListScope) => { if (!isPendingSessionId(id)) navigate(sessionPath(id, inScope)) },
+    [navigate],
+  )
+
+  // Alt+[ / Alt+] / Alt+1–9 and the session header's chevrons walk THIS list —
+  // `orderedSessions`, the Active scope's rendered order, filters and search
+  // applied. It is the Active scope's whole list, so it opens in the Active
+  // scope whichever scope the user is looking at.
+  const orderedIds = React.useMemo(() => orderedSessions.map((s) => s.id), [orderedSessions])
+  const openFromList = React.useCallback((id: string) => openIn(id, 'live'), [openIn])
+  // Where the last Alt+[ / Alt+] went, until the route catches up. The keydown
+  // handlers see `openSessionId` only after the navigation commits, and opening
+  // a session renders its whole transcript first — so a second press (or key
+  // auto-repeat) inside that window would step from the OLD session and land
+  // on the same one again. Cleared once the open session actually changes.
+  const steppedToRef = React.useRef<string | null>(null)
+  React.useEffect(() => { steppedToRef.current = null }, [openSessionId])
+  const stepSession = (dir: 'prev' | 'next') => {
+    const id = stepSessionId(orderedIds, steppedToRef.current ?? openSessionId, dir)
+    if (!id) return
+    steppedToRef.current = id
+    openFromList(id)
+  }
+  const jumpToSession = (index: number) => {
+    const s = orderedSessions[index]
+    if (!s) return
+    // The prompt's cursor follows the jump, as it did when the dock owned Alt+digit.
+    list.nav.highlightSession(s.id)
+    // A step pressed before this navigation commits steps on from here.
+    steppedToRef.current = s.id
+    openFromList(s.id)
+  }
+
+  // The palette's view of the same state: every live session with the scope its
+  // list opens it in, and the list's own open / new / filter paths.
+  const paletteLive = React.useMemo(
+    () => [
+      ...list.sessions.map((session) => ({ session, scope: 'live' as const })),
+      ...list.background.map((session) => ({ session, scope: 'background' as const })),
+    ],
+    [list.sessions, list.background],
+  )
+  const openArchived = (id: string) => navigate(archivedSessionPath(id))
+  const newSession = () => navigate(SESSIONS_PATH)
+  /**
+   * The list's Project filter, for a repo it offers (DEC-8) — the palette only
+   * routes here when it does, and drills in its own query otherwise. From
+   * `NO_FILTERS`: no Status / Environment narrowing left over from before may
+   * hide the repo's sessions, and the search is cleared for the same reason.
+   */
+  const filterRepo = (repo: string) => {
+    list.setFilters({ ...NO_FILTERS, project: repo })
+    list.search.setQuery('')
+  }
+  /**
+   * The palette's open path: the list's own (`openIn`), except that a live
+   * session the list currently hides is revealed first — its filters or search
+   * are cleared, and its group is expanded if collapsed. Otherwise the session
+   * opens beside a list that does not contain it, and the ‹ › chevrons and
+   * Alt+[ ] have no place to step from. A pre-spawn session (queued, pending
+   * approval) is exempt: it is never in the ordered list, and its own section
+   * shows it whatever the filters say.
+   */
+  const openFromPalette = (id: string, inScope: 'live' | 'background') => {
+    const session = list.sessions.find((s) => s.id === id)
+    if (inScope === 'live' && session && !isPreSpawnStatus(session.status) && !orderedIds.includes(id)) {
+      if (isFiltered(list.filters) || list.search.query !== '') {
+        list.setFilters(NO_FILTERS)
+        list.search.setQuery('')
+      }
+      // From the ordering config, not `list.ordering.groups`: those are built
+      // from the filtered list, which may not hold the session yet.
+      list.ordering.expandGroup(groupKeyOf(session, list.ordering.groupBy, LIVE_SPEC.config))
+    }
+    openIn(id, inScope)
+  }
+
   const nameOf = (id: string) =>
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
 
@@ -541,7 +722,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     newSelected: openSessionId === null,
     adoptionEnabled: config?.adoptionEnabled,
     listMode,
-    onNew: () => navigate(SESSIONS_PATH),
+    onNew: newSession,
     // Same rule as the dock's `openSession` (one predicate, two entry points —
     // exactly as `Dashboard` and `DesktopShell` each guarded their own): an
     // optimistic placeholder has no server session, so a click on one must not
@@ -549,7 +730,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // Opened INSIDE the scope it was clicked in: a background row opens under
     // `/sessions/background/:id`, so the column stays in Background with the
     // row highlighted instead of flipping to Active around an absent session.
-    onOpen: (id) => { if (!isPendingSessionId(id)) navigate(sessionPath(id, scope)) },
+    onOpen: (id) => openIn(id, scope),
     onRename: (id) => setRenameTarget({ id, name: nameOf(id) }),
     onClose: (id) => {
       closeSession.mutate(id)
@@ -562,7 +743,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // Archived scope: opening a row is a READ, so it goes to the runtime-less
     // transcript route (its param is `archivedId`, which is what keeps
     // `PageHost` from mounting a session runtime over a dead session).
-    onReviewSession: (id) => navigate(archivedSessionPath(id)),
+    onReviewSession: openArchived,
     onExitList: () => {
       setListMode(false)
       setPromptFocusKey((n) => n + 1)
@@ -616,5 +797,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     </>
   )
 
-  return { banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate }
+  return {
+    banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate,
+    orderedIds, openFromList, stepSession, jumpToSession,
+    openArchived, newSession, filterRepo, openFromPalette, paletteLive,
+    repoFilterOptions: list.filterOptions.project,
+  }
 }

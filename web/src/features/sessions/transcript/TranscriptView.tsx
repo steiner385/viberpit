@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
-import { useVirtualizer, elementScroll, type VirtualizerOptions } from '@tanstack/react-virtual'
+import { useVirtualizer, elementScroll, type Virtualizer, type VirtualizerOptions } from '@tanstack/react-virtual'
 import type { Turn as TurnType, RotationMarker, RewindMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
@@ -8,12 +8,25 @@ import { ModelSwitchDivider } from './ModelSwitchDivider'
 import { RewindDividerSlot } from '@/features/sessions/rewind/RewindDividerSlot'
 import { modelName } from '@/session/modelName'
 import { failedPrompts } from '@/session/rewindTarget'
-import { buildRenderRows, type RenderRow } from './transcriptRows'
+import { buildRenderRows, ownPromptRowIndex, type RenderRow } from './transcriptRows'
 import { prefetchMarkdown } from './markdownChunk'
 import { useStickToBottom } from './useStickToBottom'
 import { ScrollToBottomButton } from './ScrollToBottomButton'
+import { useTranscriptJumpRegistration } from '@/shell/sessionGestures'
 
 const TOP_THRESHOLD = 64
+/** How much of a row may peek in at the top before it counts as visible (prompt jumps). */
+const SLIVER_PX = 2
+
+/**
+ * While a prompt jump holds the view: compensate EVERY resize of a row above
+ * the viewport. virtual-core's default skips a re-measured row's delta while the
+ * scroll direction is backward — right for a user scrolling up (it avoids the
+ * "rows jump under the reader" cascade), wrong for a jump up, where a reply that
+ * settles shorter after the jump would drag the prompt off the top.
+ */
+const holdJumpedRow: NonNullable<Virtualizer<HTMLDivElement, Element>['shouldAdjustScrollPositionOnItemSizeChange']> =
+  (item, _delta, instance) => item.start < (instance.scrollOffset ?? 0)
 
 interface Props {
   turns: TurnType[]
@@ -76,7 +89,7 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
   // needed. Idempotent: the module registry dedupes repeat imports.
   useEffect(() => { void prefetchMarkdown() }, [])
   const {
-    pinnedRef, showScrollButton, handleScroll: handleStickScroll, scrollToBottom,
+    pinnedRef, showScrollButton, handleScroll: handleStickScroll, scrollToBottom, unpin,
     scrollProgrammatically, markProgrammaticScroll,
   } = useStickToBottom({ scrollRef: containerRef, contentRef, followSignal })
   // Snapshot of scrollHeight taken just before onLoadOlder() is called, used to
@@ -131,6 +144,43 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
 
   const totalSize = virtualizer.getTotalSize()
 
+  // End a prompt jump's hold (`holdJumpedRow`): on a user scroll, and wherever
+  // the view re-pins — the Scroll-to-bottom button and a send — so the library's
+  // own resize handling is back before the view follows new content down.
+  function releaseJumpHold() {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined
+  }
+  useEffect(releaseJumpHold, [followSignal, virtualizer])
+
+  // Alt+↑ / Alt+↓ (the shell's `transcript.promptPrev/Next`): scroll to the
+  // previous / next own prompt relative to the topmost VISIBLE row. Unpin
+  // first, or the pin would snap the view back to the bottom (`scrollToFn`
+  // above, and the spacer observer).
+  // The view then holds on the target until the user scrolls (`holdJumpedRow`).
+  // Nothing past either end, and no focus moves: the user may be mid-draft.
+  // Only the session transcript answers — the assistant drawer's is a different
+  // conversation, and the shell only fires these with a session open.
+  useTranscriptJumpRegistration({
+    jumpPrompt: (dir) => {
+      // The topmost visible row from the scroller's LIVE scrollTop — never
+      // `virtualizer.range` / `scrollOffset`, which only catch up when the
+      // virtualizer handles the `scroll` event a frame after the view moves: a
+      // second press inside that frame (key repeat, a quick Alt+↑ then Alt+↓)
+      // would target from where the view WAS. `+ SLIVER_PX`: a sliver of the
+      // row above, left by a fractional offset after an align-start jump, is
+      // not "visible" — counting it would re-target the prompt already on top.
+      const el = containerRef.current
+      if (!el) return
+      const top = virtualizer.getVirtualItemForOffset(el.scrollTop + SLIVER_PX)?.index
+      if (top === undefined) return
+      const target = ownPromptRowIndex(rows, top, dir)
+      if (target === null) return
+      unpin()
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange = holdJumpedRow
+      virtualizer.scrollToIndex(target, { align: 'start' })
+    },
+  }, variant === 'session')
+
   // Update stickiness on scroll; trigger paging when near the top.
   function handleScroll() {
     const el = containerRef.current
@@ -140,6 +190,8 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
     // more growth, so without this guard it reads as "user scrolled up" and the
     // auto-pin latches off above the true bottom.
     if (!el || !handleStickScroll()) return
+    // A user scroll ends any prompt jump's hold (see `holdJumpedRow`).
+    releaseJumpHold()
     if (el.scrollTop <= TOP_THRESHOLD && (earliestTurn ?? 0) > 0 && !loadingOlder && onLoadOlder) {
       prevScrollHeightRef.current = el.scrollHeight // anchor before the prepend
       onLoadOlder()
@@ -226,7 +278,9 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
         </div>
       </div>
 
-      {showScrollButton && <ScrollToBottomButton onClick={() => scrollToBottom({ smooth: true })} />}
+      {showScrollButton && (
+        <ScrollToBottomButton onClick={() => { releaseJumpHold(); scrollToBottom({ smooth: true }) }} />
+      )}
     </div>
   )
 }

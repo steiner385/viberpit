@@ -22,7 +22,8 @@
  *   the only way out of an open session that is not the bottom nav (the list
  *   region is dropped once an item is open); on desktop it is what
  *   `DesktopShell`'s ← already did — return to the welcome pane beside the list.
- * - **The prev/next chevrons.** `useSessionNeighbors` ordering, with wraparound.
+ * - **The prev/next chevrons.** The list's own order, with wraparound — the
+ *   header reads it from the shell (`shell/sessionListNav`), as Alt+[ / Alt+] do.
  * - **Rename.** The phone list row has no rename button and the list is not on
  *   screen beside an open session, so the header is rename's only home there.
  *   Desktop gains a second route to a dialog it already had.
@@ -56,11 +57,9 @@ export interface MainPaneSessionProps {
   onClosed: () => void
   /** Leave the session for the list (Back, ← / idle Esc / Ctrl+Z). */
   onDetach: () => void
-  /** Open another session — the prev/next chevrons. */
-  onOpenSession: (id: string) => void
 }
 
-export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }: MainPaneSessionProps) {
+export function MainPaneSession({ sessionId, onClosed, onDetach }: MainPaneSessionProps) {
   const rt = useSessionRuntimeContext()
   const { detach } = useSessionSocket()
   const reloadSession = useReloadSession()
@@ -125,7 +124,6 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
         // the same narrowing `isPreSpawnStatus` makes in api/types.ts.
         status={rt.state.status.state as SessionStatus}
         onBack={() => leave(onDetach)}
-        onOpenSession={onOpenSession}
         onClosed={() => leave(onClosed)}
         onReload={reload}
         onRotate={rotate}

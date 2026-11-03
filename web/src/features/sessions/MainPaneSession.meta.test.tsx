@@ -67,6 +67,7 @@ vi.mock('@/api/hooks', () => ({
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMarkSessionViewed: vi.fn(() => ({ mutate: vi.fn() })),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
   useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
@@ -98,7 +99,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 function renderPane() {
   return render(
-    <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />,
+    <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} />,
     { wrapper },
   )
 }
@@ -141,7 +142,7 @@ describe('MainPaneSession session rail', () => {
   it('shows the live model after a sessionMeta event, while the picker stays on the record choice', async () => {
     render(
       <>
-        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />
+        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} />
         <DockedComposer />
       </>,
       { wrapper },
@@ -159,7 +160,7 @@ describe('MainPaneSession session rail', () => {
   it('shows context usage in the prompt row after a turnEnd with usage', async () => {
     render(
       <>
-        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />
+        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} />
         <DockedComposer />
       </>,
       { wrapper },

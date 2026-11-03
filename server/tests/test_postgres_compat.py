@@ -215,6 +215,8 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # session_rewinds (D-9) joins the sweep via created_at/undone_at/expired_at;
     # id (the rewindId, derived per request) and session_id have no default.
     "session_rewinds": {"id": "dtcheck-rewind", "session_id": "dtcheck-session"},
+    # session_views (D-10) joins the sweep via viewed_at; identity is half the PK.
+    "session_views": {"identity": "dtcheck@example.invalid"},
     "audit_events": {"type": "dtcheck.event", "identity": "dtcheck@example.invalid"},
     "attachments": {"media_type": "image/png", "filename": "x.png", "byte_size": 1,
                      "sha256": "0" * 64, "uploaded_by": "dtcheck"},
@@ -258,6 +260,7 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
 # same sweep (Base.metadata.sorted_tables already orders parents first).
 _FK_LINKS: dict[str, dict[str, str]] = {
     "session_queue": {"session_id": "sessions"},
+    "session_views": {"session_id": "sessions"},
     "automation_event": {"automation_id": "automation"},
     "automation_target_state": {"automation_id": "automation"},
     # initiative_artifacts joins the DateTime sweep via created_at; point its FK
@@ -1035,4 +1038,62 @@ async def test_permission_rule_record_hit_writes_naive_utc_on_postgres(pg_engine
         async with Session() as s:
             await s.execute(delete(PermissionRuleStats).where(PermissionRuleStats.profile_id == rule.profile_id))
             await s.execute(delete(PermissionProfile).where(PermissionProfile.id == rule.profile_id))
+            await s.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_session_read_state_writers_on_postgres(pg_engine, pg_url):
+    """D-10: mark_viewed / mark_unread upsert through dialect_insert() with a
+    db_utc_now() read, and unread_ids compares viewed_at against the naive-UTC
+    last_turn_at — all against a real Postgres connection."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import delete, select, update
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import Session as DbSession, SessionView
+    from server.sessions import read_state
+
+    sid, who = "dtcheck-read-state", "dtcheck@example.invalid"
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        s.add(DbSession(id=sid, name="dtcheck", account_name="dtcheck", cwd="/tmp/dtcheck"))
+        await s.commit()
+    try:
+        async with _pg_module_engine(pg_url):
+            await read_state.mark_viewed(who, sid)
+            await read_state.mark_viewed(who, sid)        # the ON CONFLICT path
+            async with Session() as s:
+                viewed = (await s.execute(select(SessionView.viewed_at).where(
+                    SessionView.identity == who))).scalar_one()
+            assert viewed.tzinfo is None
+            # Naive UTC, not the session TimeZone's wall clock.
+            assert abs(viewed - datetime.utcnow()) < timedelta(minutes=5)
+            assert sid not in await read_state.unread_ids(who)
+
+            async with Session() as s:
+                # A turn after the view (moved back, so the next real view passes it).
+                await s.execute(update(SessionView).where(SessionView.session_id == sid)
+                                .values(viewed_at=viewed - timedelta(minutes=1)))
+                await s.execute(update(DbSession).where(DbSession.id == sid).values(
+                    last_turn_at=viewed - timedelta(seconds=1)))
+                await s.commit()
+            assert sid in await read_state.unread_ids(who)
+
+            await read_state.mark_viewed(who, sid)
+            assert sid not in await read_state.unread_ids(who)
+            await read_state.mark_unread(who, sid)
+            assert sid in await read_state.unread_ids(who)
+
+            # A worker clock ahead of the DB: viewed_at = max(db now, last_turn_at).
+            ahead = datetime.utcnow() + timedelta(hours=1)
+            async with Session() as s:
+                await s.execute(update(DbSession).where(DbSession.id == sid).values(
+                    last_turn_at=ahead))
+                await s.commit()
+            await read_state.mark_viewed(who, sid)
+            assert sid not in await read_state.unread_ids(who)
+    finally:
+        async with Session() as s:            # session-scoped fixture: clean up
+            await s.execute(delete(SessionView).where(SessionView.session_id == sid))
+            await s.execute(delete(DbSession).where(DbSession.id == sid))
             await s.commit()

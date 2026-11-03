@@ -45,6 +45,7 @@ vi.mock('@/api/hooks', () => ({
   useEngineCapabilities: vi.fn(() => undefined),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMarkSessionViewed: vi.fn(() => ({ mutate: vi.fn() })),
   useSessionDiff: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
   useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
   useRewindSession: vi.fn(() => ({ preview: vi.fn(), rewind: vi.fn() })),

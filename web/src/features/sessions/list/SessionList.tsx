@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Archive, RotateCcw, Shuffle } from 'lucide-react'
-import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useSetAutoArchiveOptOut, useResolveSuspectedComplete, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled } from '@/api/hooks'
+import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useSetAutoArchiveOptOut, useResolveSuspectedComplete, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled, useMarkSessionViewed, useMarkSessionUnread } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { EmptyState } from '@/ui/EmptyState'
@@ -20,6 +20,9 @@ interface SessionListProps {
   accounts: Account[]
   isLoading?: boolean
   selectedId?: string | null
+  /** The session open in the main pane — `selectedId` may be the keyboard
+   *  cursor instead. Its card never shows unread (D-10). */
+  openId?: string | null
   isFiltered?: boolean
   onClearSearch?: () => void
   onOpen: (id: string) => void
@@ -45,6 +48,7 @@ export function SessionList({
   accounts,
   isLoading,
   selectedId,
+  openId,
   isFiltered,
   onClearSearch,
   onOpen,
@@ -68,6 +72,8 @@ export function SessionList({
   const setAutopilot = useSetAutopilotPaused()
   const setAutoArchive = useSetAutoArchiveOptOut()
   const resolveSuspected = useResolveSuspectedComplete()
+  const markViewed = useMarkSessionViewed()
+  const markUnread = useMarkSessionUnread()
   const bulkArchive = useBulkArchiveSessions()
   const resumeInterrupted = useResumeInterrupted()
   const rotateStalled = useRotateStalled()
@@ -169,6 +175,7 @@ export function SessionList({
         childSessions={childSessions}
         parentName={parentName}
         selected={session.id === selectedId}
+        open={session.id === openId}
         listMode={listMode}
         onOpen={onOpen}
         onRename={onRename}
@@ -183,6 +190,7 @@ export function SessionList({
         onToggleAutopilot={(id, paused) => setAutopilot.mutate({ id, paused })}
         onToggleAutoArchive={(id, optedOut) => setAutoArchive.mutate({ id, optedOut })}
         onResolveSuspectedComplete={(id, decision) => resolveSuspected.mutate({ id, decision })}
+        onSetUnread={(id, unread) => (unread ? markUnread : markViewed).mutate(id)}
       />
 
     )

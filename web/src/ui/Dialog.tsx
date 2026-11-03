@@ -6,6 +6,8 @@ import { getOverlayRoot } from './portal'
 import { useFocusTrap } from './useFocusTrap'
 
 const SIZES = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-5xl' } as const
+/** Stacking layer (`index.css` `--layer-*`). `palette` is the ⌘K palette's, above every dialog. */
+const LAYERS = { dialog: 'z-dialog', palette: 'z-palette' } as const
 
 /** A dialog must be named by exactly one of a visible `title` or an `aria-label` — never
  *  neither (silently unlabelled) and never both (redundant/conflicting accessible name). */
@@ -16,6 +18,7 @@ export type DialogProps = DialogLabelling & {
   onClose: () => void
   description?: React.ReactNode
   size?: keyof typeof SIZES
+  layer?: keyof typeof LAYERS
   initialFocus?: React.RefObject<HTMLElement | null>
   /** false → neither Escape nor the backdrop closes it (e.g. a running deploy). */
   dismissable?: boolean
@@ -31,6 +34,7 @@ export function Dialog({
   'aria-label': ariaLabel,
   description,
   size = 'md',
+  layer = 'dialog',
   initialFocus,
   dismissable = true,
   className,
@@ -80,7 +84,7 @@ export function Dialog({
   const handleBackdropClick = dismissable ? onClose : undefined
 
   return createPortal(
-    <div className="fixed inset-0 z-dialog flex items-end sm:items-center justify-center p-4">
+    <div className={cn('fixed inset-0 flex items-end sm:items-center justify-center p-4', LAYERS[layer])}>
       <div
         data-testid="dialog-backdrop"
         className="absolute inset-0 bg-black/50"

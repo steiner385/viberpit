@@ -1,21 +1,27 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, screen, act } from '@testing-library/react'
 import { elementScroll, type Virtualizer, type VirtualizerOptions } from '@tanstack/react-virtual'
+import type { RefObject } from 'react'
 import { TranscriptView } from './TranscriptView'
 import type { Turn } from '@/session/reducer'
+import { SessionGestureProvider, useTranscriptJumpHandle, type TranscriptJump } from '@/shell/sessionGestures'
 
 type Opts = VirtualizerOptions<HTMLDivElement, Element>
 
 // Capture the options TranscriptView hands to useVirtualizer so a test can drive
 // the virtualizer's own scroll path (its scrollToFn) without real layout.
 let capturedOpts: Opts | null = null
+// …and the instance it returns, so a test can read its row measurements and spy
+// on scrollToIndex: jsdom lays nothing out, so the scroll position is set by hand.
+let capturedVirtualizer: Virtualizer<HTMLDivElement, Element> | null = null
 vi.mock('@tanstack/react-virtual', async (importOriginal) => {
   const mod = await importOriginal<typeof import('@tanstack/react-virtual')>()
   return {
     ...mod,
     useVirtualizer: (opts: Opts) => {
       capturedOpts = opts
-      return mod.useVirtualizer(opts)
+      capturedVirtualizer = mod.useVirtualizer(opts)
+      return capturedVirtualizer
     },
   }
 })
@@ -149,4 +155,192 @@ describe('TranscriptView scrollback', () => {
   // The beginning-of-session marker is a virtualized row; its presence logic is
   // unit-tested in transcriptRows.test.ts (buildRenderRows) and its rendering is
   // covered by e2e/transcript-virtualization.spec.ts.
+})
+
+// ── Alt+↑ / Alt+↓: jump between the user's own prompts (D-10) ────────────────
+
+describe('TranscriptView jumpPrompt', () => {
+  const text = (id: string) => [{ kind: 'text' as const, id: `${id}:x`, text: id }]
+  // Row index = turn index: no head markers (no earliestTurn), no dividers.
+  const convo: Turn[] = [
+    { id: 'p1', role: 'user', blocks: text('p1') }, // 0 own prompt
+    { id: 'a1', role: 'assistant', blocks: text('a1') }, // 1
+    { id: 'n1', role: 'user', blocks: text('n1'), origin: { kind: 'autopilot' } }, // 2 nudge — skipped
+    { id: 'a2', role: 'assistant', blocks: text('a2') }, // 3
+    { id: 'p2', role: 'user', blocks: text('p2') }, // 4 own prompt
+    { id: 'a3', role: 'assistant', blocks: text('a3') }, // 5
+  ]
+
+  let handle: RefObject<TranscriptJump | null> | null = null
+  function Probe() {
+    handle = useTranscriptJumpHandle()
+    return null
+  }
+
+  function renderConvo() {
+    const view = render(
+      <SessionGestureProvider>
+        <TranscriptView {...base} turns={convo} />
+        <Probe />
+      </SessionGestureProvider>,
+    )
+    const v = capturedVirtualizer!
+    const scrollToIndex = vi.spyOn(v, 'scrollToIndex').mockImplementation(() => {})
+    const scroller = screen.getByTestId('transcript-scroll')
+    /** Put the scroller's LIVE scroll position at `top` px (jsdom lays nothing out). */
+    const scrollTo = (top: number) =>
+      Object.defineProperty(scroller, 'scrollTop', { value: top, writable: true, configurable: true })
+    /** Scroll so row `index` starts exactly at the top edge — the topmost visible row. */
+    const showFrom = (index: number) => scrollTo(v.measurementsCache[index].start)
+    const jump = (dir: 'prev' | 'next') => act(() => { handle!.current!.jumpPrompt(dir) })
+    return { ...view, scrollToIndex, scrollTo, showFrom, jump }
+  }
+
+  // The root cause of the 9/40 keyboard-nav e2e failure: `virtualizer.range`
+  // and `scrollOffset` only catch up when the virtualizer handles the `scroll`
+  // event, a frame AFTER scrollTop moves. A key pressed inside that frame — key
+  // repeat, a quick double press — targeted from where the view WAS. The jump
+  // reads the scroller's live scrollTop instead.
+  it('targets from the LIVE scroll position, not the virtualizer\'s not-yet-updated range', () => {
+    const { scrollToIndex, showFrom, jump } = renderConvo()
+    const v = capturedVirtualizer!
+    showFrom(0) // the view is at p1…
+    v.range = { startIndex: 4, endIndex: 5 } // …but the range still says p2 (stale)
+    v.scrollOffset = v.measurementsCache[4].start
+    jump('next')
+    expect(scrollToIndex).toHaveBeenLastCalledWith(4, { align: 'start' })
+  })
+
+  it('Alt+↑ goes to the previous own prompt above the topmost visible row', () => {
+    const { scrollToIndex, showFrom, jump } = renderConvo()
+    showFrom(5)
+    jump('prev')
+    expect(scrollToIndex).toHaveBeenLastCalledWith(4, { align: 'start' })
+  })
+
+  it('skips nudges — a user turn with an origin is not the user\'s own prompt', () => {
+    const { scrollToIndex, showFrom, jump } = renderConvo()
+    showFrom(4)
+    jump('prev')
+    expect(scrollToIndex).toHaveBeenLastCalledWith(0, { align: 'start' })
+    showFrom(0)
+    jump('next')
+    expect(scrollToIndex).toHaveBeenLastCalledWith(4, { align: 'start' })
+  })
+
+  it('does nothing at either end', () => {
+    const { scrollToIndex, showFrom, jump } = renderConvo()
+    showFrom(0)
+    jump('prev')
+    showFrom(4)
+    jump('next')
+    expect(scrollToIndex).not.toHaveBeenCalled()
+  })
+
+  it('unpins stick-to-bottom, so the transcript stays where it jumped', () => {
+    const { showFrom, jump } = renderConvo()
+    expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull()
+    showFrom(5)
+    jump('prev')
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeInTheDocument()
+  })
+
+  // virtual-core skips scroll compensation for a RE-measured row above the
+  // viewport while the scroll direction is backward — right for a user scrolling
+  // up, wrong for a jump: a reply that settles a few hundred px shorter after the
+  // jump would drag the prompt off the top (seen in e2e, 591px). The jump holds
+  // the view by compensating every above-viewport resize until the user scrolls.
+  it('holds the jumped-to row in place while rows above it settle, until the user scrolls', async () => {
+    const { showFrom, jump } = renderConvo()
+    const v = capturedVirtualizer!
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeUndefined()
+    showFrom(5)
+    jump('prev')
+    const hold = v.shouldAdjustScrollPositionOnItemSizeChange
+    expect(hold).toBeDefined()
+    v.scrollOffset = 500
+    const item = (start: number) => ({ index: 0, key: 'k', start, size: 100, end: start + 100, lane: 0 })
+    expect(hold!(item(100), -50, v)).toBe(true) // above the viewport: compensate
+    expect(hold!(item(600), -50, v)).toBe(false) // in or below it: leave alone
+
+    // A genuine user scroll hands resize handling back to the library.
+    const scroller = screen.getByTestId('transcript-scroll')
+    await act(nextFrame)
+    fireEvent.scroll(scroller)
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeUndefined()
+  })
+
+  // After an align-start jump the row above can keep a sub-pixel sliver in view
+  // (fractional scroll offsets), and the range then reports IT as topmost — so
+  // the next Alt+↓ re-targeted the prompt already at the top (seen in e2e).
+  it('a sub-pixel sliver of the row above does not count as the topmost visible row', () => {
+    const { scrollToIndex, scrollTo, jump } = renderConvo()
+    const v = capturedVirtualizer!
+    const a2 = v.measurementsCache[3]
+    scrollTo(a2.end - 0.5) // a2 "visible", but only its last half-pixel…
+    jump('next') // …so p2 (4) is the top, and there is no own prompt after it
+    expect(scrollToIndex).not.toHaveBeenCalled()
+    scrollTo(a2.start + 10) // a2 genuinely in view: p2 is next
+    jump('next')
+    expect(scrollToIndex).toHaveBeenLastCalledWith(4, { align: 'start' })
+  })
+
+  it('re-pinning ends the hold — the Scroll-to-bottom button', () => {
+    const { showFrom, jump } = renderConvo()
+    const v = capturedVirtualizer!
+    showFrom(5)
+    jump('prev')
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeDefined()
+    fireEvent.click(screen.getByRole('button', { name: 'Scroll to bottom' }))
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeUndefined()
+  })
+
+  it('re-pinning ends the hold — a send (followSignal)', () => {
+    const view = render(
+      <SessionGestureProvider>
+        <TranscriptView {...base} turns={convo} followSignal={0} />
+        <Probe />
+      </SessionGestureProvider>,
+    )
+    const v = capturedVirtualizer!
+    vi.spyOn(v, 'scrollToIndex').mockImplementation(() => {})
+    Object.defineProperty(screen.getByTestId('transcript-scroll'), 'scrollTop',
+      { value: v.measurementsCache[5].start, writable: true, configurable: true })
+    act(() => { handle!.current!.jumpPrompt('prev') })
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeDefined()
+    view.rerender(
+      <SessionGestureProvider>
+        <TranscriptView {...base} turns={convo} followSignal={1} />
+        <Probe />
+      </SessionGestureProvider>,
+    )
+    expect(capturedVirtualizer!.shouldAdjustScrollPositionOnItemSizeChange).toBeUndefined()
+  })
+
+  it('focuses nothing — focus stays where the key was pressed', () => {
+    const { showFrom, jump } = renderConvo()
+    const before = document.activeElement
+    showFrom(5)
+    jump('prev')
+    expect(document.activeElement).toBe(before)
+  })
+
+  it('only the session transcript registers — the assistant drawer\'s never answers Alt+↑', () => {
+    // User turns only: the drawer's assistant replies need its runtime (feedback).
+    render(
+      <SessionGestureProvider>
+        <TranscriptView {...base} turns={convo.filter((t) => t.role === 'user')} variant="assistant" />
+        <Probe />
+      </SessionGestureProvider>,
+    )
+    expect(handle!.current).toBeNull()
+  })
+
+  it('unregisters on unmount, so a closed session leaves nothing to jump', () => {
+    const { unmount } = renderConvo()
+    expect(handle!.current).not.toBeNull()
+    const ref = handle!
+    unmount()
+    expect(ref.current).toBeNull()
+  })
 })

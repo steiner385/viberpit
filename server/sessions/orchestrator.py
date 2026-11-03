@@ -94,6 +94,7 @@ from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
+from server.sessions import read_state as _read_state
 from server.sessions import dispatch
 from server.sessions import events as ev
 from server.sessions import host_heartbeat
@@ -26540,6 +26541,7 @@ class SessionOrchestrator:
             # Its own always-allow rule set can never match again (rules bind to one
             # session id), so it goes with the row instead of piling up in the rules list.
             n_rules = await _rule_store.delete_session_rules(db, session_id)
+            await _read_state.delete_for_session(db, session_id)
             await db.execute(
                 sa_delete(DbSession).where(DbSession.id == session_id)
             )

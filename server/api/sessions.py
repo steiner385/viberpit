@@ -48,6 +48,7 @@ from server.sessions.orchestrator import (
     ModelBlockedError,
 )
 from server.sessions import session_actions
+from server.sessions import read_state
 from server.sessions import worktree_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
@@ -767,10 +768,21 @@ def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
 # ---------------------------------------------------------------------------
 
 
+async def _unread_ids_or_none(identity: str, route: str) -> set[str]:
+    """The caller's unread session ids (D-10), or none on a DB error: ``unread`` is a
+    cosmetic flag, so it must never 500 the session list — every session reads as read."""
+    try:
+        return await read_state.unread_ids(identity)
+    except Exception:
+        log.warning("%s: read-state lookup failed — every session degrades to read", route,
+                    exc_info=True)
+        return set()
+
+
 @router.get("")
 async def list_sessions(
     request: Request,
-    _identity: str = Depends(current_identity),
+    identity: str = Depends(current_identity),
 ) -> list[dict]:
     """Return all in-memory session records.
 
@@ -803,12 +815,14 @@ async def list_sessions(
     except Exception:                          # DB down: report "unknown", never false-fresh (NFR-5)
         log.warning("list_sessions: heartbeat snapshot failed — liveness degrades to unknown",
                     exc_info=True)
+    unread = await _unread_ids_or_none(identity, "list_sessions")
     return [
-        _record_to_dict(
+        {**_record_to_dict(
             r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
             defer_seconds=defer_seconds, queue_position=positions.get(r.id),
             queue_stall_reason=stall_reasons.get(r.id),
-            heartbeats=heartbeats, heartbeats_now=hb_now)
+            heartbeats=heartbeats, heartbeats_now=hb_now),
+         "unread": r.id in unread}
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]
 
@@ -1158,15 +1172,17 @@ async def adopt_session_route(
 @router.get("/archived")
 async def list_archived_sessions(
     request: Request,
-    _identity: str = Depends(current_identity),
+    identity: str = Depends(current_identity),
 ) -> list[dict]:
-    """Return all archived session metadata."""
+    """Return all archived session metadata, with the caller's ``unread`` (D-10)."""
     orch = _get_orchestrator(request)
     rows = await orch.list_archived()
+    unread = await _unread_ids_or_none(identity, "list_archived_sessions")
     # The orchestrator's internal RPC wire temporarily carries the old Claude
     # alias for daemon-first rolling deploys. It is not part of the browser API.
     return [
-        {key: value for key, value in row.items() if key != "claudeSessionId"}
+        {**{key: value for key, value in row.items() if key != "claudeSessionId"},
+         "unread": row.get("id") in unread}
         for row in rows
     ]
 
@@ -1774,6 +1790,38 @@ async def close_session(
         identity=identity,
         detail={"session_id": session_id},
     )
+
+
+@router.post("/{session_id}/viewed", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_session_viewed(
+    session_id: str,
+    identity: str = Depends(current_identity),
+) -> Response:
+    """The caller has seen this session now (D-10). Served from the DB, not the daemon."""
+    try:
+        await read_state.mark_viewed(identity, session_id)
+    except read_state.UnknownSession:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        ) from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{session_id}/unread", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_session_unread(
+    session_id: str,
+    identity: str = Depends(current_identity),
+) -> Response:
+    """Mark as unread for the caller (D-10): its last turn reads as new again."""
+    try:
+        await read_state.mark_unread(identity, session_id)
+    except read_state.UnknownSession:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        ) from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{session_id}/unarchive")

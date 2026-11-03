@@ -31,9 +31,8 @@
  * The bar names WHAT is running the session — agent (engine), account alias,
  * runner host, model and reasoning effort — because with more than one engine
  * in the fleet "which agent am I talking to?" is no longer a constant. The
- * record comes from the SESSIONS QUERY keyed by this header's own `sessionId`
- * (the same query `useSessionNeighbors` already walks for the chevrons), not
- * from a global and not from a prop: `MainPaneSession` passes only the runtime's
+ * record comes from the SESSIONS QUERY keyed by this header's own `sessionId`,
+ * not from a global and not from a prop: `MainPaneSession` passes only the runtime's
  * derived title/goal/status, and the runtime carries no engine, host or effort.
  * The cluster is desktop-only (`hidden md:`) and every value truncates, so a
  * long alias cannot starve the title.
@@ -47,6 +46,15 @@
  * presentations. The pill is `aria-hidden` free but silent for screen readers
  * being announced twice is not a risk — `StatusBar` is the only `role="status"`
  * live region; the pill is a static label.
+ *
+ * ## The chevrons walk the LIST's order (D-10)
+ *
+ * ‹ › step through the shell's `orderedSessions` — filters, search and collapsed
+ * groups applied — through `shell/sessionListNav`, the same order and the same
+ * open as Alt+[ / Alt+]. They used to walk `useSessionNeighbors`, a second
+ * ordering over the raw sessions query, which could step to a session the list
+ * was hiding. Outside the shell there is no list, and beside a session the list
+ * does not show (Background scope, filtered out) no neighbours — no chevrons.
  */
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
@@ -56,7 +64,7 @@ import { canUseEngine } from '@/session/engineCapabilities'
 import { StatusPill } from '@/features/accounts/UsageBadge'
 import { SessionGoalText } from '@/features/sessions/SessionGoalText'
 import { SessionActions } from '@/features/sessions/SessionActions'
-import { useSessionNeighbors } from '@/session/useSessionNeighbors'
+import { useSessionListNav } from '@/shell/sessionListNav'
 import { engineBadge, tierLabel } from '@/session/modelName'
 import { useToastAnchor } from '@/shell/toastInsets'
 import { usePageTitle } from '@/shell/usePageTitle'
@@ -74,8 +82,6 @@ export interface SessionHeaderProps {
   status: SessionStatus
   /** Leave the session for the list (the Back button). */
   onBack: () => void
-  /** Open another session — the prev/next chevrons. */
-  onOpenSession: (id: string) => void
   /** Archive/delete finished — the host advances to the neighbouring session. */
   onClosed: () => void
   /** "Reload session" menu item — the host rebuilds the driver and re-attaches. */
@@ -104,9 +110,11 @@ const NAV_BUTTON = cn(
 )
 
 export function SessionHeader({
-  sessionId, title, goal, goalSource, status, onBack, onOpenSession, onClosed, onReload, onRotate,
+  sessionId, title, goal, goalSource, status, onBack, onClosed, onReload, onRotate,
 }: SessionHeaderProps) {
-  const { prevId, nextId } = useSessionNeighbors(sessionId)
+  const listNav = useSessionListNav()
+  const prevId = listNav?.neighbor(sessionId, 'prev') ?? null
+  const nextId = listNav?.neighbor(sessionId, 'next') ?? null
   const [renameOpen, setRenameOpen] = useState(false)
   const renameSession = useRenameSession()
   const { data: sessions = [] } = useSessions()
@@ -134,8 +142,8 @@ export function SessionHeader({
   const canRotate = canUseEngine(caps, 'accountRotation')
     || canUseEngine(caps, 'accountSwitchNewThread')
 
-  // Both chevrons render as a pair: useSessionNeighbors returns prevId/nextId
-  // both-null (single/unknown session) or both-set (wraparound), never one null.
+  // Both chevrons render as a pair: the list step returns prevId/nextId both-null
+  // (no list, the session is not in it, or it is the only row) or both-set (it wraps).
   const hasNeighbors = prevId !== null || nextId !== null
 
   // Back, the chevrons, the rename title and the actions menu all live here, so
@@ -177,7 +185,7 @@ export function SessionHeader({
       {hasNeighbors && (
         <button
           type="button"
-          onClick={() => prevId && onOpenSession(prevId)}
+          onClick={() => prevId && listNav?.open(prevId)}
           aria-label="Previous session"
           className={cn(NAV_BUTTON, 'text-lg leading-none')}
         >
@@ -240,7 +248,7 @@ export function SessionHeader({
       {hasNeighbors && (
         <button
           type="button"
-          onClick={() => nextId && onOpenSession(nextId)}
+          onClick={() => nextId && listNav?.open(nextId)}
           aria-label="Next session"
           className={cn(NAV_BUTTON, 'text-lg leading-none')}
         >

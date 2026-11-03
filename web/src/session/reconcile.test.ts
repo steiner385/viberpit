@@ -44,3 +44,31 @@ describe('reconcileSessions', () => {
     expect(out.map((x) => x.id)).toEqual(['a'])
   })
 })
+
+// D-10: `unread` is per-viewer read state, not part of the session record the rev
+// token versions, and only the list payloads carry it. A merge must neither lose
+// it (a payload without the field reads as "read") nor let a WS-newer cached row
+// hide the poll's fresher value.
+describe('reconcileSessions — unread', () => {
+  it('keeps the cached unread when the incoming row has none', () => {
+    const prev = [s('a', { revAt: T1, unread: true })]
+    const next = [s('a', { revAt: T2 })]
+    expect(reconcileSessions(prev, next)[0].unread).toBe(true)
+  })
+  it('takes the poll unread even when the cached row wins on rev token', () => {
+    const prev = [s('a', { status: 'done', revAt: T2, unread: false })]
+    const next = [s('a', { status: 'in_progress', revAt: T1, unread: true })]
+    const out = reconcileSessions(prev, next)[0]
+    expect(out.status).toBe('done')
+    expect(out.unread).toBe(true)
+  })
+  it('takes the poll unread when the poll wins', () => {
+    const prev = [s('a', { revAt: T1, unread: true })]
+    const next = [s('a', { revAt: T2, unread: false })]
+    expect(reconcileSessions(prev, next)[0].unread).toBe(false)
+  })
+  it('returns the cached row unchanged (same reference) when nothing differs', () => {
+    const cached = s('a', { revAt: T2, unread: true })
+    expect(reconcileSessions([cached], [s('a', { revAt: T1, unread: true })])[0]).toBe(cached)
+  })
+})

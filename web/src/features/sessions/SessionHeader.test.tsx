@@ -24,6 +24,7 @@ import { QK } from '@/api/hooks'
 import type { SessionDiff } from './diff/types'
 import type { AgentCapabilities, EngineOffer, Session, SessionStatus } from '@/api/types'
 import { session as makeSession } from '@/test/factories'
+import { SessionListNavProvider } from '@/shell/sessionListNav'
 import { SessionHeader, type SessionHeaderProps } from './SessionHeader'
 
 expect.extend(toHaveNoViolations)
@@ -42,6 +43,12 @@ interface RenderOpts {
   engines?: EngineOffer[]
   /** Seed the diff summary the `+N −M` chip reads. */
   diff?: SessionDiff
+  /**
+   * The shell's list order (`list.ordering.orderedSessions` ids). Defaults to
+   * the sessions' own order; `null` renders the header outside the shell, with
+   * no list to walk.
+   */
+  listOrder?: string[] | null
 }
 
 /** The router location, so a test can see the chip switch `?view=`. */
@@ -49,17 +56,23 @@ function Where() {
   return <div data-testid="where">{useLocation().search}</div>
 }
 
-function renderHeader({ props = {}, sessions = [session()], engines, diff }: RenderOpts = {}) {
+function renderHeader({ props = {}, sessions = [session()], engines, diff, listOrder }: RenderOpts = {}) {
   const onBack = vi.fn()
   const onOpenSession = vi.fn()
   const onClosed = vi.fn()
+  const order = listOrder === undefined ? sessions.map((s) => s.id) : listOrder
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(QK.sessions, sessions)
   if (engines) qc.setQueryData(QK.config, { repoRoot: '/repo', engines })
   if (diff) qc.setQueryData(QK.sessionDiff('sess-1', { summary: true, ignoreWhitespace: false }), diff)
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/sessions/sess-1']}>{children}<Where /></MemoryRouter>
+      <MemoryRouter initialEntries={['/sessions/sess-1']}>
+        {order === null ? children : (
+          <SessionListNavProvider orderedIds={order} onOpen={onOpenSession}>{children}</SessionListNavProvider>
+        )}
+        <Where />
+      </MemoryRouter>
     </QueryClientProvider>
   )
   const utils = render(
@@ -70,7 +83,6 @@ function renderHeader({ props = {}, sessions = [session()], engines, diff }: Ren
       goalSource={null}
       status="idle"
       onBack={onBack}
-      onOpenSession={onOpenSession}
       onClosed={onClosed}
       {...props}
     />,
@@ -168,6 +180,34 @@ describe('SessionHeader — Back and the prev/next chevrons', () => {
 
   it('hides the chevrons when there is only one session', () => {
     renderHeader()
+    expect(screen.queryByRole('button', { name: 'Next session' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Previous session' })).toBeNull()
+  })
+
+  // D-10: the chevrons walk the shell's LIST order — the one Alt+[ / Alt+]
+  // walk, filters and search included — not a second ordering of their own
+  // over the sessions query (the retired `useSessionNeighbors`).
+  it('walk the list order the shell hands down, not the sessions query order', async () => {
+    const { onOpenSession } = renderHeader({ sessions: three(), listOrder: ['c', 'sess-1', 'a'] })
+    await userEvent.click(screen.getByRole('button', { name: 'Next session' }))
+    expect(onOpenSession).toHaveBeenLastCalledWith('a')
+    await userEvent.click(screen.getByRole('button', { name: 'Previous session' }))
+    expect(onOpenSession).toHaveBeenLastCalledWith('c')
+  })
+
+  // A session the Active list does not show — a Background-scope session, or
+  // one filtered out — has no neighbours in it, so the chevrons hide rather
+  // than jump to the far end of a list the user is not looking at. (Alt+[ /
+  // Alt+] keep their first/last fallback: a key press with nothing selected is
+  // a request to enter the list.)
+  it('hide for a session the list does not show (Background scope, filtered out)', () => {
+    renderHeader({ sessions: three(), listOrder: ['a', 'c'] })
+    expect(screen.queryByRole('button', { name: 'Next session' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Previous session' })).toBeNull()
+  })
+
+  it('renders no chevrons outside the shell, where there is no list to walk', () => {
+    renderHeader({ sessions: three(), listOrder: null })
     expect(screen.queryByRole('button', { name: 'Next session' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Previous session' })).toBeNull()
   })

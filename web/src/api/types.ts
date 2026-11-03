@@ -352,6 +352,10 @@ export interface Session {
   /** Last-activity time. May be null/absent for a session with no recorded
    *  activity — guard with isValidTimestamp() before formatting. */
   updatedAt?: string | null
+  /** True when a turn finished since the calling viewer last looked at this
+   *  session (per-viewer read state, D-10). Absent means read: the server only
+   *  tracks sessions the viewer has opened. */
+  unread?: boolean
   detached?: boolean
   nameIsAuto?: boolean
   /** Sub-agents spawned in this session, for hierarchical drill-down (empty when none). */
@@ -488,6 +492,8 @@ export interface ArchivedSession {
   permissionMode: string
   createdAt: string
   archivedAt: string
+  /** Per-viewer read state (D-10), same rule as `Session.unread`. */
+  unread?: boolean
 }
 
 /** Result of a best-effort batch operation over session ids. */

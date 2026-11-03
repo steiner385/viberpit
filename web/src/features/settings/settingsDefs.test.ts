@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { SETTINGS_DEFS, SETTINGS_BY_ID, sectionsInGroup } from './settingsDefs'
 import {
-  SETTINGS_DEFS, SETTINGS_BY_ID, SETTINGS_GROUPS, DEFAULT_SETTINGS_SECTION,
-  isSettingsSectionId, sectionsInGroup,
-} from './settingsDefs'
+  SETTINGS_GROUPS, SETTINGS_META, DEFAULT_SETTINGS_SECTION, isSettingsSectionId,
+} from './settingsMeta'
 import { readLastSection, writeLastSection, LAST_SECTION_KEY } from './lastSection'
 
 describe('settingsDefs', () => {
@@ -63,6 +63,29 @@ describe('settingsDefs', () => {
   it('Deploy carries the pending-count badge that stands in for the hidden banner', () => {
     expect(SETTINGS_BY_ID.deploy.badge).toBe('deployPending')
     expect(SETTINGS_BY_ID.deploy.scope).toBe('server')
+  })
+})
+
+describe('settingsMeta — the one source of section metadata (D-10)', () => {
+  it('every def IS its meta row plus page fields: same ids, same order, same metadata', () => {
+    expect(SETTINGS_DEFS.map((d) => d.id)).toEqual(SETTINGS_META.map((m) => m.id))
+    SETTINGS_META.forEach((m, i) => {
+      const d = SETTINGS_DEFS[i]
+      expect(d.component, `${m.id} has a component`).toBeDefined()
+      expect(d.icon, `${m.id} has an icon`).toBeDefined()
+      for (const key of ['group', 'label', 'description', 'keywords'] as const) {
+        expect(d[key], `${m.id}.${key}`).toBe(m[key])
+      }
+    })
+  })
+
+  it('the metadata module imports no section component (the palette chunk stays light)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const src = readFileSync(join(__dirname, 'settingsMeta.ts'), 'utf8')
+    const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1])
+    // Not even the icons (D-10 bundle ruling): they are page fields.
+    expect(imports).toEqual([])
   })
 })
 

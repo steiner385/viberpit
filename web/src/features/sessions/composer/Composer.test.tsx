@@ -303,6 +303,28 @@ describe('Composer', () => {
     expect(box).toHaveValue('older')
   })
 
+  // D-10: Alt+↑ / Alt+↓ are the shell's prompt jumps. Recalling history on them
+  // would `preventDefault` the key and the shell's dispatcher skips a prevented
+  // event, so the jump would never fire from the composer.
+  it('Alt+↑ / Alt+↓ do not recall history — they are left for the prompt jump', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} history={['older', 'newer']} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    box.focus()
+    await user.keyboard('{Alt>}{ArrowUp}{/Alt}')
+    expect(box).toHaveValue('')
+    const up = new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', altKey: true, bubbles: true, cancelable: true })
+    box.dispatchEvent(up)
+    expect(up.defaultPrevented).toBe(false)
+    // …and plain ↑ still recalls.
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('newer')
+    const down = new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', altKey: true, bubbles: true, cancelable: true })
+    box.dispatchEvent(down)
+    expect(down.defaultPrevented).toBe(false)
+    expect(box).toHaveValue('newer')
+  })
+
   it('ArrowDown walks back toward the live draft and restores it', async () => {
     const user = userEvent.setup()
     render(<Composer {...defaults} history={['older', 'newer']} />)

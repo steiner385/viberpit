@@ -22,7 +22,7 @@
  * boundary. The list, the composer, the drawer host and the nav rail are all the
  * shipping components.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/api/types'
@@ -863,5 +863,140 @@ describe('Escape closes an open menu instead of detaching', () => {
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('menu', { name: /theme/i })).not.toBeInTheDocument()
     expect(app.path()).toBe('/sessions/s1')
+  })
+})
+
+// ── D-10: session switching and prompt jumps ─────────────────────────────────
+//
+// Elsewhere: Alt+[ ] / Alt+Shift+1–9 / Alt+↑↓. On Apple: ⌘⌥[ ] / ⌘⌥1–9 / ⌘⌥↑↓
+// — a bare ⌥ chord there is typing (German ⌥5 is "[") or caret movement (⌥↑).
+
+/** Dispatch a keydown on `target` and return it, to read `defaultPrevented`. */
+function press(target: Element, init: KeyboardEventInit): KeyboardEvent {
+  const ev = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })
+  act(() => { target.dispatchEvent(ev) })
+  return ev
+}
+
+const PLATFORM = window.navigator.platform
+function setPlatform(value: string): void {
+  Object.defineProperty(window.navigator, 'platform', { value, configurable: true })
+}
+
+describe('session switching — Linux / Windows chords', () => {
+  beforeEach(() => setPlatform('Linux x86_64'))
+  afterEach(() => setPlatform(PLATFORM))
+  const alt = (target: Element, key: string, code: string) => press(target, { key, code, altKey: true })
+
+  it('Alt+] / Alt+[ step from the open session, wrapping at both ends', async () => {
+    const app = await renderSession()
+    alt(railLink(), ']', 'BracketRight')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+    alt(railLink(), ']', 'BracketRight')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s1'))
+    alt(railLink(), '[', 'BracketLeft')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('the header chevrons go exactly where Alt+[ / Alt+] go', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.click(screen.getByRole('button', { name: 'Next session' }))
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+    const byChevron = app.path()
+    await act(async () => { await app.router.navigate('/sessions/s1') })
+    alt(railLink(), ']', 'BracketRight')
+    await waitFor(() => expect(app.path()).toBe(byChevron))
+    await act(async () => { await app.router.navigate('/sessions/s1') })
+    await user.click(screen.getByRole('button', { name: 'Previous session' }))
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('Alt+Shift+2 opens the second session from inside the session composer', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.click(composer())
+    const ev = press(composer(), { key: '@', code: 'Digit2', altKey: true, shiftKey: true })
+    expect(ev.defaultPrevented).toBe(true)
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('bare Alt+2 is left to the browser (Linux tab select)', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.click(composer())
+    const ev = press(composer(), { key: '2', code: 'Digit2', altKey: true })
+    expect(ev.defaultPrevented).toBe(false)
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('Alt+] does nothing from another text entry (the list search)', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    const ev = alt(search, ']', 'BracketRight')
+    expect(ev.defaultPrevented).toBe(false)
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('Alt+↑ / Alt+↓ are claimed with a session open — from the composer too', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    for (const key of ['ArrowUp', 'ArrowDown']) {
+      expect(press(composer(), { key, code: key, altKey: true }).defaultPrevented, `Alt+${key}`).toBe(true)
+    }
+  })
+
+  it('Alt+↑ does nothing without a session open', () => {
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    expect(press(railLink(), { key: 'ArrowUp', code: 'ArrowUp', altKey: true }).defaultPrevented).toBe(false)
+  })
+})
+
+describe('session switching — Apple chords (⌘⌥)', () => {
+  beforeEach(() => setPlatform('MacIntel'))
+  afterEach(() => setPlatform(PLATFORM))
+  const cmdOpt = (target: Element, key: string, code: string) =>
+    press(target, { key, code, metaKey: true, altKey: true })
+
+  it('⌘⌥] / ⌘⌥[ step the list; ⌘⌥2 opens the second session from the composer', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    cmdOpt(railLink(), '‘', 'BracketRight')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+    cmdOpt(railLink(), '“', 'BracketLeft')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s1'))
+    await user.click(composer())
+    expect(cmdOpt(composer(), '™', 'Digit2').defaultPrevented).toBe(true)
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('⌘⌥↑ / ⌘⌥↓ are claimed from the composer', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    for (const key of ['ArrowUp', 'ArrowDown']) {
+      expect(cmdOpt(composer(), key, key).defaultPrevented, `⌘⌥${key}`).toBe(true)
+    }
+  })
+
+  it('a bare ⌥5 typing "[" (German layout) in the composer is neither matched nor prevented', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.click(composer())
+    const ev = press(composer(), { key: '[', code: 'Digit5', altKey: true })
+    expect(ev.defaultPrevented).toBe(false)
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('a bare ⌥↑ in the composer is left to the caret', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    expect(press(composer(), { key: 'ArrowUp', code: 'ArrowUp', altKey: true }).defaultPrevented).toBe(false)
+    expect(press(railLink(), { key: ']', code: 'BracketRight', altKey: true }).defaultPrevented).toBe(false)
   })
 })

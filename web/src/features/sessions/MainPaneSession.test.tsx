@@ -134,7 +134,6 @@ function renderPane(
         sessionId={sessionId}
         onClosed={vi.fn()}
         onDetach={onDetach}
-        onOpenSession={vi.fn()}
       />
       <DockComposer />
     </SessionRuntimeProvider>,

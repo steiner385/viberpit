@@ -8,6 +8,7 @@ import {
   NO_FILTERS, deriveFilterOptions,
   type FilterOptions, type ListFilters,
 } from '@/session/listFilters'
+import { GROUP_BY_VALUES } from '@/session/ordering'
 import { SessionListControls } from './SessionListControls'
 
 expect.extend(toHaveNoViolations)
@@ -164,7 +165,23 @@ describe('SessionListControls — DEC-7 relabel', () => {
     expect(project.value).toBe('repo')
     expect(within(groupBy).queryByRole('option', { name: 'Repo' })).toBeNull()
     const values = within(groupBy).getAllByRole('option').map((o) => (o as HTMLOptionElement).value)
-    expect(values).toEqual(['none', 'repo', 'status'])
+    expect(values).toEqual(['none', 'repo', 'status', 'branch', 'host', 'date', 'pr'])
+  })
+
+  it('offers Branch, Host, Date and PR, one option per persisted Group-by value (D-10)', () => {
+    render(
+      <SessionListControls
+        groupBy="none" sortBy="status"
+        onGroupByChange={() => {}} onSortByChange={() => {}}
+        searchQuery="" onSearchChange={() => {}}
+      />,
+    )
+    const groupBy = screen.getByLabelText('Group by')
+    const options = within(groupBy).getAllByRole('option') as HTMLOptionElement[]
+    expect(options.map((o) => o.textContent)).toEqual(
+      ['None', 'Project', 'Status', 'Branch', 'Host', 'Date', 'PR'],
+    )
+    expect(options.map((o) => o.value)).toEqual([...GROUP_BY_VALUES])
   })
 
   it('renders no filter selects at all when `filters` is omitted (ArchivedSessionList)', () => {

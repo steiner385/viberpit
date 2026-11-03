@@ -209,6 +209,24 @@ describe('SessionSocket', () => {
     expect(sessions.find((s) => s.id === 'session-2')?.status).toBe('idle')
   })
 
+  it('keeps the per-viewer unread flag through status and rotation patches (D-10)', () => {
+    // Only the list payloads carry `unread`; a frame that rewrites the row must
+    // not drop it, or the row silently reads as "read".
+    const qc = new QueryClient()
+    qc.setQueryData(QK.sessions, [{ id: 'session-1', status: 'in_progress', accountName: 'a', unread: true }])
+    const sock = new SessionSocket('/ws')
+    sock.setQueryClient(qc)
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'status', sessionId: 'session-1', status: 'done', updatedAt: '2026-11-03T10:00:00Z' })
+    ws.simulateMessage({ type: 'rotated', sessionId: 'session-1', fromAccount: 'a', toAccount: 'b' })
+    const row = (qc.getQueryData(QK.sessions) as Array<{ id: string; status: string; accountName: string; unread?: boolean }>)[0]
+    expect(row.status).toBe('done')
+    expect(row.accountName).toBe('b')
+    expect(row.unread).toBe(true)
+  })
+
   it('invokes rotated callback', () => {
     const sock = new SessionSocket('/ws')
     sock.connect()

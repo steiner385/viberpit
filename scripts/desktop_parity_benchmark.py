@@ -11,10 +11,10 @@ S={"Y":1.0,"P":0.5,"N":0.0}
 D=[
 ("1 Shell & IA",[
  ("Session sidebar + search",3,"Y","Active/Background/Archived scopes, server FTS"),
- ("Group/sort by project, folder, branch, status, env, date, PR",2,"P","group none/repo/status only"),
+ ("Group/sort by project, folder, branch, status, env, date, PR",2,"Y","repo, status, branch, host (env), date, PR; folder = repo"),
  ("Pin / star sessions",1,"N",""),
- ("Read / unread marking",1,"N","needs-you badge only"),
- ("⌘K palette over sessions + branches",2,"N",""),
+ ("Read / unread marking",1,"Y","per-viewer bold + card menu, live and archived; no ⌘⌥U chord"),
+ ("⌘K palette over sessions + branches",2,"P","sessions, actions, nav, settings, repos, branches; repo/branch drill down inside the palette (no branch checkout or start-on-branch); keyboard-only on phone"),
  ("Split view / tiled panes",2,"N","umbrella spec non-goal"),
  ("Pop session into own window",1,"P","every session is a URL; no layout restore"),
  ("Archived view + unarchive",2,"Y",""),
@@ -105,8 +105,8 @@ D=[
 ("9 Shortcuts & a11y",[
  ("Shortcut registry + ⌘/ sheet",2,"Y",""),
  ("Keyboard menus for mode / model / effort",1,"Y",""),
- ("Session switching by keyboard",2,"P","list arrows; no ⌘1-9 / Ctrl+Tab"),
- ("Jump between prompts",1,"N",""),
+ ("Session switching by keyboard",2,"Y","⌘⌥[ ] and ⌘⌥1–9 in list order (Alt+[ ] / Alt+Shift+1–9 elsewhere)"),
+ ("Jump between prompts",1,"Y","⌘⌥↑/↓ (Alt+↑/↓ elsewhere), as Desktop"),
  ("Accessibility (landmarks, live regions, reduced motion)",2,"Y","VP ahead"),
 ]),
 ("10 Remote & multi-device",[

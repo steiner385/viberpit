@@ -34,7 +34,6 @@ function makeProps(overrides: Partial<React.ComponentProps<typeof DispatchBar>> 
     onNavigate: vi.fn(),
     onOpenHighlighted: vi.fn(),
     onEnterList: vi.fn(),
-    onJump: vi.fn(),
     onShowHelp: vi.fn(),
     onEscape: vi.fn(),
     isPending: false,
@@ -313,13 +312,31 @@ describe('DispatchBar', () => {
     expect((box as HTMLTextAreaElement).value).toBe('why is the sky blue?')
   })
 
-  it('Alt+2 jumps to row index 1', async () => {
-    const user = userEvent.setup()
-    const onJump = vi.fn()
-    render(<DispatchBar {...makeProps({ onJump })} />)
-    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{Alt>}2{/Alt}')
-    expect(onJump).toHaveBeenCalledWith(1)
+  // D-10: Alt+1–9 and Alt+↑/↓ belong to the shell's one dispatcher
+  // (`session.jumpN`, `transcript.promptPrev/Next`). The bar must leave them
+  // unclaimed — a `preventDefault` here is what makes the dispatcher skip them.
+  it('leaves Alt+digit unclaimed for the shell — the bar has no jump of its own', () => {
+    render(<DispatchBar {...makeProps()} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    box.focus()
+    for (const [key, code] of [['2', 'Digit2'], ['™', 'Digit2']]) {
+      const e = new KeyboardEvent('keydown', { key, code, altKey: true, bubbles: true, cancelable: true })
+      box.dispatchEvent(e)
+      expect(e.defaultPrevented, `Alt+${key}`).toBe(false)
+    }
+  })
+
+  it('Alt+↑ / Alt+↓ do not move the list highlight', () => {
+    const onNavigate = vi.fn()
+    render(<DispatchBar {...makeProps({ onNavigate })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    box.focus()
+    for (const key of ['ArrowUp', 'ArrowDown']) {
+      const e = new KeyboardEvent('keydown', { key, code: key, altKey: true, bubbles: true, cancelable: true })
+      box.dispatchEvent(e)
+      expect(e.defaultPrevented, `Alt+${key}`).toBe(false)
+    }
+    expect(onNavigate).not.toHaveBeenCalled()
   })
 
   it('Tab on an empty prompt enters list mode', async () => {

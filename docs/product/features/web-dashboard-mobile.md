@@ -14,6 +14,10 @@ links:
     - web/src/api/repoCheck.ts
     - web/src/features/sessions/SessionBody.tsx
     - web/src/features/sessions/composer/Composer.tsx
+    - web/src/features/palette/AppPalette.tsx
+    - web/src/session/ordering.ts
+    - web/src/shell/shortcuts.ts
+    - server/sessions/read_state.py
   prs: [423, 461, 498, 776, 778, 316, 313, 330, 339, 524, 566, 376, 1471]
 ---
 
@@ -97,6 +101,61 @@ above, moved every component listed here out of `components/` into its `features
 home, and replaced the ad-hoc `lib/useMediaQuery.ts` call sites with the single
 `useViewport()` reader. The session transcript is a live view bridged over WebSocket, not a
 raw PTY dump — there is no terminal emulator in the tree.
+
+**Session list grouping** — the list's Group control offers None, Repo, Status, **Branch**, **Host**,
+**Date** and **PR**, and the choice is remembered per browser.
+- **Date** groups by last activity into Today, Yesterday, Previous 7 days and Older, in your local time.
+- **PR** files a session under its most advanced PR: Open, Draft, Merged, Closed, then No PR.
+- Sessions with no branch or host collect in a trailing **No branch** / **No host** group.
+- Sorting is unchanged, and the Archived list keeps its own order.
+
+**Unread sessions** — a session's title turns **bold** when a turn has finished since you last looked at
+it. Read state is per viewer and stored on the server, so it follows you across devices.
+- Opening a session marks it read. While it stays open on a visible tab, each new turn end marks it read
+  again after 2 s; a turn that ends while the tab is hidden stays unread until you come back. The open
+  session's own card is never bold.
+- The card menu has **Mark as read** / **Mark as unread**. Archived cards show the same bold, and opening an
+  archived session's transcript marks it read.
+- A session you have never opened is never bold, so automation sessions and everything that existed before
+  this shipped start out read.
+- Bold complements the amber needs-you badge; it does not replace it. Screen readers hear "unread" in the
+  card's name.
+- Server side: `GET /api/sessions` and `GET /api/sessions/archived` carry `unread` per session for the
+  caller; `POST /api/sessions/{id}/viewed` and `POST /api/sessions/{id}/unread` set it.
+
+**⌘K palette** — ⌘K (Ctrl+K on Linux and Windows) opens a search over everything; press it again or Esc to
+close it. It works while typing in the composer.
+- **Sections:** Sessions (live, background, then archived), Actions (New session and the app shortcuts,
+  each with its chord), Navigate, Settings, Repos and Branches. With nothing typed it shows your 8 most
+  recent sessions, then Actions.
+- **Keys:** ↑/↓ move, Enter runs.
+- **Repos and branches drill down inside the palette.** A repo the list's Project filter offers sets that
+  filter. Any other repo, and every branch, turns the query into `repo:owner/name` or `branch:name`, which
+  matches that exact repo or branch, so you pick the session from there. You can type these facets
+  yourself, and combine them with each other and with words.
+- Opening a live session from the palette clears list filters or search that would hide it (except for a
+  session that has not started yet).
+- **Phone:** the palette needs a hardware keyboard; there is no touch button for it. It fits a 390 px
+  screen. The kiosk has no palette.
+
+**Keyboard navigation** — every chord is listed in the shortcut sheet (⌘/ or Ctrl+/), which is built from
+`web/src/shell/shortcuts.ts`.
+
+| Action | macOS | Linux / Windows |
+|---|---|---|
+| Open the palette | ⌘K | Ctrl+K |
+| Previous / next session in list order (wraps; with none open, ] opens the first and [ the last) | ⌘⌥[ / ⌘⌥] | Alt+[ / Alt+] |
+| Open the Nth session in the list | ⌘⌥1–9 | Alt+Shift+1–9 |
+| Scroll to your previous / next prompt | ⌘⌥↑ / ⌘⌥↓ | Alt+↑ / Alt+↓ |
+
+- Session keys follow the Active list's current order, including its grouping, filters and search. The
+  session header's previous/next arrows use the same order.
+- They work from the composer and the new-session prompt, but not from other text fields.
+- Why these chords: a bare ⌥ chord types characters on Mac non-US layouts (⌥5 is `[` on a German
+  keyboard), so macOS adds ⌘; bare Alt+1–9 switches browser tabs on Linux and Windows, so the jump adds
+  Shift; ⌥↑/↓ moves the caret in a text field, so the prompt jump uses ⌘⌥↑/↓ on macOS.
+- The prompt jump moves relative to the topmost visible message, stops following new output, and leaves
+  focus where it was.
 
 **Session rail and Details tab** — the old meta strip under the session header is gone. A
 right-hand session rail (20rem, collapsible, remembered per browser) shows four cards:

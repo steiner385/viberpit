@@ -13,6 +13,7 @@ import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { getPreferredEngine, setPreferredEngine } from '@/lib/enginePreference'
 import { getDispatchToggle, setDispatchToggle } from '@/lib/dispatchToggles'
 import { caretLineEdges } from '@/lib/caretLineEdges'
+import { DISPATCH_PROMPT_ID } from '@/lib/detachKeyGuard'
 import { isGatedTier, modelName } from '@/session/modelName'
 import { useImageAttachments } from '@/features/sessions/composer/useImageAttachments'
 import { AttachmentChips } from '@/features/sessions/composer/AttachmentChips'
@@ -77,8 +78,6 @@ export interface DispatchBarProps {
   onOpenHighlighted: () => void
   /** Tab on an empty prompt — drop into list-focus mode. */
   onEnterList: () => void
-  /** Alt+1..9 — open session by index. */
-  onJump: (index: number) => void
   /** ? — open the shortcuts overlay. */
   onShowHelp: () => void
   /** Esc — also clears highlight in the parent. */
@@ -101,7 +100,7 @@ export interface DispatchBarProps {
    *
    * The bar has always assumed one: it points `aria-controls` at
    * `#session-listbox`, names a `row-<id>` in `aria-activedescendant`, and
-   * swallows Tab / ↑↓ / ←→ / Alt+digit to move that list's cursor. The Sessions
+   * swallows Tab / ↑↓ / ←→ to move that list's cursor. The Sessions
    * column has TWO scopes now, and the archived one renders
    * `ArchivedScopeBody` — so `SessionList`, which owns that id and every
    * `row-<id>`, is not mounted while the dock still is.
@@ -134,7 +133,6 @@ export function DispatchBar({
   onNavigate,
   onOpenHighlighted,
   onEnterList,
-  onJump,
   onShowHelp,
   onEscape,
   activeDescendantId,
@@ -361,14 +359,6 @@ export function DispatchBar({
     const caret = el.selectionStart ?? 0
     const empty = text === ''
 
-    // Alt+Digit1..9 → jump to session by index. List-cursor behaviour — no list,
-    // no jump; let the key fall through.
-    if (drivesList && e.altKey && /^[1-9]$/.test(e.key)) {
-      e.preventDefault()
-      onJump(Number(e.key) - 1)
-      return
-    }
-
     // Enter (no Shift) → toggle a highlighted header (empty prompt), else dispatch/open.
     // The header-toggle branch is list-cursor behaviour, same as the rest of this
     // function's `drivesList &&` guards — with no list on screen a held-over
@@ -401,14 +391,16 @@ export function DispatchBar({
 
     // ArrowUp → navigate up only at the first line (or empty). List-cursor
     // behaviour — with no list on screen, let the key move the caret/scroll natively.
-    if (drivesList && e.key === 'ArrowUp' && (empty || caretLineEdges(text, caret).atFirstLine)) {
+    // Never with Alt: Alt+↑/↓ (and Alt+1–9) are the shell's (`shell/shortcuts.ts`),
+    // and a `preventDefault` here is what would make its dispatcher skip them.
+    if (drivesList && !e.altKey && e.key === 'ArrowUp' && (empty || caretLineEdges(text, caret).atFirstLine)) {
       e.preventDefault()
       onNavigate('up')
       return
     }
 
     // ArrowDown → navigate down only at the last line (or empty)
-    if (drivesList && e.key === 'ArrowDown' && (empty || caretLineEdges(text, caret).atLastLine)) {
+    if (drivesList && !e.altKey && e.key === 'ArrowDown' && (empty || caretLineEdges(text, caret).atLastLine)) {
       e.preventDefault()
       onNavigate('down')
       return
@@ -819,7 +811,7 @@ export function DispatchBar({
       <div className="flex flex-wrap items-end gap-2 @max-md:justify-end">
         <textarea
           ref={textareaRef}
-          id="dispatch-bar-prompt"
+          id={DISPATCH_PROMPT_ID}
           aria-label="New session prompt"
           aria-controls={drivesList ? 'session-listbox' : undefined}
           aria-activedescendant={drivesList ? activeDescendantId : undefined}

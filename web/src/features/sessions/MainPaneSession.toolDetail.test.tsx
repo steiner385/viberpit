@@ -31,7 +31,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 function renderPane() {
   render(
-    <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />,
+    <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} />,
     { wrapper },
   )
 }

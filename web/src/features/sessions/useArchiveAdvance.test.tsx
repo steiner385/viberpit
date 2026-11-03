@@ -13,7 +13,7 @@
 // ## Why the cache is seeded rather than the network faked
 //
 // The hooks (`useSessions`, `useArchivedSessions`) and the ordering
-// (`useSessionOrdering`, `nextSessionAfterClose`) are all REAL — only the data
+// (`useItemOrdering`, `nextSessionAfterClose`) are all REAL — only the data
 // they read is placed directly in the query cache. That makes "the session
 // appeared in the archived list" a single deterministic write instead of a wait
 // on a 30-second poll, and it keeps the failure modes honest: a hook that stops

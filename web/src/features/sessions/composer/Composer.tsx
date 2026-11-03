@@ -364,7 +364,10 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     if (pickingCommand && paletteRef.current?.handleKeyDown(e)) return
     if (!pickingCommand && pickingMention && mentionRef.current?.handleKeyDown(e)) return
 
-    if (!pickingCommand && !pickingMention && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && history.length > 0) {
+    // Never with Alt: Alt+↑/↓ jump the transcript between prompts (the shell's
+    // `transcript.promptPrev/Next`), and recalling here would `preventDefault`
+    // the key, which makes the shell's dispatcher skip it.
+    if (!e.altKey && !pickingCommand && !pickingMention && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && history.length > 0) {
       const el = e.currentTarget
       const caret = el.selectionStart ?? 0
       const empty = text === ''

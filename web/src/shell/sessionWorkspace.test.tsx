@@ -74,6 +74,8 @@ vi.mock('@/api/hooks', () => ({
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useSetAutoArchiveOptOut: () => ({ mutate: vi.fn() }),
   useResolveSuspectedComplete: () => ({ mutate: vi.fn() }),
+  useMarkSessionViewed: () => ({ mutate: vi.fn() }),
+  useMarkSessionUnread: () => ({ mutate: vi.fn() }),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
   useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
