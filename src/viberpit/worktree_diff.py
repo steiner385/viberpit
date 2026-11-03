@@ -73,7 +73,7 @@ GIT_GLOBAL = (
 # Explicit prefixes override diff.noprefix / mnemonicPrefix / srcPrefix / dstPrefix.
 # ``--ignore-submodules=dirty`` stops git spawning ``git status`` inside each
 # submodule (whose own ``.git/modules/<name>/config`` filter drivers would run here,
-# out of reach of ``_filter_overrides``); pointer changes are still reported, and
+# out of reach of ``filter_overrides``); pointer changes are still reported, and
 # ``--submodule=short`` overrides ``diff.submodule=log|diff``, which would also read
 # into the submodule.
 _DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "-M",
@@ -96,13 +96,19 @@ def git_env() -> dict[str, str]:
     return env
 
 
-def run_git(cwd: str, *args: str) -> bytes | None:
+def run_git(cwd: str, *args: str, index_file: str | None = None) -> bytes | None:
     """Run git in ``cwd``; stdout bytes, or None on failure (raises ``GitTimeout``).
-    Bytes, not text (unlike ``worktrees._run``): paths and contents need not be UTF-8."""
+    Bytes, not text (unlike ``worktrees._run``): paths and contents need not be UTF-8.
+
+    ``index_file`` points git at a private index (``GIT_INDEX_FILE``) — the one repo
+    variable ``git_env`` strips that a caller may set, and only to a file it owns."""
+    env = git_env()
+    if index_file is not None:
+        env["GIT_INDEX_FILE"] = index_file
     try:
         r = subprocess.run(
             ["git", "-C", cwd, *GIT_GLOBAL, *args],
-            capture_output=True, env=git_env(), timeout=GIT_TIMEOUT_S, check=False,
+            capture_output=True, env=env, timeout=GIT_TIMEOUT_S, check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise GitTimeout from exc
@@ -207,14 +213,14 @@ _FILTER_KEY_RE = re.compile(rb"^filter\.(.+)\.[^.]+$", re.DOTALL)
 _TRUSTED_SCOPES = {b"global", b"system", b"command"}
 
 
-class _UnsafeConfig(Exception):
+class UnsafeGitConfig(Exception):
     """A repo-scope filter driver name cannot be neutralised safely via ``-c``."""
 
 
-def _filter_overrides(top: str) -> tuple[str, ...]:
+def filter_overrides(top: str) -> tuple[str, ...]:
     """``-c`` args neutralising every filter driver defined in an untrusted scope.
 
-    Raises ``_UnsafeConfig`` when a driver name cannot be spliced into a ``-c`` key
+    Raises ``UnsafeGitConfig`` when a driver name cannot be spliced into a ``-c`` key
     (``=``, newline, NUL) or the config cannot be read; ``GitTimeout`` on timeout."""
     try:
         r = subprocess.run(
@@ -225,11 +231,11 @@ def _filter_overrides(top: str) -> tuple[str, ...]:
     except subprocess.TimeoutExpired as exc:
         raise GitTimeout from exc
     except OSError as exc:
-        raise _UnsafeConfig("git config unreadable") from exc
+        raise UnsafeGitConfig("git config unreadable") from exc
     if r.returncode == 1:  # no filter.* keys anywhere
         return ()
     if r.returncode != 0:
-        raise _UnsafeConfig("git config unreadable")
+        raise UnsafeGitConfig("git config unreadable")
     toks = r.stdout.split(b"\0")
     names: set[bytes] = set()
     for scope, key in zip(toks[0::2], toks[1::2]):
@@ -237,12 +243,12 @@ def _filter_overrides(top: str) -> tuple[str, ...]:
             continue
         m = _FILTER_KEY_RE.match(key)
         if m is None:
-            raise _UnsafeConfig("unparseable filter key")
+            raise UnsafeGitConfig("unparseable filter key")
         names.add(m.group(1))
     args: list[str] = []
     for raw in sorted(names):
         if any(c in raw for c in (b"=", b"\n", b"\r", b"\0")):
-            raise _UnsafeConfig("unsafe filter driver name")
+            raise UnsafeGitConfig("unsafe filter driver name")
         name = os.fsdecode(raw)
         for var in ("clean=", "smudge=", "process=", "required=false"):
             args += ["-c", f"filter.{name}.{var}"]
@@ -487,12 +493,12 @@ def _session_diff(cwd: str, *, summary: bool, ignore_whitespace: bool) -> dict[s
         if not rev:
             return _empty(base, head)
         # Every call that may hash working-tree files runs with these overrides.
-        cfg = _filter_overrides(top)
+        cfg = filter_overrides(top)
         ws = ("-w",) if ignore_whitespace else ()
         numstat = run_git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
         names = run_git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
         untracked = run_git(top, *cfg, "ls-files", "--others", "--exclude-standard", "-z")
-    except (GitTimeout, _UnsafeConfig):
+    except (GitTimeout, UnsafeGitConfig):
         return _empty(base, head, truncated=True)
     if numstat is None or names is None:
         return _empty(base, head)
