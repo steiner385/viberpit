@@ -6,11 +6,13 @@ import hashlib
 import os
 import stat
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 
 from viberpit import brand, worktrees
+from viberpit.worktree_diff import merge_driver_overrides
 from viberpit.worktrees import ForkWorktreeError, create_fork_worktree
 
 SID = "abcd1234-0000-4000-8000-000000000000"
@@ -101,6 +103,10 @@ def _registered(repo: Path) -> str:
     return _git(repo, "worktree", "list", "--porcelain")
 
 
+def _fork(source: Path | str, dest: Path, sid: str = SID) -> worktrees.ForkWorktreeInfo:
+    return create_fork_worktree(str(source), source_session_id=sid, dest=str(dest))
+
+
 # -- branch naming -------------------------------------------------------------------
 
 def test_fork_branch_name_follows_the_session_prefix_rule() -> None:
@@ -109,18 +115,28 @@ def test_fork_branch_name_follows_the_session_prefix_rule() -> None:
     assert brand.is_session_branch(name)
 
 
-def test_next_fork_branch_skips_existing(repo: Path) -> None:
-    _git(repo, "branch", worktrees.fork_branch_name(SID, 1))
-    assert worktrees.next_fork_branch(str(repo), SID) == worktrees.fork_branch_name(SID, 2)
+def test_next_fork_branch_takes_the_first_free_n(repo: Path) -> None:
+    for n in (1, 3):
+        _git(repo, "branch", worktrees.fork_branch_name(SID, n))
+    _git(repo, "branch", worktrees.fork_branch_name(SID, 2) + "x")   # not a number
+    assert worktrees._next_fork_branch(str(repo), SID) == worktrees.fork_branch_name(SID, 2)
 
 
-@pytest.mark.parametrize("bad", ["-x", "feature", "main"])
-def test_rejects_a_branch_outside_the_session_prefix(repo: Path, tmp_path: Path,
-                                                    bad: str) -> None:
-    dest = tmp_path / "wt"
-    with pytest.raises(ForkWorktreeError):
-        create_fork_worktree(str(repo), branch=bad, dest=str(dest))
-    assert not dest.exists()
+def test_fork_picks_past_an_existing_branch_and_leaves_it(repo: Path, tmp_path: Path) -> None:
+    taken = worktrees.fork_branch_name(SID, 1)
+    _git(repo, "branch", taken)
+    tip = _git(repo, "rev-parse", taken)
+    info = _fork(repo, tmp_path / "wt")
+    assert info.branch == worktrees.fork_branch_name(SID, 2)
+    assert _git(repo, "rev-parse", taken) == tip
+
+
+@pytest.mark.parametrize("rel,ok", [
+    (b"a/b.txt", True), (b"../x", False), (b"/abs", False), (b"a/../b", False),
+    (b"nested/", False), (b"a/.git/config", False), (b".GIT/x", False), (b"a//b", False),
+    (b"./a", False), (b"", False)])
+def test_rel_ok(rel: bytes, ok: bool) -> None:
+    assert worktrees._rel_ok(rel) is ok
 
 
 # -- the fork itself -----------------------------------------------------------------
@@ -130,17 +146,16 @@ def test_child_carries_every_kind_of_change_and_source_is_untouched(
     _dirty(repo)
     before = _snapshot(repo)
     dest = tmp_path / "wt"
-    branch = worktrees.fork_branch_name(SID, 1)
 
-    info = create_fork_worktree(str(repo / "sub"), branch=branch, dest=str(dest))
+    info = _fork(repo / "sub", dest)
 
     assert _snapshot(repo) == before
     assert info.path == str(dest)
     assert info.cwd == str(dest / "sub")          # mirrors the source's subdir
-    assert info.branch == branch
+    assert info.branch == worktrees.fork_branch_name(SID, 1)
     assert info.repo == str(repo)
     assert _git(dest, "rev-parse", "HEAD") == _git(repo, "rev-parse", "HEAD")
-    assert _git(dest, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    assert _git(dest, "rev-parse", "--abbrev-ref", "HEAD").strip() == info.branch
     # committed + staged
     assert (dest / "a.txt").read_text() == "a3 staged\n"
     assert set(_git(dest, "diff", "--cached", "--name-only").split()) == {"a.txt", "c.txt"}
@@ -158,29 +173,41 @@ def test_child_carries_every_kind_of_change_and_source_is_untouched(
     assert "refs/stash" not in _git(repo, "for-each-ref")
 
 
+def test_staged_rename_deletion_and_mode_change_carry_over(repo: Path, tmp_path: Path) -> None:
+    _git(repo, "mv", "sub/b.txt", "sub/renamed.txt")     # staged rename
+    _git(repo, "rm", "-q", "d.txt")                      # staged deletion
+    os.chmod(repo / "touched.txt", 0o755)                # tracked mode change (unstaged)
+    before = _snapshot(repo)
+    dest = tmp_path / "wt"
+    _fork(repo, dest)
+    assert _snapshot(repo) == before
+    staged = _git(dest, "diff", "--cached", "--name-status", "-M").split("\n")
+    assert "R100\tsub/b.txt\tsub/renamed.txt" in staged
+    assert "D\td.txt" in staged
+    assert not (dest / "d.txt").exists()
+    assert os.stat(dest / "touched.txt").st_mode & 0o111
+    assert _git(dest, "diff", "--name-only").split() == ["touched.txt"]
+
+
+def test_detached_head_source(repo: Path, tmp_path: Path) -> None:
+    _git(repo, "checkout", "-q", "--detach", "HEAD~1")
+    (repo / "a.txt").write_text("detached edit\n")
+    before = _snapshot(repo)
+    dest = tmp_path / "wt"
+    info = _fork(repo, dest)
+    assert _snapshot(repo) == before
+    assert _git(dest, "rev-parse", "HEAD") == _git(repo, "rev-parse", "HEAD")
+    assert _git(dest, "rev-parse", "--abbrev-ref", "HEAD").strip() == info.branch
+    assert (dest / "a.txt").read_text() == "detached edit\n"
+
+
 def test_clean_source_forks_to_a_clean_child(repo: Path, tmp_path: Path) -> None:
     before = _snapshot(repo)
     dest = tmp_path / "wt"
-    info = create_fork_worktree(str(repo), branch=worktrees.fork_branch_name(SID, 1),
-                                dest=str(dest))
+    info = _fork(repo, dest)
     assert _snapshot(repo) == before
     assert info.cwd == str(dest)
     assert _git(dest, "status", "--porcelain") == ""
-
-
-def test_fork_from_a_session_worktree_source(repo: Path, tmp_path: Path) -> None:
-    """The source is normally itself a linked worktree, not the clone."""
-    src = tmp_path / "src-wt"
-    _git(repo, "worktree", "add", "-q", "-b", "viberpit/src", str(src))
-    _dirty(src)
-    before = _snapshot_linked(src)
-    dest = tmp_path / "wt"
-    info = create_fork_worktree(str(src), branch=worktrees.fork_branch_name(SID, 1),
-                                dest=str(dest))
-    assert _snapshot_linked(src) == before
-    assert info.repo == str(repo)
-    assert (dest / "u.txt").read_text() == "untracked\n"
-    assert (dest / "a.txt").read_text() == "a3 staged\n"
 
 
 def _snapshot_linked(path: Path) -> tuple[bytes, str, bytes]:
@@ -193,26 +220,145 @@ def _snapshot_linked(path: Path) -> tuple[bytes, str, bytes]:
     return idx, _git(path, "rev-parse", "HEAD"), status
 
 
+def test_fork_from_a_session_worktree_source(repo: Path, tmp_path: Path) -> None:
+    """The source is normally itself a linked worktree, not the clone."""
+    src = tmp_path / "src-wt"
+    _git(repo, "worktree", "add", "-q", "-b", "viberpit/src", str(src))
+    _dirty(src)
+    before = _snapshot_linked(src)
+    dest = tmp_path / "wt"
+    info = _fork(src, dest)
+    assert _snapshot_linked(src) == before
+    assert info.repo == str(repo)
+    assert (dest / "u.txt").read_text() == "untracked\n"
+    assert (dest / "a.txt").read_text() == "a3 staged\n"
+
+
 def test_symlink_and_fifo_untracked_entries_are_skipped(repo: Path, tmp_path: Path) -> None:
-    (repo / "outside.txt").write_text("x\n")
     os.symlink("/etc/passwd", repo / "link")
     os.mkfifo(repo / "pipe")
     (repo / "keep.txt").write_text("keep\n")
     before = _snapshot(repo)
     dest = tmp_path / "wt"
-    create_fork_worktree(str(repo), branch=worktrees.fork_branch_name(SID, 1),
-                         dest=str(dest))
+    _fork(repo, dest)
     assert _snapshot(repo) == before
     assert (dest / "keep.txt").read_text() == "keep\n"
     assert not os.path.lexists(dest / "link")
     assert not os.path.lexists(dest / "pipe")
 
 
+def test_missing_source_index_fails_and_is_not_created(repo: Path, tmp_path: Path) -> None:
+    (repo / ".git" / "index").unlink()
+    dest = tmp_path / "wt"
+    with pytest.raises(ForkWorktreeError) as ei:
+        _fork(repo, dest)
+    assert ei.value.code == "FORK_FAILED"
+    assert not (repo / ".git" / "index").exists()
+    assert not dest.exists()
+
+
+# -- repo-config command execution ---------------------------------------------------
+
+def test_repo_local_merge_driver_never_runs(repo: Path, tmp_path: Path) -> None:
+    marker = tmp_path / "pwned"
+    _git(repo, "config", "merge.evil.driver", f"touch {marker}; exit 1")
+    _git(repo, "config", "merge.ff", "true")             # a plain merge.* setting
+    (repo / ".gitattributes").write_text("* merge=evil\n")
+    _git(repo, "add", ".gitattributes")
+    _git(repo, "commit", "-qm", "attrs")
+    # Sanity: the driver does fire on a real merge in plain git.
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "a.txt").write_text("side\n")
+    _git(repo, "commit", "-qam", "side")
+    _git(repo, "checkout", "-q", "main")
+    (repo / "a.txt").write_text("main\n")
+    _git(repo, "commit", "-qam", "main")
+    subprocess.run(["git", "-C", str(repo), "merge", "-q", "side"], capture_output=True)
+    assert marker.exists()
+    marker.unlink()
+    _git(repo, "merge", "--abort")
+
+    # The override neutralises it on that same real merge.
+    overrides = merge_driver_overrides(str(repo))
+    assert "merge.evil.driver=false" in overrides
+    subprocess.run(["git", "-C", str(repo), *overrides, "merge", "-q", "side"],
+                   capture_output=True)
+    assert not marker.exists()
+    _git(repo, "merge", "--abort")
+    _dirty(repo)
+    before = _snapshot(repo)
+    dest = tmp_path / "wt"
+    _fork(repo, dest)
+    assert not marker.exists()
+    assert _snapshot(repo) == before
+    assert (dest / "a.txt").read_text() == "a3 staged\n"
+
+
+# -- concurrency ---------------------------------------------------------------------
+
+def _race(repo: Path, dests: list[Path]) -> list[object]:
+    barrier = threading.Barrier(len(dests))
+    results: list[object] = [None] * len(dests)
+
+    def run(i: int) -> None:
+        barrier.wait()
+        try:
+            results[i] = _fork(repo, dests[i])
+        except ForkWorktreeError as exc:
+            results[i] = exc
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(dests))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
+
+
+def test_concurrent_forks_get_distinct_branches(repo: Path, tmp_path: Path) -> None:
+    _dirty(repo)
+    results = _race(repo, [tmp_path / "wt1", tmp_path / "wt2"])
+    assert all(isinstance(r, worktrees.ForkWorktreeInfo) for r in results)
+    infos = [r for r in results if isinstance(r, worktrees.ForkWorktreeInfo)]
+    assert {i.branch for i in infos} == {worktrees.fork_branch_name(SID, n) for n in (1, 2)}
+    for info in infos:
+        assert Path(info.path, "u.txt").read_text() == "untracked\n"
+        assert _git(info.path, "rev-parse", "--abbrev-ref", "HEAD").strip() == info.branch
+
+
+def test_concurrent_forks_to_one_dest_never_harm_the_winner(repo: Path, tmp_path: Path) -> None:
+    _dirty(repo)
+    dest = tmp_path / "wt"
+    results = _race(repo, [dest, dest])
+    wins = [r for r in results if isinstance(r, worktrees.ForkWorktreeInfo)]
+    losses = [r for r in results if isinstance(r, ForkWorktreeError)]
+    assert len(wins) == 1 and len(losses) == 1
+    assert losses[0].code == "FORK_DEST_EXISTS"
+    assert (dest / "u.txt").read_text() == "untracked\n"
+    assert str(dest) in _registered(repo)
+    assert wins[0].branch in _branches(repo)
+
+
+def test_failed_add_discards_nothing(repo: Path, tmp_path: Path,
+                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """A racer outside the lock (the agent) took the name: add fails, and the
+    branch and its worktree are left exactly as they were."""
+    theirs = worktrees.fork_branch_name(SID, 1)
+    _git(repo, "branch", theirs)      # not checked out: a discard WOULD delete it
+    tip = _git(repo, "rev-parse", theirs)
+    monkeypatch.setattr(worktrees, "_next_fork_branch", lambda *_a: theirs)
+    dest = tmp_path / "wt"
+    with pytest.raises(ForkWorktreeError) as ei:
+        _fork(repo, dest)
+    assert ei.value.code == "FORK_FAILED"
+    assert _git(repo, "rev-parse", theirs) == tip
+
+
 # -- failure cleanup -----------------------------------------------------------------
 
-def _assert_no_half_fork(repo: Path, dest: Path, branch: str) -> None:
+def _assert_no_half_fork(repo: Path, dest: Path) -> None:
     assert not dest.exists()
-    assert branch not in _branches(repo)
+    assert not [b for b in _branches(repo) if "/fork-" in b]
     assert str(dest) not in _registered(repo)
 
 
@@ -222,12 +368,11 @@ def test_untracked_over_the_size_bound_fails_and_cleans_up(
     (repo / "big.txt").write_text("0123456789\n")
     before = _snapshot(repo)
     dest = tmp_path / "wt"
-    branch = worktrees.fork_branch_name(SID, 1)
     with pytest.raises(ForkWorktreeError) as ei:
-        create_fork_worktree(str(repo), branch=branch, dest=str(dest))
+        _fork(repo, dest)
     assert ei.value.code == "FORK_UNTRACKED_TOO_LARGE"
     assert _snapshot(repo) == before
-    _assert_no_half_fork(repo, dest, branch)
+    _assert_no_half_fork(repo, dest)
 
 
 def test_failure_partway_removes_the_half_made_worktree(
@@ -240,40 +385,31 @@ def test_failure_partway_removes_the_half_made_worktree(
 
     monkeypatch.setattr(worktrees, "_copy_untracked", boom)
     dest = tmp_path / "wt"
-    branch = worktrees.fork_branch_name(SID, 1)
-    with pytest.raises(ForkWorktreeError):
-        create_fork_worktree(str(repo), branch=branch, dest=str(dest))
+    with pytest.raises(ForkWorktreeError) as ei:
+        _fork(repo, dest)
+    assert ei.value.code == "FORK_FAILED"
     assert _snapshot(repo) == before
-    _assert_no_half_fork(repo, dest, branch)
+    _assert_no_half_fork(repo, dest)
 
 
 def test_existing_dest_is_refused_and_left_alone(repo: Path, tmp_path: Path) -> None:
     dest = tmp_path / "wt"
     dest.mkdir()
     (dest / "precious").write_text("mine\n")
-    branch = worktrees.fork_branch_name(SID, 1)
-    with pytest.raises(ForkWorktreeError):
-        create_fork_worktree(str(repo), branch=branch, dest=str(dest))
+    with pytest.raises(ForkWorktreeError) as ei:
+        _fork(repo, dest)
+    assert ei.value.code == "FORK_DEST_EXISTS"
     assert (dest / "precious").read_text() == "mine\n"
-    assert branch not in _branches(repo)
-
-
-def test_existing_branch_is_refused_and_left_alone(repo: Path, tmp_path: Path) -> None:
-    branch = worktrees.fork_branch_name(SID, 1)
-    _git(repo, "branch", branch)
-    tip = _git(repo, "rev-parse", branch)
-    dest = tmp_path / "wt"
-    with pytest.raises(ForkWorktreeError):
-        create_fork_worktree(str(repo), branch=branch, dest=str(dest))
-    assert not dest.exists()
-    assert _git(repo, "rev-parse", branch) == tip    # not deleted by cleanup
+    assert not [b for b in _branches(repo) if "/fork-" in b]
 
 
 def test_non_repo_source_raises(tmp_path: Path) -> None:
-    with pytest.raises(ForkWorktreeError):
-        create_fork_worktree(str(tmp_path), branch=worktrees.fork_branch_name(SID, 1),
-                             dest=str(tmp_path / "wt"))
+    with pytest.raises(ForkWorktreeError) as ei:
+        _fork(tmp_path, tmp_path / "wt")
+    assert ei.value.code == "FORK_NOT_A_REPO"
 
+
+# -- the copy, directly --------------------------------------------------------------
 
 def test_copy_enforces_the_bound_on_bytes_actually_read(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -286,3 +422,26 @@ def test_copy_enforces_the_bound_on_bytes_actually_read(
     with pytest.raises(ForkWorktreeError) as ei:
         worktrees._copy_untracked(str(src), str(dst), [b"grew.txt"])
     assert ei.value.code == "FORK_UNTRACKED_TOO_LARGE"
+
+
+def test_copy_never_reads_through_a_swapped_in_source_symlink(tmp_path: Path) -> None:
+    src, dst, outside = tmp_path / "src", tmp_path / "dst", tmp_path / "outside"
+    for d in (src, dst, outside):
+        d.mkdir()
+    (outside / "secret").write_text("secret\n")
+    os.symlink(outside, src / "d")          # "d/" was a real dir when planned
+    worktrees._copy_untracked(str(src), str(dst), [b"d/secret"])
+    assert not os.path.lexists(dst / "d")
+
+
+def test_copy_never_creates_through_a_child_symlink(tmp_path: Path) -> None:
+    """A tracked symlink in the child pointing outside cannot carry the copy out."""
+    src, dst, outside = tmp_path / "src", tmp_path / "dst", tmp_path / "outside"
+    for d in (src, dst, outside):
+        d.mkdir()
+    (src / "out" / "deeper").mkdir(parents=True)
+    (src / "out" / "deeper" / "x").write_text("x\n")
+    os.symlink(outside, dst / "out")
+    with pytest.raises(ForkWorktreeError):
+        worktrees._copy_untracked(str(src), str(dst), [b"out/deeper/x"])
+    assert list(outside.iterdir()) == []

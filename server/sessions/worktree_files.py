@@ -38,6 +38,7 @@ import time
 from typing import Any
 
 from server.permission_rules.patterns import worktree_rel
+from viberpit.fs_beneath import SymlinkInPath, open_beneath
 from viberpit.worktree_diff import (
     BINARY_SNIFF_BYTES,
     GitTimeout,
@@ -251,41 +252,22 @@ def _is_git_internal(rel: str) -> bool:
 
 def _open_beneath(root: str, rel: str) -> int:
     """Open ``root/rel`` read-only and non-blocking without following any symlink on
-    the way, from ``root``'s directory fd. Raises ``FileAccessError``."""
-    parts = rel.split("/")
+    the way, from ``root``'s directory fd (:mod:`viberpit.fs_beneath`). Raises
+    ``FileAccessError``."""
     try:
-        dfd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        rfd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as exc:
         raise FileAccessError(FILE_NOT_FOUND) from exc
     try:
-        for part in parts[:-1]:
-            try:
-                nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                              dir_fd=dfd)
-            except OSError as exc:
-                raise _open_error(exc, part, dfd) from exc
-            os.close(dfd)
-            dfd = nfd
-        try:
-            return os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
-                           dir_fd=dfd)
-        except OSError as exc:
-            raise _open_error(exc, parts[-1], dfd) from exc
+        return open_beneath(rfd, rel)
+    except SymlinkInPath as exc:
+        raise FileAccessError(PATH_OUTSIDE_WORKTREE) from exc
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            raise FileAccessError(FILE_NOT_FOUND) from exc
+        raise FileAccessError(PATH_OUTSIDE_WORKTREE) from exc
     finally:
-        os.close(dfd)
-
-
-def _open_error(exc: OSError, name: str, dfd: int) -> FileAccessError:
-    if exc.errno == errno.ENOENT:
-        return FileAccessError(FILE_NOT_FOUND)
-    if exc.errno == errno.ENOTDIR:
-        # O_DIRECTORY|O_NOFOLLOW on a symlink is ENOTDIR too: that one is an escape.
-        try:
-            is_link = stat.S_ISLNK(os.lstat(name, dir_fd=dfd).st_mode)
-        except OSError:
-            is_link = False
-        return FileAccessError(PATH_OUTSIDE_WORKTREE if is_link else FILE_NOT_FOUND)
-    return FileAccessError(PATH_OUTSIDE_WORKTREE)
+        os.close(rfd)
 
 
 def read_file(cwd: str, path: str) -> dict[str, Any]:
