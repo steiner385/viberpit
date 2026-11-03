@@ -22,7 +22,7 @@ export const PALETTE_SECTIONS = [
 
 export type PaletteSectionId = (typeof PALETTE_SECTIONS)[number]['id']
 
-export interface PaletteEntry extends Searchable {
+interface PaletteEntryBase extends Searchable {
   /** Unique across the palette — the option's DOM id derives from it. */
   key: string
   section: PaletteSectionId
@@ -31,8 +31,19 @@ export interface PaletteEntry extends Searchable {
   chord?: string
   /** Epoch ms, sessions only: the empty query's "recent" order. */
   recency?: number
-  run: () => void
 }
+
+/**
+ * Selecting an entry either RUNS it (the palette closes first) or DRILLS: the
+ * palette's own query becomes `drill` and the palette stays open. A drill is
+ * how a repo or branch the session list cannot filter to exactly is shown —
+ * session entries carry their repo and branch as keywords, so the Sessions
+ * section then lists the sessions on it, background and archived included.
+ */
+export type PaletteEntry = PaletteEntryBase & (
+  | { run: () => void; drill?: undefined }
+  | { drill: string; run?: undefined }
+)
 
 /** Sessions shown for an empty query, before Actions. */
 export const RECENT_SESSIONS = 8
@@ -120,20 +131,24 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
   }
 
   if (reachable('sessions')) {
+    // The list's Project filter only offers repos with an Active-scope session;
+    // any other repo (archived-only, background-only, idle) drills instead of
+    // routing to a list that cannot show it.
     for (const r of data.repos) {
-      out.push({
-        key: `repo:${r.nameWithOwner}`, section: 'repos', label: r.nameWithOwner,
-        run: () => host.filterRepo(r.nameWithOwner),
-      })
+      const key = `repo:${r.nameWithOwner}`
+      out.push(host.canFilterRepo(r.nameWithOwner)
+        ? { key, section: 'repos', label: r.nameWithOwner, run: () => host.filterRepo(r.nameWithOwner) }
+        : { key, section: 'repos', label: r.nameWithOwner, drill: r.nameWithOwner })
     }
     // Archived rows carry no branch, so the live sessions are the whole domain.
+    // No list filter narrows to a branch, so a branch always drills.
     const branches = new Set<string>()
     for (const { session } of host.live) {
       const b = session.branch?.trim()
       if (b) branches.add(b)
     }
     for (const b of branches) {
-      out.push({ key: `branch:${b}`, section: 'branches', label: b, run: () => host.filterBranch(b) })
+      out.push({ key: `branch:${b}`, section: 'branches', label: b, drill: b })
     }
   }
   return out

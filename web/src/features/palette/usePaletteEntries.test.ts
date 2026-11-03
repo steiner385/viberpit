@@ -34,7 +34,7 @@ function host(over: Partial<PaletteHost> = {}): PaletteHost {
   return {
     context: ctx(), actions: {}, live: [],
     openSession: vi.fn(), openArchived: vi.fn(), newSession: vi.fn(), navigate: vi.fn(),
-    filterRepo: vi.fn(), filterBranch: vi.fn(), close: vi.fn(),
+    canFilterRepo: () => false, filterRepo: vi.fn(), close: vi.fn(),
     ...over,
   }
 }
@@ -48,9 +48,9 @@ describe('buildPaletteEntries', () => {
     const h = host({ live: [{ session: live('a'), scope: 'live' }, { session: live('b'), scope: 'background' }] })
     const sessions = inSection(buildPaletteEntries(h, { archived: [archived('z')], repos: [] }), 'sessions')
     expect(sessions.map((e) => e.label)).toEqual(['Live a', 'Live b', 'Old z'])
-    sessions[1].run()
+    sessions[1].run!()
     expect(h.openSession).toHaveBeenCalledWith('b', 'background')
-    sessions[2].run()
+    sessions[2].run!()
     expect(h.openArchived).toHaveBeenCalledWith('z')
     expect(sessions[2].detail).toMatch(/Archived/)
   })
@@ -97,7 +97,7 @@ describe('buildPaletteEntries', () => {
     expect(inSection(entries, 'navigate').map((e) => e.label)).toEqual(NAV_DEFS.map((d) => d.label))
     const settings = inSection(entries, 'settings')
     expect(settings.map((e) => e.label)).toEqual(SETTINGS_META.map((m) => m.label))
-    settings.find((e) => e.label === 'Hooks')!.run()
+    settings.find((e) => e.label === 'Hooks')!.run!()
     expect(h.navigate).toHaveBeenCalledWith('/settings/hooks')
   })
 
@@ -117,8 +117,9 @@ describe('buildPaletteEntries', () => {
     expect(inSection(entries, 'actions')).toEqual([])
   })
 
-  it('a repo or a branch narrows the session list through the host', () => {
+  it('a repo the list’s Project filter offers applies it; any other repo, and every branch, drills in the palette', () => {
     const h = host({
+      canFilterRepo: (r) => r === 'o/one',
       live: [
         { session: live('a', { branch: 'feat/x' }), scope: 'live' },
         { session: live('b', { branch: 'feat/x' }), scope: 'live' },
@@ -126,14 +127,33 @@ describe('buildPaletteEntries', () => {
         { session: live('d'), scope: 'live' },
       ],
     })
-    const entries = buildPaletteEntries(h, { archived: [], repos: [repo('o/one')] })
-    const [r] = inSection(entries, 'repos')
-    r.run()
+    const entries = buildPaletteEntries(h, { archived: [], repos: [repo('o/one'), repo('o/two')] })
+    const [one, two] = inSection(entries, 'repos')
+    expect(one.drill).toBeUndefined()
+    one.run!()
     expect(h.filterRepo).toHaveBeenCalledWith('o/one')
+    expect(two.drill).toBe('o/two')
     const branches = inSection(entries, 'branches')
     expect(branches.map((e) => e.label)).toEqual(['feat/x', 'main'])
-    branches[1].run()
-    expect(h.filterBranch).toHaveBeenCalledWith('main')
+    expect(branches.map((e) => e.drill)).toEqual(['feat/x', 'main'])
+    expect(h.filterRepo).toHaveBeenCalledTimes(1)
+  })
+
+  it('a drill-down’s Sessions are the sessions on that repo or branch — background and archived included', () => {
+    const h = host({
+      live: [
+        { session: live('fg', { repo: 'o/main-app', branch: 'feat/x' }), scope: 'live' },
+        { session: live('bg', { repo: 'o/bots', branch: 'chore/deps' }), scope: 'background' },
+      ],
+    })
+    const prepared = preparePalette(buildPaletteEntries(h, {
+      archived: [archived('z', { repo: 'o/bots' })], repos: [repo('o/bots')],
+    }))
+    const sessionsFor = (q: string) =>
+      paletteSections(prepared, q).find((s) => s.id === 'sessions')?.entries.map((e) => e.label)
+    expect(sessionsFor('o/bots')).toEqual(['Live bg', 'Old z'])
+    expect(sessionsFor('chore/deps')).toEqual(['Live bg'])
+    expect(sessionsFor('feat/x')).toEqual(['Live fg'])
   })
 })
 

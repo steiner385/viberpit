@@ -23,6 +23,7 @@ import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import { stepSessionId } from '@/session/listStep'
+import { NO_FILTERS, isFiltered } from '@/session/listFilters'
 import {
   BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, listScopeForPath, readerRouteForPath, sessionPath,
   type ListScope,
@@ -374,21 +375,33 @@ function AppShellInner() {
   //
   // Open ⇔ a context snapshot is held: the shell's context at the ⌘K keydown,
   // taken before the palette itself counts as an overlay, which is what each
-  // Action's `when` is judged against. `afterClose` runs an entry's effect once
-  // the palette has unmounted — passive cleanups (the focus trap's restore)
-  // run before this component's effects in the same commit — so an action that
-  // opens a menu or moves focus is not undone by the restore.
-  const [paletteContext, setPaletteContext] = React.useState<ShortcutContext | null>(null)
+  // Action's `when` is judged against — and the action handlers of that same
+  // render, so the snapshot and the functions it gates cannot disagree.
+  // `afterClose` runs an entry's effect once the palette has unmounted —
+  // passive cleanups (the focus trap's restore) run before this component's
+  // effects in the same commit — so an action that opens a menu or moves focus
+  // is not undone by the restore.
+  const [paletteOpen, setPaletteOpen] = React.useState<{
+    context: ShortcutContext
+    actions: Readonly<Record<string, () => void>>
+  } | null>(null)
   const afterClose = React.useRef<(() => void) | null>(null)
   React.useEffect(() => {
-    if (paletteContext !== null || !afterClose.current) return
+    if (paletteOpen !== null || !afterClose.current) return
     const run = afterClose.current
     afterClose.current = null
     run()
-  }, [paletteContext])
+  }, [paletteOpen])
+  const closePalette = React.useCallback((then?: () => void) => {
+    afterClose.current = then ?? null
+    setPaletteOpen(null)
+  }, [])
 
   const keyHandlers: ShortcutHandlers = {
-    'app.palette': (e) => setPaletteContext({ ...shortcutContext(e), yieldsToTextEntry: false }),
+    'app.palette': (e) => setPaletteOpen({
+      context: { ...shortcutContext(e), yieldsToTextEntry: false },
+      actions: actionHandlers,
+    }),
     'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
     // The row matched, so the digit is 1–9; `?? 0` only satisfies the type.
     'session.jumpN': (e) => workspace.jumpToSession((altDigit(e) ?? 0) - 1),
@@ -414,21 +427,34 @@ function AppShellInner() {
   const revealActiveList = () => {
     if (!(listVisible && region.inSessions && listScopeForPath(pathname) === 'live')) navigate(SESSIONS_PATH)
   }
-  const paletteHost: PaletteHost | null = paletteContext && {
-    context: paletteContext,
-    actions: actionHandlers,
-    live: workspace.paletteLive,
-    openSession: workspace.openIn,
-    openArchived: workspace.openArchived,
-    newSession: workspace.newSession,
-    navigate,
-    filterRepo: (repo) => { workspace.filterRepo(repo); revealActiveList() },
-    filterBranch: (branch) => { workspace.filterBranch(branch); revealActiveList() },
-    close: (then) => {
-      afterClose.current = then ?? null
-      setPaletteContext(null)
-    },
-  }
+  // The host is MEMOIZED: the shell re-renders on every route change, list
+  // poll and session frame, and a fresh host would make the open palette
+  // re-build and re-prepare every entry each time. Its inputs are the open
+  // snapshot and the two list-derived values the entries read; the effects that
+  // need the CURRENT render's state (where the list is, what it filters) reach
+  // it through `paletteFx`, assigned after every commit.
+  const paletteFx = React.useRef({ workspace, revealActiveList })
+  React.useEffect(() => { paletteFx.current = { workspace, revealActiveList } })
+  const { paletteLive, repoFilterOptions } = workspace
+  const paletteHost = React.useMemo((): PaletteHost | null => {
+    if (!paletteOpen) return null
+    const offered = new Set(repoFilterOptions.map((o) => o.value))
+    return {
+      context: paletteOpen.context,
+      actions: paletteOpen.actions,
+      live: paletteLive,
+      openSession: (id, scope) => paletteFx.current.workspace.openFromPalette(id, scope),
+      openArchived: (id) => paletteFx.current.workspace.openArchived(id),
+      newSession: () => paletteFx.current.workspace.newSession(),
+      navigate,
+      canFilterRepo: (repo) => offered.has(repo),
+      filterRepo: (repo) => {
+        paletteFx.current.workspace.filterRepo(repo)
+        paletteFx.current.revealActiveList()
+      },
+      close: closePalette,
+    }
+  }, [paletteOpen, paletteLive, repoFilterOptions, navigate, closePalette])
 
   return (
     // The list ORDER, for the open session's ‹ › chevrons — the same order
@@ -649,21 +675,28 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   const openArchived = (id: string) => navigate(archivedSessionPath(id))
   const newSession = () => navigate(SESSIONS_PATH)
   /**
-   * The list's Project filter when it offers `repo` (DEC-8); otherwise the list
-   * search. The search matches names and transcripts only — it has no `repo:` /
-   * `branch:` syntax — and a Project value the options lack is sanitized away
-   * on the next render, so a repo with no live session falls back to its name.
+   * The list's Project filter, for a repo it offers (DEC-8) — the palette only
+   * routes here when it does, and drills in its own query otherwise. From
+   * `NO_FILTERS`: no Status / Environment narrowing left over from before may
+   * hide the repo's sessions, and the search is cleared for the same reason.
    */
   const filterRepo = (repo: string) => {
-    if (list.filterOptions.project.some((o) => o.value === repo)) {
-      list.setFilters({ ...list.filters, project: repo })
-      list.search.setQuery('')
-    } else {
-      list.search.setQuery(repo)
-    }
+    list.setFilters({ ...NO_FILTERS, project: repo })
+    list.search.setQuery('')
   }
-  /** No branch filter exists, so a branch is a plain search for its name. */
-  const filterBranch = (branch: string) => list.search.setQuery(branch)
+  /**
+   * The palette's open path: the list's own (`openIn`), except that a live
+   * session the list's filters or search currently hide clears them first —
+   * otherwise the session opens beside a list that does not contain it, and
+   * the ‹ › chevrons and Alt+[ ] have no place to step from.
+   */
+  const openFromPalette = (id: string, inScope: 'live' | 'background') => {
+    if (inScope === 'live' && !orderedIds.includes(id) && (isFiltered(list.filters) || list.search.query !== '')) {
+      list.setFilters(NO_FILTERS)
+      list.search.setQuery('')
+    }
+    openIn(id, inScope)
+  }
 
   const nameOf = (id: string) =>
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
@@ -755,6 +788,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   return {
     banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate,
     orderedIds, openFromList, stepSession, jumpToSession,
-    openIn, openArchived, newSession, filterRepo, filterBranch, paletteLive,
+    openArchived, newSession, filterRepo, openFromPalette, paletteLive,
+    repoFilterOptions: list.filterOptions.project,
   }
 }

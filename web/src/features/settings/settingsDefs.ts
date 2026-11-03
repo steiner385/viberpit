@@ -1,4 +1,10 @@
 import type * as React from 'react'
+import {
+  SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck, ListChecks,
+  Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
+  Rocket, Gauge, Send, Route,
+  type LucideIcon,
+} from 'lucide-react'
 import type { SettingsScope } from './scope'
 import { SETTINGS_META, type SettingsGroupId, type SettingsMeta, type SettingsSectionId } from './settingsMeta'
 import { GeneralSection } from './sections/GeneralSection'
@@ -27,6 +33,8 @@ export type SettingsBadgeKey = 'accountsAttention' | 'deployPending'
 
 /** What the Settings PAGE needs beyond the metadata (`settingsMeta.ts`). */
 interface SettingsPageFields {
+  /** The nav icon — a page field, not metadata: the palette draws none. */
+  icon: LucideIcon
   scope: SettingsScope
   badge?: SettingsBadgeKey
   /** Mount the live capacity readout after the body, with this stack row marked current (spec 2026-09-20 D10). */
@@ -54,30 +62,30 @@ interface SettingsPageFields {
  * here — or a component here for an id the metadata lacks — does not compile.
  */
 const PAGE: Record<SettingsSectionId, SettingsPageFields> = {
-  general:       { scope: 'server',  component: GeneralSection, ownsChassis: true },
-  appearance:    { scope: 'browser', component: AppearanceSection, ownsChassis: true },
-  notifications: { scope: 'device',  component: NotificationsSection, ownsChassis: true },
-  channels:      { scope: 'server',  component: NotificationChannelsSection, ownsChassis: true },
-  rules:         { scope: 'server',  component: NotificationRulesSection, ownsChassis: true },
-  sessions:      { scope: 'server',  component: SessionDefaultsSection, ownsChassis: true },
-  presets:       { scope: 'server',  component: PresetsSection, layout: 'wide' },
-  templates:     { scope: 'server',  component: TemplatesSection, layout: 'wide' },
-  profiles:      { scope: 'server',  component: PermissionProfilesSection, layout: 'wide' },
-  'always-allow': { scope: 'server', component: PermissionRulesSection, layout: 'wide' },
-  capacity:      { scope: 'server',  component: LimitsSection, ownsChassis: true },
-  fleet:         { scope: 'server',  component: FleetSection, layout: 'wide', readout: 'hosts' },
-  accounts:      { scope: 'server',  component: AccountsManager, layout: 'wide', badge: 'accountsAttention', readout: 'accounts' },
-  plugins:       { scope: 'server',  component: PluginsSection, layout: 'wide' },
-  skills:        { scope: 'server',  component: SkillsSection, layout: 'wide' },
-  commands:      { scope: 'server',  component: CommandsSection, layout: 'wide' },
-  mcp:           { scope: 'server',  component: McpSection, layout: 'wide' },
-  hooks:         { scope: 'server',  component: HooksSection, layout: 'wide' },
-  snapshots:     { scope: 'server',  component: SnapshotsSection, layout: 'wide' },
+  general:       { icon: SlidersHorizontal, scope: 'server',  component: GeneralSection, ownsChassis: true },
+  appearance:    { icon: Palette, scope: 'browser', component: AppearanceSection, ownsChassis: true },
+  notifications: { icon: Bell, scope: 'device',  component: NotificationsSection, ownsChassis: true },
+  channels:      { icon: Send, scope: 'server',  component: NotificationChannelsSection, ownsChassis: true },
+  rules:         { icon: Route, scope: 'server',  component: NotificationRulesSection, ownsChassis: true },
+  sessions:      { icon: Play, scope: 'server',  component: SessionDefaultsSection, ownsChassis: true },
+  presets:       { icon: Bookmark, scope: 'server',  component: PresetsSection, layout: 'wide' },
+  templates:     { icon: FileText, scope: 'server',  component: TemplatesSection, layout: 'wide' },
+  profiles:      { icon: ShieldCheck, scope: 'server',  component: PermissionProfilesSection, layout: 'wide' },
+  'always-allow': { icon: ListChecks, scope: 'server', component: PermissionRulesSection, layout: 'wide' },
+  capacity:      { icon: Gauge, scope: 'server',  component: LimitsSection, ownsChassis: true },
+  fleet:         { icon: Server, scope: 'server',  component: FleetSection, layout: 'wide', readout: 'hosts' },
+  accounts:      { icon: Users, scope: 'server',  component: AccountsManager, layout: 'wide', badge: 'accountsAttention', readout: 'accounts' },
+  plugins:       { icon: Puzzle, scope: 'server',  component: PluginsSection, layout: 'wide' },
+  skills:        { icon: Sparkles, scope: 'server',  component: SkillsSection, layout: 'wide' },
+  commands:      { icon: SquareTerminal, scope: 'server',  component: CommandsSection, layout: 'wide' },
+  mcp:           { icon: Plug, scope: 'server',  component: McpSection, layout: 'wide' },
+  hooks:         { icon: Webhook, scope: 'server',  component: HooksSection, layout: 'wide' },
+  snapshots:     { icon: Camera, scope: 'server',  component: SnapshotsSection, layout: 'wide' },
   // The phone's ONLY deploy surface (`shell/useAppBanners` hides the deploy
   // banner there), so the badge is load-bearing rather than decorative: it is
   // what tells a phone user there is anything here to look at.
-  deploy:        { scope: 'server',  component: DeploySection, layout: 'wide', ownsChassis: true, badge: 'deployPending' },
-  about:         { scope: 'none',    component: AboutSection, ownsChassis: true },
+  deploy:        { icon: Rocket, scope: 'server',  component: DeploySection, layout: 'wide', ownsChassis: true, badge: 'deployPending' },
+  about:         { icon: Info, scope: 'none',    component: AboutSection, ownsChassis: true },
 }
 
 export interface SettingsDef extends SettingsMeta, SettingsPageFields {}

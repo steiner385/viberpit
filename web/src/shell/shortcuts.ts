@@ -218,8 +218,10 @@ export const SHORTCUTS: Shortcut[] = [
     match: cmdOrCtrl((e) => e.key === ';'),
     when: (c) => c.interactive && !c.overlayOpen },
   // The ⌘K palette (D-10): sessions, actions, sections, settings, repos and
-  // branches. On `e.code` so a non-Latin layout's K still opens it; Shift is
-  // excluded because Ctrl+Shift+K is Firefox's web console. Ctrl+K is Chrome's
+  // branches. On `e.key` — the K the layout types (Dvorak's sits on the QWERTY
+  // V key) — falling back to the physical `KeyK` only when the layout reports
+  // no Latin letter (Cyrillic, Greek …). Shift is excluded because
+  // Ctrl+Shift+K is Firefox's web console. Ctrl+K is Chrome's
   // "search the web" on Linux/Windows, but it is not browser-reserved — the
   // keydown reaches the page and the dispatcher's preventDefault keeps it.
   // Blocked under an overlay like its siblings: the open palette IS one, and
@@ -227,7 +229,8 @@ export const SHORTCUTS: Shortcut[] = [
   // Kiosk is excluded — `ui/Dialog` refuses modals there.
   { id: 'app.palette', keys: 'Ctrl+K', keysMac: '⌘K',
     description: 'Search sessions, actions and settings (works while typing)', group: 'app',
-    match: cmdOrCtrl((e) => !e.shiftKey && e.code === 'KeyK'),
+    match: cmdOrCtrl((e) => !e.shiftKey
+      && (e.key === 'k' || e.key === 'K' || (!/^[a-z]$/i.test(e.key) && e.code === 'KeyK'))),
     when: (c) => c.interactive && !c.overlayOpen },
   //
   // ── Session switching (D-10) — WIRED ─────────────────────────────────

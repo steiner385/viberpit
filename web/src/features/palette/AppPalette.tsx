@@ -38,12 +38,23 @@ export function AppPalette({ host }: { host: PaletteHost }) {
   const activeEntry = current >= 0 ? flat[current] : undefined
 
   // Keep the selected row in view as ↑/↓ walk past the list's edge.
+  // Keyed on the entry's KEY, not its object: a re-derived list hands back new
+  // entry objects for the same selection, which is no reason to scroll.
+  const activeKey = activeEntry?.key
   React.useEffect(() => {
-    if (!activeEntry) return
-    document.getElementById(`${listId}-${activeEntry.key}`)?.scrollIntoView?.({ block: 'nearest' })
-  }, [activeEntry, listId])
+    if (activeKey === undefined) return
+    document.getElementById(`${listId}-${activeKey}`)?.scrollIntoView?.({ block: 'nearest' })
+  }, [activeKey, listId])
 
-  const run = (e: PaletteEntry) => host.close(e.run)
+  const run = (e: PaletteEntry) => {
+    if (e.drill !== undefined) {
+      setQuery(e.drill)
+      setActive(0)
+      inputRef.current?.focus()
+      return
+    }
+    host.close(e.run)
+  }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (PALETTE_ROW?.match?.(e.nativeEvent)) { e.preventDefault(); host.close(); return }

@@ -25,9 +25,11 @@ export interface PaletteHost {
   /** The list's New session button. */
   newSession: () => void
   navigate: (path: string) => void
-  /** Narrow the Sessions list to a repo / branch (see `AppShell`). */
+  /** Whether the Active list's Project filter offers `nameWithOwner` — only
+   *  then can it show exactly that repo's sessions. */
+  canFilterRepo: (nameWithOwner: string) => boolean
+  /** Apply the Project filter (from `NO_FILTERS`) and clear the list search. */
   filterRepo: (nameWithOwner: string) => void
-  filterBranch: (branch: string) => void
   /** Close the palette. `then` runs after it has unmounted and focus is back
    *  where ⌘K was pressed, so an action that opens a menu or moves focus is not
    *  undone by the palette's focus restore. */

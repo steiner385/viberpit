@@ -72,7 +72,8 @@ describe('settingsMeta — the one source of section metadata (D-10)', () => {
     SETTINGS_META.forEach((m, i) => {
       const d = SETTINGS_DEFS[i]
       expect(d.component, `${m.id} has a component`).toBeDefined()
-      for (const key of ['group', 'label', 'icon', 'description', 'keywords'] as const) {
+      expect(d.icon, `${m.id} has an icon`).toBeDefined()
+      for (const key of ['group', 'label', 'description', 'keywords'] as const) {
         expect(d[key], `${m.id}.${key}`).toBe(m[key])
       }
     })
@@ -83,7 +84,8 @@ describe('settingsMeta — the one source of section metadata (D-10)', () => {
     const { join } = await import('node:path')
     const src = readFileSync(join(__dirname, 'settingsMeta.ts'), 'utf8')
     const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1])
-    expect(imports).toEqual(['lucide-react'])
+    // Not even the icons (D-10 bundle ruling): they are page fields.
+    expect(imports).toEqual([])
   })
 })
 
