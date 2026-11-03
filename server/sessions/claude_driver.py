@@ -31,6 +31,8 @@ from server.obs.context import bind_session
 from .automation_execution import AutomationExecutionFence
 from .background_tasks import _AGENT_TOOLS, _is_background_launch
 from . import events as ev
+from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_UNAVAILABLE, RewindError,
+                     conversation_request, files_request, map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
@@ -2229,6 +2231,62 @@ class ClaudeAgentDriver:
             return await self._client.get_context_usage()
         except CLIConnectionError:
             return {}
+
+    async def rewind_files(self, user_message_id: str, *, dry_run: bool) -> dict:
+        """Restore (or, with ``dry_run``, preview) the files Claude edited since prompt
+        ``user_message_id``. Returns the CLI reply; a refusal raises ``RewindError``.
+
+        Sent raw on the SDK's control channel: the SDK's own ``rewind_files()`` has no
+        ``dry_run`` and drops the reply. The CLI's handler has no turn guard of its own,
+        so the driver refuses while a turn runs or a card is pending."""
+        resp = await self._rewind_control(files_request(user_message_id, dry_run=dry_run))
+        if resp.get("canRewind") is not True:
+            raise self._rewind_refused(map_cli_error(resp))
+        log.info("driver.rewind_files session=%s dry_run=%s files=%s", self.session_id,
+                 dry_run, len(resp.get("filesChanged") or ()))
+        return resp
+
+    async def rewind_conversation(self, target_uuid: str, *, last_seen: str | None) -> dict:
+        """Cut the conversation before prompt ``target_uuid`` (exclusive: the target is
+        dropped and returned as ``prefillText``). ``last_seen`` is the newest prompt
+        uuid the caller knows of. Returns the CLI reply; a refusal raises ``RewindError``."""
+        resp = await self._rewind_control(conversation_request(target_uuid, last_seen=last_seen))
+        if resp.get("rewound") is not True:
+            raise self._rewind_refused(map_cli_error(resp))
+        log.info("driver.rewind_conversation session=%s target=%s", self.session_id,
+                 target_uuid)
+        return resp
+
+    async def _rewind_control(self, request: dict) -> dict:
+        """One rewind control request on the idle live client. Every refusal is a
+        ``RewindError`` logged at INFO; nothing here logs at WARNING."""
+        if self._client is None or self._stream_ended:
+            raise self._rewind_refused(RewindError(REWIND_UNAVAILABLE, "session not live"))
+        if (self._turn_live() or self._reg.pending(self.session_id)
+                or self._qreg.pending(self.session_id)):
+            raise self._rewind_refused(RewindError(REWIND_BUSY,
+                                                   "a turn is running or awaiting input"))
+        # The internal method the SDK's own ``rewind_files()`` calls. Pinned by
+        # ``test_rewind_driver`` (the SDK seam) and ``test_rewind_cli_contract`` (the
+        # reply shapes from the installed binary).
+        send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
+        if send is None:
+            raise self._rewind_refused(RewindError(REWIND_UNAVAILABLE,
+                                                   "SDK client has no control channel"))
+        try:
+            resp = await send(request, timeout=REWIND_CONTROL_TIMEOUT_S)
+        except CLIConnectionError as exc:
+            raise self._rewind_refused(RewindError(REWIND_UNAVAILABLE, str(exc))) from exc
+        except Exception as exc:
+            # The SDK raises a control ``error`` reply as a bare Exception(text).
+            raise self._rewind_refused(map_cli_error({"error": str(exc)})) from exc
+        return resp if isinstance(resp, dict) else {}
+
+    def _rewind_refused(self, err: RewindError) -> RewindError:
+        """Log an expected refusal (INFO: a WARNING would auto-file an issue)."""
+        log.info("driver.rewind refused session=%s error_data=%s message=%s",
+                 self.session_id, err.error_data, err)
+        return err
 
     @property
     def last_mcp_status(self) -> list:
