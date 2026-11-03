@@ -2149,6 +2149,89 @@ async def fork_session(
     return result
 
 
+class RewindRequest(BaseModel):
+    """``POST /{id}/rewind`` body (D-9). ``toTurnId`` is the user turn to rewind to
+    (cut: it and everything after); ``dryRun`` previews and changes nothing."""
+    toTurnId: str = Field(..., min_length=1)
+    mode: Literal["files_and_conversation", "conversation"]
+    dryRun: bool = False
+    #: One uuid per click: a retried request returns the rewind the first one made.
+    requestId: uuid.UUID
+
+
+@router.post("/{session_id}/rewind")
+async def rewind_session(
+    session_id: str,
+    body: RewindRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> Any:
+    """Rewind the session to a user turn (D-9), on the daemon that owns it. ``dryRun``:
+    200 ``{files, deleted, insertions, deletions, checkpointAvailable}`` (worktree-
+    relative paths; nothing changes). Otherwise 200 ``{rewindId, prefill,
+    filesRestored}``; ``prefill`` is the cut prompt's text. Unknown session 404; every
+    refusal 409 with a ``REWIND_CODES`` code (``REWIND_BUSY``, ``REWIND_NO_CHECKPOINT``,
+    ``REWIND_TOO_LARGE``, …), or ``daemon_outdated`` from an old daemon. ``requestId``
+    (a uuid per click) makes a retry return the same rewind."""
+    from server.sessions import rewind as rw
+    try:
+        result = await _get_orchestrator(request).rewind_session(
+            session_id, to_turn_id=body.toTurnId, mode=body.mode, dry_run=body.dryRun,
+            request_id=str(body.requestId), identity=identity)
+    except rw.RewindError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "rewind sessions")
+    if not body.dryRun:
+        await record_audit(db=db, type="session.rewind", identity=identity,
+                           detail={"session_id": session_id, "rewind_id": result["rewindId"],
+                                   "mode": body.mode, "to_turn_id": body.toTurnId})
+    return result
+
+
+class RewindUndoRequest(BaseModel):
+    """``POST /{id}/rewind/undo`` body (D-9)."""
+    rewindId: str = Field(..., min_length=1)
+
+
+@router.post("/{session_id}/rewind/undo")
+async def undo_session_rewind(
+    session_id: str,
+    body: RewindUndoRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> Any:
+    """Undo the session's latest rewind (D-9): transcript and files back as they were
+    before it. 200 ``{ok: true, skipped: [paths]}`` — ``skipped`` the paths left alone
+    by design (a symlink on the path is never followed); a repeat answers ok again.
+    Unknown session 404; 409 ``REWIND_UNDO_EXPIRED`` once a turn ran since (or a newer
+    rewind exists, or the backup is gone or on another host), ``REWIND_FAILED`` with
+    ``failed: [paths]`` when some files could not be restored (the backup is kept; a
+    retry finishes the undo), another ``REWIND_CODES`` code, or ``daemon_outdated``
+    from an old daemon."""
+    from server.sessions import rewind as rw
+    try:
+        result = await _get_orchestrator(request).undo_rewind(
+            session_id, rewind_id=body.rewindId, identity=identity)
+    except rw.RewindError as exc:
+        detail: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+        if exc.failed:
+            detail["failed"] = exc.failed
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "undo rewinds")
+    await record_audit(db=db, type="session.rewind_undo", identity=identity,
+                       detail={"session_id": session_id, "rewind_id": body.rewindId})
+    return result
+
+
 @router.post("/{session_id}/mcp/{server}/reconnect")
 async def session_mcp_reconnect(
     session_id: str,

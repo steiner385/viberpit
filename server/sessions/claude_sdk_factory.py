@@ -107,7 +107,8 @@ def session_tmpdir_env() -> dict[str, str]:
 
 async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
-                     ready_grants=None, fork_session=False, extra_args=None):
+                     ready_grants=None, fork_session=False, extra_args=None,
+                     enable_file_checkpointing=False):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -119,6 +120,11 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     SOURCE session's id, ``fork_session=True`` and ``extra_args={"resume-session-at":
     <uuid>}`` start a NEW engine session holding the source's history through that
     transcript entry (``--resume <sid> --fork-session --resume-session-at <uuid>``).
+
+    *enable_file_checkpointing* (D-9 Rewind): the SDK sets
+    ``CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`` in the CLI's env, so turns run by this
+    process get file checkpoints ``rewind_files`` can restore. Spawn-time only — the
+    orchestrator passes it on every coding spawn while rewind is on.
 
     *options_overlay*: the assistant's overlay (see ``server/assistant/options.py``)
     replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
@@ -145,6 +151,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         permission_mode=to_sdk_permission_mode(mode),
         include_partial_messages=True, resume=resume,
         fork_session=bool(fork_session), extra_args=dict(extra_args or {}),
+        enable_file_checkpointing=bool(enable_file_checkpointing),
         hooks=hooks,
         settings=_MCP_TRUST_SETTINGS,
         max_buffer_size=SDK_MAX_BUFFER_BYTES,

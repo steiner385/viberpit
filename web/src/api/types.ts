@@ -219,6 +219,9 @@ export interface AgentCapabilities {
   attachments: boolean
   accountRotation: boolean
   accountSwitchNewThread: boolean
+  /** Rewind to here (D-9): `server/sessions/engine.py:rewind_supported` — the engine
+   *  declares it AND `VIBERPIT_REWIND_ENABLED` is on. False hides every rewind control. */
+  rewind: boolean
 }
 
 /**

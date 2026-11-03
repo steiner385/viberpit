@@ -44,6 +44,8 @@ vi.mock('@/api/hooks', () => ({
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
   useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
+  useRewindSession: vi.fn(() => ({ preview: vi.fn(), rewind: vi.fn() })),
+  useUndoRewind: vi.fn(() => ({ undo: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -214,12 +216,12 @@ describe('SessionBody — capability-gated surfaces', () => {
   const CLAUDE_CAPS: AgentCapabilities = {
     models: true, reasoningEffort: false, steer: false, interrupt: true, approvals: true,
     questions: true, fork: false, adopt: true, selfModelSwitch: true, subagents: true,
-    attachments: true, accountRotation: true, accountSwitchNewThread: false,
+    attachments: true, accountRotation: true, accountSwitchNewThread: false, rewind: false,
   }
   const CODEX_CAPS: AgentCapabilities = {
     models: true, reasoningEffort: true, steer: true, interrupt: true, approvals: true,
     questions: false, fork: false, adopt: false, selfModelSwitch: false, subagents: false,
-    attachments: true, accountRotation: false, accountSwitchNewThread: true,
+    attachments: true, accountRotation: false, accountSwitchNewThread: true, rewind: false,
   }
 
   const offer = (engine: EngineOffer['engine'], capabilities: AgentCapabilities): EngineOffer => ({

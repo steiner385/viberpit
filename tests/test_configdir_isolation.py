@@ -103,6 +103,266 @@ class TestReconcileLinks(unittest.TestCase):
             self.assertFalse(cj.is_symlink(), ".claude.json must NOT be a symlink")
 
     # -------------------------------------------------------------------------
+    # file-history (D-9 rewind) is shared, credentials still are not
+    # -------------------------------------------------------------------------
+    def test_file_history_is_shared_and_credentials_still_are_not(self):
+        """file-history holds file backups, not credentials: it is symlinked so a rotated
+        session can still restore its files. .credentials.json / .claude.json never are."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history").mkdir()
+            (base / ".credentials.json").write_text("{}")
+            (base / ".claude.json").write_text("{}")
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            configdir.reconcile_links("alpha")
+            self.assertIn("file-history", configdir.SHARE_ALLOWLIST)
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual(Path(os.readlink(cfg_dir / "file-history")), base / "file-history")
+            for name in (".credentials.json", ".claude.json"):
+                self.assertNotIn(name, configdir.SHARE_ALLOWLIST)
+                self.assertFalse((cfg_dir / name).is_symlink(), f"{name} must stay real")
+
+    def test_file_history_is_created_in_the_shared_base_when_missing(self):
+        """Without a shared dir to link, the CLI would write each account's checkpoints
+        into a private dir and a rotation would silently lose them (spike §4)."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            self.assertFalse((base / "file-history").exists())
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            self.assertTrue((base / "file-history").is_dir())
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+
+    def test_a_private_file_history_is_merged_into_the_shared_one_not_deleted(self):
+        """An account dir that already holds real checkpoints (an interactive `ccrun`
+        session) keeps them: they move into the shared dir before the link replaces it."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history" / "shared-sid").mkdir(parents=True)
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            (cfg_dir / "file-history" / "private-sid").mkdir(parents=True)
+            (cfg_dir / "file-history" / "private-sid" / "abc@v1").write_text("v0\n")
+            configdir.compose("alpha")
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((base / "file-history" / "private-sid" / "abc@v1").read_text(),
+                             "v0\n")
+            self.assertTrue((base / "file-history" / "shared-sid").is_dir())
+
+    def test_a_colliding_private_file_history_is_left_in_place(self):
+        """A session dir present in BOTH cannot be merged without overwriting one side:
+        the private dir stays (unlinked) rather than losing either copy."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history" / "sid").mkdir(parents=True)
+            (base / "file-history" / "sid" / "x@v1").write_text("shared\n")
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            (cfg_dir / "file-history" / "sid").mkdir(parents=True)
+            (cfg_dir / "file-history" / "sid" / "x@v1").write_text("private\n")
+            configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "sid" / "x@v1").read_text(),
+                             "private\n")
+            self.assertEqual((base / "file-history" / "sid" / "x@v1").read_text(), "shared\n")
+
+    def test_a_collision_logs_one_info_line_naming_the_account(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history" / "sid").mkdir(parents=True)
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            (cfg_dir / "file-history" / "sid").mkdir(parents=True)
+            with self.assertLogs("viberpit.configdir", level="INFO") as logs:
+                configdir.compose("alpha")
+            self.assertEqual(len(logs.records), 1)
+            rec = logs.records[0]
+            self.assertEqual(rec.levelname, "INFO")
+            self.assertIn("alpha", rec.getMessage())
+            self.assertIn("sid", rec.getMessage())
+
+    # -------------------------------------------------------------------------
+    # file-history merge races (a concurrent composer, the CLI writing meanwhile)
+    # -------------------------------------------------------------------------
+    def _private_history(self, *sids: str) -> Path:
+        from viberpit import paths
+        self._seed_slot("alpha")
+        (paths.shared_base() / "file-history").mkdir(exist_ok=True)
+        cfg_dir = paths.account_cfg_dir("alpha")
+        for sid in sids:
+            (cfg_dir / "file-history" / sid).mkdir(parents=True)
+            (cfg_dir / "file-history" / sid / "abc@v1").write_text(f"{sid}\n")
+        return cfg_dir
+
+    def _racing(self, before):
+        """Patch the no-replace rename so *before(src, dst)* runs just ahead of it."""
+        from unittest import mock
+        from viberpit import configdir
+        real = configdir._rename_noreplace
+
+        def racing(src, dst):
+            before(src, dst)
+            return real(src, dst)
+        return mock.patch.object(configdir, "_rename_noreplace", racing)
+
+    def test_rename_noreplace_never_replaces_an_existing_destination(self):
+        import tempfile
+        from viberpit import configdir
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = Path(d) / "src", Path(d) / "dst"
+            src.mkdir()
+            dst.mkdir()                                  # an EMPTY dir: os.rename would replace it
+            with self.assertRaises(FileExistsError):
+                configdir._rename_noreplace(src, dst)
+            self.assertTrue(src.is_dir())
+
+    def _race_destination_appears(self):
+        """(a) Another composer creates the destination between the check and the
+        rename: no nested dir, no exception, the private copy is kept."""
+        with temp_env():
+            from viberpit import configdir, paths
+            cfg_dir = self._private_history("sid")
+            shared = paths.shared_base() / "file-history"
+
+            def appear(src, dst):
+                Path(dst).mkdir(exist_ok=True)
+            with self._racing(appear):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "sid" / "abc@v1").read_text(), "sid\n")
+            self.assertFalse((shared / "sid" / "sid").exists())
+            self.assertEqual(list((shared / "sid").iterdir()), [])
+
+    def _race_private_file_written(self):
+        """(b) The CLI recreates an entry while the merge runs: the now non-empty private
+        dir is not deleted, and the next compose finishes the job."""
+        with temp_env():
+            from viberpit import configdir, paths
+            cfg_dir = self._private_history("sid")
+            shared = paths.shared_base() / "file-history"
+
+            def write(src, dst):
+                (cfg_dir / "file-history" / "late-sid").mkdir(exist_ok=True)
+                (cfg_dir / "file-history" / "late-sid" / "x@v1").write_text("late\n")
+            with self._racing(write):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "late-sid" / "x@v1").read_text(),
+                             "late\n")
+            self.assertEqual((shared / "sid" / "abc@v1").read_text(), "sid\n")
+            configdir.reconcile_links("alpha")
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((shared / "late-sid" / "x@v1").read_text(), "late\n")
+
+    def _race_source_vanishes(self):
+        """(c) Another composer moved the entry first: skipped, nothing raised."""
+        with temp_env():
+            from viberpit import configdir, paths
+            cfg_dir = self._private_history("sid")
+            shared = paths.shared_base() / "file-history"
+
+            def vanish(src, dst):
+                os.rename(src, dst)          # the other composer wins
+            with self._racing(vanish):
+                configdir.compose("alpha")
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((shared / "sid" / "abc@v1").read_text(), "sid\n")
+
+    def _fallback(self):
+        """Force the exists-check + os.rename fallback (no renameat2)."""
+        from unittest import mock
+        from viberpit import configdir
+        return mock.patch.object(configdir, "_renameat2", lambda: None)
+
+    def test_a_shared_child_appearing_mid_merge_keeps_the_private_dir(self):
+        self._race_destination_appears()
+
+    def test_a_shared_child_appearing_mid_merge_keeps_the_private_dir_on_fallback(self):
+        with self._fallback():
+            self._race_destination_appears()
+
+    def test_a_file_written_into_the_private_dir_mid_merge_is_kept(self):
+        self._race_private_file_written()
+
+    def test_a_file_written_into_the_private_dir_mid_merge_is_kept_on_fallback(self):
+        with self._fallback():
+            self._race_private_file_written()
+
+    def test_a_source_vanishing_mid_merge_is_skipped(self):
+        self._race_source_vanishes()
+
+    def test_a_source_vanishing_mid_merge_is_skipped_on_fallback(self):
+        with self._fallback():
+            self._race_source_vanishes()
+
+    def test_fallback_reports_a_vanished_source_before_an_existing_destination(self):
+        import tempfile
+        from viberpit import configdir
+        with tempfile.TemporaryDirectory() as d, self._fallback():
+            src, dst = Path(d) / "gone", Path(d) / "dst"
+            dst.mkdir()
+            with self.assertRaises(FileNotFoundError):
+                configdir._rename_noreplace(src, dst)
+            src.mkdir()
+            with self.assertRaises(FileExistsError):
+                configdir._rename_noreplace(src, dst)
+
+    def test_an_entry_recreated_between_rmdir_and_link_never_fails_the_compose(self):
+        """The CLI recreates file-history after the merge emptied and removed it: the
+        symlink cannot be made, the spawn still composes, the next compose links it."""
+        from unittest import mock
+        with temp_env():
+            from viberpit import configdir
+            cfg_dir = self._private_history("sid")
+            real_rmdir = os.rmdir
+
+            def rmdir_then_recreate(path, *a, **kw):
+                real_rmdir(path, *a, **kw)
+                if Path(path) == cfg_dir / "file-history":
+                    os.mkdir(path)
+            with mock.patch.object(configdir.os, "rmdir", rmdir_then_recreate):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertTrue((cfg_dir / "file-history").is_dir())
+            configdir.reconcile_links("alpha")
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+
+    def test_a_regular_file_named_file_history_is_kept_and_logged(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "file-history").write_text("not a dir\n")
+            with self.assertLogs("viberpit.configdir", level="INFO") as logs:
+                configdir.compose("alpha")
+            self.assertEqual((cfg_dir / "file-history").read_text(), "not a dir\n")
+            self.assertEqual(len(logs.records), 1)
+            self.assertEqual(logs.records[0].levelname, "INFO")
+            self.assertIn("alpha", logs.records[0].getMessage())
+            self.assertIn("file-history", logs.records[0].getMessage())
+
+    def test_a_cross_device_merge_keeps_the_private_dir(self):
+        import errno
+        from unittest import mock
+        with temp_env():
+            from viberpit import configdir
+            cfg_dir = self._private_history("sid")
+
+            def exdev(src, dst):
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            with mock.patch.object(configdir, "_rename_noreplace", exdev):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "sid" / "abc@v1").read_text(), "sid\n")
+
+    # -------------------------------------------------------------------------
     # non-allowlist entries are NOT symlinked
     # -------------------------------------------------------------------------
     def test_non_allowlist_entries_not_symlinked(self):

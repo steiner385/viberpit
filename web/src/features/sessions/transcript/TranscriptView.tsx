@@ -1,11 +1,13 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { useVirtualizer, elementScroll, type VirtualizerOptions } from '@tanstack/react-virtual'
-import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/reducer'
+import type { Turn as TurnType, RotationMarker, RewindMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
 import { ModelSwitchDivider } from './ModelSwitchDivider'
+import { RewindDividerSlot } from '@/features/sessions/rewind/RewindDividerSlot'
 import { modelName } from '@/session/modelName'
+import { failedPrompts } from '@/session/rewindTarget'
 import { buildRenderRows, type RenderRow } from './transcriptRows'
 import { prefetchMarkdown } from './markdownChunk'
 import { useStickToBottom } from './useStickToBottom'
@@ -16,6 +18,8 @@ const TOP_THRESHOLD = 64
 interface Props {
   turns: TurnType[]
   rotations?: RotationMarker[]
+  /** The latest rewind's divider (D-9), live sessions only. */
+  rewind?: RewindMarker | null
   /** The session's current model — threaded to badge subagents on a different model. */
   model?: string | null
   toolDetailMode: ToolDetailMode
@@ -62,7 +66,7 @@ interface Props {
  *  - scrolling near the top pages in older turns and the prior scroll anchor is
  *    restored so the viewport doesn't jump.
  */
-export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, viewModeEpoch, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk, followSignal }: Props) {
+export function TranscriptView({ turns, rotations = [], rewind, model, toolDetailMode, thinkingCollapsed, viewModeEpoch, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk, followSignal }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Warm the markdown renderer the moment a transcript exists, rather than
@@ -84,9 +88,11 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
   // The full ordered render list: head markers, then the flattened transcript.
   // buildRenderRows is the single source of truth for which rows exist.
   const rows = useMemo<RenderRow[]>(
-    () => buildRenderRows(turns, rotations, { loadingOlder, earliestTurn }),
-    [turns, rotations, loadingOlder, earliestTurn],
+    () => buildRenderRows(turns, rotations, { loadingOlder, earliestTurn, rewind }),
+    [turns, rotations, loadingOlder, earliestTurn, rewind],
   )
+  // Each failed reply's prompt, for its error card's Rewind & retry (D-9).
+  const promptOfFailed = useMemo(() => failedPrompts(turns), [turns])
 
   // The virtualizer moves scrollTop on its own: when a row *above* the viewport
   // measures for the first time (or is remeasured), virtual-core compensates
@@ -162,6 +168,8 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
         return <div className="py-2 text-center text-xs text-ink-muted">— Beginning of session —</div>
       case 'model-switch':
         return <ModelSwitchDivider to={modelName(row.toModel)} />
+      case 'rewind':
+        return <RewindDividerSlot marker={row.marker} />
       case 'rotation':
         return <RotationDivider from={row.rot.from} to={row.rot.to} reason={row.rot.reason} />
       case 'turn':
@@ -180,6 +188,7 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
             sessionModel={model}
             variant={variant}
             onAsk={onAsk}
+            failedPrompt={promptOfFailed.get(row.turn.id) ?? null}
           />
         )
     }

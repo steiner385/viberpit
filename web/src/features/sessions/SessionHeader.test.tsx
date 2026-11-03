@@ -396,7 +396,7 @@ const caps = (over: Partial<AgentCapabilities> = {}): AgentCapabilities => ({
   models: false, reasoningEffort: false, steer: false, interrupt: false,
   approvals: false, questions: false, fork: false, adopt: false,
   selfModelSwitch: false, subagents: false, attachments: false,
-  accountRotation: false, accountSwitchNewThread: false, ...over,
+  accountRotation: false, accountSwitchNewThread: false, rewind: false, ...over,
 })
 
 const offer = (engine: 'claude_code' | 'codex', capabilities: AgentCapabilities): EngineOffer => ({

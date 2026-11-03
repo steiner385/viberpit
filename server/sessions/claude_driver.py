@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import functools
 import hashlib
@@ -9,7 +10,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Callable
+from typing import AsyncIterator, Callable
 from claude_agent_sdk import (AssistantMessage, PermissionResultAllow, PermissionResultDeny,
                               ResultMessage, TaskStartedMessage, TaskUpdatedMessage,
                               TaskNotificationMessage, TERMINAL_TASK_STATUSES)
@@ -17,7 +18,7 @@ from claude_agent_sdk._errors import CLIConnectionError
 from viberpit import brand
 from viberpit import copilot as _copilot_mod
 from viberpit.accounts import provider_or_none as _provider_of
-from server.aio import bounded_wait, cancel_and_reap, format_task_dump
+from server.aio import bounded_wait, cancel_and_reap, format_task_dump, run_to_completion
 from server.assistant.context import PromptContext, render_context_header
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
@@ -31,6 +32,9 @@ from server.obs.context import bind_session
 from .automation_execution import AutomationExecutionFence
 from .background_tasks import _AGENT_TOOLS, _is_background_launch
 from . import events as ev
+from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIND_OUTCOME_UNKNOWN,
+                     REWIND_UNAVAILABLE, RewindError, conversation_request, files_request,
+                     map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
@@ -64,7 +68,7 @@ _STATUS_TRACE = os.environ.get("VIBERPIT_STATUS_TRACE", "false").lower() in ("1"
 # WS attach path (_emit_live_extras); buffering them would double-emit.
 _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
                  ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
-                 ev.TurnAnchor, ev.TurnEnd, ev.ErrorEvent,
+                 ev.TurnAnchor, ev.UserPromptUuid, ev.TurnEnd, ev.ErrorEvent,
                  # The turn's asks and their resolutions ride the attach snapshot too, so
                  # a mid-turn reattach re-delivers a pending permission/question AT ITS
                  # PLACE in the turn — after the prompt and the content that led to it —
@@ -300,6 +304,16 @@ class _MessageSource:
                            cancel_grace=grace)
 
 
+def _is_control_error_reply(exc: BaseException) -> bool:
+    """True when the SDK raised a control ``error`` REPLY from the CLI.
+
+    claude-agent-sdk 0.2.105 (``_internal/query.py``) raises a reply as a bare
+    ``Exception(error_text)``; a timeout is a bare ``Exception`` raised ``from``
+    ``TimeoutError``; a dead transport is ``CLIConnectionError`` or the reader's own
+    exception type."""
+    return type(exc) is Exception and not isinstance(exc.__cause__, TimeoutError)
+
+
 class ClaudeAgentDriver:
     """Drives one Claude session via an SDK client, exposing normalized events.
 
@@ -337,6 +351,10 @@ class ClaudeAgentDriver:
         # <uuid>`, verified on CLI 2.1.316. The flag is hidden, so the capability is
         # also gated by VIBERPIT_FORK_ENABLED (engine.fork_supported).
         fork=True,
+        # Rewind to here (D-9): CLI file checkpoints + the `rewind_files` /
+        # `rewind_conversation` control requests, verified on CLI 2.1.317. Internal
+        # surfaces, so also gated by VIBERPIT_REWIND_ENABLED (engine.rewind_supported).
+        rewind=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -346,6 +364,7 @@ class ClaudeAgentDriver:
                  on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
+                 on_prompt_uuid: Callable[[str, str, str], None] | None = None,
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None,
                  resumed_after_restart: bool = False,
@@ -423,6 +442,9 @@ class ClaudeAgentDriver:
         # Fired (synchronously) with (session id, turn id, transcript uuid) for each
         # TurnAnchor (D-8), so the orchestrator keeps SessionRecord.turn_anchors live.
         self._on_turn_anchor = on_turn_anchor
+        # Fired (synchronously) with (session id, user turn id, CLI prompt uuid) for each
+        # UserPromptUuid (D-9), so the orchestrator keeps SessionRecord.prompt_uuids live.
+        self._on_prompt_uuid = on_prompt_uuid
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
@@ -459,6 +481,8 @@ class ClaudeAgentDriver:
         # Distinct from `_turn_active`, which `_end_turn` deliberately leaves set across
         # its own dequeue into `_start_turn` (PR #1480) and so cannot gate that call.
         self._starting_turn: bool = False
+        # D-9: set while a rewind sequence owns the idle client (`rewind_hold`).
+        self._rewind_held: bool = False
         self._titled: bool = False
         # Each entry: (text, images, context). The context chip (assistant sessions
         # only, spec §4.5) rides along so a prompt that waits in the queue still gets
@@ -1246,10 +1270,12 @@ class ClaudeAgentDriver:
         cursor: ``RuntimeError: anext(): asynchronous generator is already running``.
         The loser of the race queues instead, exactly as it would have had it arrived a
         tick later; the winner's turn end dequeues it."""
-        if self._starting_turn:
+        if self._starting_turn or self._rewind_held:
+            # A rewind hold (D-9) defers turns the same way; its release dequeues.
             self._queue.append((text, images or [], context, origin))
-            log.info("driver.start_turn: another turn is starting — queued prompt "
-                     "session=%s queue_depth=%d", self.session_id, len(self._queue))
+            log.info("driver.start_turn: %s — queued prompt session=%s queue_depth=%d",
+                     "a rewind holds the session" if self._rewind_held
+                     else "another turn is starting", self.session_id, len(self._queue))
             await self._emit_status()
             self._emit(ev.QueueUpdate(self.queue_wire()))
             return
@@ -1318,6 +1344,9 @@ class ClaudeAgentDriver:
         self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
             images=wire_images or None, context=context, origin=origin))
+        # The CLI echoes this prompt with its transcript uuid (--replay-user-messages,
+        # set at spawn while rewind is on): the translator maps it onto `user_turn`.
+        self._tr.expect_prompt(user_turn, sdk_text)
         assert self._client is not None  # _start_turn only runs once the client is connected
         if images:
             content: list[dict] = []
@@ -1648,6 +1677,12 @@ class ClaudeAgentDriver:
                 except Exception:  # noqa: BLE001 - recording an anchor must never break the pump
                     log.debug("driver.on_turn_anchor failed session=%s", self.session_id,
                               exc_info=True)
+            if isinstance(e, ev.UserPromptUuid) and self._on_prompt_uuid is not None:
+                try:
+                    self._on_prompt_uuid(self.session_id, e.turn_id, e.uuid)
+                except Exception:  # noqa: BLE001 - recording a uuid must never break the pump
+                    log.debug("driver.on_prompt_uuid failed session=%s", self.session_id,
+                              exc_info=True)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
             self._note_progress(e)
@@ -1692,7 +1727,16 @@ class ClaudeAgentDriver:
         # Nothing queued: settle to idle. The dequeue below is deliberately NOT an
         # `else` — see its comment. A dead stream settles too, whatever is queued:
         # those prompts are held for the rebuilt driver (_reassign carries them).
-        if not self._queue or self._stream_ended:
+        # A rewind hold (D-9) counts as an empty queue: a CLI-initiated turn ending
+        # inside one settles here, and the hold's release dequeues in FIFO order.
+        # Dequeuing now would hand the head to `_start_turn`, which re-queues it at
+        # the tail under the hold while `_turn_active` stays set — stranding it.
+        # `deferred` is read ONCE, before any await: the hold can be released during
+        # the settle awaits below, and its release then owns the drain — dequeuing
+        # here as well would start a second pump on the one SDK cursor.
+        deferred = self._rewind_held
+        settled = not self._queue or self._stream_ended or deferred
+        if settled:
             self._turn_active = False
             self._turn_started_at = None
             self._turn_buffer = []
@@ -1717,7 +1761,19 @@ class ClaudeAgentDriver:
         # reopening the window.
         if self._stream_ended:
             return   # nothing to dequeue onto, nothing to listen to
-        if self._queue:
+        if deferred:
+            # Backstop: the post-settle check below already catches a release mid-settle.
+            # The rewind hold's release drains the queue; no suggestions for a turn
+            # the user is about to rewind past. The listener guards itself against a
+            # pump the release may already have started.
+            self._start_listener()
+            return
+        if settled and (self._turn_active or self._starting_turn):
+            # Another path started a turn during the settle awaits (a hold taken and
+            # released meanwhile, or a prompt that found the driver idle): it owns
+            # the cursor and the queue now.
+            return
+        if self._queue and not self._rewind_held:
             next_text, next_images, next_context, next_origin = self._queue.pop(0)
             log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                       self.session_id, len(self._queue))
@@ -2213,6 +2269,139 @@ class ClaudeAgentDriver:
         except CLIConnectionError:
             return {}
 
+    @contextlib.asynccontextmanager
+    async def rewind_hold(self) -> AsyncIterator[None]:
+        """Claim the idle driver for a whole rewind sequence (D-9).
+
+        The orchestrator runs dry run → undo backup → ``rewind_files`` →
+        ``rewind_conversation`` inside ONE hold, so no prompt can start a turn between
+        those steps (a turn there would race the file restore and the cut). Entry runs
+        the busy check once and sets the claim with no await in between, so
+        check-and-claim cannot interleave with another coroutine. While held,
+        ``_start_turn`` QUEUES a prompt on the path a concurrent start already takes;
+        on exit — normal, error or cancellation — the claim is released and the queue
+        head is started as ``_end_turn`` dequeues. A second hold refuses ``REWIND_BUSY``.
+
+        The rewind methods re-run the same busy check inside the hold (the hold itself
+        is not "busy"), which also catches a CLI-initiated turn opened meanwhile."""
+        if self._rewind_held:
+            raise self._rewind_refused(RewindError(REWIND_BUSY, "another rewind is in progress"))
+        self._rewind_check_idle()
+        self._rewind_held = True
+        log.info("driver.rewind_hold claimed session=%s", self.session_id)
+        try:
+            yield
+        except BaseException:
+            # Unwinding from the body's error: the drain's own failure must not mask
+            # it. CancelledError is not caught here, so a cancel still propagates.
+            try:
+                await self._release_rewind_hold()
+            except Exception:
+                log.info("driver.rewind_hold: dequeue after a failed rewind failed "
+                         "session=%s", self.session_id, exc_info=True)
+            raise
+        else:
+            await self._release_rewind_hold()
+
+    async def _release_rewind_hold(self) -> None:
+        self._rewind_held = False
+        log.info("driver.rewind_hold released session=%s queue_depth=%d",
+                 self.session_id, len(self._queue))
+        # Finishes even when the holder was cancelled, so a queued prompt is never
+        # stranded; the caller's cancellation is re-raised afterwards (#1164).
+        await run_to_completion(self._drain_after_rewind(),
+                                name=f"driver-rewind-drain:{self.session_id}")
+
+    async def _drain_after_rewind(self) -> None:
+        """Start the queue head a rewind hold deferred (``_end_turn``'s dequeue). The
+        idle checks and the pop run with no await between them."""
+        if (not self._queue or self._stream_ended or self._closing or self._rewind_held
+                or self._starting_turn or self._turn_live()):
+            return
+        text, images, context, origin = self._queue.pop(0)
+        log.info("driver.rewind_hold: dequeuing prompt session=%s remaining=%d",
+                 self.session_id, len(self._queue))
+        self._emit(ev.QueueUpdate(self.queue_wire()))
+        await self._start_turn(text, images, context=context, origin=origin)
+
+    async def rewind_files(self, user_message_id: str, *, dry_run: bool) -> dict:
+        """Restore (or, with ``dry_run``, preview) the files Claude edited since prompt
+        ``user_message_id``. Returns the CLI reply; a refusal raises ``RewindError``.
+
+        Sent raw on the SDK's control channel: the SDK's own ``rewind_files()`` has no
+        ``dry_run`` and drops the reply. The CLI's handler has no turn guard of its own,
+        so the driver refuses while a turn runs or a card is pending. Run a multi-step
+        sequence inside :meth:`rewind_hold`."""
+        resp = await self._rewind_control(files_request(user_message_id, dry_run=dry_run))
+        if resp.get("canRewind") is not True:
+            raise self._rewind_refused(map_cli_error(resp))
+        log.info("driver.rewind_files session=%s dry_run=%s files=%s", self.session_id,
+                 dry_run, len(resp.get("filesChanged") or ()))
+        return resp
+
+    async def rewind_conversation(self, target_uuid: str, *, last_seen: str | None) -> dict:
+        """Cut the conversation before prompt ``target_uuid`` (exclusive: the target is
+        dropped and returned as ``prefillText``). ``last_seen`` is the newest prompt
+        uuid the caller knows of. Returns the CLI reply; a refusal raises ``RewindError``."""
+        resp = await self._rewind_control(conversation_request(target_uuid, last_seen=last_seen))
+        if resp.get("rewound") is not True:
+            raise self._rewind_refused(map_cli_error(resp))
+        log.info("driver.rewind_conversation session=%s target=%s", self.session_id,
+                 target_uuid)
+        return resp
+
+    def rewind_busy(self) -> bool:
+        """Is a turn starting, running, or waiting on a permission card or question? The
+        one busy test behind every rewind refusal, and the orchestrator's undo gate."""
+        return bool(self._starting_turn or self._turn_live() or self._reg.pending(self.session_id)
+                    or self._qreg.pending(self.session_id))
+
+    def _rewind_check_idle(self) -> None:
+        """Refuse unless the client is live and idle. Synchronous: no await between this
+        check and whatever the caller does next."""
+        if self._client is None or self._stream_ended:
+            raise self._rewind_refused(RewindError(REWIND_UNAVAILABLE, "session not live"))
+        if self.rewind_busy():
+            raise self._rewind_refused(RewindError(REWIND_BUSY,
+                                                   "a turn is running or awaiting input"))
+
+    async def _rewind_control(self, request: dict) -> dict:
+        """One rewind control request on the idle live client. Every refusal is a
+        ``RewindError`` logged at INFO; nothing here logs at WARNING.
+
+        A request that changes state (anything but a dry run) whose reply never came —
+        a timeout or a transport failure — may or may not have been applied. That raises
+        ``REWIND_FAILED`` with ``reason=outcome_unknown``, so the caller restores from
+        its own backup rather than assume nothing happened."""
+        self._rewind_check_idle()
+        # The internal method the SDK's own ``rewind_files()`` calls. Pinned by
+        # ``test_rewind_driver`` (the SDK seam) and ``test_rewind_cli_contract`` (the
+        # reply shapes from the installed binary).
+        send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
+        if send is None:
+            raise self._rewind_refused(RewindError(REWIND_UNAVAILABLE,
+                                                   "SDK client has no control channel"))
+        mutating = request.get("dry_run") is not True
+        try:
+            resp = await send(request, timeout=REWIND_CONTROL_TIMEOUT_S)
+        except Exception as exc:
+            if _is_control_error_reply(exc):
+                # The CLI answered with a control ``error``: a definite refusal.
+                raise self._rewind_refused(map_cli_error({"error": str(exc)})) from exc
+            if mutating:
+                raise self._rewind_refused(RewindError(
+                    REWIND_FAILED, f"no reply to {request.get('subtype')}: {exc}",
+                    reason=REWIND_OUTCOME_UNKNOWN)) from exc
+            code = REWIND_UNAVAILABLE if isinstance(exc, CLIConnectionError) else REWIND_FAILED
+            raise self._rewind_refused(RewindError(code, str(exc))) from exc
+        return resp if isinstance(resp, dict) else {}
+
+    def _rewind_refused(self, err: RewindError) -> RewindError:
+        """Log an expected refusal (INFO: a WARNING would auto-file an issue)."""
+        log.info("driver.rewind refused session=%s error_data=%s message=%s",
+                 self.session_id, err.error_data, err)
+        return err
+
     @property
     def last_mcp_status(self) -> list:
         """The last sanitized snapshot, without a round-trip (never raises)."""
@@ -2620,6 +2809,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,
             on_turn_anchor=config.on_turn_anchor,
+            on_prompt_uuid=config.on_prompt_uuid,
             on_record_condense_ms=config.on_record_condense_ms,
             get_condense_estimate=config.get_condense_estimate,
             on_recoverable_failure=config.on_recoverable_failure,

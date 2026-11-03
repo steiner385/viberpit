@@ -1,4 +1,4 @@
-import type { Turn as TurnType, RotationMarker } from '@/session/reducer'
+import type { Turn as TurnType, RotationMarker, RewindMarker } from '@/session/reducer'
 
 /**
  * A single virtualizable row. Virtualizers operate on a flat index space, so we
@@ -28,12 +28,15 @@ export type RenderRow =
   | TranscriptRow
   | { key: string; kind: 'loading-older' }
   | { key: string; kind: 'begin' }
+  | { key: string; kind: 'rewind'; marker: RewindMarker }
 
 export interface RenderRowOptions {
   /** True while an older-page fetch is in flight — shows the loading marker. */
   loadingOlder?: boolean
   /** Earliest turn index known to the server; 0 means we're at the very start. */
   earliestTurn?: number
+  /** The latest rewind (D-9): its divider trails the transcript, where the cut turns were. */
+  rewind?: RewindMarker | null
 }
 
 /**
@@ -44,7 +47,7 @@ export interface RenderRowOptions {
 export function buildRenderRows(
   turns: TurnType[],
   rotations: RotationMarker[],
-  { loadingOlder = false, earliestTurn }: RenderRowOptions = {},
+  { loadingOlder = false, earliestTurn, rewind }: RenderRowOptions = {},
 ): RenderRow[] {
   const head: RenderRow[] = []
   if (loadingOlder) head.push({ key: 'loading-older', kind: 'loading-older' })
@@ -52,7 +55,9 @@ export function buildRenderRows(
   // server confirms we're at the very start (earliestTurn === 0). Read-only
   // views omit earliestTurn, so it never shows there.
   if (turns.length > 0 && earliestTurn === 0) head.push({ key: 'begin', kind: 'begin' })
-  return [...head, ...flattenRows(turns, rotations)]
+  const rows: RenderRow[] = [...head, ...flattenRows(turns, rotations)]
+  if (rewind) rows.push({ key: `rewind-${rewind.rewindId}`, kind: 'rewind', marker: rewind })
+  return rows
 }
 
 export function flattenRows(turns: TurnType[], rotations: RotationMarker[]): TranscriptRow[] {

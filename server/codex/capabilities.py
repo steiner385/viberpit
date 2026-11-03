@@ -172,6 +172,10 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # CLAUDE_CONFIG_DIR is, so ViberPit's Library surface has nothing analogous
     # to scan or mutate there. See CODEX_LIBRARY_UNSUPPORTED_DETAIL (#1285).
     library_management=False,
+    # Rewind to here (D-9) is verified for the Claude CLI only (file checkpoints and
+    # rewind_conversation); no Codex mechanism has been examined, so every rewind
+    # control stays hidden for Codex sessions.
+    rewind=False,
 )
 
 #: Human-readable reason the Library surface (`GET /api/library/engines`)

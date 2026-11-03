@@ -75,7 +75,10 @@ export type Block =
 // `anchorUuid` is the CLI transcript uuid this assistant turn can be forked from (D-8,
 // see EvTurnAnchor). Set only on the segment that ENDS the engine turn; absent = no
 // Fork action.
-export interface Turn { id: string; engineTurnId?: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean; anchorUuid?: string }
+//
+// `promptUuid` is the CLI prompt uuid of a LIVE user turn (D-9 rewind target, see
+// EvUserPromptUuid). Absent on a replayed user turn, whose id already is that uuid.
+export interface Turn { id: string; engineTurnId?: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean; anchorUuid?: string; promptUuid?: string }
 
 export type SubThreadTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
 /** Live task state of a Task sub-agent, from subAgentStarted/Progress/Ended. Absent on
@@ -118,6 +121,13 @@ export interface RotationMarker {
   afterTurnId: string | null
 }
 
+/**
+ * The latest rewind (D-9), shown as a divider at the transcript's tail where the cut
+ * turns were, with Undo. Live-only (the replay follows the cut chain and never
+ * re-emits it), so it survives a replayReset; it goes on the next prompt or undo.
+ */
+export interface RewindMarker { rewindId: string; filesRestored: string[] }
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 /** Latest result's token/cost footprint (consumed by lib/contextWindow helpers). */
@@ -155,6 +165,8 @@ export interface TranscriptState {
   error: { code: string; message: string; resetsAt?: string | null } | null
   queued: QueuedItem[]           // prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
+  rewind: RewindMarker | null   // the latest rewind's divider (D-9); survives replayReset
+  replayFor: string | null      // a rewind this view can't show without a fresh replay; the runtime re-attaches once per value
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
   backgroundTasks: Record<string, BackgroundTaskState>   // keyed by the launching tool-use id (#2635)
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
@@ -187,6 +199,8 @@ export const initialTranscript: TranscriptState = {
   error: null,
   queued: [],
   rotations: [],
+  rewind: null,
+  replayFor: null,
   subAgents: {},
   backgroundTasks: {},
   latestSuggestions: [],
@@ -278,6 +292,7 @@ export type LocalAction =
   | { type: '_promptStage'; stage: PromptStage }
   | { type: '_promptHeld'; text: string }
   | { type: '_promptStalled' }
+  | { type: '_rewindExpired'; rewindId: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -902,7 +917,9 @@ export function transcriptReducer(
         // whichever id this user turn already holds.
         nextTurns = replaceTurn(state.turns, idx, (t) => userTurn(t.id, blocks, ev.ownerPrefix, ev.context, ev.origin))
       }
-      return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
+      // A new prompt sent live (from any view) ends the rewind's undo window (D-9).
+      const rewind = idx === -1 && !state.replaying ? null : state.rewind
+      return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent, rewind }
     }
 
     // ── turnStart ─────────────────────────────────────────────────────────────
@@ -1206,6 +1223,49 @@ export function transcriptReducer(
       if (idx === -1 || state.turns[idx].anchorUuid === ev.uuid) return state
       return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, anchorUuid: ev.uuid })) }
     }
+
+    // ── userPromptUuid ────────────────────────────────────────────────────────
+    case 'userPromptUuid': {
+      // Role-scoped like turnAnchor: only the user turn it names, never an assistant turn
+      // sharing the id, and never a fabricated one for a turn this view does not hold.
+      const idx = findRoleTurnIdx(state.turns, ev.turnId, 'user')
+      if (idx === -1 || state.turns[idx].promptUuid === ev.uuid) return state
+      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, promptUuid: ev.uuid })) }
+    }
+
+    // ── rewound / rewindUndone (D-9) ──────────────────────────────────────────
+    case 'rewound': {
+      // Cut the target prompt and everything after it (and the rotations anchored
+      // there); the divider takes their place. The view may hold the prompt under the
+      // driver's id (live, with its `promptUuid`) or under the uuid (replayed), and the
+      // event names it by the id its sender held plus the uuid — so any of the turn's
+      // keys may match either. A view without the turn asks for a replay, which follows
+      // the server's cut chain, and shows no divider it could not place.
+      // Defined keys only: an omitted promptUuid must not match every turn without one.
+      const keys = new Set([ev.toTurnId, ev.promptUuid].filter(Boolean))
+      let idx = -1
+      for (let i = state.turns.length - 1; i >= 0 && idx === -1; i--) {
+        const t = state.turns[i]
+        if (t.role === 'user' && (keys.has(t.id) || keys.has(t.engineTurnId) || keys.has(t.promptUuid))) idx = i
+      }
+      if (idx === -1) return { ...state, replayFor: `rewound:${ev.rewindId}` }
+      const kept = state.turns.slice(0, idx)
+      const ids = new Set(kept.map((t) => t.id))
+      return {
+        ...state, turns: kept, openBlockId: null, latestSuggestions: [],
+        rotations: state.rotations.filter((r) => r.afterTurnId === null || ids.has(r.afterTurnId)),
+        rewind: { rewindId: ev.rewindId, filesRestored: ev.filesRestored },
+      }
+    }
+    case 'rewindUndone':
+      // The cut turns come back with a replay (the runtime acts on `replayFor`).
+      return {
+        ...state, replayFor: `rewindUndone:${ev.rewindId}`,
+        rewind: state.rewind?.rewindId === ev.rewindId ? null : state.rewind,
+      }
+    case '_rewindExpired':
+      // The server refused the undo as expired (a stale divider, e.g. across a reconnect).
+      return state.rewind?.rewindId === ev.rewindId ? { ...state, rewind: null } : state
 
     // ── turnEnd ───────────────────────────────────────────────────────────────
     case 'turnEnd': {
@@ -1574,6 +1634,8 @@ export function transcriptReducer(
         // inline `error` block stays in the transcript, so nothing is lost, and a
         // condition that still holds raises a fresh error on this turn.
         error: null,
+        // Sending ends the rewind's undo window (D-9).
+        rewind: null,
       }
     }
 

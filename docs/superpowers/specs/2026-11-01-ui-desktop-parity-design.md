@@ -104,6 +104,12 @@ labels.
   - Every message: **Copy as Markdown**.
   - User messages: **Fork from here**, **Rewind to here**, **Edit & resend**.
   - Assistant messages: Fork from here.
+  - **Shipped (D-8, D-9).** Rewind to here and Edit & resend appear on a user turn once it has a CLI prompt uuid
+    (live: the `userPromptUuid` echo; replay: the turn id). They are hidden without the `rewind` capability and
+    disabled while a turn runs or a permission, plan or question card is pending. A rewind replaces the cut turns
+    with a divider, `Rewound — N files restored`, carrying **Undo rewind**. The divider hides after the next
+    prompt or once the undo is done. Replay follows the active chain, so cut turns stay hidden on reload. See §5
+    for the mechanism and the undo design.
 - **File paths** `[A-D13]`: path-like spans open the Files tab at that line. Secondary actions: Attach as `@`,
   Copy path.
 - **Search** `[A-D13]`: ⌘F with focus in the transcript (falling through to the browser's find elsewhere). The
@@ -119,8 +125,8 @@ labels.
 | Action | Semantics | Backend |
 |---|---|---|
 | **Fork from here** `[A-D3]` | Creates a **new linked child session** (`parentSessionId`) whose conversation is the source up to that message, in its own worktree branched from the source's current HEAD. The source is untouched. | **Shipped (D-8), verified** (`2026-11-02-d8-fork-verification.md`): `resume=<source>` + `fork_session=True` + `extra_args={"resume-session-at": <uuid>}`. Claude only, behind `VIBERPIT_FORK_ENABLED` |
-| **Rewind to here** `[A-D3]` | Truncates the conversation to before the message **and** restores files to that checkpoint. A divider marks the rewind and offers **Undo rewind**, which restores conversation and files. A confirmation lists the files that will change. | SDK `enable_file_checkpointing=True` + `ClaudeSDKClient.rewind_files(user_message_id)`; requires a fresh spawn with checkpointing on. The undo strategy (pre-rewind checkpoint or WIP commit) is decided in the implementation plan after verification. |
-| **Edit & resend** `[A-D7]` | Rewind to before the user message, then prefill the composer with its text. | the rewind path |
+| **Rewind to here** `[A-D3]` | Truncates the conversation to before the message **and** restores files to that checkpoint. A divider marks the rewind and offers **Undo rewind**, which restores conversation and files. A confirmation lists the files that will change. | **Shipped (D-9), verified** (`2026-11-03-d9-rewind-verification.md`): `enable_file_checkpointing=True` on every spawn, then `rewind_files` (dry run and real run) and `rewind_conversation` control requests on the live client, inside a driver rewind hold. Undo is a ViberPit-owned backup plus byte truncation. Claude only, behind `VIBERPIT_REWIND_ENABLED` |
+| **Edit & resend** `[A-D7]` | Rewind to before the user message, then prefill the composer with its text. | the rewind path; **shipped (D-9)**, prefilled from the CLI's `prefillText` |
 | **Move to host** `[A-D19]` | Pushes the branch, then resumes the session on the target fleet host, keeping the session id and transcript. The source worktree is kept until the move is confirmed. | new orchestrator op over the existing fleet router |
 
 Rewind and edit are disabled during a running turn and on engines without the capability.
@@ -140,6 +146,67 @@ Rewind and edit are disabled during a running turn and on engines without the ca
   `<prefix>fork-<id>-<n>` at the source's HEAD, with uncommitted and untracked files copied. File restore to a
   message is rewind (D-9).
 
+**Rewind as shipped (D-9).**
+- **Checkpointing.** Every coding spawn (new, resume, fork and the driver's fresh-session respawn) passes
+  `enable_file_checkpointing=True` while the kill switch `VIBERPIT_REWIND_ENABLED` (default on) is on. The CLI then
+  snapshots, per user prompt, the files that **Edit, Write and NotebookEdit** touch. Bash is never tracked. It keeps
+  the newest **100** snapshots per session. `file-history` joins `SHARE_ALLOWLIST` in `src/viberpit/configdir.py`,
+  so every account config dir links one shared store and a rotated session can still restore its files. Without
+  that, a rewind after rotation was a silent partial restore (verification §4). Credentials are still never shared.
+- **Target.** The client sends `toTurnId`, the user turn's id, as fork sends `atTurnId`. The server resolves it to
+  the CLI prompt uuid. Live, `extra_args["replay-user-messages"]` makes the CLI echo each prompt with its uuid, and
+  the translator emits `userPromptUuid {turnId, uuid}`. On replay the turn id already is the uuid. A non-user turn
+  is refused `REWIND_NOT_USER_MESSAGE`.
+- **Verified mechanism (CLI 2.1.317, SDK 0.2.105).** One `driver.rewind_hold()` wraps the whole sequence on the
+  idle live client. Prompts sent meanwhile queue in the driver and start, in order, when the hold is released.
+  1. `rewind_files {user_message_id, dry_run:true}`. This is the confirmation source and gives `filesChanged`,
+     `insertions` and `deletions`. "No file checkpoint found" or "not enabled" gives `checkpointAvailable:false`,
+     and the UI offers a conversation-only rewind.
+  2. The undo backup (below).
+  3. `rewind_files {user_message_id}` (the real run), unless the mode is `conversation`. Files go first, because the
+     cut removes the target's snapshot from the chain.
+  4. Record the transcript's byte length.
+  5. `rewind_conversation {target_message_uuid, last_seen_user_message_uuid}`. The cut is **exclusive**: it drops
+     the target prompt and everything after it, appends a `last-prompt` row with `rewound:true`, and returns
+     `prefillText`, the prompt's text. The live client carries on with no respawn.
+  6. Emit `rewound {rewindId, toTurnId, promptUuid, filesRestored}`.
+
+  Both control requests are an internal CLI surface (constitution I). They go through the SDK's private
+  `_send_control_request`, because the Python SDK's `rewind_files()` drops the reply and has no dry run. A no-model
+  contract test pins them against the installed binary. Every CLI `reason` maps to a code in `REWIND_CODES`
+  (`server/sessions/rewind.py`). If a step after the backup fails, the backup is restored. If the cut's outcome is
+  unknown, the client is stopped, the transcript truncated to the recorded length, the files restored and the
+  session resumed.
+- **Undo design: a ViberPit-owned pre-rewind checkpoint.** The CLI cannot undo: it never snapshots the state after
+  the last turn, the cut makes the dropped turns' snapshots unreachable, and it has no redo.
+  - **Backup.** Taken after the confirm and before the real `rewind_files`. It covers the dry-run `filesChanged`
+    plus every path the transcript's `file-history` rows track from the target onward, because a mode-only revert
+    is restored but not previewed. Each path's bytes and mode are stored, or "absent". It lives under
+    `VIBERPIT_HOME/rewind/<sessionId>/<rewindId>/` on the session's host, and is written through
+    `src/viberpit/fs_beneath.py` without following symlinks. Over **64 MiB** in total, the rewind is refused with
+    `REWIND_TOO_LARGE` and nothing changes.
+  - **Undo** stops the client, restores the files, truncates the transcript back to the recorded byte length, and
+    resumes the same engine session with `--resume`. It then emits `rewindUndone`. The second probe showed the
+    model and the CLI's checkpoints see the pre-rewind conversation again.
+  - **The tail allowlist.** Truncation is allowed only when every row past the recorded length is one of the rows
+    a rewind or an idle exit appends: `last-prompt`, `cost-state` or `tools-used` with no `uuid` (third probe).
+    Anything else, including a torn line, means a turn happened, so undo refuses `REWIND_UNDO_EXPIRED`. The
+    check runs again after the client stops.
+  - **The latest rewind only.** Each new rewind expires the older ones. The next prompt sent to the session expires
+    the rewind and deletes its backup. Archive deletes all of the session's backups. Undo is idempotent by
+    `rewindId`. A partial restore keeps the backup and refuses `REWIND_FAILED` with the failed paths, so a retry
+    can finish the job.
+  - **Persistence.** One `SessionRewind` row per rewind (migration `0095_session_rewinds`) holds the target, the
+    transcript path and length, the backup dir, the host, the files restored, the prefill and the
+    `created_at` / `undone_at` / `expired_at` stamps.
+- **Replay follows the active chain.** The dropped rows stay in the JSONL, so `replay.py` drops off-chain prompts,
+  and everything under them, once an explicit `rewound` `last-prompt` row is present. This governs D-8's fork
+  anchors too, so cut turns are never fork points.
+- **Rewind & retry** (§6) rewinds to the failed turn's prompt, then sends `prefill` unchanged through the normal
+  send path. It is offered on the latest prompt's own failure only, and not for image, nudge or text-less prompts.
+  Because the resend is a prompt, that rewind cannot be undone.
+- **`/rewind`** is an app command in `catalog.py`, gated like the route. It opens a picker of the 20 newest prompts.
+
 ## 6. Feedback
 
 - **Permission card** `[A-D11]`: **Allow once · Allow for this session · Always allow… · Deny** (⌘. denies).
@@ -148,7 +215,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 - **Plan approval** `[A-D17]`: Approve & run · Keep planning **with comments**. Comments can be overall or per
   plan step, and are sent back as one structured message.
 - **Error cards** `[A-D17]`: in addition to auto-resend and rotation, **Switch model**, **Lower effort** and
-  **Rewind & retry** (the latter where the capability exists).
+  **Rewind & retry** (the latter where the capability exists). **Rewind & retry shipped (D-9)**; see §5.
 
 ## 7. Sidebar and navigation
 
@@ -207,7 +274,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | `GET /sessions/{id}/diff` (aggregate worktree diff vs base, structured hunks) | Changes tab, chip, rail, inline diffs |
 | `POST /sessions/{id}/review-comments` (batch → one prompt) | not needed — client-composed prompt (D-5) |
 | `POST /sessions/{id}/fork` `{at_message_id}` — **shipped (D-8)** as `{atTurnId, mode, prefill?, requestId}` | Fork |
-| `POST /sessions/{id}/rewind` `{to_message_id}` + `POST …/rewind/undo` | Rewind, Edit & resend, Rewind & retry |
+| `POST /sessions/{id}/rewind` `{to_message_id}` + `POST …/rewind/undo` — **shipped (D-9)** as `POST /sessions/{id}/rewind` `{toTurnId, mode: "files_and_conversation" \| "conversation", dryRun?, requestId}` → dry run `{files, deleted, insertions, deletions, checkpointAvailable}`, real run `{rewindId, prefill, filesRestored}`; and `POST …/rewind/undo` `{rewindId}` → `{ok, skipped}`. 404 for an unknown session, 409 `{code, message}` with a `REWIND_CODES` code, 409 `daemon_outdated` | Rewind, Edit & resend, Rewind & retry |
 | live `set_permission_mode` / effort / fast on the driver | prompt row |
 | `scope=session` rule creation from the card | permission card |
 | per-viewer `last_viewed_seq` | read/unread |

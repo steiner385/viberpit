@@ -127,6 +127,38 @@ class TurnAnchor:
     def to_wire(self): return {"type": "turnAnchor", "turnId": self.turn_id, "uuid": self.uuid}
 
 @dataclass
+class UserPromptUuid:
+    """The CLI prompt uuid of a LIVE user turn (D-9): the id ``rewind_files`` and
+    ``rewind_conversation`` both target (docs/superpowers/specs/
+    2026-11-03-d9-rewind-verification.md). The driver mints its own user turn id, so the
+    CLI echoes each prompt (``--replay-user-messages``) and the translator maps the
+    echoed ``UserMessage.uuid`` onto the pending turn — emitted once per prompt, never as
+    a second ``UserMessage``. Replay needs none: a replayed user turn id IS the uuid."""
+    turn_id: str; uuid: str
+    def to_wire(self): return {"type": "userPromptUuid", "turnId": self.turn_id, "uuid": self.uuid}
+
+@dataclass
+class Rewound:
+    """The session was rewound to the user turn *to_turn_id* (D-9): that prompt and
+    every later turn were cut from the conversation, and *files_restored* (worktree-
+    relative where they lie in it) were put back to the prompt's checkpoint. The rewind
+    is undoable (``RewindUndone``) until the next prompt. *prompt_uuid* is the CLI
+    uuid *to_turn_id* resolved to: a view that loaded the turn from a replay holds it
+    under that uuid, a live view under the driver's id, so a client matches either."""
+    rewind_id: str; to_turn_id: str; prompt_uuid: str
+    files_restored: list[str] = field(default_factory=list)
+    def to_wire(self): return {"type": "rewound", "rewindId": self.rewind_id,
+                               "toTurnId": self.to_turn_id, "promptUuid": self.prompt_uuid,
+                               "filesRestored": list(self.files_restored)}
+
+@dataclass
+class RewindUndone:
+    """Rewind *rewind_id* was undone (D-9): the transcript and the files are back as
+    they were before it, on a client resumed from that transcript."""
+    rewind_id: str
+    def to_wire(self): return {"type": "rewindUndone", "rewindId": self.rewind_id}
+
+@dataclass
 class HandBackRequested:
     """A top-level ``hand_back`` call was READ off the tool-use block, mid-turn (#2647).
 

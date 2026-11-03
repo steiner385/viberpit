@@ -350,6 +350,11 @@ try:
         # capability and POST /api/sessions/{id}/fork answers 409 FORK_UNAVAILABLE.
         # Gates a hidden CLI flag (--resume-session-at), per constitution I.
         fork_enabled: bool = Field(default=True, alias="VIBERPIT_FORK_ENABLED")
+        # Rewind to here (D-9) kill switch: off = no engine advertises ``rewind``, and
+        # spawns stop enabling file checkpointing and the prompt echo. Gates internal
+        # CLI control requests (rewind_files dry runs, rewind_conversation), per
+        # constitution I.
+        rewind_enabled: bool = Field(default=True, alias="VIBERPIT_REWIND_ENABLED")
         # Live (not complete/done/ended/archived) children one parent may have at once.
         child_session_cap: int = Field(default=3, alias="VIBERPIT_CHILD_SESSION_CAP")
         # Deepest nesting: 1 = children only, 2 = grandchildren, …
@@ -698,6 +703,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         fork_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_FORK_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        rewind_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_REWIND_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         child_session_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_CHILD_SESSION_CAP", "")) and v.isdigit() else 3

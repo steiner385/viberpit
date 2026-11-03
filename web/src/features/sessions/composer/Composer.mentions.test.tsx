@@ -264,3 +264,19 @@ describe('attachFile — a transcript path attached as @ (D-7)', () => {
     expect(box()).toHaveValue('@src/a.ts ')
   })
 })
+
+// D-9: Edit & resend replaces the draft with the cut prompt, through the same handle,
+// and reads it first to warn that unsent text will be replaced.
+describe('setDraft / draftText — Edit & resend (D-9)', () => {
+  it('reads the draft and replaces it, caret at the end', async () => {
+    const user = userEvent.setup()
+    const ref = createRef<ComposerAttach>()
+    render(<Composer {...defaults} attachRef={ref} />)
+    await user.type(box(), 'half-written')
+    expect(ref.current!.draftText()).toBe('half-written')
+    act(() => ref.current!.setDraft('fix the bug'))
+    expect(box()).toHaveValue('fix the bug')
+    expect(ref.current!.draftText()).toBe('fix the bug')
+    expect((box() as HTMLTextAreaElement).selectionStart).toBe('fix the bug'.length)
+  })
+})

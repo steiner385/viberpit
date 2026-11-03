@@ -31,6 +31,19 @@ export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUui
 // without one (interrupted before any reply, or an engine without anchors) is not forkable.
 // Mirrors TurnAnchor (server/sessions/events.py).
 export interface EvTurnAnchor    { type: 'turnAnchor';    turnId: string; uuid: string }
+// The CLI prompt uuid of a LIVE user turn (D-9): the id a rewind targets. Sent once when
+// the CLI echoes the prompt; a replayed user turn needs none (its id already is the uuid).
+// Mirrors UserPromptUuid (server/sessions/events.py).
+export interface EvUserPromptUuid { type: 'userPromptUuid'; turnId: string; uuid: string }
+// The session was rewound to user turn `toTurnId` (D-9): that prompt and every later turn
+// were cut, and `filesRestored` (worktree-relative where they lie in it) were put back to
+// its checkpoint. Undoable until the next prompt. `promptUuid` is the CLI uuid `toTurnId`
+// resolved to: a live view holds the turn under the driver's id, a reloaded one under the
+// uuid (absent from a pre-fix daemon). Mirrors Rewound (server/sessions/events.py).
+export interface EvRewound       { type: 'rewound';       rewindId: string; toTurnId: string; promptUuid?: string; filesRestored: string[] }
+// Rewind `rewindId` was undone: transcript and files are back as before it.
+// Mirrors RewindUndone (server/sessions/events.py).
+export interface EvRewindUndone  { type: 'rewindUndone';  rewindId: string }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
@@ -95,12 +108,13 @@ export interface EvBackgroundTaskStarted { type: 'backgroundTaskStarted'; toolUs
 export interface EvBackgroundTaskEnded   { type: 'backgroundTaskEnded';   toolUseId: string; taskId: string; status: 'completed' | 'failed' | 'stopped'; ts?: number }
 
 export type SessionEvent =
-  | EvUser | EvTurnStart | EvTurnAnchor | EvTurnEnd | EvTextDelta | EvThinkingDelta
+  | EvUser | EvTurnStart | EvTurnAnchor | EvUserPromptUuid | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvPermissionResolved | EvQuestion | EvQuestionResolved
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
   | EvSuggestions | EvCondensing | EvContextUsage | EvMcpStatus | EvRecovering | EvNotice
   | EvSubAgentStarted | EvSubAgentProgress | EvSubAgentEnded
   | EvBackgroundTaskStarted | EvBackgroundTaskEnded
+  | EvRewound | EvRewindUndone
 
 export interface Command {
   name: string
@@ -126,13 +140,14 @@ export interface Command {
 // Keyed by every SessionEvent['type']: `Record` makes the compiler reject a new event
 // type that is not listed here, so the set below can never silently fall behind the union.
 const SESSION_EVENT_TYPE_FLAGS: Record<SessionEvent['type'], true> = {
-  user: true, turnStart: true, turnAnchor: true, turnEnd: true, textDelta: true, thinkingDelta: true,
+  user: true, turnStart: true, turnAnchor: true, userPromptUuid: true, turnEnd: true, textDelta: true, thinkingDelta: true,
   toolCall: true, toolResult: true, permissionRequest: true, permissionResolved: true,
   question: true, questionResolved: true, sessionMeta: true, turnModel: true, title: true,
   status: true, replayReset: true, replayComplete: true, error: true, queueUpdate: true,
   suggestions: true, condensing: true, contextUsage: true, mcpStatus: true, recovering: true, notice: true,
   subAgentStarted: true, subAgentProgress: true, subAgentEnded: true,
   backgroundTaskStarted: true, backgroundTaskEnded: true,
+  rewound: true, rewindUndone: true,
 }
 
 // The set of `type` strings that are session events (used by the WS fan-out).

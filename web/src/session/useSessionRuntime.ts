@@ -59,6 +59,8 @@ export interface SessionRuntime {
   connectionState: ConnectionState
   /** Re-send the attach frame for this session (used to recover a stuck load). */
   reattach: () => void
+  /** Drop rewind `rewindId`'s divider: the server said its undo expired (D-9). */
+  dismissRewind: (rewindId: string) => void
   title: string
   /** The reckoned goal autopilot drives toward (effective_goal resolver), for the header. */
   goal: string | null
@@ -650,6 +652,12 @@ export function useSessionRuntime(
   // Re-send attach to recover from a stuck load (the SessionPlaceholder Retry).
   const reattach = useCallback(() => attach(sessionId), [attach, sessionId])
 
+  // A rewind (D-9) this view cannot show — undone, or cutting a turn it does not hold —
+  // replays: a fresh attach full-replays the server's chain, and the reducer
+  // double-buffers it. Once per `replayFor` value, so a re-delivered event cannot loop.
+  useEffect(() => { if (state.replayFor) attach(sessionId) }, [state.replayFor, attach, sessionId])
+  const dismissRewind = useCallback((rewindId: string) => dispatch({ type: '_rewindExpired', rewindId }), [])
+
   // Lazy scrollback: fetch and prepend the previous window of older turns.
   const loadingOlderRef = useRef(false)
   const onLoadOlder = useCallback(() => {
@@ -680,6 +688,7 @@ export function useSessionRuntime(
     viewModeEpoch: viewModeState.epoch,
     connectionState,
     reattach,
+    dismissRewind,
     title,
     goal,
     goalSource,

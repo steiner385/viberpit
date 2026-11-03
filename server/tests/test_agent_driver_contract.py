@@ -65,6 +65,9 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         # --resume … --fork-session --resume-session-at <uuid> (D-8); the kill switch
         # gates it at engine.fork_supported, not here.
         fork=True,
+        # rewind_files + rewind_conversation on the live client (D-9); the kill switch
+        # gates it at engine.rewind_supported, not here.
+        rewind=True,
     )
 
     driver._engine_session_id = "native-1"

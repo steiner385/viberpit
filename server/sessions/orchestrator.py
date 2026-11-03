@@ -25,7 +25,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dataclass_replace
-from collections.abc import Coroutine, Iterable, Sequence
+from collections.abc import Awaitable, Coroutine, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, cast
 
 if TYPE_CHECKING:
@@ -121,6 +121,7 @@ from server.sessions.engine import (
     SuggestionProvider,
     _EffortUnchanged,
     parse_agent_engine,
+    rewind_enabled,
 )
 from server.sessions.failure import classify as classify_failure
 from server.sessions.failure import log_level as failure_log_level
@@ -163,7 +164,7 @@ from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
     ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
-    RESUME_ELIGIBLE_STATUSES, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
+    RESUME_ELIGIBLE_STATUSES, PROMPT_UUID_CAP, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
 )
 from server.auth.identity import OPEN_LAN_IDENTITY
 from server.sessions.usage_stall import is_usage_stalled
@@ -504,6 +505,37 @@ class UntrustedEpic(Exception):
 
     Raised by ``_sdlc_epic_upstream_text`` from the SAME row read that produces the
     prompt text, so no separate pre-check can disagree with what reaches the session."""
+
+
+class RelaunchAsIs(Exception):
+    """Raised by a ``_reassign`` ``before_relaunch`` hook that found it must not make its
+    change (and made none): the swap relaunches the session as it is. D-9's undo raises
+    it when a turn reached the transcript while the client was stopping."""
+
+
+@dataclass
+class _RewindReset:
+    """What ``_rewind_reset`` got to do (D-9): ``reached`` its hook with the client
+    stopped, ``aborted`` there (a turn reached the transcript; nothing touched),
+    ``restore`` = the backup restore's result, ``truncated`` the transcript back to
+    its recorded length, ``relaunched`` the session."""
+    reached: bool = False
+    aborted: bool = False
+    restore: Any = None
+    truncated: bool = False
+    relaunched: bool = False
+
+
+@dataclass
+class _RewindApplied:
+    """One rewind's facts, for settling it (``_rewind_settled``) or rolling it back."""
+    rewind_id: str
+    target: str
+    to_turn_id: str
+    jsonl: str
+    jsonl_len: int | None
+    dest: Path | None
+    restored: list[str]
 
 
 class SessionLeaseHeld(RuntimeError):
@@ -2403,6 +2435,12 @@ class SessionOrchestrator:
         ``owns_pr`` (this session's ``_session_opened_pr``, for the draft-PR guard) and
         ``ready_grants`` (this session's user-approved drafts, for the same guard) are
         passed only to a factory that declares them — the real one — so fakes keep theirs.
+
+        Rewind (D-9): while ``VIBERPIT_REWIND_ENABLED`` is on, every CODING spawn — new,
+        resume and fork alike, since the CLI reads the checkpoint switch from its spawn
+        env only — gets ``enable_file_checkpointing=True`` and the
+        ``--replay-user-messages`` prompt echo (merged into any fork ``extra_args``).
+        Same declared-only rule, so fakes keep their signatures.
         """
         import inspect
         base = self._sdk_factory
@@ -2421,6 +2459,12 @@ class SessionOrchestrator:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
                 kw["ready_grants"] = self._ready_grants(session_id)
+            if self._rewind_spawn(session_id):
+                if "enable_file_checkpointing" in declared:
+                    kw["enable_file_checkpointing"] = True
+                if "extra_args" in declared:
+                    kw["extra_args"] = {**(fork_kw.get("extra_args") or {}),
+                                        "replay-user-messages": None}
             overlay = getattr(self, "_overlays", {}).get(session_id)
             # `dict` and not merely "not None": every kind's overlay lands in the same
             # registry, and a Codex session's is a different type entirely
@@ -2886,6 +2930,7 @@ class SessionOrchestrator:
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
             on_turn_anchor=self._record_turn_anchor,
+            on_prompt_uuid=self._record_prompt_uuid,
             on_record_condense_ms=self._record_condense_ms,
             get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
@@ -17431,6 +17476,635 @@ class SessionOrchestrator:
         rec.turn_anchors_rebuilt_at = stamp if lossless else None
         return rebuilt.get(turn_id)
 
+    def _rewind_spawn(self, session_id: str) -> bool:
+        """Does a Claude spawn for *session_id* carry rewind's spawn options (D-9)? Every
+        coding session while the kill switch is on; never the assistant drawer, which
+        edits no files. A record-less spawn counts as coding."""
+        return rewind_enabled() and not is_assistant(
+            getattr(self, "_records", {}).get(session_id))
+
+    def _record_prompt_uuid(self, session_id: str, turn_id: str, uuid: str) -> None:
+        """Driver ``on_prompt_uuid`` callback: keep the user turn's CLI prompt uuid (D-9)
+        on the in-memory record. A record-less session (torn down mid-turn) is ignored."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.record_prompt_uuid(turn_id, uuid)
+
+    async def resolve_prompt_uuid(self, session_id: str, turn_id: str) -> str | None:
+        """The CLI prompt uuid of user turn *turn_id* — the id a rewind targets — or None.
+
+        Shaped like ``resolve_turn_anchor``: the record answers first (live turns, whose
+        ids the driver minted). On a miss — a replayed turn id after a reload, a record a
+        daemon restart rebuilt empty, or a turn older than the record's bound — the user
+        prompts are rebuilt from the transcript (where a user turn's id IS its uuid) and
+        merged in, and the FULL rebuild is consulted. Only engines with a transcript
+        (Claude) can answer; everything else is None."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        hit = rec.prompt_uuids.get(turn_id)
+        if hit is not None:
+            return hit
+        stamp = await self._transcript_stamp(session_id)
+        if stamp is None or rec.prompt_uuids_rebuilt_at == stamp:
+            return None
+        rebuilt = {e.turn_id: e.turn_id for e in await replay_events(stamp[0], max_turns=None)
+                   if isinstance(e, ev.UserMessage) and not e.owner_prefix}
+        live_only = {t: u for t, u in rec.prompt_uuids.items() if t not in rebuilt}
+        for tid, prompt in rebuilt.items():
+            rec.record_prompt_uuid(tid, prompt)
+        for tid, prompt in live_only.items():  # live (minted-id) entries stay the newest
+            rec.record_prompt_uuid(tid, prompt)
+        lossless = len(rebuilt) + len(live_only) <= PROMPT_UUID_CAP
+        rec.prompt_uuids_rebuilt_at = stamp if lossless else None
+        return rebuilt.get(turn_id)
+
+    # ── Rewind to here (D-9) ──────────────────────────────────────────────────────
+
+    def _rewind_lock(self, session_id: str) -> asyncio.Lock:
+        """The per-session lock every rewind, undo and prompt-time expiry runs under, so
+        an undo racing a prompt is either a clean undo or ``REWIND_UNDO_EXPIRED``."""
+        locks: dict[str, asyncio.Lock] = self.__dict__.setdefault("_rewind_locks", {})
+        lock = locks.get(session_id)
+        if lock is None:
+            lock = locks[session_id] = asyncio.Lock()
+        return lock
+
+    def _rewind_refuse(self, session_id: str, code: str, why: str) -> NoReturn:
+        from server.sessions.rewind import RewindError
+        log.info("session.rewind_refused session=%s code=%s reason=%s", session_id, code, why)
+        raise RewindError(code, why)
+
+    async def _rewind_target(self, rec: SessionRecord, to_turn_id: str,
+                             identity: str) -> tuple[Any, str]:
+        """``(live driver, CLI prompt uuid)`` for a rewind of *rec* to user turn
+        *to_turn_id*, or a coded refusal: the gate (engine capability + kill switch;
+        never the assistant drawer), the target (a non-user turn is NOT_USER_MESSAGE,
+        an unknown one TARGET_NOT_FOUND — the CLI's control path cannot tell them
+        apart), and a live client (a detached session is resumed first)."""
+        from server.sessions import rewind as rw
+        from server.sessions.engine import rewind_supported
+        if not rewind_supported(self._engine_registry.capabilities_for(rec.engine)):
+            self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE,
+                                f"engine {rec.engine} cannot rewind here")
+        if is_assistant(rec):
+            self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE, "the assistant cannot rewind")
+        target = await self.resolve_prompt_uuid(rec.id, to_turn_id)
+        if target is None:
+            if await self.resolve_turn_anchor(rec.id, to_turn_id) is not None:
+                self._rewind_refuse(rec.id, rw.REWIND_NOT_USER_MESSAGE,
+                                    "the target is not a user prompt")
+            self._rewind_refuse(rec.id, rw.REWIND_TARGET_NOT_FOUND,
+                                "no prompt uuid for the target turn")
+        driver = self._drivers.get(rec.id)
+        if driver is None:
+            # A detached session is resumed first. Any resume failure (spawn or swap
+            # deadline, a lease another host holds, a failed resume) is "not live
+            # here right now": a coded refusal, never a 500.
+            try:
+                driver = await self.ensure_driver(rec.id, identity)
+            except Exception as exc:  # noqa: BLE001 — every resume failure maps to one code
+                self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE,
+                                    f"the session could not be resumed: {type(exc).__name__}")
+        if driver is None or not hasattr(driver, "rewind_hold"):
+            self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE, "the session is not live")
+        return driver, target
+
+    async def rewind_session(self, session_id: str, *, to_turn_id: str, mode: str,
+                             request_id: str, dry_run: bool = False,
+                             identity: str = SYSTEM_IDENTITY) -> dict:
+        """Rewind *session_id* to user turn *to_turn_id* (D-9): the files to that
+        prompt's CLI checkpoint (``mode == "files_and_conversation"``) and the
+        conversation to just before it, through the CLI's ``rewind_files`` /
+        ``rewind_conversation`` control requests on the idle live client
+        (docs/superpowers/specs/2026-11-03-d9-rewind-verification.md).
+
+        ``dry_run`` changes nothing and returns ``{files, deleted, insertions,
+        deletions, checkpointAvailable}`` — ``files`` worktree-relative, ``deleted``
+        the ones that did not exist at the prompt; a prompt with no checkpoint is
+        ``checkpointAvailable: false`` (the UI then offers conversation only).
+
+        Otherwise, inside ONE driver ``rewind_hold`` (no turn can start between the
+        steps): dry run, undo backup (``REWIND_TOO_LARGE`` past 64 MiB, before anything
+        changes), ``rewind_files`` (files mode), record the transcript's length,
+        ``rewind_conversation``. Any failure after the files changed restores them
+        from the backup; a conversation cut whose reply never came (outcome unknown)
+        also truncates the transcript back and resumes a fresh client, so the session
+        ends where it started. Returns ``{rewindId, prefill, filesRestored}`` and emits
+        ``rewound``; the rewind is undoable (``undo_rewind``) until the next prompt.
+        Idempotent per *request_id*: a retry returns the same ``rewindId``. The
+        sequence runs to completion even if the caller is cancelled.
+
+        Raises ``KeyError`` for an unknown session and ``RewindError`` (with
+        ``error_data``) for every expected refusal."""
+        from server.sessions import rewind as rw
+        rec = self._worktree_record(session_id)   # unknown: a KeyError logged at INFO
+        if mode not in rw.MODES:
+            raise ValueError(f"bad rewind mode: {mode!r}")
+        if dry_run:
+            return await self._rewind_preview(rec, to_turn_id, identity)
+        rewind_id = rw.rewind_id_for(session_id, request_id)
+        async with self._rewind_lock(session_id):
+            replayed = await self._rewind_replayed(session_id, rewind_id)
+            if replayed is not None:
+                return replayed
+            return await run_to_completion(
+                self._rewind_once(rec, rewind_id, to_turn_id=to_turn_id, mode=mode,
+                                  identity=identity),
+                name=f"session-rewind-{session_id}")
+
+    async def _rewind_preview(self, rec: SessionRecord, to_turn_id: str,
+                              identity: str) -> dict:
+        """``rewind_session``'s dry run (see there): read-only, no hold."""
+        from server.sessions import rewind as rw
+        driver, target = await self._rewind_target(rec, to_turn_id, identity)
+        try:
+            preview = rw.RewindPreview.from_cli(await driver.rewind_files(target, dry_run=True))
+        except rw.RewindError as exc:
+            if exc.code != rw.REWIND_NO_CHECKPOINT:
+                raise
+            preview = rw.RewindPreview.no_checkpoint()
+        cwd = rec.cwd or getattr(driver, "cwd", None)
+        deleted: list[str] = []
+        if preview.files and cwd:
+            jsonl = await asyncio.to_thread(self.transcript_path, rec.id)
+            if jsonl:
+                tracked = await asyncio.to_thread(rw.tracked_since, jsonl, target, cwd)
+                absent = {rw.display_path(cwd, p) for p in tracked.absent}
+                deleted = [d for d in (rw.display_path(cwd, f) for f in preview.files)
+                           if d in absent]
+        files = [rw.display_path(cwd, f) if cwd else f for f in preview.files]
+        return {"files": files, "deleted": deleted, "insertions": preview.insertions,
+                "deletions": preview.deletions,
+                "checkpointAvailable": preview.checkpoint_available}
+
+    async def _rewind_replayed(self, session_id: str, rewind_id: str) -> dict | None:
+        """The answer of an earlier request with the same id, or None (first request)."""
+        from server.db.models import SessionRewind
+        cached = self.__dict__.get("_rewind_results", {}).get(rewind_id)
+        if cached is not None:
+            return dict(cached)
+        async with db_session() as db:
+            row = await db.get(SessionRewind, rewind_id)
+        if row is None:
+            return None
+        if row.session_id != session_id:
+            raise ValueError(f"rewind {rewind_id} is not a rewind of {session_id}")
+        log.info("session.rewind_replayed session=%s rewind=%s", session_id, rewind_id)
+        return {"rewindId": rewind_id, "prefill": row.prefill,
+                "filesRestored": list(row.files_restored or [])}
+
+    async def _rewind_once(self, rec: SessionRecord, rewind_id: str, *, to_turn_id: str,
+                           mode: str, identity: str) -> dict:
+        """One rewind for ``rewind_session`` (see there), under the session's lock."""
+        from server.sessions import rewind as rw
+        driver, target = await self._rewind_target(rec, to_turn_id, identity)
+        jsonl = await asyncio.to_thread(self.transcript_path, rec.id)
+        if not jsonl:
+            self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE, "the session has no transcript")
+        files_mode = mode == rw.MODE_FILES_AND_CONVERSATION
+        cwd = rec.cwd or getattr(driver, "cwd", None)
+        if files_mode and not cwd:
+            self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE, "the session has no worktree")
+        # The newest prompt this server knows of: without it the CLI refuses any target
+        # with later turns (stale_target).
+        last_seen = self._newest_prompt(rec)
+        dest = rw.backup_dir(rec.id, rewind_id) if files_mode else None
+        restored: list[str] = []
+        files_touched = False
+        files_unknown = False
+        jsonl_len: int | None = None
+        conversation_unknown = False
+        try:
+            async with driver.rewind_hold():
+                if files_mode:
+                    assert cwd is not None and dest is not None
+                    preview = rw.RewindPreview.from_cli(
+                        await driver.rewind_files(target, dry_run=True))
+                    tracked = await asyncio.to_thread(rw.tracked_since, jsonl, target, cwd)
+                    await asyncio.to_thread(rw.take_backup, dest, cwd,
+                                            {*preview.files, *tracked.paths})
+                    files_touched = True        # from here on the files may differ
+                    try:
+                        await driver.rewind_files(target, dry_run=False)
+                    except rw.RewindError as exc:
+                        files_unknown = exc.outcome_unknown
+                        raise
+                    restored = [rw.display_path(cwd, f) for f in preview.files]
+                jsonl_len = await asyncio.to_thread(os.path.getsize, jsonl)
+                try:
+                    reply = await driver.rewind_conversation(target, last_seen=last_seen)
+                except rw.RewindError as exc:
+                    conversation_unknown = exc.outcome_unknown
+                    raise
+        except BaseException as exc:
+            applied = _RewindApplied(rewind_id=rewind_id, target=target, to_turn_id=to_turn_id,
+                                     jsonl=jsonl, jsonl_len=jsonl_len, dest=dest,
+                                     restored=restored)
+            settled = await self._rewind_roll_back(
+                rec, applied, files_touched=files_touched,
+                cut_unknown=conversation_unknown, reset=files_unknown or conversation_unknown)
+            if settled is not None and isinstance(exc, Exception):
+                # The reply was lost but the transcript shows the cut applied: it is
+                # the success it is (rewound emitted, undoable), not an error.
+                return settled
+            raise
+        conv = rw.ConversationRewind.from_cli(reply)
+        result = await self._rewind_settled(rec, _RewindApplied(
+            rewind_id=rewind_id, target=target, to_turn_id=to_turn_id, jsonl=jsonl,
+            jsonl_len=jsonl_len, dest=dest, restored=restored), prefill=conv.prefill)
+        log.info("session.rewind session=%s rewind=%s mode=%s target=%s files=%d",
+                 rec.id, rewind_id, mode, target, len(restored))
+        return result
+
+    async def _rewind_settled(self, rec: SessionRecord, a: _RewindApplied, *,
+                              prefill: str | None) -> dict:
+        """The bookkeeping of an applied rewind: the row (expiring earlier ones), the
+        undoable marker, the record's cut prompts (kept for an undo) and its last
+        prompt (never re-sent), the ``rewound`` event, the cached answer."""
+        await self._record_rewind(rec.id, a.rewind_id, to_prompt_uuid=a.target,
+                                  to_turn_id=a.to_turn_id, jsonl_path=a.jsonl,
+                                  jsonl_len=a.jsonl_len, backup_dir=a.dest,
+                                  files_restored=a.restored, prefill=prefill)
+        self.__dict__.setdefault("_rewind_undoable", {})[rec.id] = a.rewind_id
+        # Kept so an undo can put the record's prompt uuids back (last_seen).
+        self.__dict__.setdefault("_rewind_cut_prompts", {})[a.rewind_id] = dict(
+            rec.prompt_uuids)
+        self._forget_cut_prompts(rec, a.target)
+        # The cut prompt must never be re-sent by a later restart or rotation.
+        self._last_prompt.pop(rec.id, None)
+        live = self._drivers.get(rec.id)
+        if live is not None:
+            live.emit(ev.Rewound(a.rewind_id, a.to_turn_id, a.target, a.restored))
+        result = {"rewindId": a.rewind_id, "prefill": prefill, "filesRestored": a.restored}
+        self.__dict__.setdefault("_rewind_results", {})[a.rewind_id] = result
+        return dict(result)
+
+    async def _rewind_roll_back(self, rec: SessionRecord, a: _RewindApplied, *,
+                                files_touched: bool, cut_unknown: bool,
+                                reset: bool) -> dict | None:
+        """Put a failed rewind back where it started — or, when that is impossible,
+        into a state that is at least consistent and visible. Never raises over the
+        caller's error.
+
+        When a state-changing request's reply never came (*reset*), the live CLI may
+        have applied it: stop the client, restore the files and (for the cut,
+        *cut_unknown*) truncate the transcript, then resume (``_rewind_reset``) — never
+        restore under a live CLI. After a definite refusal the CLI changed nothing, so
+        the files are restored in place.
+
+        If the reset never got the client stopped (the swap returned early), the
+        transcript decides: a ``rewound`` row for this target past the recorded length
+        means the cut WAS applied, so the rewind is settled as done (files stay
+        rewound, backup kept, undoable). Otherwise the files are restored directly and
+        the session is parked (``reassign_failed``) for the recovery sweep and the
+        dashboard. The backup is dropped only once every path is back; otherwise it is
+        kept and the failure logged at WARNING. Returns the settled rewind's answer
+        (the cut prompt's text read back from the transcript) when it settled one,
+        else None."""
+        from server.sessions import rewind as rw
+        dest = a.dest
+        result: rw.RestoreResult | None = None
+        try:
+            if reset:
+                out = await self._rewind_reset(
+                    rec, jsonl=a.jsonl, jsonl_len=a.jsonl_len if cut_unknown else None,
+                    backup_dir=str(dest) if files_touched and dest else None,
+                    reason="rewind_rollback", check_tail=False)
+                result = out.restore
+                if out.reached and cut_unknown and not out.truncated:
+                    log.warning("session.rewind_rollback_untruncated session=%s — the "
+                                "transcript could not be cut back; backup kept", rec.id)
+                    return None
+                if not out.reached and self._records.get(rec.id) is rec:
+                    if cut_unknown and a.jsonl_len is not None and await asyncio.to_thread(
+                            rw.cut_applied, a.jsonl, a.jsonl_len, a.target):
+                        prefill = await asyncio.to_thread(rw.prompt_text, a.jsonl, a.target)
+                        settled = await self._rewind_settled(rec, a, prefill=prefill)
+                        log.info("session.rewind_settled_after_lost_reply session=%s "
+                                 "rewind=%s — the transcript shows the cut applied",
+                                 rec.id, a.rewind_id)
+                        return settled
+                    if files_touched and dest is not None:
+                        result = await asyncio.to_thread(rw.restore_backup, dest)
+                    await self._pause_session(rec, reason=_REASSIGN_FAILED_PAUSE_REASON)
+                elif not out.reached and files_touched and dest is not None:
+                    result = await asyncio.to_thread(rw.restore_backup, dest)
+                elif not out.relaunched:
+                    log.error("session.rewind_rollback_failed session=%s — the session "
+                              "could not be resumed after the rollback", rec.id)
+            elif files_touched and dest is not None:
+                result = await asyncio.to_thread(rw.restore_backup, dest)
+        except Exception:
+            log.exception("session.rewind_rollback_failed session=%s", rec.id)
+            return None         # keep whatever backup exists: it may be the only copy
+        if result is not None and not result.ok:
+            log.warning("session.rewind_rollback_restore_incomplete session=%s backup=%s "
+                        "failed=%s", rec.id, dest, list(result.failed))
+            return None
+        await asyncio.to_thread(rw.drop_backup, dest)
+        return None
+
+    async def _rewind_reset(self, rec: SessionRecord, *, jsonl: str, jsonl_len: int | None,
+                            backup_dir: str | None, reason: str,
+                            check_tail: bool) -> _RewindReset:
+        """Stop the client and, with nothing holding the transcript, put the session
+        back: restore the undo backup FIRST, then truncate the transcript to
+        *jsonl_len* (None: leave it), then resume on the same engine session id —
+        through ``_reassign`` (the swap rotation and reload use) on the session's
+        CURRENT account, with no ``rotated`` event and any usage pause kept.
+
+        *check_tail* (undo): once the client is down, re-check that the transcript
+        past *jsonl_len* holds only the rewind's own rows; if a turn reached it while
+        the client stopped, nothing is touched and the session resumes as it is
+        (``aborted``). A record no longer live (archived meanwhile) is not touched."""
+        from server.sessions import rewind as rw
+        out = _RewindReset()
+        if self._records.get(rec.id) is not rec:
+            log.info("session.rewind_reset_skipped session=%s — the record is gone", rec.id)
+            return out
+
+        async def _restore() -> None:
+            out.reached = True
+            if check_tail and jsonl_len is not None and not await asyncio.to_thread(
+                    rw.tail_is_rewind_only, jsonl, jsonl_len):
+                out.aborted = True
+                raise RelaunchAsIs("a turn reached the transcript while the client stopped")
+            if backup_dir:
+                out.restore = await asyncio.to_thread(rw.restore_backup, Path(backup_dir))
+            if jsonl_len is not None:
+                # A failed truncation must not fail the swap (the session would be
+                # parked with its files already restored); it is reported instead.
+                try:
+                    await asyncio.to_thread(rw.truncate_transcript, jsonl, jsonl_len)
+                except (OSError, rw.RewindError) as exc:
+                    log.warning("session.rewind_truncate_failed session=%s path=%s: %s",
+                                rec.id, jsonl, exc)
+                else:
+                    out.truncated = True
+
+        # A usage pause is not something a rewind or its undo resolves; the swap's own
+        # status writes (the old client closing, the new one coming up idle) clear it,
+        # so it is put back once the session is up again.
+        paused = ((rec.status, rec.paused_reason, rec.paused_until)
+                  if rec.status in _STALLED_STATUSES and rec.paused_reason else None)
+        result = await self._reassign(rec, rec.account, reason=reason,
+                                      replay_last_prompt=False, before_relaunch=_restore,
+                                      publish_rotated=False, clear_pause=False)
+        out.relaunched = result == "rotated"
+        if out.relaunched and paused is not None and rec.paused_reason is None:
+            rec.paused_reason, rec.paused_until = paused[1], paused[2]
+            await self._persist_status(rec.id, paused[0])
+        return out
+
+    @staticmethod
+    def _prompt_order(rec: SessionRecord) -> list[str]:
+        """The record's prompt uuids, oldest first. Insertion order alone is not that:
+        a miss rebuild (``resolve_prompt_uuid``) re-inserts the transcript's prompts
+        (chronological, keyed by uuid) and then re-appends the live entries (keyed by
+        the driver's ids), which repeat uuids already listed. Each uuid's FIRST
+        appearance is chronological — the rebuild lists every prompt the transcript
+        had, and a live entry it lacks is newer."""
+        return list(dict.fromkeys(rec.prompt_uuids.values()))
+
+    @classmethod
+    def _newest_prompt(cls, rec: SessionRecord) -> str | None:
+        """The newest prompt uuid the record holds (a rewind's ``last_seen``)."""
+        order = cls._prompt_order(rec)
+        return order[-1] if order else None
+
+    @classmethod
+    def _forget_cut_prompts(cls, rec: SessionRecord, target: str) -> None:
+        """Drop the rewound prompts (the target and every later one) from the record's
+        prompt uuids, so ``last_seen`` and target lookups never name a cut prompt.
+        Cut by chronology (``_prompt_order``), every key of a cut uuid — the live id and
+        the rebuilt copy alike; earlier prompts keep all their keys. The next miss
+        re-reads the transcript."""
+        order = cls._prompt_order(rec)
+        if target not in order:
+            return
+        cut = set(order[order.index(target):])
+        rec.prompt_uuids = {t: u for t, u in rec.prompt_uuids.items() if u not in cut}
+        rec.prompt_uuids_rebuilt_at = None
+
+    async def _record_rewind(self, session_id: str, rewind_id: str, *, to_prompt_uuid: str,
+                             to_turn_id: str, jsonl_path: str, jsonl_len: int | None,
+                             backup_dir: Path | None, files_restored: list[str],
+                             prefill: str | None) -> None:
+        """Persist a rewind and expire every earlier undoable one: only the latest
+        rewind can be undone. ``host`` pins the undo to the host holding the backup."""
+        from sqlalchemy import insert as sa_insert
+        from server.db.clock import db_utc_now
+        from server.db.models import SessionRewind
+        await self._expire_rewinds(session_id, reason="superseded")
+        async with db_session() as db:
+            await db.execute(sa_insert(SessionRewind).values(
+                id=rewind_id, session_id=session_id, to_prompt_uuid=to_prompt_uuid,
+                to_turn_id=to_turn_id, jsonl_path=jsonl_path, jsonl_len=jsonl_len,
+                backup_dir=str(backup_dir) if backup_dir else None,
+                files_restored=files_restored, prefill=prefill, host=self_host_name(),
+                created_at=db_utc_now()))
+
+    async def _expire_rewinds(self, session_id: str, *, reason: str,
+                              only: str | None = None) -> None:
+        """Stamp ``expired_at`` on the session's undoable rewinds (or just *only*) and
+        drop their backups: a prompt was sent, a newer rewind replaced it, or the
+        session was archived."""
+        from sqlalchemy import select as sa_select, update as sa_update
+        from server.db.clock import db_utc_now
+        from server.db.models import SessionRewind
+        from server.sessions import rewind as rw
+        live: list[Any] = [SessionRewind.session_id == session_id,
+                           SessionRewind.undone_at.is_(None), SessionRewind.expired_at.is_(None)]
+        if only is not None:
+            live.append(SessionRewind.id == only)
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(SessionRewind.id, SessionRewind.backup_dir).where(*live))).all()
+            if rows:
+                await db.execute(sa_update(SessionRewind)
+                                 .where(SessionRewind.id.in_([r.id for r in rows]))
+                                 .values(expired_at=db_utc_now()))
+        results = self.__dict__.get("_rewind_results", {})
+        cut_prompts = self.__dict__.get("_rewind_cut_prompts", {})
+        for r in rows:
+            results.pop(r.id, None)
+            cut_prompts.pop(r.id, None)
+            await asyncio.to_thread(rw.drop_backup, r.backup_dir)
+            log.info("session.rewind_expired session=%s rewind=%s reason=%s",
+                     session_id, r.id, reason)
+
+    async def _seed_undoable_rewinds(self) -> None:
+        """Rehydrate: remember every loaded session's still-undoable rewind (its backup
+        lives on this host), so the first prompt after a restart expires it as it would
+        have before. A failure here leaves undo's transcript check as the backstop."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import SessionRewind
+        undoable: dict[str, str] = self.__dict__.setdefault("_rewind_undoable", {})
+        try:
+            async with db_session() as db:
+                rows = (await db.execute(sa_select(
+                    SessionRewind.id, SessionRewind.session_id).where(
+                        SessionRewind.undone_at.is_(None), SessionRewind.expired_at.is_(None),
+                        SessionRewind.host == self_host_name()))).all()
+            seeded = {r.session_id: r.id for r in rows if r.session_id in self._records}
+        except Exception:
+            log.warning("session.rewind_seed_failed — prompt-time expiry falls back to "
+                        "undo's transcript check", exc_info=True)
+            return
+        undoable.update(seeded)
+        if seeded:
+            log.info("session.rewind_seeded undoable=%d", len(seeded))
+
+    async def _expire_rewind_on_prompt(self, session_id: str) -> bool:
+        """``send_prompt``'s hook: the session's undoable rewind stops being undoable (an
+        undo would truncate the turn this prompt starts). A rewind or undo in flight is
+        waited out on the session's lock — for at most ``_SWAP_PROMPT_HOLD_S``, after
+        which this answers False and the prompt is refused for a re-send ("recovering",
+        the swap hold's contract). A failed expiry is logged and the prompt still goes:
+        the rewind stays marked undoable here (a later prompt retries the expiry), and
+        undo's transcript check refuses once the turn is written. A session with no
+        rewind state costs two dict lookups."""
+        undoable: dict[str, str] = self.__dict__.get("_rewind_undoable", {})
+        held = self.__dict__.get("_rewind_locks", {}).get(session_id)
+        if session_id not in undoable and (held is None or not held.locked()):
+            return True
+        lock = self._rewind_lock(session_id)
+        try:
+            async with asyncio.timeout(_SWAP_PROMPT_HOLD_S):
+                await lock.acquire()
+        except TimeoutError:
+            log.info("send_prompt: a rewind is still in flight after %.0fs — prompt refused "
+                     "for a re-send session=%s", _SWAP_PROMPT_HOLD_S, session_id)
+            return False
+        try:
+            if undoable.get(session_id) is not None:
+                try:
+                    await self._expire_rewinds(session_id, reason="prompt")
+                except Exception:
+                    log.warning("session.rewind_expire_failed session=%s — delivering the "
+                                "prompt; undo re-checks the transcript", session_id,
+                                exc_info=True)
+                else:
+                    undoable.pop(session_id, None)
+        finally:
+            lock.release()
+        return True
+
+    async def _drop_session_rewinds(self, session_id: str) -> None:
+        """Archive: no rewind of the session is undoable any more; delete every backup.
+        Under the session's lock, so it never pulls a backup from under an undo."""
+        from server.sessions import rewind as rw
+        async with self._rewind_lock(session_id):
+            self.__dict__.get("_rewind_undoable", {}).pop(session_id, None)
+            try:
+                await self._expire_rewinds(session_id, reason="archive")
+            except Exception:   # noqa: BLE001 — retention cleanup must never fail an archive
+                log.info("session.rewind_archive_expiry_failed session=%s", session_id,
+                         exc_info=True)
+            await asyncio.to_thread(rw.drop_session_backups, session_id)
+
+    async def undo_rewind(self, session_id: str, rewind_id: str,
+                          identity: str = SYSTEM_IDENTITY) -> dict:
+        """Undo rewind *rewind_id* of *session_id* (D-9): stop the client, restore the
+        undo backup, truncate the transcript back to its pre-rewind length, and resume
+        on the same engine session id (on the session's current account), then emit
+        ``rewindUndone``. Returns ``{"ok": True, "skipped": [paths never restored by
+        design — a symlink on the path]}``.
+
+        Only the session's latest rewind, only on the host holding its backup, and only
+        while nothing but the rewind's own rows follow the recorded length
+        (``REWIND_UNDO_EXPIRED`` otherwise — checked before the client stops and again
+        once it is down, so a turn is never truncated). A path that cannot be restored
+        refuses ``REWIND_FAILED`` with ``failed`` paths and keeps the backup; retrying
+        the same undo finishes it. Idempotent by *rewind_id*: an undo already applied
+        answers ok again, and concurrent undos serialize on the session's lock (one
+        applies). Runs to completion even if the caller is cancelled."""
+        rec = self._worktree_record(session_id)   # unknown: a KeyError logged at INFO
+        async with self._rewind_lock(session_id):
+            return await run_to_completion(self._undo_once(rec, rewind_id, identity),
+                                           name=f"session-rewind-undo-{session_id}")
+
+    async def _undo_once(self, rec: SessionRecord, rewind_id: str, identity: str) -> dict:
+        """One undo for ``undo_rewind`` (see there), under the session's lock."""
+        from sqlalchemy import update as sa_update
+        from server.db.clock import db_utc_now
+        from server.db.models import SessionRewind
+        from server.sessions import rewind as rw
+
+        async def expired(why: str) -> NoReturn:
+            await self._expire_rewinds(rec.id, reason="undo_refused", only=rewind_id)
+            self._rewind_refuse(rec.id, rw.REWIND_UNDO_EXPIRED, why)
+
+        async with db_session() as db:
+            row = await db.get(SessionRewind, rewind_id)
+        if row is None or row.session_id != rec.id:
+            self._rewind_refuse(rec.id, rw.REWIND_UNDO_EXPIRED, "no such rewind")
+        if row.undone_at is not None:
+            log.info("session.rewind_undo_replayed session=%s rewind=%s", rec.id, rewind_id)
+            return {"ok": True, "skipped": []}
+        # Each new rewind expires every earlier one (_record_rewind), so an unexpired
+        # row IS the session's latest rewind.
+        if row.expired_at is not None:
+            self._rewind_refuse(rec.id, rw.REWIND_UNDO_EXPIRED, "the rewind has expired")
+        # Prechecks, before anything is stopped.
+        if row.host != self_host_name():
+            self._rewind_refuse(rec.id, rw.REWIND_UNDO_EXPIRED,
+                                f"the undo backup is on host {row.host!r}")
+        if row.backup_dir and not await asyncio.to_thread(rw.backup_ok, Path(row.backup_dir)):
+            await expired("the undo backup is missing or unreadable")
+        driver = self._drivers.get(rec.id)
+        busy = getattr(driver, "rewind_busy", None)
+        if callable(busy) and busy():
+            self._rewind_refuse(rec.id, rw.REWIND_BUSY, "a turn is running or awaiting input")
+        if not row.jsonl_path or row.jsonl_len is None or not await asyncio.to_thread(
+                rw.tail_is_rewind_only, row.jsonl_path, row.jsonl_len):
+            # A turn ran since (a prompt the hook missed, or one the CLI started):
+            # truncating would drop it.
+            await expired("a turn ran since the rewind")
+        out = await self._rewind_reset(rec, jsonl=row.jsonl_path, jsonl_len=row.jsonl_len,
+                                       backup_dir=row.backup_dir, reason="rewind_undo",
+                                       check_tail=True)
+        if out.aborted:
+            await expired("a turn reached the transcript while the client stopped")
+        if not out.reached:
+            self._rewind_refuse(rec.id, rw.REWIND_FAILED, "the client could not be stopped")
+        cwd = rec.cwd or ""
+        restore = out.restore or rw.RestoreResult()
+        if row.jsonl_len is not None and not out.truncated:
+            # Files back, conversation still rewound: not undone. The row and backup
+            # stay, so retrying the undo (restore again, truncate again) finishes it.
+            raise rw.RewindError(rw.REWIND_FAILED, "the transcript could not be truncated")
+        if not restore.ok:
+            failed = [rw.display_path(cwd, p) if cwd else p for p in restore.failed]
+            log.warning("session.rewind_undo_restore_incomplete session=%s rewind=%s "
+                        "backup=%s failed=%s — backup kept; retry the undo", rec.id,
+                        rewind_id, row.backup_dir, failed)
+            raise rw.RewindError(rw.REWIND_FAILED, "some files could not be restored",
+                              failed=failed)
+        async with db_session() as db:
+            await db.execute(sa_update(SessionRewind).where(SessionRewind.id == rewind_id)
+                             .values(undone_at=db_utc_now()))
+        await asyncio.to_thread(rw.drop_backup, row.backup_dir)
+        self.__dict__.get("_rewind_undoable", {}).pop(rec.id, None)
+        self.__dict__.get("_rewind_results", {}).pop(rewind_id, None)
+        saved = self.__dict__.get("_rewind_cut_prompts", {}).pop(rewind_id, None)
+        # No snapshot (a restart since the rewind): forget them all, so the next lookup
+        # rebuilds from the restored transcript rather than trusting the cut record.
+        rec.prompt_uuids = saved if saved is not None else {}
+        rec.prompt_uuids_rebuilt_at = None
+        if not out.relaunched:
+            self._rewind_refuse(rec.id, rw.REWIND_FAILED,
+                                "undone on disk, but the session could not be resumed")
+        live = self._drivers.get(rec.id)
+        if live is not None:
+            _rethread_identity(live, identity)
+            live.emit(ev.RewindUndone(rewind_id))
+        skipped = [rw.display_path(cwd, p) if cwd else p for p in restore.skipped]
+        log.info("session.rewind_undone session=%s rewind=%s skipped=%d", rec.id, rewind_id,
+                 len(skipped))
+        return {"ok": True, "skipped": skipped}
+
     async def _transcript_stamp(self, session_id: str) -> tuple[str, int, int] | None:
         """``(path, size, mtime_ns)`` of *session_id*'s own transcript, or None."""
         path = await asyncio.to_thread(self.transcript_path, session_id)
@@ -18449,6 +19123,8 @@ class SessionOrchestrator:
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
         self._startup_note("rehydrated", added)
+        # Prompt-time rewind expiry must survive the restart (D-9).
+        await self._seed_undoable_rewinds()
         # Reconcile 'queued' rows with no session_queue entry BEFORE draining, so
         # the drain never has to reach a row it structurally cannot see, and a
         # reconciled row (now 'ended') is reflected in the very same pass. Reuse
@@ -21964,6 +22640,11 @@ class SessionOrchestrator:
             log.info("send_prompt rejected: drain in progress session=%s", session_id)
             self._publish_event({"type": "updatePending"})
             return "draining"
+        # A prompt ends the session's undoable rewind (D-9): an undo would truncate the
+        # turn it starts. Before the driver lookup below: a rewind or undo in flight is
+        # waited out first, and an undo replaces the driver.
+        if not await self._expire_rewind_on_prompt(session_id):
+            return "recovering"
         # getattr: some harnesses build the orchestrator via __new__ (see line ~3094).
         swap = getattr(self, "_swapping", {}).get(session_id)
         if swap is not None:
@@ -24788,7 +25469,9 @@ class SessionOrchestrator:
             log.info("session id=%s set_model(%r) applied on retry", record.id, record.model)
 
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str,
-                        replay_last_prompt: bool = True) -> str:
+                        replay_last_prompt: bool = True,
+                        before_relaunch: Callable[[], Awaitable[None]] | None = None,
+                        publish_rotated: bool = True, clear_pause: bool = True) -> str:
         """Resume the session's claude conversation on *new_account* (may equal the
         current account, for a 401 recompose). Relaunches the driver, replays the last
         prompt (unless ``replay_last_prompt`` is False — see reload_session for the one
@@ -24808,6 +25491,14 @@ class SessionOrchestrator:
         and nothing was touched). Callers that must be honest about whether the
         account actually changed (switch_account_manual, the ``/account`` command) read
         this instead of assuming success.
+
+        ``before_relaunch`` runs once the old driver is closed and before the new one
+        is claimed and started — the one window where nothing holds the transcript
+        (D-9's rewind undo truncates it there). Its failure fails the swap, except
+        ``RelaunchAsIs``: it changed nothing, so the session is relaunched unchanged.
+        ``publish_rotated=False`` skips the global ``rotated`` event (the caller emits
+        its own) and ``clear_pause=False`` leaves a usage pause standing — both for a
+        same-account restart that is not a recovery (the rewind undo and rollback).
         """
         # Validate BEFORE touching anything. switch_account_manual() validated its own
         # argument, but _rotate_away() did not — so a phantom account name out of
@@ -24870,7 +25561,10 @@ class SessionOrchestrator:
         try:
             ok = await self._reassign_locked(record, new_account, reason=reason,
                                              replay_last_prompt=replay_last_prompt,
-                                             new_thread=new_thread)
+                                             new_thread=new_thread,
+                                             before_relaunch=before_relaunch,
+                                             publish_rotated=publish_rotated,
+                                             clear_pause=clear_pause)
         finally:
             if self._swapping.get(record.id) is swap_done:
                 del self._swapping[record.id]
@@ -24882,7 +25576,10 @@ class SessionOrchestrator:
 
     async def _reassign_locked(self, record: SessionRecord, new_account: str, *,
                                reason: str, replay_last_prompt: bool = True,
-                               new_thread: bool = False) -> bool:
+                               new_thread: bool = False,
+                               before_relaunch: Callable[[], Awaitable[None]] | None = None,
+                               publish_rotated: bool = True, clear_pause: bool = True
+                               ) -> bool:
         """The actual reassign body, run with an entry in `self._swapping` held for
         `record.id` by the caller (`_reassign`) — see there for why.
 
@@ -24951,6 +25648,13 @@ class SessionOrchestrator:
                 old_closed = True
                 await old_driver.aclose()
                 _lap("close")
+            if before_relaunch is not None:
+                try:
+                    await before_relaunch()
+                except RelaunchAsIs as why:
+                    log.info("reassign.before_relaunch_skipped session=%s reason=%s: %s",
+                             record.id, reason, why)
+                _lap("before_relaunch")
             # Re-assert the lease across the swap (#1379). We normally already hold it
             # — a reassign only runs on a session with a live driver — so this just
             # refreshes the fence. It matters when the lease was FENCED away while the
@@ -25048,7 +25752,7 @@ class SessionOrchestrator:
             # normal state after a daemon restart) would stay parked forever and the
             # recovery sweep would re-enter on its own output every 30 s. Persist
             # idle here, before the replay, so a replayed turn's own status wins.
-            if record.status in _STALLED_STATUSES:
+            if clear_pause and record.status in _STALLED_STATUSES:
                 await self._persist_status(record.id, "idle")
             last = self._last_prompt.get(record.id) if replay_last_prompt else None
             if last or carried:
@@ -25059,16 +25763,23 @@ class SessionOrchestrator:
                 await new_driver.send_prompt(text)
             # A successful swap ends whatever pause parked the session; the replayed
             # turn's own status persist may not arrive (no prompt to replay), so clear
-            # the cause here too.
-            record.paused_reason = None
-            record.paused_until = None
+            # the cause here too. A same-account restart that is not a recovery (a
+            # rewind undo) passes clear_pause=False and leaves a usage pause standing.
+            if clear_pause:
+                record.paused_reason = None
+                record.paused_until = None
             async with db_session() as db:
                 from sqlalchemy import update as sa_update
+                values: dict[str, Any] = {"account_name": new_account}
+                if clear_pause:
+                    values.update(paused_reason=None, paused_until=None)
                 await db.execute(
-                    sa_update(DbSession)
-                    .where(DbSession.id == record.id)
-                    .values(account_name=new_account, paused_reason=None, paused_until=None)
-                )
+                    sa_update(DbSession).where(DbSession.id == record.id).values(**values))
+            log.info("reassign.complete session=%s %s→%s reason=%s new_thread=%s "
+                     "steps=%s", record.id, old, new_account, reason, new_thread, steps)
+            if not publish_rotated:
+                # The caller tells the browser itself (a rewind undo emits rewindUndone).
+                return True
             # Bump the in-memory rev token BEFORE publishing the event (mirrors
             # _persist_status's "row-write token" bump). Without this the `rotated`
             # WS patch (web/src/ws/client.ts _patchSessionAccount) carries no fresher
@@ -25077,8 +25788,6 @@ class SessionOrchestrator:
             # apart and the stale poll silently reverts the account badge.
             from datetime import datetime
             record.updated_at = datetime.utcnow()
-            log.info("reassign.complete session=%s %s→%s reason=%s new_thread=%s "
-                     "steps=%s", record.id, old, new_account, reason, new_thread, steps)
             self._publish_event({
                 "type": "rotated", "sessionId": record.id, "fromAccount": old,
                 "toAccount": new_account, "reason": reason,
@@ -25289,6 +25998,10 @@ class SessionOrchestrator:
         self._spawn(self._enforce_archive_limit(), name="archive-limit-on-archive")
 
         self._settle_claims_on_terminal(session_id)
+
+        # No rewind of an archived session stays undoable; its backups go (D-9).
+        self._spawn(self._drop_session_rewinds(session_id),
+                    name=f"rewind-drop-on-archive-{session_id}")
 
         # Drain the session queue: an archived session frees a slot so the next queued
         # session can start. Tracked via _spawn — mirrors close_session.

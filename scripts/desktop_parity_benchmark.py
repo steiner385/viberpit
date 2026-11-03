@@ -51,7 +51,7 @@ D=[
 ]),
 ("4 Commands & config",[
  ("Engine slash-command passthrough",3,"Y",""),
- ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp /fork"),
+ ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp /fork /rewind"),
  ("Plugins + marketplace browse/install",2,"P","enable/disable + detail; no marketplace"),
  ("Skills management",1,"Y",""),
  ("MCP servers + per-tool toggles",2,"P","servers, OAuth, scope; no per-tool toggles"),
@@ -77,7 +77,7 @@ D=[
  ("OS / push notifications with actions",2,"Y","Web Push"),
  ("Context meter + 'auto-compacts soon'",2,"Y",""),
  ("Plan-usage meter",2,"Y","per-window quota"),
- ("Error recovery actions (switch model, lower effort, rewind & retry)",2,"P","auto-resend, rotate"),
+ ("Error recovery actions (switch model, lower effort, rewind & retry)",2,"P","auto-resend, rotate, rewind & retry"),
 ]),
 ("7 Lifecycle & branching",[
  ("New session pre-flight (folder/env/model/effort)",3,"Y","plus account + host"),
@@ -85,8 +85,8 @@ D=[
  ("Resume / continue",3,"Y",""),
  ("Import CLI sessions",1,"Y","Adopt"),
  ("Fork session (from here)",3,"Y","Claude; files start from current worktree"),
- ("Rewind to message (with file restore, undo)",3,"N",""),
- ("Edit & resend a previous message",2,"N",""),
+ ("Rewind to message (with file restore, undo)",3,"Y","Claude; Edit/Write only — shell changes not restored"),
+ ("Edit & resend a previous message",2,"Y",""),
  ("Side chat scoped to session (/btw, ⌘;)",2,"P","app-level assistant drawer"),
  ("Spin off parallel / child sessions",1,"Y",""),
  ("Archive / unarchive / auto-archive",2,"Y",""),

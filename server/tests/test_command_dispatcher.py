@@ -142,3 +142,12 @@ async def test_fork_that_reaches_the_server_says_where_to_send_it():
     res = await dispatch(FakeDriver(), _cmd("fork", "client"), "")
     assert res["name"] == "fork" and res["render"] == "notice"
     assert "/fork" in res["data"]["text"]
+
+
+@pytest.mark.anyio
+async def test_rewind_that_reaches_the_server_says_where_to_send_it():
+    """The browser runs /rewind (D-9). One that arrives here (a new session's first
+    prompt) has nothing to rewind to: a notice, never the help overlay."""
+    res = await dispatch(FakeDriver(), _cmd("rewind", "client"), "")
+    assert res["name"] == "rewind" and res["render"] == "notice"
+    assert "/rewind" in res["data"]["text"]
