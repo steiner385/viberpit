@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { highlightRanges, highlightSegments, parseSearchTerms } from './highlightRanges'
+import { highlightRanges, highlightSegments, maskMarkdownCode, parseSearchTerms } from './highlightRanges'
 
 describe('highlightRanges', () => {
   it('finds every occurrence of every term, sorted', () => {
@@ -62,5 +62,25 @@ describe('parseSearchTerms', () => {
   it('lowercases and splits on whitespace, like the server\'s parse_terms', () => {
     expect(parseSearchTerms('  Foo\tBAR  baz ')).toEqual(['foo', 'bar', 'baz'])
     expect(parseSearchTerms('   ')).toEqual([])
+  })
+})
+
+describe('maskMarkdownCode', () => {
+  it('blanks inline code and fenced blocks, keeping every offset and newline', () => {
+    const text = 'Run `a widget` now\n```ts\nwidget()\n```\nthe widget'
+    const masked = maskMarkdownCode(text)
+    expect(masked).toHaveLength(text.length)
+    expect(masked.split('\n')).toHaveLength(text.split('\n').length)
+    expect(masked).not.toContain('`')
+    expect(highlightRanges(masked, ['widget'])).toEqual([[text.lastIndexOf('widget'), text.length]])
+  })
+
+  it('an unclosed fence blanks to the end; a fence closes only on its own kind and length', () => {
+    expect(maskMarkdownCode('a\n````\nb\n```\nc').trim()).toBe('a')
+    expect(maskMarkdownCode('~~~\nx\n~~~\ny')).toBe('   \n \n   \ny')
+  })
+
+  it('leaves text without code untouched', () => {
+    expect(maskMarkdownCode('plain widget text')).toBe('plain widget text')
   })
 })

@@ -109,6 +109,14 @@ describe('buildRenderRows — the post-turn summary row (D-11)', () => {
     expect(row.files).toEqual([{ path: '/r/a.ts', plus: 1, minus: 1 }])
   })
 
+  it('keys the summary row by a constant, so its measured size survives a new turn', () => {
+    const before = buildRenderRows([user('u1'), edited], [], { summary: done }).find((r) => r.kind === 'summary')
+    const after = buildRenderRows([user('u1'), edited, user('u2'), turn('a9')], [], { summary: done })
+      .find((r) => r.kind === 'summary')
+    expect(before?.key).toBe('summary')
+    expect(after?.key).toBe('summary')
+  })
+
   it('is absent without summary inputs (read-only views), and for a status with its own card', () => {
     expect(buildRenderRows([user('u1'), edited], []).some((r) => r.kind === 'summary')).toBe(false)
     for (const status of ['waiting_input', 'waiting_question', 'ready_review', 'waiting_external']) {

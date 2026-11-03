@@ -92,3 +92,28 @@ export function highlightSegments(text: string, terms: readonly string[]): Highl
   if (pos < text.length) out.push({ text: text.slice(pos), mark: false, lead: false })
   return out
 }
+
+/**
+ * `text` with its markdown code — fenced blocks and inline spans — blanked to
+ * spaces, every other character (newlines included) kept at its offset. The
+ * markdown highlight pass never marks inside code, so the current hit's lead run
+ * is counted on this, not on the raw text: a run inside code is one the reader
+ * never sees marked. Plain text (a user prompt) is not markdown and is counted raw.
+ */
+export function maskMarkdownCode(text: string): string {
+  const blank = (s: string) => s.replace(/[^\n]/g, ' ')
+  let fence: string | null = null
+  const lines = text.split('\n').map((line) => {
+    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence !== null) {
+      if (open && open[1][0] === fence[0] && open[1].length >= fence.length && open[2].trim() === '') fence = null
+      return blank(line)
+    }
+    if (open) {
+      fence = open[1]
+      return blank(line)
+    }
+    return line
+  })
+  return lines.join('\n').replace(/(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g, blank)
+}

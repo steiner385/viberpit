@@ -139,3 +139,21 @@ describe('stepJump', () => {
     expect(stepJump(pending(), { ...state, canLoad: false })).toEqual({ kind: 'fail', reason: 'unloadable' })
   })
 })
+
+describe('resolveHit — counts lead runs the way they render (code is skipped)', () => {
+  const prose = 'Run `widget` first.\n\n```\nwidget()\n```\n\nThen fix the widget.'
+  const snippet = 'Then fix the widget.'
+  const at = snippet.indexOf('widget')
+  const h = (role: 'user' | 'assistant'): SearchHit =>
+    ({ turnId: 'x1', ordinal: 0, role, snippet, matchStart: at, matchEnd: at + 6 })
+
+  it('an assistant (markdown) turn does not count the term inside inline or fenced code', () => {
+    const rows = buildRenderRows([t('x1', 'assistant', prose, { ordinal: 0 })], [])
+    expect(resolveHit(rows, jumpRequest([h('assistant')], 0, ['widget']), turnHoldsEngineTurn)?.lead).toBe(0)
+  })
+
+  it('a user prompt is plain text — every occurrence counts', () => {
+    const rows = buildRenderRows([t('x1', 'user', prose)], [])
+    expect(resolveHit(rows, jumpRequest([h('user')], 0, ['widget']), turnHoldsEngineTurn)?.lead).toBe(2)
+  })
+})

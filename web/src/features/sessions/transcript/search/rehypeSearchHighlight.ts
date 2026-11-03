@@ -7,7 +7,7 @@
  * is never touched: a fenced block's text is highlight.js's token spans, and an
  * inline code span must stay a bare string for `PathRef` to recognise a path. Math
  * (KaTeX's spans), SVG and scripts are skipped too. The current hit is the
- * `currentLead`-th lead-term run in document order.
+ * `currentLead`-th lead-term run in document order (the last, past the end).
  */
 import type { Element, ElementContent, Root, RootContent } from 'hast'
 import { highlightSegments } from './highlightRanges'
@@ -25,15 +25,15 @@ function skipped(el: Element): boolean {
 export function rehypeSearchHighlight(highlight: SearchHighlight) {
   return (tree: Root) => {
     if (highlight.terms.length === 0) return
-    let lead = -1
+    // Every lead-term mark, in document order: the current one is picked after the
+    // walk, so a lead past the last rendered run falls back to the last.
+    const leads: Element[] = []
 
-    function mark(text: string, current: boolean): Element {
+    function mark(text: string): Element {
       return {
         type: 'element',
         tagName: 'mark',
-        properties: current
-          ? { className: MARK_CURRENT_CLASS.split(' '), [MARK_CURRENT_ATTR]: 'true' }
-          : { className: MARK_CLASS.split(' ') },
+        properties: { className: MARK_CLASS.split(' ') },
         children: [{ type: 'text', value: text }],
       }
     }
@@ -55,8 +55,9 @@ export function rehypeSearchHighlight(highlight: SearchHighlight) {
               next.push({ type: 'text', value: seg.text })
               continue
             }
-            if (seg.lead) lead++
-            next.push(mark(seg.text, seg.lead && lead === highlight.currentLead))
+            const el = mark(seg.text)
+            if (seg.lead) leads.push(el)
+            next.push(el)
           }
         } else {
           next.push(child)
@@ -66,5 +67,8 @@ export function rehypeSearchHighlight(highlight: SearchHighlight) {
     }
 
     visit(tree)
+    if (highlight.currentLead === null || leads.length === 0) return
+    const current = leads[Math.min(highlight.currentLead, leads.length - 1)]
+    current.properties = { className: MARK_CURRENT_CLASS.split(' '), [MARK_CURRENT_ATTR]: 'true' }
   }
 }

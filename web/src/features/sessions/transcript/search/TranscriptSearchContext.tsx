@@ -25,9 +25,15 @@ export interface SearchRenderKit {
   renderText: (text: string, highlight: SearchHighlight) => ReactNode
   /** The markdown text-node pass for `highlight`. */
   rehypePlugin: (highlight: SearchHighlight) => RehypePluginEntry
-  /** How many marked runs of `text` hold the lead (first) term — the unit the
-   *  current hit is counted in. */
-  leadRuns: (text: string, terms: readonly string[]) => number
+  /** A turn-level current lead split across consecutive prose texts: each text's
+   *  highlight, in order. Counted the way the marks render — markdown code is
+   *  skipped when `markdown`; a lead past the last run falls back to the last. */
+  splitHighlight: (
+    texts: readonly string[],
+    terms: readonly string[],
+    lead: number | null,
+    markdown: boolean,
+  ) => SearchHighlight[]
 }
 
 /** The current hit: the rendered turn it landed on, and which lead-term run in that
@@ -50,32 +56,8 @@ export const TranscriptSearchContext = createContext<TranscriptSearchState | nul
 /** One prose block's highlight. */
 export interface SearchHighlight {
   terms: readonly string[]
-  /** Which lead-term run IN THIS BLOCK is the current hit, or null for none. */
+  /** Which lead-term run IN THIS BLOCK is the current hit, or null for none. Past
+   *  the block's last run, the last run is current. */
   currentLead: number | null
   kit: SearchRenderKit
-}
-
-/**
- * Split a turn-level current lead across consecutive prose texts: the highlight for
- * each, in order. Run `n` of the turn lands in the text holding it, re-counted from
- * that text's own start.
- */
-export function splitHighlight(
-  texts: readonly string[],
-  terms: readonly string[],
-  lead: number | null,
-  kit: SearchRenderKit,
-): SearchHighlight[] {
-  let left = lead
-  return texts.map((text) => {
-    if (left === null) return { terms, currentLead: null, kit }
-    const runs = kit.leadRuns(text, terms)
-    if (left < runs) {
-      const here = left
-      left = null
-      return { terms, currentLead: here, kit }
-    }
-    left -= runs
-    return { terms, currentLead: null, kit }
-  })
 }

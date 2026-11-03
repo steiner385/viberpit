@@ -11,7 +11,8 @@
  */
 import type { Turn } from './reducer'
 import { statusPresentation, TIER_LABEL, type StatusPresentation } from './statusTier'
-import { toolInputToFileDiff, fileChanges } from '@/features/sessions/diff/toolDiff'
+import { buildLines } from '@/lib/toolContent'
+import { changedPaths } from './toolSummary'
 
 /** Every assistant turn since the last user turn — one logical reply, however many
  *  segments it streamed as. Empty when the transcript ends on a prompt. */
@@ -28,16 +29,42 @@ export interface ChangedFile {
   minus?: number
 }
 
+type Counts = { additions: number; deletions: number }
+
+/** One Edit/Write's `+`/`−` lines, by the transcript's own `buildLines` rule; null
+ *  when the input carries no text to count. */
+function lineCounts(input: Record<string, unknown>): Counts | null {
+  const lines = buildLines(input)
+  if (lines.length === 0) return null
+  const additions = lines.filter((l) => l.prefix === '+').length
+  return { additions, deletions: lines.length - additions }
+}
+
+/** A Claude call's counts: a MultiEdit sums its `edits[]` (each counted like an
+ *  Edit); null when any edit is uncountable. */
+function callCounts(input: Record<string, unknown>): Counts | null {
+  if (!Array.isArray(input.edits)) return lineCounts(input)
+  const total = { additions: 0, deletions: 0 }
+  for (const edit of input.edits) {
+    const c = edit != null && typeof edit === 'object' ? lineCounts(edit as Record<string, unknown>) : null
+    if (!c) return null
+    total.additions += c.additions
+    total.deletions += c.deletions
+  }
+  return input.edits.length > 0 ? total : null
+}
+
 /**
  * The distinct paths the given turns' edit/write tool calls touched, in first-touch
- * order. A Claude call names `input.file_path` and carries its text, so
- * `toolInputToFileDiff` counts it; a Codex file change names `changes: [{path}]`
- * with no text, so its paths stay uncounted. A call whose result came back failed
- * changed nothing and is skipped.
+ * order. A Claude Edit/Write/MultiEdit names `input.file_path` and carries its
+ * text, so it is counted; a NotebookEdit names `notebook_path` (a cell, no line
+ * diff) and a Codex file change names `changes: [{path}]` with no text, so those
+ * paths stay uncounted. A call whose result came back failed changed nothing and
+ * is skipped.
  */
 export function changedFiles(turns: readonly Turn[]): ChangedFile[] {
   const byPath = new Map<string, { plus: number; minus: number; counted: boolean }>()
-  const add = (path: string, counts: { additions: number; deletions: number } | null) => {
+  const add = (path: string, counts: Counts | null) => {
     const cur = byPath.get(path) ?? { plus: 0, minus: 0, counted: true }
     if (counts) {
       cur.plus += counts.additions
@@ -53,9 +80,11 @@ export function changedFiles(turns: readonly Turn[]): ChangedFile[] {
       if (block.result && !block.result.ok) continue
       const { input } = block
       if (typeof input.file_path === 'string' && input.file_path) {
-        add(input.file_path, toolInputToFileDiff(input))
+        add(input.file_path, callCounts(input))
+      } else if (typeof input.notebook_path === 'string' && input.notebook_path) {
+        add(input.notebook_path, null)
       } else {
-        for (const change of fileChanges(input)) add(change.path, null)
+        for (const path of changedPaths(input.changes)) add(path, null)
       }
     }
   }

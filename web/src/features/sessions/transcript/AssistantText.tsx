@@ -2,7 +2,7 @@ import { parseInsights } from './insights'
 import { hideHtmlComments } from './htmlComments'
 import { InsightCallout } from './InsightCallout'
 import { Markdown } from './Markdown'
-import { splitHighlight, type SearchHighlight } from './search/TranscriptSearchContext'
+import type { SearchHighlight } from './search/TranscriptSearchContext'
 
 interface Props {
   text: string
@@ -20,7 +20,7 @@ export function AssistantText({ text, streaming, highlight }: Props) {
   const segments = parseInsights(visible)
   // The block's current lead-term run, re-counted into the segment holding it.
   const split = highlight
-    && splitHighlight(segments.map((s) => s.text), highlight.terms, highlight.currentLead, highlight.kit)
+    && highlight.kit.splitHighlight(segments.map((s) => s.text), highlight.terms, highlight.currentLead, true)
   const segHighlight = (i: number): SearchHighlight | undefined => (split ? split[i] : undefined)
   return (
     <>

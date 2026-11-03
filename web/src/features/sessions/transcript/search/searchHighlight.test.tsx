@@ -104,6 +104,36 @@ describe('transcript search highlight', () => {
     expect(all[0]).not.toHaveAttribute(MARK_CURRENT_ATTR)
   })
 
+  it('a block whose only occurrence is inside code gets no current hit — the next block does', async () => {
+    const turn: TurnType = {
+      id: 'a1', role: 'assistant', blocks: [
+        { kind: 'text', id: 'a1:a', text: 'Call `widget` here.' },
+        { kind: 'text', id: 'a1:b', text: 'Then the widget works.' },
+      ],
+    }
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'a1', lead: 0 } })
+    const current = await screen.findByText('widget', { selector: `mark[${MARK_CURRENT_ATTR}]` })
+    expect(current.closest('p')?.textContent).toBe('Then the widget works.')
+    expect(container.querySelectorAll(`[${MARK_CURRENT_ATTR}]`)).toHaveLength(1)
+  })
+
+  it('a current lead past the last rendered occurrence falls back to the last one (markdown)', async () => {
+    const turn: TurnType = { id: 'a1', role: 'assistant', blocks: [{ kind: 'text', id: 'a1:t', text: 'A widget and a widget.' }] }
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'a1', lead: 5 } })
+    await screen.findAllByText('widget', { selector: 'mark' })
+    const all = marks(container)
+    expect(all[1]).toHaveAttribute(MARK_CURRENT_ATTR, 'true')
+    expect(container.querySelectorAll(`[${MARK_CURRENT_ATTR}]`)).toHaveLength(1)
+  })
+
+  it('a current lead past the last occurrence falls back to the last one (plain text)', () => {
+    const turn: TurnType = { id: 'u1', role: 'user', blocks: [{ kind: 'text', id: 'u1:t', text: 'one widget, two widget' }] }
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'u1', lead: 9 } })
+    const all = marks(container)
+    expect(all[1]).toHaveAttribute(MARK_CURRENT_ATTR, 'true')
+    expect(container.querySelectorAll(`[${MARK_CURRENT_ATTR}]`)).toHaveLength(1)
+  })
+
   it('renders no marks when no search is open', () => {
     const turn: TurnType = { id: 'u1', role: 'user', blocks: [{ kind: 'text', id: 'u1:t', text: 'widget' }] }
     const { container } = renderTurn(turn, null)

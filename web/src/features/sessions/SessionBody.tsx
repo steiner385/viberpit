@@ -26,6 +26,7 @@ import { InterruptedAskNotice } from '@/features/sessions/transcript/Interrupted
 import { PendingModelApprovalPanel } from '@/features/sessions/panels/PendingModelApprovalPanel'
 import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
+import { summaryOutcome } from '@/session/turnSummary'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
 import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff } from '@/api/hooks'
@@ -77,6 +78,10 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   // The worktree diff summary (D-4): it lists the Changes tab, and the header's
   // chip reads the same query. `busy` going false (a turn ended) refetches it.
   const busy = statusTier(rt.state.status.state) === 'busy'
+  // The summary card's hand-off (D-11) — "Asked you" mid-turn, "Handed back" after —
+  // for the persistent live region to announce once (`SessionAriaLive`).
+  const handOffOutcome = summaryOutcome(rt.state.status.state, sessionRecord?.handBackReason, null, busy)
+  const handOff = handOffOutcome?.reason ? { label: handOffOutcome.label, reason: handOffOutcome.reason } : null
   const diffSummary = useSessionDiff(rt.sessionId, { summary: true, busy })
   const hasChanges = (diffSummary.data?.files.length ?? 0) > 0
   // The Files tab (D-7) reads the session's worktree, so it needs one.
@@ -361,7 +366,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                 )}
 
                 {/* sr-only aria-live mirror (owns its own ref + effect) */}
-                <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
+                <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} handOff={handOff} />
               </>
             )
 

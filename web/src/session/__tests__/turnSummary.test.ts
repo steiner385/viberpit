@@ -35,7 +35,7 @@ describe('lastLogicalTurn', () => {
 })
 
 describe('changedFiles', () => {
-  it('collects edit and write paths with their line counts from toolInputToFileDiff', () => {
+  it('collects edit and write paths with their line counts (buildLines)', () => {
     const files = changedFiles([asst('a1', [edit('/r/a.ts', 'x', 'y\nz'), write('/r/b.ts', 'one\ntwo\nthree')])])
     expect(files).toEqual([
       { path: '/r/a.ts', plus: 2, minus: 1 },
@@ -69,6 +69,19 @@ describe('changedFiles', () => {
       tool('edit', { file_path: '/r/denied.ts', old_string: 'a', new_string: 'b' }, false),
     ])])
     expect(files).toEqual([])
+  })
+
+  it('reads a NotebookEdit\'s notebook_path as an uncounted path', () => {
+    const nb = tool('edit', { notebook_path: '/r/n.ipynb', cell_id: 'c1', new_source: 'x = 1' }, true)
+    expect(changedFiles([asst('a1', [nb])])).toEqual([{ path: '/r/n.ipynb' }])
+  })
+
+  it('sums a MultiEdit\'s edits[] the way a single Edit is counted', () => {
+    const multi = tool('edit', {
+      file_path: '/r/m.ts',
+      edits: [{ old_string: 'a', new_string: 'b\nc' }, { old_string: 'd\ne\nf', new_string: 'g' }],
+    }, true)
+    expect(changedFiles([asst('a1', [multi])])).toEqual([{ path: '/r/m.ts', plus: 3, minus: 4 }])
   })
 
   it('counts an edit whose result has not arrived yet', () => {
@@ -130,5 +143,15 @@ describe('summaryOutcome', () => {
   it('shows nothing while busy without a reason', () => {
     expect(summaryOutcome('in_progress', null, null, true)).toBeNull()
     expect(summaryOutcome('in_progress', '   ', null, true)).toBeNull()
+  })
+})
+
+describe('turnSummary layering', () => {
+  it('imports nothing from features/ — session/ sits below it', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../turnSummary.ts', import.meta.url), 'utf8')
+    expect(src).not.toMatch(/from '@\/features\//)
+    // The guard can fail: the pattern does match a features import.
+    expect("import { x } from '@/features/sessions/diff/toolDiff'").toMatch(/from '@\/features\//)
   })
 })

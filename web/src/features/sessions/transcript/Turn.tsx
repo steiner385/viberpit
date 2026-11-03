@@ -20,7 +20,7 @@ import { BlockRow } from './BlockRow'
 import { TurnFeedback } from './TurnFeedback'
 import { MessageActions } from './MessageActions'
 import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
-import { TranscriptSearchContext, splitHighlight, type SearchHighlight } from './search/TranscriptSearchContext'
+import { TranscriptSearchContext, type SearchHighlight } from './search/TranscriptSearchContext'
 
 interface Props {
   turn: TurnType
@@ -84,7 +84,7 @@ export const Turn = memo(function Turn({
     if (!search) return undefined
     const prose = visibleBlocks.filter((b) => b.kind === 'text')
     const lead = search.current?.turnId === turn.id ? search.current.lead : null
-    const split = splitHighlight(prose.map((b) => b.text), search.terms, lead, search.kit)
+    const split = search.kit.splitHighlight(prose.map((b) => b.text), search.terms, lead, !isUser)
     return split[prose.findIndex((b) => b.id === blockId)]
   }
 

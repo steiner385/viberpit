@@ -87,7 +87,9 @@ function buildSummaryRow(turns: TurnType[], s: SummaryRowInputs): RenderRow | nu
   const busy = statusTier(s.status) === 'busy'
   const outcome = summaryOutcome(s.status, s.handBackReason, s.suspectedCompleteReason, busy)
   if (!outcome) return null
-  const key = `summary-${turns[turns.length - 1].id}`
+  // Constant: the row is always the tail's, and a per-turn key would drop its
+  // measured size (and remount the card) on every new turn.
+  const key = 'summary'
   if (outcome.mode === 'asked') return { key, kind: 'summary', outcome, files: [] }
   const reply = lastLogicalTurn(turns)
   if (reply.length === 0) return null

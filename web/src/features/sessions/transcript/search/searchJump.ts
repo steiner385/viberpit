@@ -7,7 +7,7 @@ import type { Virtualizer } from '@tanstack/react-virtual'
 import type { Turn } from '@/session/reducer'
 import type { SearchHit } from '@/api/transcript'
 import type { RenderRow } from '../transcriptRows'
-import { highlightSegments } from './highlightRanges'
+import { highlightSegments, maskMarkdownCode } from './highlightRanges'
 import { MARK_CURRENT_ATTR } from './searchMarks'
 
 /** How far back a jump may page older history in: past this the hit is reported
@@ -49,26 +49,29 @@ export function jumpRequest(hits: readonly SearchHit[], index: number, terms: re
 
 /** A turn's prose as the server's snippets see it: its text blocks in order, each
  *  whitespace character one space (`server/sessions/search.py` `_snippet`). */
-function proseOf(turn: Turn): string {
-  return turn.blocks
+function proseOf(turn: Turn, transform: (raw: string) => string = (raw) => raw): string {
+  const raw = turn.blocks
     .map((b) => (b.kind === 'text' ? b.text : ''))
     .filter(Boolean)
     .join('\n')
-    .replace(/\s/g, ' ')
+  // Transform (mask) BEFORE whitespace is flattened: fences are found by line.
+  return transform(raw).replace(/\s/g, ' ')
 }
 
 /** Which lead-term run of `turn` the hit's match is, from where its snippet sits in
- *  the turn's prose; null when the snippet is not there. */
+ *  the turn's prose; null when the snippet is not there. Runs are counted the way
+ *  they render: an assistant turn is markdown, whose code is never marked. */
 function leadFromSnippet(turn: Turn, req: JumpRequest, terms: readonly string[]): number | null {
   if (req.snippet === undefined || req.matchStart === undefined) return null
   const prose = proseOf(turn)
+  const counted = turn.role === 'assistant' ? proseOf(turn, maskMarkdownCode) : prose
   const at: number[] = []
   for (let p = prose.indexOf(req.snippet); p !== -1; p = prose.indexOf(req.snippet, p + 1)) at.push(p)
   if (at.length === 0) return null
   const match = at[Math.min(req.dupRank, at.length - 1)] + req.matchStart
   let lead = 0
   let pos = 0
-  for (const seg of highlightSegments(prose, terms)) {
+  for (const seg of highlightSegments(counted, terms)) {
     const end = pos + seg.text.length
     if (seg.lead) {
       if (match < end) return lead
