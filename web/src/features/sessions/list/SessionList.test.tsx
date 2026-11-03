@@ -17,6 +17,7 @@ vi.mock('@/api/hooks', async (importOriginal) => {
 })
 
 import { SessionList } from './SessionList'
+import { api } from '@/api/client'
 
 const SESSIONS: Session[] = [
   session({
@@ -70,6 +71,27 @@ const baseProps = {
   onDelete: vi.fn(),
   onQuickResume: vi.fn(),
 }
+
+describe('SessionList read state (D-10)', () => {
+  it('wires the card menu to POST /viewed and /unread', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue(undefined)
+    const user = userEvent.setup()
+    render(
+      <SessionList {...baseProps} sessions={[
+        { ...SESSIONS[0], unread: true },
+        { ...SESSIONS[1], unread: false },
+      ]} />,
+      { wrapper },
+    )
+    await user.click(screen.getByRole('button', { name: 'More actions for session Work session' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
+    expect(post).toHaveBeenCalledWith('/sessions/sess-1/viewed')
+    await user.click(screen.getByRole('button', { name: 'More actions for session Research' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Mark as unread' }))
+    expect(post).toHaveBeenCalledWith('/sessions/sess-2/unread')
+    post.mockRestore()
+  })
+})
 
 describe('SessionList', () => {
   const onOpen = vi.fn()

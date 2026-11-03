@@ -41,6 +41,8 @@ vi.mock('@/api/hooks', () => ({
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   // "Mark complete" / "Not done" on a handed-back session's pinned panel.
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Auto-viewed (D-10): opening the session posts `viewed`.
+  useMarkSessionViewed: vi.fn(() => ({ mutate: vi.fn() })),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
   useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
@@ -127,6 +129,19 @@ describe('SessionBody', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useEngineOffers).mockReturnValue([])
+  })
+
+  it('marks the open session viewed once it renders (D-10 auto-viewed)', () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useMarkSessionViewed).mockReturnValue(
+      { mutate } as unknown as ReturnType<typeof hooks.useMarkSessionViewed>,
+    )
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([
+      makeSession({ id: 's1', updatedAt: '2026-11-03T10:00:00Z', unread: true }),
+    ]))
+    renderBody(<SessionBody rt={makeRuntime([])} />)
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate).toHaveBeenCalledWith('s1')
   })
 
   it('marks the recovery request as suggested rather than user-authored', () => {

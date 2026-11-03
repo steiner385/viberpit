@@ -62,6 +62,8 @@ vi.mock('@/api/hooks', () => ({
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useSetAutoArchiveOptOut: () => ({ mutate: vi.fn() }),
   useResolveSuspectedComplete: () => ({ mutate: vi.fn() }),
+  useMarkSessionViewed: () => ({ mutate: vi.fn() }),
+  useMarkSessionUnread: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAutomations: vi.fn(() => ({ data: [] })),
   // The Delivery list column's reads (finish-line row 4; capacity per

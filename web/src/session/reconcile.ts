@@ -33,6 +33,18 @@ export function reconcileSessions(prev: Session[] | undefined, next: Session[]):
   const prevById = new Map(prev.map((s) => [s.id, s]))
   return next.map((fresh) => {
     const cached = prevById.get(fresh.id)
-    return cached && revIsNewer(cached.revAt, fresh.revAt) ? cached : fresh
+    if (!cached) return fresh
+    if (revIsNewer(cached.revAt, fresh.revAt)) {
+      // `unread` is per-viewer read state, not part of the record the rev token
+      // versions (D-10): the poll's value is the fresher one even when the WS
+      // patch won on the record.
+      return fresh.unread === undefined || fresh.unread === cached.unread
+        ? cached
+        : { ...cached, unread: fresh.unread }
+    }
+    // A payload without the field must not erase it — absent reads as "read".
+    return fresh.unread === undefined && cached.unread !== undefined
+      ? { ...fresh, unread: cached.unread }
+      : fresh
   })
 }

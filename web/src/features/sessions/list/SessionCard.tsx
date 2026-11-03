@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, Monitor } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, Monitor, Eye, CircleDot } from 'lucide-react'
 import { toast } from 'sonner'
 import { inGroup, matchShortcut } from '@/shell/shortcuts'
 import { useQuickReplies } from '@/api/quickReplies'
@@ -94,6 +94,8 @@ interface SessionCardProps {
   /** Called when the user answers a "likely complete" hand-back: confirm archives the
    *  session, reject clears the hint — parent owns the mutation. */
   onResolveSuspectedComplete?: (id: string, decision: 'confirm' | 'reject') => void
+  /** "Mark as read" (false) / "Mark as unread" (true) — parent owns the mutation (D-10). */
+  onSetUnread?: (id: string, unread: boolean) => void
   /** Sessions this one dispatched (child-session spec §4.6); derived by the list from the
    *  same sessions array, so the card never fetches. */
   childSessions?: Session[]
@@ -102,7 +104,9 @@ interface SessionCardProps {
   parentName?: string | null
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, onResolveSuspectedComplete, childSessions = [], parentName = null }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, onResolveSuspectedComplete, onSetUnread, childSessions = [], parentName = null }: SessionCardProps) {
+  // Per-viewer read state (D-10): a turn ended since this viewer last looked.
+  const unread = session.unread === true
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const hasChildren = childSessions.length > 0
@@ -314,7 +318,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   return (
     <CardFrame
       id={session.id}
-      openLabel={`Open session ${session.name}`}
+      openLabel={unread ? `Open session ${session.name}, unread` : `Open session ${session.name}`}
       railClass={accent.rail}
       selected={selected}
       listMode={listMode}
@@ -416,8 +420,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               child of {parentName ?? session.parentSessionId.slice(0, 8)}
             </button>
           )}
+          {/* Unread is the weight, not another chip: read titles drop to medium so
+              bold reads as a difference on fonts where semibold renders as bold. */}
           <span
-            className="min-w-0 truncate text-sm font-semibold text-ink"
+            data-unread={unread ? 'true' : undefined}
+            className={cn('min-w-0 truncate text-sm text-ink', unread ? 'font-bold' : 'font-medium')}
             title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
           >
             {session.name}
@@ -552,6 +559,18 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                   >
                     <Archive size={16} aria-hidden="true" />
                     {session.autoArchiveOptOut ? 'Enable auto-archive' : 'Disable auto-archive'}
+                  </button>
+                )}
+                {onSetUnread && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="card-overflow-read-state"
+                    onClick={() => { close(); onSetUnread(session.id, !unread) }}
+                    className={cn(menuItem, 'text-ink')}
+                  >
+                    {unread ? <Eye size={16} aria-hidden="true" /> : <CircleDot size={16} aria-hidden="true" />}
+                    {unread ? 'Mark as read' : 'Mark as unread'}
                   </button>
                 )}
                 <button

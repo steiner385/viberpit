@@ -508,6 +508,43 @@ export function useRenameSession() {
   })
 }
 
+/** Flip one session's per-viewer `unread` flag in both list caches (D-10). */
+async function setUnreadInCaches(qc: QueryClient, id: string, unread: boolean) {
+  await Promise.all([qc.cancelQueries({ queryKey: QK.sessions }), qc.cancelQueries({ queryKey: QK.archived })])
+  const flip = <T extends { id: string; unread?: boolean }>(rows: T[] | undefined) =>
+    rows?.map((s) => (s.id === id && s.unread !== unread ? { ...s, unread } : s))
+  qc.setQueryData<Session[]>(QK.sessions, flip)
+  qc.setQueryData<ArchivedSession[]>(QK.archived, flip)
+}
+
+function invalidateSessionLists(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: QK.sessions })
+  qc.invalidateQueries({ queryKey: QK.archived })
+}
+
+/** POST /sessions/{id}/viewed: the caller has seen the session up to now (D-10).
+ *  Fired automatically by `useAutoMarkViewed` and by the card's "Mark as read",
+ *  so a failure never toasts — the next refetch shows the real state. */
+export function useMarkSessionViewed() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiRequestError, string>({
+    mutationFn: (id) => api.post<void>(`/sessions/${id}/viewed`),
+    meta: { suppressErrorToast: true },
+    onMutate: (id) => setUnreadInCaches(qc, id, false),
+    onSettled: () => invalidateSessionLists(qc),
+  })
+}
+
+/** POST /sessions/{id}/unread: the card's "Mark as unread" (D-10). */
+export function useMarkSessionUnread() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiRequestError, string>({
+    mutationFn: (id) => api.post<void>(`/sessions/${id}/unread`),
+    onMutate: (id) => setUnreadInCaches(qc, id, true),
+    onSettled: () => invalidateSessionLists(qc),
+  })
+}
+
 /** Stop ONE running Task sub-agent (POST /sessions/{id}/agents/{toolUseId}/stop). The
  *  CLI answers on the event stream (subAgentEnded), so nothing is invalidated here. */
 export function useStopSubAgent() {

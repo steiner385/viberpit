@@ -36,6 +36,7 @@ import { FileRefContext, type FileRefActions } from '@/features/sessions/transcr
 import { useComposerAttach } from '@/shell/sessionGestures'
 import { ForkProvider } from '@/features/sessions/fork/ForkProvider'
 import { RewindProvider } from '@/features/sessions/rewind/RewindProvider'
+import { useAutoMarkViewed } from './useAutoMarkViewed'
 
 /** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
 const ChangesTab = lazy(() => import('@/features/sessions/diff/ChangesTab'))
@@ -62,6 +63,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   // "Mark complete" / "Not done" on a handed-back session — the same mutation the
   // list card offers, so the decision can be taken beside the transcript evidence.
   const resolveSuspected = useResolveSuspectedComplete()
+  // Per-viewer read state (D-10): this is the live open session, so it is read.
+  useAutoMarkViewed(rt.sessionId, sessionRecord?.updatedAt)
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns

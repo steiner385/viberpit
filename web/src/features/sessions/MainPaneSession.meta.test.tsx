@@ -67,6 +67,7 @@ vi.mock('@/api/hooks', () => ({
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMarkSessionViewed: vi.fn(() => ({ mutate: vi.fn() })),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
   useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),

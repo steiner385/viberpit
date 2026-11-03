@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Archive, RotateCcw, Shuffle } from 'lucide-react'
-import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useSetAutoArchiveOptOut, useResolveSuspectedComplete, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled } from '@/api/hooks'
+import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useSetAutoArchiveOptOut, useResolveSuspectedComplete, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled, useMarkSessionViewed, useMarkSessionUnread } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { EmptyState } from '@/ui/EmptyState'
@@ -68,6 +68,8 @@ export function SessionList({
   const setAutopilot = useSetAutopilotPaused()
   const setAutoArchive = useSetAutoArchiveOptOut()
   const resolveSuspected = useResolveSuspectedComplete()
+  const markViewed = useMarkSessionViewed()
+  const markUnread = useMarkSessionUnread()
   const bulkArchive = useBulkArchiveSessions()
   const resumeInterrupted = useResumeInterrupted()
   const rotateStalled = useRotateStalled()
@@ -183,6 +185,7 @@ export function SessionList({
         onToggleAutopilot={(id, paused) => setAutopilot.mutate({ id, paused })}
         onToggleAutoArchive={(id, optedOut) => setAutoArchive.mutate({ id, optedOut })}
         onResolveSuspectedComplete={(id, decision) => resolveSuspected.mutate({ id, decision })}
+        onSetUnread={(id, unread) => (unread ? markUnread : markViewed).mutate(id)}
       />
 
     )
