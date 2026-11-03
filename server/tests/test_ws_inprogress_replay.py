@@ -33,9 +33,9 @@ def test_replay_trims_in_progress_turn_when_active(tmp_path, monkeypatch):
         return await real(p, **kw)
     monkeypatch.setattr(wsmod, "replay_window", spy)
 
-    # Minimal orchestrator stub exposing transcript_path.
+    # Minimal orchestrator stub exposing the replay resolver.
     class Orch:
-        async def transcript_path(self, sid): return path
+        async def transcript_source(self, sid): return path, None
     # The helper now feeds the socket's outbound FIFO (out_q.put_nowait) rather
     # than sending a pre-built batch — frames are individual wire dicts.
     sent: list[dict] = []
@@ -73,7 +73,7 @@ def test_live_attach_resets_even_when_trimmed_history_is_empty(tmp_path):
     path = _write_in_progress_only_transcript(tmp_path)
 
     class Orch:
-        async def transcript_path(self, sid): return path
+        async def transcript_source(self, sid): return path, None
     sent: list[dict] = []
 
     asyncio.run(
@@ -102,7 +102,7 @@ def test_replay_frames_are_tagged_with_session_id(tmp_path):
     path = _write_transcript(tmp_path)
 
     class Orch:
-        async def transcript_path(self, sid): return path
+        async def transcript_source(self, sid): return path, None
     sent: list[dict] = []
 
     asyncio.run(
@@ -133,7 +133,7 @@ def test_run_replay_passes_turn_started_at_to_replay_window(tmp_path, monkeypatc
     monkeypatch.setattr(wsmod, "replay_window", spy)
 
     class Orch:
-        async def transcript_path(self, sid): return path
+        async def transcript_source(self, sid): return path, None
     sent: list[dict] = []
 
     asyncio.run(wsmod._run_replay_and_complete(  # type: ignore[attr-defined]
@@ -198,7 +198,7 @@ def test_attach_passes_driver_turn_started_at_to_replay_window(tmp_path, monkeyp
         def unsubscribe_events(self, q): pass
         async def ensure_driver(self, session_id, identity): return _LiveDriver()
         async def get_session(self, session_id): return None
-        async def transcript_path(self, session_id): return path
+        async def transcript_source(self, session_id): return path, None
         async def command_catalog(self, session_id): return []
         def pending_questions(self, session_id): return []
         def pop_pending_initial_prompt(self, session_id): return None
@@ -229,7 +229,7 @@ def test_idle_attach_empty_transcript_does_not_reset(tmp_path):
     empty.write_text("")
 
     class Orch:
-        async def transcript_path(self, sid): return str(empty)
+        async def transcript_source(self, sid): return str(empty), None
     sent: list[dict] = []
 
     asyncio.run(

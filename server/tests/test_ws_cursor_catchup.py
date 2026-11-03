@@ -148,7 +148,7 @@ def live_ring_edge(remote_edge):
     # that registration (no driver → read-only replay attach), so the mock must mirror it.
     orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
-         mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
+         mock.patch.object(orch, "transcript_source", new=mock.AsyncMock(return_value=(None, None))):
         with client.websocket_connect("/ws", headers=_IDENT) as wsA:
             wsA.send_json({"type": "attach", "sessionId": "s1"})
             evA = _collect_until(wsA, lambda acc: _count(acc, "textDelta") >= 4)
@@ -196,7 +196,7 @@ def test_same_socket_reattach_with_cursor_catches_up(remote_edge):
     # that registration (no driver → read-only replay attach), so the mock must mirror it.
     orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
-         mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
+         mock.patch.object(orch, "transcript_source", new=mock.AsyncMock(return_value=(None, None))):
         with client.websocket_connect("/ws", headers=_IDENT) as ws:
             # First attach drains the 4 streamed deltas (srcSeq 0..3); the ring holds 0..3.
             ws.send_json({"type": "attach", "sessionId": "s1"})
@@ -628,8 +628,8 @@ def test_cross_epoch_cursor_after_daemon_restart_forces_full_replay(tmp_path):
                 orch_a._drivers["s1"] = driver_a   # mirrors the real ensure_driver (see live_ring_edge)
                 with mock.patch.object(orch_a, "ensure_driver",
                                        new=mock.AsyncMock(return_value=driver_a)), \
-                     mock.patch.object(orch_a, "transcript_path",
-                                       new=mock.AsyncMock(return_value=None)):
+                     mock.patch.object(orch_a, "transcript_source",
+                                       new=mock.AsyncMock(return_value=(None, None))):
                     with client.websocket_connect("/ws", headers=_IDENT) as wsA:
                         wsA.send_json({"type": "attach", "sessionId": "s1"})
                         evA = _collect_until(wsA, lambda acc: _count(acc, "textDelta") >= 4)
@@ -671,8 +671,8 @@ def test_cross_epoch_cursor_after_daemon_restart_forces_full_replay(tmp_path):
                 orch_b._drivers["s1"] = driver_b   # mirrors the real ensure_driver (see live_ring_edge)
                 with mock.patch.object(orch_b, "ensure_driver",
                                        new=mock.AsyncMock(return_value=driver_b)), \
-                     mock.patch.object(orch_b, "transcript_path",
-                                       new=mock.AsyncMock(return_value=str(transcript))):
+                     mock.patch.object(orch_b, "transcript_source",
+                                       new=mock.AsyncMock(return_value=(str(transcript), None))):
                     # First post-restart attach drives daemon B's pump to publish fresh seq
                     # 0..3 into ITS ring (same daemon-pump path that fed epoch E1). Kept OPEN so
                     # the ring stays retained while the cross-epoch attach probes it.

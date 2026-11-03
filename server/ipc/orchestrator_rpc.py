@@ -410,6 +410,15 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     register_rpc(app, "transcript_path", transcript_path)
 
+    async def transcript_source(params: dict) -> list:
+        # The replay resolver (a fork child reads its source to the fork point); the
+        # same off-loop treatment as transcript_path, which it calls first.
+        path, until_uuid = await _maybe_await(
+            await asyncio.to_thread(orch.transcript_source, **params))
+        return [path, until_uuid]
+
+    register_rpc(app, "transcript_source", transcript_source)
+
     import dataclasses
 
     async def pm_onboarding_counts(params: dict) -> dict:

@@ -65,7 +65,7 @@ class _BaseOrch:
     def unsubscribe_events(self, q): pass
     async def ensure_driver(self, session_id, identity): return self._driver
     async def get_session(self, session_id): return None
-    async def transcript_path(self, session_id): return self._path
+    async def transcript_source(self, session_id): return self._path, None
     # The attach's fallback when there is no transcript FILE (an engine whose
     # history lives behind the daemon). None here = "no history to replay", which
     # is what these frame-ordering tests want: they assert on the reset/permission

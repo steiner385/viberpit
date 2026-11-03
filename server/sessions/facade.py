@@ -137,7 +137,7 @@ class InProcessOrchestratorAdapter:
     async def transcript_events(self, *a, **k): return await _maybe_await(self._orch.transcript_events(*a, **k))
     async def transcript_window(self, *a, **k): return await _maybe_await(self._orch.transcript_window(*a, **k))
     # The attach-path replay for an engine with no transcript file (Codex). ws.py
-    # falls back to it when transcript_path() is None; see the orchestrator method.
+    # falls back to it when transcript_source() has no path; see the orchestrator method.
     async def engine_replay_window(self, *a, **k): return await _maybe_await(self._orch.engine_replay_window(*a, **k))
     async def interrupt(self, *a, **k): return await _maybe_await(self._orch.interrupt(*a, **k))
     async def stop_subagent(self, *a, **k): return await _maybe_await(self._orch.stop_subagent(*a, **k))
@@ -178,7 +178,7 @@ class InProcessOrchestratorAdapter:
     async def reload_session(self, *a, **k): return await _maybe_await(self._orch.reload_session(*a, **k))
     async def rotate_to_best(self, *a, **k): return await _maybe_await(self._orch.rotate_to_best(*a, **k))
     async def set_account_pin(self, *a, **k): return await _maybe_await(self._orch.set_account_pin(*a, **k))
-    async def transcript_path(self, *a, **k): return await _maybe_await(self._orch.transcript_path(*a, **k))
+    async def transcript_source(self, *a, **k): return tuple(await _maybe_await(self._orch.transcript_source(*a, **k)))
     async def resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch.resolve_transcript_path(*a, **k))
     # Engine-neutral "is there history?" — the export routes' 404-vs-504 gate, which
     # transcript_path cannot answer for an engine with no transcript file.

@@ -23050,6 +23050,35 @@ class SessionOrchestrator:
             cwd = getattr(rec, "cwd", None)
         return self._find_transcript(config_dir, csid, cwd)
 
+    def transcript_source(self, session_id) -> tuple[str | None, str | None]:
+        """What a REPLAY of *session_id* reads: ``(path, until_uuid)``.
+
+        The session's own transcript (``transcript_path``) with no cut — or, for a fork
+        child (D-8) before its first turn has written one, its SOURCE's transcript cut
+        after the fork-point entry ``until_uuid`` (inclusive, the CLI's own cut), so the
+        child shows the history it was forked with. ``replay.py`` replays nothing when
+        that uuid is missing — never the whole source. Once the child's own id arrives
+        ``fork_from`` is cleared and its own file, which the CLI wrote with the same
+        uuids, takes over. A first-message fork has no ``fork_from``: ``(None, None)``.
+
+        Every replay of a session's history asks this (the WS attach, the orphaned-ask
+        re-offer, ``transcript_window``/``transcript_events``); ``transcript_path`` stays
+        the session's OWN file for the readers that must not see the source's.
+        Synchronous and in-memory like ``transcript_path``: run it off the loop."""
+        path = self.transcript_path(session_id)
+        if path is not None:
+            return path, None
+        rec = self._records.get(session_id)
+        if rec is None or not rec.fork_from:
+            return None, None
+        source_sid, anchor = rec.fork_from
+        # A fork runs on its source's host and account (fork_session), so the source's
+        # transcript is in the same account tree; the source's cwd is the fast path.
+        source = self._records.get(getattr(rec, "parent_session_id", None) or "")
+        source_path = self._find_transcript(str(account_cfg_dir(rec.account)), source_sid,
+                                            getattr(source, "cwd", None))
+        return (source_path, anchor) if source_path else (None, None)
+
     def _engine_of(self, session_id: str) -> AgentEngine:
         """The engine owning *session_id*, defaulting to Claude for unknown ids.
 
@@ -25978,8 +26007,12 @@ class SessionOrchestrator:
                 engine = ref.engine
         if engine is AgentEngine.CODEX:
             return await self._codex_replay(session_id, ref=ref)
-        path = await self.resolve_transcript_path(session_id)
-        return ClaudeTranscriptReplay(path) if path else None
+        # A live fork child before its first turn replays its source to the fork point;
+        # anything else (an archived row included) resolves its own file as before.
+        path, until_uuid = await asyncio.to_thread(self.transcript_source, session_id)
+        if path is None:
+            path = await self.resolve_transcript_path(session_id)
+        return ClaudeTranscriptReplay(path, until_uuid=until_uuid) if path else None
 
     async def _row_engine_ref(self, session_id: str) -> "_RowEngineRef | None":
         """What the DB row says about who owns *session_id*, or None.

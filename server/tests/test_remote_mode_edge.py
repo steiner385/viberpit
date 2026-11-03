@@ -250,7 +250,8 @@ def test_ws_attach_streams_event_from_daemon(remote_edge):
     orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver",
                            new=mock.AsyncMock(return_value=driver)), \
-         mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
+         mock.patch.object(orch, "transcript_source",
+                           new=mock.AsyncMock(return_value=(None, None))):
         with client.websocket_connect("/ws", headers=_IDENT) as ws:
             ws.send_json({"type": "attach", "sessionId": "s1"})
             # Drain frames until the streamed textDelta arrives (batch-wrapped).

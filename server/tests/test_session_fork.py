@@ -6,6 +6,7 @@ that records the options each spawn was given, so no ``claude`` ever runs."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -751,6 +752,126 @@ async def test_the_source_cannot_reply_to_or_list_a_fork(env) -> None:
     assert spy.sent == [] and spy.ensured == []
     assert orch.steerable_children_of(src.id) == []          # session_context's list
     assert [c.id for c in orch.children_of(src.id)] == [child]   # the cap still counts it
+
+
+# --- a fork replays its source up to the fork point until its first turn -------------
+
+def _write_cli_transcript(cwd: str, sid: str, turns: list[tuple[str, str, str, str]],
+                          tail: list[dict] | None = None) -> str:
+    """A CLI transcript for *sid* in *cwd*'s project dir under the shared projects
+    tree: one user + one assistant entry per ``(user uuid, prompt, reply uuid, reply)``."""
+    rows: list[dict] = []
+    for u, q, a, r in turns:
+        rows.append({"type": "user", "uuid": u, "message": {"role": "user", "content": q}})
+        rows.append({"type": "assistant", "uuid": a,
+                     "message": {"role": "assistant", "model": "m",
+                                 "content": [{"type": "text", "text": r}]}})
+    rows.extend(tail or [])
+    d = (Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects"
+         / SessionOrchestrator.project_dir_name(cwd))
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{sid}.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return str(path)
+
+
+_ASK_AFTER_THE_ANCHOR = [{"type": "assistant", "uuid": "ask-1", "message": {
+    "role": "assistant", "model": "m", "content": [{
+        "type": "tool_use", "id": "tu-ask", "name": "AskUserQuestion",
+        "input": {"questions": [{"question": "which?", "options": [{"label": "A"}]}]}}]}}]
+
+
+async def _attach_replay(orch, session_id: str) -> list[dict]:
+    from server.bridge import ws as wsmod
+    from server.sessions.facade import InProcessOrchestratorAdapter
+    frames: list[dict] = []
+    await wsmod._run_replay_and_complete(InProcessOrchestratorAdapter(orch), frames.append,
+                                         session_id)
+    return frames
+
+
+def _texts(frames: list[dict], kind: str) -> list[str | None]:
+    return [f.get("text") for f in frames if f.get("type") == kind]
+
+
+@pytest.mark.asyncio
+async def test_a_fork_replays_its_source_up_to_the_fork_point_until_its_first_turn(env) -> None:
+    orch, _, src, *_ = env
+    src_path = _write_cli_transcript(src.cwd, "src-sdk", [
+        ("u0", "q0", "uuid-1", "r0"), ("u1", "q1", "a1", "r1")], tail=_ASK_AFTER_THE_ANCHOR)
+    child = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    assert orch.transcript_source(child) == (src_path, "uuid-1")
+    assert orch.transcript_source(src.id) == (src_path, None)
+
+    frames = await _attach_replay(orch, child)
+    assert _texts(frames, "user") == ["q0"]
+    assert "r0" in json.dumps(frames) and "r1" not in json.dumps(frames)
+    window = await orch.transcript_window(child, limit=None)
+    assert window is not None and window.total_turns == 1
+    # The source's later question is not the fork's to re-offer.
+    from server.bridge import ws as wsmod
+    from server.sessions.facade import InProcessOrchestratorAdapter
+    with patch.object(SessionOrchestrator, "orphaned_interaction", return_value="question"):
+        assert await wsmod._orphaned_ask_frames(InProcessOrchestratorAdapter(orch), child) == []
+
+    # After the first turn the child's own file (the CLI's copy of the prefix, same
+    # uuids, plus the new turn) takes over.
+    own = _write_cli_transcript(orch.record(child).cwd, "child-sdk", [
+        ("u0", "q0", "uuid-1", "r0"), ("u9", "q-new", "a9", "r-new")])
+    await orch._persist_engine_session_id(child, "child-sdk")
+    assert orch.transcript_source(child) == (own, None)
+    assert _texts(await _attach_replay(orch, child), "user") == ["q0", "q-new"]
+
+
+@pytest.mark.asyncio
+async def test_a_fork_whose_anchor_is_gone_replays_nothing(env) -> None:
+    orch, _, src, *_ = env
+    _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "other", "r0")])
+    child = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    frames = await _attach_replay(orch, child)
+    assert _texts(frames, "user") == [] and "r0" not in json.dumps(frames)
+    assert frames[-1]["type"] == "replayComplete"
+
+
+@pytest.mark.asyncio
+async def test_a_first_message_fork_replays_nothing(env) -> None:
+    orch, _, src, *_ = env
+    _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "uuid-1", "r0")])
+    child = (await _fork(orch, src.id, at_turn_id=None, mode="message",
+                         prefill="hi"))["sessionId"]
+    assert orch.transcript_source(child) == (None, None)
+    assert _texts(await _attach_replay(orch, child), "user") == []
+
+
+@pytest.mark.asyncio
+async def test_transcript_source_round_trips_over_the_daemon_rpc(env) -> None:
+    orch, _, src, *_ = env
+    src_path = _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "uuid-1", "r0")])
+    child = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    app = create_daemon_app()
+    register_orchestrator_rpc(app, orch)
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            ro = RemoteOrchestrator(client)
+            assert await ro.transcript_source(child) == (src_path, "uuid-1")
+            assert await ro.transcript_source(src.id) == (src_path, None)
+        finally:
+            await client.aclose()
+    assert "transcript_source" in _PER_SESSION
+
+
+@pytest.mark.asyncio
+async def test_remote_transcript_source_falls_back_on_an_older_daemon() -> None:
+    class OldDaemon(_RecordingClient):
+        async def call(self, method, *, timeout=None, **kwargs):
+            self.calls.append((method, kwargs, timeout))
+            if method == "transcript_source":
+                raise DaemonError("UnknownMethod", "transcript_source")
+            return "/p.jsonl"
+    client = OldDaemon()
+    assert await RemoteOrchestrator(client).transcript_source("s") == ("/p.jsonl", None)
+    assert [m for m, *_ in client.calls] == ["transcript_source", "transcript_path"]
 
 
 # --- restart durability and cancellation --------------------------------------------

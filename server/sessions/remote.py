@@ -988,6 +988,19 @@ class RemoteOrchestrator:
     async def transcript_path(self, session_id):
         return await self._client.call("transcript_path", session_id=session_id)
 
+    async def transcript_source(self, session_id) -> tuple[str | None, str | None]:
+        """``(path, until_uuid)`` for a replay (see the orchestrator). The edge then
+        reads the file itself, as it does for ``transcript_path``. A daemon that
+        predates this RPC has no forks, so its own ``transcript_path`` is the answer."""
+        try:
+            path, until_uuid = await self._client.call("transcript_source",
+                                                       session_id=session_id)
+        except DaemonError as exc:
+            if exc.err_type != "UnknownMethod":
+                raise
+            return await self.transcript_path(session_id), None
+        return path, until_uuid
+
     async def pending_questions(self, session_id):
         return await self._client.call("pending_questions", session_id=session_id)
 

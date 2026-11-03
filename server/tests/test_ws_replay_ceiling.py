@@ -14,8 +14,8 @@ from server.bridge import ws as ws_mod
 
 
 class _FakeOrch:
-    async def transcript_path(self, session_id):
-        return "/tmp/does-not-matter.jsonl"
+    async def transcript_source(self, session_id):
+        return "/tmp/does-not-matter.jsonl", None
 
 
 @pytest.mark.asyncio

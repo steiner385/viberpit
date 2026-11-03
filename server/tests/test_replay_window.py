@@ -255,3 +255,30 @@ async def test_replay_events_turn_index_shares_cursor_space(tmp_path):
     path = _write_transcript(tmp_path, 5)
     events = await replay_events(path, max_turns=2)
     assert [e.turn_index for e in events if isinstance(e, ev.TurnStart)] == [3, 4]
+
+
+# --- until_uuid: a fork child replays its source up to the fork point (D-8) ------------
+
+@pytest.mark.asyncio
+async def test_until_uuid_stops_after_the_anchor_inclusive(tmp_path):
+    from server.sessions import events as ev
+    from server.sessions.replay import ClaudeTranscriptReplay
+    path = _write_transcript(tmp_path, 5)
+    w = await replay_window(path, limit=None, until_uuid="a2")
+    assert _turn_ids(w) == ["a0", "a1", "a2"] and w.total_turns == 3
+    users = [e.text for e in w.events if isinstance(e, ev.UserMessage)]
+    assert users == ["q0", "q1", "q2"]                  # nothing after the anchor
+    assert [e.uuid for e in w.events if isinstance(e, ev.TurnAnchor)][-1] == "a2"
+    # Paging and the flat reader see the same cut.
+    page = await ClaudeTranscriptReplay(path, until_uuid="a2").window(before=2, limit=1)
+    assert _turn_ids(page) == ["a1"] and page.total_turns == 3
+    flat = await replay_events(path, max_turns=None, until_uuid="a2")
+    assert [e.turn_id for e in flat if isinstance(e, ev.TurnStart)] == ["a0", "a1", "a2"]
+
+
+@pytest.mark.asyncio
+async def test_until_uuid_not_found_replays_nothing_never_the_whole_file(tmp_path):
+    path = _write_transcript(tmp_path, 5)
+    w = await replay_window(path, limit=None, until_uuid="not-there")
+    assert w.events == [] and w.total_turns == 0
+    assert await replay_events(path, max_turns=None, until_uuid="not-there") == []

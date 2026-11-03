@@ -73,8 +73,8 @@ class FakeOrch:
     def get_session(self, session_id):
         return None
 
-    def transcript_path(self, session_id):
-        return None  # no replay
+    def transcript_source(self, session_id):
+        return None, None  # no replay
 
     @property
     def _registry(self):
