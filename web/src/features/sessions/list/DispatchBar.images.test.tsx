@@ -7,14 +7,13 @@ import type { AgentCapabilities, EngineOffer } from '@/api/types'
 /**
  * The props `DispatchBar` requires but this suite does not exercise. They were
  * simply omitted before, so every render here was missing `onNavigate`,
- * `onEnterList`, `onJump`, `onShowHelp`, `onEscape` and `isPending` — the
+ * `onEnterList`, `onShowHelp`, `onEscape` and `isPending` — the
  * component would have thrown on any key that reaches one of them.
  */
 const required: Omit<DispatchBarProps, 'repos' | 'reposLoading' | 'reposError' | 'onDispatch'> = {
   onNavigate: vi.fn(),
   onOpenHighlighted: vi.fn(),
   onEnterList: vi.fn(),
-  onJump: vi.fn(),
   onShowHelp: vi.fn(),
   onEscape: vi.fn(),
   isPending: false,

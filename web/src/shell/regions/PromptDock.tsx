@@ -23,7 +23,7 @@ export interface PromptDockProps {
   /**
    * The Sessions list state, owned by the shell and shared with `ContextList`.
    *
-   * ONE cursor: ↑/↓, Alt+digit and ←/→ typed at the prompt move the same
+   * ONE cursor: ↑/↓ and ←/→ typed at the prompt move the same
    * highlight the list column renders its selection from. Both old shells wired
    * their prompt bar and their list to a single `useListNavigation`; a second
    * handle here would put the two regions permanently out of step.
@@ -190,8 +190,9 @@ function NewSessionBar({
     // An optimistic placeholder has no session on the server yet — opening one
     // would attach a socket to an id the daemon has never heard of. Both old
     // shells guarded their own "open" entry point with this; Task 18 restored it
-    // here after `KeyboardSessions.test.tsx`'s Enter/Alt+digit cases were
-    // re-hosted on the shell and turned red.
+    // here after `KeyboardSessions.test.tsx`'s Enter case was
+    // re-hosted on the shell and turned red. (Alt+1–9 is the shell's
+    // `session.jumpN` now, which applies the same guard.)
     if (isPendingSessionId(id)) return
     // Path from `NAV_DEFS`, not a literal, so the dock cannot drift from the
     // route table the rest of the shell is built from.
@@ -298,13 +299,6 @@ function NewSessionBar({
         // mode flag is the shell's, because the list column renders from it.
         if (nav.highlightedIndex < 0) nav.setHighlightedIndex(0)
         onEnterList()
-      }}
-      onJump={(index) => {
-        const s = ordering.orderedSessions[index]
-        if (s) {
-          nav.highlightSession(s.id)
-          openSession(s.id)
-        }
       }}
       onShowHelp={onShowHelp}
       onEscape={() => nav.setHighlightedIndex(-1)}

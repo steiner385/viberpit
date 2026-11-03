@@ -11,11 +11,13 @@ import {
   meta,
   ctrl,
   cmdOrCtrl,
+  alt,
+  altDigit,
   type KeyboardLike,
   type Shortcut,
   type ShortcutContext,
 } from './shortcuts'
-import { SESSION_COMPOSER_ATTR, textEntryClaimsKey } from '@/lib/detachKeyGuard'
+import { DISPATCH_PROMPT_ID, SESSION_COMPOSER_ATTR, textEntryClaimsKey } from '@/lib/detachKeyGuard'
 
 function ev(over: Partial<KeyboardLike>): KeyboardLike {
   return { key: '', code: '', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...over }
@@ -56,6 +58,8 @@ const SHELL_HANDLED = [
   'app.help', 'app.assistant',
   'compose.help', 'compose.nav', 'insession.stop', 'insession.detach', 'insession.detachEsc',
   'insession.forceDetach', 'insession.denyPermission',
+  'session.listPrev', 'session.listNext', 'session.jumpN',
+  'transcript.promptPrev', 'transcript.promptNext',
 ]
 const shellRow = (e: KeyboardLike, c: ShortcutContext) =>
   matchShortcut(e, (s) => SHELL_HANDLED.includes(s.id), c)?.id
@@ -153,8 +157,50 @@ const KEY_BY_GLYPH: Record<string, string> = {
 
 function keyForGlyph(glyph: string): string | null {
   if (glyph in KEY_BY_GLYPH) return KEY_BY_GLYPH[glyph]
-  if (/^[a-z?;/.]$/.test(glyph)) return glyph // 'c', 'r', 'a', 'd', '?', ';', '/', '.'
+  if (/^[a-z?;/.[\]1-9]$/.test(glyph)) return glyph // 'c', 'r', 'a', 'd', '?', ';', '/', '.', '[', ']', '1'
   return null
+}
+
+/** The physical key (`KeyboardEvent.code`) a glyph sits on — what an Alt row
+ *  matches, because macOS Option rewrites `key` (⌥1 reports "¡"). */
+const CODE_BY_KEY: Record<string, string> = {
+  '[': 'BracketLeft',
+  ']': 'BracketRight',
+  ArrowUp: 'ArrowUp',
+  ArrowDown: 'ArrowDown',
+}
+
+function codeForKey(key: string): string | null {
+  if (key in CODE_BY_KEY) return CODE_BY_KEY[key]
+  if (/^[1-9]$/.test(key)) return `Digit${key}`
+  return null
+}
+
+/**
+ * `Alt+[` / `⌥↑` / `Alt+1–9` as synthetic Alt events, or null when `keys` is not
+ * a bare-Alt chord. A range (`1–9`) yields one event per key in it, so the
+ * reachability guard checks all nine digits rather than the first.
+ *
+ * Each event carries the key a Mac would NOT report: the plain glyph. The
+ * Option-rewritten form (`¡`, `“`) is pinned by its own case below; here the
+ * point is that the row's matcher reads `code` and still accepts the glyph the
+ * sheet prints.
+ */
+function altChordsFromKeys(keys: string): KeyboardLike[] | null {
+  const m = /^(?:Alt\+|⌥)(?!Shift\+|⇧)(.+)$/.exec(keys)
+  if (!m) return null
+  const range = /^([1-9])–([1-9])$/.exec(m[1])
+  const glyphs = range
+    ? Array.from({ length: Number(range[2]) - Number(range[1]) + 1 }, (_, i) => String(Number(range[1]) + i))
+    : [m[1]]
+  const events: KeyboardLike[] = []
+  for (const glyph of glyphs) {
+    const key = keyForGlyph(glyph)
+    const code = key === null ? null : codeForKey(key)
+    if (key === null || code === null) return null
+    events.push(ev({ key, code, altKey: true }))
+  }
+  return events
 }
 
 /**
@@ -205,6 +251,8 @@ function chordFromKeys(keys: string): KeyboardLike | null {
  * the rows whose matcher has to spell a modifier out.
  */
 function eventsFromKeys(keys: string): KeyboardLike[] {
+  const alts = altChordsFromKeys(keys.trim())
+  if (alts !== null) return alts
   const chord = chordFromKeys(keys.trim())
   if (chord !== null) return [chord]
   return keys
@@ -238,7 +286,6 @@ const DISPLAY_ONLY_ROWS = [
   'compose.create',
   'compose.open',
   'compose.newline',
-  'compose.jump',
   'compose.deselect',
 ]
 
@@ -456,10 +503,11 @@ describe('displayKeys / isApplePlatform', () => {
 
   it('a platform-varying row is a ⌘ chord on Apple and the SAME key on Ctrl elsewhere', () => {
     for (const s of SHORTCUTS.filter((x) => x.keysMac !== undefined)) {
-      // Alt+Shift+letter rows are ⌥⇧ on Apple, not ⌘ (Option, not Command).
-      const altShift = /^Alt\+Shift\+(.)$/.exec(s.keys)
-      if (altShift) {
-        expect(s.keysMac, `${s.id} keysMac`).toBe(`⌥⇧${altShift[1]}`)
+      // Alt rows are ⌥ on Apple, not ⌘ (Option, not Command): Alt+Shift+M is
+      // ⌥⇧M, Alt+[ is ⌥[, Alt+1–9 is ⌥1–9.
+      const altRow = /^Alt\+(Shift\+)?(.+)$/.exec(s.keys)
+      if (altRow) {
+        expect(s.keysMac, `${s.id} keysMac`).toBe(`⌥${altRow[1] ? '⇧' : ''}${altRow[2]}`)
         continue
       }
       expect(s.keysMac, `${s.id} keysMac`).toMatch(/^⌘/)
@@ -751,6 +799,117 @@ describe('matchShortcut — the shell scope', () => {
     expect(matchShortcut(ev({ key: 'ArrowUp' }), () => true, ctx())?.id).toBe('list.up')
     expect(shellRow(ev({ key: 'ArrowUp' }), ctx())).toBe('compose.nav')
     expect(matchShortcut(ev({ key: 'ArrowUp' }), () => false, ctx())).toBeUndefined()
+  })
+})
+
+// ─── D-10: session switching and prompt jumps (Alt chords on `e.code`) ───────
+
+describe('matchShortcut — Alt+[ ] / Alt+1–9 / Alt+↑↓', () => {
+  const composer = document.createElement('textarea')
+  composer.setAttribute(SESSION_COMPOSER_ATTR, '')
+  const dispatch = document.createElement('textarea')
+  dispatch.id = DISPATCH_PROMPT_ID
+  const search = document.createElement('input')
+  search.type = 'search'
+  const open = ctx({ sessionOpen: true })
+
+  it('Alt+[ / Alt+] step the list — with or without a session open', () => {
+    expect(shellRow(ev({ key: '[', code: 'BracketLeft', altKey: true }), ctx())).toBe('session.listPrev')
+    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx())).toBe('session.listNext')
+    expect(shellRow(ev({ key: '[', code: 'BracketLeft', altKey: true }), open)).toBe('session.listPrev')
+    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), open)).toBe('session.listNext')
+  })
+
+  it('Alt+1–9 reach the jump row, and the digit is read from the physical key', () => {
+    for (let n = 1; n <= 9; n++) {
+      const e = ev({ key: String(n), code: `Digit${n}`, altKey: true })
+      expect(shellRow(e, ctx())).toBe('session.jumpN')
+      expect(altDigit(e)).toBe(n)
+    }
+    expect(shellRow(ev({ key: '0', code: 'Digit0', altKey: true }), ctx())).toBeUndefined()
+    expect(altDigit(ev({ key: '0', code: 'Digit0', altKey: true }))).toBeNull()
+  })
+
+  it('still fire when macOS Option rewrites `e.key` — ⌥1 is "¡", ⌥[ is "“", ⌥] is "‘"', () => {
+    const e1 = ev({ key: '¡', code: 'Digit1', altKey: true })
+    expect(shellRow(e1, ctx())).toBe('session.jumpN')
+    expect(altDigit(e1)).toBe(1)
+    expect(shellRow(ev({ key: '“', code: 'BracketLeft', altKey: true }), ctx())).toBe('session.listPrev')
+    expect(shellRow(ev({ key: '‘', code: 'BracketRight', altKey: true }), ctx())).toBe('session.listNext')
+  })
+
+  it('Alt+↑ / Alt+↓ jump between own prompts, but only with a session open', () => {
+    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), open)).toBe('transcript.promptPrev')
+    expect(shellRow(ev({ key: 'ArrowDown', code: 'ArrowDown', altKey: true }), open)).toBe('transcript.promptNext')
+    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ inSessions: false })))
+      .toBeUndefined()
+  })
+
+  it('plain ↑/↓ are untouched — the list highlight keeps them', () => {
+    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp' }), open)).toBe('compose.nav')
+    expect(shellRow(ev({ key: ']', code: 'BracketRight' }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: '3', code: 'Digit3' }), ctx())).toBeUndefined()
+  })
+
+  it('need Alt ALONE: Shift, Ctrl or Meta alongside it is some other chord', () => {
+    for (const extra of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true, ...extra }), open)).toBeUndefined()
+      expect(shellRow(ev({ key: '3', code: 'Digit3', altKey: true, ...extra }), open)).toBeUndefined()
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true, ...extra }), open)).toBeUndefined()
+    }
+  })
+
+  it('fire from the session composer and the new-session prompt, which yield Alt to the shell', () => {
+    for (const active of [composer, dispatch]) {
+      expect(shellRow(ev({ key: '3', code: 'Digit3', altKey: true }), ctx({ active }))).toBe('session.jumpN')
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ active }))).toBe('session.listNext')
+    }
+    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, active: composer })))
+      .toBe('transcript.promptPrev')
+  })
+
+  it('never fire from any OTHER text entry — on a Mac, ⌥ there types a character', () => {
+    expect(shellRow(ev({ key: '¡', code: 'Digit1', altKey: true }), ctx({ active: search }))).toBeUndefined()
+    expect(shellRow(ev({ key: '“', code: 'BracketLeft', altKey: true }), ctx({ active: search }))).toBeUndefined()
+    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, active: search })))
+      .toBeUndefined()
+  })
+
+  it('are blocked under a modal or an open menu', () => {
+    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
+    expect(shellRow(ev({ key: '3', code: 'Digit3', altKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
+    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, overlayOpen: true })))
+      .toBeUndefined()
+  })
+
+  it('session switching is off in kiosk — a wall display has no list to switch through', () => {
+    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ interactive: false }))).toBeUndefined()
+    expect(shellRow(ev({ key: '1', code: 'Digit1', altKey: true }), ctx({ interactive: false }))).toBeUndefined()
+  })
+
+  it('the old display-only `compose.jump` is gone — Alt+1–9 is one row, not two', () => {
+    const ids = SHORTCUTS.map((s) => s.id)
+    expect(ids).not.toContain('compose.jump')
+    expect(SHORTCUTS.filter((s) => /1–9/.test(s.keys)).map((s) => s.id)).toEqual(['session.jumpN'])
+  })
+})
+
+describe('alt()', () => {
+  const altX = alt((e) => e.code === 'KeyX')
+
+  it('REQUIRES Alt and bails on Shift, Ctrl and Meta', () => {
+    expect(altX(ev({ key: 'x', code: 'KeyX', altKey: true }))).toBe(true)
+    expect(altX(ev({ key: 'x', code: 'KeyX' }))).toBe(false)
+    expect(altX(ev({ key: 'X', code: 'KeyX', altKey: true, shiftKey: true }))).toBe(false)
+    expect(altX(ev({ key: 'x', code: 'KeyX', altKey: true, ctrlKey: true }))).toBe(false)
+    expect(altX(ev({ key: 'x', code: 'KeyX', altKey: true, metaKey: true }))).toBe(false)
+  })
+
+  it('is disjoint from plain(), so no Alt chord steals an unmodified key', () => {
+    const plainX = plain((e) => e.code === 'KeyX')
+    for (const e of [ev({ code: 'KeyX' }), ev({ code: 'KeyX', altKey: true })]) {
+      expect(plainX(e) && altX(e)).toBe(false)
+    }
   })
 })
 

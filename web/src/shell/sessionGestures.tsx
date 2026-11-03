@@ -83,18 +83,67 @@ const ComposerAttachContext = React.createContext<React.RefObject<ComposerAttach
   null,
 )
 
+/** The open session's transcript scroll (Alt+↑ / Alt+↓, D-10). */
+export interface TranscriptJump {
+  /** Scroll to the previous / next own prompt relative to the topmost visible
+   *  row; nothing past either end. Unpins stick-to-bottom, moves no focus. */
+  jumpPrompt: (dir: 'prev' | 'next') => void
+}
+
+/**
+ * The session transcript's prompt jump. A bridge of its own rather than a field
+ * of `SessionGestures` because the owner is `TranscriptView` — the virtualizer
+ * and the stick-to-bottom pin are local to it — not `MainPaneSession`, which
+ * publishes the gestures object whole on every render. Null current means no
+ * session transcript is mounted, and the keys then do nothing.
+ */
+const TranscriptJumpContext = React.createContext<React.RefObject<TranscriptJump | null> | null>(
+  null,
+)
+
 /** The shell's side: owns the refs both halves share. */
 export function SessionGestureProvider({ children }: { children: React.ReactNode }) {
   const ref = React.useRef<SessionGestures | null>(null)
   const menus = React.useRef<PromptRowMenus | null>(null)
   const attach = React.useRef<ComposerAttach | null>(null)
+  const jump = React.useRef<TranscriptJump | null>(null)
   return (
     <SessionGestureContext.Provider value={ref}>
       <PromptRowMenusContext.Provider value={menus}>
-        <ComposerAttachContext.Provider value={attach}>{children}</ComposerAttachContext.Provider>
+        <ComposerAttachContext.Provider value={attach}>
+          <TranscriptJumpContext.Provider value={jump}>{children}</TranscriptJumpContext.Provider>
+        </ComposerAttachContext.Provider>
       </PromptRowMenusContext.Provider>
     </SessionGestureContext.Provider>
   )
+}
+
+/** The shell's read handle for the transcript's prompt jump (see `TranscriptJumpContext`). */
+export function useTranscriptJumpHandle(): React.RefObject<TranscriptJump | null> {
+  const ref = React.useContext(TranscriptJumpContext)
+  if (!ref) throw new Error('useTranscriptJumpHandle must be used inside SessionGestureProvider')
+  return ref
+}
+
+/**
+ * The transcript's side: publish `jump` while mounted, when `enabled`. Same two
+ * effects as `useSessionGestures`, for the same reason — the published closure
+ * is never a render behind, and the handle clears on unmount only.
+ */
+export function useTranscriptJumpRegistration(jump: TranscriptJump, enabled: boolean): void {
+  const ref = React.useContext(TranscriptJumpContext)
+  const active = enabled && ref !== null
+
+  React.useEffect(() => {
+    if (active && ref) ref.current = jump
+  })
+
+  React.useEffect(() => {
+    if (!active || !ref) return
+    return () => {
+      ref.current = null
+    }
+  }, [active, ref])
 }
 
 /**

@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { orderSessions, buildNavItems, GROUP_BY_VALUES } from '../ordering'
-import { useSessionOrdering, LIVE_SPEC, BACKGROUND_SPEC } from '../useSessionOrdering'
+import { useItemOrdering, LIVE_SPEC, BACKGROUND_SPEC } from '../useSessionOrdering'
 import { loadSessionOrder, saveSessionOrder } from '@/lib/sessionOrder'
 import type { Session, PullRequestInfo } from '@/api/types'
 import { mkSession, pullRequest } from '@/test/factories'
@@ -132,7 +132,7 @@ describe('group by date', () => {
       vi.setSystemTime(NOW)
       window.localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ groupBy: 'date', sortBy: 'name' }))
       const { result } = renderHook(() =>
-        useSessionOrdering([mk('t', { updatedAt: local(2026, 5, 15, 1) }), mk('y', { updatedAt: local(2026, 5, 14, 1) })]),
+        useItemOrdering([mk('t', { updatedAt: local(2026, 5, 15, 1) }), mk('y', { updatedAt: local(2026, 5, 14, 1) })], LIVE_SPEC),
       )
       expect(result.current.groups.map((g) => g.label)).toEqual(['Today', 'Yesterday'])
     } finally {
@@ -182,14 +182,14 @@ describe('persistence of the new values', () => {
   it.each(['branch', 'host', 'date', 'pr'] as const)('a stored "%s" round-trips', (g) => {
     saveSessionOrder({ groupBy: g, sortBy: 'name' })
     expect(loadSessionOrder()).toEqual({ groupBy: g, sortBy: 'name' })
-    const { result } = renderHook(() => useSessionOrdering([mk('a')]))
+    const { result } = renderHook(() => useItemOrdering([mk('a')], LIVE_SPEC))
     expect(result.current.groupBy).toBe(g)
   })
 
   it('a stored unknown value falls back to the default', () => {
     window.localStorage.setItem('viberpit.sessionOrder', JSON.stringify({ groupBy: 'author', sortBy: 'name' }))
     expect(loadSessionOrder()).toEqual({ groupBy: 'none', sortBy: 'name' })
-    const { result } = renderHook(() => useSessionOrdering([mk('a')]))
+    const { result } = renderHook(() => useItemOrdering([mk('a')], LIVE_SPEC))
     expect(result.current.groupBy).toBe('none')
   })
 })
@@ -210,11 +210,11 @@ describe('buildNavItems follows the new groups', () => {
 
   it('pr via the hook: navItems and orderedSessions track the PR groups', () => {
     const { result } = renderHook(() =>
-      useSessionOrdering([
+      useItemOrdering([
         mk('n', { prs: [] }),
         mk('m', { prs: prs('merged') }),
         mk('o', { prs: prs('open') }),
-      ]),
+      ], LIVE_SPEC),
     )
     act(() => result.current.setGroupBy('pr'))
     expect(result.current.navItems.map((i) => (i.kind === 'header' ? i.label : i.session.id))).toEqual([
@@ -226,7 +226,7 @@ describe('buildNavItems follows the new groups', () => {
 
   it('branch via the hook: the No-branch header comes last', () => {
     const { result } = renderHook(() =>
-      useSessionOrdering([mk('x', { branch: null }), mk('b', { branch: 'main' })]),
+      useItemOrdering([mk('x', { branch: null }), mk('b', { branch: 'main' })], LIVE_SPEC),
     )
     act(() => result.current.setGroupBy('branch'))
     const headers = result.current.navItems.filter((i) => i.kind === 'header')

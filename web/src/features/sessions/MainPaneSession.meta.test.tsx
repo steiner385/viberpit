@@ -99,7 +99,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 function renderPane() {
   return render(
-    <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />,
+    <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} />,
     { wrapper },
   )
 }
@@ -142,7 +142,7 @@ describe('MainPaneSession session rail', () => {
   it('shows the live model after a sessionMeta event, while the picker stays on the record choice', async () => {
     render(
       <>
-        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />
+        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} />
         <DockedComposer />
       </>,
       { wrapper },
@@ -160,7 +160,7 @@ describe('MainPaneSession session rail', () => {
   it('shows context usage in the prompt row after a turnEnd with usage', async () => {
     render(
       <>
-        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />
+        <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} />
         <DockedComposer />
       </>,
       { wrapper },

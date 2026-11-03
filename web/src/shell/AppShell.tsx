@@ -22,8 +22,10 @@ import { isPendingSessionId } from '@/lib/pendingSessions'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
+import { stepSessionId } from '@/session/listStep'
 import {
   BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, listScopeForPath, readerRouteForPath, sessionPath,
+  type ListScope,
 } from '@/session/sessionNavState'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
@@ -34,7 +36,11 @@ import { useAttractCycle } from './useAttractCycle'
 import { useIdleCursor } from './useIdleCursor'
 import { useWakeLock } from './useWakeLock'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
-import { SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle } from './sessionGestures'
+import {
+  SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle, useTranscriptJumpHandle,
+} from './sessionGestures'
+import { SessionListNavProvider } from './sessionListNav'
+import { altDigit } from './shortcuts'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts } from './useShortcuts'
 import { useToastAnchor } from './toastInsets'
@@ -68,8 +74,9 @@ import { WebVitalsCollector } from '@/obs/WebVitalsCollector'
  * ## What the shell owns, and why
  *
  * The Sessions list state (`useSessionListState`) is held HERE rather than in
- * `ContextList`, because `PromptDock` drives the same cursor: ↑/↓ and Alt+digit
- * typed at the prompt move the highlight the list column renders. One handle,
+ * `ContextList`, because `PromptDock` drives the same cursor: ↑/↓ typed at the
+ * prompt move the highlight the list column renders, and the shell's own
+ * Alt+[ / Alt+] / Alt+1–9 walk the list's order (`SessionListNavProvider`). One handle,
  * two regions — both old shells did the same and it is the reason the list and
  * the prompt never disagreed within a shell.
  *
@@ -311,6 +318,7 @@ function AppShellInner() {
   // keydown time.
   const gestures = useSessionGestureHandle()
   const promptMenus = usePromptRowMenusHandle()
+  const transcriptJump = useTranscriptJumpHandle()
   useShortcuts(
     (e) => {
       const active = document.activeElement
@@ -349,6 +357,12 @@ function AppShellInner() {
       'insession.effortMenu': () => promptMenus.current?.openEffort(),
       'insession.denyPermission': () => gestures.current?.denyOldestPermission(),
       'insession.cycleView': () => gestures.current?.onCycleView(),
+      'session.listPrev': () => workspace.stepSession('prev'),
+      'session.listNext': () => workspace.stepSession('next'),
+      // The row matched, so the digit is 1–9; `?? 0` only satisfies the type.
+      'session.jumpN': (e) => workspace.jumpToSession((altDigit(e) ?? 0) - 1),
+      'transcript.promptPrev': () => transcriptJump.current?.jumpPrompt('prev'),
+      'transcript.promptNext': () => transcriptJump.current?.jumpPrompt('next'),
     },
   )
 
@@ -365,58 +379,62 @@ function AppShellInner() {
   const toastBandRef = useToastAnchor('band')
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
-      {shows('app.banners') && (
-        <BannerStack items={bannersForMode(workspace.banners, mode)} className="shrink-0 px-2 pt-2" />
-      )}
-      {shows('app.rail') && phone && <TopBar />}
+    // The list ORDER, for the open session's ‹ › chevrons — the same order
+    // Alt+[ / Alt+] walk above (`shell/sessionListNav`).
+    <SessionListNavProvider orderedIds={workspace.orderedIds} onOpen={workspace.openFromList}>
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
+        {shows('app.banners') && (
+          <BannerStack items={bannersForMode(workspace.banners, mode)} className="shrink-0 px-2 pt-2" />
+        )}
+        {shows('app.rail') && phone && <TopBar />}
 
-      <div className="flex min-h-0 flex-1">
-        {shows('app.rail') && !phone && <NavRail />}
+        <div className="flex min-h-0 flex-1">
+          {shows('app.rail') && !phone && <NavRail />}
 
-        {/* Desktop is master-detail: the list sits BESIDE the page. Everywhere
-            else the band is a column, so the list stacks above the dock — which
-            lives inside `app.main` and must stay under the content, never
-            beside it. */}
-        <div
-          ref={toastBandRef}
-          className={cn(
-            'flex min-w-0 min-h-0 flex-1',
-            mode === 'desktop' ? 'flex-row' : 'flex-col',
-          )}
-        >
-          {listVisible && (
-            <ContextList
-              column={listColumnFor(def?.id, {
-                sessions: workspace.list, roadmap: roadmap.list, delivery: delivery.list,
-              })}
+          {/* Desktop is master-detail: the list sits BESIDE the page. Everywhere
+              else the band is a column, so the list stacks above the dock — which
+              lives inside `app.main` and must stay under the content, never
+              beside it. */}
+          <div
+            ref={toastBandRef}
+            className={cn(
+              'flex min-w-0 min-h-0 flex-1',
+              mode === 'desktop' ? 'flex-row' : 'flex-col',
+            )}
+          >
+            {listVisible && (
+              <ContextList
+                column={listColumnFor(def?.id, {
+                  sessions: workspace.list, roadmap: roadmap.list, delivery: delivery.list,
+                })}
+              />
+            )}
+            <PageHost
+              pageHidden={pageHidden}
+              dock={shows('app.dock') ? <PromptDock {...workspace.dock} /> : undefined}
             />
-          )}
-          <PageHost
-            pageHidden={pageHidden}
-            dock={shows('app.dock') ? <PromptDock {...workspace.dock} /> : undefined}
-          />
+          </div>
+
+          {/* At ≥1280 this is an inline column beside the page; below it, an
+              overlay `Sheet` that portals out of the layout entirely. `DrawerHost`
+              owns that switch (`useViewport().drawerPushes`), so the shell places
+              it in the band either way. */}
+          {shows('app.drawer') && <DrawerHost />}
         </div>
 
-        {/* At ≥1280 this is an inline column beside the page; below it, an
-            overlay `Sheet` that portals out of the layout entirely. `DrawerHost`
-            owns that switch (`useViewport().drawerPushes`), so the shell places
-            it in the band either way. */}
-        {shows('app.drawer') && <DrawerHost />}
+        {shows('app.rail') && phone && <NavBar />}
+
+        {shows('app.overlays') && <Overlays />}
+        {workspace.dialogs}
+        {/* Renders nothing. It sits inside the shell rather than in `main.tsx`
+            because a field vitals sample is attributed to a route and a width
+            tier, and both of those are router/`useViewport` state that only
+            exists below here (#1411). Not in the region matrix: it has no
+            geometry, and a kiosk display is the load least worth going
+            unmeasured. */}
+        <WebVitalsCollector />
       </div>
-
-      {shows('app.rail') && phone && <NavBar />}
-
-      {shows('app.overlays') && <Overlays />}
-      {workspace.dialogs}
-      {/* Renders nothing. It sits inside the shell rather than in `main.tsx`
-          because a field vitals sample is attributed to a route and a width
-          tier, and both of those are router/`useViewport` state that only
-          exists below here (#1411). Not in the region matrix: it has no
-          geometry, and a kiosk display is the load least worth going
-          unmeasured. */}
-      <WebVitalsCollector />
-    </div>
+    </SessionListNavProvider>
   )
 }
 
@@ -529,6 +547,42 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     [openSessionId, scope, orderedSessions, allOrderedSessions, navigate],
   )
 
+  /**
+   * Open `id` the way a list row click does: the pending-id guard (an optimistic
+   * placeholder has no server session to attach to), then `sessionPath`.
+   */
+  const openIn = React.useCallback(
+    (id: string, inScope: ListScope) => { if (!isPendingSessionId(id)) navigate(sessionPath(id, inScope)) },
+    [navigate],
+  )
+
+  // Alt+[ / Alt+] / Alt+1–9 and the session header's chevrons walk THIS list —
+  // `orderedSessions`, the Active scope's rendered order, filters and search
+  // applied. It is the Active scope's whole list, so it opens in the Active
+  // scope whichever scope the user is looking at.
+  const orderedIds = React.useMemo(() => orderedSessions.map((s) => s.id), [orderedSessions])
+  const openFromList = React.useCallback((id: string) => openIn(id, 'live'), [openIn])
+  // Where the last Alt+[ / Alt+] went, until the route catches up. The keydown
+  // handlers see `openSessionId` only after the navigation commits, and opening
+  // a session renders its whole transcript first — so a second press (or key
+  // auto-repeat) inside that window would step from the OLD session and land
+  // on the same one again. Cleared once the open session actually changes.
+  const steppedToRef = React.useRef<string | null>(null)
+  React.useEffect(() => { steppedToRef.current = null }, [openSessionId])
+  const stepSession = (dir: 'prev' | 'next') => {
+    const id = stepSessionId(orderedIds, steppedToRef.current ?? openSessionId, dir)
+    if (!id) return
+    steppedToRef.current = id
+    openFromList(id)
+  }
+  const jumpToSession = (index: number) => {
+    const s = orderedSessions[index]
+    if (!s) return
+    // The prompt's cursor follows the jump, as it did when the dock owned Alt+digit.
+    list.nav.highlightSession(s.id)
+    openFromList(s.id)
+  }
+
   const nameOf = (id: string) =>
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
 
@@ -549,7 +603,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // Opened INSIDE the scope it was clicked in: a background row opens under
     // `/sessions/background/:id`, so the column stays in Background with the
     // row highlighted instead of flipping to Active around an absent session.
-    onOpen: (id) => { if (!isPendingSessionId(id)) navigate(sessionPath(id, scope)) },
+    onOpen: (id) => openIn(id, scope),
     onRename: (id) => setRenameTarget({ id, name: nameOf(id) }),
     onClose: (id) => {
       closeSession.mutate(id)
@@ -616,5 +670,8 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     </>
   )
 
-  return { banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate }
+  return {
+    banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate,
+    orderedIds, openFromList, stepSession, jumpToSession,
+  }
 }

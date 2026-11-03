@@ -632,15 +632,18 @@ describe('PromptDock — one cursor, shared with the list', () => {
     expect(posted).toHaveLength(0)
   })
 
-  it('opens a session by ordinal on Alt+digit', async () => {
-    const user = userEvent.setup()
+  // D-10: Alt+1–9 is the shell's `session.jumpN` now (it works with focus
+  // anywhere, not only at this prompt), so the dock must leave it unclaimed —
+  // and, mounted without the shell, it opens nothing on its own.
+  it('leaves Alt+digit to the shell — the dock opens nothing by ordinal itself', async () => {
     renderAt('/sessions')
     const prompt = await screen.findByLabelText('New session prompt')
+    prompt.focus()
+    const ev = new KeyboardEvent('keydown', { key: '2', code: 'Digit2', altKey: true, bubbles: true, cancelable: true })
+    prompt.dispatchEvent(ev)
 
-    await user.click(prompt)
-    await user.keyboard('{Alt>}2{/Alt}')
-
-    expect(screen.getByTestId('where')).toHaveTextContent('/sessions/b|')
+    expect(ev.defaultPrevented).toBe(false)
+    expect(screen.getByTestId('where')).toHaveTextContent('/sessions|')
   })
 
   it('asks the shell for help on ? with an empty prompt', async () => {

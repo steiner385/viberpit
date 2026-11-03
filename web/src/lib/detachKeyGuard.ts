@@ -100,6 +100,19 @@ export function focusInOtherTextEntry(el: Element | null): boolean {
   return asTextEntry(el) !== null && !isSessionComposer(el)
 }
 
+/** The new-session prompt's id (`DispatchBar`) — the dock's textarea while no session is open. */
+export const DISPATCH_PROMPT_ID = 'dispatch-bar-prompt'
+
+/**
+ * True ⇒ focus is in a text entry that is NEITHER of the app's two prompts (the
+ * session composer, the new-session prompt). The Alt chords (Alt+[ ] / Alt+1–9 /
+ * Alt+↑↓) fire from the prompts — both leave Alt keys to the shell — but never
+ * from any other field: on a Mac, ⌥ there types a character (⌥1 is "¡").
+ */
+export function focusInNonPromptTextEntry(el: Element | null): boolean {
+  return focusInOtherTextEntry(el) && el?.id !== DISPATCH_PROMPT_ID
+}
+
 /** True ⇒ the key belongs to the focused text entry; do NOT detach. */
 export function detachKeyYieldsToTextEntry(key: DetachKey, active: Element | null): boolean {
   const el = asTextEntry(active)

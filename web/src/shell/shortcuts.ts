@@ -1,4 +1,4 @@
-import { focusInOtherTextEntry, isFormControl } from '@/lib/detachKeyGuard'
+import { focusInNonPromptTextEntry, focusInOtherTextEntry, isFormControl } from '@/lib/detachKeyGuard'
 
 /** An action performed against the focused session row in list mode. */
 export type ListRowAction =
@@ -125,6 +125,32 @@ export function cmdOrCtrl(pred: (e: KeyboardLike) => boolean) {
   return (e: KeyboardLike): boolean => onMeta(e) || onCtrl(e)
 }
 
+/**
+ * Bare-Alt chord predicate — REQUIRES Alt, bails on Shift/Ctrl/Meta.
+ *
+ * Unlike its siblings it bails on Shift too: Alt+Shift+letter is the prompt-row
+ * menus' family, a different chord. Rows built on it match on `e.code`, never
+ * `e.key` — macOS Option rewrites the key (⌥1 reports "¡", ⌥[ reports "“"), so
+ * a key match would leave the binding dead on every Mac.
+ */
+export function alt(pred: (e: KeyboardLike) => boolean) {
+  return (e: KeyboardLike): boolean => e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && pred(e)
+}
+
+/** The 1–9 of an Alt+digit, read from the physical key (`Digit1`…`Digit9`); else null. */
+export function altDigit(e: KeyboardLike): number | null {
+  const m = /^Digit([1-9])$/.exec(e.code)
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * Alt chords fire from the app's prompts — the session composer and the
+ * new-session prompt both leave Alt keys unclaimed — and from the chrome, but
+ * never from any other text entry, where ⌥ types a character on a Mac.
+ */
+const altChordAllowed = (c: ShortcutContext): boolean =>
+  !c.overlayOpen && !focusInNonPromptTextEntry(c.active)
+
 /** True on Apple platforms, where the help sheet shows `keysMac`. */
 export function isApplePlatform(): boolean {
   if (typeof navigator === 'undefined') return false
@@ -167,6 +193,29 @@ export const SHORTCUTS: Shortcut[] = [
     match: cmdOrCtrl((e) => e.key === ';'),
     when: (c) => c.interactive && !c.overlayOpen },
   //
+  // ── Session switching (D-10) — WIRED ─────────────────────────────────
+  //
+  // Previous / next / Nth session in the LIST's order — the shell's
+  // `useSessionListState().ordering.orderedSessions`, filters and search
+  // applied, the order the session header's ‹ › chevrons step through too
+  // (`shell/sessionListNav`). Alt+[ / Alt+] wrap; with no session open, Alt+]
+  // opens the first row and Alt+[ the last. Alt chords, because the ⌘/Ctrl
+  // next-tab family below is the browser's. Kiosk has no list to switch through.
+  { id: 'session.listPrev', keys: 'Alt+[', keysMac: '⌥[',
+    description: 'Open the previous session in the list', group: 'app',
+    match: alt((e) => e.code === 'BracketLeft'),
+    when: (c) => c.interactive && altChordAllowed(c) },
+  { id: 'session.listNext', keys: 'Alt+]', keysMac: '⌥]',
+    description: 'Open the next session in the list', group: 'app',
+    match: alt((e) => e.code === 'BracketRight'),
+    when: (c) => c.interactive && altChordAllowed(c) },
+  // One row for all nine digits: the help sheet shows one line, and the handler
+  // reads the digit back through `altDigit`.
+  { id: 'session.jumpN', keys: 'Alt+1–9', keysMac: '⌥1–9',
+    description: 'Open the Nth session in the list', group: 'app',
+    match: alt((e) => altDigit(e) !== null),
+    when: (c) => c.interactive && altChordAllowed(c) },
+  //
   // ── NOT BOUND, and why — the Desktop-parity rows this app cannot have ─
   //
   // Claude Code *Desktop* is Electron and owns its window, so it can bind ⌘N,
@@ -202,16 +251,15 @@ export const SHORTCUTS: Shortcut[] = [
   // Safari's and Chrome's own next/previous-tab bindings on macOS (Apple's
   // Safari shortcut reference, support.apple.com/guide/safari/cpsh003), so even
   // where the page CAN preventDefault them, binding them would break tab
-  // switching for anyone with the app open. **No replacement binding is
-  // invented here.** Next/previous-session has no keyboard binding in this PR,
-  // and picking one is a human decision, not this task's.
+  // switching for anyone with the app open. No ⌘/Ctrl binding stands in for
+  // them: next/previous session is Alt+] / Alt+[ (`session.listNext` /
+  // `session.listPrev` above, D-10), which neither browser reserves — under
+  // ids of their own, so `session.next` / `session.prev` stay absent.
   //
   // Consequences that outlive this comment:
-  //   · Ruling R2 (Task 8 must re-check the session-cycling handler once list
-  //     filters land) has NOTHING to re-check — no such handler exists. If a
-  //     future PR adds one, its order must come from
-  //     `useSessionListState().ordering.orderedSessions`, the same order the
-  //     list renders, or cycling will navigate to a filtered-out session.
+  //   · The cycling order is `useSessionListState().ordering.orderedSessions`,
+  //     the same order the list renders, so cycling never navigates to a
+  //     filtered-out session.
   //   · Starting a session is still reachable without a chord: the New Session
   //     button at the foot of the list column clears the open session, which
   //     puts the dispatch bar in `app.dock`. Detach is still ← (and Esc while idle).
@@ -265,7 +313,6 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'compose.create', keys: 'Enter', description: 'Create a session from the prompt', group: 'compose' },
   { id: 'compose.open', keys: '→ / Enter', description: 'Open highlighted session (empty prompt)', group: 'compose' },
   { id: 'compose.newline', keys: 'Shift+Enter', description: 'Insert a newline', group: 'compose' },
-  { id: 'compose.jump', keys: 'Alt+1–9', description: 'Open session by number', group: 'compose' },
   { id: 'compose.deselect', keys: 'Esc', description: 'Clear the prompt and deselect', group: 'compose' },
   // `?` works from anywhere in the chrome, not just the prompt (`DispatchBar`
   // keeps its own empty-prompt branch, so `?` still types a character mid-draft).
@@ -398,9 +445,23 @@ export const SHORTCUTS: Shortcut[] = [
     group: 'in-session',
     match: cmdOrCtrl((e) => !e.shiftKey && (e.key === 'o' || e.key === 'O')),
     when: (c) => c.sessionOpen && c.interactive && !c.overlayOpen && !focusInOtherTextEntry(c.active) },
+  // Prompt jumps (D-10): scroll the transcript to the previous / next prompt the
+  // user typed (`role === 'user' && !origin` — nudges are skipped), relative to
+  // the topmost visible row. They unpin stick-to-bottom and move no focus, so
+  // they work mid-draft: the composer leaves Alt+↑/↓ unclaimed for exactly this.
+  // Read-only, so kiosk is not excluded.
+  { id: 'transcript.promptPrev', keys: 'Alt+↑', keysMac: '⌥↑', description: 'Scroll to your previous prompt',
+    group: 'in-session',
+    match: alt((e) => e.code === 'ArrowUp'),
+    when: (c) => c.sessionOpen && altChordAllowed(c) },
+  { id: 'transcript.promptNext', keys: 'Alt+↓', keysMac: '⌥↓', description: 'Scroll to your next prompt',
+    group: 'in-session',
+    match: alt((e) => e.code === 'ArrowDown'),
+    when: (c) => c.sessionOpen && altChordAllowed(c) },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
-  // session). All three are reserved by the browser's own UI — see the
-  // "NOT BOUND, and why" block at the top of this array for the evidence.
+  // session — that is Alt+[ / Alt+] above). All three are reserved by the
+  // browser's own UI — see the "NOT BOUND, and why" block at the top of this
+  // array for the evidence.
   // `Shift+Tab` (cycle permission mode) is deliberately NOT listed: sub-spec B D8
   // removes the binding, and the handler that carried it (`useInSessionKeys`, now
   // deleted) is gone — the AppShell cutover made a window-level

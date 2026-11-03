@@ -36,6 +36,13 @@ export interface StickToBottom {
   handleScroll: () => boolean
   /** Jump to the bottom and re-enable sticking. `smooth` animates unless reduced motion is on. */
   scrollToBottom: (opts?: { smooth?: boolean }) => void
+  /**
+   * Stop sticking, as a user scroll away from the bottom would — before a
+   * programmatic jump up the transcript (Alt+↑), which the scroll guard would
+   * otherwise not read as leaving the bottom, so the next content growth would
+   * drag the view straight back down.
+   */
+  unpin: () => void
   /** Set scrollTop without the resulting scroll event reading as a user gesture. */
   scrollProgrammatically: (el: HTMLElement, top: number) => void
   /** Flag this frame's scroll events as ours — for scrolls made by someone else's code (e.g. a virtualizer). */
@@ -115,6 +122,12 @@ export function useStickToBottom({ scrollRef, contentRef, followSignal }: Option
     }
   }, [scrollRef, endSmooth, scrollProgrammatically])
 
+  const unpin = useCallback(() => {
+    endSmooth()
+    if (pinnedRef.current) setShowScrollButton(true)
+    pinnedRef.current = false
+  }, [endSmooth])
+
   // A user gesture during a smooth scroll cancels it (the browser stops the
   // animation); hand scroll detection straight back so that gesture can unstick.
   useEffect(() => {
@@ -150,5 +163,5 @@ export function useStickToBottom({ scrollRef, contentRef, followSignal }: Option
     scrollToBottom()
   }, [followSignal, scrollToBottom])
 
-  return { pinnedRef, showScrollButton, handleScroll, scrollToBottom, scrollProgrammatically, markProgrammaticScroll }
+  return { pinnedRef, showScrollButton, handleScroll, scrollToBottom, unpin, scrollProgrammatically, markProgrammaticScroll }
 }

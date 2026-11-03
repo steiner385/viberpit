@@ -99,7 +99,6 @@ function renderPane({ onDetach, onClosed }: { onDetach: () => void; onClosed: ()
         sessionId="s1"
         onClosed={onClosed}
         onDetach={onDetach}
-        onOpenSession={vi.fn()}
       />
     </SessionRuntimeProvider>,
   )

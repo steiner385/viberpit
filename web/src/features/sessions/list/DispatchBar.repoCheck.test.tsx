@@ -72,7 +72,6 @@ function makeProps(overrides: Partial<React.ComponentProps<typeof DispatchBar>> 
     onNavigate: vi.fn(),
     onOpenHighlighted: vi.fn(),
     onEnterList: vi.fn(),
-    onJump: vi.fn(),
     onShowHelp: vi.fn(),
     onEscape: vi.fn(),
     isPending: false,

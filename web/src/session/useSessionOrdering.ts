@@ -121,7 +121,7 @@ export function useItemOrdering<G extends string, S extends string, T>(
   }
 }
 
-// ── Live wrapper (unchanged public API) ──────────────────────────────────────
+// ── The live and background specs ────────────────────────────────────────────
 export type SessionOrdering = OrderingHandle<GroupBy, SortBy, Session>
 
 export const LIVE_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
@@ -143,12 +143,4 @@ export const LIVE_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
 export const BACKGROUND_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
   ...LIVE_SPEC,
   namespace: 'background',
-}
-
-export function useSessionOrdering(
-  sessions: readonly Session[],
-  matchedIds: Set<string> | null = null,
-  allSessions: readonly Session[] = sessions,
-): SessionOrdering {
-  return useItemOrdering(sessions, LIVE_SPEC, matchedIds, allSessions)
 }

@@ -16,7 +16,7 @@
  *   • The "Sessions tab" that focus was parked on is a nav rail LINK.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
@@ -24,6 +24,7 @@ import type { Session } from '@/api/types'
 import { appSettings } from '@/test/factories'
 import { session } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
+import { saveListFilters } from '@/lib/sessionOrder'
 
 // ── Mock @/api/hooks (same scaffold as DashboardTabs.test.tsx) ────────────────
 
@@ -115,8 +116,13 @@ vi.mock('@/api/hooks', () => ({
   useRotateStalled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
+// The search box's result, controllable per test: `null` is "no search", a set
+// is the ids the search matched — what `useListPipeline` narrows the list by.
+const search = vi.hoisted(() => ({ matchedIds: null as Set<string> | null }))
 vi.mock('@/session/useSessionSearch', () => ({
-  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
+  useSessionSearch: () => ({
+    query: '', setQuery: vi.fn(), matchedIds: search.matchedIds, isFiltered: search.matchedIds !== null,
+  }),
 }))
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
@@ -150,6 +156,7 @@ function renderShell() {
 }
 
 function setupDefaultMocks() {
+  search.matchedIds = null
   vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
@@ -333,6 +340,37 @@ describe('Task 4 — row actions on highlighted session', () => {
     expect(app.path()).toBe('/sessions/s3')
   })
 
+  // D-10: the jump is the shell's (`session.jumpN`), matched on `e.code` — on a
+  // Mac, Option rewrites the key itself (⌥1 reports "¡"), so a match on
+  // `e.key` would make the binding dead on every Mac.
+  it('Alt+1 still opens the first session when macOS rewrites the key to "¡"', () => {
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    const app = renderShell()
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    box.focus()
+    fireEvent.keyDown(box, { key: '¡', code: 'Digit1', altKey: true })
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('Alt+2 works with focus in the chrome, not only from the prompt', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    const app = renderShell()
+    screen.getByRole('link', { name: /^Sessions/ }).focus()
+    await user.keyboard('{Alt>}2{/Alt}')
+    expect(app.path()).toBe('/sessions/s2')
+  })
+
+  it('Alt+digit counts the rows the search left, not every session', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    search.matchedIds = new Set(['s2', 's3'])
+    const app = renderShell()
+    screen.getByRole('link', { name: /^Sessions/ }).focus()
+    await user.keyboard('{Alt>}1{/Alt}')
+    expect(app.path()).toBe('/sessions/s2')
+  })
+
   it('Alt+9 is a no-op when fewer than 9 sessions', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
@@ -364,6 +402,86 @@ describe('Task 4 — row actions on highlighted session', () => {
     await waitFor(() => {
       expect(screen.getByLabelText(/open session two/i)).toHaveAttribute('data-selected', 'true')
     })
+  })
+})
+
+// ── D-10: Alt+[ / Alt+] walk the list order ───────────────────────────────────
+
+describe('Alt+[ / Alt+] — previous / next session in the list order', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupDefaultMocks()
+    window.localStorage.clear()
+  })
+
+  it('with no session open, Alt+] opens the first session and Alt+[ the last', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    const app = renderShell()
+    screen.getByRole('link', { name: /^Sessions/ }).focus()
+    await user.keyboard('{Alt>}[BracketRight]{/Alt}')
+    expect(app.path()).toBe('/sessions/s1')
+    await act(async () => { await app.router.navigate('/sessions') })
+    await user.keyboard('{Alt>}[BracketLeft]{/Alt}')
+    expect(app.path()).toBe('/sessions/s3')
+  })
+
+  it('works from the new-session prompt, and on the macOS-rewritten key', async () => {
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    const app = renderShell()
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    box.focus()
+    fireEvent.keyDown(box, { key: '‘', code: 'BracketRight', altKey: true })
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('respects the search: it steps through the matching rows only', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    search.matchedIds = new Set(['s2', 's3'])
+    const app = renderShell()
+    screen.getByRole('link', { name: /^Sessions/ }).focus()
+    await user.keyboard('{Alt>}[BracketRight]{/Alt}')
+    expect(app.path()).toBe('/sessions/s2')
+    await act(async () => { await app.router.navigate('/sessions') })
+    await user.keyboard('{Alt>}[BracketLeft]{/Alt}')
+    expect(app.path()).toBe('/sessions/s3')
+  })
+
+  it('respects the list filters too', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([
+      makeSession({ id: 's1', name: 'One', repo: 'acme/web' }),
+      makeSession({ id: 's2', name: 'Two', repo: 'acme/api' }),
+      makeSession({ id: 's3', name: 'Three', repo: 'acme/web' }),
+    ]))
+    saveListFilters('live', { status: null, project: 'acme/api', environment: null })
+    const app = renderShell()
+    screen.getByRole('link', { name: /^Sessions/ }).focus()
+    await user.keyboard('{Alt>}[BracketRight]{/Alt}')
+    expect(app.path()).toBe('/sessions/s2')
+  })
+
+  it('does nothing with an empty list', async () => {
+    const user = userEvent.setup()
+    const app = renderShell()
+    screen.getByRole('link', { name: /^Sessions/ }).focus()
+    await user.keyboard('{Alt>}[BracketRight]{/Alt}')
+    expect(app.path()).toBe('/sessions')
+  })
+
+  it('a second press before the opened session renders steps on from it, not from the old one', () => {
+    // Key auto-repeat, or a quick double press: the second keydown lands before
+    // the navigation commits, while the shell still reports no session open.
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    const app = renderShell()
+    const rail = screen.getByRole('link', { name: /^Sessions/ })
+    rail.focus()
+    act(() => {
+      fireEvent.keyDown(rail, { key: ']', code: 'BracketRight', altKey: true })
+      fireEvent.keyDown(rail, { key: ']', code: 'BracketRight', altKey: true })
+    })
+    expect(app.path()).toBe('/sessions/s2')
   })
 })
 

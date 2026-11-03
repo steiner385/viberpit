@@ -172,7 +172,6 @@ function SessionsPage() {
       // Detaching (Back, ← / Esc / Ctrl+Z) goes to the list, not to the
       // neighbour: the session is still there, the user just left it.
       onDetach={() => navigate(scope === 'background' ? BACKGROUND_PATH : SESSIONS_PATH)}
-      onOpenSession={(next) => navigate(sessionPath(next, scope))}
     />
   )
 }

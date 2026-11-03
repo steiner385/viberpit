@@ -865,3 +865,77 @@ describe('Escape closes an open menu instead of detaching', () => {
     expect(app.path()).toBe('/sessions/s1')
   })
 })
+
+// ── D-10: Alt+[ ] / Alt+1–9 switch sessions; Alt+↑↓ jump between prompts ──────
+
+describe('Alt+[ / Alt+] / Alt+1–9 switch sessions in the list order', () => {
+  const altKey = (target: Element, key: string, code: string) => {
+    const ev = new KeyboardEvent('keydown', { key, code, altKey: true, bubbles: true, cancelable: true })
+    act(() => { target.dispatchEvent(ev) })
+    return ev
+  }
+
+  it('Alt+] / Alt+[ step from the open session, wrapping at both ends', async () => {
+    const app = await renderSession()
+    altKey(railLink(), ']', 'BracketRight')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+    altKey(railLink(), ']', 'BracketRight')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s1'))
+    altKey(railLink(), '[', 'BracketLeft')
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('the header chevrons go exactly where Alt+[ / Alt+] go', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.click(screen.getByRole('button', { name: 'Next session' }))
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+    const byChevron = app.path()
+    await act(async () => { await app.router.navigate('/sessions/s1') })
+    altKey(railLink(), ']', 'BracketRight')
+    await waitFor(() => expect(app.path()).toBe(byChevron))
+    await act(async () => { await app.router.navigate('/sessions/s1') })
+    await user.click(screen.getByRole('button', { name: 'Previous session' }))
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('Alt+2 opens the second session from inside the session composer — and on the Mac key "™"', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.click(composer())
+    const ev = altKey(composer(), '™', 'Digit2')
+    expect(ev.defaultPrevented).toBe(true)
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('Alt+] does nothing from another text entry (the list search)', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    const ev = altKey(search, '‘', 'BracketRight')
+    expect(ev.defaultPrevented).toBe(false)
+    expect(app.path()).toBe('/sessions/s1')
+  })
+})
+
+describe('Alt+↑ / Alt+↓ jump between own prompts', () => {
+  it('are claimed with a session open — from the composer too — and left alone without one', async () => {
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    for (const key of ['ArrowUp', 'ArrowDown']) {
+      const ev = new KeyboardEvent('keydown', { key, code: key, altKey: true, bubbles: true, cancelable: true })
+      act(() => { composer().dispatchEvent(ev) })
+      expect(ev.defaultPrevented, `Alt+${key}`).toBe(true)
+    }
+  })
+
+  it('do nothing without a session open', () => {
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    const ev = new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', altKey: true, bubbles: true, cancelable: true })
+    act(() => { railLink().dispatchEvent(ev) })
+    expect(ev.defaultPrevented).toBe(false)
+  })
+})
