@@ -585,3 +585,75 @@ def test_cancellation_inside_hold_releases_and_drains():
             await d.aclose()
     sent = _run(go)
     assert len(sent) == 1 and "queued" in sent[0]
+
+
+def test_cli_turn_ending_inside_hold_settles_and_release_sends_the_prompt():
+    """A CLI-initiated turn (background-task notification) that ends inside a hold
+    settles; it must not dequeue into the hold, where the prompt would be re-queued
+    at the tail with ``_turn_active`` left set — stranded for good."""
+    clients: list = []
+
+    async def go():
+        d = _driver(FakeControl(), clients=clients)
+        await d.start()
+        client = clients[0]
+        try:
+            async with d.rewind_hold():
+                d._turn_active = True          # opened by the idle listener
+                await d.send_prompt("typed while a background turn ran")
+                await d._end_turn()            # its ResultMessage arrives inside the hold
+                assert d._turn_active is False
+                assert client.sent == []
+            await _settle(d, client, 1)
+            return list(client.sent), list(d._queue), d._turn_active
+        finally:
+            await d.aclose()
+    sent, queue, active = _run(go)
+    assert len(sent) == 1 and "typed while a background turn ran" in sent[0]
+    assert queue == [] and active is False
+
+
+def test_queued_prompts_keep_fifo_order_across_the_hold():
+    clients: list = []
+
+    async def go():
+        d = _driver(FakeControl(), clients=clients)
+        await d.start()
+        client = clients[0]
+        try:
+            async with d.rewind_hold():
+                d._turn_active = True
+                await d.send_prompt("first")
+                await d.send_prompt("second")
+                await d._end_turn()
+                assert [q[0] for q in d._queue] == ["first", "second"]
+            await _settle(d, client, 2)
+            return list(client.sent)
+        finally:
+            await d.aclose()
+    sent = _run(go)
+    assert len(sent) == 2
+    assert "first" in sent[0] and "second" in sent[1]
+
+
+def test_drain_failure_does_not_mask_the_body_error(caplog):
+    async def go():
+        d = _driver(FakeControl())
+        await d.start()
+        try:
+            with pytest.raises(ValueError, match="backup failed"):
+                async with d.rewind_hold():
+                    await d.send_prompt("queued")
+
+                    async def boom(*a, **k):
+                        raise RuntimeError("start failed")
+                    d._start_turn = boom  # type: ignore[method-assign]
+                    raise ValueError("backup failed")
+            return d._rewind_held
+        finally:
+            await d.aclose()
+    with caplog.at_level(logging.DEBUG, logger="server.sessions.claude_driver"):
+        held = _run(go)
+    assert held is False
+    recs = [r for r in caplog.records if "dequeue after a failed rewind" in r.getMessage()]
+    assert len(recs) == 1 and recs[0].levelno == logging.INFO

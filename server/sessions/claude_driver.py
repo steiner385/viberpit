@@ -1727,7 +1727,11 @@ class ClaudeAgentDriver:
         # Nothing queued: settle to idle. The dequeue below is deliberately NOT an
         # `else` — see its comment. A dead stream settles too, whatever is queued:
         # those prompts are held for the rebuilt driver (_reassign carries them).
-        if not self._queue or self._stream_ended:
+        # A rewind hold (D-9) counts as an empty queue: a CLI-initiated turn ending
+        # inside one settles here, and the hold's release dequeues in FIFO order.
+        # Dequeuing now would hand the head to `_start_turn`, which re-queues it at
+        # the tail under the hold while `_turn_active` stays set — stranding it.
+        if not self._queue or self._stream_ended or self._rewind_held:
             self._turn_active = False
             self._turn_started_at = None
             self._turn_buffer = []
@@ -1752,7 +1756,7 @@ class ClaudeAgentDriver:
         # reopening the window.
         if self._stream_ended:
             return   # nothing to dequeue onto, nothing to listen to
-        if self._queue:
+        if self._queue and not self._rewind_held:
             next_text, next_images, next_context, next_origin = self._queue.pop(0)
             log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                       self.session_id, len(self._queue))
@@ -2270,14 +2274,26 @@ class ClaudeAgentDriver:
         log.info("driver.rewind_hold claimed session=%s", self.session_id)
         try:
             yield
-        finally:
-            self._rewind_held = False
-            log.info("driver.rewind_hold released session=%s queue_depth=%d",
-                     self.session_id, len(self._queue))
-            # Finishes even when the holder was cancelled, so a queued prompt is never
-            # stranded; the caller's cancellation is re-raised afterwards (#1164).
-            await run_to_completion(self._drain_after_rewind(),
-                                    name=f"driver-rewind-drain:{self.session_id}")
+        except BaseException:
+            # Unwinding from the body's error: the drain's own failure must not mask
+            # it. CancelledError is not caught here, so a cancel still propagates.
+            try:
+                await self._release_rewind_hold()
+            except Exception:
+                log.info("driver.rewind_hold: dequeue after a failed rewind failed "
+                         "session=%s", self.session_id, exc_info=True)
+            raise
+        else:
+            await self._release_rewind_hold()
+
+    async def _release_rewind_hold(self) -> None:
+        self._rewind_held = False
+        log.info("driver.rewind_hold released session=%s queue_depth=%d",
+                 self.session_id, len(self._queue))
+        # Finishes even when the holder was cancelled, so a queued prompt is never
+        # stranded; the caller's cancellation is re-raised afterwards (#1164).
+        await run_to_completion(self._drain_after_rewind(),
+                                name=f"driver-rewind-drain:{self.session_id}")
 
     async def _drain_after_rewind(self) -> None:
         """Start the queue head a rewind hold deferred (``_end_turn``'s dequeue). The
