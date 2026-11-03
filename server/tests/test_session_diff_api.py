@@ -207,6 +207,38 @@ async def test_rpc_round_trip_runs_on_the_daemon(repo: Path) -> None:
     assert all(f["hunks"] == [] for f in d["files"])
 
 
+@pytest.mark.asyncio
+async def test_unknown_session_rpc_is_not_a_warning(repo: Path, caplog) -> None:
+    """An unknown id is an expected refusal (edge -> 404): no WARNING, still a KeyError.
+    A genuine handler defect still logs WARNING."""
+    import logging
+
+    app = create_daemon_app()
+    orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
+                               usage_fn=lambda name: None)
+    register_orchestrator_rpc(app, orch)
+
+    async def boom(params):
+        raise ValueError("handler defect")
+
+    app.state.rpc["boom"] = boom
+    with caplog.at_level(logging.INFO, logger="server.ipc.daemon"):
+        async with serve_daemon_uds(app) as sock:
+            client = DaemonClient(sock)
+            try:
+                ro = RemoteOrchestrator(client)
+                with pytest.raises(KeyError):
+                    await ro.session_diff("sess-1")
+                warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+                with pytest.raises(Exception):
+                    await client.call("boom")
+            finally:
+                await client.aclose()
+    assert warned == []
+    assert any(r.levelno == logging.WARNING and "handler defect" in r.getMessage()
+               for r in caplog.records)
+
+
 class _HostOrch:
     def __init__(self, name):
         self.name, self.calls = name, []

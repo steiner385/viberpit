@@ -23,6 +23,14 @@ log = logging.getLogger("server.ipc.daemon")
 _EXPECTED_RPC_ERRORS = frozenset({"StaleOwnership", "DriverStartTimeout"})
 
 
+def _is_unknown_session(exc: Exception) -> bool:
+    """An unknown-session refusal: the edge maps this ``KeyError`` to a clean 404.
+
+    ``str(KeyError)`` is repr-quoted, so the text starts with a quote character.
+    """
+    return isinstance(exc, KeyError) and str(exc).lstrip("'\"").startswith("No session with id")
+
+
 def create_daemon_app() -> FastAPI:
     from server.obs.context import PROC_EPOCH
     import uuid as _uuid
@@ -368,7 +376,8 @@ def create_daemon_app() -> FastAPI:
             # edge reconstructs (they carry error_data) are expected — INFO; anything
             # else is a handler defect — WARNING with the traceback.
             if (getattr(exc, "error_data", None) is not None
-                    or type(exc).__name__ in _EXPECTED_RPC_ERRORS):
+                    or type(exc).__name__ in _EXPECTED_RPC_ERRORS
+                    or _is_unknown_session(exc)):
                 log.info("rpc.error method=%s type=%s message=%s",
                          method, type(exc).__name__, exc)
             else:
