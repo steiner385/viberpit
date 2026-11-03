@@ -156,12 +156,12 @@ describe('MessageActions — Fork from here', () => {
 
   it('says why on a 409, and stays put', async () => {
     vi.spyOn(api, 'post').mockRejectedValue(new ApiRequestError(409, {
-      detail: { code: 'FORK_OWNED_BY_AUTOMATION', message: 'server text' },
+      detail: { code: 'FORK_AT_CAPACITY', message: 'server text' },
     }))
     host(<MessageActions turn={reply1} />)
     await chooseFork(/Message actions — reply/)
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
-      'An automation is running this session — fork it after the run finishes'))
+      'Too many sessions are running — fork once one finishes'))
     expect(toast).not.toHaveBeenCalled()
     expect(screen.queryByText(/open session/)).toBeNull()
   })

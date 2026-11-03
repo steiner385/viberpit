@@ -373,6 +373,49 @@ async def test_migration_matches_models_and_round_trips(ownership_db):
         tx.reserve_session()
 
 
+_OPERATION_LOOKUP_INDEXES = {
+    "ix_automation_operations_predecessor_token",
+    "ix_automation_operations_session_id",
+    "ix_automation_operations_reserved_session_id",
+}
+
+
+@pytest.mark.asyncio
+async def test_operation_lookup_columns_are_indexed_and_migration_0094_round_trips(ownership_db):
+    """The three columns every lineage walk filters on (``_naming`` and
+    ``_finished``, #3230) are indexed by the model, and migration 0094 — the
+    reviewable record, since reconcile never creates an index on an existing
+    table — adds and drops exactly those indexes."""
+    import importlib.util
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect
+
+    path = Path(__file__).parents[1] / "db/migrations/versions/0094_automation_operation_indexes.py"
+    spec = importlib.util.spec_from_file_location("operation_index_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert migration.down_revision == "0093_session_fork_resume"
+    model_indexes = {index.name for index in AutomationOperation.__table__.indexes}
+    assert model_indexes == _OPERATION_LOOKUP_INDEXES
+
+    def names(conn) -> set[str]:
+        return {index["name"] for index in inspect(conn).get_indexes("automation_operations")}
+
+    def exercise(conn):
+        assert names(conn) == _OPERATION_LOOKUP_INDEXES          # create_all, from the model
+        with Operations.context(MigrationContext.configure(conn)):
+            migration.downgrade()
+            assert names(conn) == set()
+            migration.upgrade()
+        assert names(conn) == _OPERATION_LOOKUP_INDEXES
+
+    async with database._engine.begin() as conn:
+        await conn.run_sync(exercise)
+
+
 @pytest.mark.asyncio
 async def test_cancelled_acquisition_rolls_back_targets_and_retry_state(ownership_db):
     async with ownership_db() as db:

@@ -58,10 +58,12 @@ def check_limits(*, enabled: bool, parent_depth: int, live_children: int, cap: i
 def steering_parent(child: object | None) -> str | None:
     """The session *child* reports its stops to and takes replies from: its parent —
     except for a fork (D-8). A fork's ``parent_session_id`` links it to its source for
-    the sessions tree, the ownership lineage and the per-parent child cap, but a fork is
-    the user's own session: it never notifies or wakes the source, never escalates as a
-    child whose parent is unreachable, is not listed among the source's children and
-    cannot be steered by it. Every child-notice and parent-steering path asks this."""
+    the sessions tree and the per-parent child cap, but a fork is the user's own
+    session: it never notifies or wakes the source, never escalates as a child whose
+    parent is unreachable, is not listed among the source's children and cannot be
+    steered by it. Every child-notice and parent-steering path asks this, and so does
+    the automation ownership fence for its pre-launch parent hint: a fork is an
+    ownership-lineage boundary too (#3230, ``ownership._lineage_parent``)."""
     if child is None or getattr(child, "is_fork", False) is True:
         return None
     return getattr(child, "parent_session_id", None) or None

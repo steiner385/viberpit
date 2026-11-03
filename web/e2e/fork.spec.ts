@@ -101,10 +101,10 @@ test('forking a prompt cuts at the reply before it and prefills the child compos
 
 test('a refused fork says why and stays on the session', async ({ page }) => {
   await openSession(page, { reply: { status: 409, json: { detail: {
-    code: 'FORK_OWNED_BY_AUTOMATION', message: 'owned' } } } })
+    code: 'FORK_AT_CAPACITY', message: 'full' } } } })
   await openMenu(page, 'Second answer', 'reply')
   await page.getByRole('menuitem', { name: 'Fork from here' }).click()
-  await expect(page.getByText('An automation is running this session — fork it after the run finishes')).toBeVisible()
+  await expect(page.getByText('Too many sessions are running — fork once one finishes')).toBeVisible()
   await expect(page).toHaveURL(new RegExp(`/sessions/${sid}`))
 })
 

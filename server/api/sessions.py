@@ -2114,7 +2114,7 @@ async def fork_session(
     message-mode text echoed back (null for a reply fork). Unknown session 404; a
     prefill over 10,000 chars 400 ``PREFILL_TOO_LONG``; 409 ``FORK_UNAVAILABLE`` (kill
     switch off, or an engine that cannot fork), ``TURN_NOT_FORKABLE`` (no settled
-    anchor for the turn, or one still in flight), ``FORK_AT_CAPACITY``, ``FORK_OWNED_BY_AUTOMATION``,
+    anchor for the turn, or one still in flight), ``FORK_AT_CAPACITY``,
     ``FORK_NEEDS_APPROVAL``, a fork worktree code (e.g. ``FORK_UNSAFE_CONFIG``),
     ``model blocked by policy`` and the account 409s exactly as on create, or
     ``daemon_outdated`` from an old daemon. ``requestId`` (a uuid per click) makes a
