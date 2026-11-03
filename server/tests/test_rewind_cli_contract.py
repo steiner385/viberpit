@@ -37,17 +37,44 @@ BOGUS = "00000000-0000-4000-8000-000000000000"
 _TIMEOUT_S = 60
 
 
+def _cli_path_env(binary: str) -> str:
+    """The minimal PATH for the CLI. A native binary needs nothing extra. A script
+    wrapper (``#!/usr/bin/env node``, an npm install) gets its interpreter's dir on
+    PATH; when that interpreter can't be found the test SKIPS — a wrapper must never
+    turn into a contract failure."""
+    path = "/usr/bin:/bin"
+    with open(binary, "rb") as fh:
+        head = fh.readline(512)
+    if not head.startswith(b"#!"):
+        return path
+    parts = head[2:].decode(errors="replace").split()
+    if not parts:
+        pytest.skip(f"{binary} is a script with an empty shebang")
+    if os.path.basename(parts[0]) == "env":
+        args = [a for a in parts[1:] if not a.startswith("-")]
+        if not args:
+            pytest.skip(f"{binary} is a script with an unparseable shebang")
+        interp = args[0]
+    else:
+        interp = parts[0]
+    resolved = interp if os.path.isabs(interp) else shutil.which(interp)
+    if resolved is None or not os.access(resolved, os.X_OK):
+        pytest.skip(f"{binary} is a script needing {interp!r}, which was not found on PATH")
+    return f"{os.path.dirname(resolved)}:{path}"
+
+
 def _run_cli(binary: str, requests: list[dict]) -> dict[str, dict]:
     """Start a throwaway stream-json session, send ``requests`` as control requests
     (after the SDK's ``initialize``), close stdin, and return each ``control_response``
     by request id. Every temp dir is removed afterwards."""
+    path_env = _cli_path_env(binary)
     root = tempfile.mkdtemp(prefix="d9-rewind-contract.")
     try:
         cwd, cfg, home = (os.path.join(root, n) for n in ("cwd", "cfg", "home"))
         for p in (cwd, cfg, home):
             os.mkdir(p)
         env = {
-            "PATH": "/usr/bin:/bin",
+            "PATH": path_env,
             "HOME": home,
             "CLAUDE_CONFIG_DIR": cfg,
             "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "true",
@@ -112,3 +139,24 @@ def test_bogus_ids_get_the_documented_replies(binary):
     assert real["subtype"] == "error"
     assert "No file checkpoint found" in real["error"]
     assert map_cli_error({"error": real["error"]}).code == REWIND_NO_CHECKPOINT
+
+
+def test_wrapper_path_native_binary_needs_nothing(tmp_path):
+    exe = tmp_path / "claude"
+    exe.write_bytes(b"\x7fELF\x02\x01")
+    assert _cli_path_env(str(exe)) == "/usr/bin:/bin"
+
+
+def test_wrapper_path_carries_the_interpreter_dir(tmp_path):
+    exe = tmp_path / "claude"
+    exe.write_text("#!/usr/bin/env sh\nexit 0\n")
+    sh = shutil.which("sh")
+    assert sh is not None
+    assert _cli_path_env(str(exe)) == f"{os.path.dirname(sh)}:/usr/bin:/bin"
+
+
+def test_wrapper_without_its_interpreter_skips(tmp_path):
+    exe = tmp_path / "claude"
+    exe.write_text("#!/usr/bin/env d9-no-such-interpreter\n")
+    with pytest.raises(pytest.skip.Exception, match="d9-no-such-interpreter"):
+        _cli_path_env(str(exe))

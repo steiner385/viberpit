@@ -14,6 +14,7 @@ import inspect
 import logging
 
 import pytest
+from claude_agent_sdk._errors import CLIConnectionError
 
 from server.sessions import rewind
 from server.sessions.claude_driver import ClaudeAgentDriver
@@ -21,7 +22,8 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions.rewind import (REWIND_BUSY, REWIND_CODES, REWIND_FAILED,
                                     REWIND_NO_CHECKPOINT, REWIND_NOT_USER_MESSAGE,
                                     REWIND_SPLITS_TOOL_CALL, REWIND_STALE_TARGET,
-                                    REWIND_TARGET_NOT_FOUND, REWIND_UNAVAILABLE,
+                                    REWIND_OUTCOME_UNKNOWN, REWIND_TARGET_NOT_FOUND,
+                                    REWIND_UNAVAILABLE,
                                     ConversationRewind, RewindError, RewindPreview,
                                     map_cli_error)
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -63,12 +65,15 @@ class FakeControl:
         return reply
 
 
-def _driver(control: FakeControl | None, registry: PermissionRegistry | None = None):
+def _driver(control: FakeControl | None, registry: PermissionRegistry | None = None,
+            clients: list | None = None):
     def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
              on_pre_compact=None):
         client = FakeSDKClient([], on_can_use_tool=can_use_tool, startup_frames=[])
         if control is not None:
             client._query = control
+        if clients is not None:
+            clients.append(client)
         return client
     return ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                              sdk_factory=make, registry=registry or PermissionRegistry(),
@@ -386,3 +391,197 @@ def test_sdk_rewind_files_uses_the_control_channel_the_adapter_uses():
     params = inspect.signature(Query._send_control_request).parameters
     assert list(params)[:2] == ["self", "request"]
     assert "timeout" in params
+
+
+# ---- outcome unknown: a state-changing request with no reply ------------------
+
+def _timeout_exc(subtype: str) -> Exception:
+    """What the SDK raises on a control timeout: a bare Exception from TimeoutError."""
+    try:
+        try:
+            raise TimeoutError
+        except TimeoutError as e:
+            raise Exception(f"Control request timeout: {subtype}") from e
+    except Exception as exc:
+        return exc
+
+
+@pytest.mark.parametrize("call,exc", [
+    (lambda d: d.rewind_files(U2, dry_run=False), _timeout_exc("rewind_files")),
+    (lambda d: d.rewind_conversation(U2, last_seen=U3), _timeout_exc("rewind_conversation")),
+    (lambda d: d.rewind_files(U2, dry_run=False), CLIConnectionError("pipe closed")),
+    (lambda d: d.rewind_conversation(U2, last_seen=U3), OSError("reader died")),
+])
+def test_no_reply_to_a_mutating_request_is_outcome_unknown(call, exc):
+    control = FakeControl(exc)
+
+    async def go():
+        d = _driver(control)
+        await d.start()
+        try:
+            with pytest.raises(RewindError) as ei:
+                await call(d)
+            return ei.value
+        finally:
+            await d.aclose()
+    err = _run(go)
+    assert err.code == REWIND_FAILED
+    assert err.error_data == {"code": REWIND_FAILED, "reason": REWIND_OUTCOME_UNKNOWN}
+
+
+def test_dry_run_timeout_is_plain_failed():
+    control = FakeControl(_timeout_exc("rewind_files"))
+
+    async def go():
+        d = _driver(control)
+        await d.start()
+        try:
+            with pytest.raises(RewindError) as ei:
+                await d.rewind_files(U2, dry_run=True)
+            return ei.value
+        finally:
+            await d.aclose()
+    assert _run(go).error_data == {"code": REWIND_FAILED}
+
+
+# ---- rewind_hold ---------------------------------------------------------------
+
+async def _settle(d, client, n_sent: int) -> None:
+    """Wait (bounded) until the client saw ``n_sent`` prompts and the turn settled."""
+    for _ in range(200):
+        if len(client.sent) >= n_sent and not d._turn_live():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"sent={client.sent!r} live={d._turn_live()}")
+
+
+def test_prompt_sent_during_hold_is_queued_and_starts_after_release():
+    control = FakeControl(DRY_U2, REAL_OK, CONV_OK)
+    clients: list = []
+
+    async def go():
+        d = _driver(control, clients=clients)
+        await d.start()
+        client = clients[0]
+        try:
+            async with d.rewind_hold():
+                await d.rewind_files(U2, dry_run=True)
+                await d.send_prompt("typed during the rewind")
+                assert client.sent == []
+                assert [q[0] for q in d._queue] == ["typed during the rewind"]
+                # The hold is not "busy": the sequence keeps going with a prompt queued.
+                await d.rewind_files(U2, dry_run=False)
+                await d.rewind_conversation(U2, last_seen=U3)
+            await _settle(d, client, 1)
+            return list(client.sent), list(d._queue)
+        finally:
+            await d.aclose()
+    sent, queue = _run(go)
+    assert len(sent) == 1 and "typed during the rewind" in sent[0]
+    assert queue == []
+    assert [r["subtype"] for r in control.sent] == ["rewind_files", "rewind_files",
+                                                     "rewind_conversation"]
+
+
+def test_hold_refused_while_a_turn_is_starting():
+    async def go():
+        d = _driver(FakeControl())
+        await d.start()
+        d._starting_turn = True
+        try:
+            with pytest.raises(RewindError) as ei:
+                async with d.rewind_hold():
+                    pass
+            return ei.value.code, d._rewind_held
+        finally:
+            d._starting_turn = False
+            await d.aclose()
+    assert _run(go) == (REWIND_BUSY, False)
+
+
+def test_per_call_check_refuses_while_a_turn_is_starting():
+    control = FakeControl(DRY_U2)
+
+    async def go():
+        d = _driver(control)
+        await d.start()
+        d._starting_turn = True
+        try:
+            with pytest.raises(RewindError) as ei:
+                await d.rewind_files(U2, dry_run=True)
+            return ei.value.code
+        finally:
+            d._starting_turn = False
+            await d.aclose()
+    assert _run(go) == REWIND_BUSY
+    assert control.sent == []
+
+
+def test_second_hold_is_refused_busy():
+    async def go():
+        d = _driver(FakeControl())
+        await d.start()
+        try:
+            async with d.rewind_hold():
+                with pytest.raises(RewindError) as ei:
+                    async with d.rewind_hold():
+                        pass
+                still_held = d._rewind_held
+            return ei.value.code, still_held, d._rewind_held
+        finally:
+            await d.aclose()
+    assert _run(go) == (REWIND_BUSY, True, False)
+
+
+def test_exception_inside_hold_releases_and_drains():
+    clients: list = []
+
+    async def go():
+        d = _driver(FakeControl(), clients=clients)
+        await d.start()
+        client = clients[0]
+        try:
+            with pytest.raises(RuntimeError, match="backup failed"):
+                async with d.rewind_hold():
+                    await d.send_prompt("queued")
+                    raise RuntimeError("backup failed")
+            assert d._rewind_held is False
+            await _settle(d, client, 1)
+            return list(client.sent), list(d._queue)
+        finally:
+            await d.aclose()
+    sent, queue = _run(go)
+    assert len(sent) == 1 and "queued" in sent[0]
+    assert queue == []
+
+
+def test_cancellation_inside_hold_releases_and_drains():
+    clients: list = []
+
+    async def go():
+        d = _driver(FakeControl(), clients=clients)
+        await d.start()
+        client = clients[0]
+        entered = asyncio.Event()
+
+        async def holder():
+            async with d.rewind_hold():
+                await d.send_prompt("queued")
+                entered.set()
+                await asyncio.sleep(3600)
+        try:
+            task = asyncio.create_task(holder())
+            await entered.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert d._rewind_held is False
+            await _settle(d, client, 1)
+            # A later hold can be taken again.
+            async with d.rewind_hold():
+                pass
+            return list(client.sent)
+        finally:
+            await d.aclose()
+    sent = _run(go)
+    assert len(sent) == 1 and "queued" in sent[0]

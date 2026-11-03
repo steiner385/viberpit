@@ -79,6 +79,11 @@ _ERROR_TEXT_CODES: tuple[tuple[str, str], ...] = (
     ("is not a user message", REWIND_NOT_USER_MESSAGE),
 )
 
+#: ``error_data["reason"]`` of a ``REWIND_FAILED`` for a state-changing request whose
+#: reply never came (timeout, transport failure): it may have been applied, so the
+#: caller must restore from its undo backup.
+REWIND_OUTCOME_UNKNOWN = "outcome_unknown"
+
 #: Seconds to wait for one rewind control reply (the SDK's own default).
 REWIND_CONTROL_TIMEOUT_S = 60.0
 
