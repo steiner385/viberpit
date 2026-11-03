@@ -2601,10 +2601,20 @@ class SessionOrchestrator:
 
     async def _automation_before_execution(self, session_id: str, *, execution_id: str | None = None) -> bool:
         from server.automations.ownership import (
-            begin_session_execution, execution_snapshot, lineage_unowned,
+            StaleOwnership, ancestors_unowned, begin_session_execution, execution_snapshot,
+            lineage_unowned,
         )
         record = self._records.get(session_id)
         parent = getattr(record, "parent_session_id", None)
+        if (getattr(record, "is_fork", False) is True
+                and not await ancestors_unowned(session_id, parent_session_id=parent)):
+            # A fork (D-8) never joins an automation operation that owns its source's
+            # lineage — not even one that went live after fork admission checked: it
+            # could not prove stopped until a human closed the fork. Refused before
+            # begin_session_execution; fork_session turns it into
+            # FORK_OWNERSHIP_STALE and removes the worktree and row. The same holds
+            # for a fork rebuilt from its row (is_fork is persisted).
+            raise StaleOwnership("a fork never runs under its source's automation")
         prior = await execution_snapshot(session_id, parent_session_id=parent)
         if prior is not None and await lineage_unowned(session_id, parent_session_id=parent):
             # Every operation in the lineage is finished and none names this session —
@@ -5860,6 +5870,7 @@ class SessionOrchestrator:
                 # until a daemon restart rebuilt the record from the row (2026-09-07).
                 permission_mode=permission_mode,
                 fork_from=fork_from,
+                is_fork=fork_worktree is not None,
             )
         except BaseException:
             await self._run_rollback_shielded(
@@ -5977,6 +5988,7 @@ class SessionOrchestrator:
                         parent_session_id=_pre_record.parent_session_id,
                         fork_source_engine_session_id=fork_from[0] if fork_from else None,
                         fork_resume_at=fork_from[1] if fork_from else None,
+                        is_fork=True if fork_worktree is not None else None,
                         account_name=account,
                         engine=selected_engine.value,
                         engine_session_id=None,
@@ -18218,6 +18230,7 @@ class SessionOrchestrator:
             parent_session_id=getattr(row, "parent_session_id", None),
             parent_notified_status=getattr(row, "parent_notified_status", None),
             fork_from=_row_fork_from(row),
+            is_fork=bool(getattr(row, "is_fork", None)),
             # Initial value only: a record just rebuilt from its row has no driver.
             # From here on the flag is DERIVED on every read (_sync_detached), never
             # hand-maintained — see that method for the drift this used to cause.

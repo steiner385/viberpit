@@ -406,6 +406,14 @@ async def lineage_unowned(session_id: str, *, parent_session_id: str | None = No
     async with db_session() as db:
         if (await db.scalars(_naming(session_id))).first() is not None:
             return False
+    return await ancestors_unowned(session_id, parent_session_id=parent_session_id)
+
+
+async def ancestors_unowned(session_id: str, *, parent_session_id: str | None = None) -> bool:
+    """``lineage_unowned``'s ancestor half: every operation naming any ancestor of
+    *session_id*, at EVERY level of the parent walk, is finished. Operations naming
+    the session itself are not considered (a fork's own later runs are its own)."""
+    async with db_session() as db:
         seen = {session_id}
         current = parent_session_id or await db.scalar(
             select(DbSession.parent_session_id).where(DbSession.id == session_id))

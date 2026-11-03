@@ -223,6 +223,11 @@ class SessionRecord:
     # fork_resume_at (restored by _record_from_row), so it survives a daemon restart;
     # deliberately NOT in to_dict/from_dict — only the owner daemon spawns drivers.
     fork_from: tuple[str, str] | None = None
+    # This session was made by Fork from here (D-8); persisted as the row's
+    # ``is_fork``. A fork never joins an automation operation that owns its source's
+    # lineage: while one does, its driver refuses to start (StaleOwnership) rather
+    # than begin execution under it (_automation_before_execution).
+    is_fork: bool = False
 
     def record_turn_anchor(self, turn_id: str, uuid: str) -> None:
         """Remember *turn_id*'s anchor as the newest, evicting the oldest past the cap."""

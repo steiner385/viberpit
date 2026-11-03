@@ -288,6 +288,9 @@ class Session(Base):
     fork_source_engine_session_id: Mapped[str | None] = mapped_column(
         String, nullable=True, default=None)
     fork_resume_at: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Made by Fork from here (D-8): its driver never starts under a live automation
+    # operation of its ancestors. NULL = not a fork. Nullable for init_db's reconcile.
+    is_fork: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
     # model, pin…). Used as the archived-sessions list's "archived at" only as a legacy

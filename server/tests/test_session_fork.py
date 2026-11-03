@@ -576,16 +576,90 @@ async def test_retry_after_a_failure_returns_the_same_child(env) -> None:
 
 @pytest.mark.asyncio
 async def test_an_owner_going_live_mid_fork_is_a_coded_refusal(env) -> None:
-    """An operation that goes live between admission and the child driver's
-    ownership fence: FORK_OWNERSHIP_STALE, and the fork worktree is gone."""
-    from server.automations.ownership import StaleOwnership
-    orch, _, src, _, clone = env
-    with patch("server.automations.ownership.begin_session_execution",
-               mock.AsyncMock(side_effect=StaleOwnership("claimed meanwhile"))):
+    """Real store: an automation claims the source and starts its action AFTER fork
+    admission passed (here, while the worktree is being made). The child's driver
+    refuses to begin under it: FORK_OWNERSHIP_STALE, no worktree, no row, and the
+    operation's execution_sessions untouched."""
+    from server.automations.ownership import owned
+    from server.tests.test_automation_ownership import claim, target
+    orch, spawns, src, _, clone = env
+    token = await claim([target()])
+    made: list[str] = []
+    real = worktrees.create_fork_worktree
+    loop = asyncio.get_running_loop()
+
+    async def go_live() -> None:
+        async with owned(token) as tx:
+            tx.start_action(session_id=src.id)
+
+    def racing(*a, **k):
+        info = real(*a, **k)
+        made.append(info.path)
+        asyncio.run_coroutine_threadsafe(go_live(), loop).result(30)
+        return info
+
+    with patch.object(worktrees, "create_fork_worktree", racing):
         with pytest.raises(fk.ForkError) as ei:
             await _fork(orch, src.id, at_turn_id="t1", mode="reply")
     assert ei.value.code == fk.FORK_OWNERSHIP_STALE
+    op = await _operation(token)
+    assert op.phase == "active" and op.session_id == src.id
+    assert (op.execution_sessions or {}) == {}
+    assert len(made) == 1 and not os.path.lexists(made[0])
     assert _fork_branches(clone) == [] and await _rows_with_parent(src.id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_fork_rebuilt_from_its_row_keeps_the_rule(env) -> None:
+    """A fork restored after a restart (is_fork from its row) refuses to start under a
+    source automation that went live since; with no live owner it starts."""
+    from server.automations.ownership import StaleOwnership, owned
+    from server.tests.test_automation_ownership import claim, target
+    orch, _, src, *_ = env
+    child_id = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    async with db_session() as db:
+        row = await db.get(DbSession, child_id)
+    assert row is not None and row.is_fork is True
+    orch._records[child_id] = SessionOrchestrator._record_from_row(row)
+    assert orch._records[child_id].is_fork is True
+    assert await orch._automation_before_execution(child_id) is False   # no owner
+    token = await claim([target()])
+    async with owned(token) as tx:
+        tx.start_action(session_id=src.id)
+    with pytest.raises(StaleOwnership):
+        await orch._automation_before_execution(child_id)
+    assert child_id not in ((await _operation(token)).execution_sessions or {})
+
+
+@pytest.mark.asyncio
+async def test_a_finished_operations_own_sessions_stay_fenced(env) -> None:
+    """A released operation's own root, and a child it registered, are NOT unowned:
+    begin_session_execution on them still raises StaleOwnership."""
+    from server.automations.ownership import (
+        ReleaseProof, StaleOwnership, attest_session_stopped, begin_session_execution,
+        execution_snapshot, lineage_unowned, owned, register_child_execution)
+    from server.tests.test_automation_ownership import claim, target
+    token = await claim([target()])
+    async with owned(token) as tx:
+        root = tx.reserve_session()
+    await begin_session_execution(root)
+    await register_child_execution("kid", root)
+    async with db_session() as db:
+        db.add(DbSession(id=root, name="root", account_name="a", cwd="/tmp", status="ended"))
+        db.add(DbSession(id="kid", name="kid", account_name="a", cwd="/tmp", status="ended",
+                         parent_session_id=root))
+        await db.commit()
+    assert await attest_session_stopped(token, 0, session_id="kid")   # never entered
+    snap = await execution_snapshot(root)
+    assert snap is not None and snap.generation is not None
+    assert await attest_session_stopped(token, snap.generation, session_id=root)
+    async with owned(token) as tx:
+        tx.release(ReleaseProof.WORK_STOPPED, "done")
+    assert (await _operation(token)).phase == "released"
+    for sid, parent in ((root, None), ("kid", root)):
+        assert await lineage_unowned(sid, parent_session_id=parent) is False
+        with pytest.raises(StaleOwnership):
+            await begin_session_execution(sid, parent_session_id=parent)
 
 
 # --- restart durability and cancellation --------------------------------------------
