@@ -67,6 +67,10 @@ def _rename_noreplace(src: Path, dst: Path) -> None:
         err = ctypes.get_errno()
         if err not in (errno.ENOSYS, errno.EINVAL):
             raise OSError(err, os.strerror(err), str(src), None, str(dst))
+    # Source first, as renameat2 reports it: a vanished source is FileNotFoundError (the
+    # entry another composer already moved), never mistaken for a collision.
+    if not os.path.lexists(src):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(src))
     if os.path.lexists(dst):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(dst))
     os.rename(src, dst)
@@ -165,7 +169,11 @@ def reconcile_links(name: str) -> None:
                 # Never delete state: merge, then remove only an EMPTY dir. A dir the
                 # CLI refilled mid-merge (ENOTEMPTY) or a collision stays private; the
                 # next compose finishes the job.
-                if not link.is_dir() or not _merge_into_shared(link, source, name):
+                if not link.is_dir():
+                    log.info("configdir.share_kept_private account=%s entry=%s "
+                             "reason=not_a_directory", name, entry_name)
+                    continue
+                if not _merge_into_shared(link, source, name):
                     continue
                 try:
                     os.rmdir(link)
@@ -187,7 +195,14 @@ def reconcile_links(name: str) -> None:
             continue  # source is inside the account store — refuse to mirror from it
         except ValueError:
             pass
-        link.symlink_to(source)
+        try:
+            link.symlink_to(source)
+        except FileExistsError:
+            if entry_name not in SHARED_STATE_DIRS:
+                raise
+            # The CLI (or another composer) recreated the entry after the merge emptied
+            # it: never fail the spawn over it — the next compose finishes the job.
+            continue
 
 
 def overlay_shared_claude_json(base: dict) -> dict:
