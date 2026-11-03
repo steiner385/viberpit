@@ -292,95 +292,86 @@ class TranscriptAnchors:
 
 
 class _ActiveChain:
-    """Which top-level transcript entries are on the conversation's ACTIVE chain (D-9).
+    """Which top-level transcript entries a REWIND left on the conversation (D-9).
 
-    A rewind (``rewind_conversation``) never deletes rows: it appends a ``last-prompt``
-    row whose ``leafUuid`` names the new leaf, and the CLI loads only the ``parentUuid``
-    chain ending there (docs/superpowers/specs/2026-11-03-d9-rewind-verification.md §3).
-    The dropped turns stay in the file, so replay must follow the same chain.
+    ``rewind_conversation`` never deletes rows: it appends a ``last-prompt`` row marked
+    ``explicit``/``rewound`` whose ``leafUuid`` is the new leaf, and the CLI loads only
+    the ``parentUuid`` chain ending there; the dropped turns stay in the file
+    (docs/superpowers/specs/2026-11-03-d9-rewind-verification.md §3). Only such a row
+    cuts. The CLI also writes plain ``last-prompt`` rows routinely, and they LAG — one
+    lands mid-turn, possibly on a parallel tool_result that ends up off the walk — so
+    a plain row never moves the leaf. A transcript with no rewind row drops nothing.
+    ViberPit never truncates a transcript in place otherwise: D-8's
+    ``--resume-session-at`` always runs with ``fork_session`` (a new file).
 
-    Fed every top-level entry and ``last-prompt`` row in file order, in the parse's one
-    pass; ``active()`` then walks the chain back once, and once more over the dropped
-    branches. The leaf is:
+    Fed every top-level entry and ``last-prompt`` row in file order in the parse's one
+    pass; the tip is chosen once the whole file is read, because a row may name a
+    parent written AFTER it. With a rewind row the tip is the last conversation
+    message after the newest rewind row that descends from its leaf (resolved parents;
+    a ``null`` leaf — a rewind to the first prompt — makes it the last message under a
+    new root), else the leaf itself. A D-8 ``until_uuid`` read uses the cut entry as
+    the tip; one naming a sidechain row (never an anchor, so unreachable from the UI)
+    falls back to that rewind tip.
 
-    * the newest ``last-prompt`` row's ``leafUuid`` — ``null`` (a rewind to the first
-      prompt) leaves an empty chain — extended by every LATER entry that descends from
-      it. The CLI writes ``last-prompt`` rows routinely and they lag: one lands before
-      the reply's entries exist, so a turn in progress lies past the newest row;
-    * else the file's last entry (a transcript from before ``last-prompt`` rows);
-    * the cut entry itself for a D-8 ``until_uuid`` read.
+    What is DROPPED is an off-chain human prompt (harness user rows excluded) or
+    ``compact_boundary`` and everything under it: a rewind cuts at a prompt (it cannot
+    split a tool call) or at a compaction's summary. The walk alone is not the
+    conversation — parallel tool_results are parented on their
+    ``sourceToolAssistantUUID`` and hang off it, as do attachment and system rows and
+    synthetic API-error replies — so off-chain rows under no dropped root stay.
 
-    A ``compact_boundary`` has ``parentUuid: null``; its ``logicalParentUuid`` carries
-    the chain across it, so compacted history stays on the chain as it always has. An
-    entry without a ``parentUuid`` key (a hand-written legacy row) chains to the entry
-    before it.
+    Parents: a null ``parentUuid`` falls back to ``logicalParentUuid`` (a
+    compact_boundary's), a missing key to the entry before (a hand-written legacy
+    row), and a parent the file never wrote (the CLI's "phantom parent") to the entry
+    before it in file order — the CLI picks it by timestamp, which file order follows."""
 
-    What is DROPPED is narrower than "off the walk": an off-chain human prompt and
-    everything under it. A rewind always cuts at a human prompt (it cannot split a tool
-    call), so that is exactly a rewound turn — or at a compaction's summary, whose
-    off-chain ``compact_boundary`` is dropped the same way.
-
-    The walk alone is not the conversation: the CLI parents a tool_result row on its
-    ``sourceToolAssistantUUID``, so with parallel tool calls all but one result hang off
-    the chain, as do attachment and system rows and the synthetic API-error replies
-    ViberPit has always shown. Off-chain rows under no off-chain prompt stay, so a
-    transcript with no rewind replays exactly as before (checked against ~100k real
-    transcripts). Two more shapes the CLI writes:
-
-    * a parent the file never wrote (the CLI's "phantom parent"): its loader falls back
-      to the entry before by timestamp; file order is that order;
-    * a parent written AFTER its child, so parents resolve once the file is read and
-      the drop is a walk over children, not a file-order sweep."""
-
-    __slots__ = ("_parents", "_before", "_roots", "_prev", "_has_leaf", "_reach", "_tip")
+    __slots__ = ("_parents", "_before", "_roots", "_messages", "_prev", "_cut",
+                 "_cut_at", "_leaf")
 
     def __init__(self) -> None:
         self._parents: dict[str, str | None] = {}   # as written; file order
         self._before: dict[str, str | None] = {}    # the entry before, in file order
-        self._roots: set[str] = set()   # human prompts and compact boundaries
+        self._roots: set[str] = set()       # human prompts and compact boundaries
+        self._messages: list[str] = []      # conversation message uuids, file order
         self._prev: str | None = None
-        self._has_leaf = False
-        self._reach: set[str | None] = set()   # the newest leaf and what descends from it
-        self._tip: str | None = None
+        self._cut = False                   # a rewind row was read
+        self._cut_at = 0                    # len(_parents) when the newest one was
+        self._leaf: str | None = None       # its leafUuid
 
     def leaf_row(self, o: dict) -> None:
-        if "leafUuid" not in o:
-            return
+        if not (o.get("rewound") is True or o.get("explicit") is True):
+            return                          # a routine, lagging leaf pointer
         leaf = o.get("leafUuid")
-        leaf = leaf if isinstance(leaf, str) else None
-        self._has_leaf = True
-        self._reach = {leaf}
-        self._tip = leaf
+        self._cut = True
+        self._cut_at = len(self._parents)
+        self._leaf = leaf if isinstance(leaf, str) else None
 
     def entry(self, uuid: str, o: dict, content: list[dict]) -> None:
         if "parentUuid" in o:
             parent = o.get("parentUuid") or o.get("logicalParentUuid") or None
         else:
             parent = self._prev
-        parent = parent if isinstance(parent, str) else None
-        self._parents[uuid] = parent
+        self._parents[uuid] = parent if isinstance(parent, str) else None
         self._before[uuid] = self._prev
         self._prev = uuid
         typ = o.get("type")
-        # A human prompt, not a tool's rows (its result, an image companion, meta
-        # context) — the line the CLI's loader draws.
-        prompt = typ == "user" and not (
-            o.get("isMeta") is True or o.get("turnCompanion") is True
-            or any(k in o for k in ("toolUseResult", "sourceToolAssistantUUID",
-                                    "sourceToolUseID"))
-            or any(b.get("type") == "tool_result" for b in content))
         boundary = typ == "system" and o.get("subtype") == "compact_boundary"
-        if prompt or boundary:
+        if typ in ("user", "assistant") or boundary:
+            self._messages.append(uuid)
+        if boundary or (typ == "user" and self._is_prompt(o, content)):
             self._roots.add(uuid)
-        message = typ in ("user", "assistant") or boundary
-        if self._has_leaf:
-            if parent not in self._reach:
-                return
-            self._reach.add(uuid)
-        # The tip moves on conversation messages only: a trailing attachment or system
-        # row stays as an off-chain row under it, never becomes the chain's end.
-        if message or self._tip is None:
-            self._tip = uuid
+
+    @staticmethod
+    def _is_prompt(o: dict, content: list[dict]) -> bool:
+        """A human prompt: not a tool's rows (result, image companion — the line the
+        CLI's loader draws) and not a harness entry."""
+        if (o.get("turnCompanion") is True
+                or any(k in o for k in ("toolUseResult", "sourceToolAssistantUUID",
+                                        "sourceToolUseID"))
+                or any(b.get("type") == "tool_result" for b in content)):
+            return False
+        text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+        return not is_harness_user_entry(o, text)
 
     def _parent(self, uuid: str) -> str | None:
         parent = self._parents[uuid]
@@ -388,17 +379,50 @@ class _ActiveChain:
             return self._before[uuid]           # a phantom parent
         return parent
 
+    def _rewind_tip(self) -> str | None:
+        """The last message after the newest rewind row that descends from its leaf."""
+        leaf = self._leaf
+        if leaf is not None and leaf not in self._parents:
+            return self._prev               # a leaf this file does not hold: its end
+        after = set(list(self._parents)[self._cut_at:])
+        under: dict[str, bool] = {}         # memo: does this entry descend from the leaf
+
+        def descends(uuid: str) -> bool:
+            path: dict[str, None] = {}      # ordered, O(1) membership
+            node: str | None = uuid
+            verdict = False
+            while node is not None:
+                if node in under:
+                    verdict = under[node]
+                    break
+                if node == leaf:
+                    verdict = True
+                    break
+                if node in path:            # a cycle: not under the leaf
+                    break
+                path[node] = None
+                parent = self._parent(node)
+                if parent is None:          # a root: new history iff written after the cut
+                    verdict = leaf is None and node in after
+                    break
+                node = parent
+            for p in path:
+                under[p] = verdict
+            return verdict
+        for uuid in reversed(self._messages):
+            if uuid in after and descends(uuid):
+                return uuid
+        return leaf
+
     def active(self, until_uuid: str | None) -> set[str] | None:
         """The uuids to replay, or None when that is every entry seen."""
-        tip = until_uuid if until_uuid is not None else self._tip
-        if tip is not None and tip not in self._parents:
-            tip = self._prev                 # a leaf this file does not hold: its last chain
+        if not self._cut:
+            return None
+        tip = until_uuid if until_uuid in self._parents else self._rewind_tip()
         chain: set[str] = set()
         while tip is not None and tip not in chain:
             chain.add(tip)
             tip = self._parent(tip)
-        if self._parents.keys() <= chain:
-            return None
         children: dict[str, list[str]] = {}
         for uuid in self._parents:
             parent = self._parent(uuid)

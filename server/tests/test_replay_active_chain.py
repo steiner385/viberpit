@@ -8,8 +8,9 @@ facts — must do the same, or a rewound turn reappears on reload and stays a fo
 
 Fixture rows copy the field shapes of the real spike transcripts (CLI 2.1.317):
 ``last-prompt`` rows are written routinely and LAG the chain (one lands mid-turn
-pointing at the prompt's last attachment, before the reply's entries exist), a rewind
-appends an ``explicit``/``rewound`` row and then a plain one with the same leaf,
+pointing at the prompt's last attachment, before the reply's entries exist, and a
+finished turn often gets no row after it for hours), a rewind appends an
+``explicit``/``rewound`` row and then a plain one with the same leaf,
 uuid-less bookkeeping rows (queue-operation, file-history-snapshot, cost-state) sit
 between entries, and a ``compact_boundary`` has ``parentUuid: null`` with the chain
 carried by ``logicalParentUuid``."""
@@ -59,10 +60,12 @@ class _T:
         self.rows.append({"type": "cost-state", "sessionId": SID})
         self.tip = leaf
 
-    def turn(self, n: str, *, parent: str | None = "tip", tool: bool = True) -> str:
+    def turn(self, n: str, *, parent: str | None = "tip", tool: bool = True,
+             leaf_after: bool = False) -> str:
         """One real-shaped turn: prompt, attachment, a lagging last-prompt row, an
-        assistant tool_use + its tool_result (optional), then the final text reply.
-        Returns the reply's uuid (the turn's anchor)."""
+        assistant tool_use + its tool_result (optional), then the final text reply —
+        with a last-prompt row after it only if *leaf_after* (the CLI often writes
+        none). Returns the reply's uuid (the turn's anchor)."""
         p = self.tip if parent == "tip" else parent
         self.noise()
         u = self._entry("user", f"u{n}", p,
@@ -80,7 +83,8 @@ class _T:
         a = self._entry("assistant", f"a{n}", att, message={
             "role": "assistant", "model": "claude-x",
             "content": [{"type": "text", "text": f"reply {n}"}], "usage": {"input_tokens": 1}})
-        self.last_prompt(a)
+        if leaf_after:
+            self.last_prompt(a)
         return a
 
     def compact(self) -> str:
@@ -106,9 +110,9 @@ def _replies(events) -> list[str]:
 
 def _three_turns() -> _T:
     t = _T()
-    t.turn("1")
+    t.turn("1", leaf_after=True)
     t.turn("2")
-    t.turn("3")
+    t.turn("3", leaf_after=True)
     return t
 
 
@@ -346,8 +350,96 @@ def test_until_uuid_cut_follows_the_chain_to_the_cut(tmp_path):
 def test_unknown_leaf_falls_back_to_the_files_last_chain(tmp_path):
     t = _three_turns()
     t.last_prompt("not-in-this-file")
+    t.rewind("also-not-in-this-file", cut="u2")
     events, _meta, _facts = _parse_transcript(t.write(tmp_path))
     assert _prompts(events) == ["prompt 1", "prompt 2", "prompt 3"]
+
+
+def test_lagging_leaf_on_a_parallel_result_hides_no_later_turn(tmp_path):
+    """Shaped like a real never-rewound transcript (322869a1…): a routine last-prompt
+    row lands on the parallel tool_result that ends up OFF the parentUuid walk, then a
+    whole further turn completes with no new leaf row for hours. A routine row is not
+    a cut, so every turn replays."""
+    t = _T()
+    t.turn("1", tool=False)
+    u = t._entry("user", "u2", t.tip, message={"role": "user", "content": "prompt 2"})
+    x = t._entry("assistant", "x2", u, message={"id": "m2", "role": "assistant",
+                 "model": "claude-x", "content": [
+                     {"type": "tool_use", "id": "tx", "name": "Read", "input": {}}]})
+    y = t._entry("assistant", "y2", x, message={"id": "m2", "role": "assistant",
+                 "model": "claude-x", "content": [
+                     {"type": "tool_use", "id": "ty", "name": "Read", "input": {}}]})
+    rx = t._entry("user", "rx2", x, sourceToolAssistantUUID=x, message={"role": "user",
+                  "content": [{"type": "tool_result", "tool_use_id": "tx", "content": "1"}]})
+    t.last_prompt(rx)                           # lags onto the off-walk result
+    ry = t._entry("user", "ry2", y, sourceToolAssistantUUID=y, message={"role": "user",
+                  "content": [{"type": "tool_result", "tool_use_id": "ty", "content": "2"}]})
+    t._entry("assistant", "a2", ry, message={"role": "assistant", "model": "claude-x",
+             "content": [{"type": "text", "text": "reply 2"}]})
+    t.turn("3")                                 # completed, no leaf row after it
+    path = t.write(tmp_path)
+    events, _meta, facts = _parse_transcript(path)
+    assert _prompts(events) == ["prompt 1", "prompt 2", "prompt 3"]
+    assert facts.anchors == {"a1": "a1", "a2": "a2", "a3": "a3"}
+    # Every prefix the live file passes through replays every prompt it holds.
+    rows = list(t.rows)
+    for cut in range(1, len(rows) + 1):
+        t.rows = rows[:cut]
+        held = [r["message"]["content"] for r in t.rows
+                if r.get("type") == "user" and isinstance(r["message"]["content"], str)]
+        assert _prompts(_parse_transcript(t.write(tmp_path, "p.jsonl"))[0]) == held
+
+
+def test_rewind_with_a_parent_written_after_its_child(tmp_path):
+    """The CLI can write a row before the parent it names. After a rewind the tip is
+    chosen once the whole file is read, so the new turn is still found."""
+    t = _T()
+    a1 = t.turn("1")
+    t.turn("2")
+    t.rewind(a1, cut="u2")
+    u4 = t._entry("user", "u4", a1, message={"role": "user", "content": "prompt 4"})
+    t._entry("assistant", "a4", "att4", message={"role": "assistant", "model": "claude-x",
+             "content": [{"type": "text", "text": "reply 4"}]})
+    t._entry("attachment", "att4", u4)          # a4's parent, written after it
+    t._entry("system", "hook4", "a4", subtype="stop_hook_summary")
+    events, _meta, facts = _parse_transcript(t.write(tmp_path))
+    assert _prompts(events) == ["prompt 1", "prompt 4"]
+    assert _replies(events) == ["t1", "a1", "a4"]
+    assert facts.anchors == {"a1": "a1", "a4": "a4"}
+
+
+def test_off_chain_harness_rows_are_not_dropped_roots(tmp_path):
+    """An interrupt marker or task-notification hanging off the kept chain is a
+    harness row, not a human prompt: it does not start a dropped branch."""
+    t = _T()
+    a1 = t.turn("1")
+    intr = t._entry("user", "intr", a1, message={"role": "user", "content": [
+        {"type": "text", "text": "[Request interrupted by user]"}]})
+    t._entry("assistant", "after_intr", intr, message={"role": "assistant",
+             "model": "claude-x", "content": [{"type": "text", "text": "stopped"}]})
+    t.tip = a1
+    t.turn("2")
+    t.turn("3")
+    t.rewind("a2", cut="u3")
+    events, _meta, facts = _parse_transcript(t.write(tmp_path))
+    assert _prompts(events) == ["prompt 1", "prompt 2"]
+    assert {"intr", "after_intr"} <= facts.entries
+
+
+def test_until_uuid_naming_a_sidechain_row_falls_back_to_the_rewind_tip(tmp_path):
+    """Unreachable from the UI (a sidechain row is never an anchor), but defined: the
+    cut still reads only up to that row, and the chain is the rewind's."""
+    t = _T()
+    a1 = t.turn("1")
+    t.turn("2")
+    t.rewind(a1, cut="u2")
+    a3 = t.turn("3")
+    t.rows.append({"parentUuid": None, "isSidechain": True, "type": "user", "uuid": "s0",
+                   "message": {"role": "user", "content": "sub-agent task"}})
+    t.tip = a3
+    t.turn("4")
+    events, _meta, _facts = _parse_transcript(t.write(tmp_path), until_uuid="s0")
+    assert _prompts(events) == ["prompt 1", "prompt 3"]
 
 
 def test_legacy_rows_without_parent_uuid_replay_linearly(tmp_path):
