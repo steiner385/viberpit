@@ -383,7 +383,7 @@ describe('SessionList', () => {
 
   it('keeps group headers visible when every group is collapsed', () => {
     // Regression: in the real app SessionList is fed sessions={orderedSessions},
-    // and useSessionOrdering excludes collapsed groups from orderedSessions. So
+    // and useItemOrdering excludes collapsed groups from orderedSessions. So
     // collapsing every group makes the `sessions` prop empty while `groups` is
     // still full. The empty-state guard must NOT swallow the headers, otherwise
     // it looks like all sessions vanished.

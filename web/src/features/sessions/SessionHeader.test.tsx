@@ -195,12 +195,15 @@ describe('SessionHeader — Back and the prev/next chevrons', () => {
     expect(onOpenSession).toHaveBeenLastCalledWith('c')
   })
 
-  it('a session the filtered list does not show steps to the list\'s ends, like Alt+[ / Alt+]', async () => {
-    const { onOpenSession } = renderHeader({ sessions: three(), listOrder: ['a', 'c'] })
-    await userEvent.click(screen.getByRole('button', { name: 'Next session' }))
-    expect(onOpenSession).toHaveBeenLastCalledWith('a')
-    await userEvent.click(screen.getByRole('button', { name: 'Previous session' }))
-    expect(onOpenSession).toHaveBeenLastCalledWith('c')
+  // A session the Active list does not show — a Background-scope session, or
+  // one filtered out — has no neighbours in it, so the chevrons hide rather
+  // than jump to the far end of a list the user is not looking at. (Alt+[ /
+  // Alt+] keep their first/last fallback: a key press with nothing selected is
+  // a request to enter the list.)
+  it('hide for a session the list does not show (Background scope, filtered out)', () => {
+    renderHeader({ sessions: three(), listOrder: ['a', 'c'] })
+    expect(screen.queryByRole('button', { name: 'Next session' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Previous session' })).toBeNull()
   })
 
   it('renders no chevrons outside the shell, where there is no list to walk', () => {

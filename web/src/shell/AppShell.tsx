@@ -580,6 +580,8 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     if (!s) return
     // The prompt's cursor follows the jump, as it did when the dock owned Alt+digit.
     list.nav.highlightSession(s.id)
+    // A step pressed before this navigation commits steps on from here.
+    steppedToRef.current = s.id
     openFromList(s.id)
   }
 

@@ -137,16 +137,41 @@ export function alt(pred: (e: KeyboardLike) => boolean) {
   return (e: KeyboardLike): boolean => e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && pred(e)
 }
 
-/** The 1–9 of an Alt+digit, read from the physical key (`Digit1`…`Digit9`); else null. */
+/**
+ * The D-10 navigation chord: ⌘⌥ on Apple, Alt (or Alt+Shift) elsewhere —
+ * Meta+Alt REQUIRED on Apple, bailing on Shift/Ctrl; off Apple `alt()`, or
+ * Alt+Shift with no Meta/Ctrl when `shiftElsewhere`.
+ *
+ * Platform-sniffed, unlike `cmdOrCtrl`, because neither form works on the
+ * other platform. On a Mac a bare ⌥ chord is TYPING: non-US layouts put
+ * brackets and braces on ⌥5/6/8/9 (German ⌥5 is "["), US ⌥[ is "“", and ⌥↑/↓
+ * move the caret in a textarea — a binding there would eat text. ⌘⌥ types
+ * nothing. Off Apple, ⌘ is the Super key, which window managers own.
+ *
+ * `shiftElsewhere` is the digits': Chrome and Firefox on Linux select tabs
+ * with bare Alt+1–9, so the jump takes Alt+Shift+1–9 there rather than break
+ * tab switching (the same rule that keeps ⌘⇧[ ] unbound).
+ */
+export function navChord(pred: (e: KeyboardLike) => boolean, { shiftElsewhere = false } = {}) {
+  const elsewhere = shiftElsewhere
+    ? (e: KeyboardLike): boolean => e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && pred(e)
+    : alt(pred)
+  return (e: KeyboardLike): boolean =>
+    isApplePlatform()
+      ? e.metaKey && e.altKey && !e.shiftKey && !e.ctrlKey && pred(e)
+      : elsewhere(e)
+}
+
+/** The 1–9 of a digit chord, read from the physical key (`Digit1`…`Digit9`); else null. */
 export function altDigit(e: KeyboardLike): number | null {
   const m = /^Digit([1-9])$/.exec(e.code)
   return m ? Number(m[1]) : null
 }
 
 /**
- * Alt chords fire from the app's prompts — the session composer and the
- * new-session prompt both leave Alt keys unclaimed — and from the chrome, but
- * never from any other text entry, where ⌥ types a character on a Mac.
+ * The navigation chords fire from the app's prompts — the session composer and
+ * the new-session prompt both leave Alt chords unclaimed — and from the chrome,
+ * but never from any other text entry, which owns its own keys.
  */
 const altChordAllowed = (c: ShortcutContext): boolean =>
   !c.overlayOpen && !focusInNonPromptTextEntry(c.active)
@@ -198,22 +223,24 @@ export const SHORTCUTS: Shortcut[] = [
   // Previous / next / Nth session in the LIST's order — the shell's
   // `useSessionListState().ordering.orderedSessions`, filters and search
   // applied, the order the session header's ‹ › chevrons step through too
-  // (`shell/sessionListNav`). Alt+[ / Alt+] wrap; with no session open, Alt+]
-  // opens the first row and Alt+[ the last. Alt chords, because the ⌘/Ctrl
-  // next-tab family below is the browser's. Kiosk has no list to switch through.
-  { id: 'session.listPrev', keys: 'Alt+[', keysMac: '⌥[',
+  // (`shell/sessionListNav`). They wrap; with no session open, next opens the
+  // first row and previous the last. ⌘⌥ on Apple, Alt / Alt+Shift elsewhere
+  // (`navChord`): the ⌘/Ctrl next-tab family below is the browser's, a bare ⌥
+  // is typing on a Mac, and bare Alt+1–9 is Linux's tab select. Kiosk has no
+  // list to switch through.
+  { id: 'session.listPrev', keys: 'Alt+[', keysMac: '⌘⌥[',
     description: 'Open the previous session in the list', group: 'app',
-    match: alt((e) => e.code === 'BracketLeft'),
+    match: navChord((e) => e.code === 'BracketLeft'),
     when: (c) => c.interactive && altChordAllowed(c) },
-  { id: 'session.listNext', keys: 'Alt+]', keysMac: '⌥]',
+  { id: 'session.listNext', keys: 'Alt+]', keysMac: '⌘⌥]',
     description: 'Open the next session in the list', group: 'app',
-    match: alt((e) => e.code === 'BracketRight'),
+    match: navChord((e) => e.code === 'BracketRight'),
     when: (c) => c.interactive && altChordAllowed(c) },
   // One row for all nine digits: the help sheet shows one line, and the handler
   // reads the digit back through `altDigit`.
-  { id: 'session.jumpN', keys: 'Alt+1–9', keysMac: '⌥1–9',
+  { id: 'session.jumpN', keys: 'Alt+Shift+1–9', keysMac: '⌘⌥1–9',
     description: 'Open the Nth session in the list', group: 'app',
-    match: alt((e) => altDigit(e) !== null),
+    match: navChord((e) => altDigit(e) !== null, { shiftElsewhere: true }),
     when: (c) => c.interactive && altChordAllowed(c) },
   //
   // ── NOT BOUND, and why — the Desktop-parity rows this app cannot have ─
@@ -252,9 +279,11 @@ export const SHORTCUTS: Shortcut[] = [
   // Safari shortcut reference, support.apple.com/guide/safari/cpsh003), so even
   // where the page CAN preventDefault them, binding them would break tab
   // switching for anyone with the app open. No ⌘/Ctrl binding stands in for
-  // them: next/previous session is Alt+] / Alt+[ (`session.listNext` /
-  // `session.listPrev` above, D-10), which neither browser reserves — under
-  // ids of their own, so `session.next` / `session.prev` stay absent.
+  // them: next/previous session is Alt+] / Alt+[ (⌘⌥] / ⌘⌥[ on Apple —
+  // `session.listNext` / `session.listPrev` above, D-10), which no browser
+  // reserves — under ids of their own, so `session.next` / `session.prev` stay
+  // absent. Tab-select-by-number (Alt+1–9 on Linux, Ctrl+1–8, ⌘1–9) is left
+  // alone the same way: the jump is Alt+Shift+1–9 / ⌘⌥1–9.
   //
   // Consequences that outlive this comment:
   //   · The cycling order is `useSessionListState().ordering.orderedSessions`,
@@ -448,18 +477,20 @@ export const SHORTCUTS: Shortcut[] = [
   // Prompt jumps (D-10): scroll the transcript to the previous / next prompt the
   // user typed (`role === 'user' && !origin` — nudges are skipped), relative to
   // the topmost visible row. They unpin stick-to-bottom and move no focus, so
-  // they work mid-draft: the composer leaves Alt+↑/↓ unclaimed for exactly this.
-  // Read-only, so kiosk is not excluded.
-  { id: 'transcript.promptPrev', keys: 'Alt+↑', keysMac: '⌥↑', description: 'Scroll to your previous prompt',
+  // they work mid-draft: the composer leaves Alt chords unclaimed for exactly
+  // this. Read-only, so kiosk is not excluded. ⌘⌥↑/↓ on Apple — a bare ⌥↑/↓ moves
+  // the caret there; ⌘⌥↑/↓ shadows Chrome Mac's pane focus, which the page may
+  // take. NEVER ⌘⌥← / ⌘⌥→: those are macOS Chrome's previous / next tab.
+  { id: 'transcript.promptPrev', keys: 'Alt+↑', keysMac: '⌘⌥↑', description: 'Scroll to your previous prompt',
     group: 'in-session',
-    match: alt((e) => e.code === 'ArrowUp'),
+    match: navChord((e) => e.code === 'ArrowUp'),
     when: (c) => c.sessionOpen && altChordAllowed(c) },
-  { id: 'transcript.promptNext', keys: 'Alt+↓', keysMac: '⌥↓', description: 'Scroll to your next prompt',
+  { id: 'transcript.promptNext', keys: 'Alt+↓', keysMac: '⌘⌥↓', description: 'Scroll to your next prompt',
     group: 'in-session',
-    match: alt((e) => e.code === 'ArrowDown'),
+    match: navChord((e) => e.code === 'ArrowDown'),
     when: (c) => c.sessionOpen && altChordAllowed(c) },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
-  // session — that is Alt+[ / Alt+] above). All three are reserved by the
+  // session — that is Alt+[ / Alt+] / ⌘⌥[ ] above). All three are reserved by the
   // browser's own UI — see the "NOT BOUND, and why" block at the top of this
   // array for the evidence.
   // `Shift+Tab` (cycle permission mode) is deliberately NOT listed: sub-spec B D8

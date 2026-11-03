@@ -251,6 +251,53 @@ describe('TranscriptView jumpPrompt', () => {
     expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeUndefined()
   })
 
+  // After an align-start jump the row above can keep a sub-pixel sliver in view
+  // (fractional scroll offsets), and the range then reports IT as topmost — so
+  // the next Alt+↓ re-targeted the prompt already at the top (seen in e2e).
+  it('a sub-pixel sliver of the row above does not count as the topmost visible row', () => {
+    const { scrollToIndex, showFrom, jump } = renderConvo()
+    const v = capturedVirtualizer!
+    const a2 = v.measurementsCache[3]
+    showFrom(3) // a2 "visible", but only its last half-pixel…
+    v.scrollOffset = a2.end - 0.5
+    jump('next') // …so p2 (4) is the top, and there is no own prompt after it
+    expect(scrollToIndex).not.toHaveBeenCalled()
+    v.scrollOffset = a2.start + 10 // a2 genuinely in view: p2 is next
+    jump('next')
+    expect(scrollToIndex).toHaveBeenLastCalledWith(4, { align: 'start' })
+  })
+
+  it('re-pinning ends the hold — the Scroll-to-bottom button', () => {
+    const { showFrom, jump } = renderConvo()
+    const v = capturedVirtualizer!
+    showFrom(5)
+    jump('prev')
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeDefined()
+    fireEvent.click(screen.getByRole('button', { name: 'Scroll to bottom' }))
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeUndefined()
+  })
+
+  it('re-pinning ends the hold — a send (followSignal)', () => {
+    const view = render(
+      <SessionGestureProvider>
+        <TranscriptView {...base} turns={convo} followSignal={0} />
+        <Probe />
+      </SessionGestureProvider>,
+    )
+    const v = capturedVirtualizer!
+    vi.spyOn(v, 'scrollToIndex').mockImplementation(() => {})
+    v.range = { startIndex: 5, endIndex: 5 }
+    act(() => { handle!.current!.jumpPrompt('prev') })
+    expect(v.shouldAdjustScrollPositionOnItemSizeChange).toBeDefined()
+    view.rerender(
+      <SessionGestureProvider>
+        <TranscriptView {...base} turns={convo} followSignal={1} />
+        <Probe />
+      </SessionGestureProvider>,
+    )
+    expect(capturedVirtualizer!.shouldAdjustScrollPositionOnItemSizeChange).toBeUndefined()
+  })
+
   it('focuses nothing — focus stays where the key was pressed', () => {
     const { showFrom, jump } = renderConvo()
     const before = document.activeElement

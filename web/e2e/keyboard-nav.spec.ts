@@ -1,6 +1,7 @@
 /**
- * D-10 navigation keys in a real browser: Alt+[ / Alt+] switch sessions in the
- * list order, Alt+↑ / Alt+↓ jump the transcript between the user's own prompts.
+ * D-10 navigation keys in a real browser: Alt+[ / Alt+] and Alt+Shift+1–9
+ * switch sessions in the list order, Alt+↑ / Alt+↓ jump the transcript between
+ * the user's own prompts — ⌘⌥ on a Mac.
  *
  * jsdom dispatches any chord and lays nothing out, so it can show neither that
  * Chromium delivers Alt+] / Alt+↑ to the page nor that the virtualized
@@ -77,6 +78,46 @@ test('Alt+] walks the list order from no session open, and wraps; Alt+[ steps ba
   // …and Alt+[ wraps the other way.
   await page.keyboard.press('Alt+BracketLeft')
   await expect(page).toHaveURL(new RegExp(`/sessions/${second}$`))
+})
+
+test('Alt+Shift+2 opens the second row; bare Alt+2 stays the browser\'s (Linux tab select)', async ({ page }) => {
+  await mockApp(page)
+  await page.goto('/sessions')
+  const rows = page.getByRole('button', { name: /^open session session nav-/i })
+  await expect(rows).toHaveCount(2)
+  const secondId = ((await rows.nth(1).getAttribute('aria-label')) ?? '').replace(/^open session session /i, '')
+
+  await page.keyboard.press('Alt+Digit2')
+  await page.waitForTimeout(200)
+  await expect(page).toHaveURL(/\/sessions$/)
+
+  await page.keyboard.press('Alt+Shift+Digit2')
+  await expect(page).toHaveURL(new RegExp(`/sessions/${secondId}$`))
+})
+
+test('on a Mac the chords are ⌘⌥ — a bare ⌥] is typing and switches nothing', async ({ page }) => {
+  // The platform the shell reads (`isApplePlatform`), set before the app boots.
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' })
+  })
+  await mockApp(page)
+  await page.goto('/sessions')
+  await expect(page.getByRole('button', { name: /open session session nav-a/i })).toBeVisible()
+
+  await page.keyboard.press('Alt+BracketRight')
+  await page.waitForTimeout(200)
+  await expect(page).toHaveURL(/\/sessions$/)
+
+  await page.keyboard.press('Meta+Alt+BracketRight')
+  await expect(page).toHaveURL(/\/sessions\/nav-[ab]$/)
+  await sessionShown(page)
+  await expect(page.getByText(`Reply ${EXCHANGES - 1}, paragraph 39.`)).toBeVisible()
+
+  const composer = page.getByRole('textbox', { name: /^message$/i })
+  await composer.focus()
+  await page.keyboard.press('Meta+Alt+ArrowUp')
+  await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
+  await expect(composer).toBeFocused()
 })
 
 test('Alt+↑ / Alt+↓ jump between own prompts from inside the composer', async ({ page }) => {

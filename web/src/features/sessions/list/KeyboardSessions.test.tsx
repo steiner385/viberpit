@@ -155,8 +155,15 @@ function renderShell() {
   return renderApp({ path: '/sessions', mode: 'desktop' })
 }
 
+const PLATFORM = window.navigator.platform
+/** jsdom's platform is '' (not Apple); a Mac case sets it, `setupDefaultMocks` restores it. */
+function setPlatform(value: string): void {
+  Object.defineProperty(window.navigator, 'platform', { value, configurable: true })
+}
+
 function setupDefaultMocks() {
   search.matchedIds = null
+  setPlatform(PLATFORM)
   vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
@@ -331,33 +338,37 @@ describe('Task 4 — row actions on highlighted session', () => {
     expect(screen.getByRole('dialog', { name: /delete/i })).toBeInTheDocument()
   })
 
-  it('Alt+3 opens the third session directly', async () => {
+  // Alt+SHIFT+digit off Apple: Chrome and Firefox on Linux select tabs with bare Alt+1–9.
+  it('Alt+Shift+3 opens the third session directly', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{Alt>}3{/Alt}')
+    await user.keyboard('{Alt>}{Shift>}3{/Shift}{/Alt}')
     expect(app.path()).toBe('/sessions/s3')
   })
 
   // D-10: the jump is the shell's (`session.jumpN`), matched on `e.code` — on a
-  // Mac, Option rewrites the key itself (⌥1 reports "¡"), so a match on
+  // Mac, Option rewrites the key itself (⌘⌥1 can report "¡"), so a match on
   // `e.key` would make the binding dead on every Mac.
-  it('Alt+1 still opens the first session when macOS rewrites the key to "¡"', () => {
+  it('⌘⌥1 on a Mac opens the first session even when the key reads "¡"', () => {
+    setPlatform('MacIntel')
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     box.focus()
     fireEvent.keyDown(box, { key: '¡', code: 'Digit1', altKey: true })
+    expect(app.path()).toBe('/sessions') // a bare ⌥1 types "¡" on a Mac
+    fireEvent.keyDown(box, { key: '¡', code: 'Digit1', altKey: true, metaKey: true })
     expect(app.path()).toBe('/sessions/s1')
   })
 
-  it('Alt+2 works with focus in the chrome, not only from the prompt', async () => {
+  it('Alt+Shift+2 works with focus in the chrome, not only from the prompt', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     screen.getByRole('link', { name: /^Sessions/ }).focus()
-    await user.keyboard('{Alt>}2{/Alt}')
+    await user.keyboard('{Alt>}{Shift>}2{/Shift}{/Alt}')
     expect(app.path()).toBe('/sessions/s2')
   })
 
@@ -367,7 +378,7 @@ describe('Task 4 — row actions on highlighted session', () => {
     search.matchedIds = new Set(['s2', 's3'])
     const app = renderShell()
     screen.getByRole('link', { name: /^Sessions/ }).focus()
-    await user.keyboard('{Alt>}1{/Alt}')
+    await user.keyboard('{Alt>}{Shift>}1{/Shift}{/Alt}')
     expect(app.path()).toBe('/sessions/s2')
   })
 
@@ -376,7 +387,7 @@ describe('Task 4 — row actions on highlighted session', () => {
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{Alt>}9{/Alt}')
+    await user.keyboard('{Alt>}{Shift>}9{/Shift}{/Alt}')
     expect(app.path()).toBe('/sessions')
   })
 
@@ -426,12 +437,24 @@ describe('Alt+[ / Alt+] — previous / next session in the list order', () => {
     expect(app.path()).toBe('/sessions/s3')
   })
 
-  it('works from the new-session prompt, and on the macOS-rewritten key', async () => {
+  it('works from the new-session prompt', () => {
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
+    const app = renderShell()
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    box.focus()
+    fireEvent.keyDown(box, { key: ']', code: 'BracketRight', altKey: true })
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('on a Mac it is ⌘⌥] (key rewritten to "‘"); a bare ⌥] is typing', () => {
+    setPlatform('MacIntel')
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     box.focus()
     fireEvent.keyDown(box, { key: '‘', code: 'BracketRight', altKey: true })
+    expect(app.path()).toBe('/sessions')
+    fireEvent.keyDown(box, { key: '‘', code: 'BracketRight', altKey: true, metaKey: true })
     expect(app.path()).toBe('/sessions/s1')
   })
 
@@ -504,13 +527,13 @@ describe('Pending placeholder — keyboard open is a no-op', () => {
     expect(app.path()).toBe('/sessions')
   })
 
-  it('Alt+1 jump to a pending session does not call onOpenSession', async () => {
+  it('Alt+Shift+1 jump to a pending session does not navigate', async () => {
     const user = userEvent.setup()
     const pending = makeSession({ id: 'pending-1', name: 'Starting…', status: 'in_progress', pending: true })
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult([pending]))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{Alt>}1{/Alt}')
+    await user.keyboard('{Alt>}{Shift>}1{/Shift}{/Alt}')
     expect(app.path()).toBe('/sessions')
   })
 })

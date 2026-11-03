@@ -233,9 +233,9 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | Chord | Action |
 |---|---|
 | Alt+Shift+M / I / E (⌥⇧ on Apple) | mode / model / effort menus. Desktop's ⌘⇧M/I/E is browser-reserved (Ctrl+Shift+I DevTools, ⌘/Ctrl+Shift+M profile menu), so this is the fallback chord; matched on `e.code`. |
-| ⌘⌥↑ / ⌘⌥↓ (Alt+↑/↓ on Linux/Windows) | jump to previous / next own prompt |
-| Alt+[ / Alt+] | previous / next session in list order |
-| ⌘⌥1–9 (Alt+1–9) | jump to the nth session; presets in the dispatch bar |
+| ⌘⌥↑ / ⌘⌥↓ (Alt+↑/↓ on Linux/Windows) | jump to previous / next own prompt. On Chrome Mac ⌘⌥↑/↓ shadows pane focus, which is not reserved, so the page may take it. It is chosen over ⌥↑/↓ because that one moves the caret in a textarea. Never ⌘⌥←/→, which is Chrome Mac's previous/next tab. |
+| ⌘⌥[ / ⌘⌥] (Alt+[ / Alt+] on Linux/Windows) | previous / next session in list order. A bare ⌥ chord types on Mac non-US layouts (German ⌥5/⌥6 are `[` `]`), so Apple adds ⌘. |
+| ⌘⌥1–9 (Alt+Shift+1–9 on Linux/Windows) | jump to the nth session in list order; presets in the dispatch bar. Not bare Alt+1–9: Chrome and Firefox on Linux use it to select tabs, and taking it would break tab switching. |
 | ⌘K | palette |
 | Ctrl+O | cycle transcript view mode |
 | Esc | stop while busy (§3) |

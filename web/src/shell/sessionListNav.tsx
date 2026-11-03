@@ -19,8 +19,14 @@ import * as React from 'react'
 import { stepSessionId } from '@/session/listStep'
 
 export interface SessionListNav {
-  /** The session one step from `fromId` in the list order (see `stepSessionId`). */
-  neighbor: (fromId: string | null, dir: 'prev' | 'next') => string | null
+  /**
+   * The session one step from `fromId` in the list order, wrapping — or null
+   * when `fromId` is not in the list (a Background-scope session, a filtered-out
+   * one) or is its only row. Unlike the keys' `stepSessionId`, there is no
+   * first/last fallback: a chevron beside a session the list does not show
+   * would jump into a list the user is not looking at, so it hides instead.
+   */
+  neighbor: (fromId: string, dir: 'prev' | 'next') => string | null
   /** Open `id` the way a click on its list row does (pending ids are ignored). */
   open: (id: string) => void
 }
@@ -35,7 +41,7 @@ export function SessionListNavProvider({
   children: React.ReactNode
 }) {
   const value = React.useMemo<SessionListNav>(() => ({
-    neighbor: (fromId, dir) => stepSessionId(orderedIds, fromId, dir),
+    neighbor: (fromId, dir) => (orderedIds.includes(fromId) ? stepSessionId(orderedIds, fromId, dir) : null),
     open: onOpen,
   }), [orderedIds, onOpen])
   return <SessionListNavContext.Provider value={value}>{children}</SessionListNavContext.Provider>

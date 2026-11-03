@@ -15,6 +15,8 @@ import { ScrollToBottomButton } from './ScrollToBottomButton'
 import { useTranscriptJumpRegistration } from '@/shell/sessionGestures'
 
 const TOP_THRESHOLD = 64
+/** How much of a row may peek in at the top before it counts as visible (prompt jumps). */
+const SLIVER_PX = 2
 
 /**
  * While a prompt jump holds the view: compensate EVERY resize of a row above
@@ -142,6 +144,14 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
 
   const totalSize = virtualizer.getTotalSize()
 
+  // End a prompt jump's hold (`holdJumpedRow`): on a user scroll, and wherever
+  // the view re-pins — the Scroll-to-bottom button and a send — so the library's
+  // own resize handling is back before the view follows new content down.
+  function releaseJumpHold() {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined
+  }
+  useEffect(releaseJumpHold, [followSignal, virtualizer])
+
   // Alt+↑ / Alt+↓ (the shell's `transcript.promptPrev/Next`): scroll to the
   // previous / next own prompt relative to the topmost VISIBLE row — the
   // virtualizer's range, overscan excluded. Unpin first, or the pin would snap
@@ -152,8 +162,13 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
   // conversation, and the shell only fires these with a session open.
   useTranscriptJumpRegistration({
     jumpPrompt: (dir) => {
-      const top = virtualizer.range?.startIndex
-      if (top === undefined) return
+      const first = virtualizer.range?.startIndex
+      if (first === undefined) return
+      // A sliver of the row above (≤ SLIVER_PX, left by a fractional scroll
+      // offset after an align-start jump) is not "visible": counting it would
+      // make the next Alt+↓ re-target the prompt already at the top.
+      const above = virtualizer.measurementsCache[first]
+      const top = above && above.end - (virtualizer.scrollOffset ?? 0) <= SLIVER_PX ? first + 1 : first
       const target = ownPromptRowIndex(rows, top, dir)
       if (target === null) return
       unpin()
@@ -172,7 +187,7 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
     // auto-pin latches off above the true bottom.
     if (!el || !handleStickScroll()) return
     // A user scroll ends any prompt jump's hold (see `holdJumpedRow`).
-    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined
+    releaseJumpHold()
     if (el.scrollTop <= TOP_THRESHOLD && (earliestTurn ?? 0) > 0 && !loadingOlder && onLoadOlder) {
       prevScrollHeightRef.current = el.scrollHeight // anchor before the prepend
       onLoadOlder()
@@ -259,7 +274,9 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
         </div>
       </div>
 
-      {showScrollButton && <ScrollToBottomButton onClick={() => scrollToBottom({ smooth: true })} />}
+      {showScrollButton && (
+        <ScrollToBottomButton onClick={() => { releaseJumpHold(); scrollToBottom({ smooth: true }) }} />
+      )}
     </div>
   )
 }

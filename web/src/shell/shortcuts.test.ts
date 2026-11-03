@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import {
   SHORTCUTS,
   matchShortcut,
@@ -177,28 +177,34 @@ function codeForKey(key: string): string | null {
 }
 
 /**
- * `Alt+[` / `⌥↑` / `Alt+1–9` as synthetic Alt events, or null when `keys` is not
- * a bare-Alt chord. A range (`1–9`) yields one event per key in it, so the
- * reachability guard checks all nine digits rather than the first.
+ * The D-10 chords as synthetic events, or null when `keys` is not one:
+ * `Alt+[` / `Alt+↑` (Alt), `Alt+Shift+1–9` (Alt+Shift) and `⌘⌥[` / `⌘⌥1–9` /
+ * `⌘⌥↑` (Meta+Alt, the Apple form). A range (`1–9`) yields one event per key in
+ * it, so the reachability guard checks all nine digits rather than the first.
+ * A string whose terminal glyph has no `code` here (the menus' `Alt+Shift+M`)
+ * returns null and falls through to `chordFromKeys`.
  *
- * Each event carries the key a Mac would NOT report: the plain glyph. The
- * Option-rewritten form (`¡`, `“`) is pinned by its own case below; here the
- * point is that the row's matcher reads `code` and still accepts the glyph the
- * sheet prints.
+ * Each event carries the plain glyph as `key`, not what a layout or Option
+ * would report (`¡`, `[` on a German ⌥5): the rows match on `code`, and those
+ * rewritten forms are pinned by their own cases below.
  */
 function altChordsFromKeys(keys: string): KeyboardLike[] | null {
-  const m = /^(?:Alt\+|⌥)(?!Shift\+|⇧)(.+)$/.exec(keys)
+  const m = /^(⌘⌥|Alt\+Shift\+|Alt\+)(.+)$/.exec(keys)
   if (!m) return null
-  const range = /^([1-9])–([1-9])$/.exec(m[1])
+  const mods: Partial<KeyboardLike> =
+    m[1] === '⌘⌥' ? { metaKey: true, altKey: true }
+    : m[1] === 'Alt+Shift+' ? { altKey: true, shiftKey: true }
+    : { altKey: true }
+  const range = /^([1-9])–([1-9])$/.exec(m[2])
   const glyphs = range
     ? Array.from({ length: Number(range[2]) - Number(range[1]) + 1 }, (_, i) => String(Number(range[1]) + i))
-    : [m[1]]
+    : [m[2]]
   const events: KeyboardLike[] = []
   for (const glyph of glyphs) {
     const key = keyForGlyph(glyph)
     const code = key === null ? null : codeForKey(key)
     if (key === null || code === null) return null
-    events.push(ev({ key, code, altKey: true }))
+    events.push(ev({ key, code, ...mods }))
   }
   return events
 }
@@ -320,7 +326,12 @@ describe('shortcuts registry — integrity', () => {
       // nothing else, so a `keysMac` the matcher rejects is a binding that is
       // dead on exactly one platform — the failure mode no non-Apple test run
       // can see.
-      for (const keys of [s.keys, s.keysMac].filter((k): k is string => k !== undefined)) {
+      // Each on its own platform: the D-10 rows are platform-aware (⌘⌥ on
+      // Apple, Alt elsewhere), so `keysMac` is only a promise on a Mac.
+      const shown: [string, string][] = [['Win32', s.keys]]
+      if (s.keysMac !== undefined) shown.push(['MacIntel', s.keysMac])
+      for (const [platform, keys] of shown) {
+        setPlatform(platform)
         const events = eventsFromKeys(keys)
         expect(
           events.length,
@@ -334,6 +345,7 @@ describe('shortcuts registry — integrity', () => {
         }
       }
     }
+    setPlatform(ORIGINAL_PLATFORM)
   })
 
   it('every row is documented — non-empty keys and description', () => {
@@ -456,9 +468,14 @@ describe('shortcutAllowed', () => {
 
 /** jsdom reports `navigator.platform` as ''. Redefine it rather than casting
  *  a stub navigator into place. */
+const ORIGINAL_PLATFORM = window.navigator.platform
 function setPlatform(value: string): void {
   Object.defineProperty(window.navigator, 'platform', { value, configurable: true })
 }
+
+const D10_ROWS = [
+  'session.listPrev', 'session.listNext', 'session.jumpN', 'transcript.promptPrev', 'transcript.promptNext',
+]
 
 describe('displayKeys / isApplePlatform', () => {
   const original = window.navigator.platform
@@ -503,11 +520,19 @@ describe('displayKeys / isApplePlatform', () => {
 
   it('a platform-varying row is a ⌘ chord on Apple and the SAME key on Ctrl elsewhere', () => {
     for (const s of SHORTCUTS.filter((x) => x.keysMac !== undefined)) {
-      // Alt rows are ⌥ on Apple, not ⌘ (Option, not Command): Alt+Shift+M is
-      // ⌥⇧M, Alt+[ is ⌥[, Alt+1–9 is ⌥1–9.
-      const altRow = /^Alt\+(Shift\+)?(.+)$/.exec(s.keys)
-      if (altRow) {
-        expect(s.keysMac, `${s.id} keysMac`).toBe(`⌥${altRow[1] ? '⇧' : ''}${altRow[2]}`)
+      // Alt+Shift+letter rows are ⌥⇧ on Apple, not ⌘ (Option, not Command).
+      const altShift = /^Alt\+Shift\+([A-Z])$/.exec(s.keys)
+      if (altShift) {
+        expect(s.keysMac, `${s.id} keysMac`).toBe(`⌥⇧${altShift[1]}`)
+        continue
+      }
+      // D-10's navigation rows are ⌘⌥ on Apple — a bare ⌥ types characters on
+      // non-US Mac layouts (German ⌥5 is "[") and moves the caret (⌥↑) — and Alt
+      // or Alt+Shift elsewhere, on the same terminal key.
+      if (D10_ROWS.includes(s.id)) {
+        expect(s.keysMac, `${s.id} keysMac`).toMatch(/^⌘⌥/)
+        expect(s.keys, `${s.id} keys`).toMatch(/^Alt\+/)
+        expect(s.keysMac?.slice(2), `${s.id}`).toBe(s.keys.replace(/^Alt\+(Shift\+)?/, ''))
         continue
       }
       expect(s.keysMac, `${s.id} keysMac`).toMatch(/^⌘/)
@@ -802,9 +827,15 @@ describe('matchShortcut — the shell scope', () => {
   })
 })
 
-// ─── D-10: session switching and prompt jumps (Alt chords on `e.code`) ───────
+// ─── D-10: session switching and prompt jumps (on `e.code`) ──────────────────
+//
+// Apple: ⌘⌥[ ] / ⌘⌥1–9 / ⌘⌥↑↓. A bare ⌥ chord is TYPING on a Mac — non-US
+// layouts put brackets and braces on ⌥5/6/8/9 (German ⌥5 is "["), and ⌥↑/↓
+// move the caret in a textarea — so the Mac form adds ⌘.
+// Elsewhere: Alt+[ ] / Alt+↑↓, and Alt+SHIFT+1–9 — Chrome and Firefox on Linux
+// select tabs with Alt+1–9, and taking it would break tab switching.
 
-describe('matchShortcut — Alt+[ ] / Alt+1–9 / Alt+↑↓', () => {
+describe('matchShortcut — the D-10 navigation chords', () => {
   const composer = document.createElement('textarea')
   composer.setAttribute(SESSION_COMPOSER_ATTR, '')
   const dispatch = document.createElement('textarea')
@@ -812,82 +843,119 @@ describe('matchShortcut — Alt+[ ] / Alt+1–9 / Alt+↑↓', () => {
   const search = document.createElement('input')
   search.type = 'search'
   const open = ctx({ sessionOpen: true })
+  afterEach(() => setPlatform(ORIGINAL_PLATFORM))
 
-  it('Alt+[ / Alt+] step the list — with or without a session open', () => {
-    expect(shellRow(ev({ key: '[', code: 'BracketLeft', altKey: true }), ctx())).toBe('session.listPrev')
-    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx())).toBe('session.listNext')
-    expect(shellRow(ev({ key: '[', code: 'BracketLeft', altKey: true }), open)).toBe('session.listPrev')
-    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), open)).toBe('session.listNext')
+  describe('on Linux / Windows', () => {
+    beforeEach(() => setPlatform('Linux x86_64'))
+
+    it('Alt+[ / Alt+] step the list — with or without a session open', () => {
+      expect(shellRow(ev({ key: '[', code: 'BracketLeft', altKey: true }), ctx())).toBe('session.listPrev')
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx())).toBe('session.listNext')
+      expect(shellRow(ev({ key: '[', code: 'BracketLeft', altKey: true }), open)).toBe('session.listPrev')
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), open)).toBe('session.listNext')
+    })
+
+    it('Alt+Shift+1–9 reach the jump row; the digit is read from the physical key', () => {
+      for (let n = 1; n <= 9; n++) {
+        const e = ev({ key: '!@#$%^&*('[n - 1], code: `Digit${n}`, altKey: true, shiftKey: true })
+        expect(shellRow(e, ctx())).toBe('session.jumpN')
+        expect(altDigit(e)).toBe(n)
+      }
+      expect(shellRow(ev({ key: ')', code: 'Digit0', altKey: true, shiftKey: true }), ctx())).toBeUndefined()
+      expect(altDigit(ev({ key: '0', code: 'Digit0', altKey: true }))).toBeNull()
+    })
+
+    it('bare Alt+1–9 is the browser\'s tab select — it reaches no row', () => {
+      for (let n = 1; n <= 9; n++) {
+        expect(shellRow(ev({ key: String(n), code: `Digit${n}`, altKey: true }), open)).toBeUndefined()
+      }
+    })
+
+    it('Alt+↑ / Alt+↓ jump between own prompts, but only with a session open', () => {
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), open)).toBe('transcript.promptPrev')
+      expect(shellRow(ev({ key: 'ArrowDown', code: 'ArrowDown', altKey: true }), open)).toBe('transcript.promptNext')
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx())).toBeUndefined()
+    })
+
+    it('need their exact modifiers: Ctrl or Meta alongside is some other chord', () => {
+      for (const extra of [{ ctrlKey: true }, { metaKey: true }]) {
+        expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true, ...extra }), open)).toBeUndefined()
+        expect(shellRow(ev({ key: '#', code: 'Digit3', altKey: true, shiftKey: true, ...extra }), open)).toBeUndefined()
+        expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true, ...extra }), open)).toBeUndefined()
+      }
+      expect(shellRow(ev({ key: '}', code: 'BracketRight', altKey: true, shiftKey: true }), open)).toBeUndefined()
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true, shiftKey: true }), open)).toBeUndefined()
+    })
+
+    it('plain keys are untouched — ↑/↓ stay the list highlight\'s', () => {
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp' }), open)).toBe('compose.nav')
+      expect(shellRow(ev({ key: ']', code: 'BracketRight' }), ctx())).toBeUndefined()
+      expect(shellRow(ev({ key: '3', code: 'Digit3' }), ctx())).toBeUndefined()
+    })
+
+    it('fire from the session composer and the new-session prompt, which yield these chords to the shell', () => {
+      for (const active of [composer, dispatch]) {
+        expect(shellRow(ev({ key: '#', code: 'Digit3', altKey: true, shiftKey: true }), ctx({ active }))).toBe('session.jumpN')
+        expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ active }))).toBe('session.listNext')
+      }
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, active: composer })))
+        .toBe('transcript.promptPrev')
+    })
+
+    it('never fire from any OTHER text entry', () => {
+      expect(shellRow(ev({ key: '!', code: 'Digit1', altKey: true, shiftKey: true }), ctx({ active: search }))).toBeUndefined()
+      expect(shellRow(ev({ key: '[', code: 'BracketLeft', altKey: true }), ctx({ active: search }))).toBeUndefined()
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, active: search })))
+        .toBeUndefined()
+    })
+
+    it('are blocked under a modal or an open menu', () => {
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
+      expect(shellRow(ev({ key: '#', code: 'Digit3', altKey: true, shiftKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, overlayOpen: true })))
+        .toBeUndefined()
+    })
+
+    it('session switching is off in kiosk — a wall display has no list to switch through', () => {
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ interactive: false }))).toBeUndefined()
+      expect(shellRow(ev({ key: '!', code: 'Digit1', altKey: true, shiftKey: true }), ctx({ interactive: false }))).toBeUndefined()
+    })
   })
 
-  it('Alt+1–9 reach the jump row, and the digit is read from the physical key', () => {
-    for (let n = 1; n <= 9; n++) {
-      const e = ev({ key: String(n), code: `Digit${n}`, altKey: true })
-      expect(shellRow(e, ctx())).toBe('session.jumpN')
-      expect(altDigit(e)).toBe(n)
-    }
-    expect(shellRow(ev({ key: '0', code: 'Digit0', altKey: true }), ctx())).toBeUndefined()
-    expect(altDigit(ev({ key: '0', code: 'Digit0', altKey: true }))).toBeNull()
+  describe('on Apple', () => {
+    beforeEach(() => setPlatform('MacIntel'))
+
+    it('⌘⌥[ / ⌘⌥] / ⌘⌥1–9 / ⌘⌥↑↓ reach the rows', () => {
+      const meta = { metaKey: true, altKey: true }
+      expect(shellRow(ev({ key: '“', code: 'BracketLeft', ...meta }), ctx())).toBe('session.listPrev')
+      expect(shellRow(ev({ key: '‘', code: 'BracketRight', ...meta }), ctx())).toBe('session.listNext')
+      // ⌘⌥5 on a German layout reports "[" — the code is what is matched.
+      const e5 = ev({ key: '[', code: 'Digit5', ...meta })
+      expect(shellRow(e5, ctx())).toBe('session.jumpN')
+      expect(altDigit(e5)).toBe(5)
+      expect(shellRow(ev({ key: '¡', code: 'Digit1', ...meta }), ctx())).toBe('session.jumpN')
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', ...meta }), open)).toBe('transcript.promptPrev')
+      expect(shellRow(ev({ key: 'ArrowDown', code: 'ArrowDown', ...meta }), open)).toBe('transcript.promptNext')
+    })
+
+    it('a bare ⌥ chord is typing, never a binding — German ⌥5 is "[", ⌥↑ moves the caret', () => {
+      expect(shellRow(ev({ key: '[', code: 'Digit5', altKey: true }), ctx({ active: composer }))).toBeUndefined()
+      expect(shellRow(ev({ key: '{', code: 'Digit8', altKey: true }), ctx({ active: composer }))).toBeUndefined()
+      expect(shellRow(ev({ key: '“', code: 'BracketLeft', altKey: true }), ctx({ active: composer }))).toBeUndefined()
+      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, active: composer })))
+        .toBeUndefined()
+    })
+
+    it('the Linux digit form and Shift/Ctrl alongside ⌘⌥ reach nothing', () => {
+      expect(shellRow(ev({ key: '!', code: 'Digit1', altKey: true, shiftKey: true }), ctx())).toBeUndefined()
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', metaKey: true, altKey: true, shiftKey: true }), ctx()))
+        .toBeUndefined()
+      expect(shellRow(ev({ key: ']', code: 'BracketRight', metaKey: true, altKey: true, ctrlKey: true }), ctx()))
+        .toBeUndefined()
+    })
   })
 
-  it('still fire when macOS Option rewrites `e.key` — ⌥1 is "¡", ⌥[ is "“", ⌥] is "‘"', () => {
-    const e1 = ev({ key: '¡', code: 'Digit1', altKey: true })
-    expect(shellRow(e1, ctx())).toBe('session.jumpN')
-    expect(altDigit(e1)).toBe(1)
-    expect(shellRow(ev({ key: '“', code: 'BracketLeft', altKey: true }), ctx())).toBe('session.listPrev')
-    expect(shellRow(ev({ key: '‘', code: 'BracketRight', altKey: true }), ctx())).toBe('session.listNext')
-  })
-
-  it('Alt+↑ / Alt+↓ jump between own prompts, but only with a session open', () => {
-    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), open)).toBe('transcript.promptPrev')
-    expect(shellRow(ev({ key: 'ArrowDown', code: 'ArrowDown', altKey: true }), open)).toBe('transcript.promptNext')
-    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ inSessions: false })))
-      .toBeUndefined()
-  })
-
-  it('plain ↑/↓ are untouched — the list highlight keeps them', () => {
-    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp' }), open)).toBe('compose.nav')
-    expect(shellRow(ev({ key: ']', code: 'BracketRight' }), ctx())).toBeUndefined()
-    expect(shellRow(ev({ key: '3', code: 'Digit3' }), ctx())).toBeUndefined()
-  })
-
-  it('need Alt ALONE: Shift, Ctrl or Meta alongside it is some other chord', () => {
-    for (const extra of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
-      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true, ...extra }), open)).toBeUndefined()
-      expect(shellRow(ev({ key: '3', code: 'Digit3', altKey: true, ...extra }), open)).toBeUndefined()
-      expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true, ...extra }), open)).toBeUndefined()
-    }
-  })
-
-  it('fire from the session composer and the new-session prompt, which yield Alt to the shell', () => {
-    for (const active of [composer, dispatch]) {
-      expect(shellRow(ev({ key: '3', code: 'Digit3', altKey: true }), ctx({ active }))).toBe('session.jumpN')
-      expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ active }))).toBe('session.listNext')
-    }
-    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, active: composer })))
-      .toBe('transcript.promptPrev')
-  })
-
-  it('never fire from any OTHER text entry — on a Mac, ⌥ there types a character', () => {
-    expect(shellRow(ev({ key: '¡', code: 'Digit1', altKey: true }), ctx({ active: search }))).toBeUndefined()
-    expect(shellRow(ev({ key: '“', code: 'BracketLeft', altKey: true }), ctx({ active: search }))).toBeUndefined()
-    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, active: search })))
-      .toBeUndefined()
-  })
-
-  it('are blocked under a modal or an open menu', () => {
-    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
-    expect(shellRow(ev({ key: '3', code: 'Digit3', altKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
-    expect(shellRow(ev({ key: 'ArrowUp', code: 'ArrowUp', altKey: true }), ctx({ sessionOpen: true, overlayOpen: true })))
-      .toBeUndefined()
-  })
-
-  it('session switching is off in kiosk — a wall display has no list to switch through', () => {
-    expect(shellRow(ev({ key: ']', code: 'BracketRight', altKey: true }), ctx({ interactive: false }))).toBeUndefined()
-    expect(shellRow(ev({ key: '1', code: 'Digit1', altKey: true }), ctx({ interactive: false }))).toBeUndefined()
-  })
-
-  it('the old display-only `compose.jump` is gone — Alt+1–9 is one row, not two', () => {
+  it('the old display-only `compose.jump` is gone — the jump is one row, not two', () => {
     const ids = SHORTCUTS.map((s) => s.id)
     expect(ids).not.toContain('compose.jump')
     expect(SHORTCUTS.filter((s) => /1–9/.test(s.keys)).map((s) => s.id)).toEqual(['session.jumpN'])
@@ -942,14 +1010,32 @@ describe('the un-bindable Desktop chords bind nothing', () => {
     // next/previous-TAB bindings on macOS. Dropped too; no replacement invented.
     ['⌘⇧] (next tab)', ev({ key: ']', metaKey: true, shiftKey: true })],
     ['⌘⇧[ (previous tab)', ev({ key: '[', metaKey: true, shiftKey: true })],
+    // Tab select by number. Alt+1–9 is Chrome's and Firefox's on Linux, which
+    // is why the jump row is Alt+SHIFT+1–9 there; Ctrl+1–8 elsewhere, ⌘1–9 on Mac.
+    ...Array.from({ length: 9 }, (_, i): [string, KeyboardLike] =>
+      [`Alt+${i + 1} (Linux tab select)`, ev({ key: String(i + 1), code: `Digit${i + 1}`, altKey: true })]),
+    ...Array.from({ length: 8 }, (_, i): [string, KeyboardLike] =>
+      [`Ctrl+${i + 1} (tab select)`, ev({ key: String(i + 1), code: `Digit${i + 1}`, ctrlKey: true })]),
+    ...Array.from({ length: 9 }, (_, i): [string, KeyboardLike] =>
+      [`⌘${i + 1} (tab select)`, ev({ key: String(i + 1), code: `Digit${i + 1}`, metaKey: true })]),
+    // ⌘⌥← / ⌘⌥→ — previous / next tab on macOS Chrome. The prompt jump is
+    // ⌘⌥↑/↓ and must never widen to the horizontal arrows.
+    ['⌘⌥← (previous tab)', ev({ key: 'ArrowLeft', code: 'ArrowLeft', metaKey: true, altKey: true })],
+    ['⌘⌥→ (next tab)', ev({ key: 'ArrowRight', code: 'ArrowRight', metaKey: true, altKey: true })],
   ]
 
-  it.each(RESERVED)('%s reaches no row in the whole registry', (label, e) => {
-    // `() => true` for `canAct`: not "the shell has no handler", but "no row
-    // anywhere — list, header, compose, in-session — matches this event".
-    expect(matchShortcut(e, () => true, anywhere), label).toBeUndefined()
-    // …and it is not selectable by a focused row or group header either.
-    expect(matchShortcut(e, () => true), label).toBeUndefined()
+  it.each(RESERVED)('%s reaches no row in the whole registry, on any platform', (label, e) => {
+    // Both platforms: the D-10 rows match differently on Apple (⌘⌥) and
+    // elsewhere (Alt / Alt+Shift), and a reserved chord must miss both forms.
+    for (const platform of ['MacIntel', 'Linux x86_64']) {
+      setPlatform(platform)
+      // `() => true` for `canAct`: not "the shell has no handler", but "no row
+      // anywhere — list, header, compose, in-session — matches this event".
+      expect(matchShortcut(e, () => true, anywhere), `${label} on ${platform}`).toBeUndefined()
+      // …and it is not selectable by a focused row or group header either.
+      expect(matchShortcut(e, () => true), `${label} on ${platform}`).toBeUndefined()
+    }
+    setPlatform(ORIGINAL_PLATFORM)
   })
 
   it('the prompt-row menu chords (Alt+Shift+M / I / E) are not in the browser-reserved set', () => {

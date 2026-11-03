@@ -53,7 +53,8 @@
  * groups applied — through `shell/sessionListNav`, the same order and the same
  * open as Alt+[ / Alt+]. They used to walk `useSessionNeighbors`, a second
  * ordering over the raw sessions query, which could step to a session the list
- * was hiding. Outside the shell there is no list, so there are no chevrons.
+ * was hiding. Outside the shell there is no list, and beside a session the list
+ * does not show (Background scope, filtered out) no neighbours — no chevrons.
  */
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
@@ -142,7 +143,7 @@ export function SessionHeader({
     || canUseEngine(caps, 'accountSwitchNewThread')
 
   // Both chevrons render as a pair: the list step returns prevId/nextId both-null
-  // (no list, or the open session is its only row) or both-set (it wraps).
+  // (no list, the session is not in it, or it is the only row) or both-set (it wraps).
   const hasNeighbors = prevId !== null || nextId !== null
 
   // Back, the chevrons, the rename title and the actions menu all live here, so
