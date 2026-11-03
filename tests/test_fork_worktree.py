@@ -502,3 +502,35 @@ def test_timeout_during_add_discards_what_it_made(
         _fork(repo, dest)
     assert ei.value.code == "FORK_FAILED"
     _assert_no_half_fork(repo, dest)
+
+
+# -- fix round 3: per-worktree config (extensions.worktreeConfig) ---------------------
+
+@pytest.mark.parametrize("where", ["main", "source"])
+def test_worktree_scope_filter_never_reaches_the_child(repo: Path, tmp_path: Path,
+                                                       where: str) -> None:
+    """git copies the CURRENT worktree's config.worktree into a new worktree. The fork
+    adds from the source, whose worktree scope is the one scanned and neutralised;
+    a filter in the main worktree's (unscanned) config.worktree must not run."""
+    (repo / ".gitattributes").write_text("*.txt filter=x\n")
+    _git(repo, "add", ".gitattributes")
+    _git(repo, "commit", "-qm", "attrs")
+    src = tmp_path / "src-wt"
+    _git(repo, "worktree", "add", "-q", "-b", "viberpit/src", str(src))
+    _git(repo, "config", "extensions.worktreeConfig", "true")
+    marker = tmp_path / "pwned"
+    _git(repo if where == "main" else src, "config", "--worktree",
+         "filter.x.smudge", f"touch {marker} && cat")
+    (src / "a.txt").write_text("changed\n")
+
+    # Sanity: a plain add from that worktree does run the driver.
+    _git(repo if where == "main" else src, "worktree", "add", "-q", "--detach",
+         str(tmp_path / "plain"))
+    assert marker.exists()
+    marker.unlink()
+
+    dest = tmp_path / "wt"
+    info = _fork(src, dest)
+    assert not marker.exists()
+    assert (dest / "a.txt").read_text() == "changed\n"
+    assert info.branch in _branches(repo)

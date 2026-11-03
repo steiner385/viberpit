@@ -984,11 +984,18 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
         except GitTimeout as exc:
             raise ForkWorktreeError("git timed out naming the fork branch") from exc
         try:
-            added = run_git(repo_top, *git, "worktree", "add", "-q", "-b", branch,
+            # Run from the SOURCE worktree, not repo_top: with extensions.worktreeConfig
+            # git copies the *current* worktree's config.worktree into the new one,
+            # and only the source's worktree scope is what ``git`` was scanned from.
+            # From the main worktree, its unscanned config.worktree (a filter driver,
+            # say) would reach the child's checkout un-neutralised.
+            added = run_git(top, *git, "worktree", "add", "-q", "-b", branch,
                             dest, "--", head_sha, timeout=FORK_GIT_TIMEOUT_S)
         except GitTimeout as exc:
-            # git was killed mid-add. Unlike a refused add, dest and branch were both
-            # confirmed new under this lock moments ago, so what is there is ours.
+            # git was killed mid-add. dest and branch were confirmed new under the
+            # lock moments ago, but clone_lock excludes only cooperating callers in
+            # this process: the discard is best-effort and could remove a same-named
+            # branch or dest something else (the agent's own git) made in that window.
             log.info("worktree.fork_failed step=add dest=%s branch=%s err=timeout",
                      dest, branch)
             _discard_fork(repo_top, dest, branch)
