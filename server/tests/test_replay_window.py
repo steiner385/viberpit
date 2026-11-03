@@ -282,3 +282,20 @@ async def test_until_uuid_not_found_replays_nothing_never_the_whole_file(tmp_pat
     w = await replay_window(path, limit=None, until_uuid="not-there")
     assert w.events == [] and w.total_turns == 0
     assert await replay_events(path, max_turns=None, until_uuid="not-there") == []
+
+
+def test_no_turn_before_the_last_compaction_is_anchored(tmp_path):
+    """--resume-session-at cannot resume at an entry at or before the last
+    compact_boundary on CLI 2.1.317 (pre-boundary: "No message found"; inside the
+    preserved segment: a silent exit), so those turns get no fork anchor (D-8)."""
+    from server.sessions import events as ev
+    from server.sessions.replay import _window, transcript_turn_anchors
+    rows = [json.loads(line) for line in open(_write_transcript(tmp_path, 4))]
+    boundary = {"type": "system", "subtype": "compact_boundary", "uuid": "cb",
+                "parentUuid": None, "logicalParentUuid": "a1"}
+    p = tmp_path / "c.jsonl"
+    p.write_text("\n".join(json.dumps(o) for o in rows[:4] + [boundary] + rows[4:]))
+    assert transcript_turn_anchors(str(p)) == {"a2": "a2", "a3": "a3"}
+    w = _window(str(p), None, None)
+    assert [e.uuid for e in w.events if isinstance(e, ev.TurnAnchor)] == ["a2", "a3"]
+    assert _turn_ids(w) == ["a0", "a1", "a2", "a3"]     # history still replays

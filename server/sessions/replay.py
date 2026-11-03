@@ -287,6 +287,10 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
     out: list = []
     meta_event = None
     tool_use_entries: set = set()   # assistant entry uuids carrying a tool_use block
+    # Assistant entry uuids at or before the LAST compact_boundary: the CLI cannot
+    # resume at one (CLI 2.1.317 — see the D-8 verification doc §1, "Compaction").
+    assistant_uuids: list = []
+    pre_compaction: set = set()
     reached = until_uuid is None
     for o in _read_jsonl(path):
         if until_uuid is not None:
@@ -296,6 +300,9 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
         if o.get("isSidechain"):
             continue
         typ = o.get("type")
+        if typ == "system" and o.get("subtype") == "compact_boundary":
+            pre_compaction.update(assistant_uuids)
+            continue
         msg = o.get("message") or {}
         content = _content_blocks(msg)
         uuid = o.get("uuid")
@@ -354,6 +361,7 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
                 # long sessions — the status strip needs the model after re-attach.
                 meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
+            assistant_uuids.append(uuid)
             if any(b.get("type") == "tool_use" for b in content):
                 # Read off the raw blocks, not the emitted events: a signal tool or
                 # AskUserQuestion emits no ToolCall but is still a dangling tool_use.
@@ -371,11 +379,12 @@ def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, objec
     # the single shared reconstruction path, so every consumer (replay_window /
     # transcript_events / export / replay_events) inherits it and the drop_incomplete
     # tail-trim below anchors on the deduped last user entry.
-    return (_with_turn_anchors(_collapse_recovery_resend_dupes(out), tool_use_entries),
+    return (_with_turn_anchors(_collapse_recovery_resend_dupes(out),
+                               tool_use_entries | pre_compaction),
             meta_event)
 
 
-def _with_turn_anchors(out: list, tool_use_entries: set) -> list:
+def _with_turn_anchors(out: list, unanchorable: set) -> list:
     """Insert one ``TurnAnchor`` per LOGICAL turn, mirroring the live translator (D-8).
 
     A logical turn runs from one human prompt (a ``UserMessage`` — harness entries and
@@ -388,8 +397,9 @@ def _with_turn_anchors(out: list, tool_use_entries: set) -> list:
     them would ride along with the neighbouring page. For the same reason the trailing
     in-progress turn's anchor is trimmed with it by ``drop_incomplete_turn``. A prompt
     with no assistant entry after it (an interrupt) gets none, and so does a turn whose
-    last entry carries a tool_use (in *tool_use_entries*): the inclusive cut would fork
-    from a dangling tool_use — the live translator's rule."""
+    last entry is in *unanchorable*: one carrying a tool_use (the inclusive cut would
+    fork from a dangling tool_use — the live translator's rule), or one at or before the
+    last compact_boundary, which ``--resume-session-at`` cannot resume at."""
     anchored: dict[int, ev.TurnAnchor] = {}   # TurnEnd index -> the anchor it closes
     last: tuple[int, ev.TurnAnchor] | None = None
     for i, e in enumerate(out):
@@ -398,7 +408,7 @@ def _with_turn_anchors(out: list, tool_use_entries: set) -> list:
                 anchored[last[0]] = last[1]
             last = None
         elif isinstance(e, ev.TurnEnd) and e.src_uuid:
-            last = (None if e.src_uuid in tool_use_entries
+            last = (None if e.src_uuid in unanchorable
                     else (i, ev.TurnAnchor(e.turn_id, e.src_uuid)))
     if last is not None:
         anchored[last[0]] = last[1]

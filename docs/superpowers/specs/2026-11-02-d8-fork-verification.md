@@ -42,6 +42,29 @@ installed binary, the vendored SDK or ViberPit's code. Parent spec:
   and it still honours the flag. Run before any model call: `--output-format stream-json --verbose --input-format
   stream-json --resume 5651281d… --fork-session --resume-session-at 00000000-0000-4000-8000-000000000000`. It returned rc=1
   and the result frame said `"errors":["No message found with message.uuid of: 00000000-…"]`.
+- **Compaction: anchors at or before the last `compact_boundary` cannot be forked.** Re-probed 2026-11-02 21:52 EST
+  against **2.1.317** (the installed binary had moved on from 2.1.316). The probe made no model call:
+  - **Setup.** A throwaway `CLAUDE_CONFIG_DIR` with no credentials, and a temp cwd. A copy of a real 1144-entry
+    transcript went into that cwd's project dir.
+  - **The transcript.** It has one auto-compaction: a `system`/`compact_boundary` row with `parentUuid: null` and
+    a `logicalParentUuid`. Its `compactMetadata.preservedSegment`/`preservedMessages` name 8 pre-boundary entries the
+    compaction kept.
+  - **The command.** `--output-format stream-json --verbose --input-format stream-json --resume <sid> --fork-session
+    --resume-session-at <uuid> </dev/null`. No prompt was sent.
+
+  | anchor | rc | result |
+  |---|---|---|
+  | a top-level assistant entry before the boundary, not preserved | 1 | `No message found with message.uuid of: …`, `cost 0` |
+  | an entry inside the preserved segment (3 tried, incl. the segment's tail) | 0 | **no output at all**: no `init` frame, no fork file written |
+  | an assistant entry after the boundary | 0 | `init` under a new session id, then `result` with `num_turns 0`, `duration_api_ms 0` (the frame's cost is the source's restored cost-state); fork file written |
+  | a bogus uuid | 1 | `No message found …` |
+
+  The source file's sha256 was unchanged. The loader keeps only the chain from the last boundary on, so a
+  pre-boundary uuid is "not found". A preserved one makes the CLI exit silently, which a driver would see as a dead
+  start. ViberPit therefore treats every top-level assistant entry at or before the last boundary as unanchorable
+  (`replay._build_events` → `_with_turn_anchors`). `fork_session` checks the requested anchor against the
+  transcript's own anchor set, so a live anchor recorded before a later compaction is refused with
+  `TURN_NOT_FORKABLE` too. The probe dir was removed afterwards.
 
 ## 2. The Python SDK (`claude-agent-sdk==0.2.105`, pinned in `pyproject.toml:10`)
 
