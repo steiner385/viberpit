@@ -64,7 +64,7 @@ _STATUS_TRACE = os.environ.get("VIBERPIT_STATUS_TRACE", "false").lower() in ("1"
 # WS attach path (_emit_live_extras); buffering them would double-emit.
 _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
                  ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
-                 ev.TurnEnd, ev.ErrorEvent,
+                 ev.TurnAnchor, ev.TurnEnd, ev.ErrorEvent,
                  # The turn's asks and their resolutions ride the attach snapshot too, so
                  # a mid-turn reattach re-delivers a pending permission/question AT ITS
                  # PLACE in the turn — after the prompt and the content that led to it —
@@ -131,6 +131,24 @@ def _scan_transcript_tail(path: str, needle: str, *, last_size: int) -> tuple[bo
             return needle.encode() in fh.read(), size
     except OSError:
         return False, size
+
+
+async def wait_for_transcript_entry(path: str, uuid: str, *, grace: float) -> bool:
+    """Whether *uuid* reaches the tail of the transcript at *path* within *grace*
+    seconds — the CLI writes each entry under its message uuid, so this waits on the
+    fact rather than a guessed interval. Polls ``_scan_transcript_tail`` off the loop
+    (a file that has not grown is not re-read). Never raises; the caller logs."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + grace
+    size = -1
+    while True:
+        found, size = await asyncio.to_thread(_scan_transcript_tail, path, uuid,
+                                              last_size=size)
+        if found:
+            return True
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(_TRANSCRIPT_FLUSH_POLL_S)
 
 # Soft notice text surfaced when a dropped turn is being auto-resent.
 _RECOVERING_MSG = "Recovering the dropped turn…"
@@ -315,6 +333,10 @@ class ClaudeAgentDriver:
         # (server/library/scan.py, mutate.py) — Claude's shared config
         # directory, not a per-session concept.
         library_management=True,
+        # Fork from here (D-8): `--resume <sid> --fork-session --resume-session-at
+        # <uuid>`, verified on CLI 2.1.316. The flag is hidden, so the capability is
+        # also gated by VIBERPIT_FORK_ENABLED (engine.fork_supported).
+        fork=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -323,9 +345,11 @@ class ClaudeAgentDriver:
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
+                 on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None,
-                 resumed_after_restart: bool = False):
+                 resumed_after_restart: bool = False,
+                 fork_resume_at: str | None = None):
         self.automation_execution_id = automation_execution_id
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_tasks: set[str] = set()
@@ -351,6 +375,9 @@ class ClaudeAgentDriver:
         # Resuming a turn a daemon restart cut off (#2922): the transcript repair at
         # start() then blames the restart, not the user.
         self._resumed_after_restart = resumed_after_restart
+        # Fork from here (D-8): `resume` is then the SOURCE session's id, resumed as a
+        # new forked session cut at this transcript uuid. See start().
+        self._fork_resume_at = fork_resume_at
         self._engine_session_id: str | None = None
         self._on_session_id = on_session_id
         self._on_sync_back = on_sync_back
@@ -393,6 +420,9 @@ class ClaudeAgentDriver:
         # four (seen 2026-09-12: header chip said 4 agents, card showed none).
         self._on_sub_agents_changed = on_sub_agents_changed
         self._on_background_work_changed = on_background_work_changed
+        # Fired (synchronously) with (session id, turn id, transcript uuid) for each
+        # TurnAnchor (D-8), so the orchestrator keeps SessionRecord.turn_anchors live.
+        self._on_turn_anchor = on_turn_anchor
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
@@ -576,6 +606,11 @@ class ClaudeAgentDriver:
         tracking a CLI-initiated turn (`_turn_active`). The one test that decides
         whether a new prompt starts now or waits."""
         return self.drain_alive or self._turn_active
+
+    def in_flight_turn_ids(self) -> frozenset[str]:
+        """Turn ids and transcript uuids of the turn still running (D-8): a fork there
+        is refused. Empty between turns."""
+        return self._tr.in_flight_ids()
 
     @property
     def awaiting_user_input(self) -> bool:
@@ -1045,7 +1080,10 @@ class ClaudeAgentDriver:
         # tool_use as the transcript tail. On resume the CLI rejects that state with
         # error_during_execution / [ede_diagnostic] and every turn dead-ends. Heal it
         # before handing the session back to the SDK. Best-effort — never block start.
-        if self.resume:
+        # A fork's `resume` is the SOURCE's transcript: never repair it from here.
+        # The source may be mid-turn (its tail a live tool_use), and the cut point is
+        # a settled, tool-free entry anyway.
+        if self.resume and not self._fork_resume_at:
             text = RESTART_INTERRUPT_TEXT if self._resumed_after_restart else INTERRUPT_TEXT
             try:
                 await asyncio.to_thread(
@@ -1054,8 +1092,12 @@ class ClaudeAgentDriver:
             except Exception:
                 log.warning("driver.start: transcript repair failed session=%s",
                             self.session_id, exc_info=True)
+        fork_kw: dict = {}
+        if self.resume and self._fork_resume_at:
+            fork_kw = {"fork_session": True,
+                       "extra_args": {"resume-session-at": self._fork_resume_at}}
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
-                               self.resume, on_pre_compact=self._on_pre_compact)
+                               self.resume, on_pre_compact=self._on_pre_compact, **fork_kw)
         if inspect.isawaitable(client):
             client = await client
         self._client = client
@@ -1600,6 +1642,12 @@ class ClaudeAgentDriver:
                     except Exception:  # noqa: BLE001 - a snapshot refresh must never break the pump
                         log.debug("driver.on_background_work_changed failed session=%s",
                                   self.session_id, exc_info=True)
+            if isinstance(e, ev.TurnAnchor) and self._on_turn_anchor is not None:
+                try:
+                    self._on_turn_anchor(self.session_id, e.turn_id, e.uuid)
+                except Exception:  # noqa: BLE001 - recording an anchor must never break the pump
+                    log.debug("driver.on_turn_anchor failed session=%s", self.session_id,
+                              exc_info=True)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
             self._note_progress(e)
@@ -2455,22 +2503,13 @@ class ClaudeAgentDriver:
             log.debug("flush wait skipped session=%s: no transcript for %s",
                       self.session_id, session)
             return
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + grace
-        size = -1
-        while True:
-            found, size = await asyncio.to_thread(
-                _scan_transcript_tail, path, want, last_size=size)
-            if found:
-                self._last_assistant_uuid = None
-                return
-            if loop.time() >= deadline:
-                log.warning(
-                    "flush wait: CLI did not persist assistant message %s for "
-                    "session=%s within %.1fs — terminating anyway; that reply may be "
-                    "missing from the transcript (#1012)", want, self.session_id, grace)
-                return
-            await asyncio.sleep(_TRANSCRIPT_FLUSH_POLL_S)
+        if await wait_for_transcript_entry(path, want, grace=grace):
+            self._last_assistant_uuid = None
+            return
+        log.warning(
+            "flush wait: CLI did not persist assistant message %s for "
+            "session=%s within %.1fs — terminating anyway; that reply may be "
+            "missing from the transcript (#1012)", want, self.session_id, grace)
 
     async def aclose(self, *, reason: str | None = None):
         """Tear the driver down. ``reason=CLOSE_REASON_RESTART`` (the orchestrator's
@@ -2580,6 +2619,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,
+            on_turn_anchor=config.on_turn_anchor,
             on_record_condense_ms=config.on_record_condense_ms,
             get_condense_estimate=config.get_condense_estimate,
             on_recoverable_failure=config.on_recoverable_failure,
@@ -2591,4 +2631,5 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             automation_execution_id=config.automation_execution_id,
             after_execution_close=config.after_execution_close,
             resumed_after_restart=config.resumed_after_restart,
+            fork_resume_at=config.fork_resume_at,
         )

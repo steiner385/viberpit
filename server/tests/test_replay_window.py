@@ -255,3 +255,49 @@ async def test_replay_events_turn_index_shares_cursor_space(tmp_path):
     path = _write_transcript(tmp_path, 5)
     events = await replay_events(path, max_turns=2)
     assert [e.turn_index for e in events if isinstance(e, ev.TurnStart)] == [3, 4]
+
+
+# --- until_uuid: a fork child replays its source up to the fork point (D-8) ------------
+
+@pytest.mark.asyncio
+async def test_until_uuid_stops_after_the_anchor_inclusive(tmp_path):
+    from server.sessions import events as ev
+    from server.sessions.replay import ClaudeTranscriptReplay
+    path = _write_transcript(tmp_path, 5)
+    w = await replay_window(path, limit=None, until_uuid="a2")
+    assert _turn_ids(w) == ["a0", "a1", "a2"] and w.total_turns == 3
+    users = [e.text for e in w.events if isinstance(e, ev.UserMessage)]
+    assert users == ["q0", "q1", "q2"]                  # nothing after the anchor
+    assert [e.uuid for e in w.events if isinstance(e, ev.TurnAnchor)][-1] == "a2"
+    # Paging and the flat reader see the same cut.
+    page = await ClaudeTranscriptReplay(path, until_uuid="a2").window(before=2, limit=1)
+    assert _turn_ids(page) == ["a1"] and page.total_turns == 3
+    flat = await replay_events(path, max_turns=None, until_uuid="a2")
+    assert [e.turn_id for e in flat if isinstance(e, ev.TurnStart)] == ["a0", "a1", "a2"]
+
+
+@pytest.mark.asyncio
+async def test_until_uuid_not_found_replays_nothing_never_the_whole_file(tmp_path):
+    path = _write_transcript(tmp_path, 5)
+    w = await replay_window(path, limit=None, until_uuid="not-there")
+    assert w.events == [] and w.total_turns == 0
+    assert await replay_events(path, max_turns=None, until_uuid="not-there") == []
+
+
+def test_no_turn_before_the_last_compaction_is_anchored(tmp_path):
+    """--resume-session-at cannot resume at an entry at or before the last
+    compact_boundary on CLI 2.1.317 (pre-boundary: "No message found"; inside the
+    preserved segment: a silent exit), so those turns get no fork anchor (D-8)."""
+    from server.sessions import events as ev
+    from server.sessions.replay import _window, transcript_anchor_facts
+    rows = [json.loads(line) for line in open(_write_transcript(tmp_path, 4))]
+    boundary = {"type": "system", "subtype": "compact_boundary", "uuid": "cb",
+                "parentUuid": None, "logicalParentUuid": "a1"}
+    p = tmp_path / "c.jsonl"
+    p.write_text("\n".join(json.dumps(o) for o in rows[:4] + [boundary] + rows[4:]))
+    facts = transcript_anchor_facts(str(p))
+    assert facts.anchors == {"a2": "a2", "a3": "a3"}
+    assert {"a0", "a1", "u0", "u1"} <= facts.compacted and not {"a2", "a3"} & facts.compacted
+    w = _window(str(p), None, None)
+    assert [e.uuid for e in w.events if isinstance(e, ev.TurnAnchor)] == ["a2", "a3"]
+    assert _turn_ids(w) == ["a0", "a1", "a2", "a3"]     # history still replays

@@ -133,3 +133,12 @@ async def test_mcp_renders_the_live_server_list():
 async def test_mcp_without_driver_support_returns_no_servers():
     res = await dispatch(FakeDriver(), _cmd("mcp", "client"), "")
     assert res == {"name": "mcp", "render": "mcp", "data": {"servers": []}}
+
+
+@pytest.mark.anyio
+async def test_fork_that_reaches_the_server_says_where_to_send_it():
+    """The browser runs /fork (D-8). One that arrives here (a new session's first
+    prompt) has no reply to fork at: a notice, never the help overlay."""
+    res = await dispatch(FakeDriver(), _cmd("fork", "client"), "")
+    assert res["name"] == "fork" and res["render"] == "notice"
+    assert "/fork" in res["data"]["text"]

@@ -34,8 +34,8 @@ class _Orch:
     def orphaned_interaction(self, sid):
         return self._kind
 
-    def transcript_path(self, sid):
-        return self._path
+    def transcript_source(self, sid):
+        return self._path, None
 
 
 def test_reoffers_the_transcript_question_when_nothing_is_live(tmp_path):

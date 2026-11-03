@@ -69,7 +69,8 @@ import {
   type DecisionProposal, type DecisionResult,
 } from './triage'
 import { useSessionSocket } from '@/ws/client'
-import { extractMutationErrorMessage } from './queryClient'
+import { extractMutationErrorMessage, shouldRetryQuery } from './queryClient'
+import type { ForkTarget } from '@/session/forkTarget'
 import type { SessionEvent } from '@/session/events'
 import type { SessionDiff } from '@/features/sessions/diff/types'
 import type { SessionFileContent, SessionFileList } from '@/features/sessions/files/types'
@@ -1186,6 +1187,36 @@ export function useAdoptSession() {
       qc.invalidateQueries({ queryKey: QK.adoptable })
     },
   })
+}
+
+/** `POST /sessions/{id}/fork` (D-8) → the child session and the composer prefill
+ *  the server echoes back (null for a reply fork). */
+export interface ForkSessionResult { sessionId: string; prefill: string | null }
+
+/**
+ * Fork session `id` at a turn into a linked child (D-8). `fork(target)` mints the
+ * `requestId` ONCE per call and carries it in the mutation's variables, so the
+ * mutation's own retries (transient 502/503/504 and network failures only, the
+ * query policy) resend the same id — and the server answers a repeat with the
+ * child the first request made instead of forking twice. The caller owns the
+ * failure message (a coded 409 toast), so the global toast is suppressed.
+ */
+export function useForkSession(id: string) {
+  const qc = useQueryClient()
+  const { mutateAsync, isPending } = useMutation<
+    ForkSessionResult, ApiRequestError, ForkTarget & { requestId: string }
+  >({
+    mutationFn: (body) => api.post<ForkSessionResult>(`/sessions/${encodeURIComponent(id)}/fork`, body),
+    retry: shouldRetryQuery,
+    meta: { suppressErrorToast: true },
+    // The child joins the list (and the source's child rows) on the next read.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+  const fork = useCallback(
+    (target: ForkTarget) => mutateAsync({ ...target, requestId: crypto.randomUUID() }),
+    [mutateAsync],
+  )
+  return { fork, isPending }
 }
 
 export interface SessionTranscript {

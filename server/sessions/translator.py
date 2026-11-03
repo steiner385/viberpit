@@ -48,6 +48,15 @@ class Translator:
         # mark_complete and then writes a closing paragraph, and a per-message reset
         # would throw the signal away. Cleared only by `_reset()`, at turn end.
         self._turn_signals: dict[str, dict] = {}
+        # The turn's fork anchor (D-8): the uuid of the LAST top-level consolidated
+        # AssistantMessage, or None when that message carries a tool_use. Only that
+        # uuid matches a transcript entry — the stream events that open the turn carry
+        # uuids the CLI never journals. Turn-scoped.
+        self._anchor_uuid: str | None = None
+        # Every top-level AssistantMessage uuid of the OPEN turn — the transcript
+        # entries a replay could have named as this still-running turn's id or anchor,
+        # which a fork must refuse (in_flight_ids). Turn-scoped.
+        self._turn_entry_uuids: set[str] = set()
         # Task sub-agents: CLI task id -> the spawning Task tool-use id. Lives for the
         # translator's lifetime, NOT the turn: a background sub-agent's notices arrive
         # after the turn that spawned it ended (through the driver's idle listener).
@@ -83,6 +92,16 @@ class Translator:
         self._turn_text_msg_id = None
         self._turn_model = {}
         self._turn_signals = {}
+        self._anchor_uuid = None
+        self._turn_entry_uuids = set()
+
+    def in_flight_ids(self) -> frozenset[str]:
+        """Ids naming the turn still in flight, live or replayed: its stream turn id and
+        the uuid of each top-level assistant entry written so far. Empty between
+        turns. A fork at any of them would cut a turn that has not finished (D-8)."""
+        ids = {self._turn_id, *self._turn_entry_uuids}
+        ids.discard("")
+        return frozenset(ids)
 
     def _sub_agent_notice(self, msg) -> list:
         """system/task_* notices → SubAgent* events for a Task sub-agent (spec §4.2), or
@@ -249,6 +268,17 @@ class Translator:
             # marker for their own sub-objective — exclude them. Reset per top-level
             # message so only the FINAL top-level message's text is matched.
             if pid is None:
+                # An entry carrying a tool_use is never a fork point: the cut is
+                # inclusive, so a turn that ENDS on one (interrupt, max_turns,
+                # error_during_execution) would fork from a dangling tool_use. Clear,
+                # so only a later tool-free entry re-anchors the turn.
+                src = getattr(msg, "uuid", None)
+                if isinstance(src, str) and src:
+                    self._turn_entry_uuids.add(src)
+                if any(isinstance(b, ToolUseBlock) for b in msg.content):
+                    self._anchor_uuid = None
+                elif isinstance(src, str) and src:
+                    self._anchor_uuid = src
                 # The CLI emits ONE AssistantMessage per content block, all sharing the
                 # API `message_id`: [text] then [tool_use]. Resetting per SDK message
                 # would wipe the prose the moment the tool-use block arrived, so a
@@ -368,6 +398,7 @@ class Translator:
                 outcome = "complete"
             else:
                 outcome = "success"
+            anchor = self._anchor_uuid
             self._reset()
             out = []
             # An error result carries the agent's failure (max-turns, execution error,
@@ -379,6 +410,8 @@ class Translator:
             err = _error_from_result(msg, tid)
             if err is not None:
                 out.append(err)
+            if anchor is not None:
+                out.append(ev.TurnAnchor(tid, anchor))
             out.append(ev.TurnEnd(tid, _usage_dict(msg.usage),
                                   getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
                                   outcome=outcome, pr_resolution=pr_resolution,

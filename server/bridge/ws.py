@@ -390,8 +390,10 @@ async def _orphaned_ask_frames(orchestrator, session_id: str) -> list[dict]:
             return []
     elif await orchestrator.pending_permissions(session_id):
         return []
-    path = await _maybe_await(orchestrator.transcript_path(session_id))
-    if not path:
+    path, until_uuid = await _maybe_await(orchestrator.transcript_source(session_id))
+    # A fork child that has not run its first turn replays its SOURCE (until_uuid
+    # set): an ask in that file is the source's, never one this child left orphaned.
+    if not path or until_uuid is not None:
         return []
     from server.sessions.replay import last_orphaned_permission, last_question_events
     # Off the event loop: both readers parse the ENTIRE transcript, and this runs on
@@ -437,7 +439,9 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
     earliest_turn = 0
     total_turns = 0
     try:
-        path = await orchestrator.transcript_path(session_id)
+        # The replay resolver, not transcript_path: a fork child before its first turn
+        # replays its source's transcript up to the fork point (until_uuid, D-8).
+        path, until_uuid = await orchestrator.transcript_source(session_id)
         if path:
             # Same ceiling as orchestrator.transcript_window (imported, never
             # re-declared) — this is THE session-open path, so an unbounded replay
@@ -454,7 +458,7 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
             from server.sessions import orchestrator as _orch_mod
             window = await asyncio.wait_for(
                 replay_window(path, drop_incomplete_turn=drop_incomplete,
-                              turn_started_at=turn_started_at),
+                              turn_started_at=turn_started_at, until_uuid=until_uuid),
                 timeout=_orch_mod._TRANSCRIPT_WINDOW_CEILING_S,
             )
             events = window.events

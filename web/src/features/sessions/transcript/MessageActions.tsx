@@ -1,6 +1,6 @@
 /**
- * MessageActions — the per-turn "⋯" menu (Desktop parity, sub-spec D §4). D-3 ships
- * Copy as Markdown only; later items (Fork, Rewind, Edit) append to `ACTIONS`.
+ * MessageActions — the per-turn "⋯" menu (Desktop parity, sub-spec D §4). D-3 shipped
+ * Copy as Markdown; D-8 adds Fork from here. Later items (Rewind, Edit) append to `ACTIONS`.
  */
 import { useRef, useState } from 'react'
 import { MoreHorizontal } from 'lucide-react'
@@ -10,13 +10,17 @@ import { Menu } from '@/ui/Menu'
 import type { Turn } from '@/session/reducer'
 import { turnMarkdown } from '@/session/turnMarkdown'
 import { copyText } from '@/lib/copyText'
+import { useForkActions, type ForkActions } from '@/features/sessions/fork/forkContext'
+
+/** What an action can reach beyond its turn: the session's fork actions, when it can fork. */
+interface ActionEnv { fork: ForkActions | null }
 
 interface MessageAction {
   id: string
   label: string
-  run: (turn: Turn) => Promise<void>
+  run: (turn: Turn, env: ActionEnv) => Promise<void>
   /** Hidden when false. */
-  available: (turn: Turn) => boolean
+  available: (turn: Turn, env: ActionEnv) => boolean
 }
 
 const ACTIONS: readonly MessageAction[] = [
@@ -28,6 +32,17 @@ const ACTIONS: readonly MessageAction[] = [
       const md = turnMarkdown(turn)
       if (md !== null && (await copyText(md))) toast('Copied')
       else toast.error("Couldn't copy")
+    },
+  },
+  {
+    // D-8: a reply forks through itself; a prompt forks through the reply before
+    // it, with the prompt prefilled in the child's composer.
+    id: 'fork',
+    label: 'Fork from here',
+    available: (turn, { fork }) => fork?.targetFor(turn) != null,
+    run: async (turn, { fork }) => {
+      const target = fork?.targetFor(turn)
+      if (fork && target) await fork.fork(target)
     },
   },
 ]
@@ -44,7 +59,9 @@ const REVEAL_ON_TURN_HOVER = '[:hover>&]:opacity-100 [:focus-within>&]:opacity-1
 export function MessageActions({ turn, className }: { turn: Turn; className?: string }) {
   const anchorRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
-  const actions = ACTIONS.filter((a) => a.available(turn))
+  const fork = useForkActions()
+  const env: ActionEnv = { fork }
+  const actions = ACTIONS.filter((a) => a.available(turn, env))
   if (actions.length === 0) return null
 
   return (
@@ -74,7 +91,7 @@ export function MessageActions({ turn, className }: { turn: Turn; className?: st
         label="Message actions"
         align="end"
         items={actions.map((a) => ({ id: a.id, label: a.label }))}
-        onSelect={(id) => { void actions.find((a) => a.id === id)?.run(turn) }}
+        onSelect={(id) => { void actions.find((a) => a.id === id)?.run(turn, env) }}
       />
     </>
   )

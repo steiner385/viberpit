@@ -27,13 +27,25 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import brand, gh_credential, paths
 from .gitrepos import STALE_LOCK_AGE_S, clone_lock, git_env_for_remote
+from .fs_beneath import SymlinkInPath, open_beneath, open_dir_beneath
+from .worktree_diff import (
+    GitTimeout,
+    UnsafeGitConfig,
+    filter_overrides,
+    merge_driver_overrides,
+    run_git,
+    untrusted_conditional_includes,
+    worktree_top,
+)
 
 log = logging.getLogger(__name__)
 
@@ -463,6 +475,14 @@ def _short(session_id: str) -> str:
     return session_id.split("-")[0] or session_id
 
 
+def session_worktree_dir(repo_root: str, repo_top: str, session_id: str) -> Path:
+    """Where session *session_id*'s worktree of the clone at *repo_top* lives:
+    ``<worktrees_base>/<clone name>/<short id>``. The ONE layout — new sessions and
+    forks are both created here, and the janitor (``_candidate_worktree_dirs``)
+    sweeps exactly this shape."""
+    return worktrees_base(repo_root) / os.path.basename(repo_top.rstrip("/")) / _short(session_id)
+
+
 def _child_branch(base: str, session_id: str) -> str:
     """Name of the per-session child branch created off *base*.
 
@@ -614,7 +634,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     repo_top = top.stdout.strip()
     repo_name = os.path.basename(repo_top.rstrip("/"))
 
-    dest = worktrees_base(repo_root) / repo_name / _short(session_id)
+    dest = session_worktree_dir(repo_root, repo_top, session_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     # Serialize the git-mutating work per shared clone: fetch writes refs and
@@ -702,6 +722,377 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         if "invalid reference" in r2.stderr:
             raise BranchRefUnresolvableError(msg)
         raise WorktreeError(msg)
+
+
+# ---------------------------------------------------------------------------
+# Fork worktrees (D-8): a child at the source's HEAD + its uncommitted work.
+# ---------------------------------------------------------------------------
+
+#: Ceiling on the untracked bytes one fork copies. Over it the fork fails (and
+#: cleans up) rather than silently dropping files or filling the disk.
+FORK_MAX_UNTRACKED_BYTES = 200 * 1024**2
+#: Per-call ceiling for the fork's tree-sized git calls (snapshot, checkout, apply).
+#: ``create_worktree``'s checkout has no ceiling at all; this one only stops a hung
+#: git from holding the clone lock forever, never a large-but-healthy checkout.
+FORK_GIT_TIMEOUT_S = 600.0
+#: Identity for the throwaway ``stash create`` commits. They are never put on a
+#: branch (only their trees are applied), and a clone with no ``user.*`` set would
+#: otherwise fail "Please tell me who you are".
+_FORK_IDENT = ("-c", f"user.name={brand.NAME} fork",
+               "-c", f"user.email=fork@{brand.SLUG}.invalid")
+#: On every fork git call: never descend into a submodule, whose own config the
+#: driver neutralisation cannot see.
+_FORK_SAFE = ("-c", "submodule.recurse=false")
+_COPY_CHUNK = 1 << 20
+
+
+#: ``ForkWorktreeError.code`` values — the stable reasons that cross the daemon RPC
+#: (``error_data``) and that the edge maps to a 409 with the same code.
+FORK_FAILED = "FORK_FAILED"
+FORK_UNTRACKED_TOO_LARGE = "FORK_UNTRACKED_TOO_LARGE"
+FORK_NOT_A_REPO = "FORK_NOT_A_REPO"
+FORK_NO_HEAD = "FORK_NO_HEAD"
+FORK_DEST_EXISTS = "FORK_DEST_EXISTS"
+FORK_UNSAFE_CONFIG = "FORK_UNSAFE_CONFIG"
+FORK_APPLY_FAILED = "FORK_APPLY_FAILED"
+FORK_DISK_FULL = "FORK_DISK_FULL"
+FORK_WORKTREE_CODES = frozenset({
+    FORK_FAILED,
+    FORK_UNTRACKED_TOO_LARGE,
+    FORK_NOT_A_REPO,
+    FORK_NO_HEAD,
+    FORK_DEST_EXISTS,
+    FORK_UNSAFE_CONFIG,
+    FORK_APPLY_FAILED,
+    FORK_DISK_FULL,
+})
+
+
+class ForkWorktreeError(WorktreeError):
+    """A fork worktree could not be created; nothing half-made is left behind.
+
+    ``code`` (one of ``FORK_WORKTREE_CODES``) is a stable machine-readable reason;
+    ``error_data`` carries it across the daemon RPC envelope, which also marks the
+    refusal expected (logged at INFO, not an auto-filed WARNING)."""
+
+    def __init__(self, message: str, code: str = FORK_FAILED) -> None:
+        super().__init__(message)
+        self.code = code
+        self.error_data = {"code": code}
+
+
+@dataclass
+class ForkWorktreeInfo:
+    path: str     # the new worktree's root
+    cwd: str      # the child's cwd: the source cwd's position mirrored inside ``path``
+    branch: str   # the fork branch checked out in ``path``
+    repo: str     # absolute toplevel of the main clone both worktrees belong to
+
+
+def fork_branch_name(source_session_id: str, n: int) -> str:
+    """``<prefix>fork-<short source id>-<n>`` — inside ``brand.is_session_branch``, so
+    ``remove_worktree`` tidies it like any other session child branch."""
+    return f"{brand.BRANCH_PREFIX}fork-{_short(source_session_id)}-{n}"
+
+
+def _next_fork_branch(repo_top: str, source_session_id: str) -> str:
+    """The first ``fork_branch_name(source, n)`` (n ≥ 1) with no local branch, from
+    one ``for-each-ref``. Call under ``clone_lock(repo_top)``."""
+    stem = "refs/heads/" + fork_branch_name(source_session_id, 0)[:-1]
+    out = run_git(repo_top, *_FORK_SAFE, "for-each-ref", "--format=%(refname)", stem + "*")
+    if out is None:
+        raise ForkWorktreeError("could not list the fork branches")
+    taken = {int(s) for line in os.fsdecode(out).splitlines()
+             if (s := line[len(stem):]).isascii() and s.isdecimal()}
+    n = 1
+    while n in taken:
+        n += 1
+    return fork_branch_name(source_session_id, n)
+
+
+def _rel_ok(rel: bytes) -> bool:
+    """A git-listed relative path we are willing to recreate: no empty, ``.``/``..``
+    or ``.git`` component (case-insensitively), not absolute, not a ``dir/`` entry
+    (a nested repository)."""
+    if not rel or rel.startswith(b"/") or rel.endswith(b"/"):
+        return False
+    return all(p not in (b"", b".", b"..") and p.lower() != b".git" for p in rel.split(b"/"))
+
+
+def _plan_untracked(top: str, listing: bytes) -> list[bytes]:
+    """Untracked entries worth copying — regular files by ``lstat`` — bounded in total
+    size before the child exists. A filter only: :func:`_copy_untracked` re-checks
+    everything at open time."""
+    btop = os.fsencode(top)
+    keep: list[bytes] = []
+    total = 0
+    for rel in listing.split(b"\0"):
+        if not _rel_ok(rel):
+            continue
+        try:
+            st = os.lstat(os.path.join(btop, rel))
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue  # symlinks, FIFOs, devices, sockets
+        total += st.st_size
+        if total > FORK_MAX_UNTRACKED_BYTES:
+            raise ForkWorktreeError(
+                f"untracked files exceed the {FORK_MAX_UNTRACKED_BYTES} byte fork limit",
+                FORK_UNTRACKED_TOO_LARGE)
+        keep.append(rel)
+    return keep
+
+
+def _copy_untracked(src_top: str, dst_top: str, entries: list[bytes]) -> None:
+    """Copy each planned regular file into the child, mode bits kept.
+
+    Both sides go through :mod:`viberpit.fs_beneath` from a root directory fd, so no
+    symlink is followed anywhere on either path — one swapped in after the plan
+    included. The source leaf is opened non-blocking (a FIFO cannot park the worker)
+    and only a regular file is read; a source path that no longer resolves cleanly
+    is skipped. In the child, each parent directory is opened, or made with
+    ``mkdir(dir_fd=…)``, one component at a time, so a symlinked component is refused
+    before anything is created beneath it; that fails the fork. The byte bound is
+    enforced again on what is actually read."""
+    left = FORK_MAX_UNTRACKED_BYTES
+    src_root = os.open(src_top, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        dst_root = os.open(dst_top, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except BaseException:
+        os.close(src_root)
+        raise
+    try:
+        for rel in entries:
+            if not _rel_ok(rel):
+                continue
+            try:
+                fd = open_beneath(src_root, rel)
+            except OSError:
+                continue  # gone, or a symlink on the way since the plan
+            with os.fdopen(fd, "rb") as src:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                try:
+                    pfd = open_dir_beneath(dst_root, rel.split(b"/")[:-1], create=True)
+                except SymlinkInPath as exc:
+                    raise ForkWorktreeError(
+                        f"untracked path escapes the fork: {os.fsdecode(rel)}") from exc
+                try:
+                    out = os.open(os.path.basename(rel), os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                  | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=pfd)
+                finally:
+                    os.close(pfd)
+                with os.fdopen(out, "wb") as dst:
+                    while chunk := src.read(_COPY_CHUNK):
+                        left -= len(chunk)
+                        if left < 0:
+                            raise ForkWorktreeError(
+                                f"untracked files exceed the {FORK_MAX_UNTRACKED_BYTES} byte"
+                                " fork limit", FORK_UNTRACKED_TOO_LARGE)
+                        dst.write(chunk)
+                    os.fchmod(dst.fileno(), stat.S_IMODE(st.st_mode) & 0o777)
+    finally:
+        os.close(src_root)
+        os.close(dst_root)
+
+
+def _discard_fork(repo_top: str, dest: str, branch: str) -> None:
+    """Remove a half-made fork: its worktree (locked or not), admin record and branch.
+
+    Only called once this fork's own ``worktree add`` succeeded under the clone lock,
+    i.e. for a ``dest`` and ``branch`` this call created — never for one a failed
+    ``add`` may have found already there."""
+    _run(["git", "-C", repo_top, "worktree", "unlock", dest])
+    _run(["git", "-C", repo_top, "worktree", "remove", "-f", "-f", dest])
+    if os.path.lexists(dest):
+        shutil.rmtree(dest, ignore_errors=True)
+    clear_stale_registration(repo_top, dest)
+    _run(["git", "-C", repo_top, "branch", "-D", "--", branch])
+
+
+def fork_worktree_dir(source_cwd: str, repo_root: str, session_id: str) -> str:
+    """The standard session worktree dir (``session_worktree_dir``) for fork child
+    *session_id* of the source worktree at *source_cwd*, found without running git.
+
+    Raises ``ForkWorktreeError(FORK_NOT_A_REPO)`` when *source_cwd* is in no git
+    work tree."""
+    try:
+        loc = git_dir_of(source_cwd)
+    except OSError:
+        loc = None
+    if loc is None:
+        raise ForkWorktreeError(f"not a git work tree: {source_cwd}", FORK_NOT_A_REPO)
+    top, git_dir = loc
+    from viberpit.clone_doctor import clone_dir_from_gitdir
+    clone = clone_dir_from_gitdir(git_dir) or top
+    return str(session_worktree_dir(repo_root, clone, session_id))
+
+
+def discard_fork_worktree(info: ForkWorktreeInfo) -> None:
+    """Remove a fork worktree whose session never started: worktree, admin record and
+    fork branch, dirty or not (it holds only a copy of the source's state)."""
+    _discard_fork(info.repo, info.path, info.branch)
+
+
+def create_fork_worktree(source_cwd: str, *, source_session_id: str,
+                         dest: str) -> ForkWorktreeInfo:
+    """Create a new worktree at ``dest`` on a new fork branch, at the source worktree's
+    current HEAD and carrying its uncommitted work. Read-only on the source.
+
+    - Tracked changes, staged and unstaged: ``git stash create`` against a private
+      COPY of the source index, then ``git stash apply --index`` in the child. A
+      plain ``stash create`` refreshes and rewrites the source's own index; the copy
+      keeps that file byte-identical. Only objects are written to the shared store,
+      and no ``refs/stash`` entry is made. The stash must sit on the HEAD the child
+      was made at (``stash^1``), or the fork fails closed.
+    - Untracked, non-ignored files (``ls-files --others --exclude-standard``) are
+      copied, regular files only, mode bits kept, at most
+      ``FORK_MAX_UNTRACKED_BYTES`` in total.
+
+    ``source_cwd`` may be a subdirectory of its work tree: the fork branches from the
+    toplevel, and ``ForkWorktreeInfo.cwd`` is the same relative position in ``dest``.
+    The branch is ``fork_branch_name(source_session_id, n)`` with the first free
+    ``n``, picked under ``clone_lock`` together with the final check that ``dest``
+    (absolute) does not exist, so two concurrent forks never share either. Any
+    failure after this call's ``worktree add`` succeeded removes the worktree and
+    the branch; a failed ``add`` touches nothing it may not own.
+
+    Git runs hardened (``worktree_diff``'s ``GIT_GLOBAL``/``git_env``: no hooks, no
+    fsmonitor, no system config), with repo-scope filter and merge drivers
+    neutralised and submodules never recursed into: the source tree and the clone's
+    config are agent-writable.
+
+    Raises ``ForkWorktreeError`` (with a ``code``) on every failure.
+    """
+    if not os.path.isabs(dest):
+        raise ForkWorktreeError(f"fork dest must be absolute: {dest!r}")
+    try:
+        top = worktree_top(source_cwd)
+        if top is None:
+            raise ForkWorktreeError(f"not a git work tree: {source_cwd}", FORK_NOT_A_REPO)
+        rel = os.path.relpath(os.path.realpath(source_cwd), os.path.realpath(top))
+        if rel == ".." or rel.startswith("../"):
+            rel = "."
+        common = run_git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        head = run_git(top, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+        index = run_git(top, "rev-parse", "--path-format=absolute", "--git-path", "index")
+        if common is None or index is None:
+            raise ForkWorktreeError(f"cannot resolve the source repository: {top}")
+        if head is None:
+            raise ForkWorktreeError("the source has no commit to fork from", FORK_NO_HEAD)
+        repo_top = os.path.dirname(os.fsdecode(common.rstrip(b"\n")).rstrip("/"))
+        head_sha = os.fsdecode(head.strip())
+        src_index = os.fsdecode(index.rstrip(b"\n"))
+        if not os.path.isfile(src_index):
+            # Without an index git reads every tracked file as a staged deletion; a
+            # fork of that would be wrong, and seeding one would be a guess.
+            raise ForkWorktreeError("the source has no index to fork from")
+        if os.path.lexists(dest):
+            raise ForkWorktreeError(f"fork dest already exists: {dest}", FORK_DEST_EXISTS)
+        # The overrides below are scanned in the SOURCE's config context, but the
+        # checkout and apply run in the child's (new gitdir, fork branch): an
+        # ``includeIf "onbranch:…"``/``"gitdir:…"`` could add a driver only there.
+        # Fail closed on any repo-scope conditional include.
+        if conditional := untrusted_conditional_includes(top):
+            raise ForkWorktreeError(
+                f"repository config has conditional includes: {', '.join(conditional)}",
+                FORK_UNSAFE_CONFIG)
+        git = (*_FORK_SAFE, *filter_overrides(top), *merge_driver_overrides(top))
+
+        # Read the source: only objects are written, never its index or tree.
+        with tempfile.TemporaryDirectory(prefix=f"{brand.SLUG}-fork-") as td:
+            private_index = os.path.join(td, "index")
+            shutil.copyfile(src_index, private_index)
+            stash = run_git(top, *git, *_FORK_IDENT, "stash", "create",
+                            index_file=private_index, timeout=FORK_GIT_TIMEOUT_S)
+            listing = run_git(top, *git, "ls-files", "--others", "--exclude-standard", "-z",
+                              index_file=private_index, timeout=FORK_GIT_TIMEOUT_S)
+        if stash is None or listing is None:
+            raise ForkWorktreeError("could not snapshot the source's uncommitted work")
+        stash_sha = os.fsdecode(stash.strip())
+        if stash_sha:
+            # The child is made at head_sha and checked to be there; the stash must
+            # sit on that same commit, or applying it would be a real merge.
+            parent = run_git(top, *_FORK_SAFE, "rev-parse", "--verify", "-q",
+                             f"{stash_sha}^1")
+            if parent is None or os.fsdecode(parent.strip()) != head_sha:
+                raise ForkWorktreeError("the source's HEAD moved while it was being forked")
+        untracked = _plan_untracked(top, listing)
+    except GitTimeout as exc:
+        raise ForkWorktreeError("git timed out reading the fork source") from exc
+    except UnsafeGitConfig as exc:
+        raise ForkWorktreeError(f"unsafe repository config: {exc}", FORK_UNSAFE_CONFIG) from exc
+    except OSError as exc:
+        raise ForkWorktreeError(f"could not read the fork source: {exc}") from exc
+
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    with clone_lock(repo_top):
+        try:
+            check_disk_headroom(Path(dest).parent)
+            # Re-checked under the lock: a concurrent fork may have taken either.
+            if os.path.lexists(dest):
+                raise ForkWorktreeError(f"fork dest already exists: {dest}",
+                                        FORK_DEST_EXISTS)
+            branch = _next_fork_branch(repo_top, source_session_id)
+        except DiskSpaceError as exc:
+            raise ForkWorktreeError(str(exc), FORK_DISK_FULL) from exc
+        except GitTimeout as exc:
+            raise ForkWorktreeError("git timed out naming the fork branch") from exc
+        try:
+            # Run from the SOURCE worktree, not repo_top: with extensions.worktreeConfig
+            # git copies the *current* worktree's config.worktree into the new one,
+            # and only the source's worktree scope is what ``git`` was scanned from.
+            # From the main worktree, its unscanned config.worktree (a filter driver,
+            # say) would reach the child's checkout un-neutralised.
+            added = run_git(top, *git, "worktree", "add", "-q", "-b", branch,
+                            dest, "--", head_sha, timeout=FORK_GIT_TIMEOUT_S)
+        except GitTimeout as exc:
+            # git was killed mid-add. dest and branch were confirmed new under the
+            # lock moments ago, but clone_lock excludes only cooperating callers in
+            # this process: the discard is best-effort and could remove a same-named
+            # branch or dest something else (the agent's own git) made in that window.
+            log.info("worktree.fork_failed step=add dest=%s branch=%s err=timeout",
+                     dest, branch)
+            _discard_fork(repo_top, dest, branch)
+            raise ForkWorktreeError("git timed out creating the fork worktree") from exc
+        if added is None:
+            # Not discarded: a failed add may have hit a dest or branch that is not ours.
+            log.info("worktree.fork_failed step=add dest=%s branch=%s", dest, branch)
+            raise ForkWorktreeError("git worktree add failed for the fork")
+        step = "lock"
+        try:
+            lock_worktree(repo_top, Path(dest))
+            step = "verify"
+            child_head = run_git(dest, *_FORK_SAFE, "rev-parse", "--verify", "-q", "HEAD")
+            if child_head is None or os.fsdecode(child_head.strip()) != head_sha:
+                raise ForkWorktreeError("the fork worktree is not at the source's HEAD")
+            if stash_sha:
+                step = "apply"
+                if run_git(dest, *git, "stash", "apply", "--index", "-q", stash_sha,
+                           timeout=FORK_GIT_TIMEOUT_S) is None:
+                    raise ForkWorktreeError("the source's changes did not apply cleanly",
+                                            FORK_APPLY_FAILED)
+            step = "untracked"
+            _copy_untracked(top, dest, untracked)
+        except BaseException as exc:
+            _discard_fork(repo_top, dest, branch)
+            log.info("worktree.fork_failed step=%s dest=%s branch=%s err=%s",
+                     step, dest, branch, exc)
+            if isinstance(exc, ForkWorktreeError):
+                raise
+            if isinstance(exc, GitTimeout):
+                raise ForkWorktreeError(f"git timed out during fork ({step})") from exc
+            if isinstance(exc, Exception):
+                raise ForkWorktreeError(f"fork failed ({step}): {exc}") from exc
+            raise
+    cwd = os.path.join(dest, rel) if rel != "." else dest
+    if not os.path.isdir(cwd):  # the source sat in an untracked-only or ignored dir
+        cwd = dest
+    log.info("worktree.fork_create source=%s head=%s stash=%s untracked=%d branch=%s path=%s",
+             top, head_sha, stash_sha or "-", len(untracked), branch, dest)
+    return ForkWorktreeInfo(path=dest, cwd=cwd, branch=branch, repo=repo_top)
 
 
 # ---------------------------------------------------------------------------

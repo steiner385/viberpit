@@ -107,6 +107,20 @@ class AgentCapabilities:
     library_management: bool = False
 
 
+def fork_enabled() -> bool:
+    """The ``VIBERPIT_FORK_ENABLED`` kill switch (D-8, default on)."""
+    from server.config import get_settings
+    return bool(get_settings().fork_enabled)
+
+
+def fork_supported(caps: AgentCapabilities | None) -> bool:
+    """Can a session on an engine with *caps* be forked right now? THE fork gate:
+    the engine declares ``fork`` and the kill switch is on. ``None`` (an unknown
+    engine) is never forkable. The wire capability and the orchestrator's refusal
+    both read this, so the UI never offers a fork the server would refuse."""
+    return caps is not None and caps.fork and fork_enabled()
+
+
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     """The browser shape of one capability set.
 
@@ -116,10 +130,12 @@ def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     keys. Derived from the dataclass fields rather than restated, so adding a
     capability cannot leave one payload a field short.
     """
-    return {
+    wire = {
         _to_camel(field): bool(getattr(caps, field))
         for field in AgentCapabilities.__dataclass_fields__
     }
+    wire["fork"] = fork_supported(caps)
+    return wire
 
 
 def _to_camel(name: str) -> str:
@@ -251,6 +267,11 @@ class AgentDriverConfig:
     #: dangling tool_use with a restart-attributed marker instead of the CLI's
     #: "interrupted by user" (#2922). Other engines ignore it.
     resumed_after_restart: bool = False
+    #: Fork from here (D-8): the source transcript uuid to cut ``resume`` at. Set, the
+    #: driver resumes ``resume`` (the SOURCE's engine session id) as a fork — a new
+    #: engine session holding the source's history through that uuid — and never
+    #: writes to the source's transcript. Only engines with ``fork`` honour it.
+    fork_resume_at: str | None = None
     #: Reasoning effort requested at launch, for engines that expose the knob
     #: (`AgentCapabilities.reasoning_effort`). Already persisted on the session row
     #: and carried on `SessionRecord`; it reaches the driver here so an engine that
@@ -277,6 +298,9 @@ class AgentDriverConfig:
     #: starts or ends, so the orchestrator can refresh the persisted background-work
     #: snapshot (#2635). Only Claude calls it.
     on_background_work_changed: Callable[[str], None] | None = None
+    #: Fired (synchronously) with (session id, turn id, transcript uuid) for each
+    #: ``TurnAnchor`` (D-8 fork point). Only engines with transcript uuids (Claude) call it.
+    on_turn_anchor: Callable[[str, str, str], None] | None = None
     #: MCP servers the orchestrator wrote to the CLI's per-project disabled list; Claude
     #: re-applies them after start in case a racing compose() erased the file (R5). Codex ignores.
     desired_disabled_mcp: list[str] | None = None

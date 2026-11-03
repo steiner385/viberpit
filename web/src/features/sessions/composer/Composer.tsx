@@ -283,16 +283,21 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // "Send now": interrupt the live turn and post the draft as the next turn. The
   // draft is only cleared once the frame actually left the browser — a closed
   // socket rejects control frames (#505), and the user's text must survive that.
+  // A known slash command runs as a command, exactly as `submit` runs it — it must
+  // never interrupt the turn and reach the engine as literal text.
   const submitNow = useCallback(() => {
     if (!onInterruptAndPrompt) return
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
+    if (refs.length === 0 && runCommandFromText(trimmed)) {
+      clearDraft(false); return
+    }
     const sent = suggestedDraft.current === text
       ? onInterruptAndPrompt(trimmed, refs, 'suggested') : onInterruptAndPrompt(trimmed, refs)
     if (!sent) return
     clearDraft(true)
-  }, [text, onInterruptAndPrompt, att, clearDraft])
+  }, [text, onInterruptAndPrompt, att, runCommandFromText, clearDraft])
   const canSendNow = isWorking && !chatArmed && onInterruptAndPrompt !== undefined
 
   const prefill = useCallback((value: string) => {

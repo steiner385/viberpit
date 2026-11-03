@@ -107,13 +107,18 @@ def session_tmpdir_env() -> dict[str, str]:
 
 async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
-                     ready_grants=None):
+                     ready_grants=None, fork_session=False, extra_args=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
     the draft-PR guard (``draft_hold_guard``); the orchestrator binds its
     ``_session_opened_pr`` here. *ready_grants*: that guard's view of the drafts the
     user approved for this session (``DraftReadyGrants.for_session``).
+
+    *fork_session* / *extra_args* (D-8 Fork from here): with *resume* set to the
+    SOURCE session's id, ``fork_session=True`` and ``extra_args={"resume-session-at":
+    <uuid>}`` start a NEW engine session holding the source's history through that
+    transcript entry (``--resume <sid> --fork-session --resume-session-at <uuid>``).
 
     *options_overlay*: the assistant's overlay (see ``server/assistant/options.py``)
     replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
@@ -139,6 +144,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         cwd=cwd, env=env, can_use_tool=can_use_tool,
         permission_mode=to_sdk_permission_mode(mode),
         include_partial_messages=True, resume=resume,
+        fork_session=bool(fork_session), extra_args=dict(extra_args or {}),
         hooks=hooks,
         settings=_MCP_TRUST_SETTINGS,
         max_buffer_size=SDK_MAX_BUFFER_BYTES,

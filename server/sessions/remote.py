@@ -58,6 +58,15 @@ SPAWN_RPC_TIMEOUT = 90.0
 # can outlast the 30s client default. They are reads: timing out only costs a retry.
 WORKTREE_RPC_TIMEOUT = 90.0
 
+# Fork from here (D-8): the daemon makes a fork worktree, then spawns. Sized above the
+# worst case of the bounded steps — create_fork_worktree's four tree-sized git calls
+# (stash create, ls-files, worktree add, stash apply) at FORK_GIT_TIMEOUT_S each, its
+# dozen or so small git calls at GIT_TIMEOUT_S, then the spawn's own budget, plus a
+# margin for the bounded untracked copy — so the edge does not give up on a fork the
+# daemon will still finish. fork_session is idempotent per request id, so a retry after
+# a timeout anyway returns that same child.
+FORK_RPC_TIMEOUT = 4 * 600.0 + 12 * 30.0 + SPAWN_RPC_TIMEOUT + 120.0
+
 # Materialization apply (#992): its own budget because it is not spawn-shaped at all.
 # The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
 # one createIssue per issue (an epic plus every task in the plan), then the batched
@@ -906,6 +915,35 @@ class RemoteOrchestrator:
                 raise worktree_files.FileAccessError(code) from exc
             raise
 
+    async def fork_session(self, session_id, *, at_turn_id: str | None, mode: str,
+                           request_id: str, prefill: str | None = None,
+                           identity: str = SYSTEM_IDENTITY) -> dict:
+        """Proxy fork_session (D-8) to the daemon that owns the source, with
+        ``FORK_RPC_TIMEOUT``. An unknown session is re-raised as KeyError, a blocked
+        model as ModelBlockedError, an account refusal as AllAccountsBusy, and a
+        refusal as ForkError / ForkWorktreeError with the envelope's code — only known
+        codes; anything else stays a DaemonError."""
+        from viberpit import worktrees
+        from server.sessions import fork as fk
+        try:
+            return await self._client.call(
+                "fork_session", timeout=FORK_RPC_TIMEOUT, session_id=session_id,
+                at_turn_id=at_turn_id, mode=mode, request_id=request_id, prefill=prefill,
+                identity=identity)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            if exc.err_type == "ModelBlockedError":
+                raise ModelBlockedError((exc.data or {}).get("model", exc.message)) from exc
+            if exc.err_type == "AllAccountsBusy":
+                raise reconstruct_create_session_error(exc) from exc
+            code = (exc.data or {}).get("code")
+            if exc.err_type == "ForkError" and code in fk.FORK_CODES:
+                raise fk.ForkError(code, exc.message) from exc
+            if exc.err_type == "ForkWorktreeError" and code in worktrees.FORK_WORKTREE_CODES:
+                raise worktrees.ForkWorktreeError(exc.message, code) from exc
+            raise
+
     async def mcp_reconnect(self, session_id, server: str):
         """The daemon answers an error-shaped dict (exceptions do not survive the RPC hop
         as their own types); re-raise the orchestrator's LookupError / ValueError here."""
@@ -949,6 +987,19 @@ class RemoteOrchestrator:
 
     async def transcript_path(self, session_id):
         return await self._client.call("transcript_path", session_id=session_id)
+
+    async def transcript_source(self, session_id) -> tuple[str | None, str | None]:
+        """``(path, until_uuid)`` for a replay (see the orchestrator). The edge then
+        reads the file itself, as it does for ``transcript_path``. A daemon that
+        predates this RPC has no forks, so its own ``transcript_path`` is the answer."""
+        try:
+            path, until_uuid = await self._client.call("transcript_source",
+                                                       session_id=session_id)
+        except DaemonError as exc:
+            if exc.err_type != "UnknownMethod":
+                raise
+            return await self.transcript_path(session_id), None
+        return path, until_uuid
 
     async def pending_questions(self, session_id):
         return await self._client.call("pending_questions", session_id=session_id)

@@ -366,6 +366,69 @@ async def execution_snapshot(session_id: str, *, parent_session_id: str | None =
         return None
 
 
+def _naming(session_id: str):
+    """Operations that name *session_id*: as root, reservation, or a registered
+    execution (the same match ``execution_snapshot`` uses)."""
+    return select(AutomationOperation).where(or_(
+        AutomationOperation.session_id == session_id,
+        AutomationOperation.reserved_session_id == session_id,
+        AutomationOperation.execution_sessions[session_id]["current"].as_string().is_not(None),
+    ))
+
+
+async def _finished(db, operation: AutomationOperation) -> bool:
+    """``released`` is the only terminal phase. A ``transferred`` operation is
+    finished only when its successor chain (``predecessor_token``) ends released; a
+    claimed/active/... successor still owns the work."""
+    seen: set[str] = set()
+    while operation.phase == "transferred":
+        if operation.token in seen:
+            return False   # a cyclic chain is never proof of a finished owner
+        seen.add(operation.token)
+        successor = await db.scalar(select(AutomationOperation).where(
+            AutomationOperation.predecessor_token == operation.token))
+        if successor is None:
+            return False
+        operation = successor
+    return operation.phase == "released"
+
+
+async def lineage_unowned(session_id: str, *, parent_session_id: str | None = None) -> bool:
+    """No automation owns *session_id*'s execution — THE definition.
+
+    True only when no operation names the session itself (in any phase: a session
+    an operation registered or reserved stays fenced even once it is released), AND
+    every operation naming any ancestor, at EVERY level of the parent walk, is
+    finished (``_finished``). A lineage with no operations at all is unowned.
+
+    The parent hint is for a session whose row does not exist yet (a launch); it is
+    the trusted pre-launch parent, as in ``execution_snapshot``."""
+    async with db_session() as db:
+        if (await db.scalars(_naming(session_id))).first() is not None:
+            return False
+    return await ancestors_unowned(session_id, parent_session_id=parent_session_id)
+
+
+async def ancestors_unowned(session_id: str, *, parent_session_id: str | None = None) -> bool:
+    """``lineage_unowned``'s ancestor half: every operation naming any ancestor of
+    *session_id*, at EVERY level of the parent walk, is finished. Operations naming
+    the session itself are not considered (a fork's own later runs are its own)."""
+    async with db_session() as db:
+        seen = {session_id}
+        current = parent_session_id or await db.scalar(
+            select(DbSession.parent_session_id).where(DbSession.id == session_id))
+        while current:
+            if current in seen:
+                return False   # cyclic ancestry: never conclude "unowned"
+            seen.add(current)
+            for operation in (await db.scalars(_naming(current))).all():
+                if not await _finished(db, operation):
+                    return False
+            current = await db.scalar(
+                select(DbSession.parent_session_id).where(DbSession.id == current))
+        return True
+
+
 async def session_execution(session_id: str) -> tuple[str, int | None, int | None] | None:
     snapshot = await execution_snapshot(session_id)
     if snapshot is None:
@@ -374,9 +437,15 @@ async def session_execution(session_id: str) -> tuple[str, int | None, int | Non
 
 
 async def register_child_execution(session_id: str, parent_session_id: str) -> None:
-    """Durably distinguish a new pending child from unknown legacy child history."""
+    """Durably distinguish a new pending child from unknown legacy child history.
+
+    No-op when the child's lineage is unowned (``lineage_unowned``): there is no live
+    owner to tell, and ``owned()`` on a finished operation would refuse ("no longer
+    owns its targets") — which made every child of a finished automation session
+    fail to launch."""
     snapshot = await execution_snapshot(parent_session_id)
-    if snapshot is None:
+    if snapshot is None or await lineage_unowned(session_id,
+                                                 parent_session_id=parent_session_id):
         return
     async with owned(snapshot.token) as tx:
         states = dict(tx.operation.execution_sessions or {})
@@ -392,7 +461,8 @@ async def begin_session_execution(session_id: str, *, parent_session_id: str | N
                                   execution_id: str | None = None) -> None:
     """Invalidate the session AND whole-tree proof before managed native effects."""
     snapshot = await execution_snapshot(session_id, parent_session_id=parent_session_id)
-    if snapshot is None:
+    if snapshot is None or await lineage_unowned(session_id,
+                                                 parent_session_id=parent_session_id):
         return
     async with owned(snapshot.token) as tx:
         generation = (tx.operation.execution_generation or 0) + 1

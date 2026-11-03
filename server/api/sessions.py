@@ -16,6 +16,7 @@ import inspect
 import logging
 import os
 import re
+import uuid
 from datetime import datetime
 from typing import Any, Literal, NoReturn, TYPE_CHECKING
 
@@ -2016,12 +2017,12 @@ async def session_diff(
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
-        _raise_worktree_read_error(exc, "compute session diffs")
+        _raise_daemon_outdated_or_reraise(exc, "compute session diffs")
 
 
-def _raise_worktree_read_error(exc: DaemonError, what: str) -> NoReturn:
-    """A worktree read (diff, file list, file read) failed on the daemon. One that
-    predates the RPC answers UnknownMethod: an explicit 409 ``daemon_outdated`` (a 4xx
+def _raise_daemon_outdated_or_reraise(exc: DaemonError, what: str) -> NoReturn:
+    """A daemon call (worktree diff, file list, file read, fork) failed on the daemon.
+    One that predates the RPC answers UnknownMethod: an explicit 409 ``daemon_outdated`` (a 4xx
     the UI neither retries nor surfaces as a crash) instead of a bare
     ``{"detail": "<method>"}`` from the app-level DaemonError handler. Anything else
     re-raises to that handler."""
@@ -2055,7 +2056,7 @@ async def session_files(
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
-        _raise_worktree_read_error(exc, "list session files")
+        _raise_daemon_outdated_or_reraise(exc, "list session files")
 
 
 _FILE_ACCESS_STATUS = {
@@ -2086,7 +2087,66 @@ async def session_file_content(
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
-        _raise_worktree_read_error(exc, "read session files")
+        _raise_daemon_outdated_or_reraise(exc, "read session files")
+
+
+class ForkRequest(BaseModel):
+    """``POST /{id}/fork`` body (D-8). ``reply``: ``atTurnId`` is the reply's turn.
+    ``message``: ``atTurnId`` is the previous reply's turn, or null for the first
+    message, and ``prefill`` is the user message text to echo back."""
+    atTurnId: str | None = None
+    mode: Literal["reply", "message"]
+    prefill: str | None = None
+    #: One uuid per click: a retried request returns the child the first one made.
+    requestId: uuid.UUID
+
+
+@router.post("/{session_id}/fork", status_code=status.HTTP_201_CREATED)
+async def fork_session(
+    session_id: str,
+    body: ForkRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> Any:
+    """Fork the session at a turn into a new linked child session (D-8), created on
+    the daemon that owns the source. ``201 {sessionId, prefill}``; ``prefill`` is the
+    message-mode text echoed back (null for a reply fork). Unknown session 404; a
+    prefill over 10,000 chars 400 ``PREFILL_TOO_LONG``; 409 ``FORK_UNAVAILABLE`` (kill
+    switch off, or an engine that cannot fork), ``TURN_NOT_FORKABLE`` (no settled
+    anchor for the turn, or one still in flight), ``FORK_AT_CAPACITY``, ``FORK_OWNED_BY_AUTOMATION``,
+    ``FORK_NEEDS_APPROVAL``, a fork worktree code (e.g. ``FORK_UNSAFE_CONFIG``),
+    ``model blocked by policy`` and the account 409s exactly as on create, or
+    ``daemon_outdated`` from an old daemon. ``requestId`` (a uuid per click) makes a
+    retry return the same child."""
+    from viberpit import worktrees
+    from server.sessions import fork as fk
+    try:
+        result = await _get_orchestrator(request).fork_session(
+            session_id, at_turn_id=body.atTurnId, mode=body.mode,
+            request_id=str(body.requestId), prefill=body.prefill, identity=identity)
+    except fk.ForkError as exc:
+        code = (status.HTTP_400_BAD_REQUEST if exc.code == fk.PREFILL_TOO_LONG
+                else status.HTTP_409_CONFLICT)
+        raise HTTPException(status_code=code,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except worktrees.ForkWorktreeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except ModelBlockedError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="model blocked by policy")
+    except AllAccountsBusy as exc:
+        return _all_accounts_busy_response(
+            exc, limited_message="The source's account is at or above the usage ceiling")
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "fork sessions")
+    await record_audit(db=db, type="session.fork", identity=identity,
+                       detail={"session_id": result["sessionId"], "source": session_id,
+                               "mode": body.mode})
+    return result
 
 
 @router.post("/{session_id}/mcp/{server}/reconnect")

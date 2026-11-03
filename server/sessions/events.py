@@ -114,6 +114,19 @@ class TurnEnd:
                                "handBackReason": self.hand_back_reason}
 
 @dataclass
+class TurnAnchor:
+    """The CLI transcript uuid a finished turn can be forked from (D-8): the uuid of the
+    turn's LAST top-level assistant transcript entry — `--resume-session-at` cuts
+    inclusively there, keeping the whole reply (docs/superpowers/specs/
+    2026-11-02-d8-fork-verification.md). Emitted once per turn, immediately before its
+    TurnEnd, live (translator, from the consolidated ``AssistantMessage.uuid``) and on
+    replay (from the JSONL ``uuid``). A turn with no top-level assistant entry (an
+    interrupt before any reply) has no anchor, and neither has an engine without
+    transcript uuids."""
+    turn_id: str; uuid: str
+    def to_wire(self): return {"type": "turnAnchor", "turnId": self.turn_id, "uuid": self.uuid}
+
+@dataclass
 class HandBackRequested:
     """A top-level ``hand_back`` call was READ off the tool-use block, mid-turn (#2647).
 

@@ -152,10 +152,10 @@ def _window_and_trim(path: str, *args) -> ReplayWindow:
         _trim_heap_after(path)
 
 
-def _parse_and_trim(path: str, max_turns: int | None) -> list:
+def _parse_and_trim(path: str, max_turns: int | None, until_uuid: str | None = None) -> list:
     """``_parse`` for a worker thread; see ``_window_and_trim``."""
     try:
-        return _parse(path, max_turns)
+        return _parse(path, max_turns, until_uuid)
     finally:
         _trim_heap_after(path)
 
@@ -273,18 +273,64 @@ def _collapse_recovery_resend_dupes(out: list) -> list:
     return [e for i, e in enumerate(out) if i not in drop]
 
 
-def _build_events(path: str) -> tuple[list, object | None]:
-    """Parse the full main JSONL into (events, meta_event). No trimming.
+@dataclass(frozen=True)
+class TranscriptAnchors:
+    """What one parse of a transcript says about where it can be forked (D-8).
+
+    ``anchors`` is one fork anchor per LOGICAL turn, ``{turnId: uuid}`` in transcript
+    order, for the UI and ``SessionRecord.turn_anchors``. A live session anchors finer
+    than that: a background task-notification continuation is merged into the turn
+    before it on replay but is its own turn live. So whether ``--resume-session-at``
+    can cut at a uuid is answered by the entry sets, not by ``anchors``:
+    ``entries`` holds every top-level entry uuid in the file, ``dangling`` the
+    assistant entries carrying a tool_use, and ``compacted`` everything at or before
+    the last compact_boundary."""
+    anchors: dict[str, str] = field(default_factory=dict)
+    entries: frozenset[str] = frozenset()
+    dangling: frozenset[str] = frozenset()
+    compacted: frozenset[str] = frozenset()
+
+
+def _build_events(path: str, until_uuid: str | None = None) -> tuple[list, object | None]:
+    """Parse the full main JSONL into (events, meta_event). No trimming. See
+    ``_parse_transcript``."""
+    events, meta_event, _facts = _parse_transcript(path, until_uuid)
+    return events, meta_event
+
+
+def _parse_transcript(path: str, until_uuid: str | None = None
+                      ) -> tuple[list, object | None, TranscriptAnchors]:
+    """Parse the full main JSONL into (events, meta_event, anchor facts). No trimming.
 
     Sub-agent (``isSidechain``) entries are skipped here: for Layout-A single-file
     transcripts this keeps their steps out of the main thread; for Layout-B they
-    live in separate sidecar files that ``_subagent_events`` reconstructs."""
+    live in separate sidecar files that ``_subagent_events`` reconstructs.
+
+    *until_uuid* (D-8) reads the file only up to and including the entry with that
+    uuid — the CLI's own inclusive ``--resume-session-at`` cut — so a fork child shows
+    its source's history up to the fork point before its own transcript exists. An
+    *until_uuid* the file does not contain yields nothing: never the whole source."""
     out: list = []
     meta_event = None
+    tool_use_entries: set = set()   # assistant entry uuids carrying a tool_use block
+    # Every top-level entry uuid, and those at or before the LAST compact_boundary: the
+    # CLI cannot resume at one (CLI 2.1.317 — see the D-8 verification doc §1).
+    entry_uuids: set = set()
+    pre_compaction: set = set()
+    reached = until_uuid is None
     for o in _read_jsonl(path):
+        if until_uuid is not None:
+            if reached:
+                break                   # past the inclusive cut
+            reached = o.get("uuid") == until_uuid
         if o.get("isSidechain"):
             continue
         typ = o.get("type")
+        if typ == "system" and o.get("subtype") == "compact_boundary":
+            pre_compaction.update(entry_uuids)
+            continue
+        if o.get("uuid"):
+            entry_uuids.add(o["uuid"])
         msg = o.get("message") or {}
         content = _content_blocks(msg)
         uuid = o.get("uuid")
@@ -343,6 +389,10 @@ def _build_events(path: str) -> tuple[list, object | None]:
                 # long sessions — the status strip needs the model after re-attach.
                 meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
+            if any(b.get("type") == "tool_use" for b in content):
+                # Read off the raw blocks, not the emitted events: a signal tool or
+                # AskUserQuestion emits no ToolCall but is still a dangling tool_use.
+                tool_use_entries.add(uuid)
             # Per-turn model, mirroring the live translator, so replayed/historical
             # sessions show the model-switch divider when the model changes mid-session.
             if model:
@@ -350,11 +400,69 @@ def _build_events(path: str) -> tuple[list, object | None]:
             out.extend(_assistant_block_events(content, uuid, ts, None))
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
+    if not reached:
+        return [], None, TranscriptAnchors()
     # Collapse the duplicate user turn a recovery resend leaves behind. Done here, in
     # the single shared reconstruction path, so every consumer (replay_window /
     # transcript_events / export / replay_events) inherits it and the drop_incomplete
     # tail-trim below anchors on the deduped last user entry.
-    return _collapse_recovery_resend_dupes(out), meta_event
+    events = _with_turn_anchors(_collapse_recovery_resend_dupes(out),
+                                tool_use_entries | pre_compaction)
+    facts = TranscriptAnchors(
+        anchors={e.turn_id: e.uuid for e in events if isinstance(e, ev.TurnAnchor)},
+        entries=frozenset(entry_uuids), dangling=frozenset(tool_use_entries),
+        compacted=frozenset(pre_compaction))
+    return events, meta_event, facts
+
+
+def _with_turn_anchors(out: list, unanchorable: set) -> list:
+    """Insert one ``TurnAnchor`` per LOGICAL turn, mirroring the live translator (D-8).
+
+    A logical turn runs from one human prompt (a ``UserMessage`` — harness entries and
+    tool results emit none) to the next. Its anchor is its LAST top-level assistant
+    entry: every TurnEnd here is top-level (sidechain entries are skipped above), and a
+    replayed entry's turn id IS its uuid, so the anchor is ``TurnAnchor(uuid, uuid)``.
+
+    Placed immediately BEFORE that entry's TurnEnd so it lies strictly inside the entry's
+    turn: `_window` slices pages on TurnStart/TurnEnd boundaries, and an anchor outside
+    them would ride along with the neighbouring page. For the same reason the trailing
+    in-progress turn's anchor is trimmed with it by ``drop_incomplete_turn``. A prompt
+    with no assistant entry after it (an interrupt) gets none, and so does a turn whose
+    last entry is in *unanchorable*: one carrying a tool_use (the inclusive cut would
+    fork from a dangling tool_use — the live translator's rule), or one at or before the
+    last compact_boundary, which ``--resume-session-at`` cannot resume at."""
+    anchored: dict[int, ev.TurnAnchor] = {}   # TurnEnd index -> the anchor it closes
+    last: tuple[int, ev.TurnAnchor] | None = None
+    for i, e in enumerate(out):
+        if isinstance(e, ev.UserMessage):
+            if last is not None:
+                anchored[last[0]] = last[1]
+            last = None
+        elif isinstance(e, ev.TurnEnd) and e.src_uuid:
+            last = (None if e.src_uuid in unanchorable
+                    else (i, ev.TurnAnchor(e.turn_id, e.src_uuid)))
+    if last is not None:
+        anchored[last[0]] = last[1]
+    if not anchored:
+        return out
+    res: list = []
+    for i, e in enumerate(out):
+        if i in anchored:
+            res.append(anchored[i])
+        res.append(e)
+    return res
+
+
+def transcript_anchor_facts(path: str) -> TranscriptAnchors:
+    """The fork facts of the transcript at *path* (see ``TranscriptAnchors``): its
+    ``anchors`` are the rebuild source for ``SessionRecord.turn_anchors`` once a reload
+    or a daemon restart has left the record without the live ones, and its entry sets
+    say whether a fork may cut at a uuid. Whole-file and synchronous: wrap it in
+    ``asyncio.to_thread`` on the event loop. A missing file yields empty facts."""
+    try:
+        return _parse_transcript(path)[2]
+    finally:
+        _trim_heap_after(path)
 
 
 def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | None = None,
@@ -596,8 +704,9 @@ def _is_in_progress_user(e, turn_started_at: float | None) -> bool:
 
 def _window(path: str, before: int | None, limit: int | None, drop_incomplete_turn: bool = False,
             include_subagents: bool = False,
-            turn_started_at: float | None = None) -> ReplayWindow:
-    out, meta_event = _build_events(path)
+            turn_started_at: float | None = None,
+            until_uuid: str | None = None) -> ReplayWindow:
+    out, meta_event = _build_events(path, until_uuid)
     if drop_incomplete_turn:
         # Drop the trailing in-progress logical turn: everything from the last real
         # UserMessage onward. The live driver buffer / daemon ring owns that turn, and
@@ -675,28 +784,31 @@ def _window(path: str, before: int | None, limit: int | None, drop_incomplete_tu
     return ReplayWindow(events=window, earliest_turn=start, total_turns=total)
 
 
-def _parse(path: str, max_turns: int | None) -> list:
+def _parse(path: str, max_turns: int | None, until_uuid: str | None = None) -> list:
     """Back-compat: last `max_turns` turns as a flat event list (None → ALL turns).
 
     Main-thread only (no sub-agent reconstruction) — this feeds the sub-agent
     SUMMARY and suggestion generators, which must not see nested sub-agent turns."""
-    return _window(path, before=None, limit=max_turns).events
+    return _window(path, before=None, limit=max_turns, until_uuid=until_uuid).events
 
 
 async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int | None = 20,
                         drop_incomplete_turn: bool = False,
-                        turn_started_at: float | None = None) -> ReplayWindow:
+                        turn_started_at: float | None = None,
+                        until_uuid: str | None = None) -> ReplayWindow:
     # The reattach / transcript-window UI path: reconstruct sub-agent threads so a
     # completed sub-agent shows its internal turns inside its Task card, as it does live.
     # limit=None returns the FULL transcript (no cap) — the review/export path.
     # turn_started_at (epoch SECONDS, from the live driver / daemon turn tracking)
     # scopes drop_incomplete_turn to the turn that actually is in progress.
+    # until_uuid cuts the file after that entry (a fork's source; see _build_events).
     return await asyncio.to_thread(_window_and_trim, jsonl_path, before, limit,
-                                   drop_incomplete_turn, True, turn_started_at)
+                                   drop_incomplete_turn, True, turn_started_at, until_uuid)
 
 
-async def replay_events(jsonl_path: str, *, max_turns: int | None = 20) -> list:
-    return await asyncio.to_thread(_parse_and_trim, jsonl_path, max_turns)
+async def replay_events(jsonl_path: str, *, max_turns: int | None = 20,
+                        until_uuid: str | None = None) -> list:
+    return await asyncio.to_thread(_parse_and_trim, jsonl_path, max_turns, until_uuid)
 
 
 def last_question_events(path: str) -> list["ev.Question"]:
@@ -876,10 +988,11 @@ class ClaudeTranscriptReplay:
     code the facade runs.
     """
 
-    __slots__ = ("path",)
+    __slots__ = ("path", "until_uuid")
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, until_uuid: str | None = None) -> None:
         self.path = path
+        self.until_uuid = until_uuid     # a fork's source, cut at the fork point (D-8)
 
     async def window(
         self,
@@ -895,7 +1008,8 @@ class ClaudeTranscriptReplay:
             limit=limit,
             drop_incomplete_turn=drop_incomplete_turn,
             turn_started_at=turn_started_at,
+            until_uuid=self.until_uuid,
         )
 
     async def events(self, *, max_turns: int | None = 20) -> list:
-        return await replay_events(self.path, max_turns=max_turns)
+        return await replay_events(self.path, max_turns=max_turns, until_uuid=self.until_uuid)

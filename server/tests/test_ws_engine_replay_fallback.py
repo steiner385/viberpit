@@ -4,7 +4,7 @@
 `replay_window` takes `drop_incomplete_turn` / `turn_started_at` — and in remote mode
 the edge reads the shared file, so routing it through an RPC would change both the
 latency and the ring/gap behaviour. That path must stay byte-identical. A Codex
-session has no file at all, so `transcript_path` answers None and the attach takes the
+session has no file at all, so `transcript_source` answers None and the attach takes the
 `engine_replay_window` fallback; everything after it — replayReset, the per-frame
 sessionId tag, replayComplete — is shared and unchanged.
 """
@@ -32,8 +32,8 @@ class _EngineOrch:
         self._wire = wire
         self.calls: list[dict] = []
 
-    async def transcript_path(self, session_id):
-        return None
+    async def transcript_source(self, session_id):
+        return None, None
 
     async def engine_replay_window(self, session_id, *, drop_incomplete_turn=False,
                                    turn_started_at=None):
@@ -96,8 +96,8 @@ async def test_the_claude_disk_path_is_untouched(monkeypatch) -> None:
     """When a transcript file exists the attach still reads it directly — the
     fallback must not be reachable, or remote mode loses its shared-file read."""
     class _DiskOrch(_EngineOrch):
-        async def transcript_path(self, session_id):
-            return "/tmp/whatever.jsonl"
+        async def transcript_source(self, session_id):
+            return "/tmp/whatever.jsonl", None
 
     orch = _DiskOrch(None)
 
@@ -141,8 +141,8 @@ async def test_a_failing_engine_replay_still_sends_the_reset() -> None:
 async def test_an_orchestrator_without_the_rpc_still_attaches() -> None:
     """The same guarantee for a peer that lacks the method entirely."""
     class _OldOrch:
-        async def transcript_path(self, session_id):
-            return None
+        async def transcript_source(self, session_id):
+            return None, None
 
     frames: list[dict] = []
     events = await ws_mod._run_replay_and_complete(

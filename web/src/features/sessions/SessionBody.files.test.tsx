@@ -46,6 +46,7 @@ vi.mock('@/api/hooks', () => ({
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionDiff: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
+  useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useStopSubAgent: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))

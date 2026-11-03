@@ -53,6 +53,10 @@ AUTO_ARCHIVE_OPT_OUT_CREATE = "create-opt-out"
 # than opting out at dispatch or by unarchiving. Same truthy gate, no new branch.
 AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE = "session-toggle"
 
+# How many turns' fork anchors (D-8) a SessionRecord keeps in memory. Older turns
+# still resolve: SessionOrchestrator.resolve_turn_anchor rebuilds from the transcript.
+TURN_ANCHOR_CAP = 500
+
 
 @dataclass
 class SessionRecord:
@@ -200,6 +204,37 @@ class SessionRecord:
     # can still populate the composer's command palette instead of showing an
     # empty autocomplete. None until the session has been live once.
     command_catalog: list | None = None
+    # Fork anchors (D-8): turn id -> the CLI transcript uuid that turn can be forked
+    # from, fed live by the driver's TurnAnchor events and merged from the transcript
+    # on a lookup miss (SessionOrchestrator.resolve_turn_anchor). Insertion-ordered and
+    # bounded to the newest TURN_ANCHOR_CAP turns. Daemon-local ONLY — NOT in
+    # to_dict/from_dict, never a DB column: the fork RPC resolves a turn on the owner
+    # daemon, which is the process holding both this map and the transcript.
+    turn_anchors: dict[str, str] = field(default_factory=dict)
+    # (path, size, mtime_ns) of the transcript last merged into turn_anchors without
+    # eviction, so a lookup miss against an unchanged transcript skips the re-parse.
+    # Same daemon-local lifetime as turn_anchors.
+    turn_anchors_rebuilt_at: tuple[str, int, int] | None = None
+    # A fork child (D-8) that has not yet reported its own engine session id:
+    # (source engine session id, transcript uuid to cut at). Every driver built for it
+    # until then resumes the SOURCE as a fork (SessionOrchestrator._create_driver), so
+    # no rebuild can ever resume the source's transcript unforked. Cleared once the
+    # child's own id arrives. Persisted in the row's fork_source_engine_session_id /
+    # fork_resume_at (restored by _record_from_row), so it survives a daemon restart;
+    # deliberately NOT in to_dict/from_dict — only the owner daemon spawns drivers.
+    fork_from: tuple[str, str] | None = None
+    # This session was made by Fork from here (D-8); persisted as the row's
+    # ``is_fork``. A fork never joins an automation operation that owns its source's
+    # lineage: while one does, its driver refuses to start (StaleOwnership) rather
+    # than begin execution under it (_automation_before_execution).
+    is_fork: bool = False
+
+    def record_turn_anchor(self, turn_id: str, uuid: str) -> None:
+        """Remember *turn_id*'s anchor as the newest, evicting the oldest past the cap."""
+        self.turn_anchors.pop(turn_id, None)
+        self.turn_anchors[turn_id] = uuid
+        while len(self.turn_anchors) > TURN_ANCHOR_CAP:
+            del self.turn_anchors[next(iter(self.turn_anchors))]
 
     @property
     def updated_at_iso(self) -> str | None:

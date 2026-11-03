@@ -51,7 +51,7 @@ D=[
 ]),
 ("4 Commands & config",[
  ("Engine slash-command passthrough",3,"Y",""),
- ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp"),
+ ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp /fork"),
  ("Plugins + marketplace browse/install",2,"P","enable/disable + detail; no marketplace"),
  ("Skills management",1,"Y",""),
  ("MCP servers + per-tool toggles",2,"P","servers, OAuth, scope; no per-tool toggles"),
@@ -84,7 +84,7 @@ D=[
  ("Worktree visible + controls (branch, enter, discard)",2,"P","branch + path shown; discard/repair → D-14"),
  ("Resume / continue",3,"Y",""),
  ("Import CLI sessions",1,"Y","Adopt"),
- ("Fork session (from here)",3,"N","engine capability exists, no UI"),
+ ("Fork session (from here)",3,"Y","Claude; files start from current worktree"),
  ("Rewind to message (with file restore, undo)",3,"N",""),
  ("Edit & resend a previous message",2,"N",""),
  ("Side chat scoped to session (/btw, ⌘;)",2,"P","app-level assistant drawer"),

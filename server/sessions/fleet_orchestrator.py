@@ -209,10 +209,12 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_diff",
     # So do the D-7 file list and file read.
     "session_files", "session_file",
+    # A fork (D-8) is made from the source's transcript and worktree, on its host.
+    "fork_session",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",
-    "pending_permissions", "transcript_path", "transcript_events",
+    "pending_permissions", "transcript_path", "transcript_source", "transcript_events",
     "resolve_transcript_path", "transcript_window", "engine_replay_window",
     "transcript_search_text", "has_transcript",
     "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",

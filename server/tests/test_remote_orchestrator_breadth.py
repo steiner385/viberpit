@@ -376,7 +376,7 @@ async def test_transcript_window_returns_replay_window():
             # keyword set; the values are the same defaults as before.
             patched.assert_called_once_with("/fake/t.jsonl", before=None, limit=5,
                                             drop_incomplete_turn=False,
-                                            turn_started_at=None)
+                                            turn_started_at=None, until_uuid=None)
             assert isinstance(result, ReplayWindow)
             assert result.total_turns == 1
         finally:

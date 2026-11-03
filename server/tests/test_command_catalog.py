@@ -152,3 +152,28 @@ def test_a_vendor_mcp_entry_stays_passthrough_without_mcp_status():
     assert mcp.kind == "passthrough"
     assert classify("mcp", caps) == "passthrough"
     assert classify("mcp", CLAUDE) == "client"
+
+
+# --- /fork (D-8) -------------------------------------------------------------------------
+
+
+def test_fork_is_an_app_client_command_only_where_the_engine_can_fork():
+    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    assert by["fork"].kind == "client" and by["fork"].source == APP
+    assert by["fork"].argument_hint is None
+    assert app_command("fork", CLAUDE) is not None
+    assert "fork" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+    assert app_command("fork", CODEX_CAPABILITIES) is None
+
+
+def test_fork_follows_the_kill_switch():
+    """The same gate as `POST /sessions/{id}/fork` (`engine.fork_supported`), so the
+    palette never offers a fork the route would refuse."""
+    import os
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, {"VIBERPIT_FORK_ENABLED": "false"}):
+        assert "fork" not in {c.name for c in build_catalog(None, CLAUDE)}
+        assert app_command("fork", CLAUDE) is None
+        assert classify("fork", CLAUDE) == "passthrough"
+    assert classify("fork", CLAUDE) == "client"

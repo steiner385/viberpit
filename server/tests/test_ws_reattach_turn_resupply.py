@@ -122,7 +122,7 @@ def open_turn_edge(remote_edge):
     # that registration (no driver → read-only replay attach), so the mock must mirror it.
     orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
-         mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
+         mock.patch.object(orch, "transcript_source", new=mock.AsyncMock(return_value=(None, None))):
         with client.websocket_connect("/ws", headers=_IDENT) as wsA:
             wsA.send_json({"type": "attach", "sessionId": "s1"})
             evA = _collect_until(wsA, lambda acc: _saw_turn(acc, 4))
@@ -177,7 +177,7 @@ def test_resupply_not_covered_degrades_to_undropped_disk_replay(open_turn_edge, 
         + json.dumps({"type": "user", "uuid": "u2", "timestamp": open_turn_ts,
                       "message": {"role": "user", "content": "open turn prompt"}}) + "\n")
     from server.sessions.remote import RemoteDriver
-    with mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=str(jsonl))), \
+    with mock.patch.object(orch, "transcript_source", new=mock.AsyncMock(return_value=(str(jsonl), None))), \
          mock.patch.object(RemoteDriver, "prepare_open_turn_resupply",
                            new=mock.AsyncMock(return_value=False)) as prep:
         with client.websocket_connect("/ws", headers=_IDENT) as wsB:

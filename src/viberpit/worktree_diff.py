@@ -25,6 +25,10 @@ per-worktree config scope (which the agent can write) is neutralised with empty
 ``clean``/``smudge``/``process`` and ``required=false``; a name that cannot be safely
 spliced into ``-c`` fails closed. Submodules are never entered
 (``--ignore-submodules=dirty``), so a submodule's own config cannot run one either.
+The overrides are scanned from, and the guarded calls run in, the same config context
+(``top``'s gitdir and branch), so a conditional ``includeIf`` resolves identically for
+both; a D-8 fork checks out under a new gitdir and branch, which is why it refuses
+any repo-scope ``includeIf`` instead (``untrusted_conditional_includes``).
 
 Two residuals are accepted; both need the agent to write config files outside its
 working files. The acceptEdits write boundary (#3217) is now enforced: auto-approved
@@ -73,7 +77,7 @@ GIT_GLOBAL = (
 # Explicit prefixes override diff.noprefix / mnemonicPrefix / srcPrefix / dstPrefix.
 # ``--ignore-submodules=dirty`` stops git spawning ``git status`` inside each
 # submodule (whose own ``.git/modules/<name>/config`` filter drivers would run here,
-# out of reach of ``_filter_overrides``); pointer changes are still reported, and
+# out of reach of ``filter_overrides``); pointer changes are still reported, and
 # ``--submodule=short`` overrides ``diff.submodule=log|diff``, which would also read
 # into the submodule.
 _DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "-M",
@@ -96,13 +100,22 @@ def git_env() -> dict[str, str]:
     return env
 
 
-def run_git(cwd: str, *args: str) -> bytes | None:
+def run_git(cwd: str, *args: str, index_file: str | None = None,
+            timeout: float = GIT_TIMEOUT_S) -> bytes | None:
     """Run git in ``cwd``; stdout bytes, or None on failure (raises ``GitTimeout``).
-    Bytes, not text (unlike ``worktrees._run``): paths and contents need not be UTF-8."""
+    Bytes, not text (unlike ``worktrees._run``): paths and contents need not be UTF-8.
+
+    ``index_file`` points git at a private index (``GIT_INDEX_FILE``) — the one repo
+    variable ``git_env`` strips that a caller may set, and only to a file it owns.
+    ``timeout`` overrides ``GIT_TIMEOUT_S`` for calls that mutate a whole tree (a
+    checkout), whose cost scales with the repository rather than the change."""
+    env = git_env()
+    if index_file is not None:
+        env["GIT_INDEX_FILE"] = index_file
     try:
         r = subprocess.run(
             ["git", "-C", cwd, *GIT_GLOBAL, *args],
-            capture_output=True, env=git_env(), timeout=GIT_TIMEOUT_S, check=False,
+            capture_output=True, env=env, timeout=timeout, check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise GitTimeout from exc
@@ -201,51 +214,105 @@ def _git_bounded(cwd: str, args: list[str], limit: int,
     return bytes(buf), "failed" if status == "timeout" else status
 
 
-_FILTER_KEY_RE = re.compile(rb"^filter\.(.+)\.[^.]+$", re.DOTALL)
+# Section -> (key pattern capturing the driver name, whether a non-matching key is an
+# error). Every ``filter.*`` key belongs to a driver; ``merge.*`` also holds plain
+# settings (``merge.ff``, ``merge.conflictStyle``), so only ``.driver`` keys count.
+_DRIVER_KEY_RE = {
+    "filter": (re.compile(rb"^filter\.(.+)\.[^.]+$", re.DOTALL), True),
+    "merge": (re.compile(rb"^merge\.(.+)\.driver$", re.DOTALL | re.IGNORECASE), False),
+}
 # Scopes an agent cannot write from inside its worktree. Anything else that defines a
-# filter driver (local, worktree, or an unknown scope) is neutralised.
+# driver (local, worktree, or an unknown scope) is neutralised.
 _TRUSTED_SCOPES = {b"global", b"system", b"command"}
 
 
-class _UnsafeConfig(Exception):
-    """A repo-scope filter driver name cannot be neutralised safely via ``-c``."""
+class UnsafeGitConfig(Exception):
+    """A repo-scope driver name cannot be neutralised safely via ``-c``."""
 
 
-def _filter_overrides(top: str) -> tuple[str, ...]:
-    """``-c`` args neutralising every filter driver defined in an untrusted scope.
+def _untrusted_config_keys(top: str, regexp: str) -> list[bytes]:
+    """Every config key matching ``regexp`` set in an untrusted scope (includes
+    followed: an included key reports its includer's scope).
 
-    Raises ``_UnsafeConfig`` when a driver name cannot be spliced into a ``-c`` key
-    (``=``, newline, NUL) or the config cannot be read; ``GitTimeout`` on timeout."""
+    Raises ``UnsafeGitConfig`` when the config cannot be read; ``GitTimeout`` on
+    timeout."""
     try:
         r = subprocess.run(
             ["git", "-C", top, *GIT_GLOBAL, "config", "--show-scope", "--includes",
-             "--name-only", "-z", "--get-regexp", r"^filter\."],
+             "--name-only", "-z", "--get-regexp", regexp],
             capture_output=True, env=git_env(), timeout=GIT_TIMEOUT_S, check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise GitTimeout from exc
     except OSError as exc:
-        raise _UnsafeConfig("git config unreadable") from exc
-    if r.returncode == 1:  # no filter.* keys anywhere
-        return ()
+        raise UnsafeGitConfig("git config unreadable") from exc
+    if r.returncode == 1:  # no such keys anywhere
+        return []
     if r.returncode != 0:
-        raise _UnsafeConfig("git config unreadable")
+        raise UnsafeGitConfig("git config unreadable")
     toks = r.stdout.split(b"\0")
+    return [key for scope, key in zip(toks[0::2], toks[1::2])
+            if scope not in _TRUSTED_SCOPES]
+
+
+def _untrusted_driver_names(top: str, section: str) -> list[str]:
+    """Names of every ``<section>.<name>.*`` driver defined in an untrusted scope.
+
+    Raises ``UnsafeGitConfig`` when a name cannot be spliced into a ``-c`` key
+    (``=``, newline, NUL) or the config cannot be read; ``GitTimeout`` on timeout."""
     names: set[bytes] = set()
-    for scope, key in zip(toks[0::2], toks[1::2]):
-        if scope in _TRUSTED_SCOPES:
-            continue
-        m = _FILTER_KEY_RE.match(key)
+    pattern, strict = _DRIVER_KEY_RE[section]
+    for key in _untrusted_config_keys(top, rf"^{section}\."):
+        m = pattern.match(key)
         if m is None:
-            raise _UnsafeConfig("unparseable filter key")
+            if strict:
+                raise UnsafeGitConfig(f"unparseable {section} key")
+            continue
         names.add(m.group(1))
-    args: list[str] = []
+    out: list[str] = []
     for raw in sorted(names):
         if any(c in raw for c in (b"=", b"\n", b"\r", b"\0")):
-            raise _UnsafeConfig("unsafe filter driver name")
-        name = os.fsdecode(raw)
+            raise UnsafeGitConfig(f"unsafe {section} driver name")
+        out.append(os.fsdecode(raw))
+    return out
+
+
+def untrusted_conditional_includes(top: str) -> list[str]:
+    """Every ``includeIf.*`` key set in an untrusted (repo or worktree) scope.
+
+    The driver overrides are computed from ``top``'s config context. That is sound
+    only for git calls that run in that same context. A call made in another
+    context — a new worktree's gitdir or branch, as a fork's checkout and apply
+    are — can activate an ``includeIf "onbranch:…"`` / ``"gitdir:…"`` section the
+    scan never saw. A caller that changes context must refuse when this is non-empty.
+
+    Raises ``UnsafeGitConfig`` / ``GitTimeout`` as :func:`_untrusted_config_keys`."""
+    return [os.fsdecode(k) for k in _untrusted_config_keys(top, r"^includeif\.")]
+
+
+def filter_overrides(top: str) -> tuple[str, ...]:
+    """``-c`` args neutralising every filter driver defined in an untrusted scope
+    (empty ``clean``/``smudge``/``process``, ``required=false``).
+
+    Raises ``UnsafeGitConfig`` / ``GitTimeout`` as :func:`_untrusted_driver_names`."""
+    args: list[str] = []
+    for name in _untrusted_driver_names(top, "filter"):
         for var in ("clean=", "smudge=", "process=", "required=false"):
             args += ["-c", f"filter.{name}.{var}"]
+    return tuple(args)
+
+
+def merge_driver_overrides(top: str) -> tuple[str, ...]:
+    """``-c`` args neutralising every ``merge.<name>.driver`` defined in an untrusted
+    scope, for git calls that may merge (``stash apply``). The driver becomes
+    ``false``: a merge that would have run it conflicts — failing closed — instead of
+    running a repo-supplied command (or silently keeping one side, as ``true`` or an
+    empty command would). ``recursive`` is pointed at the builtin ``text`` driver.
+
+    Raises ``UnsafeGitConfig`` / ``GitTimeout`` as :func:`_untrusted_driver_names`."""
+    args: list[str] = []
+    for name in _untrusted_driver_names(top, "merge"):
+        args += ["-c", f"merge.{name}.driver=false", "-c", f"merge.{name}.recursive=text"]
     return tuple(args)
 
 
@@ -487,12 +554,12 @@ def _session_diff(cwd: str, *, summary: bool, ignore_whitespace: bool) -> dict[s
         if not rev:
             return _empty(base, head)
         # Every call that may hash working-tree files runs with these overrides.
-        cfg = _filter_overrides(top)
+        cfg = filter_overrides(top)
         ws = ("-w",) if ignore_whitespace else ()
         numstat = run_git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--numstat", "-z", rev)
         names = run_git(top, *cfg, "diff", *_DIFF_OPTS, *ws, "--name-status", "-z", rev)
         untracked = run_git(top, *cfg, "ls-files", "--others", "--exclude-standard", "-z")
-    except (GitTimeout, _UnsafeConfig):
+    except (GitTimeout, UnsafeGitConfig):
         return _empty(base, head, truncated=True)
     if numstat is None or names is None:
         return _empty(base, head)

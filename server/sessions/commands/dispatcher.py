@@ -34,6 +34,12 @@ async def dispatch(driver, cmd: Command, args: str) -> dict | None:
             mcp_status = getattr(driver, "mcp_status", None)
             servers = await mcp_status() if mcp_status is not None else []
             return {"name": "mcp", "render": "mcp", "data": {"servers": [s.to_wire() for s in servers]}}
+        if cmd.name == "fork":
+            # The browser runs /fork itself (D-8: it needs the transcript's latest
+            # reply). Reaching here means it arrived another way — e.g. as a new
+            # session's first prompt, which has no reply to fork at.
+            return {"name": "fork", "render": "notice",
+                    "data": {"text": "/fork forks at a finished reply — send it from the session's message box"}}
         # /help (and any other client command) renders from the client's cached catalog.
         return {"name": cmd.name, "render": "help", "data": None}
 

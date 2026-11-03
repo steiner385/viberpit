@@ -76,6 +76,7 @@ vi.mock('@/api/hooks', () => ({
   useResolveSuspectedComplete: () => ({ mutate: vi.fn() }),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
+  useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAutomations: vi.fn(() => ({ data: [] })),
   // The Delivery list column's reads (finish-line row 4; capacity per

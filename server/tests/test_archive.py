@@ -736,7 +736,8 @@ def test_transcript_events_returns_replayed_events(tmp_path):
                     events = await orch.transcript_events("t1")
                     # Default is the bounded 20-turn tail; user-facing callers pass
                     # max_turns=None explicitly (PR #482 un-capping).
-                    mock_replay.assert_called_once_with("/fake/path.jsonl", max_turns=20)
+                    mock_replay.assert_called_once_with("/fake/path.jsonl", max_turns=20,
+                                                        until_uuid=None)
             return events
 
     events = asyncio.run(run())

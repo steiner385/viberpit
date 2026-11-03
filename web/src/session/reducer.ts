@@ -71,7 +71,11 @@ export type Block =
 // alongside `ownerPrefix` rather than being read off the raw event at render time.
 // Continuations after steering share engineTurnId but have distinct display ids.
 // Only the original segment owns the history ordinal.
-export interface Turn { id: string; engineTurnId?: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean }
+//
+// `anchorUuid` is the CLI transcript uuid this assistant turn can be forked from (D-8,
+// see EvTurnAnchor). Set only on the segment that ENDS the engine turn; absent = no
+// Fork action.
+export interface Turn { id: string; engineTurnId?: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean; anchorUuid?: string }
 
 export type SubThreadTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
 /** Live task state of a Task sub-agent, from subAgentStarted/Progress/Ended. Absent on
@@ -1189,6 +1193,18 @@ export function transcriptReducer(
     // ── status ────────────────────────────────────────────────────────────────
     case 'status': {
       return { ...state, status: { state: ev.state, count: ev.count } }
+    }
+
+    // ── turnAnchor ────────────────────────────────────────────────────────────
+    case 'turnAnchor': {
+      // Main thread only (the server never anchors a sub-agent turn). Role-scoped and
+      // latest-first (findRoleTurnIdx), so a steered turn's anchor lands on its LAST
+      // segment — the reply the fork keeps. An anchor for a turn this view does not
+      // hold is dropped rather than fabricating one: a turn rebuilt later (replay,
+      // older page) brings its own anchor.
+      const idx = findRoleTurnIdx(state.turns, ev.turnId, 'assistant')
+      if (idx === -1 || state.turns[idx].anchorUuid === ev.uuid) return state
+      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, anchorUuid: ev.uuid })) }
     }
 
     // ── turnEnd ───────────────────────────────────────────────────────────────
