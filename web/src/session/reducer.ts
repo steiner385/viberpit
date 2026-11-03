@@ -1241,7 +1241,8 @@ export function transcriptReducer(
       // event names it by the id its sender held plus the uuid — so any of the turn's
       // keys may match either. A view without the turn asks for a replay, which follows
       // the server's cut chain, and shows no divider it could not place.
-      const keys = new Set([ev.toTurnId, ev.promptUuid])
+      // Defined keys only: an omitted promptUuid must not match every turn without one.
+      const keys = new Set([ev.toTurnId, ev.promptUuid].filter(Boolean))
       let idx = -1
       for (let i = state.turns.length - 1; i >= 0 && idx === -1; i--) {
         const t = state.turns[i]

@@ -17556,7 +17556,16 @@ class SessionOrchestrator:
                                     "the target is not a user prompt")
             self._rewind_refuse(rec.id, rw.REWIND_TARGET_NOT_FOUND,
                                 "no prompt uuid for the target turn")
-        driver = self._drivers.get(rec.id) or await self.ensure_driver(rec.id, identity)
+        driver = self._drivers.get(rec.id)
+        if driver is None:
+            # A detached session is resumed first. Any resume failure (spawn or swap
+            # deadline, a lease another host holds, a failed resume) is "not live
+            # here right now": a coded refusal, never a 500.
+            try:
+                driver = await self.ensure_driver(rec.id, identity)
+            except Exception as exc:  # noqa: BLE001 — every resume failure maps to one code
+                self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE,
+                                    f"the session could not be resumed: {type(exc).__name__}")
         if driver is None or not hasattr(driver, "rewind_hold"):
             self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE, "the session is not live")
         return driver, target
@@ -17659,7 +17668,7 @@ class SessionOrchestrator:
             self._rewind_refuse(rec.id, rw.REWIND_UNAVAILABLE, "the session has no worktree")
         # The newest prompt this server knows of: without it the CLI refuses any target
         # with later turns (stale_target).
-        last_seen = next(reversed(rec.prompt_uuids.values()), None)
+        last_seen = self._newest_prompt(rec)
         dest = rw.backup_dir(rec.id, rewind_id) if files_mode else None
         restored: list[str] = []
         files_touched = False
@@ -17688,13 +17697,17 @@ class SessionOrchestrator:
                 except rw.RewindError as exc:
                     conversation_unknown = exc.outcome_unknown
                     raise
-        except BaseException:
+        except BaseException as exc:
             applied = _RewindApplied(rewind_id=rewind_id, target=target, to_turn_id=to_turn_id,
                                      jsonl=jsonl, jsonl_len=jsonl_len, dest=dest,
                                      restored=restored)
-            await self._rewind_roll_back(
+            settled = await self._rewind_roll_back(
                 rec, applied, files_touched=files_touched,
                 cut_unknown=conversation_unknown, reset=files_unknown or conversation_unknown)
+            if settled is not None and isinstance(exc, Exception):
+                # The reply was lost but the transcript shows the cut applied: it is
+                # the success it is (rewound emitted, undoable), not an error.
+                return settled
             raise
         conv = rw.ConversationRewind.from_cli(reply)
         result = await self._rewind_settled(rec, _RewindApplied(
@@ -17728,7 +17741,8 @@ class SessionOrchestrator:
         return dict(result)
 
     async def _rewind_roll_back(self, rec: SessionRecord, a: _RewindApplied, *,
-                                files_touched: bool, cut_unknown: bool, reset: bool) -> None:
+                                files_touched: bool, cut_unknown: bool,
+                                reset: bool) -> dict | None:
         """Put a failed rewind back where it started — or, when that is impossible,
         into a state that is at least consistent and visible. Never raises over the
         caller's error.
@@ -17745,7 +17759,9 @@ class SessionOrchestrator:
         rewound, backup kept, undoable). Otherwise the files are restored directly and
         the session is parked (``reassign_failed``) for the recovery sweep and the
         dashboard. The backup is dropped only once every path is back; otherwise it is
-        kept and the failure logged at WARNING."""
+        kept and the failure logged at WARNING. Returns the settled rewind's answer
+        (the cut prompt's text read back from the transcript) when it settled one,
+        else None."""
         from server.sessions import rewind as rw
         dest = a.dest
         result: rw.RestoreResult | None = None
@@ -17759,15 +17775,16 @@ class SessionOrchestrator:
                 if out.reached and cut_unknown and not out.truncated:
                     log.warning("session.rewind_rollback_untruncated session=%s — the "
                                 "transcript could not be cut back; backup kept", rec.id)
-                    return
+                    return None
                 if not out.reached and self._records.get(rec.id) is rec:
                     if cut_unknown and a.jsonl_len is not None and await asyncio.to_thread(
                             rw.cut_applied, a.jsonl, a.jsonl_len, a.target):
-                        await self._rewind_settled(rec, a, prefill=None)
+                        prefill = await asyncio.to_thread(rw.prompt_text, a.jsonl, a.target)
+                        settled = await self._rewind_settled(rec, a, prefill=prefill)
                         log.info("session.rewind_settled_after_lost_reply session=%s "
                                  "rewind=%s — the transcript shows the cut applied",
                                  rec.id, a.rewind_id)
-                        return
+                        return settled
                     if files_touched and dest is not None:
                         result = await asyncio.to_thread(rw.restore_backup, dest)
                     await self._pause_session(rec, reason=_REASSIGN_FAILED_PAUSE_REASON)
@@ -17780,12 +17797,13 @@ class SessionOrchestrator:
                 result = await asyncio.to_thread(rw.restore_backup, dest)
         except Exception:
             log.exception("session.rewind_rollback_failed session=%s", rec.id)
-            return              # keep whatever backup exists: it may be the only copy
+            return None         # keep whatever backup exists: it may be the only copy
         if result is not None and not result.ok:
             log.warning("session.rewind_rollback_restore_incomplete session=%s backup=%s "
                         "failed=%s", rec.id, dest, list(result.failed))
-            return
+            return None
         await asyncio.to_thread(rw.drop_backup, dest)
+        return None
 
     async def _rewind_reset(self, rec: SessionRecord, *, jsonl: str, jsonl_len: int | None,
                             backup_dir: str | None, reason: str,
@@ -17839,17 +17857,34 @@ class SessionOrchestrator:
             await self._persist_status(rec.id, paused[0])
         return out
 
-    def _forget_cut_prompts(self, rec: SessionRecord, target: str) -> None:
+    @staticmethod
+    def _prompt_order(rec: SessionRecord) -> list[str]:
+        """The record's prompt uuids, oldest first. Insertion order alone is not that:
+        a miss rebuild (``resolve_prompt_uuid``) re-inserts the transcript's prompts
+        (chronological, keyed by uuid) and then re-appends the live entries (keyed by
+        the driver's ids), which repeat uuids already listed. Each uuid's FIRST
+        appearance is chronological — the rebuild lists every prompt the transcript
+        had, and a live entry it lacks is newer."""
+        return list(dict.fromkeys(rec.prompt_uuids.values()))
+
+    @classmethod
+    def _newest_prompt(cls, rec: SessionRecord) -> str | None:
+        """The newest prompt uuid the record holds (a rewind's ``last_seen``)."""
+        order = cls._prompt_order(rec)
+        return order[-1] if order else None
+
+    @classmethod
+    def _forget_cut_prompts(cls, rec: SessionRecord, target: str) -> None:
         """Drop the rewound prompts (the target and every later one) from the record's
-        prompt uuids, so ``last_seen`` and target lookups never name a cut prompt. A
-        rebuilt copy (keyed by uuid) of a cut live prompt goes too; the next miss
+        prompt uuids, so ``last_seen`` and target lookups never name a cut prompt.
+        Cut by chronology (``_prompt_order``), every key of a cut uuid — the live id and
+        the rebuilt copy alike; earlier prompts keep all their keys. The next miss
         re-reads the transcript."""
-        items = list(rec.prompt_uuids.items())
-        cut_from = next((i for i, (_, u) in enumerate(items) if u == target), None)
-        if cut_from is None:
+        order = cls._prompt_order(rec)
+        if target not in order:
             return
-        cut = {u for _, u in items[cut_from:]}
-        rec.prompt_uuids = {t: u for t, u in items[:cut_from] if u not in cut}
+        cut = set(order[order.index(target):])
+        rec.prompt_uuids = {t: u for t, u in rec.prompt_uuids.items() if u not in cut}
         rec.prompt_uuids_rebuilt_at = None
 
     async def _record_rewind(self, session_id: str, rewind_id: str, *, to_prompt_uuid: str,
@@ -18054,8 +18089,9 @@ class SessionOrchestrator:
         self.__dict__.get("_rewind_undoable", {}).pop(rec.id, None)
         self.__dict__.get("_rewind_results", {}).pop(rewind_id, None)
         saved = self.__dict__.get("_rewind_cut_prompts", {}).pop(rewind_id, None)
-        if saved is not None:
-            rec.prompt_uuids = saved
+        # No snapshot (a restart since the rewind): forget them all, so the next lookup
+        # rebuilds from the restored transcript rather than trusting the cut record.
+        rec.prompt_uuids = saved if saved is not None else {}
         rec.prompt_uuids_rebuilt_at = None
         if not out.relaunched:
             self._rewind_refuse(rec.id, rw.REWIND_FAILED,

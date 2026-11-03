@@ -200,17 +200,13 @@ class RewindPreview:
 
 @dataclass(frozen=True)
 class ConversationRewind:
-    """A successful ``rewind_conversation``: the cut prompt's text (for the composer)
-    and the assistant entry the chain now ends at (``None`` at the first prompt)."""
+    """A successful ``rewind_conversation``: the cut prompt's text (for the composer)."""
     prefill: str | None
-    preceding_uuid: str | None
 
     @classmethod
     def from_cli(cls, resp: Mapping[str, Any]) -> ConversationRewind:
         prefill = resp.get("prefillText")
-        preceding = resp.get("precedingAssistantUuid")
-        return cls(prefill=prefill if isinstance(prefill, str) else None,
-                   preceding_uuid=preceding if isinstance(preceding, str) else None)
+        return cls(prefill=prefill if isinstance(prefill, str) else None)
 
 
 # ── The undo backup ─────────────────────────────────────────────────────────────
@@ -390,6 +386,35 @@ def cut_applied(jsonl_path: str, offset: int, target_uuid: str) -> bool:
     except OSError:
         return False
     return False
+
+
+def prompt_text(jsonl_path: str, prompt_uuid: str) -> str | None:
+    """The text of user prompt *prompt_uuid* in a CLI transcript (what
+    ``rewind_conversation`` returns as ``prefillText``), or None. Read when the cut's
+    reply was lost but the transcript shows it applied."""
+    try:
+        with open(jsonl_path, "rb") as fh:
+            for line in fh:
+                if prompt_uuid.encode() not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not (isinstance(row, dict) and row.get("type") == "user"
+                        and row.get("uuid") == prompt_uuid):
+                    continue
+                content = (row.get("message") or {}).get("content")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    text = "".join(b.get("text", "") for b in content
+                                   if isinstance(b, dict) and b.get("type") == "text")
+                    return text or None
+                return None
+    except OSError:
+        return None
+    return None
 
 
 def truncate_transcript(jsonl_path: str, length: int) -> None:

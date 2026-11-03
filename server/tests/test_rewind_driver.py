@@ -377,8 +377,8 @@ def test_preview_without_checkpoint():
 
 def test_conversation_rewind_from_reply():
     assert ConversationRewind.from_cli(CONV_OK) == ConversationRewind(
-        prefill="Use the Edit tool on a.txt", preceding_uuid="9346e4fc")
-    assert ConversationRewind.from_cli(CONV_FIRST).preceding_uuid is None
+        prefill="Use the Edit tool on a.txt")
+    assert ConversationRewind.from_cli(CONV_FIRST).prefill == "Read a.txt"
 
 
 # ---- the SDK seam the adapter relies on ----------------------------------------

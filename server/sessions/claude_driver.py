@@ -1762,6 +1762,7 @@ class ClaudeAgentDriver:
         if self._stream_ended:
             return   # nothing to dequeue onto, nothing to listen to
         if deferred:
+            # Backstop: the post-settle check below already catches a release mid-settle.
             # The rewind hold's release drains the queue; no suggestions for a turn
             # the user is about to rewind past. The listener guards itself against a
             # pump the release may already have started.

@@ -50,6 +50,14 @@ describe('rewound', () => {
     expect(s.rewind?.rewindId).toBe('r1')
   })
 
+  it('an event without promptUuid matches only by toTurnId (an undefined key matches nothing)', () => {
+    const { promptUuid: _omitted, ...bare } = REWOUND as Extract<SessionEvent, { type: 'rewound' }>
+    void _omitted
+    const s = transcriptReducer(live, bare)
+    expect(s.turns.map((t) => t.id)).toEqual(['u1', 'a1'])
+    expect(s.rewind?.rewindId).toBe('r1')
+  })
+
   it('for a target this view does not hold: no cut, no divider, asks for a replay', () => {
     const s = transcriptReducer(live, { ...REWOUND, toTurnId: 'elsewhere', promptUuid: 'nowhere' })
     expect(s.turns).toBe(live.turns)

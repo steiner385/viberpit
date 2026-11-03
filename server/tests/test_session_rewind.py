@@ -1170,10 +1170,12 @@ async def test_an_applied_cut_with_no_reply_and_no_swap_is_kept_and_undoable(
     real_reassign = env.orch._reassign
     _no_swap(env, monkeypatch)
     rid = str(uuid.uuid4())
-    with pytest.raises(rw.RewindError) as ei:
-        await _rewind(env.orch, env.src.id, request_id=rid)
-    assert ei.value.outcome_unknown
+    out = await _rewind(env.orch, env.src.id, request_id=rid)
     rewind_id = rw.rewind_id_for(env.src.id, rid)
+    # The applied rewind is answered as the success it is; the prefill is read back
+    # from the transcript (the lost reply carried it).
+    assert out == {"rewindId": rewind_id, "prefill": PROMPTS[U2],
+                   "filesRestored": ["a.txt", "new.txt", "gone.txt"]}
     (row,) = await _rows(env.src.id)
     assert row.id == rewind_id and row.expired_at is None
     assert _state(env.cwd)["a.txt"] == AT_U2["a.txt"]          # files stay rewound
@@ -1230,6 +1232,69 @@ def test_the_tail_check_allows_the_exit_rows(tmp_path: Path) -> None:
     q = tmp_path / "u.jsonl"
     q.write_text("x\n" + json.dumps({**_EXIT_ROWS[0], "uuid": "u"}) + "\n")
     assert rw.tail_is_rewind_only(str(q), 2) is False
+
+
+# --- final wave: chronological prompt order, clean resume refusals -------------------
+
+def test_a_merged_record_cut_by_a_hit_keeps_the_earlier_prompts() -> None:
+    """After a miss rebuild the transcript-keyed entries come first and the live ones
+    are re-appended: insertion order is not chronological. The cut and last_seen go by
+    each uuid's first appearance."""
+    rec = SessionRecord(id="s", name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="c", cols=80, rows=24, cwd=None)  # type: ignore[arg-type]
+    for k, v in [(U1, U1), (U2, U2), (U3, U3), ("x2", U2), ("x3", U3)]:
+        rec.record_prompt_uuid(k, v)
+    SessionOrchestrator._forget_cut_prompts(rec, U3)
+    assert rec.prompt_uuids == {U1: U1, U2: U2, "x2": U2}
+    assert SessionOrchestrator._newest_prompt(rec) == U2
+
+
+@pytest.mark.parametrize("then", ["first_by_replay_id", "second_by_live_id"])
+@pytest.mark.asyncio
+async def test_a_rebuilt_record_rewinds_again_after_edit_and_resend(env: Env, then: str) -> None:
+    """U1 is known only from the transcript (sent before a restart); P2/P3 are live.
+    A preview on U1 merges the rebuild; Edit & resend on P3 cuts U3. A further rewind
+    must still see U2 as the newest prompt (no stale_target) and find P2 by its live id."""
+    env.src.prompt_uuids.clear()
+    env.src.prompt_uuids_rebuilt_at = None
+    env.src.record_prompt_uuid("x2", U2)
+    env.src.record_prompt_uuid("x3", U3)
+    await _rewind(env.orch, env.src.id, to=U1, dry_run=True)        # opened, cancelled
+    await _rewind(env.orch, env.src.id, to="x3", mode=rw.MODE_CONVERSATION)
+    target = U1 if then == "first_by_replay_id" else "x2"
+    out = await _rewind(env.orch, env.src.id, to=target, mode=rw.MODE_CONVERSATION)
+    conv = [s for s in env.cli.sent if s["subtype"] == "rewind_conversation"]
+    assert conv[-1]["last_seen_user_message_uuid"] == U2
+    assert out["prefill"] == PROMPTS[U1 if then == "first_by_replay_id" else U2]
+
+
+@pytest.mark.asyncio
+async def test_an_undo_with_no_saved_prompts_rebuilds_them(env: Env) -> None:
+    out = await _rewind(env.orch, env.src.id, to="live-2")
+    env.orch.__dict__["_rewind_cut_prompts"].clear()          # e.g. after a restart
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == OK
+    assert env.src.prompt_uuids == {}
+    env.cli.sent.clear()
+    await _rewind(env.orch, env.src.id, to=U1, mode=rw.MODE_CONVERSATION)
+    conv = [s for s in env.cli.sent if s["subtype"] == "rewind_conversation"]
+    assert conv[-1]["last_seen_user_message_uuid"] == U3
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.asyncio
+async def test_a_failed_resume_refuses_unavailable_at_info(
+        env: Env, monkeypatch, caplog: pytest.LogCaptureFixture, dry_run: bool) -> None:
+    from server.sessions.orchestrator import SessionLeaseHeld
+    env.orch._drivers.pop(env.src.id)                    # detached
+
+    async def lease_held(*a, **k):
+        raise SessionLeaseHeld(env.src.id)
+    monkeypatch.setattr(env.orch, "ensure_driver", lease_held)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(rw.RewindError) as ei:
+        await _rewind(env.orch, env.src.id, dry_run=dry_run)
+    assert ei.value.code == rw.REWIND_UNAVAILABLE
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 # --- RPC / remote / fleet / facade --------------------------------------------------
