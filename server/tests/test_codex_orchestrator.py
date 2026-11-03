@@ -338,7 +338,7 @@ async def test_rotation_still_runs_for_claude(tmp_path: Path) -> None:
     seen: list[str] = []
 
     async def _locked(rec, new_account, *, reason, replay_last_prompt=True,
-                      new_thread=False):
+                      new_thread=False, before_relaunch=None):
         seen.append(new_account)
         return True
 
@@ -362,7 +362,7 @@ async def test_rotation_falls_back_to_a_new_thread_when_only_that_capability_is_
     seen: list[tuple] = []
 
     async def _locked(rec, new_account, *, reason, replay_last_prompt=True,
-                      new_thread=False):
+                      new_thread=False, before_relaunch=None):
         seen.append((new_account, new_thread))
         return True
 

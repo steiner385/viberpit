@@ -324,6 +324,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         # the source (its transcript, turn anchors and worktree). A refusal raises
         # ForkError / ForkWorktreeError, whose error_data carries the code.
         "fork_session",
+        # D-9 Rewind to here: the rewind result / {ok}, run on the daemon that owns the
+        # session (its live client, transcript, worktree and undo backups). A refusal
+        # raises RewindError, whose error_data carries the code (and CLI reason).
+        "rewind_session", "undo_rewind",
         "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",

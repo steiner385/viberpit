@@ -212,6 +212,9 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "mcp_repo_rule": {"repo": "dtcheck/repo", "server": "dtcheck", "enabled": True},
     "app_sessions": {"identity": "dtcheck@example.invalid"},
     "assistant_notices": {"identity": "dtcheck@example.invalid"},
+    # session_rewinds (D-9) joins the sweep via created_at/undone_at/expired_at;
+    # id (the rewindId, derived per request) and session_id have no default.
+    "session_rewinds": {"id": "dtcheck-rewind", "session_id": "dtcheck-session"},
     "audit_events": {"type": "dtcheck.event", "identity": "dtcheck@example.invalid"},
     "attachments": {"media_type": "image/png", "filename": "x.png", "byte_size": 1,
                      "sha256": "0" * 64, "uploaded_by": "dtcheck"},

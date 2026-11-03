@@ -35,6 +35,13 @@ export interface EvTurnAnchor    { type: 'turnAnchor';    turnId: string; uuid: 
 // the CLI echoes the prompt; a replayed user turn needs none (its id already is the uuid).
 // Mirrors UserPromptUuid (server/sessions/events.py).
 export interface EvUserPromptUuid { type: 'userPromptUuid'; turnId: string; uuid: string }
+// The session was rewound to user turn `toTurnId` (D-9): that prompt and every later turn
+// were cut, and `filesRestored` (worktree-relative where they lie in it) were put back to
+// its checkpoint. Undoable until the next prompt. Mirrors Rewound (server/sessions/events.py).
+export interface EvRewound       { type: 'rewound';       rewindId: string; toTurnId: string; filesRestored: string[] }
+// Rewind `rewindId` was undone: transcript and files are back as before it.
+// Mirrors RewindUndone (server/sessions/events.py).
+export interface EvRewindUndone  { type: 'rewindUndone';  rewindId: string }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
@@ -105,6 +112,7 @@ export type SessionEvent =
   | EvSuggestions | EvCondensing | EvContextUsage | EvMcpStatus | EvRecovering | EvNotice
   | EvSubAgentStarted | EvSubAgentProgress | EvSubAgentEnded
   | EvBackgroundTaskStarted | EvBackgroundTaskEnded
+  | EvRewound | EvRewindUndone
 
 export interface Command {
   name: string
@@ -137,6 +145,7 @@ const SESSION_EVENT_TYPE_FLAGS: Record<SessionEvent['type'], true> = {
   suggestions: true, condensing: true, contextUsage: true, mcpStatus: true, recovering: true, notice: true,
   subAgentStarted: true, subAgentProgress: true, subAgentEnded: true,
   backgroundTaskStarted: true, backgroundTaskEnded: true,
+  rewound: true, rewindUndone: true,
 }
 
 // The set of `type` strings that are session events (used by the WS fan-out).

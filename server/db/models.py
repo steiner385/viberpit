@@ -648,6 +648,32 @@ class AssistantNotice(Base):
     read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
 
+class SessionRewind(Base):
+    """One rewind of a session to an earlier prompt (D-9), and what undoing it needs.
+
+    ``jsonl_len`` is the transcript's byte length just before ``rewind_conversation``
+    (which only appends), so undo truncates back to it; ``backup_dir`` is the undo
+    backup of the files the rewind restored, on the session's host (NULL for a
+    conversation-only rewind). Only a session's latest rewind is undoable, and only
+    until its next prompt: ``expired_at`` is stamped then (and on archive), and
+    ``undone_at`` once undone; either one ends it and drops the backup."""
+
+    __tablename__ = "session_rewinds"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)   # the rewindId
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    to_prompt_uuid: Mapped[str | None] = mapped_column(String, nullable=True)
+    to_turn_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    jsonl_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    jsonl_len: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    backup_dir: Mapped[str | None] = mapped_column(String, nullable=True)
+    files_restored: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False,
+                                                 default=datetime.utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Automation(Base):
     """Registry state for one code-defined automation. Identity (name, schema,
     behavior) lives in server/automations/; this row stores only mutable state."""

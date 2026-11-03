@@ -183,6 +183,13 @@ def attachments_dir() -> Path:
     return d
 
 
+def rewind_dir() -> Path:
+    """Root of the D-9 rewind undo backups on this host: ``rewind/<sessionId>/<rewindId>/``
+    beneath it, each the files a rewind restored (bytes + mode, or absent) so the rewind
+    can be undone. Local state of the host that runs the session; never shared."""
+    return root() / "rewind"
+
+
 def _resolve_dot_dir(parent: str | os.PathLike[str], emitted: str, legacy: str) -> str:
     """*emitted*, unless *parent* holds ONLY the *legacy* dir — then *legacy*.
 

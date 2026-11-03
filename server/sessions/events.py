@@ -138,6 +138,24 @@ class UserPromptUuid:
     def to_wire(self): return {"type": "userPromptUuid", "turnId": self.turn_id, "uuid": self.uuid}
 
 @dataclass
+class Rewound:
+    """The session was rewound to the user turn *to_turn_id* (D-9): that prompt and
+    every later turn were cut from the conversation, and *files_restored* (worktree-
+    relative where they lie in it) were put back to the prompt's checkpoint. The rewind
+    is undoable (``RewindUndone``) until the next prompt."""
+    rewind_id: str; to_turn_id: str; files_restored: list[str] = field(default_factory=list)
+    def to_wire(self): return {"type": "rewound", "rewindId": self.rewind_id,
+                               "toTurnId": self.to_turn_id,
+                               "filesRestored": list(self.files_restored)}
+
+@dataclass
+class RewindUndone:
+    """Rewind *rewind_id* was undone (D-9): the transcript and the files are back as
+    they were before it, on a client resumed from that transcript."""
+    rewind_id: str
+    def to_wire(self): return {"type": "rewindUndone", "rewindId": self.rewind_id}
+
+@dataclass
 class HandBackRequested:
     """A top-level ``hand_back`` call was READ off the tool-use block, mid-turn (#2647).
 

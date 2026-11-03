@@ -20,7 +20,8 @@ from server.sessions.engine import (
     _EffortUnchanged,
     parse_agent_engine,
 )
-from server.sessions.orchestrator import ModelBlockedError
+from server.sessions.orchestrator import DRIVER_SWAP_TIMEOUT_S, ModelBlockedError
+from server.sessions.rewind import REWIND_CODES, REWIND_CONTROL_TIMEOUT_S, RewindError
 from server.sessions import worktree_files
 
 if TYPE_CHECKING:
@@ -67,6 +68,17 @@ WORKTREE_RPC_TIMEOUT = 90.0
 # a timeout anyway returns that same child.
 FORK_RPC_TIMEOUT = 4 * 600.0 + 12 * 30.0 + SPAWN_RPC_TIMEOUT + 120.0
 
+# Rewind to here (D-9): the daemon may first resume a detached session (a spawn), then
+# sends up to three CLI control requests (dry run, rewind_files, rewind_conversation)
+# of REWIND_CONTROL_TIMEOUT_S each and reads + writes an undo backup of up to 64 MiB;
+# a conversation cut whose reply never came is rolled back with a driver swap
+# (DRIVER_SWAP_TIMEOUT_S) plus a backup restore. An undo is one swap plus the restore.
+# Sized above the rewind's worst case, with a margin for the backup I/O, so the edge
+# does not give up on a rewind the daemon will still finish. Both calls are idempotent
+# (rewindId per request id), so a retry after a timeout anyway returns that rewind.
+REWIND_RPC_TIMEOUT = (SPAWN_RPC_TIMEOUT + 3 * REWIND_CONTROL_TIMEOUT_S
+                      + DRIVER_SWAP_TIMEOUT_S + 120.0)
+
 # Materialization apply (#992): its own budget because it is not spawn-shaped at all.
 # The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
 # one createIssue per issue (an epic plus every task in the plan), then the batched
@@ -75,6 +87,20 @@ FORK_RPC_TIMEOUT = 4 * 600.0 + 12 * 30.0 + SPAWN_RPC_TIMEOUT + 120.0
 # that is still creating issues, and the journal, not this deadline, is then the only
 # way to tell what exists.
 MATERIALIZE_RPC_TIMEOUT = 600.0
+
+
+def _rewind_error(exc: DaemonError) -> Exception:
+    """The exception a rewind RPC's error envelope stands for: KeyError for an unknown
+    session, RewindError for a known code, else the DaemonError itself (an old
+    daemon's UnknownMethod included — the route maps it to ``daemon_outdated``)."""
+    if exc.err_type == "KeyError":
+        return KeyError(exc.message)
+    data = exc.data or {}
+    code = data.get("code")
+    if exc.err_type == "RewindError" and code in REWIND_CODES:
+        reason = data.get("reason")
+        return RewindError(code, exc.message, reason=reason if isinstance(reason, str) else None)
+    return exc
 
 
 class _WireEvent:
@@ -943,6 +969,31 @@ class RemoteOrchestrator:
             if exc.err_type == "ForkWorktreeError" and code in worktrees.FORK_WORKTREE_CODES:
                 raise worktrees.ForkWorktreeError(exc.message, code) from exc
             raise
+
+    async def rewind_session(self, session_id, *, to_turn_id: str, mode: str,
+                             request_id: str, dry_run: bool = False,
+                             identity: str = SYSTEM_IDENTITY) -> dict:
+        """Proxy rewind_session (D-9) to the daemon that owns the session, with
+        ``REWIND_RPC_TIMEOUT``. An unknown session is re-raised as KeyError and a
+        refusal as RewindError with the envelope's code (and CLI reason) — only known
+        codes; anything else stays a DaemonError."""
+        try:
+            return await self._client.call(
+                "rewind_session", timeout=REWIND_RPC_TIMEOUT, session_id=session_id,
+                to_turn_id=to_turn_id, mode=mode, request_id=request_id, dry_run=dry_run,
+                identity=identity)
+        except DaemonError as exc:
+            raise _rewind_error(exc) from exc
+
+    async def undo_rewind(self, session_id, rewind_id: str,
+                          identity: str = SYSTEM_IDENTITY) -> dict:
+        """Proxy undo_rewind (D-9) to the owning daemon; errors as ``rewind_session``."""
+        try:
+            return await self._client.call(
+                "undo_rewind", timeout=REWIND_RPC_TIMEOUT, session_id=session_id,
+                rewind_id=rewind_id, identity=identity)
+        except DaemonError as exc:
+            raise _rewind_error(exc) from exc
 
     async def mcp_reconnect(self, session_id, server: str):
         """The daemon answers an error-shaped dict (exceptions do not survive the RPC hop
