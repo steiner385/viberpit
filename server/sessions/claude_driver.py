@@ -315,6 +315,10 @@ class ClaudeAgentDriver:
         # (server/library/scan.py, mutate.py) — Claude's shared config
         # directory, not a per-session concept.
         library_management=True,
+        # Fork from here (D-8): `--resume <sid> --fork-session --resume-session-at
+        # <uuid>`, verified on CLI 2.1.316. The flag is hidden, so the capability is
+        # also gated by VIBERPIT_FORK_ENABLED (engine.fork_supported).
+        fork=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -326,7 +330,8 @@ class ClaudeAgentDriver:
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None,
-                 resumed_after_restart: bool = False):
+                 resumed_after_restart: bool = False,
+                 fork_resume_at: str | None = None):
         self.automation_execution_id = automation_execution_id
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_tasks: set[str] = set()
@@ -352,6 +357,9 @@ class ClaudeAgentDriver:
         # Resuming a turn a daemon restart cut off (#2922): the transcript repair at
         # start() then blames the restart, not the user.
         self._resumed_after_restart = resumed_after_restart
+        # Fork from here (D-8): `resume` is then the SOURCE session's id, resumed as a
+        # new forked session cut at this transcript uuid. See start().
+        self._fork_resume_at = fork_resume_at
         self._engine_session_id: str | None = None
         self._on_session_id = on_session_id
         self._on_sync_back = on_sync_back
@@ -580,6 +588,11 @@ class ClaudeAgentDriver:
         tracking a CLI-initiated turn (`_turn_active`). The one test that decides
         whether a new prompt starts now or waits."""
         return self.drain_alive or self._turn_active
+
+    def in_flight_turn_ids(self) -> frozenset[str]:
+        """Turn ids and transcript uuids of the turn still running (D-8): a fork there
+        is refused. Empty between turns."""
+        return self._tr.in_flight_ids()
 
     @property
     def awaiting_user_input(self) -> bool:
@@ -1049,7 +1062,10 @@ class ClaudeAgentDriver:
         # tool_use as the transcript tail. On resume the CLI rejects that state with
         # error_during_execution / [ede_diagnostic] and every turn dead-ends. Heal it
         # before handing the session back to the SDK. Best-effort — never block start.
-        if self.resume:
+        # A fork's `resume` is the SOURCE's transcript: never repair it from here.
+        # The source may be mid-turn (its tail a live tool_use), and the cut point is
+        # a settled, tool-free entry anyway.
+        if self.resume and not self._fork_resume_at:
             text = RESTART_INTERRUPT_TEXT if self._resumed_after_restart else INTERRUPT_TEXT
             try:
                 await asyncio.to_thread(
@@ -1058,8 +1074,12 @@ class ClaudeAgentDriver:
             except Exception:
                 log.warning("driver.start: transcript repair failed session=%s",
                             self.session_id, exc_info=True)
+        fork_kw: dict = {}
+        if self.resume and self._fork_resume_at:
+            fork_kw = {"fork_session": True,
+                       "extra_args": {"resume-session-at": self._fork_resume_at}}
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
-                               self.resume, on_pre_compact=self._on_pre_compact)
+                               self.resume, on_pre_compact=self._on_pre_compact, **fork_kw)
         if inspect.isawaitable(client):
             client = await client
         self._client = client
@@ -2602,4 +2622,5 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             automation_execution_id=config.automation_execution_id,
             after_execution_close=config.after_execution_close,
             resumed_after_restart=config.resumed_after_restart,
+            fork_resume_at=config.fork_resume_at,
         )

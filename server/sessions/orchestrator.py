@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dataclass_replace
 from collections.abc import Coroutine, Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, cast
 
 if TYPE_CHECKING:
     from server.automations.backlog_grouping import RefreshSummary
@@ -2392,9 +2392,13 @@ class SessionOrchestrator:
             declared = set(inspect.signature(base).parameters)
         except (TypeError, ValueError):
             declared = set()
-        def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+        def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None,
+                     **fork_kw):
             extra = {**self._display_env(session_id), **self._oat_env(session_id)}
-            kw: dict = {"on_pre_compact": on_pre_compact}
+            # `fork_kw` is the driver's fork request (D-8: fork_session + extra_args),
+            # forwarded only when present, so a factory that never forks keeps its
+            # signature.
+            kw: dict = {"on_pre_compact": on_pre_compact, **fork_kw}
             if "owns_pr" in declared:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
@@ -2812,6 +2816,12 @@ class SessionOrchestrator:
         """Build one driver through the canonical engine registry."""
         execution_id = uuid.uuid4().hex
         rec = getattr(self, "_records", {}).get(session_id)
+        # A fork child with no engine session id of its own yet (D-8): every driver
+        # built for it — the spawn's and any rebuild's — resumes the SOURCE as a fork.
+        fork_from = getattr(rec, "fork_from", None)
+        fork_resume_at: str | None = None
+        if fork_from is not None and not resume:
+            resume, fork_resume_at = fork_from
         return self._engine_registry.create(engine, AgentDriverConfig(
             session_id=session_id,
             account=account,
@@ -2820,6 +2830,7 @@ class SessionOrchestrator:
             mode=mode,
             identity=identity,
             resume=resume,
+            fork_resume_at=fork_resume_at,
             resumed_after_restart=bool(
                 resume and getattr(rec, "interrupted_by_restart", False) is True),
             reasoning_effort=reasoning_effort,
@@ -5579,8 +5590,15 @@ class SessionOrchestrator:
         autopilot_paused: bool = False,
         auto_archive_opt_out_reason: str | None = None,
         parent_session_id: str | None = None,
+        fork_worktree: worktrees.ForkWorktreeInfo | None = None,
+        fork_from: tuple[str, str] | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
+
+        *fork_worktree* / *fork_from* (D-8, ``fork_session`` only): the session runs in
+        that ready-made fork worktree instead of a new one, and — with *fork_from* =
+        (source engine session id, transcript uuid) — resumes the source as a fork cut
+        at that uuid. The fork worktree stays the CALLER's to discard if this raises.
 
         When preexisting_row=True the session already has a DB row — 'queued' from
         _enqueue_session (_maybe_start_queued) or 'pending_approval' from
@@ -5617,7 +5635,13 @@ class SessionOrchestrator:
         # below; this branch only applies when cwd is an actual git repo — the ViberPit
         # clone resolved by the API.)
         worktree_info: worktrees.WorktreeInfo | None = None
-        if cwd is not None and worktrees.is_git_repo(cwd):
+        if fork_worktree is not None:
+            worktree_info = worktrees.WorktreeInfo(
+                fork_worktree.path, fork_worktree.branch, is_child=True,
+                repo=fork_worktree.repo)
+            cwd = fork_worktree.cwd
+            self._worktrees[session_id] = worktree_info
+        elif cwd is not None and worktrees.is_git_repo(cwd):
             try:
                 worktree_info = await asyncio.to_thread(
                     worktrees.create_worktree, cwd, branch, session_id, repo_root
@@ -5779,10 +5803,12 @@ class SessionOrchestrator:
                 # a full-auto session prompted on its first Bash call after mark_complete
                 # until a daemon restart rebuilt the record from the row (2026-09-07).
                 permission_mode=permission_mode,
+                fork_from=fork_from,
             )
         except BaseException:
             await self._run_rollback_shielded(
-                self._release_prespawn_resources(session_id, worktree_info),
+                self._release_prespawn_resources(session_id, worktree_info,
+                                                 keep_paths=fork_worktree is not None),
                 name=f"session-prespawn-rollback-{session_id}")
             raise
         self._records[session_id] = _pre_record
@@ -5958,7 +5984,12 @@ class SessionOrchestrator:
                     # per-driver state, released on every teardown path.
                     rollback_record = (self._records.pop(session_id)
                                        if session_id in self._records else None)
-                    await self._cleanup_session_paths(session_id, rollback_record)
+                    if fork_worktree is not None:
+                        # The fork worktree is fork_session's to discard (it holds a
+                        # dirty copy remove_worktree would keep).
+                        self._worktrees.pop(session_id, None)
+                    else:
+                        await self._cleanup_session_paths(session_id, rollback_record)
 
                 await self._run_rollback_shielded(
                     _rollback(), name=f"session-spawn-rollback-{session_id}")
@@ -5981,6 +6012,7 @@ class SessionOrchestrator:
 
     async def _release_prespawn_resources(
         self, session_id: str, worktree_info: worktrees.WorktreeInfo | None,
+        *, keep_paths: bool = False,
     ) -> None:
         """Undo what `_spawn_session` allocates before its driver rollback owns the spawn.
 
@@ -5991,7 +6023,10 @@ class SessionOrchestrator:
         dirty guard never keeps it); remove_worktree also deletes its child branch.
         """
         if worktree_info is not None and self._worktrees.get(session_id) is worktree_info:
-            await self._cleanup_session_paths(session_id, None)
+            if keep_paths:   # a fork worktree: the caller discards it (fork_session)
+                del self._worktrees[session_id]
+            else:
+                await self._cleanup_session_paths(session_id, None)
         if self._x11 is not None:
             try:
                 await self._x11.stop_display(session_id)
@@ -17334,6 +17369,107 @@ class SessionOrchestrator:
         rec.turn_anchors_rebuilt_at = stamp if lossless else None
         return rebuilt.get(turn_id)
 
+    async def fork_session(self, session_id: str, *, at_turn_id: str | None, mode: str,
+                           prefill: str | None = None,
+                           identity: str = SYSTEM_IDENTITY) -> dict:
+        """Fork *session_id* at a turn into a new linked child session (D-8).
+
+        ``mode == "reply"``: the child holds the history through reply *at_turn_id*.
+        ``mode == "message"``: *at_turn_id* is the reply BEFORE the user's message
+        (None for the first message, which makes the child a fresh session) and
+        *prefill* — that message's text — is echoed back for the child's composer.
+
+        The child runs in a new fork worktree (the source's current files, including
+        uncommitted work; never the files as of the turn) on the source's account,
+        engine, model, effort and permission mode, on this host, with
+        ``parent_session_id`` = the source. It is spawned through ``_spawn_session``
+        like any new session; only the resume is a fork. A failure once the fork
+        worktree exists removes it, and the spawn rolls back its own record and row.
+
+        Returns ``{"sessionId", "prefill"}``. Raises ``KeyError`` for an unknown
+        session; ``ForkError`` (``FORK_UNAVAILABLE`` / ``TURN_NOT_FORKABLE`` /
+        ``PREFILL_TOO_LONG`` / ``MODEL_BLOCKED``) and ``ForkWorktreeError`` (its
+        ``code``) for an expected refusal — each carries ``error_data``.
+        """
+        from server.sessions import fork as fk
+        from server.sessions.engine import fork_supported
+        from server.sessions.model_policy import launch_model, resolve_model_policy
+
+        def refuse(code: str, why: str) -> NoReturn:
+            log.info("session.fork_refused source=%s code=%s reason=%s",
+                     session_id, code, why)
+            raise fk.ForkError(code, why)
+
+        rec = self._worktree_record(session_id)
+        if mode not in fk.MODES:
+            raise ValueError(f"bad fork mode: {mode!r}")
+        if mode == fk.MODE_REPLY:
+            prefill = None
+        elif prefill is not None and len(prefill) > fk.PREFILL_MAX_CHARS:
+            refuse(fk.PREFILL_TOO_LONG, f"prefill over {fk.PREFILL_MAX_CHARS} chars")
+        if not fork_supported(self._engine_registry.capabilities_for(rec.engine)):
+            refuse(fk.FORK_UNAVAILABLE, f"engine {rec.engine} cannot fork here")
+        if rec.kind is not None:
+            refuse(fk.FORK_UNAVAILABLE, f"a {rec.kind} session is not forkable")
+
+        fork_from: tuple[str, str] | None = None
+        if at_turn_id is None:
+            if mode == fk.MODE_REPLY:
+                refuse(fk.TURN_NOT_FORKABLE, "a reply fork needs a turn")
+        else:
+            driver = self._drivers.get(session_id)
+            in_flight_of = getattr(driver, "in_flight_turn_ids", None)
+            running = in_flight_of() if callable(in_flight_of) else frozenset()
+            if at_turn_id in running:
+                refuse(fk.TURN_NOT_FORKABLE, "the turn is still in flight")
+            anchor = await self.resolve_turn_anchor(session_id, at_turn_id)
+            if anchor is None or anchor in running:
+                refuse(fk.TURN_NOT_FORKABLE, "the turn has no settled anchor")
+            if not rec.engine_session_id:
+                refuse(fk.TURN_NOT_FORKABLE, "the source has no engine session")
+            fork_from = (rec.engine_session_id, anchor)
+
+        async with db_session() as db:
+            policy = await resolve_model_policy(
+                db, model=launch_model(rec.model, engine=rec.engine), account=rec.account)
+        if policy == "block":
+            refuse(fk.MODEL_BLOCKED, f"model {rec.model!r} is blocked by policy")
+
+        if not rec.cwd:
+            log.info("session.fork_refused source=%s code=%s reason=no cwd",
+                     session_id, worktrees.FORK_NOT_A_REPO)
+            raise worktrees.ForkWorktreeError("the source has no worktree",
+                                              worktrees.FORK_NOT_A_REPO)
+        child_id = str(uuid.uuid4())
+        repo_root = await self._effective_repo_root()
+        try:
+            dest = worktrees.fork_worktree_dir(rec.cwd, repo_root, child_id)
+            fork_wt = await asyncio.to_thread(
+                worktrees.create_fork_worktree, rec.cwd,
+                source_session_id=session_id, dest=dest)
+        except worktrees.ForkWorktreeError as exc:
+            log.info("session.fork_refused source=%s code=%s reason=%s",
+                     session_id, exc.code, exc)
+            raise
+        try:
+            await self._spawn_session(
+                child_id, name=fk.fork_title(rec.name), account=rec.account,
+                initial_prompt=None, cols=rec.cols, rows=rec.rows, cwd=fork_wt.cwd,
+                branch=None, repo=rec.repo, identity=identity,
+                permission_mode=rec.permission_mode, attachment_ids=None,
+                name_is_auto=False, origin=None, origin_ref=None, model=rec.model,
+                reasoning_effort=rec.reasoning_effort, engine=rec.engine,
+                parent_session_id=session_id, fork_worktree=fork_wt, fork_from=fork_from)
+        except BaseException:
+            await self._run_rollback_shielded(
+                asyncio.to_thread(worktrees.discard_fork_worktree, fork_wt),
+                name=f"session-fork-rollback-{child_id}")
+            raise
+        log.info("session.fork source=%s child=%s mode=%s at=%s branch=%s",
+                 session_id, child_id, mode, fork_from[1] if fork_from else "-",
+                 fork_wt.branch)
+        return {"sessionId": child_id, "prefill": prefill}
+
     def _refresh_background_work(self, session_id: str) -> None:
         """Driver ``on_background_work_changed`` callback: a background shell/Monitor
         started or ended. Scheduled, never awaited — fired from inside the pump."""
@@ -17889,6 +18025,15 @@ class SessionOrchestrator:
                 session_id, rec.account, expect_account, engine_session_id)
             return
         if rec is not None:
+            fork_from = getattr(rec, "fork_from", None)
+            if fork_from is not None and engine_session_id == fork_from[0]:
+                # A fork child must never adopt the SOURCE's id: its later resumes
+                # would write into the source's transcript. Keep forking instead.
+                log.error("session.engine_session_id_rejected id=%s reason=fork_source "
+                          "— refusing to write the fork source's id %s",
+                          session_id, engine_session_id)
+                return
+            rec.fork_from = None
             rec.engine_session_id = engine_session_id
         async with db_session() as db:
             from sqlalchemy import update as sa_update

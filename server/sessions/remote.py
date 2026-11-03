@@ -906,6 +906,29 @@ class RemoteOrchestrator:
                 raise worktree_files.FileAccessError(code) from exc
             raise
 
+    async def fork_session(self, session_id, *, at_turn_id: str | None, mode: str,
+                           prefill: str | None = None,
+                           identity: str = SYSTEM_IDENTITY) -> dict:
+        """Proxy fork_session (D-8) to the daemon that owns the source. Its budget is
+        the spawn pipeline's: a fork worktree plus a session spawn. An unknown session
+        is re-raised as KeyError; a refusal as ForkError / ForkWorktreeError with the
+        envelope's code — only known codes; anything else stays a DaemonError."""
+        from viberpit import worktrees
+        from server.sessions import fork as fk
+        try:
+            return await self._client.call(
+                "fork_session", timeout=SPAWN_RPC_TIMEOUT, session_id=session_id,
+                at_turn_id=at_turn_id, mode=mode, prefill=prefill, identity=identity)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            code = (exc.data or {}).get("code")
+            if exc.err_type == "ForkError" and code in fk.FORK_CODES:
+                raise fk.ForkError(code, exc.message) from exc
+            if exc.err_type == "ForkWorktreeError" and code in worktrees.FORK_WORKTREE_CODES:
+                raise worktrees.ForkWorktreeError(exc.message, code) from exc
+            raise
+
     async def mcp_reconnect(self, session_id, server: str):
         """The daemon answers an error-shaped dict (exceptions do not survive the RPC hop
         as their own types); re-raise the orchestrator's LookupError / ValueError here."""

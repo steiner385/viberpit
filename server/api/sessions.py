@@ -2089,6 +2089,54 @@ async def session_file_content(
         _raise_worktree_read_error(exc, "read session files")
 
 
+class ForkRequest(BaseModel):
+    """``POST /{id}/fork`` body (D-8). ``reply``: ``atTurnId`` is the reply's turn.
+    ``message``: ``atTurnId`` is the previous reply's turn, or null for the first
+    message, and ``prefill`` is the user message text to echo back."""
+    atTurnId: str | None = None
+    mode: Literal["reply", "message"]
+    prefill: str | None = None
+
+
+@router.post("/{session_id}/fork", status_code=status.HTTP_201_CREATED)
+async def fork_session(
+    session_id: str,
+    body: ForkRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Fork the session at a turn into a new linked child session (D-8), created on
+    the daemon that owns the source. ``201 {sessionId, prefill}``; ``prefill`` is the
+    message-mode text echoed back (null for a reply fork). Unknown session 404; a
+    prefill over 10,000 chars 400 ``PREFILL_TOO_LONG``; 409 ``FORK_UNAVAILABLE`` (kill
+    switch off, or an engine that cannot fork), ``TURN_NOT_FORKABLE`` (no settled
+    anchor for the turn), ``MODEL_BLOCKED``, a fork worktree code (e.g.
+    ``FORK_UNSAFE_CONFIG``), or ``daemon_outdated`` from an old daemon."""
+    from viberpit import worktrees
+    from server.sessions import fork as fk
+    try:
+        result = await _get_orchestrator(request).fork_session(
+            session_id, at_turn_id=body.atTurnId, mode=body.mode, prefill=body.prefill,
+            identity=identity)
+    except fk.ForkError as exc:
+        code = (status.HTTP_400_BAD_REQUEST if exc.code == fk.PREFILL_TOO_LONG
+                else status.HTTP_409_CONFLICT)
+        raise HTTPException(status_code=code,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except worktrees.ForkWorktreeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_worktree_read_error(exc, "fork sessions")
+    await record_audit(db=db, type="session.fork", identity=identity,
+                       detail={"session_id": result["sessionId"], "source": session_id,
+                               "mode": body.mode})
+    return result
+
+
 @router.post("/{session_id}/mcp/{server}/reconnect")
 async def session_mcp_reconnect(
     session_id: str,

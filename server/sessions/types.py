@@ -215,6 +215,13 @@ class SessionRecord:
     # eviction, so a lookup miss against an unchanged transcript skips the re-parse.
     # Same daemon-local lifetime as turn_anchors.
     turn_anchors_rebuilt_at: tuple[str, int, int] | None = None
+    # A fork child (D-8) that has not yet reported its own engine session id:
+    # (source engine session id, transcript uuid to cut at). Every driver built for it
+    # until then resumes the SOURCE as a fork (SessionOrchestrator._create_driver), so
+    # no rebuild can ever resume the source's transcript unforked. Cleared once the
+    # child's own id arrives. Daemon-local like turn_anchors: lost on a restart, after
+    # which the child (row engine_session_id NULL) starts fresh in its worktree.
+    fork_from: tuple[str, str] | None = None
 
     def record_turn_anchor(self, turn_id: str, uuid: str) -> None:
         """Remember *turn_id*'s anchor as the newest, evicting the oldest past the cap."""

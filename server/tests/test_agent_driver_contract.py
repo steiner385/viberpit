@@ -62,6 +62,9 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         library_management=True,
         # The CLI answers get_mcp_status / reconnect_mcp_server control requests.
         mcp_status=True,
+        # --resume … --fork-session --resume-session-at <uuid> (D-8); the kill switch
+        # gates it at engine.fork_supported, not here.
+        fork=True,
     )
 
     driver._engine_session_id = "native-1"

@@ -320,6 +320,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         # size}, read on the owning daemon. A refused read raises FileAccessError, whose
         # error_data carries its code across the envelope.
         "session_files", "session_file",
+        # D-8 Fork from here: {sessionId, prefill}, created on the daemon that owns
+        # the source (its transcript, turn anchors and worktree). A refusal raises
+        # ForkError / ForkWorktreeError, whose error_data carries the code.
+        "fork_session",
         "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",

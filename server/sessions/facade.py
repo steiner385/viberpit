@@ -202,6 +202,7 @@ class InProcessOrchestratorAdapter:
     async def session_diff(self, *a, **k): return await _maybe_await(self._orch.session_diff(*a, **k))
     async def session_files(self, *a, **k): return await _maybe_await(self._orch.session_files(*a, **k))
     async def session_file(self, *a, **k): return await _maybe_await(self._orch.session_file(*a, **k))
+    async def fork_session(self, *a, **k): return await _maybe_await(self._orch.fork_session(*a, **k))
     async def mcp_reconnect(self, *a, **k): return await _maybe_await(self._orch.mcp_reconnect(*a, **k))
     async def mcp_toggle(self, *a, **k): return await _maybe_await(self._orch.mcp_toggle(*a, **k))
     async def reconnect_mcp_everywhere(self, *a, **k): return await _maybe_await(self._orch.reconnect_mcp_everywhere(*a, **k))
