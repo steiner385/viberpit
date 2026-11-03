@@ -273,21 +273,60 @@ which were harmless here.
   `~/.claude-accounts/cfg/tony_steinonline.net/projects/-tmp-d9-rewind-spike-pep0/00f0a637-6719-4040-a0bb-9b333b847e2a.jsonl`.
   The account's `projects/` is a symlink, so the real path is `~/.claude/projects/…`.
 
+## Second probe: live rewind, undo, mode-only (2026-11-03 06:18–06:21 EST)
+
+Account `tony_steinonline.net` with `--model haiku`, 4 turns (about $0.006 in total), in a throwaway non-git cwd
+`/tmp/d9-rewind-spike2.*`. The session was `785a0add-7e20-4165-ac2b-02f32f8a5c5a`, a single live stream-json client
+with checkpointing on. The log was trimmed from `/tmp/d9-probe3.log`.
+
+```
+U1 4d788d59  "Read a.txt, then Edit v0→v1"        → a.txt v1
+U2 8a895c7e  "Edit v1→v2"                         → a.txt v2
+rewind_files U2 dry_run  → {canRewind, filesChanged:[a.txt], +1 −1}
+(own backup of a.txt = "v2\n")
+rewind_files U2          → {canRewind, skippedLinks:0}            a.txt v1
+jsonl length L = 146404
+rewind_conversation U2 (last_seen=U2) → {rewound:true, prefillText:"Use the Edit tool … v1 with v2 …",
+                                         precedingAssistantUuid: dcc8c713 (U1's last entry)}
+U3 6433130b  "Quote every message I sent"  (SAME live client)
+   → "1. \"Read a.txt, then use the Edit tool to replace v0 with v1 …\""      ← U2 is gone for the model
+rewind_files U2 dry_run  → filesChanged [] (already at that state)
+rewind_files U1 dry_run  → [a.txt]; real → a.txt v0                         ← older checkpoints intact post-cut
+UNDO: stop client; truncate jsonl 155533 → 146404; restore backup → a.txt v2; resume --resume <sid>
+rewind_files U2 dry_run → canRewind, [a.txt]; U1 dry_run → canRewind, [a.txt]   ← snapshots still resolve
+rewind_files U3 dry_run → canRewind:false "No file checkpoint found for this message."  (U3 truncated away)
+U4 c0793092  "Quote every message I sent"
+   → "1. \"Read a.txt … v0 with v1 …\"  2. \"Use the Edit tool to replace v1 with v2 …\""   ← old turn 2 is back
+chmod 600 a.txt (mode-only change)
+rewind_files U4 dry_run → filesChanged [] ; real → a.txt mode 0o600 → 0o644          ← restored, not previewed
+```
+
+**Results:**
+1. **A live client works after `rewind_conversation`.** The next prompt on the same client did not see the cut turn,
+   and later file rewinds to older prompts still worked. There's no need to respawn after a rewind.
+2. **Undo by byte truncation plus `--resume` works end to end.**
+   - The model sees the pre-rewind conversation again.
+   - The CLI checkpoints for the restored turns resolve again.
+   - ViberPit's own backup puts the files back.
+   - A prompt sent after the rewind is dropped by the truncation, along with its checkpoint. This confirms that undo
+     must only be offered until the next prompt.
+3. **Mode-only changes are restored but not previewed** (formerly gap 4, now confirmed). The confirmation copy must not
+   claim the list is exhaustive. ViberPit's undo backup must therefore record mode for every file the real rewind could
+   touch, not only the dry-run list.
+   - Practical rule: also back up the files the CLI's file-history index tracks for the session, or accept that undo
+     cannot restore a mode-only revert.
+   - The plan rules on which.
+- The probe cwd was deleted. The probe transcript was left at
+  `~/.claude/projects/-tmp-d9-rewind-spike2-*/785a0add-….jsonl`.
+
 ## Gaps (not verified)
 
-1. **In-place `--resume-session-at` followed by a prompt.**
-   - Not verified: that the new prompt is appended with `parentUuid=<anchor>`, and that a later plain `--resume` follows
-     the new branch.
-   - Not verified either: that a live client keeps working normally after `rewind_conversation` when the next prompt
-     is sent.
-   - Both need a model turn, and the 3-turn budget was spent on checkpoint creation.
+1. **In-place `--resume-session-at` followed by a prompt** (the respawn alternative). This is no longer needed, because
+   `rewind_conversation` on a live client is verified above. Left unverified.
 2. **A real `rewind_files` during a running turn.** Only a dry run was sent mid-turn.
 3. **What `ht()` and `q()` in `dD()` test.** They are two more conditions that switch checkpointing off. They did not
    fire in SDK stream-json mode on this host.
-4. **Mode-only differences.**
-   - `LHo` restores a file that differs only in mode, size or mtime (`dXt`/`uXt`).
-   - The dry run (`Bzt`) lists only files with line insertions or deletions, or a new file to delete.
-   - So a mode-only change could be restored without being previewed. This was read from code, not probed.
+4. ~~Mode-only differences~~: confirmed by the second probe, see above.
 5. **The `Lp(e)` branch of the handler**, which strips `filesChanged`, is a remote/cloud condition that did not apply
    locally. It was not resolved.
 6. **No newer Python SDK was checked** for a `dry_run` parameter. 0.2.105 has none.
