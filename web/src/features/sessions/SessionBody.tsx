@@ -34,6 +34,7 @@ import { canUseEngine } from '@/session/engineCapabilities'
 import { useFileTarget, useSessionView, type SessionView } from './sessionView'
 import { FileRefContext, type FileRefActions } from '@/features/sessions/transcript/fileRefContext'
 import { useComposerAttach } from '@/shell/sessionGestures'
+import { ForkProvider } from '@/features/sessions/fork/ForkProvider'
 
 /** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
 const ChangesTab = lazy(() => import('@/features/sessions/diff/ChangesTab'))
@@ -234,23 +235,27 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                   />
                 ) : (
                   <FileRefContext.Provider value={fileRefActions}>
-                    <TranscriptView
-                      turns={rt.state.turns}
-                      rotations={rt.state.rotations}
-                      model={rt.state.model}
-                      toolDetailMode={rt.toolDetailMode}
-                      thinkingCollapsed={rt.thinkingCollapsed}
-                      viewModeEpoch={rt.viewModeEpoch}
-                      // Only the live-open block streams as plain text; during replay the open
-                      // id is meaningless, so suppress it and render everything as markdown.
-                      streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
-                      onAnswer={rt.onAnswer}
-                      subAgents={rt.state.subAgents}
-                      earliestTurn={rt.state.earliestTurn}
-                      loadingOlder={rt.state.loadingOlder}
-                      onLoadOlder={rt.onLoadOlder}
-                      followSignal={rt.state.pendingSentSeq}
-                    />
+                    {/* "Fork from here" in each turn's menu (D-8), where the engine can fork. */}
+                    <ForkProvider sessionId={rt.sessionId} turns={rt.state.turns}
+                                  earliestTurn={rt.state.earliestTurn} enabled={can(caps, 'fork')}>
+                      <TranscriptView
+                        turns={rt.state.turns}
+                        rotations={rt.state.rotations}
+                        model={rt.state.model}
+                        toolDetailMode={rt.toolDetailMode}
+                        thinkingCollapsed={rt.thinkingCollapsed}
+                        viewModeEpoch={rt.viewModeEpoch}
+                        // Only the live-open block streams as plain text; during replay the open
+                        // id is meaningless, so suppress it and render everything as markdown.
+                        streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
+                        onAnswer={rt.onAnswer}
+                        subAgents={rt.state.subAgents}
+                        earliestTurn={rt.state.earliestTurn}
+                        loadingOlder={rt.state.loadingOlder}
+                        onLoadOlder={rt.onLoadOlder}
+                        followSignal={rt.state.pendingSentSeq}
+                      />
+                    </ForkProvider>
                   </FileRefContext.Provider>
                 )}
 

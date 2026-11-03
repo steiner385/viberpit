@@ -30,7 +30,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from server.sessions.engine import AgentCapabilities
+from server.sessions.engine import AgentCapabilities, fork_supported
 
 # Split a raw prompt into (command-name, args) IFF it is a single-line
 # slash command. Mirrors the Composer's runCommandFromText regex exactly
@@ -53,7 +53,7 @@ def parse_command_line(raw: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 # Commands handled by a dedicated client-side render (no model turn).
-CLIENT = {"help", "context", "mcp"}
+CLIENT = {"help", "context", "mcp", "fork"}
 # Commands executed via a dedicated SDK method (not raw passthrough).
 CONTROL = {"model", "clear"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
@@ -113,7 +113,9 @@ def _always(_caps: AgentCapabilities) -> bool:
 #: `/help` and `/context` render client-side from data every driver publishes
 #: (the catalog itself; `context_usage()`), and `/clear` is `driver.reconnect()`
 #: — all three are AgentDriver protocol surface, so they are ungated. `/model`,
-#: `/account` and `/mcp` are gated because an engine can genuinely lack them.
+#: `/account`, `/mcp` and `/fork` are gated because an engine can genuinely lack them.
+#: `/fork` (D-8) runs in the browser — it forks at the transcript's latest settled
+#: reply through ``POST /sessions/{id}/fork`` — behind the same gate as that route.
 APP_COMMANDS: tuple[AppCommand, ...] = (
     AppCommand(
         Command(name="help", description="List the commands this session accepts",
@@ -144,6 +146,11 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
         Command(name="mcp", description="Show MCP servers, their sign-in state, and sign in",
                 argument_hint=None, kind="client", source=APP),
         gate=lambda caps: caps.mcp_status,
+    ),
+    AppCommand(
+        Command(name="fork", description="Fork this session at the latest reply into a new one",
+                argument_hint=None, kind="client", source=APP),
+        gate=fork_supported,
     ),
 )
 

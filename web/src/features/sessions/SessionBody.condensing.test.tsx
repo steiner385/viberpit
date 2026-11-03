@@ -26,6 +26,7 @@ vi.mock('@/api/hooks', () => ({
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // The worktree diff summary (SessionBody's Changes tab, SessionHeader's +N −M chip).
   useSessionDiff: vi.fn(() => ({ data: undefined })),
+  useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),

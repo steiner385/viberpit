@@ -5,6 +5,7 @@ import { DispatchBar } from '@/features/sessions/list/DispatchBar'
 import { DispatchError } from '@/features/sessions/list/dispatchError'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
+import { useForkCommand } from '@/features/sessions/fork/useForkFrom'
 import { useCreateSession, useEngineOffers, useGithubRepos, useModels } from '@/api/hooks'
 import { useEnabledFleetHosts } from '@/api/fleet'
 import { DEFAULT_AGENT_ENGINE, type Account, type AgentEngine } from '@/api/types'
@@ -128,7 +129,11 @@ function LiveComposer() {
   const promptRowMenus = usePromptRowMenusRegistration()
   // A transcript path's "Attach as @" writes into this draft (D-7, same bridge).
   const attachRef = useComposerAttachRegistration()
-  return <SessionComposer rt={rt} promptRowMenus={promptRowMenus} attachRef={attachRef} />
+  // `/fork` (D-8) is app-owned and runs here, in the browser: it needs the
+  // transcript's latest reply and opens the child. Every other command goes on to
+  // the session as before.
+  const onCommand = useForkCommand(rt)
+  return <SessionComposer rt={{ ...rt, onCommand }} promptRowMenus={promptRowMenus} attachRef={attachRef} />
 }
 
 /**

@@ -31,6 +31,15 @@ function read(sessionId?: string): SessionDraft {
 }
 
 /**
+ * Write `text` as the draft of a session whose composer has not mounted yet — what
+ * it then reads as `initial`. D-8 seeds a fork's composer with the message it was
+ * forked from, before navigating to it.
+ */
+export function seedSessionDraft(sessionId: string, text: string): void {
+  try { localStorage.setItem(keyFor(sessionId), JSON.stringify({ text, attachments: [] })) } catch { /* ignore */ }
+}
+
+/**
  * Per-session unsent-draft store backed by localStorage. `initial` is read once
  * on mount (stable for the component's lifetime); call `save` on change and
  * `clear` on submit. A no-op when `sessionId` is undefined.
