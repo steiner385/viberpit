@@ -47,6 +47,8 @@ vi.mock('@/api/hooks', () => ({
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionDiff: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
   useForkSession: vi.fn(() => ({ fork: vi.fn(), isPending: false })),
+  useRewindSession: vi.fn(() => ({ preview: vi.fn(), rewind: vi.fn() })),
+  useUndoRewind: vi.fn(() => ({ undo: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useStopSubAgent: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
@@ -157,7 +159,7 @@ describe('SessionBody — transcript path links (D-7)', () => {
     const attachFile = vi.fn()
     function DockStub() {
       const ref = useComposerAttachRegistration()
-      useEffect(() => { if (ref) ref.current = { attachFile } satisfies ComposerAttach })
+      useEffect(() => { if (ref) ref.current = { attachFile, setDraft: vi.fn() } satisfies ComposerAttach })
       return null
     }
     render(

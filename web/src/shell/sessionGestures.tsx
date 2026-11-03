@@ -32,6 +32,7 @@ import * as React from 'react'
 import { toast } from 'sonner'
 import type { PromptRowMenus } from '@/features/sessions/composer/PromptRow'
 import type { ComposerAttach } from '@/features/sessions/composer/Composer'
+import { seedSessionDraft } from '@/features/sessions/composer/useSessionDraft'
 
 export interface SessionGestures {
   /** A permission or question card is waiting for an answer. */
@@ -94,6 +95,19 @@ export function SessionGestureProvider({ children }: { children: React.ReactNode
       </PromptRowMenusContext.Provider>
     </SessionGestureContext.Provider>
   )
+}
+
+/**
+ * Edit & resend's side (D-9): put `text` in session `sessionId`'s composer — the
+ * mounted dock composer when there is one, else its saved draft, which the composer
+ * reads when it mounts (D-8's `seedSessionDraft`).
+ */
+export function useComposerSetDraft(): (sessionId: string, text: string) => void {
+  const ref = React.useContext(ComposerAttachContext)
+  return React.useCallback((sessionId: string, text: string) => {
+    if (ref?.current) ref.current.setDraft(text)
+    else seedSessionDraft(sessionId, text)
+  }, [ref])
 }
 
 /** The dock composer's side: the ref to pass as `SessionComposer`'s `attachRef`.

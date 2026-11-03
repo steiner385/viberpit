@@ -1,6 +1,6 @@
 /**
  * MessageActions — the per-turn "⋯" menu (Desktop parity, sub-spec D §4). D-3 shipped
- * Copy as Markdown; D-8 adds Fork from here. Later items (Rewind, Edit) append to `ACTIONS`.
+ * Copy as Markdown; D-8 adds Fork from here; D-9 Rewind to here and Edit & resend.
  */
 import { useRef, useState } from 'react'
 import { MoreHorizontal } from 'lucide-react'
@@ -11,9 +11,11 @@ import type { Turn } from '@/session/reducer'
 import { turnMarkdown } from '@/session/turnMarkdown'
 import { copyText } from '@/lib/copyText'
 import { useForkActions, type ForkActions } from '@/features/sessions/fork/forkContext'
+import { useRewindActions, type RewindActions } from '@/features/sessions/rewind/rewindContext'
+import { rewindTargetFor } from '@/session/rewindTarget'
 
-/** What an action can reach beyond its turn: the session's fork actions, when it can fork. */
-interface ActionEnv { fork: ForkActions | null }
+/** What an action can reach beyond its turn: the session's fork and rewind actions, where it has them. */
+interface ActionEnv { fork: ForkActions | null; rewind: RewindActions | null }
 
 interface MessageAction {
   id: string
@@ -21,7 +23,17 @@ interface MessageAction {
   run: (turn: Turn, env: ActionEnv) => Promise<void>
   /** Hidden when false. */
   available: (turn: Turn, env: ActionEnv) => boolean
+  /** Shown but not selectable when true. */
+  disabled?: (env: ActionEnv) => boolean
 }
+
+/** D-9: a prompt the server can rewind to, while the session can rewind; idle only. */
+const rewindAction = (id: string, label: string, edit: boolean): MessageAction => ({
+  id, label,
+  available: (turn, { rewind }) => rewind !== null && rewindTargetFor(turn) !== null,
+  disabled: ({ rewind }) => !!rewind?.busy,
+  run: async (turn, { rewind }) => { await rewind?.start(turn, { edit }) },
+})
 
 const ACTIONS: readonly MessageAction[] = [
   {
@@ -45,6 +57,8 @@ const ACTIONS: readonly MessageAction[] = [
       if (fork && target) await fork.fork(target)
     },
   },
+  rewindAction('rewind', 'Rewind to here', false),
+  rewindAction('edit-resend', 'Edit & resend', true),
 ]
 
 /**
@@ -60,7 +74,8 @@ export function MessageActions({ turn, className }: { turn: Turn; className?: st
   const anchorRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
   const fork = useForkActions()
-  const env: ActionEnv = { fork }
+  const rewind = useRewindActions()
+  const env: ActionEnv = { fork, rewind }
   const actions = ACTIONS.filter((a) => a.available(turn, env))
   if (actions.length === 0) return null
 
@@ -90,7 +105,7 @@ export function MessageActions({ turn, className }: { turn: Turn; className?: st
         anchorRef={anchorRef}
         label="Message actions"
         align="end"
-        items={actions.map((a) => ({ id: a.id, label: a.label }))}
+        items={actions.map((a) => ({ id: a.id, label: a.label, disabled: a.disabled?.(env) }))}
         onSelect={(id) => { void actions.find((a) => a.id === id)?.run(turn, env) }}
       />
     </>

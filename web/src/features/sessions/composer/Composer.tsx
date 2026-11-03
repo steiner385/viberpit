@@ -63,6 +63,8 @@ interface Props {
 export interface ComposerAttach {
   /** Append `path`'s `@` mention to the draft and focus it, caret after the mention. */
   attachFile: (path: string) => void
+  /** Replace the draft with `text`, caret at its end — Edit & resend's prompt (D-9). */
+  setDraft: (text: string) => void
 }
 
 export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef }: Props) {
@@ -240,16 +242,21 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   )
   // A transcript path's "Attach as @" appends the same token after the draft (one
   // space from any text before it) and lands the caret after it.
-  useImperativeHandle(attachRef, () => ({
-    attachFile: (path: string) => {
-      const sep = text === '' || /\s$/.test(text) ? '' : ' '
-      const next = `${text}${sep}${fileMentionToken(path)} `
+  useImperativeHandle(attachRef, () => {
+    const setDraft = (next: string) => {
       suggestedDraft.current = null
       pendingCaretRef.current = next.length
       setCaret(next.length)
       setText(next)
-    },
-  }), [text])
+    }
+    return {
+      attachFile: (path: string) => {
+        const sep = text === '' || /\s$/.test(text) ? '' : ' '
+        setDraft(`${text}${sep}${fileMentionToken(path)} `)
+      },
+      setDraft,
+    }
+  }, [text])
 
   const runCommandFromText = useCallback((raw: string): boolean => {
     if (!raw.startsWith('/') || raw.includes('\n')) return false

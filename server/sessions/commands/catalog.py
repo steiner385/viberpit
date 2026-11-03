@@ -30,7 +30,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from server.sessions.engine import AgentCapabilities, fork_supported
+from server.sessions.engine import AgentCapabilities, fork_supported, rewind_supported
 
 # Split a raw prompt into (command-name, args) IFF it is a single-line
 # slash command. Mirrors the Composer's runCommandFromText regex exactly
@@ -53,7 +53,7 @@ def parse_command_line(raw: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 # Commands handled by a dedicated client-side render (no model turn).
-CLIENT = {"help", "context", "mcp", "fork"}
+CLIENT = {"help", "context", "mcp", "fork", "rewind"}
 # Commands executed via a dedicated SDK method (not raw passthrough).
 CONTROL = {"model", "clear"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
@@ -151,6 +151,11 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
         Command(name="fork", description="Fork this session at the latest reply into a new one",
                 argument_hint=None, kind="client", source=APP),
         gate=fork_supported,
+    ),
+    AppCommand(
+        Command(name="rewind", description="Rewind this session to one of your messages",
+                argument_hint=None, kind="client", source=APP),
+        gate=rewind_supported,
     ),
 )
 

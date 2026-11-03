@@ -35,6 +35,7 @@ import { useFileTarget, useSessionView, type SessionView } from './sessionView'
 import { FileRefContext, type FileRefActions } from '@/features/sessions/transcript/fileRefContext'
 import { useComposerAttach } from '@/shell/sessionGestures'
 import { ForkProvider } from '@/features/sessions/fork/ForkProvider'
+import { RewindProvider } from '@/features/sessions/rewind/RewindProvider'
 
 /** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
 const ChangesTab = lazy(() => import('@/features/sessions/diff/ChangesTab'))
@@ -224,7 +225,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                     With no turns to show, the transcript area would be blank; the
                     placeholder fills it with an explicit connecting/loading/empty/error
                     state instead so the user always knows what's happening. */}
-                {rt.state.turns.length === 0 && rt.state.rotations.length === 0 ? (
+                {rt.state.turns.length === 0 && rt.state.rotations.length === 0 && !rt.state.rewind ? (
                   <SessionPlaceholder
                     connectionState={rt.connectionState}
                     replaying={rt.state.replaying}
@@ -235,12 +236,15 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                   />
                 ) : (
                   <FileRefContext.Provider value={fileRefActions}>
-                    {/* "Fork from here" in each turn's menu (D-8), where the engine can fork. */}
+                    {/* "Fork from here" in each turn's menu (D-8), where the engine can fork;
+                        "Rewind to here" / "Edit & resend" and the divider's Undo (D-9), where it can rewind. */}
                     <ForkProvider sessionId={rt.sessionId} turns={rt.state.turns}
                                   earliestTurn={rt.state.earliestTurn} enabled={can(caps, 'fork')}>
+                     <RewindProvider sessionId={rt.sessionId} enabled={can(caps, 'rewind')} busy={busy}>
                       <TranscriptView
                         turns={rt.state.turns}
                         rotations={rt.state.rotations}
+                        rewind={rt.state.rewind}
                         model={rt.state.model}
                         toolDetailMode={rt.toolDetailMode}
                         thinkingCollapsed={rt.thinkingCollapsed}
@@ -255,6 +259,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                         onLoadOlder={rt.onLoadOlder}
                         followSignal={rt.state.pendingSentSeq}
                       />
+                     </RewindProvider>
                     </ForkProvider>
                   </FileRefContext.Provider>
                 )}

@@ -1219,6 +1219,60 @@ export function useForkSession(id: string) {
   return { fork, isPending }
 }
 
+/** How far a rewind (D-9) reaches: files and conversation, or the conversation only. */
+export type RewindMode = 'files_and_conversation' | 'conversation'
+/** `POST /sessions/{id}/rewind` with `dryRun` — what a rewind would restore. Paths are
+ *  worktree-relative; `deleted` are files the rewind removes. */
+export interface RewindPreview {
+  files: string[]; deleted: string[]; insertions: number; deletions: number; checkpointAvailable: boolean
+}
+/** A rewind that ran: undo it with `rewindId`; `prefill` is the cut prompt's text. */
+export interface RewindResult { rewindId: string; prefill: string | null; filesRestored: string[] }
+
+/**
+ * Rewind session `id` to user turn `toTurnId` (D-9). `preview` is the dry run;
+ * `rewind` mints the `requestId` once per call, in the mutation's variables, so the
+ * mutation's own retries resend it and the server answers a repeat with the rewind the
+ * first request made (as `useForkSession`). The caller owns the coded 409 copy.
+ */
+export function useRewindSession(id: string) {
+  const qc = useQueryClient()
+  const url = `/sessions/${encodeURIComponent(id)}/rewind`
+  const { mutateAsync: post } = useMutation<
+    RewindPreview | RewindResult, ApiRequestError,
+    { toTurnId: string; mode: RewindMode; dryRun: boolean; requestId: string }
+  >({
+    mutationFn: (body) => api.post(url, body),
+    retry: shouldRetryQuery,
+    meta: { suppressErrorToast: true },
+    // The files moved: the Changes chip and pane read the diff afresh.
+    onSuccess: (_r, body) => { if (!body.dryRun) void qc.invalidateQueries({ queryKey: QK.sessionDiff(id) }) },
+  })
+  const send = useCallback(
+    (toTurnId: string, mode: RewindMode, dryRun: boolean) =>
+      post({ toTurnId, mode, dryRun, requestId: crypto.randomUUID() }),
+    [post],
+  )
+  return {
+    preview: useCallback((toTurnId: string) =>
+      send(toTurnId, 'files_and_conversation', true) as Promise<RewindPreview>, [send]),
+    rewind: useCallback((toTurnId: string, mode: RewindMode) =>
+      send(toTurnId, mode, false) as Promise<RewindResult>, [send]),
+  }
+}
+
+/** Undo session `id`'s latest rewind (D-9). `skipped`: paths left alone by design. */
+export function useUndoRewind(id: string) {
+  const qc = useQueryClient()
+  const { mutateAsync, isPending } = useMutation<{ ok: boolean; skipped: string[] }, ApiRequestError, string>({
+    mutationFn: (rewindId) => api.post(`/sessions/${encodeURIComponent(id)}/rewind/undo`, { rewindId }),
+    retry: shouldRetryQuery,
+    meta: { suppressErrorToast: true },
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: QK.sessionDiff(id) }) },
+  })
+  return { undo: mutateAsync, isPending }
+}
+
 export interface SessionTranscript {
   events: SessionEvent[]
   /** Lowest turn ordinal in this response (0 = session start). */

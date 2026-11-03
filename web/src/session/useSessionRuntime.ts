@@ -213,6 +213,7 @@ export function useSessionRuntime(
     // Handlers below whose frame type REQUIRES a sessionId keep the strict `!==` form.
     const isForOtherSession = (frameSessionId: string | undefined): boolean =>
       Boolean(frameSessionId) && frameSessionId !== sessionId
+    const undone = new Set<string>()
 
     const onEvent = (e: SessionEvent) => {
       // Replay frames (replayReset, replay content, replayComplete) are stamped
@@ -233,6 +234,9 @@ export function useSessionRuntime(
         e.code === 'codex_permission_mode_refused' || e.code === 'codex_sandbox_change_refused'
       )) setModeRequest(null)
       dispatch(e)
+      // An undone rewind (D-9) restored the cut turns on disk: replay to show them
+      // (a fresh attach full-replays; the reducer double-buffers it). Once per rewind.
+      if (e.type === 'rewindUndone' && !undone.has(e.rewindId)) { undone.add(e.rewindId); attach(sessionId) }
     }
     const onRotated = (msg: WsRotatedMsg) => {
       if (msg.sessionId !== sessionId) return

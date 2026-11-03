@@ -177,3 +177,36 @@ def test_fork_follows_the_kill_switch():
         assert app_command("fork", CLAUDE) is None
         assert classify("fork", CLAUDE) == "passthrough"
     assert classify("fork", CLAUDE) == "client"
+
+
+# --- /rewind (D-9) -----------------------------------------------------------------------
+
+
+def test_rewind_is_an_app_client_command_only_where_the_engine_can_rewind():
+    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    assert by["rewind"].kind == "client" and by["rewind"].source == APP
+    assert by["rewind"].argument_hint is None
+    assert app_command("rewind", CLAUDE) is not None
+    assert "rewind" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+    assert app_command("rewind", CODEX_CAPABILITIES) is None
+
+
+def test_rewind_follows_the_kill_switch():
+    """The same gate as `POST /sessions/{id}/rewind` (`engine.rewind_supported`), so
+    the palette never offers a rewind the route would refuse."""
+    import os
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, {"VIBERPIT_REWIND_ENABLED": "false"}):
+        assert "rewind" not in {c.name for c in build_catalog(None, CLAUDE)}
+        assert app_command("rewind", CLAUDE) is None
+        assert classify("rewind", CLAUDE) == "passthrough"
+    assert classify("rewind", CLAUDE) == "client"
+
+
+def test_the_clis_own_rewind_takes_our_render_where_the_gate_holds():
+    """A vendor `/rewind` entry (the CLI's interactive one) keeps its own description
+    but is client-run where the engine can rewind, so the browser's picker handles it."""
+    info = {"commands": [{"name": "rewind", "description": "Restore the code and/or conversation"}]}
+    [rewind] = [c for c in build_catalog(info, CLAUDE) if c.name == "rewind"]
+    assert rewind.kind == "client"
