@@ -179,3 +179,27 @@ async def test_legacy_pr_work_excludes_verified_linked_issue(monkeypatch, ref):
     monkeypatch.setattr(target_identity, "resolve_targets", resolve)
     with pytest.raises(OwnershipConflict, match="legacy"):
         await guard.reconcile_legacy_targets([CanonicalTarget("I_one", "different/issues#1")])
+
+
+async def test_malformed_ref_names_its_source_and_never_reaches_resolver(monkeypatch):
+    await legacy_state({"claimed": True, "issues": ["owner/repo#abc"]})
+    resolver = AsyncMock(return_value=())
+    monkeypatch.setattr(target_identity, "resolve_targets", resolver)
+    with pytest.raises(OwnershipConflict, match=r"malformed: backlog-runner:old/repo#1: 'owner/repo#abc'"):
+        await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
+    resolver.assert_not_awaited()
+
+
+async def test_malformed_ref_in_unrelated_product_is_skipped(monkeypatch):
+    await product_scopes()
+    await legacy_state({"claimed": True, "product": "unrelated", "issues": ["owner/repo#abc"]})
+    monkeypatch.setattr(target_identity, "resolve_targets", AsyncMock(return_value=()))
+    await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
+
+
+async def test_non_ascii_digit_session_ref_is_not_a_candidate(monkeypatch):
+    await legacy_session("owner/repo#²")
+    resolver = AsyncMock(return_value=())
+    monkeypatch.setattr(target_identity, "resolve_targets", resolver)
+    await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
+    resolver.assert_not_awaited()

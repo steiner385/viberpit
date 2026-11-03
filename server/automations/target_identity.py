@@ -41,6 +41,20 @@ def valid_repo_name(value: object) -> bool:
             and value.partition("/")[2] not in {".", ".."})
 
 
+def parse_target_ref(ref: object) -> tuple[str, int] | None:
+    """The one validity predicate for a target ref: ``(repo, number)`` or ``None``."""
+    if not isinstance(ref, str):
+        return None
+    try:
+        parsed = split_ref(ref)
+    except ValueError:
+        return None
+    if (parsed is None or not valid_repo_name(parsed[0])
+            or not 0 < parsed[1] <= 2**31 - 1):
+        return None
+    return parsed
+
+
 async def resolve_repositories(
     repos: Sequence[str], *,
     fetch: Callable[[str, str], Awaitable[dict]] | None = None,
@@ -113,13 +127,8 @@ async def resolve_targets(
     for ref in refs:
         if not isinstance(ref, str):
             raise TargetIdentityError("invalid target reference")
-        try:
-            parsed = split_ref(ref)
-        except ValueError:
-            parsed = None
-        if (parsed is None or not valid_repo_name(parsed[0]) or parsed[1] <= 0
-                or parsed[1] > 2**31 - 1
-                or not re.fullmatch(r"[0-9]+", ref.rpartition("#")[2])):
+        parsed = parse_target_ref(ref)
+        if parsed is None:
             raise TargetIdentityError("invalid target reference")
         repo, number = parsed
         key = (repo.lower(), number)

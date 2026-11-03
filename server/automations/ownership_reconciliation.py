@@ -112,6 +112,15 @@ async def reconcile_legacy_targets(targets: Sequence[CanonicalTarget]) -> None:
                                session.id, unrelated))
     wanted = {target.key for target in targets}
     for refs, kind, source, unrelated in candidates:
+        # resolve_targets rejects a whole batch for one bad ref; judge each ref
+        # first so a malformed legacy row neither wedges unrelated dispatches
+        # nor goes unattributed.
+        malformed = next((ref for ref in refs if target_identity.parse_target_ref(ref) is None), None)
+        if malformed is not None:
+            if unrelated:
+                continue
+            raise OwnershipConflict(
+                f"legacy target reference malformed: {source}: {malformed!r}")
         try:
             resolved = (
                 await target_identity.resolve_targets(refs, kind="pr", include_linked_issues=True)

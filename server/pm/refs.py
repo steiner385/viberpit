@@ -22,4 +22,5 @@ def split_ref(ref: str) -> tuple[str, int] | None:
     Splits on the LAST ``#`` so a repo name containing one cannot swallow the
     number."""
     repo, _, num = ref.rpartition("#")
-    return (repo, int(num)) if repo and num.isdigit() else None
+    # ASCII digits only: ``str.isdigit`` accepts "²" (and int() then raises).
+    return (repo, int(num)) if repo and re.fullmatch(r"[0-9]+", num) else None
