@@ -327,6 +327,19 @@ class ExecutionSnapshot:
     stopped_generation: int | None
     tree_stopped_generation: int | None
     execution_id: str | None
+    #: False when the operation found is released or transferred: it is history,
+    #: kept only for lineage, and nobody owns the tree any more.
+    active: bool = True
+    #: The operation itself names the session: its root or reserved session, or an
+    #: entry in ``execution_sessions``. False = found only through the parent lineage.
+    registered: bool = True
+
+    @property
+    def unowned(self) -> bool:
+        """Nobody owns this session's execution: the only operation in its lineage is
+        released/transferred and never registered it (e.g. a fork of a finished
+        automation session). A session the operation DID register stays fenced."""
+        return not self.active and not self.registered
 
 
 async def execution_snapshot(session_id: str, *, parent_session_id: str | None = None,
@@ -357,7 +370,12 @@ async def execution_snapshot(session_id: str, *, parent_session_id: str | None =
                 state = session.get("executions", {}).get(selected, {})
                 return ExecutionSnapshot(operation.token, session_id, state.get("generation"),
                                          operation.execution_generation, state.get("stopped"),
-                                         operation.stopped_generation, selected)
+                                         operation.stopped_generation, selected,
+                                         active=bool(active),
+                                         registered=(
+                                             session_id in (operation.execution_sessions or {})
+                                             or session_id in (operation.session_id,
+                                                               operation.reserved_session_id)))
             if current == session_id and parent_session_id:
                 current = parent_session_id
             else:
@@ -373,14 +391,28 @@ async def session_execution(session_id: str) -> tuple[str, int | None, int | Non
     return snapshot.token, snapshot.tree_generation, snapshot.tree_stopped_generation
 
 
-async def register_child_execution(session_id: str, parent_session_id: str) -> None:
-    """Durably distinguish a new pending child from unknown legacy child history."""
+async def register_child_execution(session_id: str, parent_session_id: str, *,
+                                   idempotent: bool = False) -> None:
+    """Durably distinguish a new pending child from unknown legacy child history.
+
+    No-op when the parent's lineage has no operation, or only a released/transferred
+    one: there is no live owner to tell, and ``owned()`` on it would refuse ("no
+    longer owns its targets") — which made every child of a finished automation
+    session fail to launch.
+
+    *idempotent*: re-registering a *session_id* the operation already tracks is a
+    no-op instead of ``StaleOwnership`` — its entry (pending, or the executions a
+    failed attempt's driver began) already fences that child. For a caller whose
+    child id is deterministic per request: a fork retry IS the same child, possibly
+    after an attempt whose driver began and then failed to start."""
     snapshot = await execution_snapshot(parent_session_id)
-    if snapshot is None:
+    if snapshot is None or not snapshot.active:
         return
     async with owned(snapshot.token) as tx:
         states = dict(tx.operation.execution_sessions or {})
         if session_id in states:
+            if idempotent:
+                return
             raise StaleOwnership("child execution was already registered")
         states[session_id] = _pending_execution()
         tx.operation.execution_sessions = states
@@ -392,7 +424,7 @@ async def begin_session_execution(session_id: str, *, parent_session_id: str | N
                                   execution_id: str | None = None) -> None:
     """Invalidate the session AND whole-tree proof before managed native effects."""
     snapshot = await execution_snapshot(session_id, parent_session_id=parent_session_id)
-    if snapshot is None:
+    if snapshot is None or snapshot.unowned:
         return
     async with owned(snapshot.token) as tx:
         generation = (tx.operation.execution_generation or 0) + 1

@@ -433,15 +433,84 @@ async def test_blocked_model_is_model_blocked_error(env) -> None:
     assert _fork_branches(clone) == []
 
 
+async def _own_source(src_id: str, *, released: bool = False) -> str:
+    """A real ownership operation (the automation store) whose root session is the
+    fork source; *released* finishes it the way a completed claim is released."""
+    from server.automations.ownership import ReleaseProof, owned
+    from server.db.models import AutomationOperation
+    from server.tests.test_automation_ownership import claim, target
+    token = await claim([target()])
+    if released:
+        async with owned(token) as tx:
+            tx.release(ReleaseProof.NOT_STARTED, "done")
+    async with db_session() as db:
+        op = await db.get(AutomationOperation, token)
+        assert op is not None
+        op.session_id = src_id
+        await db.commit()
+    return token
+
+
+async def _operation(token: str):
+    from server.db.models import AutomationOperation
+    async with db_session() as db:
+        return await db.get(AutomationOperation, token)
+
+
 @pytest.mark.asyncio
-async def test_child_execution_is_registered_with_the_source(env) -> None:
-    """An automation-owned source's ownership operation learns of the fork child,
-    through the same register_child_execution create_session calls for a child."""
+async def test_an_active_owner_registers_the_fork_child(env) -> None:
     orch, _, src, *_ = env
-    reg = mock.AsyncMock()
-    with patch("server.automations.ownership.register_child_execution", reg):
-        out = await _fork(orch, src.id, at_turn_id="t1", mode="reply")
-    reg.assert_awaited_once_with(out["sessionId"], src.id)
+    token = await _own_source(src.id)
+    child = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    op = await _operation(token)
+    assert child in (op.execution_sessions or {})
+    assert orch.record(child).parent_session_id == src.id
+
+
+@pytest.mark.asyncio
+async def test_a_finished_owner_does_not_block_the_fork(env) -> None:
+    """A finished (released) Backlog Runner / PR Doctor source: no live owner, so the
+    fork registers nothing and its driver starts — it used to fail StaleOwnership."""
+    orch, spawns, src, *_ = env
+    token = await _own_source(src.id, released=True)
+    out = await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    child = orch.record(out["sessionId"])
+    assert child.parent_session_id == src.id and out["sessionId"] in orch._drivers
+    assert spawns.calls[-1]["fork_session"] is True
+    op = await _operation(token)
+    assert out["sessionId"] not in (op.execution_sessions or {})
+
+
+@pytest.mark.asyncio
+async def test_retry_after_a_failure_past_registration_returns_the_same_child(env) -> None:
+    orch, spawns, src, _, clone = env
+    token = await _own_source(src.id)
+    rid = str(uuid.uuid4())
+    spawns.fail_fork = True
+    with pytest.raises(RuntimeError, match="cli exited"):
+        await orch.fork_session(src.id, at_turn_id="t1", mode="reply", request_id=rid)
+    assert fk.fork_child_id(src.id, rid) in ((await _operation(token)).execution_sessions or {})
+    assert _fork_branches(clone) == []
+    spawns.fail_fork = False
+    out = await orch.fork_session(src.id, at_turn_id="t1", mode="reply", request_id=rid)
+    assert out["sessionId"] == fk.fork_child_id(src.id, rid)
+    assert orch.record(out["sessionId"]).parent_session_id == src.id
+
+
+@pytest.mark.asyncio
+async def test_an_ownership_refusal_is_a_coded_refusal_before_any_git_work(env) -> None:
+    from server.automations.ownership import StaleOwnership
+    orch, spawns, src, _, clone = env
+    before = len(spawns.calls)
+    with patch("server.automations.ownership.register_child_execution",
+               mock.AsyncMock(side_effect=StaleOwnership("handed off"))), \
+            patch.object(worktrees, "create_fork_worktree") as made:
+        with pytest.raises(fk.ForkError) as ei:
+            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert ei.value.code == fk.FORK_OWNERSHIP_STALE
+    assert ei.value.error_data == {"code": fk.FORK_OWNERSHIP_STALE}
+    made.assert_not_called()
+    assert len(spawns.calls) == before and _fork_branches(clone) == []
 
 
 # --- restart durability and cancellation --------------------------------------------

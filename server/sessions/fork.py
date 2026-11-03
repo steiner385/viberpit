@@ -30,8 +30,11 @@ FORK_AT_CAPACITY = "FORK_AT_CAPACITY"
 #: The source's model is gated by ``require_approval``; a fork would launch it again.
 #: (A ``block``ed model raises ``ModelBlockedError``, as ``create_session`` does.)
 FORK_NEEDS_APPROVAL = "FORK_NEEDS_APPROVAL"
+#: The source's automation ownership refused the child (an ownership operation
+#: changed hands mid-fork). Expected and coded, never a 500.
+FORK_OWNERSHIP_STALE = "FORK_OWNERSHIP_STALE"
 FORK_CODES = frozenset({FORK_UNAVAILABLE, TURN_NOT_FORKABLE, PREFILL_TOO_LONG,
-                        FORK_AT_CAPACITY, FORK_NEEDS_APPROVAL})
+                        FORK_AT_CAPACITY, FORK_NEEDS_APPROVAL, FORK_OWNERSHIP_STALE})
 
 PREFILL_MAX_CHARS = 10_000
 
