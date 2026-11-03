@@ -132,6 +132,24 @@ def _scan_transcript_tail(path: str, needle: str, *, last_size: int) -> tuple[bo
     except OSError:
         return False, size
 
+
+async def wait_for_transcript_entry(path: str, uuid: str, *, grace: float) -> bool:
+    """Whether *uuid* reaches the tail of the transcript at *path* within *grace*
+    seconds — the CLI writes each entry under its message uuid, so this waits on the
+    fact rather than a guessed interval. Polls ``_scan_transcript_tail`` off the loop
+    (a file that has not grown is not re-read). Never raises; the caller logs."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + grace
+    size = -1
+    while True:
+        found, size = await asyncio.to_thread(_scan_transcript_tail, path, uuid,
+                                              last_size=size)
+        if found:
+            return True
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(_TRANSCRIPT_FLUSH_POLL_S)
+
 # Soft notice text surfaced when a dropped turn is being auto-resent.
 _RECOVERING_MSG = "Recovering the dropped turn…"
 # auth_stale: the CLI answered "Not logged in" from a stale in-memory token. The
@@ -2485,22 +2503,13 @@ class ClaudeAgentDriver:
             log.debug("flush wait skipped session=%s: no transcript for %s",
                       self.session_id, session)
             return
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + grace
-        size = -1
-        while True:
-            found, size = await asyncio.to_thread(
-                _scan_transcript_tail, path, want, last_size=size)
-            if found:
-                self._last_assistant_uuid = None
-                return
-            if loop.time() >= deadline:
-                log.warning(
-                    "flush wait: CLI did not persist assistant message %s for "
-                    "session=%s within %.1fs — terminating anyway; that reply may be "
-                    "missing from the transcript (#1012)", want, self.session_id, grace)
-                return
-            await asyncio.sleep(_TRANSCRIPT_FLUSH_POLL_S)
+        if await wait_for_transcript_entry(path, want, grace=grace):
+            self._last_assistant_uuid = None
+            return
+        log.warning(
+            "flush wait: CLI did not persist assistant message %s for "
+            "session=%s within %.1fs — terminating anyway; that reply may be "
+            "missing from the transcript (#1012)", want, self.session_id, grace)
 
     async def aclose(self, *, reason: str | None = None):
         """Tear the driver down. ``reason=CLOSE_REASON_RESTART`` (the orchestrator's

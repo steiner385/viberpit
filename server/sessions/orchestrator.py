@@ -17548,6 +17548,9 @@ class SessionOrchestrator:
                 refuse(fk.TURN_NOT_FORKABLE, "the turn has no settled anchor")
             if not rec.engine_session_id:
                 refuse(fk.TURN_NOT_FORKABLE, "the source has no engine session")
+            why = await self._fork_anchor_unusable(session_id, anchor)
+            if why is not None:
+                refuse(fk.TURN_NOT_FORKABLE, why)
             fork_from = (rec.engine_session_id, anchor)
 
         # Admission — the same helpers create_session uses, BEFORE any worktree.
@@ -17614,6 +17617,30 @@ class SessionOrchestrator:
         log.info("session.fork source=%s child=%s mode=%s at=%s branch=%s",
                  session_id, child_id, mode, fork_from[1] if fork_from else "-",
                  fork_wt.branch)
+
+    async def _fork_anchor_unusable(self, session_id: str, anchor: str) -> str | None:
+        """Why ``--resume-session-at <anchor>`` would fail on *session_id*'s transcript,
+        or None when the CLI can resume there (D-8).
+
+        The transcript's own anchor set (``transcript_turn_anchors``, the rule replay
+        uses) is the authority. It leaves out an entry at or before the last
+        compact_boundary, so a live anchor from before a later compaction is caught
+        here too (verification doc §1). An anchor missing from the set may only be
+        unflushed: the turn settled, but the CLI has not written its last entry yet. So
+        wait for that uuid to reach the transcript's tail, bounded by the driver's
+        flush grace, and then ask the set once more."""
+        from server.sessions import claude_driver as _cd
+        path = await asyncio.to_thread(self.transcript_path, session_id)
+        if not path:
+            return "the source has no transcript"
+        if anchor in (await asyncio.to_thread(transcript_turn_anchors, path)).values():
+            return None
+        if not await _cd.wait_for_transcript_entry(path, anchor,
+                                                   grace=_cd._TRANSCRIPT_FLUSH_GRACE_S):
+            return "the turn's last entry has not reached the transcript"
+        if anchor in (await asyncio.to_thread(transcript_turn_anchors, path)).values():
+            return None
+        return "the CLI cannot resume at this turn (before the last compaction)"
 
     async def _make_fork_worktree(self, source_cwd: str, source_id: str,
                                   dest: str) -> worktrees.ForkWorktreeInfo:

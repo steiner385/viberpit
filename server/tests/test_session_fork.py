@@ -128,6 +128,7 @@ async def env(tmp_path: Path):
                                     permission_mode="full-auto", reasoning_effort="high")
     src.engine_session_id = "src-sdk"
     src.record_turn_anchor("t1", "uuid-1")
+    _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "uuid-1", "r0")])
     Path(src.cwd, "README.md").write_text("edited\n")
     Path(src.cwd, "new.txt").write_text("untracked\n")
     try:
@@ -756,16 +757,19 @@ async def test_the_source_cannot_reply_to_or_list_a_fork(env) -> None:
 
 # --- a fork replays its source up to the fork point until its first turn -------------
 
+def _rows(u: str, q: str, a: str, r: str) -> list[dict]:
+    """One CLI turn: a user prompt entry and its assistant reply entry."""
+    return [{"type": "user", "uuid": u, "message": {"role": "user", "content": q}},
+            {"type": "assistant", "uuid": a,
+             "message": {"role": "assistant", "model": "m",
+                         "content": [{"type": "text", "text": r}]}}]
+
+
 def _write_cli_transcript(cwd: str, sid: str, turns: list[tuple[str, str, str, str]],
                           tail: list[dict] | None = None) -> str:
     """A CLI transcript for *sid* in *cwd*'s project dir under the shared projects
     tree: one user + one assistant entry per ``(user uuid, prompt, reply uuid, reply)``."""
-    rows: list[dict] = []
-    for u, q, a, r in turns:
-        rows.append({"type": "user", "uuid": u, "message": {"role": "user", "content": q}})
-        rows.append({"type": "assistant", "uuid": a,
-                     "message": {"role": "assistant", "model": "m",
-                                 "content": [{"type": "text", "text": r}]}})
+    rows = [row for u, q, a, r in turns for row in _rows(u, q, a, r)]
     rows.extend(tail or [])
     d = (Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects"
          / SessionOrchestrator.project_dir_name(cwd))
@@ -826,8 +830,8 @@ async def test_a_fork_replays_its_source_up_to_the_fork_point_until_its_first_tu
 @pytest.mark.asyncio
 async def test_a_fork_whose_anchor_is_gone_replays_nothing(env) -> None:
     orch, _, src, *_ = env
-    _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "other", "r0")])
     child = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "other", "r0")])
     frames = await _attach_replay(orch, child)
     assert _texts(frames, "user") == [] and "r0" not in json.dumps(frames)
     assert frames[-1]["type"] == "replayComplete"
@@ -872,6 +876,67 @@ async def test_remote_transcript_source_falls_back_on_an_older_daemon() -> None:
     client = OldDaemon()
     assert await RemoteOrchestrator(client).transcript_source("s") == ("/p.jsonl", None)
     assert [m for m, *_ in client.calls] == ["transcript_source", "transcript_path"]
+
+
+# --- the anchor must be on disk, and after the last compaction ------------------------
+
+_COMPACT_BOUNDARY = {"type": "system", "subtype": "compact_boundary", "uuid": "cb-1",
+                     "parentUuid": None, "logicalParentUuid": "uuid-1",
+                     "compactMetadata": {"trigger": "auto"}}
+
+
+@pytest.mark.asyncio
+async def test_a_turn_before_the_last_compaction_is_not_forkable(env) -> None:
+    """CLI 2.1.317 cannot resume at an entry before the last compact_boundary (see the
+    verification doc): a live anchor for such a turn is refused, a later one forks."""
+    orch, spawns, src, _, clone = env
+    _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "uuid-1", "r0")],
+                          tail=[_COMPACT_BOUNDARY, *_rows("u2", "q2", "a2", "r2")])
+    src.record_turn_anchor("t2", "a2")
+    before = len(spawns.calls)
+    with pytest.raises(fk.ForkError) as ei:
+        await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert ei.value.code == fk.TURN_NOT_FORKABLE
+    assert len(spawns.calls) == before and _fork_branches(clone) == []
+    out = await _fork(orch, src.id, at_turn_id="t2", mode="reply")
+    assert orch.record(out["sessionId"]).fork_from == ("src-sdk", "a2")
+
+
+@pytest.mark.asyncio
+async def test_a_fork_waits_for_its_anchor_to_reach_the_transcript(env) -> None:
+    """The turn settled but the CLI has not flushed its last entry yet: the fork waits
+    for it (bounded) instead of resuming at a uuid the CLI cannot find."""
+    orch, spawns, src, *_ = env
+    path = _write_cli_transcript(src.cwd, "src-sdk", [("u0", "q0", "uuid-1", "r0")])
+    src.record_turn_anchor("t2", "a2")
+
+    async def flush_later() -> None:
+        await asyncio.sleep(0.3)
+        with open(path, "a") as fh:
+            fh.write("\n".join(json.dumps(r) for r in _rows("u2", "q2", "a2", "r2")) + "\n")
+    flusher = asyncio.ensure_future(flush_later())
+    out = await _fork(orch, src.id, at_turn_id="t2", mode="reply")
+    await flusher
+    assert spawns.calls[-1]["extra_args"] == {"resume-session-at": "a2"}
+    assert orch.record(out["sessionId"]).fork_from == ("src-sdk", "a2")
+
+
+@pytest.mark.asyncio
+async def test_an_anchor_that_never_reaches_the_transcript_is_refused_at_info(
+        env, caplog: pytest.LogCaptureFixture) -> None:
+    orch, spawns, src, _, clone = env
+    src.record_turn_anchor("t2", "a2")             # never written to disk
+    caplog.set_level(logging.INFO)
+    before = len(spawns.calls)
+    with patch("server.sessions.claude_driver._TRANSCRIPT_FLUSH_GRACE_S", 0.3):
+        with pytest.raises(fk.ForkError) as ei:
+            await _fork(orch, src.id, at_turn_id="t2", mode="reply")
+    assert ei.value.code == fk.TURN_NOT_FORKABLE
+    assert len(spawns.calls) == before and _fork_branches(clone) == []
+    assert await _rows_with_parent(src.id) == []
+    refusals = [r for r in caplog.records if "session.fork_refused" in r.getMessage()]
+    assert refusals and all(r.levelno == logging.INFO for r in refusals)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 # --- restart durability and cancellation --------------------------------------------
