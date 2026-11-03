@@ -1,4 +1,8 @@
 """Compose a per-account CLAUDE_CONFIG_DIR: symlink mirror of ~/.claude + real creds."""
+import ctypes
+import errno
+import functools
+import logging
 import os
 import shutil
 import time
@@ -7,6 +11,8 @@ from pathlib import Path
 from . import paths
 from .creds import (capture_cfg_mcp, compose_credentials, publish_mcp, read_credentials, read_json,
                     read_shared_mcp, write_json_secure)
+
+log = logging.getLogger(__name__)
 
 CREDENTIALS_NAME = ".credentials.json"
 CLAUDE_JSON_NAME = ".claude.json"
@@ -27,17 +33,76 @@ SHARE_ALLOWLIST = {"plugins", "commands", "settings.json", "settings.local.json"
 SHARED_STATE_DIRS = {"file-history"}
 
 
-def _merge_into_shared(private: Path, shared: Path) -> bool:
-    """Move every entry of the real dir *private* into *shared*; True when *private*
-    is then empty and may be replaced by the link. A name present in both cannot be
-    merged without overwriting one side, so nothing moves and False keeps the private
-    dir in place."""
-    children = list(private.iterdir())
-    if any((shared / child.name).exists() or (shared / child.name).is_symlink()
-           for child in children):
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+
+
+@functools.cache
+def _renameat2():
+    """libc ``renameat2``, or None where libc lacks it (glibc < 2.28, non-glibc)."""
+    try:
+        fn = ctypes.CDLL(None, use_errno=True).renameat2
+    except (OSError, AttributeError):
+        return None
+    fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    fn.restype = ctypes.c_int
+    return fn
+
+
+def _rename_noreplace(src: Path, dst: Path) -> None:
+    """Rename *src* to *dst*, never replacing an existing *dst*.
+
+    ``renameat2(RENAME_NOREPLACE)`` makes the refusal atomic: ``FileExistsError`` when
+    *dst* exists, ``FileNotFoundError`` when *src* is gone, other ``OSError``s (EXDEV
+    across an sshfs boundary, …) as raised. Where the kernel, the filesystem (ENOSYS /
+    EINVAL — some FUSE mounts) or libc cannot do it, it falls back to an exists-check
+    plus ``os.rename``. That fallback keeps one residual race: a *dst* created between
+    the check and the rename is refused if it is a non-empty directory (ENOTEMPTY /
+    EEXIST), but an EMPTY directory, or a file, created in that window is replaced.
+    """
+    fn = _renameat2()
+    if fn is not None:
+        if fn(_AT_FDCWD, os.fsencode(src), _AT_FDCWD, os.fsencode(dst), _RENAME_NOREPLACE) == 0:
+            return
+        err = ctypes.get_errno()
+        if err not in (errno.ENOSYS, errno.EINVAL):
+            raise OSError(err, os.strerror(err), str(src), None, str(dst))
+    if os.path.lexists(dst):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(dst))
+    os.rename(src, dst)
+
+
+def _merge_into_shared(private: Path, shared: Path, account: str) -> bool:
+    """Move every entry of the real dir *private* into *shared*, never deleting or
+    replacing anything; True when every entry was moved (or already gone).
+
+    Safe against a concurrent composer (two spawns on one host, or dobby and rocky over
+    sshfs): each entry moves with a no-replace rename, so an entry another composer
+    already moved (FileNotFoundError) is skipped, and one that appeared in *shared*
+    meanwhile (EEXIST/ENOTEMPTY) or a cross-device move (EXDEV) stops the merge with
+    the private dir kept. A name present on both sides up front cannot be merged
+    without overwriting one, so nothing moves."""
+    try:
+        children = list(private.iterdir())
+    except FileNotFoundError:
+        return False
+    collisions = sorted(c.name for c in children if os.path.lexists(shared / c.name))
+    if collisions:
+        log.info("configdir.share_kept_private account=%s entry=%s collisions=%s",
+                 account, private.name, collisions)
         return False
     for child in children:
-        shutil.move(str(child), str(shared / child.name))
+        try:
+            _rename_noreplace(child, shared / child.name)
+        except FileNotFoundError:
+            continue  # another composer already moved it
+        except OSError as exc:
+            if exc.errno in (errno.EXDEV, errno.EEXIST, errno.ENOTEMPTY):
+                log.info("configdir.share_kept_private account=%s entry=%s child=%s "
+                         "errno=%s", account, private.name, child.name,
+                         errno.errorcode.get(exc.errno or 0, exc.errno))
+                return False
+            raise
     return True
 
 
@@ -96,11 +161,18 @@ def reconcile_links(name: str) -> None:
                 continue  # already correct — nothing to do
             link.unlink()
         elif link.exists():
-            if (entry_name in SHARED_STATE_DIRS and link.is_dir()
-                    and not _merge_into_shared(link, source)):
-                continue  # a collision: keep the private copy rather than lose either side
+            if entry_name in SHARED_STATE_DIRS:
+                # Never delete state: merge, then remove only an EMPTY dir. A dir the
+                # CLI refilled mid-merge (ENOTEMPTY) or a collision stays private; the
+                # next compose finishes the job.
+                if not link.is_dir() or not _merge_into_shared(link, source, name):
+                    continue
+                try:
+                    os.rmdir(link)
+                except OSError:
+                    continue
             # a real file/dir shadowing the shared entry — remove so the symlink wins
-            if link.is_dir() and not link.is_symlink():
+            elif link.is_dir() and not link.is_symlink():
                 shutil.rmtree(link)
             else:
                 link.unlink()

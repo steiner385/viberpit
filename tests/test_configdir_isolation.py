@@ -171,6 +171,123 @@ class TestReconcileLinks(unittest.TestCase):
                              "private\n")
             self.assertEqual((base / "file-history" / "sid" / "x@v1").read_text(), "shared\n")
 
+    def test_a_collision_logs_one_info_line_naming_the_account(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history" / "sid").mkdir(parents=True)
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            (cfg_dir / "file-history" / "sid").mkdir(parents=True)
+            with self.assertLogs("viberpit.configdir", level="INFO") as logs:
+                configdir.compose("alpha")
+            self.assertEqual(len(logs.records), 1)
+            rec = logs.records[0]
+            self.assertEqual(rec.levelname, "INFO")
+            self.assertIn("alpha", rec.getMessage())
+            self.assertIn("sid", rec.getMessage())
+
+    # -------------------------------------------------------------------------
+    # file-history merge races (a concurrent composer, the CLI writing meanwhile)
+    # -------------------------------------------------------------------------
+    def _private_history(self, *sids: str) -> Path:
+        from viberpit import paths
+        self._seed_slot("alpha")
+        (paths.shared_base() / "file-history").mkdir(exist_ok=True)
+        cfg_dir = paths.account_cfg_dir("alpha")
+        for sid in sids:
+            (cfg_dir / "file-history" / sid).mkdir(parents=True)
+            (cfg_dir / "file-history" / sid / "abc@v1").write_text(f"{sid}\n")
+        return cfg_dir
+
+    def _racing(self, before):
+        """Patch the no-replace rename so *before(src, dst)* runs just ahead of it."""
+        from unittest import mock
+        from viberpit import configdir
+        real = configdir._rename_noreplace
+
+        def racing(src, dst):
+            before(src, dst)
+            return real(src, dst)
+        return mock.patch.object(configdir, "_rename_noreplace", racing)
+
+    def test_rename_noreplace_never_replaces_an_existing_destination(self):
+        import tempfile
+        from viberpit import configdir
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = Path(d) / "src", Path(d) / "dst"
+            src.mkdir()
+            dst.mkdir()                                  # an EMPTY dir: os.rename would replace it
+            with self.assertRaises(FileExistsError):
+                configdir._rename_noreplace(src, dst)
+            self.assertTrue(src.is_dir())
+
+    def test_a_shared_child_appearing_mid_merge_keeps_the_private_dir(self):
+        """(a) Another composer creates the destination between the check and the
+        rename: no nested dir, no exception, the private copy is kept."""
+        with temp_env():
+            from viberpit import configdir, paths
+            cfg_dir = self._private_history("sid")
+            shared = paths.shared_base() / "file-history"
+
+            def appear(src, dst):
+                Path(dst).mkdir(exist_ok=True)
+            with self._racing(appear):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "sid" / "abc@v1").read_text(), "sid\n")
+            self.assertFalse((shared / "sid" / "sid").exists())
+            self.assertEqual(list((shared / "sid").iterdir()), [])
+
+    def test_a_file_written_into_the_private_dir_mid_merge_is_kept(self):
+        """(b) The CLI recreates an entry while the merge runs: the now non-empty private
+        dir is not deleted, and the next compose finishes the job."""
+        with temp_env():
+            from viberpit import configdir, paths
+            cfg_dir = self._private_history("sid")
+            shared = paths.shared_base() / "file-history"
+
+            def write(src, dst):
+                (cfg_dir / "file-history" / "late-sid").mkdir(exist_ok=True)
+                (cfg_dir / "file-history" / "late-sid" / "x@v1").write_text("late\n")
+            with self._racing(write):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "late-sid" / "x@v1").read_text(),
+                             "late\n")
+            self.assertEqual((shared / "sid" / "abc@v1").read_text(), "sid\n")
+            configdir.reconcile_links("alpha")
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((shared / "late-sid" / "x@v1").read_text(), "late\n")
+
+    def test_a_source_vanishing_mid_merge_is_skipped(self):
+        """(c) Another composer moved the entry first: skipped, nothing raised."""
+        with temp_env():
+            from viberpit import configdir, paths
+            cfg_dir = self._private_history("sid")
+            shared = paths.shared_base() / "file-history"
+
+            def vanish(src, dst):
+                os.rename(src, dst)          # the other composer wins
+            with self._racing(vanish):
+                configdir.compose("alpha")
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((shared / "sid" / "abc@v1").read_text(), "sid\n")
+
+    def test_a_cross_device_merge_keeps_the_private_dir(self):
+        import errno
+        from unittest import mock
+        with temp_env():
+            from viberpit import configdir
+            cfg_dir = self._private_history("sid")
+
+            def exdev(src, dst):
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            with mock.patch.object(configdir, "_rename_noreplace", exdev):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "sid" / "abc@v1").read_text(), "sid\n")
+
     # -------------------------------------------------------------------------
     # non-allowlist entries are NOT symlinked
     # -------------------------------------------------------------------------
