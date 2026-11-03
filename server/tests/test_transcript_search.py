@@ -515,3 +515,77 @@ async def test_a_found_replay_needs_no_extra_row_read(tmp_path, isolated_db):
         r = await orch.transcript_search("archived", "x", 10)
     assert len(r["hits"]) == 1
     ref.assert_not_called()
+
+
+# --- redaction: search sees exactly the text the client renders -------------------------
+
+_KEY = "sk-ant-api03-SECRETBODY123"
+_SECRET_EVENTS = [
+    {"type": "user", "turnId": "u0", "text": f"my key is {_KEY} ok"},
+    {"type": "turnStart", "turnId": "a0"},
+    {"type": "textDelta", "turnId": "a0", "text": "noted, plain words"},
+]
+
+
+async def _secret_search(tmp_path, q):
+    orch = _orch(tmp_path)
+    _claude(orch, "s1", tmp_path)
+    window = ReplayWindow(events=list(_SECRET_EVENTS), total_turns=1)
+    with patch.object(orch, "transcript_window", AsyncMock(return_value=window)):
+        return await orch.transcript_search("s1", q, 50)
+
+
+@pytest.mark.asyncio
+async def test_a_secret_bearing_hit_has_a_redacted_snippet(tmp_path, isolated_db):
+    r = await _secret_search(tmp_path, "key")
+    assert [h["snippet"] for h in r["hits"]] == ["my key is [REDACTED] ok"]
+    assert "SECRET" not in repr(r)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("q", ["SECRETBODY123", "sk-ant", "api03"])
+async def test_a_query_for_the_secret_finds_nothing(tmp_path, isolated_db, q):
+    assert (await _secret_search(tmp_path, q))["hits"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_query_for_the_marker_finds_it_where_it_is_rendered(tmp_path, isolated_db):
+    """Search matches the rendered text, so the visible ``[REDACTED]`` marker is
+    findable like any other word; it says a secret was there, never what it was."""
+    r = await _secret_search(tmp_path, "redacted")
+    (h,) = r["hits"]
+    assert h["snippet"][h["matchStart"]:h["matchEnd"]] == "REDACTED"
+
+
+@pytest.mark.asyncio
+async def test_list_search_text_is_redacted_on_the_file_arm(tmp_path, isolated_db):
+    orch = _orch(tmp_path)
+    p = tmp_path / "t.jsonl"
+    p.write_text('{"type":"user","message":{"role":"user","content":"key %s"}}\n' % _KEY)
+    with patch.object(orch, "resolve_transcript_path", AsyncMock(return_value=str(p))):
+        text = await orch.transcript_search_text("s1")
+    assert "SECRETBODY" not in text and "sk-ant" not in text and "[REDACTED]" in text
+
+
+@pytest.mark.asyncio
+async def test_list_search_text_is_redacted_on_the_replay_arm(tmp_path, isolated_db):
+    orch = _orch(tmp_path)
+    window = ReplayWindow(events=list(_SECRET_EVENTS), total_turns=1)
+    with patch.object(orch, "resolve_transcript_path", AsyncMock(return_value=None)), \
+            patch.object(orch, "transcript_window", AsyncMock(return_value=window)):
+        text = await orch.transcript_search_text("s1")
+    assert "SECRETBODY" not in text and "[REDACTED]" in text
+
+
+def test_list_search_does_not_enumerate_sessions_holding_keys(tmp_path):
+    orch = _orch(tmp_path)
+    client = _client(orch)
+    p = tmp_path / "t.jsonl"
+    p.write_text('{"type":"user","message":{"role":"user","content":"key %s"}}\n' % _KEY)
+    rec = SessionRecord(id="s1", name="plain", account="alpha",
+                        engine=AgentEngine.CLAUDE_CODE, engine_session_id="x",
+                        cols=80, rows=24, cwd=str(tmp_path))
+    with patch.object(orch, "list_sessions", lambda: [rec]), \
+            patch.object(orch, "resolve_transcript_path", AsyncMock(return_value=str(p))):
+        assert client.get("/api/sessions/search?q=sk-ant", headers=H).json() == {"ids": []}
+        assert client.get("/api/sessions/search?q=key", headers=H).json() == {"ids": ["s1"]}

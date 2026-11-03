@@ -27062,11 +27062,15 @@ class SessionOrchestrator:
         quietly misses one slow session is the established degradation for this path,
         whereas a 500 would drop the user's entire result list.
         """
+        from server.audit import redact_text
         from server.sessions.search import events_text, transcript_text
 
+        # Both arms answer with REDACTED text: a match on a raw secret would let a
+        # search for `sk-ant` enumerate the sessions that hold one, though the ids
+        # are all it returns. Redaction is what every transcript surface applies.
         path = await self.resolve_transcript_path(session_id)
         if path:
-            return await asyncio.to_thread(transcript_text, path)
+            return redact_text(await asyncio.to_thread(transcript_text, path))
         # limit=None: search the FULL history. A trailing window would make a term
         # findable only until the session grew past the page size, which reads as
         # search randomly forgetting things.
@@ -27075,9 +27079,9 @@ class SessionOrchestrator:
             return ""
         # In-process replay yields event objects; a remote/daemon hop has already
         # serialised them to wire dicts. Accept both, exactly as the export does.
-        return events_text([
+        return redact_text(events_text([
             e.to_wire() if hasattr(e, "to_wire") else e for e in window.events
-        ])
+        ]))
 
     async def transcript_search(self, session_id: str, q: str, limit: int) -> dict:
         """In-session transcript search (D-11): ``{hits, truncated, totalTurns}``.
@@ -27095,6 +27099,7 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select as sa_select
 
+        from server.audit import redact_event
         from server.sessions.search import SEARCH_MAX_LIMIT, parse_terms, search_events
 
         empty = {"hits": [], "truncated": False, "totalTurns": 0}
@@ -27124,8 +27129,13 @@ class SessionOrchestrator:
                     raise KeyError(f"No session with id {session_id}")
             log.info("session.transcript_search id=%s no readable history", session_id)
             return empty
+        # Redacted BEFORE matching, exactly as the WS bridge, the transcript page and
+        # the export send it: matches, snippets and offsets are then all over the text
+        # the client renders, and a query for a secret's body finds nothing. The
+        # visible `[REDACTED]` marker is findable like any rendered word.
         hits, truncated = search_events(
-            [e.to_wire() if hasattr(e, "to_wire") else e for e in window.events],
+            [redact_event(e.to_wire() if hasattr(e, "to_wire") else e)
+             for e in window.events],
             terms, max(1, min(int(limit), SEARCH_MAX_LIMIT)))
         return {"hits": hits, "truncated": truncated, "totalTurns": window.total_turns}
 
