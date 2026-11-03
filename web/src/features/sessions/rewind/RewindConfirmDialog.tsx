@@ -1,7 +1,8 @@
 /**
  * The "Rewind to here" confirm (D-9), lazy-loaded by `useRewind`. It runs the dry run
  * on mount and lists what the rewind restores — `+insertions −deletions` and the files,
- * deletions marked — above the caveat line. A prompt with no file checkpoint says so
+ * deletions marked — above the caveat line; Rewind & retry (`retry`) adds that the
+ * resend makes the rewind final. A prompt with no file checkpoint says so
  * and rewinds the conversation only. Confirm rewinds; with `edit`, the cut prompt goes
  * back in the composer. Every outcome settles `request.done` once. Built on the shared
  * `ConfirmDialog`, so it brings no new primitive onto the page.
@@ -62,14 +63,17 @@ export default function RewindConfirmDialog({ request }: { request: RewindReques
   const replacesDraft = request.replacesDraft && (
     <span className="mt-2 block font-medium text-ink">{copy.REWIND_REPLACES_DRAFT}</span>
   )
+  const retryNote = request.retry && (
+    <span className="mt-2 block font-medium text-ink">{copy.RETRY_NOTE}</span>
+  )
   return (
     <ConfirmDialog
       open
       onClose={() => { if (!working.current) done(null) }}
       onConfirm={confirm}
-      title={edit ? copy.EDIT_TITLE : copy.REWIND_TITLE}
-      description={<>{description}{replacesDraft}</>}
-      confirmLabel={edit ? copy.EDIT_CONFIRM : copy.REWIND_CONFIRM}
+      title={edit ? copy.EDIT_TITLE : request.retry ? copy.RETRY_TITLE : copy.REWIND_TITLE}
+      description={<>{description}{replacesDraft}{retryNote}</>}
+      confirmLabel={edit ? copy.EDIT_CONFIRM : request.retry ? copy.RETRY_CONFIRM : copy.REWIND_CONFIRM}
       tone="warning"
       busy={!preview}
     />

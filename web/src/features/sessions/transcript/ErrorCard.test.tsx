@@ -49,19 +49,36 @@ function mockApi({ preview = PREVIEW as unknown, result = RESULT as unknown } = 
 }
 
 const send = vi.fn()
+const RETRY_TITLE = 'Rewind and retry this message?'
+const RETRY_NOTE = "Your message is sent again right after the rewind, so this rewind can't be undone."
 
-function host(ui: ReactNode, { enabled = true, status = 'idle' } = {}) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(
+/** `applied`: the rewindId whose `rewound` the reducer has applied (the transcript is cut). */
+function tree(ui: ReactNode, qc: QueryClient, { enabled = true, status = 'idle', applied = 'r1' as string | null } = {}) {
+  return (
     <QueryClientProvider client={qc}>
       <SessionGestureProvider>
-        <RewindProvider sessionId="s1" enabled={enabled} status={status} send={send}>{ui}</RewindProvider>
+        <RewindProvider sessionId="s1" enabled={enabled} status={status} send={send} appliedRewindId={applied}>
+          {ui}
+        </RewindProvider>
       </SessionGestureProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
 }
 
+function host(ui: ReactNode, opts: { enabled?: boolean; status?: string; applied?: string | null } = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const r = render(tree(ui, qc, opts))
+  return { ...r, rerenderWith: (o: typeof opts) => r.rerender(tree(ui, qc, { ...opts, ...o })) }
+}
+
 const card = (p: Turn | null = prompt) => <ErrorCard code="api_error" message="Overloaded" prompt={p} />
+
+async function confirmRetry() {
+  await userEvent.click(screen.getByRole('button', { name: RETRY }))
+  await screen.findByRole('dialog', { name: RETRY_TITLE })
+  await screen.findByText('src/a.ts')
+  await userEvent.click(screen.getByRole('button', { name: 'Rewind and retry' }))
+}
 
 describe('ErrorCard — Rewind & retry', () => {
   beforeEach(() => { vi.restoreAllMocks(); vi.clearAllMocks() })
@@ -81,7 +98,7 @@ describe('ErrorCard — Rewind & retry', () => {
     expect(screen.queryByRole('button', { name: RETRY })).toBeNull()
   })
 
-  it('is absent when the failed turn has no prompt before it', () => {
+  it('is absent when the failed turn has no prompt of its own', () => {
     host(card(null))
     expect(screen.queryByRole('button', { name: RETRY })).toBeNull()
   })
@@ -91,32 +108,84 @@ describe('ErrorCard — Rewind & retry', () => {
     expect(screen.queryByRole('button', { name: RETRY })).toBeNull()
   })
 
+  it('is absent when the prompt carried images — a resend would drop them', () => {
+    host(card({ ...prompt, blocks: [...prompt.blocks,
+      { kind: 'image', id: 'p:img', images: [{ url: '/a.png', mime: 'image/png', name: 'a.png' }] }] }))
+    expect(screen.queryByRole('button', { name: RETRY })).toBeNull()
+  })
+
+  it('is absent when the prompt has no text', () => {
+    host(card({ ...prompt, blocks: [] }))
+    expect(screen.queryByRole('button', { name: RETRY })).toBeNull()
+  })
+
+  it('is absent for a nudge prompt (autopilot or completion)', () => {
+    host(card({ ...prompt, origin: { kind: 'completion' } }))
+    expect(screen.queryByRole('button', { name: RETRY })).toBeNull()
+  })
+
   it.each(['in_progress', 'waiting_input', 'waiting_question', 'ready_review'])(
     'is absent while the server would refuse a rewind (%s)', (status) => {
       host(card(), { status })
       expect(screen.queryByRole('button', { name: RETRY })).toBeNull()
     })
 
+  it('says the prompt is sent again and that the rewind cannot be undone after', async () => {
+    mockApi()
+    host(card())
+    await userEvent.click(screen.getByRole('button', { name: RETRY }))
+    const dialog = await screen.findByRole('dialog', { name: RETRY_TITLE })
+    expect(dialog.textContent).toContain(RETRY_NOTE)
+    expect(screen.getByRole('button', { name: 'Rewind and retry' })).toBeInTheDocument()
+  })
+
+  it('is disabled while a rewind dialog is open', async () => {
+    mockApi()
+    host(<>{card()}{card()}</>)
+    const [a, b] = screen.getAllByRole('button', { name: RETRY })
+    await userEvent.click(a)
+    await screen.findByRole('dialog', { name: RETRY_TITLE })
+    expect(a).toBeDisabled()
+    expect(b).toBeDisabled()
+  })
+
   it('confirms, rewinds to the prompt, then sends the prefill unchanged exactly once', async () => {
     const post = mockApi()
     host(card())
-    await userEvent.click(screen.getByRole('button', { name: RETRY }))
-    await screen.findByRole('dialog', { name: 'Rewind to this message?' })
-    await screen.findByText('src/a.ts')
-    expect(send).not.toHaveBeenCalled()
-    await userEvent.click(screen.getByRole('button', { name: 'Rewind' }))
+    await confirmRetry()
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
     expect(send).toHaveBeenCalledWith(RESULT.prefill, [])
     expect(post).toHaveBeenLastCalledWith('/sessions/s1/rewind', expect.objectContaining({
       toTurnId: UUID, mode: 'files_and_conversation', dryRun: false }))
   })
 
+  it('waits for the transcript cut (the matching rewound) before sending', async () => {
+    mockApi()
+    const h = host(card(), { applied: null })
+    await confirmRetry()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await new Promise((r) => setTimeout(r, 50))
+    expect(send).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: RETRY })).toBeDisabled()
+    h.rerenderWith({ applied: 'other' })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(send).not.toHaveBeenCalled()
+    h.rerenderWith({ applied: 'r1' })
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    expect(send).toHaveBeenCalledWith(RESULT.prefill, [])
+  })
+
+  it('sends anyway after a bounded wait when the cut never shows', async () => {
+    mockApi()
+    host(card(), { applied: null })
+    await confirmRetry()
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1), { timeout: 4000 })
+  })
+
   it("sends the failed prompt's own text when the rewind returns no prefill", async () => {
     mockApi({ result: { ...RESULT, prefill: null } })
     host(card())
-    await userEvent.click(screen.getByRole('button', { name: RETRY }))
-    await screen.findByText('src/a.ts')
-    await userEvent.click(screen.getByRole('button', { name: 'Rewind' }))
+    await confirmRetry()
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
     expect(send).toHaveBeenCalledWith('fix the bug', [])
   })
@@ -124,9 +193,7 @@ describe('ErrorCard — Rewind & retry', () => {
   it('a refused rewind sends nothing and says why', async () => {
     mockApi({ result: new ApiRequestError(409, { detail: { code: 'REWIND_SPLITS_TOOL_CALL', message: 'server text' } }) })
     host(card())
-    await userEvent.click(screen.getByRole('button', { name: RETRY }))
-    await screen.findByText('src/a.ts')
-    await userEvent.click(screen.getByRole('button', { name: 'Rewind' }))
+    await confirmRetry()
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
       "Can't rewind here — it would split a tool call from its result"))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -151,5 +218,6 @@ describe('ErrorCard — Rewind & retry', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(post).toHaveBeenCalledTimes(1)
     expect(send).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: RETRY })).not.toBeDisabled()
   })
 })

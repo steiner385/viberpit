@@ -20,6 +20,10 @@ export const REWIND_TITLE = 'Rewind to this message?'
 export const EDIT_TITLE = 'Rewind and edit this message?'
 export const REWIND_CONFIRM = 'Rewind'
 export const EDIT_CONFIRM = 'Rewind and edit'
+export const RETRY_TITLE = 'Rewind and retry this message?'
+export const RETRY_CONFIRM = 'Rewind and retry'
+/** Rewind & retry: the resend is a new prompt, which expires the rewind's undo. */
+export const RETRY_NOTE = "Your message is sent again right after the rewind, so this rewind can't be undone."
 export const REWIND_LOADING = 'Checking what this rewind restores…'
 export const REWIND_NO_FILES = 'No files change.'
 /** Edit & resend over a composer that already holds text. */

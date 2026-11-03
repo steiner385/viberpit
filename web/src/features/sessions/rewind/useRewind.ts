@@ -32,6 +32,8 @@ export function failRewind(err: unknown, undo = false): string | null {
 export interface RewindRequest {
   toTurnId: string
   edit: boolean
+  /** Rewind & retry: the confirm says the prompt is sent again, which ends the undo. */
+  retry: boolean
   preview: (toTurnId: string) => Promise<RewindPreview>
   rewind: (toTurnId: string, mode: RewindMode) => Promise<RewindResult>
   /** Put the cut prompt back in this session's composer (Edit & resend). */
@@ -45,7 +47,9 @@ export interface RewindRequest {
 
 export interface Rewind {
   /** Confirm and rewind to user turn `turn`; null when it has no target or one is open. */
-  start: (turn: Turn, opts: { edit: boolean }) => Promise<RewindResult | null>
+  start: (turn: Turn, opts: { edit: boolean; retry?: boolean }) => Promise<RewindResult | null>
+  /** A confirm dialog is open (one at a time: `start` refuses a second). */
+  active: boolean
   /** Undo rewind `rewindId`; a refusal toasts, skipped paths are listed. */
   undo: (rewindId: string) => Promise<void>
   /** The confirm dialog while a rewind is open — render it where `useRewind` is called. */
@@ -60,12 +64,12 @@ export function useRewind(sessionId: string, { onExpired }: { onExpired?: (rewin
   const { undo: postUndo } = useUndoRewind(sessionId)
   const draft = useComposerDraft()
 
-  const start = useCallback((turn: Turn, { edit }: { edit: boolean }) => {
+  const start = useCallback((turn: Turn, { edit, retry = false }: { edit: boolean; retry?: boolean }) => {
     const toTurnId = rewindTargetFor(turn)
     if (toTurnId === null || open.current) return Promise.resolve(null)
     open.current = true
     return new Promise<RewindResult | null>((resolve) => setRequest({
-      toTurnId, edit, preview, rewind, fail: failRewind,
+      toTurnId, edit, retry, preview, rewind, fail: failRewind,
       setDraft: (text) => draft.set(sessionId, text),
       replacesDraft: edit && draft.has(sessionId),
       done: (result) => { open.current = false; setRequest(null); resolve(result) },
@@ -83,5 +87,5 @@ export function useRewind(sessionId: string, { onExpired }: { onExpired?: (rewin
 
   const element = request && createElement(Suspense, { fallback: null },
     createElement(RewindConfirmDialog, { request }))
-  return { start, undo, element }
+  return { start, undo, element, active: request !== null }
 }

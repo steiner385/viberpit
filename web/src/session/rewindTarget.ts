@@ -29,18 +29,41 @@ export function rewindTargetFor(turn: Turn): string | null {
 }
 
 /**
- * Rewind & retry's prompts: each reply turn that carries an error block, mapped to the
- * latest user turn before it — the prompt that failed. A failed reply with no prompt
- * before it (the start of a paged-in window) is left out.
+ * Rewind & retry's prompts: the LATEST user turn, mapped from each of its own replies
+ * that carries an error block. A reply is the prompt's own only when it shares the
+ * engine turn (`engineTurnId ?? id`) of the first reply after that prompt — which keeps
+ * a steered `#after:` segment and drops an autonomous turn (a background task
+ * notification has no prompt: retrying it would cut the previous prompt's good reply,
+ * and the resend expires the undo). A fabricated turn sits wherever the tail was, so it
+ * is never mapped and never breaks the run. Older prompts are left out: a retry there
+ * would cut everything since.
  */
 export function failedPrompts(turns: readonly Turn[]): Map<string, Turn> {
   const out = new Map<string, Turn>()
   let prompt: Turn | null = null
+  let key: string | null = null
   for (const t of turns) {
-    if (t.role === 'user') prompt = t
-    else if (prompt && t.blocks.some((b) => b.kind === 'error')) out.set(t.id, prompt)
+    if (t.role === 'user') {
+      prompt = t
+      key = null
+      out.clear()
+      continue
+    }
+    if (t.fabricated || prompt === null) continue
+    const k = t.engineTurnId ?? t.id
+    if (key === null) key = k
+    else if (k !== key) { prompt = null; continue }
+    if (t.blocks.some((b) => b.kind === 'error')) out.set(t.id, prompt)
   }
   return out
+}
+
+/** Can Rewind & retry resend `prompt` exactly as it was sent? A typed (not a nudge's),
+ *  targeted prompt with text and no images — a resend carries the text only. */
+export function retryablePrompt(prompt: Turn): boolean {
+  return rewindTargetFor(prompt) !== null && !prompt.origin
+    && !prompt.blocks.some((b) => b.kind === 'image')
+    && prompt.blocks.some((b) => b.kind === 'text' && b.text.trim() !== '')
 }
 
 /** `/rewind`'s picker: the prompts with a target, newest first, at most 20. */

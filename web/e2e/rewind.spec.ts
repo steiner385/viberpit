@@ -196,19 +196,23 @@ const FAILED: SessionEvent[] = [
 ]
 
 test("Rewind & retry on an error card rewinds to the failed prompt and sends it again, once", async ({ page }) => {
-  const { posts, prompts } = await openSession(page, { history: FAILED })
+  const { posts, prompts, socket } = await openSession(page, { history: FAILED })
   const transcript = page.getByTestId('transcript-scroll')
   await transcript.getByRole('button', { name: 'Rewind & retry' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Rewind to this message?' })
+  const dialog = page.getByRole('dialog', { name: 'Rewind and retry this message?' })
   await expect(dialog.getByText('src/app.ts')).toBeVisible()
-  expect(prompts).toEqual([])
-  await dialog.getByRole('button', { name: 'Rewind' }).click()
+  await expect(dialog.getByText("Your message is sent again right after the rewind, so this rewind can't be undone.")).toBeVisible()
+  await dialog.getByRole('button', { name: 'Rewind and retry' }).click()
   await expect(dialog).toBeHidden()
   expect(posts.map((p) => p.postDataJSON())).toEqual([
     expect.objectContaining({ toTurnId: U2, dryRun: true }),
     expect.objectContaining({ toTurnId: U2, mode: 'files_and_conversation', dryRun: false }),
   ])
+  // The resend waits for the cut: nothing goes out before the server's `rewound`.
+  expect(prompts).toEqual([])
+  socket().send(wire(liveFrame(sid, 0, [{ type: 'rewound', rewindId: 'rw-1', toTurnId: U2, promptUuid: U2, filesRestored: RESULT.filesRestored }])))
   await expect.poll(() => prompts).toEqual([RESULT.prefill])
+  await expect(transcript.getByText('Second answer')).toHaveCount(0)
   // Settle: still exactly one send.
   await page.waitForTimeout(300)
   expect(prompts).toEqual([RESULT.prefill])
@@ -218,9 +222,24 @@ test('a refused Rewind & retry says why and sends nothing', async ({ page }) => 
   const { prompts } = await openSession(page, {
     history: FAILED, reply: { status: 409, json: { detail: { code: 'REWIND_SPLITS_TOOL_CALL', message: 'split' } } } })
   await page.getByTestId('transcript-scroll').getByRole('button', { name: 'Rewind & retry' }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Rewind' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Rewind and retry' }).click()
   await expect(page.getByText("Can't rewind here — it would split a tool call from its result")).toBeVisible()
+  await page.waitForTimeout(300)
   expect(prompts).toEqual([])
+})
+
+test('only the latest prompt\'s failure offers Rewind & retry', async ({ page }) => {
+  // The first turn failed, the second succeeded: the old failure offers nothing.
+  await openSession(page, { history: [
+    ...userTurn(U1, 'First question'),
+    { type: 'turnStart', turnId: 't1' },
+    { type: 'error', turnId: 't1', code: 'api_error', message: 'Overloaded — try again' },
+    { type: 'turnEnd', turnId: 't1' },
+    ...userTurn(U2, 'Second question'),
+    ...assistantTurn('t2', 'Second answer'),
+  ] })
+  await expect(page.getByTestId('transcript-scroll').getByText('Overloaded — try again')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Rewind & retry' })).toHaveCount(0)
 })
 
 test('an engine that cannot rewind offers no Rewind & retry', async ({ page }) => {

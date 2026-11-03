@@ -242,6 +242,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                                   earliestTurn={rt.state.earliestTurn} enabled={can(caps, 'fork')}>
                      <RewindProvider sessionId={rt.sessionId} enabled={can(caps, 'rewind')}
                                      status={rt.state.status.state} send={rt.onPlainPrompt}
+                                     appliedRewindId={rt.state.rewind?.rewindId ?? null}
                                      onExpired={rt.dismissRewind}>
                       <TranscriptView
                         turns={rt.state.turns}

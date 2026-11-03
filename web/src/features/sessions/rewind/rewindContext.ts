@@ -12,9 +12,12 @@ import type { Rewind } from './useRewind'
 export interface RewindActions extends Pick<Rewind, 'start' | 'undo'> {
   /** The server would refuse now (`rewindBlocked`): the items show, disabled. */
   busy: boolean
-  /** Rewind & retry: confirm and rewind to the failed `prompt`, then send its prefill
-   *  through the composer's send path, once. Cancel or a refusal sends nothing. */
+  /** Rewind & retry: confirm and rewind to the failed `prompt`, then — once the cut is
+   *  applied — send its prefill through the composer's send path, once. Cancel or a
+   *  refusal sends nothing. */
   retry: (prompt: Turn) => Promise<void>
+  /** A rewind is in hand: its confirm dialog is open, or a retry waits to send. */
+  open: boolean
 }
 
 export const RewindContext = createContext<RewindActions | null>(null)

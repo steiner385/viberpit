@@ -42,8 +42,8 @@ interface Props {
   /** Wired to a noticeCard's "Ask about it" button. Absent in read-only views, where the
    *  button hides (NoticeCard has nothing to hand the prefilled text to). */
   onAsk?: (text: string) => void
-  /** When this reply failed: the user prompt behind it (`failedPrompts`), which its
-   *  error card's Rewind & retry rewinds to. */
+  /** When this is the latest prompt's own failed reply: that prompt (`failedPrompts`),
+   *  which its error card's Rewind & retry rewinds to. */
   failedPrompt?: TurnType | null
 }
 
