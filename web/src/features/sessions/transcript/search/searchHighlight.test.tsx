@@ -117,6 +117,19 @@ describe('transcript search highlight', () => {
     expect(container.querySelectorAll(`[${MARK_CURRENT_ATTR}]`)).toHaveLength(1)
   })
 
+  it('a block whose only occurrence is in a link URL or a comment gets no current hit', async () => {
+    const turn: TurnType = {
+      id: 'a1', role: 'assistant', blocks: [
+        { kind: 'text', id: 'a1:a', text: 'See [docs](https://x.io/widget) <!-- widget -->' },
+        { kind: 'text', id: 'a1:b', text: 'Then the widget works.' },
+      ],
+    }
+    const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'a1', lead: 0 } })
+    const current = await screen.findByText('widget', { selector: `mark[${MARK_CURRENT_ATTR}]` })
+    expect(current.closest('p')?.textContent).toBe('Then the widget works.')
+    expect(container.querySelectorAll(`[${MARK_CURRENT_ATTR}]`)).toHaveLength(1)
+  })
+
   it('a current lead past the last rendered occurrence falls back to the last one (markdown)', async () => {
     const turn: TurnType = { id: 'a1', role: 'assistant', blocks: [{ kind: 'text', id: 'a1:t', text: 'A widget and a widget.' }] }
     const { container } = renderTurn(turn, { terms: ['widget'], current: { turnId: 'a1', lead: 5 } })

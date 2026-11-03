@@ -7,7 +7,7 @@ import type { Virtualizer } from '@tanstack/react-virtual'
 import type { Turn } from '@/session/reducer'
 import type { SearchHit } from '@/api/transcript'
 import type { RenderRow } from '../transcriptRows'
-import { highlightSegments, maskMarkdownCode } from './highlightRanges'
+import { highlightSegments, maskMarkdownHidden } from './highlightRanges'
 import { MARK_CURRENT_ATTR } from './searchMarks'
 
 /** How far back a jump may page older history in: past this the hit is reported
@@ -64,7 +64,7 @@ function proseOf(turn: Turn, transform: (raw: string) => string = (raw) => raw):
 function leadFromSnippet(turn: Turn, req: JumpRequest, terms: readonly string[]): number | null {
   if (req.snippet === undefined || req.matchStart === undefined) return null
   const prose = proseOf(turn)
-  const counted = turn.role === 'assistant' ? proseOf(turn, maskMarkdownCode) : prose
+  const counted = turn.role === 'assistant' ? proseOf(turn, maskMarkdownHidden) : prose
   const at: number[] = []
   for (let p = prose.indexOf(req.snippet); p !== -1; p = prose.indexOf(req.snippet, p + 1)) at.push(p)
   if (at.length === 0) return null

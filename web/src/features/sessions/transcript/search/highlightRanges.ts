@@ -7,6 +7,8 @@
  * transcript search uses (`server/sessions/search.py` `terms_match`).
  */
 
+import { blankHtmlComments } from '../htmlComments'
+
 /** A half-open `[start, end)` range of UTF-16 offsets into the original text. */
 export type Range = [number, number]
 
@@ -94,12 +96,26 @@ export function highlightSegments(text: string, terms: readonly string[]): Highl
 }
 
 /**
- * `text` with its markdown code — fenced blocks and inline spans — blanked to
- * spaces, every other character (newlines included) kept at its offset. The
- * markdown highlight pass never marks inside code, so the current hit's lead run
- * is counted on this, not on the raw text: a run inside code is one the reader
- * never sees marked. Plain text (a user prompt) is not markdown and is counted raw.
+ * `text` as the transcript renders it, for COUNTING: everything a reader never sees
+ * marked is blanked to spaces, every other character (newlines included) kept at
+ * its offset — HTML comments (`hideHtmlComments`' rule, via `blankHtmlComments`),
+ * fenced and inline code (the highlight pass skips code), inline-link destinations
+ * and titles (`[text](url "title")` shows only the text) and reference
+ * definitions. The current hit's lead run is counted on this, not on the raw text.
+ * Plain text (a user prompt) is not markdown and is counted raw.
  */
+export function maskMarkdownHidden(text: string): string {
+  const shown = maskMarkdownCode(blankHtmlComments(text))
+  const blank = (s: string) => s.replace(/[^\n]/g, ' ')
+  return shown
+    // A reference definition renders nothing at all.
+    .replace(/^ {0,3}\[[^\]\n]+\]:[^\n]*$/gm, blank)
+    // An inline link's `(destination "title")`, one level of nested parens allowed.
+    .replace(/\]\((?:[^()\n]|\([^()\n]*\))*\)/g, (m) => ']' + blank(m.slice(1)))
+}
+
+/** `text` with its markdown code — fenced blocks and inline spans — blanked, every
+ *  other character kept at its offset (see `maskMarkdownHidden`). */
 export function maskMarkdownCode(text: string): string {
   const blank = (s: string) => s.replace(/[^\n]/g, ' ')
   let fence: string | null = null

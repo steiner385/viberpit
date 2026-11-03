@@ -20,6 +20,22 @@ const STILL_ARRIVING = /<!--(?:(?!-->)[\s\S])*$/
  * quotes them constantly — and the reader is meant to see it. */
 export function hideHtmlComments(text: string): string {
   if (!text) return text
+  const stripped = replaceHtmlComments(text, () => '')
+  // Only when something was actually removed: a trailing newline left behind by a
+  // stripped marker renders as a blank line, but trailing whitespace the agent is
+  // still typing is real and must not be eaten.
+  return stripped === text ? text : stripped.trimEnd()
+}
+
+/** *text* with exactly the comments `hideHtmlComments` hides blanked to spaces
+ *  (newlines kept), so every other character keeps its offset — for counting the
+ *  transcript search's matches on the text the reader actually sees. */
+export function blankHtmlComments(text: string): string {
+  return text ? replaceHtmlComments(text, (comment) => comment.replace(/[^\n]/g, ' ')) : text
+}
+
+/** The one comment rule both of the above apply, with what to put in a comment's place. */
+function replaceHtmlComments(text: string, replace: (comment: string) => string): string {
 
   // Segments alternate outside/inside a fence, so the delimiter is captured rather
   // than discarded and the state flips as it is passed. An unclosed fence (mid-
@@ -33,13 +49,9 @@ export function hideHtmlComments(text: string): string {
         return part
       }
       if (inFence) return part
-      const out = part.replace(COMPLETED, '')
-      return i === parts.length - 1 ? out.replace(STILL_ARRIVING, '') : out
+      const out = part.replace(COMPLETED, replace)
+      return i === parts.length - 1 ? out.replace(STILL_ARRIVING, replace) : out
     })
     .join('')
-
-  // Only when something was actually removed: a trailing newline left behind by a
-  // stripped marker renders as a blank line, but trailing whitespace the agent is
-  // still typing is real and must not be eaten.
-  return stripped === text ? text : stripped.trimEnd()
+  return stripped
 }

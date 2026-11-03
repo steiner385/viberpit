@@ -4,7 +4,7 @@
  * `TranscriptSearchContext`'s `kit`, so none of this is in the eager bundle.
  */
 import type { ReactNode } from 'react'
-import { highlightSegments, maskMarkdownCode } from './highlightRanges'
+import { highlightSegments, maskMarkdownHidden } from './highlightRanges'
 import { rehypeSearchHighlight } from './rehypeSearchHighlight'
 import { MARK_CLASS, MARK_CURRENT_ATTR, MARK_CURRENT_CLASS } from './searchMarks'
 import type { RehypePluginEntry, SearchHighlight, SearchRenderKit } from './TranscriptSearchContext'
@@ -27,7 +27,7 @@ function renderText(text: string, highlight: SearchHighlight): ReactNode {
 /** How many lead-term runs of `text` render marked: markdown code is skipped. */
 export function leadRuns(text: string, terms: readonly string[], markdown: boolean): number {
   let n = 0
-  for (const seg of highlightSegments(markdown ? maskMarkdownCode(text) : text, terms)) if (seg.lead) n++
+  for (const seg of highlightSegments(markdown ? maskMarkdownHidden(text) : text, terms)) if (seg.lead) n++
   return n
 }
 

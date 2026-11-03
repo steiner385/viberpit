@@ -157,3 +157,29 @@ describe('resolveHit — counts lead runs the way they render (code is skipped)'
     expect(resolveHit(rows, jumpRequest([h('user')], 0, ['widget']), turnHoldsEngineTurn)?.lead).toBe(2)
   })
 })
+
+describe('resolveHit — text the renderer hides is not counted (links, comments)', () => {
+  const snippet = 'then fix the widget.'
+  const at = snippet.indexOf('widget')
+  const lead = (prose: string) => {
+    const rows = buildRenderRows([t('x1', 'assistant', prose, { ordinal: 0 })], [])
+    const h: SearchHit = { turnId: 'x1', ordinal: 0, role: 'assistant', snippet, matchStart: at, matchEnd: at + 6 }
+    return resolveHit(rows, jumpRequest([h], 0, ['widget']), turnHoldsEngineTurn)?.lead
+  }
+
+  it('a term in an inline link\'s URL', () => {
+    expect(lead('See [the guide](https://example.com/widget-guide "widget docs"), then fix the widget.')).toBe(0)
+  })
+
+  it('a term in an HTML comment', () => {
+    expect(lead('Noted. <!-- widget marker --> Now then fix the widget.')).toBe(0)
+  })
+
+  it('a term in a reference definition', () => {
+    expect(lead('Read [the guide][g].\n\n[g]: https://example.com/widget\n\nthen fix the widget.')).toBe(0)
+  })
+
+  it('the link TEXT is shown, so a term there still counts', () => {
+    expect(lead('See [the widget](https://example.com/x), then fix the widget.')).toBe(1)
+  })
+})

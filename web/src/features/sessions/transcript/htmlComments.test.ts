@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hideHtmlComments } from './htmlComments'
+import { hideHtmlComments, blankHtmlComments } from './htmlComments'
 
 describe('hideHtmlComments', () => {
   it('removes a completed HTML comment', () => {
@@ -51,5 +51,18 @@ describe('hideHtmlComments', () => {
 
   it('is a no-op on empty text', () => {
     expect(hideHtmlComments('')).toBe('')
+  })
+})
+
+describe('blankHtmlComments', () => {
+  it('blanks the comments hideHtmlComments removes, keeping every offset', () => {
+    const text = 'a <!-- hidden --> b\n```\n<!-- shown -->\n```\nc <!-- arriving'
+    const out = blankHtmlComments(text)
+    expect(out).toHaveLength(text.length)
+    expect(out).not.toContain('hidden')
+    expect(out).not.toContain('arriving')
+    expect(out).toContain('<!-- shown -->')
+    const words = (s: string) => s.replace(/\s+/g, ' ').trim()
+    expect(words(out)).toBe(words(hideHtmlComments(text)))
   })
 })
