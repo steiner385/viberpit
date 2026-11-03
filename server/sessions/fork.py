@@ -8,6 +8,8 @@ envelope and the daemon logs the refusal at INFO.
 """
 from __future__ import annotations
 
+import uuid
+
 #: Fork from an assistant reply: ``atTurnId`` is that reply's turn.
 MODE_REPLY = "reply"
 #: Fork from the user's message: ``atTurnId`` is the PREVIOUS reply's turn (or None
@@ -22,9 +24,14 @@ FORK_UNAVAILABLE = "FORK_UNAVAILABLE"
 TURN_NOT_FORKABLE = "TURN_NOT_FORKABLE"
 #: The message-mode prefill is longer than ``PREFILL_MAX_CHARS``.
 PREFILL_TOO_LONG = "PREFILL_TOO_LONG"
-#: The source's model is blocked by policy; a fork would launch it again.
-MODEL_BLOCKED = "MODEL_BLOCKED"
-FORK_CODES = frozenset({FORK_UNAVAILABLE, TURN_NOT_FORKABLE, PREFILL_TOO_LONG, MODEL_BLOCKED})
+#: Launch admission would queue the child (global or product cap). A fork never
+#: queues: a queued row cannot carry its fork worktree.
+FORK_AT_CAPACITY = "FORK_AT_CAPACITY"
+#: The source's model is gated by ``require_approval``; a fork would launch it again.
+#: (A ``block``ed model raises ``ModelBlockedError``, as ``create_session`` does.)
+FORK_NEEDS_APPROVAL = "FORK_NEEDS_APPROVAL"
+FORK_CODES = frozenset({FORK_UNAVAILABLE, TURN_NOT_FORKABLE, PREFILL_TOO_LONG,
+                        FORK_AT_CAPACITY, FORK_NEEDS_APPROVAL})
 
 PREFILL_MAX_CHARS = 10_000
 
@@ -36,6 +43,16 @@ class ForkError(Exception):
         super().__init__(message or code)
         self.code = code
         self.error_data = {"code": code}
+
+
+#: Namespace for ``fork_child_id`` (a fixed, arbitrary uuid4).
+_CHILD_ID_NS = uuid.UUID("5f0c6b1e-8d2a-4c47-9a3e-2b7d4e9f1a60")
+
+
+def fork_child_id(source_session_id: str, request_id: str) -> str:
+    """The child session id for fork request *request_id* of the source — the same on
+    every retry of that request, so a repeated request finds the child it made."""
+    return str(uuid.uuid5(_CHILD_ID_NS, f"{source_session_id}:{request_id}"))
 
 
 def fork_title(source_name: str | None) -> str:

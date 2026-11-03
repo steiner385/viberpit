@@ -465,6 +465,22 @@ class AutomationLaunchUncertain(RuntimeError):
     """A reserved launch may have effects; retry must not start another session."""
 
 
+async def _discard_fork_when_made(work: "asyncio.Future[worktrees.ForkWorktreeInfo]") -> None:
+    """Wait for an abandoned ``create_fork_worktree`` and discard what it made."""
+    try:
+        info = await work
+    except Exception:
+        return   # it made nothing that outlives it (create_fork_worktree cleans up)
+    await asyncio.to_thread(worktrees.discard_fork_worktree, info)
+
+
+def _row_fork_from(row) -> tuple[str, str] | None:
+    """A row's pending fork (D-8) as ``SessionRecord.fork_from``, or None."""
+    src = getattr(row, "fork_source_engine_session_id", None)
+    at = getattr(row, "fork_resume_at", None)
+    return (src, at) if src and at else None
+
+
 class ModelBlockedError(Exception):
     """A model whose approval policy is 'block' was requested at create_session.
 
@@ -475,6 +491,8 @@ class ModelBlockedError(Exception):
     def __init__(self, model: str | None):
         super().__init__(f"model {model!r} is blocked by policy")
         self.model = model
+        # An expected refusal: rides the daemon RPC envelope (and logs at INFO there).
+        self.error_data = {"model": model}
 
 
 class BranchSwitchError(Exception):
@@ -3901,13 +3919,9 @@ class SessionOrchestrator:
         # sees exactly what would run and can counter-offer; when it is allowed the
         # spawn proceeds with the original `model` (None), so the record still says
         # "account default" — nothing was selected.
-        from server.sessions.model_policy import (
-            INHERITED_DEFAULT_REASON, launch_model, resolve_model_policy)
-        gate_model = launch_model(model, engine=selected_engine)
-        async with db_session() as _db:
-            _policy = await resolve_model_policy(_db, model=gate_model, account=account)
-        if _policy == "block":
-            raise ModelBlockedError(gate_model)
+        from server.sessions.model_policy import INHERITED_DEFAULT_REASON
+        _policy, gate_model = await self._launch_model_policy(
+            model, engine=selected_engine, account=account)
 
         from server.automations.ownership import owned
 
@@ -3980,30 +3994,10 @@ class SessionOrchestrator:
             # session, and its own claim is what the live count would be
             # counting: re-checking here would self-refuse the last open slot.
             # The assistant is exempt for the same reason the global cap is.
-            queue_reason: str | None = None
-            if wait_for_slot and not is_assistant_kind(kind):
-                # Admission already decided this claim waits; the drain re-checks
-                # the same caps (queued_claim_slot_free) before starting it.
-                queue_reason = "runner_capacity"
-            elif not is_assistant_kind(kind) and ownership_token is None and repo is not None:
-                from server.automations.product_admission import repo_capacity_status
-                _slug, _count, _cap = await repo_capacity_status(repo, context=self._backlog_ctx)
-                if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
-                    queue_reason = "product_capacity"
-            # Host capacity: the edge found every enabled, healthy host full. Product
-            # capacity wins the label when both apply — it is the stricter wait
-            # (the drain re-checks it per entry), host capacity merely a slot.
-            if queue_only and queue_reason is None and not is_assistant_kind(kind):
-                queue_reason = "host_capacity"
-
-            # Global active-session cap: at/over the cap the session is created as a
-            # queued row (real session, no worktree/account/driver yet) and started
-            # later by _maybe_start_queued in (priority, enqueued_at) order. Applies
-            # to EVERY origin — automations included (their claims simply wait).
-            # Exception: the assistant (see the docstring) neither counts nor queues.
-            if queue_reason is not None or (
-                    not is_assistant_kind(kind)
-                    and self._active_session_count() >= await self._max_active_sessions()):
+            queue_reason = await self._launch_queue_reason(
+                kind=kind, repo=repo, ownership_token=ownership_token,
+                wait_for_slot=wait_for_slot, queue_only=queue_only)
+            if queue_reason is not None:
                 return await self._enqueue_session(
                     session_id, name=name, account=account,
                     initial_prompt=initial_prompt, cols=cols, rows=rows, cwd=cwd,
@@ -4015,7 +4009,7 @@ class SessionOrchestrator:
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                    queue_reason=queue_reason or "global_cap")
+                    queue_reason=queue_reason)
             try:
                 return await self._spawn_session(
                     session_id, name=name, account=account, initial_prompt=initial_prompt,
@@ -4070,6 +4064,61 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("automation.launch_uncertainty_record_failed")
             raise
+
+    async def _launch_model_policy(
+        self, model: str | None, *, engine: AgentEngine, account: str | None,
+    ) -> tuple[str, str | None]:
+        """Launch admission, model half — shared by ``create_session`` and
+        ``fork_session``: ``(policy, gate_model)`` for the model a launch would
+        actually run. ``block`` raises ``ModelBlockedError``; the caller decides what
+        ``require_approval`` means for it (create parks a hold; a fork refuses).
+
+        Judged on ``launch_model()``, not the raw request: a request naming no model
+        (or "default") still launches on one — the shared Claude settings default the
+        binary reads for itself — and that is the model the denylist must see.
+        Gating None as "allow" let every "Default" session run on whatever the last
+        /model pick wrote there, Fable included (2026-09-08)."""
+        from server.sessions.model_policy import launch_model, resolve_model_policy
+        gate_model = launch_model(model, engine=engine)
+        async with db_session() as _db:
+            policy = await resolve_model_policy(_db, model=gate_model, account=account)
+        if policy == "block":
+            raise ModelBlockedError(gate_model)
+        return policy, gate_model
+
+    async def _launch_queue_reason(
+        self, *, kind: str | None, repo: str | None, ownership_token: str | None,
+        wait_for_slot: bool, queue_only: bool,
+    ) -> str | None:
+        """Launch admission, capacity half — shared by ``create_session`` and
+        ``fork_session``: why this launch must wait for a slot instead of spawning
+        now, or None to spawn. The assistant never waits.
+
+        - ``runner_capacity``: a Backlog Runner claim admitted only "wait for a slot";
+          the drain re-checks the same caps (queued_claim_slot_free) before starting it.
+        - ``product_capacity`` (#2229): the repo's product already holds the Backlog
+          Runner's concurrent-session pin. Only for a FRESH request (no
+          ownership_token): an automation dispatch already cleared this cap in
+          _backlog_admission, and its own claim is what the count would be counting.
+        - ``host_capacity``: the edge found every enabled, healthy host full
+          (*queue_only*). Product capacity wins the label when both apply — it is the
+          stricter wait (the drain re-checks it per entry), host capacity merely a slot.
+        - ``global_cap``: at/over the active-session cap. Applies to EVERY origin —
+          automations included (their claims simply wait)."""
+        if is_assistant_kind(kind):
+            return None
+        if wait_for_slot:
+            return "runner_capacity"
+        if ownership_token is None and repo is not None:
+            from server.automations.product_admission import repo_capacity_status
+            _slug, _count, _cap = await repo_capacity_status(repo, context=self._backlog_ctx)
+            if _slug is not None and _count is not None and _cap is not None and _count >= _cap:
+                return "product_capacity"
+        if queue_only:
+            return "host_capacity"
+        if self._active_session_count() >= await self._max_active_sessions():
+            return "global_cap"
+        return None
 
     async def _automation_create_session(self, **kwargs) -> SessionRecord:
         """The create path every fleet-global automation loop binds instead of
@@ -5919,6 +5968,8 @@ class SessionOrchestrator:
                         id=session_id,
                         name=name,
                         parent_session_id=_pre_record.parent_session_id,
+                        fork_source_engine_session_id=fork_from[0] if fork_from else None,
+                        fork_resume_at=fork_from[1] if fork_from else None,
                         account_name=account,
                         engine=selected_engine.value,
                         engine_session_id=None,
@@ -17370,7 +17421,7 @@ class SessionOrchestrator:
         return rebuilt.get(turn_id)
 
     async def fork_session(self, session_id: str, *, at_turn_id: str | None, mode: str,
-                           prefill: str | None = None,
+                           request_id: str, prefill: str | None = None,
                            identity: str = SYSTEM_IDENTITY) -> dict:
         """Fork *session_id* at a turn into a new linked child session (D-8).
 
@@ -17379,33 +17430,83 @@ class SessionOrchestrator:
         (None for the first message, which makes the child a fresh session) and
         *prefill* — that message's text — is echoed back for the child's composer.
 
+        Idempotent per *request_id* (one per click): the child's id is derived from
+        ``(session_id, request_id)``, so a retry — e.g. after the edge's RPC timed out
+        while this daemon finished — returns the same child instead of forking again,
+        and a concurrent duplicate waits for the first to settle.
+
         The child runs in a new fork worktree (the source's current files, including
         uncommitted work; never the files as of the turn) on the source's account,
         engine, model, effort and permission mode, on this host, with
-        ``parent_session_id`` = the source. It is spawned through ``_spawn_session``
-        like any new session; only the resume is a fork. A failure once the fork
+        ``parent_session_id`` = the source. Admission (model policy, capacity) is
+        checked BEFORE the worktree is made, through the same helpers as
+        ``create_session``; a fork never queues, since a queued row cannot carry a
+        fork worktree. It is spawned through ``_spawn_session`` like any new session;
+        only the resume is a fork. A failure — or a cancellation — once the fork
         worktree exists removes it, and the spawn rolls back its own record and row.
 
         Returns ``{"sessionId", "prefill"}``. Raises ``KeyError`` for an unknown
-        session; ``ForkError`` (``FORK_UNAVAILABLE`` / ``TURN_NOT_FORKABLE`` /
-        ``PREFILL_TOO_LONG`` / ``MODEL_BLOCKED``) and ``ForkWorktreeError`` (its
-        ``code``) for an expected refusal — each carries ``error_data``.
+        session; ``ModelBlockedError`` for a blocked model; ``ForkError``
+        (``FORK_UNAVAILABLE`` / ``TURN_NOT_FORKABLE`` / ``PREFILL_TOO_LONG`` /
+        ``FORK_AT_CAPACITY`` / ``FORK_NEEDS_APPROVAL``) and ``ForkWorktreeError`` (its
+        ``code``) for the other expected refusals — each carries ``error_data``.
         """
         from server.sessions import fork as fk
+        rec = self._worktree_record(session_id)
+        if mode not in fk.MODES:
+            raise ValueError(f"bad fork mode: {mode!r}")
+        if mode == fk.MODE_REPLY:
+            prefill = None
+        child_id = fk.fork_child_id(session_id, request_id)
+        inflight: dict[str, asyncio.Future] = self.__dict__.setdefault("_fork_inflight", {})
+        while (pending := inflight.get(child_id)) is not None:
+            await asyncio.wait({pending})   # a duplicate request: let the first settle
+        # Claimed with no await since the check above, so exactly one caller per child
+        # id runs the existence check and the fork at a time.
+        done = asyncio.get_running_loop().create_future()
+        inflight[child_id] = done
+        try:
+            if await self._fork_child_exists(child_id, session_id):
+                log.info("session.fork_replayed source=%s child=%s", session_id, child_id)
+            else:
+                await self._fork_once(rec, child_id, at_turn_id=at_turn_id, mode=mode,
+                                      prefill=prefill, identity=identity)
+        finally:
+            inflight.pop(child_id, None)
+            done.set_result(None)
+        return {"sessionId": child_id, "prefill": prefill}
+
+    async def _fork_child_exists(self, child_id: str, source_id: str) -> bool:
+        """Did an earlier request already make fork child *child_id* of *source_id*?
+        The record answers first, then the row (a child closed or archived since)."""
+        parent: str | None
+        rec = self._records.get(child_id)
+        if rec is not None:
+            parent = rec.parent_session_id
+        else:
+            async with db_session() as db:
+                row = await db.get(DbSession, child_id)
+            if row is None:
+                return False
+            parent = row.parent_session_id
+        if parent != source_id:
+            raise ValueError(f"session {child_id} is not a fork of {source_id}")
+        return True
+
+    async def _fork_once(self, rec: SessionRecord, child_id: str, *, at_turn_id: str | None,
+                         mode: str, prefill: str | None, identity: str) -> None:
+        """One fork attempt for ``fork_session`` (see there)."""
+        from server.automations.ownership import register_child_execution
+        from server.sessions import fork as fk
         from server.sessions.engine import fork_supported
-        from server.sessions.model_policy import launch_model, resolve_model_policy
+        session_id = rec.id
 
         def refuse(code: str, why: str) -> NoReturn:
             log.info("session.fork_refused source=%s code=%s reason=%s",
                      session_id, code, why)
             raise fk.ForkError(code, why)
 
-        rec = self._worktree_record(session_id)
-        if mode not in fk.MODES:
-            raise ValueError(f"bad fork mode: {mode!r}")
-        if mode == fk.MODE_REPLY:
-            prefill = None
-        elif prefill is not None and len(prefill) > fk.PREFILL_MAX_CHARS:
+        if prefill is not None and len(prefill) > fk.PREFILL_MAX_CHARS:
             refuse(fk.PREFILL_TOO_LONG, f"prefill over {fk.PREFILL_MAX_CHARS} chars")
         if not fork_supported(self._engine_registry.capabilities_for(rec.engine)):
             refuse(fk.FORK_UNAVAILABLE, f"engine {rec.engine} cannot fork here")
@@ -17429,29 +17530,42 @@ class SessionOrchestrator:
                 refuse(fk.TURN_NOT_FORKABLE, "the source has no engine session")
             fork_from = (rec.engine_session_id, anchor)
 
-        async with db_session() as db:
-            policy = await resolve_model_policy(
-                db, model=launch_model(rec.model, engine=rec.engine), account=rec.account)
-        if policy == "block":
-            refuse(fk.MODEL_BLOCKED, f"model {rec.model!r} is blocked by policy")
+        # Admission — the same helpers create_session uses, BEFORE any worktree.
+        try:
+            policy, _ = await self._launch_model_policy(
+                rec.model, engine=rec.engine, account=rec.account)
+        except ModelBlockedError as exc:
+            log.info("session.fork_refused source=%s code=model_blocked reason=%s",
+                     session_id, exc)
+            raise
+        if policy == "require_approval":
+            refuse(fk.FORK_NEEDS_APPROVAL, f"model {rec.model!r} needs approval")
+        queue_reason = await self._launch_queue_reason(
+            kind=rec.kind, repo=rec.repo, ownership_token=None, wait_for_slot=False,
+            queue_only=False)
+        if queue_reason is not None:
+            refuse(fk.FORK_AT_CAPACITY, queue_reason)
 
         if not rec.cwd:
             log.info("session.fork_refused source=%s code=%s reason=no cwd",
                      session_id, worktrees.FORK_NOT_A_REPO)
             raise worktrees.ForkWorktreeError("the source has no worktree",
                                               worktrees.FORK_NOT_A_REPO)
-        child_id = str(uuid.uuid4())
         repo_root = await self._effective_repo_root()
         try:
             dest = worktrees.fork_worktree_dir(rec.cwd, repo_root, child_id)
-            fork_wt = await asyncio.to_thread(
-                worktrees.create_fork_worktree, rec.cwd,
-                source_session_id=session_id, dest=dest)
+            fork_wt = await self._make_fork_worktree(rec.cwd, session_id, dest)
         except worktrees.ForkWorktreeError as exc:
             log.info("session.fork_refused source=%s code=%s reason=%s",
                      session_id, exc.code, exc)
             raise
         try:
+            # Through the same registration create_session makes for a child: an
+            # automation-owned source's ownership operation learns of the fork.
+            await register_child_execution(child_id, session_id)
+            # NOTE: parent_session_id makes the fork one of the source's live children,
+            # so it counts toward dispatch_session's per-parent child cap like a
+            # dispatched child (ruled: intended, documented with the D-8 product docs).
             await self._spawn_session(
                 child_id, name=fk.fork_title(rec.name), account=rec.account,
                 initial_prompt=None, cols=rec.cols, rows=rec.rows, cwd=fork_wt.cwd,
@@ -17468,7 +17582,21 @@ class SessionOrchestrator:
         log.info("session.fork source=%s child=%s mode=%s at=%s branch=%s",
                  session_id, child_id, mode, fork_from[1] if fork_from else "-",
                  fork_wt.branch)
-        return {"sessionId": child_id, "prefill": prefill}
+
+    async def _make_fork_worktree(self, source_cwd: str, source_id: str,
+                                  dest: str) -> worktrees.ForkWorktreeInfo:
+        """``create_fork_worktree`` off the loop. The git work cannot be interrupted, so
+        a cancellation mid-way waits for it and then discards what it made — never a
+        worktree left behind for a fork nobody will spawn."""
+        work = asyncio.ensure_future(asyncio.to_thread(
+            worktrees.create_fork_worktree, source_cwd,
+            source_session_id=source_id, dest=dest))
+        try:
+            return await asyncio.shield(work)
+        except asyncio.CancelledError:
+            await run_to_completion(_discard_fork_when_made(work),
+                                    name=f"session-fork-cancel-{source_id}")
+            raise
 
     def _refresh_background_work(self, session_id: str) -> None:
         """Driver ``on_background_work_changed`` callback: a background shell/Monitor
@@ -18037,10 +18165,12 @@ class SessionOrchestrator:
             rec.engine_session_id = engine_session_id
         async with db_session() as db:
             from sqlalchemy import update as sa_update
+            # The child's own id ends a pending fork (D-8) in the same write.
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(engine_session_id=engine_session_id)
+                .values(engine_session_id=engine_session_id,
+                        fork_source_engine_session_id=None, fork_resume_at=None)
             )
 
     @staticmethod
@@ -18069,6 +18199,7 @@ class SessionOrchestrator:
             assisted_by=getattr(row, "assisted_by", None),
             parent_session_id=getattr(row, "parent_session_id", None),
             parent_notified_status=getattr(row, "parent_notified_status", None),
+            fork_from=_row_fork_from(row),
             # Initial value only: a record just rebuilt from its row has no driver.
             # From here on the flag is DERIVED on every read (_sync_detached), never
             # hand-maintained — see that method for the drift this used to cause.

@@ -219,8 +219,9 @@ class SessionRecord:
     # (source engine session id, transcript uuid to cut at). Every driver built for it
     # until then resumes the SOURCE as a fork (SessionOrchestrator._create_driver), so
     # no rebuild can ever resume the source's transcript unforked. Cleared once the
-    # child's own id arrives. Daemon-local like turn_anchors: lost on a restart, after
-    # which the child (row engine_session_id NULL) starts fresh in its worktree.
+    # child's own id arrives. Persisted in the row's fork_source_engine_session_id /
+    # fork_resume_at (restored by _record_from_row), so it survives a daemon restart;
+    # deliberately NOT in to_dict/from_dict — only the owner daemon spawns drivers.
     fork_from: tuple[str, str] | None = None
 
     def record_turn_anchor(self, turn_id: str, uuid: str) -> None:

@@ -280,6 +280,14 @@ class Session(Base):
     # <child-session-notification> — the idempotency guard for that notice across
     # repeated status persists and daemon restarts. NULL = never reported.
     parent_notified_status: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Fork from here (D-8): a fork child that has not yet reported its own engine
+    # session id resumes the SOURCE's (fork_source_engine_session_id) as a fork cut at
+    # transcript uuid fork_resume_at — durable so a daemon restart before the child's
+    # first turn still forks. Both cleared with the UPDATE that writes the child's own
+    # engine_session_id. NULL = not a pending fork. Nullable for init_db's reconcile.
+    fork_source_engine_session_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, default=None)
+    fork_resume_at: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
     # model, pin…). Used as the archived-sessions list's "archived at" only as a legacy

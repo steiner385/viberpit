@@ -5,10 +5,13 @@ Real temp git repos and the REAL orchestrator spawn path; the SDK factory is a f
 that records the options each spawn was given, so no ``claude`` ever runs."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
+import threading
 import time
+import uuid
 from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
@@ -31,9 +34,9 @@ from server.sessions import fork as fk
 from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.engine import AgentEngine, capabilities_to_wire, fork_supported
 from server.sessions.fleet_orchestrator import _PER_SESSION, FleetOrchestrator
-from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.orchestrator import ModelBlockedError, SessionOrchestrator
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.remote import SPAWN_RPC_TIMEOUT, RemoteOrchestrator
+from server.sessions.remote import FORK_RPC_TIMEOUT, RemoteOrchestrator
 from server.sessions.translator import Translator
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -134,6 +137,12 @@ async def env(tmp_path: Path):
             p.stop()
 
 
+async def _fork(orch, source: str, **kw):
+    """fork_session with a fresh request id (one per click) unless one is given."""
+    kw.setdefault("request_id", str(uuid.uuid4()))
+    return await orch.fork_session(source, **kw)
+
+
 def _fork_branches(clone: Path) -> list[str]:
     return _git(clone, "branch", "--list", "--format=%(refname:short)", "*fork-*").split()
 
@@ -149,7 +158,7 @@ async def _rows_with_parent(parent: str) -> list[DbSession]:
 @pytest.mark.asyncio
 async def test_fork_from_reply_resumes_the_source_as_a_fork(env) -> None:
     orch, spawns, src, repo_root, clone = env
-    out = await orch.fork_session(src.id, at_turn_id="t1", mode="reply", prefill="ignored")
+    out = await _fork(orch, src.id, at_turn_id="t1", mode="reply", prefill="ignored")
     assert out["prefill"] is None
     child = orch.record(out["sessionId"])
     assert spawns.calls[-1] == {"cwd": child.cwd, "resume": "src-sdk", "fork_session": True,
@@ -177,7 +186,7 @@ async def test_fork_from_reply_resumes_the_source_as_a_fork(env) -> None:
 @pytest.mark.asyncio
 async def test_fork_from_message_cuts_at_the_previous_reply_and_echoes_prefill(env) -> None:
     orch, spawns, src, *_ = env
-    out = await orch.fork_session(src.id, at_turn_id="t1", mode="message",
+    out = await _fork(orch, src.id, at_turn_id="t1", mode="message",
                                   prefill="try it the other way")
     assert out["prefill"] == "try it the other way"
     assert spawns.calls[-1]["resume"] == "src-sdk"
@@ -187,7 +196,7 @@ async def test_fork_from_message_cuts_at_the_previous_reply_and_echoes_prefill(e
 @pytest.mark.asyncio
 async def test_fork_from_the_first_message_is_a_fresh_session(env) -> None:
     orch, spawns, src, *_ = env
-    out = await orch.fork_session(src.id, at_turn_id=None, mode="message", prefill="hello")
+    out = await _fork(orch, src.id, at_turn_id=None, mode="message", prefill="hello")
     assert out["prefill"] == "hello"
     child = orch.record(out["sessionId"])
     assert spawns.calls[-1] == {"cwd": child.cwd, "resume": None}
@@ -199,7 +208,7 @@ async def test_fork_from_the_first_message_is_a_fresh_session(env) -> None:
 async def test_prefill_over_the_cap_is_refused(env) -> None:
     orch, _, src, *_ = env
     with pytest.raises(fk.ForkError) as ei:
-        await orch.fork_session(src.id, at_turn_id=None, mode="message",
+        await _fork(orch, src.id, at_turn_id=None, mode="message",
                                 prefill="x" * (fk.PREFILL_MAX_CHARS + 1))
     assert ei.value.code == fk.PREFILL_TOO_LONG
     assert fk.PREFILL_MAX_CHARS == 10_000
@@ -211,7 +220,7 @@ async def test_a_turn_without_an_anchor_is_not_forkable(env, turn, mode) -> None
     orch, spawns, src, repo_root, clone = env
     before = len(spawns.calls)
     with pytest.raises(fk.ForkError) as ei:
-        await orch.fork_session(src.id, at_turn_id=turn, mode=mode)
+        await _fork(orch, src.id, at_turn_id=turn, mode=mode)
     assert ei.value.code == fk.TURN_NOT_FORKABLE
     assert ei.value.error_data == {"code": fk.TURN_NOT_FORKABLE}
     assert len(spawns.calls) == before and _fork_branches(clone) == []
@@ -230,11 +239,11 @@ async def test_a_turn_still_in_flight_is_not_forkable(env) -> None:
     src.record_turn_anchor("other-id", "uuid-2")    # any id whose anchor is a running entry
     for turn in ("live-turn", "uuid-2", "other-id"):
         with pytest.raises(fk.ForkError) as ei:
-            await orch.fork_session(src.id, at_turn_id=turn, mode="reply")
+            await _fork(orch, src.id, at_turn_id=turn, mode="reply")
         assert ei.value.code == fk.TURN_NOT_FORKABLE
     assert _fork_branches(clone) == []
     # A settled earlier turn still forks while the source is busy.
-    out = await orch.fork_session(src.id, at_turn_id="t1", mode="reply")
+    out = await _fork(orch, src.id, at_turn_id="t1", mode="reply")
     assert orch.record(out["sessionId"]).fork_from == ("src-sdk", "uuid-1")
 
 
@@ -247,7 +256,7 @@ async def test_kill_switch_off_refuses_and_hides_the_capability(env) -> None:
         assert capabilities_to_wire(ClaudeAgentDriver.capabilities)["fork"] is False
         assert fork_supported(ClaudeAgentDriver.capabilities) is False
         with pytest.raises(fk.ForkError) as ei:
-            await orch.fork_session(src.id, at_turn_id="t1", mode="reply")
+            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
     assert ei.value.code == fk.FORK_UNAVAILABLE
 
 
@@ -258,7 +267,7 @@ async def test_codex_is_not_forkable(env) -> None:
     assert capabilities_to_wire(CODEX_CAPABILITIES)["fork"] is False
     src.engine = AgentEngine.CODEX
     with pytest.raises(fk.ForkError) as ei:
-        await orch.fork_session(src.id, at_turn_id="t1", mode="reply")
+        await _fork(orch, src.id, at_turn_id="t1", mode="reply")
     assert ei.value.code == fk.FORK_UNAVAILABLE
 
 
@@ -266,7 +275,7 @@ async def test_codex_is_not_forkable(env) -> None:
 async def test_unknown_session_is_a_keyerror(env) -> None:
     orch, *_ = env
     with pytest.raises(KeyError):
-        await orch.fork_session("nope", at_turn_id="t1", mode="reply")
+        await _fork(orch, "nope", at_turn_id="t1", mode="reply")
 
 
 @pytest.mark.asyncio
@@ -274,7 +283,7 @@ async def test_unsafe_repo_config_is_refused_with_its_code(env) -> None:
     orch, _, src, _, clone = env
     _git(clone, "config", "includeIf.onbranch:main.path", "/dev/null")
     with pytest.raises(worktrees.ForkWorktreeError) as ei:
-        await orch.fork_session(src.id, at_turn_id="t1", mode="reply")
+        await _fork(orch, src.id, at_turn_id="t1", mode="reply")
     assert ei.value.code == worktrees.FORK_UNSAFE_CONFIG
     assert ei.value.error_data == {"code": worktrees.FORK_UNSAFE_CONFIG}
 
@@ -300,7 +309,7 @@ async def test_a_failure_after_the_worktree_exists_leaves_no_half_fork(env, stag
             ctx = pytest.raises(RuntimeError, match="no config")
             orch._driver_config_dir = mock.Mock(side_effect=RuntimeError("no config"))  # type: ignore[method-assign]
         with ctx:
-            await orch.fork_session(src.id, at_turn_id="t1", mode="reply")
+            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
     assert len(made) == 1 and not os.path.lexists(made[0])
     assert _fork_branches(clone) == []
     assert made[0] not in _git(clone, "worktree", "list", "--porcelain")
@@ -310,19 +319,23 @@ async def test_a_failure_after_the_worktree_exists_leaves_no_half_fork(env, stag
 
 
 @pytest.mark.asyncio
-async def test_child_rebuilds_keep_forking_until_its_own_id_arrives(env) -> None:
+async def test_child_rebuilds_keep_forking_until_its_own_id_arrives(
+        env, caplog: pytest.LogCaptureFixture) -> None:
     """A driver rebuilt before the child's first turn resumes the source AS A FORK
     (never unforked into the source's transcript); the child's own id ends that."""
     orch, spawns, src, *_ = env
-    child = orch.record((await orch.fork_session(src.id, at_turn_id="t1",
+    child = orch.record((await _fork(orch, src.id, at_turn_id="t1",
                                                  mode="reply"))["sessionId"])
     cfg = orch._create_driver(engine=AgentEngine.CLAUDE_CODE, session_id=child.id,
                               account=child.account, cwd=child.cwd, config_dir="/x",
                               mode="interactive", identity="u", resume=None,
                               on_sync_back=lambda: None)
     assert (cfg.resume, cfg._fork_resume_at) == ("src-sdk", "uuid-1")
-    await orch._persist_engine_session_id(child.id, "src-sdk")      # never adopt it
+    with caplog.at_level(logging.ERROR, logger="server.sessions.orchestrator"):
+        await orch._persist_engine_session_id(child.id, "src-sdk")  # never adopt it
     assert child.engine_session_id == "" and child.fork_from is not None
+    (err,) = [r for r in caplog.records if "engine_session_id_rejected" in r.getMessage()]
+    assert err.levelno == logging.ERROR and "reason=fork_source" in err.getMessage()
     await orch._persist_engine_session_id(child.id, "child-sdk")
     assert child.engine_session_id == "child-sdk" and child.fork_from is None
     cfg2 = orch._create_driver(engine=AgentEngine.CLAUDE_CODE, session_id=child.id,
@@ -330,6 +343,168 @@ async def test_child_rebuilds_keep_forking_until_its_own_id_arrives(env) -> None
                                mode="interactive", identity="u", resume="child-sdk",
                                on_sync_back=lambda: None)
     assert (cfg2.resume, cfg2._fork_resume_at) == ("child-sdk", None)
+
+
+# --- idempotency -----------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_same_request_id_returns_the_same_child_once(env) -> None:
+    orch, spawns, src, _, clone = env
+    rid = str(uuid.uuid4())
+    first = await orch.fork_session(src.id, at_turn_id="t1", mode="reply", request_id=rid)
+    n_spawns = len(spawns.calls)
+    again = await orch.fork_session(src.id, at_turn_id="t1", mode="reply", request_id=rid)
+    assert again == first and len(spawns.calls) == n_spawns
+    assert first["sessionId"] == fk.fork_child_id(src.id, rid)
+    assert _fork_branches(clone) == [worktrees.fork_branch_name(src.id, 1)]
+    # Still the same child once it is gone from memory (closed, archived, restarted).
+    orch._records.pop(first["sessionId"])
+    assert (await orch.fork_session(src.id, at_turn_id="t1", mode="reply",
+                                    request_id=rid)) == first
+    other = await orch.fork_session(src.id, at_turn_id="t1", mode="reply",
+                                    request_id=str(uuid.uuid4()))
+    assert other["sessionId"] != first["sessionId"]
+    assert len(_fork_branches(clone)) == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicates_make_one_child(env) -> None:
+    orch, spawns, src, _, clone = env
+    rid = str(uuid.uuid4())
+    before = len(spawns.calls)
+    a, b = await asyncio.gather(
+        orch.fork_session(src.id, at_turn_id="t1", mode="message", prefill="p",
+                          request_id=rid),
+        orch.fork_session(src.id, at_turn_id="t1", mode="message", prefill="p",
+                          request_id=rid))
+    assert a == b == {"sessionId": fk.fork_child_id(src.id, rid), "prefill": "p"}
+    assert len(spawns.calls) == before + 1 and len(_fork_branches(clone)) == 1
+    assert len(await _rows_with_parent(src.id)) == 1
+
+
+# --- admission --------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_global_cap_refuses_before_any_worktree(env) -> None:
+    orch, spawns, src, _, clone = env
+    before = len(spawns.calls)
+    with patch.object(orch, "_max_active_sessions", mock.AsyncMock(return_value=1)):
+        with pytest.raises(fk.ForkError) as ei:
+            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert ei.value.code == fk.FORK_AT_CAPACITY
+    assert len(spawns.calls) == before and _fork_branches(clone) == []
+
+
+@pytest.mark.asyncio
+async def test_product_cap_refuses(env) -> None:
+    orch, _, src, _, clone = env
+    src.repo = "o/r"
+    seen: list = []
+
+    async def full(repo, *, context=None):
+        seen.append(repo)
+        return ("prod", 2, 2)
+
+    with patch("server.automations.product_admission.repo_capacity_status", full):
+        with pytest.raises(fk.ForkError) as ei:
+            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert ei.value.code == fk.FORK_AT_CAPACITY and seen == ["o/r"]
+    assert _fork_branches(clone) == []
+
+
+@pytest.mark.asyncio
+async def test_model_needing_approval_is_refused(env) -> None:
+    orch, _, src, _, clone = env
+    with patch("server.sessions.model_policy.resolve_model_policy",
+               mock.AsyncMock(return_value="require_approval")):
+        with pytest.raises(fk.ForkError) as ei:
+            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert ei.value.code == fk.FORK_NEEDS_APPROVAL and _fork_branches(clone) == []
+
+
+@pytest.mark.asyncio
+async def test_blocked_model_is_model_blocked_error(env) -> None:
+    orch, _, src, _, clone = env
+    with patch("server.sessions.model_policy.resolve_model_policy",
+               mock.AsyncMock(return_value="block")):
+        with pytest.raises(ModelBlockedError) as ei:
+            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert ei.value.error_data == {"model": ei.value.model}   # an INFO refusal over RPC
+    assert _fork_branches(clone) == []
+
+
+@pytest.mark.asyncio
+async def test_child_execution_is_registered_with_the_source(env) -> None:
+    """An automation-owned source's ownership operation learns of the fork child,
+    through the same register_child_execution create_session calls for a child."""
+    orch, _, src, *_ = env
+    reg = mock.AsyncMock()
+    with patch("server.automations.ownership.register_child_execution", reg):
+        out = await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    reg.assert_awaited_once_with(out["sessionId"], src.id)
+
+
+# --- restart durability and cancellation --------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_record_rebuilt_from_its_row_still_forks(env) -> None:
+    orch, spawns, src, *_ = env
+    child_id = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    async with db_session() as db:
+        row = await db.get(DbSession, child_id)
+    assert row is not None
+    assert (row.fork_source_engine_session_id, row.fork_resume_at) == ("src-sdk", "uuid-1")
+    # A daemon restart before the child's first turn: the record comes back from the row.
+    driver = orch._drivers.pop(child_id)
+    await driver.aclose()
+    orch._records[child_id] = SessionOrchestrator._record_from_row(row)
+    assert orch._records[child_id].fork_from == ("src-sdk", "uuid-1")
+    rebuilt = orch._create_driver(engine=AgentEngine.CLAUDE_CODE, session_id=child_id,
+                                  account="alpha", cwd=row.cwd, config_dir="/x",
+                                  mode="interactive", identity="u",
+                                  resume=orch._records[child_id].engine_session_id or None,
+                                  on_sync_back=lambda: None)
+    await rebuilt.start()
+    assert spawns.calls[-1]["resume"] == "src-sdk"
+    assert spawns.calls[-1]["fork_session"] is True
+    assert spawns.calls[-1]["extra_args"] == {"resume-session-at": "uuid-1"}
+    await rebuilt.aclose()
+    # The child's own id clears the pending fork in the same write.
+    await orch._persist_engine_session_id(child_id, "child-sdk")
+    async with db_session() as db:
+        row = await db.get(DbSession, child_id)
+    assert row is not None
+    assert (row.engine_session_id, row.fork_source_engine_session_id,
+            row.fork_resume_at) == ("child-sdk", None, None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_while_making_the_worktree_discards_it(env) -> None:
+    orch, spawns, src, _, clone = env
+    entered, release = threading.Event(), threading.Event()
+    made: list[str] = []
+    real = worktrees.create_fork_worktree
+
+    def slow(*a, **k):
+        entered.set()
+        release.wait(30)
+        info = real(*a, **k)
+        made.append(info.path)
+        return info
+
+    before = len(spawns.calls)
+    with patch.object(worktrees, "create_fork_worktree", slow):
+        task = asyncio.ensure_future(_fork(orch, src.id, at_turn_id="t1", mode="reply"))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert len(made) == 1 and not os.path.lexists(made[0])
+    assert _fork_branches(clone) == [] and len(spawns.calls) == before
+    assert await _rows_with_parent(src.id) == []
 
 
 # --- driver + translator ----------------------------------------------------------
@@ -409,15 +584,15 @@ async def test_rpc_round_trip_creates_the_child_on_the_owner_daemon(
         client = DaemonClient(sock)
         try:
             ro = RemoteOrchestrator(client)
-            out = await ro.fork_session(src.id, at_turn_id="t1", mode="message",
+            out = await _fork(ro, src.id, at_turn_id="t1", mode="message",
                                         prefill="again", identity="u@x")
             with pytest.raises(fk.ForkError) as not_forkable:
-                await ro.fork_session(src.id, at_turn_id="nope", mode="reply")
+                await _fork(ro, src.id, at_turn_id="nope", mode="reply")
             with pytest.raises(KeyError):
-                await ro.fork_session("nope", at_turn_id="t1", mode="reply")
+                await _fork(ro, "nope", at_turn_id="t1", mode="reply")
             with patch.dict(os.environ, {"VIBERPIT_FORK_ENABLED": "false"}):
                 with pytest.raises(fk.ForkError) as off:
-                    await ro.fork_session(src.id, at_turn_id="t1", mode="reply")
+                    await _fork(ro, src.id, at_turn_id="t1", mode="reply")
         finally:
             await client.aclose()
     assert out["prefill"] == "again"
@@ -447,10 +622,16 @@ class _RecordingClient:
 @pytest.mark.asyncio
 async def test_remote_forwards_kwargs_with_the_spawn_budget() -> None:
     client = _RecordingClient(result={"sessionId": "c", "prefill": None})
-    await RemoteOrchestrator(client).fork_session("s", at_turn_id="t", mode="reply")
+    await RemoteOrchestrator(client).fork_session("s", at_turn_id="t", mode="reply",
+                                                  request_id="r")
     assert client.calls == [("fork_session", {"session_id": "s", "at_turn_id": "t",
-                                              "mode": "reply", "prefill": None,
-                                              "identity": "system"}, SPAWN_RPC_TIMEOUT)]
+                                              "mode": "reply", "request_id": "r",
+                                              "prefill": None, "identity": "system"},
+                             FORK_RPC_TIMEOUT)]
+    from viberpit.worktrees import FORK_GIT_TIMEOUT_S
+    from viberpit.worktree_diff import GIT_TIMEOUT_S
+    from server.sessions.remote import SPAWN_RPC_TIMEOUT
+    assert FORK_RPC_TIMEOUT > 4 * FORK_GIT_TIMEOUT_S + 12 * GIT_TIMEOUT_S + SPAWN_RPC_TIMEOUT
 
 
 @pytest.mark.parametrize(("err_type", "code", "exc"), [
@@ -462,8 +643,22 @@ async def test_remote_forwards_kwargs_with_the_spawn_budget() -> None:
 async def test_remote_rebuilds_known_codes(err_type, code, exc) -> None:
     ro = RemoteOrchestrator(_RecordingClient(error=DaemonError(err_type, "m", {"code": code})))
     with pytest.raises(exc) as ei:
-        await ro.fork_session("s", at_turn_id="t", mode="reply")
+        await _fork(ro, "s", at_turn_id="t", mode="reply")
     assert ei.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_remote_rebuilds_model_blocked_and_account_refusals() -> None:
+    from server.sessions.selection import AllAccountsBusy
+    ro = RemoteOrchestrator(_RecordingClient(error=DaemonError(
+        "ModelBlockedError", "model 'opus' is blocked by policy", {"model": "opus"})))
+    with pytest.raises(ModelBlockedError) as mb:
+        await _fork(ro, "s", at_turn_id="t", mode="reply")
+    assert mb.value.model == "opus"
+    ro = RemoteOrchestrator(_RecordingClient(error=DaemonError(
+        "AllAccountsBusy", "busy", {"kind": "no_usable_accounts"})))
+    with pytest.raises(AllAccountsBusy):
+        await _fork(ro, "s", at_turn_id="t", mode="reply")
 
 
 @pytest.mark.parametrize("err_type", ["ForkError", "ForkWorktreeError"])
@@ -471,7 +666,7 @@ async def test_remote_rebuilds_known_codes(err_type, code, exc) -> None:
 async def test_remote_does_not_invent_unknown_codes(err_type) -> None:
     ro = RemoteOrchestrator(_RecordingClient(error=DaemonError(err_type, "m", {"code": "WAT"})))
     with pytest.raises(DaemonError):
-        await ro.fork_session("s", at_turn_id="t", mode="reply")
+        await _fork(ro, "s", at_turn_id="t", mode="reply")
 
 
 @pytest.mark.asyncio
@@ -499,8 +694,9 @@ async def test_fleet_routes_the_fork_to_the_owning_host() -> None:
     dobby, rocky = _Host(), _Host()
     fo = FleetOrchestrator(_Router({"dobby": dobby, "rocky": rocky}), primary="dobby")  # type: ignore[arg-type]
     fo._host_cache["s"] = "rocky"
-    await fo.fork_session("s", at_turn_id="t", mode="reply")
-    assert rocky.calls == [("s", {"at_turn_id": "t", "mode": "reply"})] and dobby.calls == []
+    await fo.fork_session("s", at_turn_id="t", mode="reply", request_id="r")
+    assert rocky.calls == [("s", {"at_turn_id": "t", "mode": "reply", "request_id": "r"})]
+    assert dobby.calls == []
 
 
 # --- HTTP -------------------------------------------------------------------------
@@ -522,18 +718,23 @@ def _client():
 
 
 def _post(c, body, sid=SID):
+    body = {"requestId": str(uuid.uuid4()), **body}
     return c.post(f"/api/sessions/{sid}/fork", json=body, headers=_H)
 
 
 def test_http_fork_is_201_with_session_id_and_prefill() -> None:
-    async def fake(self, session_id, *, at_turn_id, mode, prefill=None, identity="system"):
-        assert (session_id, at_turn_id, mode, identity) == (
-            SID, "t1", "message", "testuser@example.com")
+    rid = str(uuid.uuid4())
+
+    async def fake(self, session_id, *, at_turn_id, mode, request_id, prefill=None,
+                   identity="system"):
+        assert (session_id, at_turn_id, mode, request_id, identity) == (
+            SID, "t1", "message", rid, "testuser@example.com")
         return {"sessionId": "child", "prefill": prefill}
 
     with patch.dict(os.environ, _ENV), _client() as c, \
             patch.object(SessionOrchestrator, "fork_session", fake):
-        r = _post(c, {"atTurnId": "t1", "mode": "message", "prefill": "hi"})
+        r = _post(c, {"atTurnId": "t1", "mode": "message", "prefill": "hi",
+                      "requestId": rid})
     assert r.status_code == 201, r.text
     assert r.json() == {"sessionId": "child", "prefill": "hi"}
 
@@ -575,6 +776,27 @@ def test_http_fork_worktree_error_409_with_its_code(code) -> None:
     assert r.status_code == 409 and r.json()["detail"]["code"] == code
 
 
+def test_http_blocked_model_and_busy_accounts_map_like_create() -> None:
+    from server.sessions.selection import AllAccountsBusy
+    with patch.dict(os.environ, _ENV), _client() as c:
+        with patch.object(SessionOrchestrator, "fork_session",
+                          side_effect=ModelBlockedError("opus")):
+            r = _post(c, {"atTurnId": "t1", "mode": "reply"})
+        assert r.status_code == 409 and r.json() == {"detail": "model blocked by policy"}
+        with patch.object(SessionOrchestrator, "fork_session",
+                          side_effect=AllAccountsBusy(None, "no_usable_accounts")):
+            r = _post(c, {"atTurnId": "t1", "mode": "reply"})
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "accounts_need_reauth"
+
+
+def test_http_request_id_is_required() -> None:
+    with patch.dict(os.environ, _ENV), _client() as c:
+        r = c.post(f"/api/sessions/{SID}/fork", json={"atTurnId": "t1", "mode": "reply"},
+                   headers=_H)
+    assert r.status_code == 422
+
+
 def test_http_old_daemon_is_daemon_outdated_409() -> None:
     with patch.dict(os.environ, _ENV), _client() as c, \
             patch.object(SessionOrchestrator, "fork_session",
@@ -586,7 +808,8 @@ def test_http_old_daemon_is_daemon_outdated_409() -> None:
 def test_http_requires_identity() -> None:
     with patch.dict(os.environ, _ENV), _client() as c:
         assert c.post(f"/api/sessions/{SID}/fork",
-                      json={"atTurnId": "t1", "mode": "reply"}).status_code == 401
+                      json={"atTurnId": "t1", "mode": "reply",
+                            "requestId": str(uuid.uuid4())}).status_code == 401
 
 
 def test_config_endpoint_reports_the_gated_capability() -> None:
