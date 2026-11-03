@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from alembic.migration import MigrationContext
@@ -25,6 +25,11 @@ B = {"Tailscale-User-Login": "bob@example.com"}
 
 MIGRATION = Path(__file__).resolve().parents[1] / "db" / "migrations" / "versions" / \
     "0096_session_views.py"
+
+
+def _utcnow_naive() -> datetime:
+    """Naive UTC now, the schema's convention for last_turn_at."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _db(d) -> sqlite3.Connection:
@@ -65,7 +70,7 @@ def _post(client, sid: str, action: str, headers=A) -> int:
 def test_no_row_means_read_even_after_a_turn():
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "Fresh")
-        _set_last_turn(d, sid, datetime.utcnow())
+        _set_last_turn(d, sid, _utcnow_naive())
         assert _unread(client, sid) is False
 
 
@@ -81,7 +86,7 @@ def test_viewed_then_later_turn_then_viewed_then_mark_unread():
         assert _unread(client, sid) is True
 
         # Viewed again after that turn: the DB clock is now past it.
-        _set_last_turn(d, sid, datetime.utcnow() - timedelta(minutes=1))
+        _set_last_turn(d, sid, _utcnow_naive() - timedelta(minutes=1))
         assert _post(client, sid, "viewed") == 204
         assert _unread(client, sid) is False
 
@@ -175,6 +180,24 @@ def test_list_endpoints_issue_one_read_state_query_regardless_of_session_count()
             assert _post(client, _create(client, name), "viewed") == 204
         assert _count_read_state_queries(client, "/api/sessions") == 1
         assert _count_read_state_queries(client, "/api/sessions/archived") == 1
+
+
+def test_list_endpoints_degrade_to_read_when_the_lookup_fails():
+    from unittest.mock import patch
+
+    async def _boom(identity):
+        raise RuntimeError("db down")
+
+    with temp_env() as d, _app_with_orch(d) as (client, _orch):
+        sid = _create(client, "Resilient")
+        _set_last_turn(d, sid, datetime(2026, 1, 1))
+        assert _post(client, sid, "unread") == 204
+        with patch("server.sessions.read_state.unread_ids", side_effect=_boom):
+            assert _unread(client, sid) is False
+        assert client.delete(f"/api/sessions/{sid}", headers=A).status_code == 204
+        with patch("server.sessions.read_state.unread_ids", side_effect=_boom):
+            assert _unread(client, sid, path="/api/sessions/archived") is False
+        assert _unread(client, sid, path="/api/sessions/archived") is True
 
 
 def test_unknown_session_is_404():

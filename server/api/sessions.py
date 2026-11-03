@@ -768,6 +768,17 @@ def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
 # ---------------------------------------------------------------------------
 
 
+async def _unread_ids_or_none(identity: str, route: str) -> set[str]:
+    """The caller's unread session ids (D-10), or none on a DB error: ``unread`` is a
+    cosmetic flag, so it must never 500 the session list — every session reads as read."""
+    try:
+        return await read_state.unread_ids(identity)
+    except Exception:
+        log.warning("%s: read-state lookup failed — every session degrades to read", route,
+                    exc_info=True)
+        return set()
+
+
 @router.get("")
 async def list_sessions(
     request: Request,
@@ -804,7 +815,7 @@ async def list_sessions(
     except Exception:                          # DB down: report "unknown", never false-fresh (NFR-5)
         log.warning("list_sessions: heartbeat snapshot failed — liveness degrades to unknown",
                     exc_info=True)
-    unread = await read_state.unread_ids(identity)
+    unread = await _unread_ids_or_none(identity, "list_sessions")
     return [
         {**_record_to_dict(
             r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
@@ -1166,7 +1177,7 @@ async def list_archived_sessions(
     """Return all archived session metadata, with the caller's ``unread`` (D-10)."""
     orch = _get_orchestrator(request)
     rows = await orch.list_archived()
-    unread = await read_state.unread_ids(identity)
+    unread = await _unread_ids_or_none(identity, "list_archived_sessions")
     # The orchestrator's internal RPC wire temporarily carries the old Claude
     # alias for daemon-first rolling deploys. It is not part of the browser API.
     return [
