@@ -132,28 +132,32 @@ describe('buildPaletteEntries', () => {
     expect(one.drill).toBeUndefined()
     one.run!()
     expect(h.filterRepo).toHaveBeenCalledWith('o/one')
-    expect(two.drill).toBe('o/two')
+    expect(two.drill).toBe('repo:o/two')
     const branches = inSection(entries, 'branches')
     expect(branches.map((e) => e.label)).toEqual(['feat/x', 'main'])
-    expect(branches.map((e) => e.drill)).toEqual(['feat/x', 'main'])
+    expect(branches.map((e) => e.drill)).toEqual(['branch:feat/x', 'branch:main'])
     expect(h.filterRepo).toHaveBeenCalledTimes(1)
   })
 
-  it('a drill-down’s Sessions are the sessions on that repo or branch — background and archived included', () => {
+  it('a drill-down’s Sessions are EXACTLY the sessions on that repo or branch — background and archived included', () => {
     const h = host({
       live: [
-        { session: live('fg', { repo: 'o/main-app', branch: 'feat/x' }), scope: 'live' },
-        { session: live('bg', { repo: 'o/bots', branch: 'chore/deps' }), scope: 'background' },
+        { session: live('fg', { name: 'Maintain the docs', repo: 'o/app', branch: 'feat/x' }), scope: 'live' },
+        { session: live('bg', { repo: 'o/app-two', branch: 'main' }), scope: 'background' },
+        { session: live('m', { repo: 'o/app', branch: 'main' }), scope: 'live' },
       ],
     })
-    const prepared = preparePalette(buildPaletteEntries(h, {
-      archived: [archived('z', { repo: 'o/bots' })], repos: [repo('o/bots')],
-    }))
-    const sessionsFor = (q: string) =>
-      paletteSections(prepared, q).find((s) => s.id === 'sessions')?.entries.map((e) => e.label)
-    expect(sessionsFor('o/bots')).toEqual(['Live bg', 'Old z'])
-    expect(sessionsFor('chore/deps')).toEqual(['Live bg'])
-    expect(sessionsFor('feat/x')).toEqual(['Live fg'])
+    const entries = buildPaletteEntries(h, { archived: [archived('z', { repo: 'o/app' })], repos: [repo('o/app')] })
+    expect(inSection(entries, 'sessions').map((e) => e.facets)).toEqual([
+      { repo: 'o/app', branch: 'feat/x' }, { repo: 'o/app-two', branch: 'main' }, { repo: 'o/app', branch: 'main' },
+      { repo: 'o/app' },
+    ])
+    const prepared = preparePalette(entries)
+    const drill = (q: string) => paletteSections(prepared, q).map((s) => [s.id, s.entries.map((e) => e.label)])
+    // Only Sessions survive a drill: nothing else carries the facet.
+    expect(drill('branch:main')).toEqual([['sessions', ['Live bg', 'Live m']]])
+    expect(drill('repo:o/app')).toEqual([['sessions', ['Maintain the docs', 'Live m', 'Old z']]])
+    expect(drill('repo:o/app-two')).toEqual([['sessions', ['Live bg']]])
   })
 })
 

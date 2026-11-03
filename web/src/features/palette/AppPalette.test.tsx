@@ -25,6 +25,12 @@ const SESSIONS: Session[] = [
     id: 'bg1', name: 'Dependency sweep', repo: 'acme/bots', branch: 'chore/deps', status: 'in_progress',
     workClass: 'maintenance', updatedAt: '2026-10-20T10:00:00Z',
   }),
+  // Pre-spawn: waiting for a slot, shown in the list's own Queued section
+  // whatever the filters say.
+  session({
+    id: 'q1', name: 'Queued job', repo: 'acme/queue', status: 'queued', queuePosition: 1,
+    updatedAt: '2026-08-01T10:00:00Z',
+  }),
 ]
 
 const ARCHIVED: ArchivedSession[] = [{
@@ -299,7 +305,7 @@ describe('the list', () => {
     await within(palette()!).findByRole('option', { name: /^acme\/lonely$/ })
     await chooseOption(user, /^acme\/lonely$/)
     expect(palette()).toBeInTheDocument()
-    expect(paletteInput()).toHaveValue('acme/lonely')
+    expect(paletteInput()).toHaveValue('repo:acme/lonely')
     expect(paletteInput()).toHaveFocus()
     expect(sessionOptions()).toEqual(['Lonely relic'])
     expect(app.path()).toBe('/sessions')
@@ -314,7 +320,7 @@ describe('the list', () => {
     await user.keyboard('acme/bots')
     await within(palette()!).findByRole('option', { name: /^acme\/bots$/ })
     await chooseOption(user, /^acme\/bots$/)
-    expect(paletteInput()).toHaveValue('acme/bots')
+    expect(paletteInput()).toHaveValue('repo:acme/bots')
     expect(sessionOptions()).toEqual(['Dependency sweep'])
   })
 
@@ -325,9 +331,21 @@ describe('the list', () => {
     await user.keyboard('feat/thrust')
     await within(palette()!).findByRole('option', { name: /^feat\/thrust$/ })
     await chooseOption(user, /^feat\/thrust$/)
-    expect(paletteInput()).toHaveValue('feat/thrust')
+    expect(paletteInput()).toHaveValue('branch:feat/thrust')
     expect(sessionOptions()).toEqual(['One'])
     expect(app.path()).toBe('/pipeline')
+  })
+
+  it('opening a queued (pre-spawn) session keeps the list’s filters — its section ignores them anyway', async () => {
+    const user = userEvent.setup()
+    const app = await renderList()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'acme/rocket')
+    await openFromRail(user)
+    await user.keyboard('queued job')
+    await waitFor(() => expect(sessionOptions()).toEqual(['Queued job']))
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(app.path()).toBe('/sessions/q1'))
+    expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('acme/rocket')
   })
 
   it('with a Project filter for repo A, a branch of repo B never leaves the list filtered to A', async () => {

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { prepareSearch, searchPrepared, type SearchOps } from './paletteSearch'
 
-const item = (label: string, keywords: string[] = []) => ({ label, keywords })
+const item = (label: string, keywords: string[] = [], facets?: { repo?: string; branch?: string }) =>
+  ({ label, keywords, facets })
 const labels = (xs: readonly { label: string }[]) => xs.map((x) => x.label)
-const run = (items: { label: string; keywords?: readonly string[] }[], q: string, ops?: SearchOps) =>
+const run = (items: { label: string; keywords?: readonly string[]; facets?: { repo?: string; branch?: string } }[], q: string, ops?: SearchOps) =>
   labels(searchPrepared(prepareSearch(items), q, ops))
 
 describe('paletteSearch', () => {
@@ -48,11 +49,45 @@ describe('paletteSearch', () => {
     expect(run([item('abc')], 'zzz')).toEqual([])
   })
 
+  describe('facet terms (repo: / branch:) are exact', () => {
+    const items = [
+      item('Maintain the docs', ['o/app', 'main'], { repo: 'o/app', branch: 'feature' }),
+      item('Ship it', ['o/app', 'main'], { repo: 'o/app', branch: 'main' }),
+      item('Two', ['o/app-two', 'main'], { repo: 'o/app-two', branch: 'main' }),
+      item('Archived thing', ['o/app'], { repo: 'o/app' }),
+      item('Settings: Hooks'),
+    ]
+
+    it('branch:main matches the branch exactly — not a title that starts with "main"', () => {
+      expect(run(items, 'branch:main')).toEqual(['Ship it', 'Two'])
+    })
+
+    it('repo:o/app excludes o/app-two, and keeps entries with only a repo facet', () => {
+      expect(run(items, 'repo:o/app')).toEqual(['Maintain the docs', 'Ship it', 'Archived thing'])
+    })
+
+    it('an entry without the facet fails the term; facets combine with each other and with free text', () => {
+      expect(run(items, 'repo:o/app branch:main')).toEqual(['Ship it'])
+      expect(run(items, 'repo:o/app ship')).toEqual(['Ship it'])
+      expect(run(items, 'branch:nope')).toEqual([])
+    })
+
+    it('is case-insensitive like the rest of the search; a bare "repo:" constrains nothing yet', () => {
+      expect(run(items, 'REPO:O/APP-TWO')).toEqual(['Two'])
+      expect(run(items, 'repo:')).toEqual(labels(items))
+    })
+
+    it('free text is unchanged', () => {
+      expect(run(items, 'main')).toEqual(['Maintain the docs', 'Ship it', 'Two'])
+    })
+  })
+
   it('1,000 entries: one lowercase per query, no regex, and a fixed scan budget', () => {
     const items = Array.from({ length: 1000 }, (_, i) =>
-      item(`Session ${i} working on feature-${i % 37}`, [`owner/repo-${i % 11}`, `branch-${i}`, 'Idle']))
+      item(`Session ${i} working on feature-${i % 37}`, [`owner/repo-${i % 11}`, `branch-${i}`, 'Idle'],
+        { repo: `owner/repo-${i % 11}`, branch: `branch-${i}` }))
     const prepared = prepareSearch(items)
-    for (const q of ['e', 'feature-3', 'repo', 'zzz', 'session 99 idle']) {
+    for (const q of ['e', 'feature-3', 'repo', 'zzz', 'session 99 idle', 'repo:owner/repo-3', 'branch:branch-7 session']) {
       // Spies live only around the call, so the assertions' own regexes are not counted.
       const lower = vi.spyOn(String.prototype, 'toLowerCase')
       const regex = [

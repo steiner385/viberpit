@@ -19,6 +19,7 @@ import type { SessionListColumnProps } from '@/features/sessions/SessionListColu
 import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'
 import { useDeliveryWorkspace } from '@/features/delivery/useDeliveryWorkspace'
 import { isPendingSessionId } from '@/lib/pendingSessions'
+import { isPreSpawnStatus } from '@/api/types'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
@@ -688,10 +689,14 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
    * The palette's open path: the list's own (`openIn`), except that a live
    * session the list's filters or search currently hide clears them first —
    * otherwise the session opens beside a list that does not contain it, and
-   * the ‹ › chevrons and Alt+[ ] have no place to step from.
+   * the ‹ › chevrons and Alt+[ ] have no place to step from. A pre-spawn
+   * session (queued, pending approval) is exempt: it is never in the ordered
+   * list, and its own section shows it whatever the filters say.
    */
   const openFromPalette = (id: string, inScope: 'live' | 'background') => {
-    if (inScope === 'live' && !orderedIds.includes(id) && (isFiltered(list.filters) || list.search.query !== '')) {
+    const preSpawn = list.sessions.some((s) => s.id === id && isPreSpawnStatus(s.status))
+    if (inScope === 'live' && !preSpawn && !orderedIds.includes(id)
+      && (isFiltered(list.filters) || list.search.query !== '')) {
       list.setFilters(NO_FILTERS)
       list.search.setQuery('')
     }

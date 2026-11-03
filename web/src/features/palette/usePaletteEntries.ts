@@ -7,7 +7,7 @@ import { triageTier } from '@/session/triageTier'
 import { SETTINGS_GROUPS, SETTINGS_META } from '@/features/settings/settingsMeta'
 import { NAV_BY_ID, NAV_DEFS, settingsSectionPath, type NavId } from '@/shell/navDefs'
 import { SHORTCUTS, displayKeys, shortcutAllowed } from '@/shell/shortcuts'
-import { prepareSearch, searchPrepared, type Prepared, type Searchable } from './paletteSearch'
+import { prepareSearch, searchPrepared, type Facets, type Prepared, type Searchable } from './paletteSearch'
 import type { PaletteHost } from './paletteHost'
 
 /** Section order is the spec's (D-10 §Palette): it is also the render order. */
@@ -35,10 +35,11 @@ interface PaletteEntryBase extends Searchable {
 
 /**
  * Selecting an entry either RUNS it (the palette closes first) or DRILLS: the
- * palette's own query becomes `drill` and the palette stays open. A drill is
- * how a repo or branch the session list cannot filter to exactly is shown —
- * session entries carry their repo and branch as keywords, so the Sessions
- * section then lists the sessions on it, background and archived included.
+ * palette's own query becomes `drill` — a `repo:` / `branch:` facet term — and
+ * the palette stays open. A drill is how a repo or branch the session list
+ * cannot filter to exactly is shown: session entries carry their exact repo
+ * and branch as `facets`, so the Sessions section then lists exactly the
+ * sessions on it, background and archived included.
  */
 export type PaletteEntry = PaletteEntryBase & (
   | { run: () => void; drill?: undefined }
@@ -58,6 +59,17 @@ export interface PaletteData {
 const time = (iso: string | null | undefined): number => {
   const t = iso ? Date.parse(iso) : NaN
   return Number.isNaN(t) ? 0 : t
+}
+
+/** A session's exact repo / branch, for `repo:` / `branch:` drill-downs;
+ *  absent values are omitted so the facet term fails rather than matching "". */
+function facetsOf(repo: string | null | undefined, branch: string | null | undefined): Facets {
+  const out: Facets = {}
+  const r = repo?.trim()
+  const b = branch?.trim()
+  if (r) out.repo = r
+  if (b) out.branch = b
+  return out
 }
 
 const joinDetail = (parts: (string | null | undefined)[]): string =>
@@ -83,6 +95,7 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
         key: `session:${s.id}`, section: 'sessions', label: s.name,
         detail: joinDetail([repo, s.branch, status]),
         keywords: [repo, s.branch, status].filter((k): k is string => !!k),
+        facets: facetsOf(s.repo, s.branch),
         recency: time(s.updatedAt ?? s.createdAt),
         run: () => host.openSession(s.id, scope),
       })
@@ -93,6 +106,7 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
         key: `archived:${a.id}`, section: 'sessions', label: a.name,
         detail: joinDetail([repo, 'Archived']),
         keywords: [repo, 'Archived'].filter((k): k is string => !!k),
+        facets: facetsOf(a.repo, null),
         recency: time(a.archivedAt),
         run: () => host.openArchived(a.id),
       })
@@ -138,7 +152,7 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
       const key = `repo:${r.nameWithOwner}`
       out.push(host.canFilterRepo(r.nameWithOwner)
         ? { key, section: 'repos', label: r.nameWithOwner, run: () => host.filterRepo(r.nameWithOwner) }
-        : { key, section: 'repos', label: r.nameWithOwner, drill: r.nameWithOwner })
+        : { key, section: 'repos', label: r.nameWithOwner, drill: `repo:${r.nameWithOwner}` })
     }
     // Archived rows carry no branch, so the live sessions are the whole domain.
     // No list filter narrows to a branch, so a branch always drills.
@@ -148,7 +162,7 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
       if (b) branches.add(b)
     }
     for (const b of branches) {
-      out.push({ key: `branch:${b}`, section: 'branches', label: b, drill: b })
+      out.push({ key: `branch:${b}`, section: 'branches', label: b, drill: `branch:${b}` })
     }
   }
   return out
