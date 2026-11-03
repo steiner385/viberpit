@@ -6,6 +6,7 @@ import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
 import { ModelSwitchDivider } from './ModelSwitchDivider'
 import { RewindDividerSlot } from '@/features/sessions/rewind/RewindDividerSlot'
+import { TurnSummaryCard, type TurnSummaryInputs } from './TurnSummaryCard'
 import { modelName } from '@/session/modelName'
 import { failedPrompts } from '@/session/rewindTarget'
 import { buildRenderRows, ownPromptRowIndex, type RenderRow } from './transcriptRows'
@@ -60,6 +61,9 @@ interface Props {
   /** Changes on every local send (pass the runtime's `pendingSentSeq`): jumps to the
    *  bottom and re-enables auto-follow even if the user had scrolled up. */
   followSignal?: unknown
+  /** The live session's post-turn summary card (D-11) inputs; it trails the last
+   *  turn. Absent in read-only views and the assistant drawer. */
+  summary?: TurnSummaryInputs | null
 }
 
 /**
@@ -79,7 +83,7 @@ interface Props {
  *  - scrolling near the top pages in older turns and the prior scroll anchor is
  *    restored so the viewport doesn't jump.
  */
-export function TranscriptView({ turns, rotations = [], rewind, model, toolDetailMode, thinkingCollapsed, viewModeEpoch, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk, followSignal }: Props) {
+export function TranscriptView({ turns, rotations = [], rewind, model, toolDetailMode, thinkingCollapsed, viewModeEpoch, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk, followSignal, summary }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Warm the markdown renderer the moment a transcript exists, rather than
@@ -100,9 +104,17 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
 
   // The full ordered render list: head markers, then the flattened transcript.
   // buildRenderRows is the single source of truth for which rows exist.
+  // Keyed on the summary's three status facts, not the inputs object (a fresh
+  // object each parent render), so the rows only rebuild when the card changes.
+  const summaryStatus = summary?.status
+  const handBackReason = summary?.handBackReason
+  const suspectedCompleteReason = summary?.suspectedCompleteReason
   const rows = useMemo<RenderRow[]>(
-    () => buildRenderRows(turns, rotations, { loadingOlder, earliestTurn, rewind }),
-    [turns, rotations, loadingOlder, earliestTurn, rewind],
+    () => buildRenderRows(turns, rotations, {
+      loadingOlder, earliestTurn, rewind,
+      summary: summaryStatus === undefined ? null : { status: summaryStatus, handBackReason, suspectedCompleteReason },
+    }),
+    [turns, rotations, loadingOlder, earliestTurn, rewind, summaryStatus, handBackReason, suspectedCompleteReason],
   )
   // Each failed reply's prompt, for its error card's Rewind & retry (D-9).
   const promptOfFailed = useMemo(() => failedPrompts(turns), [turns])
@@ -222,6 +234,19 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
         return <ModelSwitchDivider to={modelName(row.toModel)} />
       case 'rewind':
         return <RewindDividerSlot marker={row.marker} />
+      case 'summary':
+        // A summary row exists only when `summary` was passed (buildRenderRows).
+        return summary ? (
+          <TurnSummaryCard
+            outcome={row.outcome}
+            files={row.files}
+            suggestions={summary.suggestions}
+            onPrompt={summary.onPrompt}
+            onResolveSuspectedComplete={summary.onResolveSuspectedComplete}
+            resolvePending={summary.resolvePending}
+            onOpenChanges={summary.onOpenChanges}
+          />
+        ) : null
       case 'rotation':
         return <RotationDivider from={row.rot.from} to={row.rot.to} reason={row.rot.reason} />
       case 'turn':

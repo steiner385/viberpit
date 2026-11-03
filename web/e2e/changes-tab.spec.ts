@@ -1,11 +1,13 @@
 /**
  * The session Changes tab (D-4): the header's `+N −M` chip opens it, it renders
  * the worktree diff, and neither the tab nor the page scrolls sideways at phone,
- * tablet or desktop widths (spec 2026-11-01 §12). The diff API is mocked with
- * `page.route`, like the other session specs.
+ * tablet or desktop widths (spec 2026-11-01 §12). The post-turn summary card
+ * (D-11) lists the finished turn's files and its Open Changes opens the same tab.
+ * The diff API is mocked with `page.route`, like the other session specs.
  */
 import { test, expect, type Page } from '@playwright/test'
-import { replayFrame, wire } from './fixtures/wsFrames'
+import { replayFrame, wire, userTurn, turnStart, toolCall, textDelta, turnEnd } from './fixtures/wsFrames'
+import type { SessionEvent } from '../src/session/events'
 
 const sid = 'changes-tab'
 
@@ -44,7 +46,7 @@ const DIFF = {
 /** Every frame the page sent over the session socket, parsed. */
 type Frame = { type: string; sessionId?: string; text?: string }
 
-async function openSession(page: Page, width: number, sent: Frame[] = []) {
+async function openSession(page: Page, width: number, sent: Frame[] = [], history: SessionEvent[] = []) {
   await page.setViewportSize({ width, height: 900 })
   await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
   await page.route('**/api/sessions', (route) => route.fulfill({ json: [{
@@ -60,7 +62,7 @@ async function openSession(page: Page, width: number, sent: Frame[] = []) {
   await page.routeWebSocket('**/ws', (ws) => ws.onMessage((msg) => {
     const frame = JSON.parse(msg.toString()) as Frame
     sent.push(frame)
-    if (frame.type === 'attach') ws.send(wire(replayFrame(sid, [], { totalTurns: 0 })))
+    if (frame.type === 'attach') ws.send(wire(replayFrame(sid, history, { totalTurns: history.length ? 2 : 0 })))
   }))
   await page.goto('/')
   await page.getByRole('button', { name: /open session changes tab/i }).click()
@@ -129,3 +131,36 @@ test('comment a line, send, and the prompt frame carries the composed review', a
   }))
   await expect(bar).toBeHidden()
 })
+
+// A finished turn that edited one file: the prompt, the reply's Edit (and its result),
+// the reply's text, then the session's `done` status — the turn is the user's again.
+const EDITED_TURN: SessionEvent[] = [
+  ...userTurn('u1', 'Bump the constant'),
+  turnStart('a1'),
+  toolCall('a1', 'tool-1', 'Edit', 'edit', {
+    file_path: '/home/u/worktrees/changes-tab/src/a.ts', old_string: 'const a = 1', new_string: 'const a = 2\nconst b = 3',
+  }),
+  { type: 'toolResult', toolId: 'tool-1', ok: true, payload: {} },
+  textDelta('a1', 'Bumped it.'),
+  turnEnd('a1'),
+  { type: 'status', state: 'done', count: 0 },
+]
+
+for (const width of [390, 1440]) {
+  test(`a finished turn ends with the summary card, whose Open Changes opens the tab, at ${width}px`, async ({ page }) => {
+    await openSession(page, width, [], EDITED_TURN)
+    const card = page.getByTestId('transcript-scroll').getByRole('region', { name: 'Turn summary' })
+    await expect(card).toBeVisible()
+    await expect(card).toContainText('Your turn')
+    // "Done" names the turn, never the objective: the card never says it.
+    await expect(card).not.toContainText(/\bdone\b/i)
+    await expect(card.getByRole('list', { name: 'Changed files' })).toContainText('src/a.ts')
+    await expect(card).toContainText('1 file changed')
+    await expect(card).toContainText('+2')
+    await expect(card).toContainText('−1')
+    await card.getByRole('button', { name: 'Open Changes' }).click()
+    await expect(page).toHaveURL(/view=changes/)
+    await expect(page.getByRole('tab', { name: 'Changes' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByText('const a = 2')).toBeVisible()
+  })
+}

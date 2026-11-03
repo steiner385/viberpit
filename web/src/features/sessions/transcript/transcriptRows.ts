@@ -1,4 +1,6 @@
 import type { Turn as TurnType, RotationMarker, RewindMarker } from '@/session/reducer'
+import { statusTier } from '@/session/statusTier'
+import { changedFiles, lastLogicalTurn, summaryOutcome, type ChangedFile, type SummaryOutcome } from '@/session/turnSummary'
 
 /**
  * A single virtualizable row. Virtualizers operate on a flat index space, so we
@@ -21,14 +23,23 @@ export type TranscriptRow =
 
 /**
  * A row as actually rendered by the transcript scroll container: the semantic
- * transcript rows plus the two head markers. Markers are ordinary rows so they
- * share the virtualizer's coordinate system (no scroll-margin bookkeeping).
+ * transcript rows plus the head markers and the tail rows (the summary card, the
+ * rewind divider). Markers are ordinary rows so they share the virtualizer's
+ * coordinate system (no scroll-margin bookkeeping).
  */
 export type RenderRow =
   | TranscriptRow
   | { key: string; kind: 'loading-older' }
   | { key: string; kind: 'begin' }
   | { key: string; kind: 'rewind'; marker: RewindMarker }
+  | { key: string; kind: 'summary'; outcome: SummaryOutcome; files: ChangedFile[] }
+
+/** The session facts the post-turn summary row (D-11) is decided from. */
+export interface SummaryRowInputs {
+  status: string
+  handBackReason?: string | null
+  suspectedCompleteReason?: string | null
+}
 
 export interface RenderRowOptions {
   /** True while an older-page fetch is in flight — shows the loading marker. */
@@ -37,6 +48,9 @@ export interface RenderRowOptions {
   earliestTurn?: number
   /** The latest rewind (D-9): its divider trails the transcript, where the cut turns were. */
   rewind?: RewindMarker | null
+  /** The live session's status facts: the post-turn summary card (D-11) trails the
+   *  last turn. Absent in read-only views, which never show it. */
+  summary?: SummaryRowInputs | null
 }
 
 /**
@@ -47,7 +61,7 @@ export interface RenderRowOptions {
 export function buildRenderRows(
   turns: TurnType[],
   rotations: RotationMarker[],
-  { loadingOlder = false, earliestTurn, rewind }: RenderRowOptions = {},
+  { loadingOlder = false, earliestTurn, rewind, summary }: RenderRowOptions = {},
 ): RenderRow[] {
   const head: RenderRow[] = []
   if (loadingOlder) head.push({ key: 'loading-older', kind: 'loading-older' })
@@ -56,8 +70,28 @@ export function buildRenderRows(
   // views omit earliestTurn, so it never shows there.
   if (turns.length > 0 && earliestTurn === 0) head.push({ key: 'begin', kind: 'begin' })
   const rows: RenderRow[] = [...head, ...flattenRows(turns, rotations)]
+  const summaryRow = summary ? buildSummaryRow(turns, summary) : null
+  if (summaryRow) rows.push(summaryRow)
   if (rewind) rows.push({ key: `rewind-${rewind.rewindId}`, kind: 'rewind', marker: rewind })
   return rows
+}
+
+/**
+ * The post-turn summary row: after the last turn, before the rewind divider.
+ * Shown once the session is not busy and its last logical turn (every assistant
+ * turn since the last prompt) has ended — none while the reply has not started.
+ * While busy it is only the mid-turn "Asked you" note, which shows regardless.
+ */
+function buildSummaryRow(turns: TurnType[], s: SummaryRowInputs): RenderRow | null {
+  if (turns.length === 0) return null
+  const busy = statusTier(s.status) === 'busy'
+  const outcome = summaryOutcome(s.status, s.handBackReason, s.suspectedCompleteReason, busy)
+  if (!outcome) return null
+  const key = `summary-${turns[turns.length - 1].id}`
+  if (outcome.mode === 'asked') return { key, kind: 'summary', outcome, files: [] }
+  const reply = lastLogicalTurn(turns)
+  if (reply.length === 0) return null
+  return { key, kind: 'summary', outcome, files: changedFiles(reply) }
 }
 
 export function flattenRows(turns: TurnType[], rotations: RotationMarker[]): TranscriptRow[] {
