@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@/api/types'
 import {
-  orderItems, buildNavItems, LIVE_ORDERING,
+  orderItems, buildNavItems, LIVE_ORDERING, GROUP_BY_VALUES, SORT_BY_VALUES,
   type GroupBy, type SortBy, type SessionGroup, type NavItem, type OrderingConfig,
 } from './ordering'
 import { loadOrderPref, saveOrderPref } from '@/lib/sessionOrder'
@@ -127,8 +127,8 @@ export type SessionOrdering = OrderingHandle<GroupBy, SortBy, Session>
 export const LIVE_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
   namespace: 'live',
   config: LIVE_ORDERING,
-  groupByValues: ['none', 'repo', 'status'],
-  sortByValues: ['status', 'lastActive', 'age', 'name'],
+  groupByValues: GROUP_BY_VALUES,
+  sortByValues: SORT_BY_VALUES,
   defaultPref: { groupBy: 'none', sortBy: 'status' },
 }
 

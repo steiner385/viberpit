@@ -10,7 +10,7 @@
  * merge into the stored object, so saving an ordering never drops the filters
  * and saving filters never drops the ordering.
  */
-import type { GroupBy, SortBy } from '@/session/ordering'
+import { GROUP_BY_VALUES, SORT_BY_VALUES, type GroupBy, type SortBy } from '@/session/ordering'
 import {
   coerceFilters, sanitizeFilters,
   type FilterOptions, type ListFilters,
@@ -93,12 +93,10 @@ export interface SessionOrderPref {
   groupBy: GroupBy
   sortBy: SortBy
 }
-const LIVE_GROUP: GroupBy[] = ['none', 'repo', 'status']
-const LIVE_SORT: SortBy[] = ['status', 'lastActive', 'age', 'name']
 const LIVE_DEFAULT: SessionOrderPref = { groupBy: 'none', sortBy: 'status' }
 
 export function loadSessionOrder(): SessionOrderPref {
-  return loadOrderPref('live', LIVE_GROUP, LIVE_SORT, LIVE_DEFAULT)
+  return loadOrderPref('live', GROUP_BY_VALUES, SORT_BY_VALUES, LIVE_DEFAULT)
 }
 export function saveSessionOrder(pref: SessionOrderPref): void {
   saveOrderPref('live', pref)

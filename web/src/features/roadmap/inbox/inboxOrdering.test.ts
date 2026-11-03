@@ -31,7 +31,7 @@ const decision = (over: Partial<DecisionProposal> = {}): DecisionProposal => ({
 })
 
 const bucket = (grouping: 'product' | 'capability' | 'confidence', p: InboxProposal) =>
-  INBOX_ORDERING_SPEC.config.groupings[grouping]!.bucketOf(p)
+  INBOX_ORDERING_SPEC.config.groupings[grouping]!.bucketOf(p, new Date(2026, 0, 1))
 const sortBy = (key: 'newest' | 'confidence' | 'title', rows: InboxProposal[]) =>
   [...rows].sort(INBOX_ORDERING_SPEC.config.sorts[key]!).map((p) => p.id)
 
