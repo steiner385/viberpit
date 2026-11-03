@@ -38,6 +38,11 @@ which:
   name}`. A child dispatched at capacity is queued and reports `"queued"`; its lineage
   survives the queue → spawn hand-off.
 
+A **fork** (`Fork from here` or `/fork`, D-8) is also a child of its source: it carries
+`parent_session_id`, so it counts toward this cap like a dispatched child. Unlike one, it is never
+registered into an automation operation. See
+[Fork from here](../features/web-dashboard-mobile.md).
+
 The model is told to use it for work the user must interact with independently and to keep
 using the Agent tool for quick, self-contained research. The eval case
 `dispatch-a-steerable-subtask` in `docs/superpowers/evals/session-tools/cases.jsonl` pins that.

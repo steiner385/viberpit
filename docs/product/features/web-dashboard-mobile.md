@@ -124,6 +124,25 @@ the session composer. Each turn also has a `Message actions` menu, shown on hove
 always on touch; **Copy as Markdown** copies the assistant turn's prose, or your prompt, to the
 clipboard.
 
+**Fork from here** — the `Message actions` menu offers **Fork from here**, which starts a new linked child
+session whose conversation is the source's, cut at that message. The source is untouched.
+- **On a reply:** the fork keeps that reply and continues after it.
+- **On your own message:** the fork cuts at the reply before it and prefills the child's composer with your
+  message, so you can edit it before sending. Forking your first message starts a fresh session with the same
+  prefill. **`/fork`** in the composer forks at the latest finished reply.
+- **Files:** the child starts from the source's **current** worktree, not from that message. It gets a new
+  branch `<prefix>fork-<id>-<n>` at the source's HEAD, with uncommitted and untracked files copied.
+  Restoring files to a message is rewind (D-9).
+- **Refusals:** a fork is refused with `FORK_OWNED_BY_AUTOMATION` while an automation owns the source. A fork
+  also stays fenced for its whole life: it will not start while an automation re-claims its source
+  ([#3230](https://github.com/steiner385/viberpit/issues/3230)). A repo whose local git config uses
+  `includeIf` is refused too (`FORK_UNSAFE_CONFIG`), as is a turn that is still running.
+- **Lineage:** a fork's `parent_session_id` is the source, so it counts toward the source's live
+  [child sessions](../guides/child-sessions.md) and their `dispatch_session` cap.
+- **Scope:** Claude only; Codex does not fork. The kill switch `VIBERPIT_FORK_ENABLED` (default on) hides the
+  menu item and `/fork`, and the server refuses with `FORK_UNAVAILABLE`. The server side is
+  `POST /api/sessions/{id}/fork`, run on the host that owns the session.
+
 **Changes tab and inline diffs** — each session has a Changes tab next to Conversation, listed when
 the session's worktree differs from its base.
 - **Base:** the merge-base with origin's default branch. With no recorded `origin/HEAD`, the tab

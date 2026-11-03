@@ -118,12 +118,27 @@ labels.
 
 | Action | Semantics | Backend |
 |---|---|---|
-| **Fork from here** `[A-D3]` | Creates a **new linked child session** (`parentSessionId`) whose conversation is the source up to that message, in its own worktree branched from the source's current HEAD. The source is untouched. | SDK `fork_session=True` + resume at message (`--resume-session-at` via `extra_args`, to be verified); the `fork` capability already exists (`engine.py:52`) |
+| **Fork from here** `[A-D3]` | Creates a **new linked child session** (`parentSessionId`) whose conversation is the source up to that message, in its own worktree branched from the source's current HEAD. The source is untouched. | **Shipped (D-8), verified** (`2026-11-02-d8-fork-verification.md`): `resume=<source>` + `fork_session=True` + `extra_args={"resume-session-at": <uuid>}`. Claude only, behind `VIBERPIT_FORK_ENABLED` |
 | **Rewind to here** `[A-D3]` | Truncates the conversation to before the message **and** restores files to that checkpoint. A divider marks the rewind and offers **Undo rewind**, which restores conversation and files. A confirmation lists the files that will change. | SDK `enable_file_checkpointing=True` + `ClaudeSDKClient.rewind_files(user_message_id)`; requires a fresh spawn with checkpointing on. The undo strategy (pre-rewind checkpoint or WIP commit) is decided in the implementation plan after verification. |
 | **Edit & resend** `[A-D7]` | Rewind to before the user message, then prefill the composer with its text. | the rewind path |
 | **Move to host** `[A-D19]` | Pushes the branch, then resumes the session on the target fleet host, keeping the session id and transcript. The source worktree is kept until the move is confirmed. | new orchestrator op over the existing fleet router |
 
 Rewind and edit are disabled during a running turn and on engines without the capability.
+
+**Fork as shipped (D-8).**
+- **Invocation, verified against CLI 2.1.316 and SDK 0.2.105.** The child spawns with `resume=<source engine session>`,
+  `fork_session=True` and `extra_args={"resume-session-at": <uuid>}`. The Python SDK has no `resume_session_at` option,
+  so `extra_args` builds the same argv the TS SDK does. `--resume-session-at` is a **hidden** flag (`.hideHelp()`), and
+  stream-json mode honours it. The cut is **inclusive**: the anchor is the last top-level assistant entry of the
+  reply, so the fork keeps that reply and continues after it. The source transcript is untouched. The gate is
+  `engine.fork_supported`, which reads the Claude capability and the kill switch `VIBERPIT_FORK_ENABLED` (default on).
+  Codex stays non-forking.
+- **Forking from your own message** works as edit-and-branch. The fork cuts at the **previous reply's** anchor, and
+  the child's composer is prefilled with the message text, so you can edit it before sending. Forking the **first**
+  message, which has no previous reply, starts a fresh session with the same prefill.
+- **Files** start from the source's **current** worktree, not from the fork point. The child gets a new branch
+  `<prefix>fork-<id>-<n>` at the source's HEAD, with uncommitted and untracked files copied. File restore to a
+  message is rewind (D-9).
 
 ## 6. Feedback
 
@@ -191,7 +206,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | `GET /sessions/{id}/files/{path}` (read-only content, with a size cap) — **shipped (D-7)** as `GET /sessions/{id}/files/content?path=` | Files tab, memory-file viewer |
 | `GET /sessions/{id}/diff` (aggregate worktree diff vs base, structured hunks) | Changes tab, chip, rail, inline diffs |
 | `POST /sessions/{id}/review-comments` (batch → one prompt) | not needed — client-composed prompt (D-5) |
-| `POST /sessions/{id}/fork` `{at_message_id}` | Fork |
+| `POST /sessions/{id}/fork` `{at_message_id}` — **shipped (D-8)** as `{atTurnId, mode, prefill?, requestId}` | Fork |
 | `POST /sessions/{id}/rewind` `{to_message_id}` + `POST …/rewind/undo` | Rewind, Edit & resend, Rewind & retry |
 | live `set_permission_mode` / effort / fast on the driver | prompt row |
 | `scope=session` rule creation from the card | permission card |

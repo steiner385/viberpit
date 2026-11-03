@@ -84,7 +84,7 @@ D=[
  ("Worktree visible + controls (branch, enter, discard)",2,"P","branch + path shown; discard/repair → D-14"),
  ("Resume / continue",3,"Y",""),
  ("Import CLI sessions",1,"Y","Adopt"),
- ("Fork session (from here)",3,"N","engine capability exists, no UI"),
+ ("Fork session (from here)",3,"Y","Claude; files start from current worktree"),
  ("Rewind to message (with file restore, undo)",3,"N",""),
  ("Edit & resend a previous message",2,"N",""),
  ("Side chat scoped to session (/btw, ⌘;)",2,"P","app-level assistant drawer"),
