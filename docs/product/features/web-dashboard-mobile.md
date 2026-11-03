@@ -156,6 +156,44 @@ session whose conversation is the source's, cut at that message. The source is u
   menu item and `/fork`, and the server refuses with `FORK_UNAVAILABLE`. The server side is
   `POST /api/sessions/{id}/fork`, run on the host that owns the session.
 
+**Rewind, Edit & resend, Rewind & retry** — your own messages also offer **Rewind to here** and
+**Edit & resend** in the `Message actions` menu. Both take the session back in place to just before that
+message.
+- **Rewind to here** cuts that message and everything after it from the conversation, and puts back the files
+  Claude changed since then.
+- **Edit & resend** is the same rewind, then it fills the composer with the cut message so you can change it
+  and send it again. If the composer already holds an unsent draft, the confirmation says it will be replaced.
+- **Rewind & retry** is a button on a failed reply's error card. It rewinds to the prompt that failed and
+  sends it again unchanged, through the normal send path. It is offered only on the latest prompt's own
+  failure. It is not offered for a prompt with an image, a nudge, or a prompt with no text. Because the resend
+  is a new prompt, this rewind can't be undone, and the confirmation says so.
+- **Confirmation:** every rewind first asks. The dialog lists the files that will change, marks the ones that
+  will be deleted, and shows the total `+insertions −deletions`. It always says: *Changes made by shell
+  commands are not restored, and edits made outside Claude since that message are overwritten.*
+- **Divider and Undo:** the cut turns are replaced by a divider, `Rewound — N files restored`, with an
+  **Undo rewind** button. Undo puts back both the conversation and the files as they were just before the
+  rewind. The divider goes away after your next message, or once the undo is done.
+- **Undo rules:**
+  - only the session's **latest** rewind can be undone, and only until the next prompt is sent;
+  - undo is refused (`REWIND_UNDO_EXPIRED`) if anything happened in the session since the rewind;
+  - before rewinding, ViberPit backs up every file the rewind could touch. If that backup would exceed
+    **64 MiB**, the rewind is refused (`REWIND_TOO_LARGE`) and nothing changes.
+- **Limits:**
+  - Only files Claude changed with its Edit and Write tools are restored. Changes made by Bash commands are not.
+  - Changes made outside Claude are not restored either. A file Claude also edited is overwritten with its
+    state at that message.
+  - The CLI keeps the newest **100** checkpoints per session, so very old messages may have none.
+  - Sessions started before D-9 have no checkpoints for their earlier messages. For those, the confirmation
+    says only the conversation will be rewound.
+  - Both actions are disabled while Claude is working or a permission, plan or question card is waiting on you.
+- **`/rewind`** in the composer opens a picker of your 20 most recent messages. Picking one runs Rewind to here.
+- **Accounts:** the CLI's file checkpoints (`file-history`) are now shared across accounts, like `projects`, so
+  rewind keeps working after the session rotates to another account.
+- **Scope:** Claude only; Codex does not rewind. The kill switch `VIBERPIT_REWIND_ENABLED` (default on) hides all
+  of these and turns off checkpointing for new spawns, and the server refuses with `REWIND_UNAVAILABLE`. The server
+  side is `POST /api/sessions/{id}/rewind` and `POST /api/sessions/{id}/rewind/undo`, run on the host that owns
+  the session.
+
 **Changes tab and inline diffs** — each session has a Changes tab next to Conversation, listed when
 the session's worktree differs from its base.
 - **Base:** the merge-base with origin's default branch. With no recorded `origin/HEAD`, the tab
