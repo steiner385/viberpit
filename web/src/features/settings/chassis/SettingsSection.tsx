@@ -1,7 +1,8 @@
 import * as React from 'react'
 import { ScopeBadge } from './ScopeBadge'
 import type { SettingsScope } from '../scope'
-import { SETTINGS_BY_ID, isSettingsSectionId } from '../settingsDefs'
+import { SETTINGS_BY_ID } from '../settingsDefs'
+import { isSettingsSectionId } from '../settingsMeta'
 import { cn } from '@/lib/utils'
 
 export interface SettingsSectionProps {

@@ -2,6 +2,14 @@ import * as React from 'react'
 import { getOverlayRoot } from '@/ui/portal'
 import { useRequireDeployController } from '@/lib/deployController'
 import { DeployOverlay } from '@/shell/DeployOverlay'
+import type { PaletteHost } from '@/features/palette/paletteHost'
+
+/**
+ * The ⌘K palette, loaded on its first open and never before: `import()` is the
+ * whole boundary, so the palette, its search and the settings metadata stay
+ * out of the entry chunk (`features/palette/paletteBoundary.test.ts`).
+ */
+const AppPalette = React.lazy(() => import('@/features/palette').then((m) => ({ default: m.AppPalette })))
 
 /** The region name, exported so tests and `AppShell` cannot spell it two ways. */
 export const OVERLAY_REGION = 'app.overlays'
@@ -90,7 +98,13 @@ let marks = 0
  * kiosk check would be a third owner of the same rule. (`PromptDock` and
  * `DrawerHost` refuse the same temptation for the same reason.)
  */
-export function Overlays() {
+export interface OverlaysProps {
+  /** The open ⌘K palette's host, or null/absent while it is closed. The shell
+   *  owns the open state (`app.palette`); this region only mounts it. */
+  palette?: PaletteHost | null
+}
+
+export function Overlays({ palette = null }: OverlaysProps = {}) {
   useRequireDeployController()
 
   React.useEffect(() => {
@@ -104,7 +118,16 @@ export function Overlays() {
     }
   }, [])
 
-  // Contributes nothing to layout: the overlay portals itself into the root
-  // marked above, so `AppShell` can place this region anywhere in its tree.
-  return <DeployOverlay />
+  // Contributes nothing to layout: both overlays portal themselves into the
+  // root marked above, so `AppShell` can place this region anywhere in its tree.
+  return (
+    <>
+      <DeployOverlay />
+      {palette && (
+        <React.Suspense fallback={null}>
+          <AppPalette host={palette} />
+        </React.Suspense>
+      )}
+    </>
+  )
 }

@@ -55,7 +55,7 @@ const headerAction = (e: KeyboardLike) => matchShortcut(e, inGroup('list-mode-he
  * is skipped, not swallowed" assertable.
  */
 const SHELL_HANDLED = [
-  'app.help', 'app.assistant',
+  'app.help', 'app.assistant', 'app.palette',
   'compose.help', 'compose.nav', 'insession.stop', 'insession.detach', 'insession.detachEsc',
   'insession.forceDetach', 'insession.denyPermission',
   'session.listPrev', 'session.listNext', 'session.jumpN',
@@ -225,15 +225,18 @@ function chordFromKeys(keys: string): KeyboardLike | null {
   if (asAltShift) {
     return ev({ key: asAltShift[1], code: `Key${asAltShift[1]}`, altKey: true, shiftKey: true })
   }
+  // A letter carries its physical key too (`Ctrl+K` → `KeyK`): `app.palette`
+  // matches on `code`, so a non-Latin layout's ⌘K still opens it.
+  const letterCode = (key: string) => (/^[a-z]$/.test(key) ? `Key${key.toUpperCase()}` : '')
   const asCtrl = /^Ctrl\+(.+)$/.exec(keys)
   if (asCtrl) {
     const key = keyForGlyph(asCtrl[1].toLowerCase())
-    return key === null ? null : ev({ key, ctrlKey: true })
+    return key === null ? null : ev({ key, code: letterCode(key), ctrlKey: true })
   }
   const asMeta = /^⌘(.+)$/.exec(keys)
   if (asMeta) {
     const key = keyForGlyph(asMeta[1].toLowerCase())
-    return key === null ? null : ev({ key, metaKey: true })
+    return key === null ? null : ev({ key, code: letterCode(key), metaKey: true })
   }
   // `Shift+a` reports the UPPERCASE key, unlike the two above which lowercase —
   // that difference is the whole reason a Shift row needs its own parse rather
@@ -814,6 +817,36 @@ describe('matchShortcut — the shell scope', () => {
     // browser reports the shifted character. Pinned so a future matcher written
     // against `e.code` does not silently start swallowing it.
     expect(shellRow(ev({ key: '?', metaKey: true, shiftKey: true }), ctx())).toBeUndefined()
+  })
+
+  // ── the palette chord (D-10) ───────────────────────────────────────────────
+
+  it('⌘K and Ctrl+K reach the palette row — on the physical K, so a non-Latin layout works', () => {
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', metaKey: true }), ctx())).toBe('app.palette')
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', ctrlKey: true }), ctx())).toBe('app.palette')
+    // Russian layout: the K key reports "л".
+    expect(shellRow(ev({ key: 'л', code: 'KeyK', ctrlKey: true }), ctx())).toBe('app.palette')
+  })
+
+  it('the palette chord fires from the composer mid-draft, and anywhere off the Sessions section', () => {
+    const composer = document.createElement('textarea')
+    composer.setAttribute(SESSION_COMPOSER_ATTR, '')
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', ctrlKey: true }),
+      ctx({ active: composer, yieldsToTextEntry: true, sessionOpen: true }))).toBe('app.palette')
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', metaKey: true }), ctx({ inSessions: false }))).toBe('app.palette')
+  })
+
+  it('the palette chord is blocked in kiosk and under an overlay (the palette closes itself)', () => {
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', ctrlKey: true }), ctx({ interactive: false }))).toBeUndefined()
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', ctrlKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
+  })
+
+  it('the palette chord needs EXACTLY ⌘ or Ctrl — bare k types, and Ctrl+Shift+K is Firefox’s console', () => {
+    expect(shellRow(ev({ key: 'k', code: 'KeyK' }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: 'K', code: 'KeyK', ctrlKey: true, shiftKey: true }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: 'K', code: 'KeyK', metaKey: true, shiftKey: true }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', ctrlKey: true, altKey: true }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: 'k', code: 'KeyK', ctrlKey: true, metaKey: true }), ctx())).toBeUndefined()
   })
 
   it('a row the caller cannot act on is skipped, and the walk continues past it', () => {

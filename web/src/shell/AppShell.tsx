@@ -40,9 +40,10 @@ import {
   SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle, useTranscriptJumpHandle,
 } from './sessionGestures'
 import { SessionListNavProvider } from './sessionListNav'
-import { altDigit } from './shortcuts'
+import { altDigit, type ShortcutContext } from './shortcuts'
 import { overlayIsOpen } from './useOverlayState'
-import { useShortcuts } from './useShortcuts'
+import { useShortcuts, type ShortcutHandlers } from './useShortcuts'
+import type { PaletteHost } from '@/features/palette/paletteHost'
 import { useToastAnchor } from './toastInsets'
 import { useAppBanners } from './useAppBanners'
 import { ViewportProvider, useViewport, type LayoutMode } from './useViewport'
@@ -319,52 +320,80 @@ function AppShellInner() {
   const gestures = useSessionGestureHandle()
   const promptMenus = usePromptRowMenusHandle()
   const transcriptJump = useTranscriptJumpHandle()
-  useShortcuts(
-    (e) => {
-      const active = document.activeElement
-      return {
-        // `overlayIsOpen()`, not `useOverlayState()`: this runs in an event
-        // handler, outside render.
-        overlayOpen: overlayIsOpen(),
-        hasOpenAction: gestures.current?.hasOpenAction ?? false,
-        hasDeniablePermission: gestures.current?.hasDeniablePermission ?? false,
-        // "A session is open" means a session's gestures are registered — not
-        // that the URL has an `:id`. A route can match before the pane mounts,
-        // and a detach row that fires with nothing to detach would swallow
-        // Escape app-wide.
-        sessionOpen: gestures.current !== null,
-        sessionBusy: gestures.current?.busy ?? false,
-        inSessions: region.inSessions,
-        interactive: mode !== 'kiosk',
-        active,
-        yieldsToTextEntry: textEntryClaimsKey(e, active),
-      }
-    },
-    {
-      // Two rows, one drawer: `?` yields to a focused text entry (it is a
-      // character there), the ⌘/Ctrl chord does not. The guard is the
-      // difference, so the registry carries two rows and they share an effect.
-      'app.help': () => openDrawer('help'),
-      'app.assistant': () => openDrawer('assistant'),
-      'compose.help': () => openDrawer('help'),
-      'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
-      'insession.stop': () => gestures.current?.onStop(),
-      'insession.detach': () => gestures.current?.onDetach(),
-      'insession.detachEsc': () => gestures.current?.onDetach(),
-      'insession.forceDetach': () => gestures.current?.onDetach(),
-      'insession.modeMenu': () => promptMenus.current?.openMode(),
-      'insession.modelMenu': () => promptMenus.current?.openModel(),
-      'insession.effortMenu': () => promptMenus.current?.openEffort(),
-      'insession.denyPermission': () => gestures.current?.denyOldestPermission(),
-      'insession.cycleView': () => gestures.current?.onCycleView(),
-      'session.listPrev': () => workspace.stepSession('prev'),
-      'session.listNext': () => workspace.stepSession('next'),
-      // The row matched, so the digit is 1–9; `?? 0` only satisfies the type.
-      'session.jumpN': (e) => workspace.jumpToSession((altDigit(e) ?? 0) - 1),
-      'transcript.promptPrev': () => transcriptJump.current?.jumpPrompt('prev'),
-      'transcript.promptNext': () => transcriptJump.current?.jumpPrompt('next'),
-    },
-  )
+  const shortcutContext = (e: KeyboardEvent): ShortcutContext => {
+    const active = document.activeElement
+    return {
+      // `overlayIsOpen()`, not `useOverlayState()`: this runs in an event
+      // handler, outside render.
+      overlayOpen: overlayIsOpen(),
+      hasOpenAction: gestures.current?.hasOpenAction ?? false,
+      hasDeniablePermission: gestures.current?.hasDeniablePermission ?? false,
+      // "A session is open" means a session's gestures are registered — not
+      // that the URL has an `:id`. A route can match before the pane mounts,
+      // and a detach row that fires with nothing to detach would swallow
+      // Escape app-wide.
+      sessionOpen: gestures.current !== null,
+      sessionBusy: gestures.current?.busy ?? false,
+      inSessions: region.inSessions,
+      interactive: mode !== 'kiosk',
+      active,
+      yieldsToTextEntry: textEntryClaimsKey(e, active),
+    }
+  }
+
+  // The handlers that need no key event — the ⌘K palette runs these very
+  // functions as its Actions (`PaletteHost.actions`), so a palette action and
+  // its shortcut cannot drift. Rows sharing an effect share the FUNCTION, which
+  // is also how the palette lists ← / Esc / Ctrl+Z as one "detach".
+  //
+  // Two rows, one drawer: `?` yields to a focused text entry (it is a
+  // character there), the ⌘/Ctrl chord does not. The guard is the difference,
+  // so the registry carries two rows and they share an effect.
+  const openHelp = () => openDrawer('help')
+  const detach = () => gestures.current?.onDetach()
+  const actionHandlers: Record<string, () => void> = {
+    'app.help': openHelp,
+    'app.assistant': () => openDrawer('assistant'),
+    'compose.help': openHelp,
+    'insession.stop': () => gestures.current?.onStop(),
+    'insession.detach': detach,
+    'insession.detachEsc': detach,
+    'insession.forceDetach': detach,
+    'insession.modeMenu': () => promptMenus.current?.openMode(),
+    'insession.modelMenu': () => promptMenus.current?.openModel(),
+    'insession.effortMenu': () => promptMenus.current?.openEffort(),
+    'insession.denyPermission': () => gestures.current?.denyOldestPermission(),
+    'insession.cycleView': () => gestures.current?.onCycleView(),
+    'session.listPrev': () => workspace.stepSession('prev'),
+    'session.listNext': () => workspace.stepSession('next'),
+    'transcript.promptPrev': () => transcriptJump.current?.jumpPrompt('prev'),
+    'transcript.promptNext': () => transcriptJump.current?.jumpPrompt('next'),
+  }
+
+  // ── the ⌘K palette (D-10) ──
+  //
+  // Open ⇔ a context snapshot is held: the shell's context at the ⌘K keydown,
+  // taken before the palette itself counts as an overlay, which is what each
+  // Action's `when` is judged against. `afterClose` runs an entry's effect once
+  // the palette has unmounted — passive cleanups (the focus trap's restore)
+  // run before this component's effects in the same commit — so an action that
+  // opens a menu or moves focus is not undone by the restore.
+  const [paletteContext, setPaletteContext] = React.useState<ShortcutContext | null>(null)
+  const afterClose = React.useRef<(() => void) | null>(null)
+  React.useEffect(() => {
+    if (paletteContext !== null || !afterClose.current) return
+    const run = afterClose.current
+    afterClose.current = null
+    run()
+  }, [paletteContext])
+
+  const keyHandlers: ShortcutHandlers = {
+    'app.palette': (e) => setPaletteContext({ ...shortcutContext(e), yieldsToTextEntry: false }),
+    'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
+    // The row matched, so the digit is 1–9; `?? 0` only satisfies the type.
+    'session.jumpN': (e) => workspace.jumpToSession((altDigit(e) ?? 0) - 1),
+  }
+  useShortcuts(shortcutContext, { ...actionHandlers, ...keyHandlers })
 
   const phone = mode === 'phone'
   const listVisible = shows('app.list')
@@ -377,6 +406,29 @@ function AppShellInner() {
   // right of the rail, left of a pushed drawer. Toasts sit at its top edge and
   // never on the chrome around it (`shell/toastInsets.ts`).
   const toastBandRef = useToastAnchor('band')
+
+  // A repo/branch from the palette narrows the ACTIVE list, so that list has to
+  // be on screen: anywhere else (another section, Archived, Background, a phone
+  // with a session open) goes to it.
+  const navigate = useNavigate()
+  const revealActiveList = () => {
+    if (!(listVisible && region.inSessions && listScopeForPath(pathname) === 'live')) navigate(SESSIONS_PATH)
+  }
+  const paletteHost: PaletteHost | null = paletteContext && {
+    context: paletteContext,
+    actions: actionHandlers,
+    live: workspace.paletteLive,
+    openSession: workspace.openIn,
+    openArchived: workspace.openArchived,
+    newSession: workspace.newSession,
+    navigate,
+    filterRepo: (repo) => { workspace.filterRepo(repo); revealActiveList() },
+    filterBranch: (branch) => { workspace.filterBranch(branch); revealActiveList() },
+    close: (then) => {
+      afterClose.current = then ?? null
+      setPaletteContext(null)
+    },
+  }
 
   return (
     // The list ORDER, for the open session's ‹ › chevrons — the same order
@@ -424,7 +476,7 @@ function AppShellInner() {
 
         {shows('app.rail') && phone && <NavBar />}
 
-        {shows('app.overlays') && <Overlays />}
+        {shows('app.overlays') && <Overlays palette={paletteHost} />}
         {workspace.dialogs}
         {/* Renders nothing. It sits inside the shell rather than in `main.tsx`
             because a field vitals sample is attributed to a route and a width
@@ -585,6 +637,34 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     openFromList(s.id)
   }
 
+  // The palette's view of the same state: every live session with the scope its
+  // list opens it in, and the list's own open / new / filter paths.
+  const paletteLive = React.useMemo(
+    () => [
+      ...list.sessions.map((session) => ({ session, scope: 'live' as const })),
+      ...list.background.map((session) => ({ session, scope: 'background' as const })),
+    ],
+    [list.sessions, list.background],
+  )
+  const openArchived = (id: string) => navigate(archivedSessionPath(id))
+  const newSession = () => navigate(SESSIONS_PATH)
+  /**
+   * The list's Project filter when it offers `repo` (DEC-8); otherwise the list
+   * search. The search matches names and transcripts only — it has no `repo:` /
+   * `branch:` syntax — and a Project value the options lack is sanitized away
+   * on the next render, so a repo with no live session falls back to its name.
+   */
+  const filterRepo = (repo: string) => {
+    if (list.filterOptions.project.some((o) => o.value === repo)) {
+      list.setFilters({ ...list.filters, project: repo })
+      list.search.setQuery('')
+    } else {
+      list.search.setQuery(repo)
+    }
+  }
+  /** No branch filter exists, so a branch is a plain search for its name. */
+  const filterBranch = (branch: string) => list.search.setQuery(branch)
+
   const nameOf = (id: string) =>
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
 
@@ -597,7 +677,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     newSelected: openSessionId === null,
     adoptionEnabled: config?.adoptionEnabled,
     listMode,
-    onNew: () => navigate(SESSIONS_PATH),
+    onNew: newSession,
     // Same rule as the dock's `openSession` (one predicate, two entry points —
     // exactly as `Dashboard` and `DesktopShell` each guarded their own): an
     // optimistic placeholder has no server session, so a click on one must not
@@ -618,7 +698,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // Archived scope: opening a row is a READ, so it goes to the runtime-less
     // transcript route (its param is `archivedId`, which is what keeps
     // `PageHost` from mounting a session runtime over a dead session).
-    onReviewSession: (id) => navigate(archivedSessionPath(id)),
+    onReviewSession: openArchived,
     onExitList: () => {
       setListMode(false)
       setPromptFocusKey((n) => n + 1)
@@ -675,5 +755,6 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   return {
     banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate,
     orderedIds, openFromList, stepSession, jumpToSession,
+    openIn, openArchived, newSession, filterRepo, filterBranch, paletteLive,
   }
 }
