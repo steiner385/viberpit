@@ -64,7 +64,7 @@ _STATUS_TRACE = os.environ.get("VIBERPIT_STATUS_TRACE", "false").lower() in ("1"
 # WS attach path (_emit_live_extras); buffering them would double-emit.
 _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
                  ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
-                 ev.TurnAnchor, ev.TurnEnd, ev.ErrorEvent,
+                 ev.TurnAnchor, ev.UserPromptUuid, ev.TurnEnd, ev.ErrorEvent,
                  # The turn's asks and their resolutions ride the attach snapshot too, so
                  # a mid-turn reattach re-delivers a pending permission/question AT ITS
                  # PLACE in the turn — after the prompt and the content that led to it —
@@ -337,6 +337,10 @@ class ClaudeAgentDriver:
         # <uuid>`, verified on CLI 2.1.316. The flag is hidden, so the capability is
         # also gated by VIBERPIT_FORK_ENABLED (engine.fork_supported).
         fork=True,
+        # Rewind to here (D-9): CLI file checkpoints + the `rewind_files` /
+        # `rewind_conversation` control requests, verified on CLI 2.1.317. Internal
+        # surfaces, so also gated by VIBERPIT_REWIND_ENABLED (engine.rewind_supported).
+        rewind=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -346,6 +350,7 @@ class ClaudeAgentDriver:
                  on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
+                 on_prompt_uuid: Callable[[str, str, str], None] | None = None,
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None,
                  resumed_after_restart: bool = False,
@@ -423,6 +428,9 @@ class ClaudeAgentDriver:
         # Fired (synchronously) with (session id, turn id, transcript uuid) for each
         # TurnAnchor (D-8), so the orchestrator keeps SessionRecord.turn_anchors live.
         self._on_turn_anchor = on_turn_anchor
+        # Fired (synchronously) with (session id, user turn id, CLI prompt uuid) for each
+        # UserPromptUuid (D-9), so the orchestrator keeps SessionRecord.prompt_uuids live.
+        self._on_prompt_uuid = on_prompt_uuid
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
@@ -1318,6 +1326,9 @@ class ClaudeAgentDriver:
         self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
             images=wire_images or None, context=context, origin=origin))
+        # The CLI echoes this prompt with its transcript uuid (--replay-user-messages,
+        # set at spawn while rewind is on): the translator maps it onto `user_turn`.
+        self._tr.expect_prompt(user_turn, sdk_text)
         assert self._client is not None  # _start_turn only runs once the client is connected
         if images:
             content: list[dict] = []
@@ -1647,6 +1658,12 @@ class ClaudeAgentDriver:
                     self._on_turn_anchor(self.session_id, e.turn_id, e.uuid)
                 except Exception:  # noqa: BLE001 - recording an anchor must never break the pump
                     log.debug("driver.on_turn_anchor failed session=%s", self.session_id,
+                              exc_info=True)
+            if isinstance(e, ev.UserPromptUuid) and self._on_prompt_uuid is not None:
+                try:
+                    self._on_prompt_uuid(self.session_id, e.turn_id, e.uuid)
+                except Exception:  # noqa: BLE001 - recording a uuid must never break the pump
+                    log.debug("driver.on_prompt_uuid failed session=%s", self.session_id,
                               exc_info=True)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
@@ -2620,6 +2637,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,
             on_turn_anchor=config.on_turn_anchor,
+            on_prompt_uuid=config.on_prompt_uuid,
             on_record_condense_ms=config.on_record_condense_ms,
             get_condense_estimate=config.get_condense_estimate,
             on_recoverable_failure=config.on_recoverable_failure,

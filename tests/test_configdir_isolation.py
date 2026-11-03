@@ -103,6 +103,75 @@ class TestReconcileLinks(unittest.TestCase):
             self.assertFalse(cj.is_symlink(), ".claude.json must NOT be a symlink")
 
     # -------------------------------------------------------------------------
+    # file-history (D-9 rewind) is shared, credentials still are not
+    # -------------------------------------------------------------------------
+    def test_file_history_is_shared_and_credentials_still_are_not(self):
+        """file-history holds file backups, not credentials: it is symlinked so a rotated
+        session can still restore its files. .credentials.json / .claude.json never are."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history").mkdir()
+            (base / ".credentials.json").write_text("{}")
+            (base / ".claude.json").write_text("{}")
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            configdir.reconcile_links("alpha")
+            self.assertIn("file-history", configdir.SHARE_ALLOWLIST)
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual(Path(os.readlink(cfg_dir / "file-history")), base / "file-history")
+            for name in (".credentials.json", ".claude.json"):
+                self.assertNotIn(name, configdir.SHARE_ALLOWLIST)
+                self.assertFalse((cfg_dir / name).is_symlink(), f"{name} must stay real")
+
+    def test_file_history_is_created_in_the_shared_base_when_missing(self):
+        """Without a shared dir to link, the CLI would write each account's checkpoints
+        into a private dir and a rotation would silently lose them (spike §4)."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            self.assertFalse((base / "file-history").exists())
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            self.assertTrue((base / "file-history").is_dir())
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+
+    def test_a_private_file_history_is_merged_into_the_shared_one_not_deleted(self):
+        """An account dir that already holds real checkpoints (an interactive `ccrun`
+        session) keeps them: they move into the shared dir before the link replaces it."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history" / "shared-sid").mkdir(parents=True)
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            (cfg_dir / "file-history" / "private-sid").mkdir(parents=True)
+            (cfg_dir / "file-history" / "private-sid" / "abc@v1").write_text("v0\n")
+            configdir.compose("alpha")
+            self.assertTrue((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((base / "file-history" / "private-sid" / "abc@v1").read_text(),
+                             "v0\n")
+            self.assertTrue((base / "file-history" / "shared-sid").is_dir())
+
+    def test_a_colliding_private_file_history_is_left_in_place(self):
+        """A session dir present in BOTH cannot be merged without overwriting one side:
+        the private dir stays (unlinked) rather than losing either copy."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "file-history" / "sid").mkdir(parents=True)
+            (base / "file-history" / "sid" / "x@v1").write_text("shared\n")
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            (cfg_dir / "file-history" / "sid").mkdir(parents=True)
+            (cfg_dir / "file-history" / "sid" / "x@v1").write_text("private\n")
+            configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "file-history").is_symlink())
+            self.assertEqual((cfg_dir / "file-history" / "sid" / "x@v1").read_text(),
+                             "private\n")
+            self.assertEqual((base / "file-history" / "sid" / "x@v1").read_text(), "shared\n")
+
+    # -------------------------------------------------------------------------
     # non-allowlist entries are NOT symlinked
     # -------------------------------------------------------------------------
     def test_non_allowlist_entries_not_symlinked(self):

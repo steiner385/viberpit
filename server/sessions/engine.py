@@ -105,6 +105,10 @@ class AgentCapabilities:
     #: must show an honest "not supported" rather than an empty or silently
     #: wrong result (#1285).
     library_management: bool = False
+    #: Rewind to here (D-9): restore the files a session's turns changed (CLI file
+    #: checkpoints) and cut the conversation back to a user prompt, live on the idle
+    #: client. Gated by the ``VIBERPIT_REWIND_ENABLED`` kill switch (rewind_supported).
+    rewind: bool = False
 
 
 def fork_enabled() -> bool:
@@ -121,6 +125,20 @@ def fork_supported(caps: AgentCapabilities | None) -> bool:
     return caps is not None and caps.fork and fork_enabled()
 
 
+def rewind_enabled() -> bool:
+    """The ``VIBERPIT_REWIND_ENABLED`` kill switch (D-9, default on)."""
+    from server.config import get_settings
+    return bool(get_settings().rewind_enabled)
+
+
+def rewind_supported(caps: AgentCapabilities | None) -> bool:
+    """Can a session on an engine with *caps* be rewound right now? THE rewind gate,
+    shaped like ``fork_supported``: the engine declares ``rewind`` and the kill switch
+    is on. ``None`` (an unknown engine) never rewinds. The wire capability reads this,
+    so the UI never offers a rewind the server would refuse."""
+    return caps is not None and caps.rewind and rewind_enabled()
+
+
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     """The browser shape of one capability set.
 
@@ -135,6 +153,7 @@ def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
         for field in AgentCapabilities.__dataclass_fields__
     }
     wire["fork"] = fork_supported(caps)
+    wire["rewind"] = rewind_supported(caps)
     return wire
 
 
@@ -301,6 +320,9 @@ class AgentDriverConfig:
     #: Fired (synchronously) with (session id, turn id, transcript uuid) for each
     #: ``TurnAnchor`` (D-8 fork point). Only engines with transcript uuids (Claude) call it.
     on_turn_anchor: Callable[[str, str, str], None] | None = None
+    #: Fired (synchronously) with (session id, user turn id, CLI prompt uuid) for each
+    #: ``UserPromptUuid`` (D-9 rewind target). Only engines that echo prompts (Claude) call it.
+    on_prompt_uuid: Callable[[str, str, str], None] | None = None
     #: MCP servers the orchestrator wrote to the CLI's per-project disabled list; Claude
     #: re-applies them after start in case a racing compose() erased the file (R5). Codex ignores.
     desired_disabled_mcp: list[str] | None = None

@@ -57,6 +57,10 @@ class Translator:
         # entries a replay could have named as this still-running turn's id or anchor,
         # which a fork must refuse (in_flight_ids). Turn-scoped.
         self._turn_entry_uuids: set[str] = set()
+        # The live user turn awaiting its CLI prompt uuid (D-9): (turn id, the exact text
+        # sent to the SDK), set by the driver as it sends a prompt, consumed by the CLI's
+        # `--replay-user-messages` echo of it. Turn-scoped.
+        self._pending_prompt: tuple[str, str] | None = None
         # Task sub-agents: CLI task id -> the spawning Task tool-use id. Lives for the
         # translator's lifetime, NOT the turn: a background sub-agent's notices arrive
         # after the turn that spawned it ended (through the driver's idle listener).
@@ -94,6 +98,36 @@ class Translator:
         self._turn_signals = {}
         self._anchor_uuid = None
         self._turn_entry_uuids = set()
+        self._pending_prompt = None
+
+    def expect_prompt(self, turn_id: str, sent_text: str) -> None:
+        """The driver is sending *sent_text* as user turn *turn_id*: map the CLI's echo
+        of it onto that turn (``UserPromptUuid``). *sent_text* is what the SDK receives,
+        headers included — the echo carries exactly that."""
+        self._pending_prompt = (turn_id, sent_text)
+
+    def _prompt_echo(self, msg) -> list:
+        """``UserPromptUuid`` when *msg* is the CLI's echo of the pending prompt, else [].
+
+        Matched on the sent text, not merely "the next user message": the CLI echoes
+        other user entries too (local-command stdout, synthetic meta prompts), and a
+        wrong uuid would point a rewind at a row that is not this prompt. A miss only
+        costs the live turn its target until a reload, where the turn id IS the uuid."""
+        pending = self._pending_prompt
+        uuid = getattr(msg, "uuid", None)
+        if pending is None or not uuid or getattr(msg, "parent_tool_use_id", None) is not None:
+            return []
+        content = msg.content
+        if isinstance(content, str):
+            text = content
+        else:
+            if any(isinstance(b, ToolResultBlock) for b in content):
+                return []
+            text = next((b.text for b in content if isinstance(b, TextBlock)), "")
+        if text.strip() != pending[1].strip():
+            return []
+        self._pending_prompt = None
+        return [ev.UserPromptUuid(pending[0], uuid)]
 
     def in_flight_ids(self) -> frozenset[str]:
         """Ids naming the turn still in flight, live or replayed: its stream turn id and
@@ -330,7 +364,11 @@ class Translator:
 
         if isinstance(msg, UserMessage):
             pid = getattr(msg, "parent_tool_use_id", None)
-            out = []
+            # A prompt echo yields only its uuid: the driver already emitted the prompt
+            # as this turn's UserMessage, and the echo opens no turn of its own.
+            out = self._prompt_echo(msg)
+            if isinstance(msg.content, str):
+                return out
             for rb in msg.content:
                 if isinstance(rb, ToolResultBlock):
                     out.append(ev.ToolResult(rb.tool_use_id, not bool(rb.is_error),

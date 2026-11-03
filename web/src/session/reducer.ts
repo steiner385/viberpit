@@ -75,7 +75,10 @@ export type Block =
 // `anchorUuid` is the CLI transcript uuid this assistant turn can be forked from (D-8,
 // see EvTurnAnchor). Set only on the segment that ENDS the engine turn; absent = no
 // Fork action.
-export interface Turn { id: string; engineTurnId?: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean; anchorUuid?: string }
+//
+// `promptUuid` is the CLI prompt uuid of a LIVE user turn (D-9 rewind target, see
+// EvUserPromptUuid). Absent on a replayed user turn, whose id already is that uuid.
+export interface Turn { id: string; engineTurnId?: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean; anchorUuid?: string; promptUuid?: string }
 
 export type SubThreadTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
 /** Live task state of a Task sub-agent, from subAgentStarted/Progress/Ended. Absent on
@@ -1205,6 +1208,15 @@ export function transcriptReducer(
       const idx = findRoleTurnIdx(state.turns, ev.turnId, 'assistant')
       if (idx === -1 || state.turns[idx].anchorUuid === ev.uuid) return state
       return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, anchorUuid: ev.uuid })) }
+    }
+
+    // ── userPromptUuid ────────────────────────────────────────────────────────
+    case 'userPromptUuid': {
+      // Role-scoped like turnAnchor: only the user turn it names, never an assistant turn
+      // sharing the id, and never a fabricated one for a turn this view does not hold.
+      const idx = findRoleTurnIdx(state.turns, ev.turnId, 'user')
+      if (idx === -1 || state.turns[idx].promptUuid === ev.uuid) return state
+      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, promptUuid: ev.uuid })) }
     }
 
     // ── turnEnd ───────────────────────────────────────────────────────────────

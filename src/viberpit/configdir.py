@@ -14,7 +14,31 @@ CLAUDE_JSON_NAME = ".claude.json"
 # Only these names from shared_base() are symlinked into the per-account cfg dir.
 # Everything else (sessions/, agents/, tasks/, .credentials.json, .claude.json, …)
 # stays isolated to each account.  (Principle VI — no over-sharing.)
-SHARE_ALLOWLIST = {"plugins", "commands", "settings.json", "settings.local.json", "projects"}
+# `file-history` (D-9 rewind) holds the CLI's file-checkpoint backups, not credentials:
+# shared so a session rotated onto another account can still restore its files (a
+# private copy makes that rewind silently partial — D-9 verification spike §4).
+SHARE_ALLOWLIST = {"plugins", "commands", "settings.json", "settings.local.json", "projects",
+                   "file-history"}
+
+# Allowlisted DIRECTORIES the CLI creates on demand and that must be shared from an
+# account's first spawn: created in shared_base() when missing, and an account's real
+# copy (written by an interactive run before it was shared) is merged into the shared
+# one rather than deleted when the link replaces it.
+SHARED_STATE_DIRS = {"file-history"}
+
+
+def _merge_into_shared(private: Path, shared: Path) -> bool:
+    """Move every entry of the real dir *private* into *shared*; True when *private*
+    is then empty and may be replaced by the link. A name present in both cannot be
+    merged without overwriting one side, so nothing moves and False keeps the private
+    dir in place."""
+    children = list(private.iterdir())
+    if any((shared / child.name).exists() or (shared / child.name).is_symlink()
+           for child in children):
+        return False
+    for child in children:
+        shutil.move(str(child), str(shared / child.name))
+    return True
 
 
 def reconcile_links(name: str) -> None:
@@ -62,6 +86,8 @@ def reconcile_links(name: str) -> None:
     # --- ensure allowlist symlinks ------------------------------------------------
     for entry_name in SHARE_ALLOWLIST:
         source = base / entry_name
+        if entry_name in SHARED_STATE_DIRS and not source.exists() and not source.is_symlink():
+            source.mkdir(mode=0o700, parents=True, exist_ok=True)
         if not source.exists():
             continue  # only symlink entries that actually exist in shared_base
         link = cfg_dir / entry_name
@@ -70,6 +96,9 @@ def reconcile_links(name: str) -> None:
                 continue  # already correct — nothing to do
             link.unlink()
         elif link.exists():
+            if (entry_name in SHARED_STATE_DIRS and link.is_dir()
+                    and not _merge_into_shared(link, source)):
+                continue  # a collision: keep the private copy rather than lose either side
             # a real file/dir shadowing the shared entry — remove so the symlink wins
             if link.is_dir() and not link.is_symlink():
                 shutil.rmtree(link)

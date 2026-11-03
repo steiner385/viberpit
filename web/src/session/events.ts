@@ -31,6 +31,10 @@ export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUui
 // without one (interrupted before any reply, or an engine without anchors) is not forkable.
 // Mirrors TurnAnchor (server/sessions/events.py).
 export interface EvTurnAnchor    { type: 'turnAnchor';    turnId: string; uuid: string }
+// The CLI prompt uuid of a LIVE user turn (D-9): the id a rewind targets. Sent once when
+// the CLI echoes the prompt; a replayed user turn needs none (its id already is the uuid).
+// Mirrors UserPromptUuid (server/sessions/events.py).
+export interface EvUserPromptUuid { type: 'userPromptUuid'; turnId: string; uuid: string }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
@@ -95,7 +99,7 @@ export interface EvBackgroundTaskStarted { type: 'backgroundTaskStarted'; toolUs
 export interface EvBackgroundTaskEnded   { type: 'backgroundTaskEnded';   toolUseId: string; taskId: string; status: 'completed' | 'failed' | 'stopped'; ts?: number }
 
 export type SessionEvent =
-  | EvUser | EvTurnStart | EvTurnAnchor | EvTurnEnd | EvTextDelta | EvThinkingDelta
+  | EvUser | EvTurnStart | EvTurnAnchor | EvUserPromptUuid | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvPermissionResolved | EvQuestion | EvQuestionResolved
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
   | EvSuggestions | EvCondensing | EvContextUsage | EvMcpStatus | EvRecovering | EvNotice
@@ -126,7 +130,7 @@ export interface Command {
 // Keyed by every SessionEvent['type']: `Record` makes the compiler reject a new event
 // type that is not listed here, so the set below can never silently fall behind the union.
 const SESSION_EVENT_TYPE_FLAGS: Record<SessionEvent['type'], true> = {
-  user: true, turnStart: true, turnAnchor: true, turnEnd: true, textDelta: true, thinkingDelta: true,
+  user: true, turnStart: true, turnAnchor: true, userPromptUuid: true, turnEnd: true, textDelta: true, thinkingDelta: true,
   toolCall: true, toolResult: true, permissionRequest: true, permissionResolved: true,
   question: true, questionResolved: true, sessionMeta: true, turnModel: true, title: true,
   status: true, replayReset: true, replayComplete: true, error: true, queueUpdate: true,

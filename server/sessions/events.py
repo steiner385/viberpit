@@ -127,6 +127,17 @@ class TurnAnchor:
     def to_wire(self): return {"type": "turnAnchor", "turnId": self.turn_id, "uuid": self.uuid}
 
 @dataclass
+class UserPromptUuid:
+    """The CLI prompt uuid of a LIVE user turn (D-9): the id ``rewind_files`` and
+    ``rewind_conversation`` both target (docs/superpowers/specs/
+    2026-11-03-d9-rewind-verification.md). The driver mints its own user turn id, so the
+    CLI echoes each prompt (``--replay-user-messages``) and the translator maps the
+    echoed ``UserMessage.uuid`` onto the pending turn — emitted once per prompt, never as
+    a second ``UserMessage``. Replay needs none: a replayed user turn id IS the uuid."""
+    turn_id: str; uuid: str
+    def to_wire(self): return {"type": "userPromptUuid", "turnId": self.turn_id, "uuid": self.uuid}
+
+@dataclass
 class HandBackRequested:
     """A top-level ``hand_back`` call was READ off the tool-use block, mid-turn (#2647).
 

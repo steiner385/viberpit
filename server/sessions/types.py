@@ -57,6 +57,11 @@ AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE = "session-toggle"
 # still resolve: SessionOrchestrator.resolve_turn_anchor rebuilds from the transcript.
 TURN_ANCHOR_CAP = 500
 
+# How many user turns' CLI prompt uuids (D-9 rewind targets) a SessionRecord keeps in
+# memory. Older ones still resolve: SessionOrchestrator.resolve_prompt_uuid rebuilds
+# from the transcript.
+PROMPT_UUID_CAP = 500
+
 
 @dataclass
 class SessionRecord:
@@ -215,6 +220,15 @@ class SessionRecord:
     # eviction, so a lookup miss against an unchanged transcript skips the re-parse.
     # Same daemon-local lifetime as turn_anchors.
     turn_anchors_rebuilt_at: tuple[str, int, int] | None = None
+    # Rewind targets (D-9): user turn id -> the CLI prompt uuid (the transcript user
+    # entry's uuid, which is also its file-checkpoint key), fed live by the driver's
+    # UserPromptUuid events and merged from the transcript on a lookup miss
+    # (SessionOrchestrator.resolve_prompt_uuid). Insertion-ordered, bounded to the newest
+    # PROMPT_UUID_CAP turns; daemon-local ONLY, like turn_anchors and for the same reason.
+    prompt_uuids: dict[str, str] = field(default_factory=dict)
+    # (path, size, mtime_ns) of the transcript last merged into prompt_uuids without
+    # eviction. Same daemon-local lifetime as prompt_uuids.
+    prompt_uuids_rebuilt_at: tuple[str, int, int] | None = None
     # A fork child (D-8) that has not yet reported its own engine session id:
     # (source engine session id, transcript uuid to cut at). Every driver built for it
     # until then resumes the SOURCE as a fork (SessionOrchestrator._create_driver), so
@@ -236,6 +250,14 @@ class SessionRecord:
         self.turn_anchors[turn_id] = uuid
         while len(self.turn_anchors) > TURN_ANCHOR_CAP:
             del self.turn_anchors[next(iter(self.turn_anchors))]
+
+    def record_prompt_uuid(self, turn_id: str, uuid: str) -> None:
+        """Remember user turn *turn_id*'s prompt uuid as the newest, evicting the oldest
+        past the cap."""
+        self.prompt_uuids.pop(turn_id, None)
+        self.prompt_uuids[turn_id] = uuid
+        while len(self.prompt_uuids) > PROMPT_UUID_CAP:
+            del self.prompt_uuids[next(iter(self.prompt_uuids))]
 
     @property
     def updated_at_iso(self) -> str | None:

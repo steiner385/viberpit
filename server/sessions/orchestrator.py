@@ -121,6 +121,7 @@ from server.sessions.engine import (
     SuggestionProvider,
     _EffortUnchanged,
     parse_agent_engine,
+    rewind_enabled,
 )
 from server.sessions.failure import classify as classify_failure
 from server.sessions.failure import log_level as failure_log_level
@@ -163,7 +164,7 @@ from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
     ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
-    RESUME_ELIGIBLE_STATUSES, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
+    RESUME_ELIGIBLE_STATUSES, PROMPT_UUID_CAP, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
 )
 from server.auth.identity import OPEN_LAN_IDENTITY
 from server.sessions.usage_stall import is_usage_stalled
@@ -2403,6 +2404,12 @@ class SessionOrchestrator:
         ``owns_pr`` (this session's ``_session_opened_pr``, for the draft-PR guard) and
         ``ready_grants`` (this session's user-approved drafts, for the same guard) are
         passed only to a factory that declares them — the real one — so fakes keep theirs.
+
+        Rewind (D-9): while ``VIBERPIT_REWIND_ENABLED`` is on, every CODING spawn — new,
+        resume and fork alike, since the CLI reads the checkpoint switch from its spawn
+        env only — gets ``enable_file_checkpointing=True`` and the
+        ``--replay-user-messages`` prompt echo (merged into any fork ``extra_args``).
+        Same declared-only rule, so fakes keep their signatures.
         """
         import inspect
         base = self._sdk_factory
@@ -2421,6 +2428,12 @@ class SessionOrchestrator:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
                 kw["ready_grants"] = self._ready_grants(session_id)
+            if self._rewind_spawn(session_id):
+                if "enable_file_checkpointing" in declared:
+                    kw["enable_file_checkpointing"] = True
+                if "extra_args" in declared:
+                    kw["extra_args"] = {**(fork_kw.get("extra_args") or {}),
+                                        "replay-user-messages": None}
             overlay = getattr(self, "_overlays", {}).get(session_id)
             # `dict` and not merely "not None": every kind's overlay lands in the same
             # registry, and a Codex session's is a different type entirely
@@ -2886,6 +2899,7 @@ class SessionOrchestrator:
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
             on_turn_anchor=self._record_turn_anchor,
+            on_prompt_uuid=self._record_prompt_uuid,
             on_record_condense_ms=self._record_condense_ms,
             get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
@@ -17429,6 +17443,49 @@ class SessionOrchestrator:
         # dropped old turns, which a later lookup can still reach by re-parsing.
         lossless = len(rebuilt) + len(live_only) <= TURN_ANCHOR_CAP
         rec.turn_anchors_rebuilt_at = stamp if lossless else None
+        return rebuilt.get(turn_id)
+
+    def _rewind_spawn(self, session_id: str) -> bool:
+        """Does a Claude spawn for *session_id* carry rewind's spawn options (D-9)? Every
+        coding session while the kill switch is on; never the assistant drawer, which
+        edits no files. A record-less spawn counts as coding."""
+        return rewind_enabled() and not is_assistant(
+            getattr(self, "_records", {}).get(session_id))
+
+    def _record_prompt_uuid(self, session_id: str, turn_id: str, uuid: str) -> None:
+        """Driver ``on_prompt_uuid`` callback: keep the user turn's CLI prompt uuid (D-9)
+        on the in-memory record. A record-less session (torn down mid-turn) is ignored."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.record_prompt_uuid(turn_id, uuid)
+
+    async def resolve_prompt_uuid(self, session_id: str, turn_id: str) -> str | None:
+        """The CLI prompt uuid of user turn *turn_id* — the id a rewind targets — or None.
+
+        Shaped like ``resolve_turn_anchor``: the record answers first (live turns, whose
+        ids the driver minted). On a miss — a replayed turn id after a reload, a record a
+        daemon restart rebuilt empty, or a turn older than the record's bound — the user
+        prompts are rebuilt from the transcript (where a user turn's id IS its uuid) and
+        merged in, and the FULL rebuild is consulted. Only engines with a transcript
+        (Claude) can answer; everything else is None."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        hit = rec.prompt_uuids.get(turn_id)
+        if hit is not None:
+            return hit
+        stamp = await self._transcript_stamp(session_id)
+        if stamp is None or rec.prompt_uuids_rebuilt_at == stamp:
+            return None
+        rebuilt = {e.turn_id: e.turn_id for e in await replay_events(stamp[0], max_turns=None)
+                   if isinstance(e, ev.UserMessage) and not e.owner_prefix}
+        live_only = {t: u for t, u in rec.prompt_uuids.items() if t not in rebuilt}
+        for tid, prompt in rebuilt.items():
+            rec.record_prompt_uuid(tid, prompt)
+        for tid, prompt in live_only.items():  # live (minted-id) entries stay the newest
+            rec.record_prompt_uuid(tid, prompt)
+        lossless = len(rebuilt) + len(live_only) <= PROMPT_UUID_CAP
+        rec.prompt_uuids_rebuilt_at = stamp if lossless else None
         return rebuilt.get(turn_id)
 
     async def _transcript_stamp(self, session_id: str) -> tuple[str, int, int] | None:
