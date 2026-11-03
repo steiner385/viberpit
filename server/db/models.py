@@ -678,6 +678,22 @@ class SessionRewind(Base):
     expired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class SessionView(Base):
+    """When one viewer last looked at one session (D-10 read state).
+
+    Unread for that viewer iff this row exists AND ``sessions.last_turn_at`` is later
+    than ``viewed_at``. No row = read, so a session nobody has opened (every existing
+    and automation-only session) never turns bold. Naive UTC, like ``last_turn_at``;
+    written from ``db_utc_now()`` (see ``server/sessions/read_state.py``)."""
+
+    __tablename__ = "session_views"
+
+    identity: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    session_id: Mapped[str] = mapped_column(
+        String, ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True)
+    viewed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class Automation(Base):
     """Registry state for one code-defined automation. Identity (name, schema,
     behavior) lives in server/automations/; this row stores only mutable state."""

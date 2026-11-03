@@ -122,6 +122,10 @@ RECONCILE_EXEMPT: set[str] = {
     # 0095_session_rewinds on prod). A rewind row without its session is meaningless,
     # so there is no synthesizable default.
     "session_rewinds.session_id",   # required at insert; the rewound session
+    # session_views (D-10): a NEW table (create_all builds it on dev SQLite; Alembic
+    # 0096_session_views on prod). viewed_at is written by every upsert in
+    # server/sessions/read_state.py; a row without it would assert an arbitrary read time.
+    "session_views.viewed_at",
 }
 
 
