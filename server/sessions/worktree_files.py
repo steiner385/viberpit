@@ -260,7 +260,7 @@ def _open_beneath(root: str, rel: str) -> int:
         raise FileAccessError(FILE_NOT_FOUND) from exc
     try:
         return open_beneath(rfd, rel)
-    except SymlinkInPath as exc:
+    except (SymlinkInPath, ValueError) as exc:
         raise FileAccessError(PATH_OUTSIDE_WORKTREE) from exc
     except OSError as exc:
         if exc.errno in (errno.ENOENT, errno.ENOTDIR):

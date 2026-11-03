@@ -115,7 +115,8 @@ Decision `docs/audits/2026-11-01-claude-desktop-code-benchmark.md` D3.
 
 **Files:**
 - Modify `src/viberpit/worktrees.py`: add
-  `create_fork_worktree(source_cwd: str, *, branch: str, dest: str) -> str`, which returns the new worktree path. Reuse
+  `create_fork_worktree(source_cwd, *, source_session_id, dest) -> ForkWorktreeInfo` (`.path` worktree root, `.cwd`
+  the source cwd's mirrored subdir, `.branch` picked under the clone lock, `.repo`). Reuse
   the existing worktree creation helpers and the hardened git env.
 - Test: `tests/test_fork_worktree.py`, run with real temp repos and `PYTHONPATH=$PWD/src`.
 

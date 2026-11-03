@@ -26,9 +26,12 @@ class SymlinkInPath(OSError):
 
 
 def _split(rel: str | bytes) -> list[str] | list[bytes]:
-    if isinstance(rel, bytes):
-        return [p for p in rel.split(b"/") if p]
-    return [p for p in rel.split("/") if p]
+    """``rel``'s components; ``ValueError`` if it is empty, absolute or has an empty
+    component (``a//b``, a trailing ``/``)."""
+    parts = rel.split(b"/") if isinstance(rel, bytes) else rel.split("/")
+    if not all(parts):
+        raise ValueError(f"not a clean relative path: {rel!r}")
+    return parts
 
 
 def _refused(exc: OSError, name: str | bytes, dfd: int) -> OSError:
@@ -44,16 +47,18 @@ def _refused(exc: OSError, name: str | bytes, dfd: int) -> OSError:
     return exc
 
 
-def open_dir_beneath(root_fd: int, rel: str | bytes, *, create: bool = False,
-                     mode: int = 0o777) -> int:
-    """A new fd for the directory ``rel`` beneath ``root_fd`` (``""`` = the root).
+def open_dir_beneath(root_fd: int, rel: str | bytes | list[str] | list[bytes], *,
+                     create: bool = False, mode: int = 0o777) -> int:
+    """A new fd for the directory ``rel`` (a relative path, or its components) beneath
+    ``root_fd``; ``""`` or ``[]`` is the root itself.
 
     With ``create``, missing components are made with ``mkdir(dir_fd=…)`` — which
     never follows a symlink either — before each is opened. Raises ``OSError``
-    (``SymlinkInPath`` for a symlinked component)."""
+    (``SymlinkInPath`` for a symlinked component); ``ValueError`` for a bad path."""
+    parts = rel if isinstance(rel, list) else (_split(rel) if rel else [])
     dfd = os.dup(root_fd)
     try:
-        for part in _split(rel):
+        for part in parts:
             if create:
                 try:
                     os.mkdir(part, mode, dir_fd=dfd)
@@ -74,11 +79,10 @@ def open_dir_beneath(root_fd: int, rel: str | bytes, *, create: bool = False,
 def open_beneath(root_fd: int, rel: str | bytes) -> int:
     """Open the file ``rel`` beneath ``root_fd`` read-only and non-blocking, following
     no symlink on the way or at the leaf. The caller ``fstat``s what it got. Raises
-    ``OSError`` (``SymlinkInPath`` for a symlinked component or leaf)."""
+    ``OSError`` (``SymlinkInPath`` for a symlinked component or leaf); ``ValueError``
+    for an absolute path or one with an empty component."""
     parts = _split(rel)
-    if not parts:
-        raise IsADirectoryError(errno.EISDIR, "empty path")
-    dfd = open_dir_beneath(root_fd, os.path.dirname(rel))
+    dfd = open_dir_beneath(root_fd, parts[:-1])
     try:
         return os.open(parts[-1], _READ_FLAGS, dir_fd=dfd)
     except OSError as exc:

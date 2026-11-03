@@ -43,6 +43,7 @@ from .worktree_diff import (
     filter_overrides,
     merge_driver_overrides,
     run_git,
+    untrusted_conditional_includes,
     worktree_top,
 )
 
@@ -769,7 +770,7 @@ def _next_fork_branch(repo_top: str, source_session_id: str) -> str:
     if out is None:
         raise ForkWorktreeError("could not list the fork branches")
     taken = {int(s) for line in os.fsdecode(out).splitlines()
-             if (s := line[len(stem):]).isdigit()}
+             if (s := line[len(stem):]).isascii() and s.isdecimal()}
     n = 1
     while n in taken:
         n += 1
@@ -841,7 +842,7 @@ def _copy_untracked(src_top: str, dst_top: str, entries: list[bytes]) -> None:
                 if not stat.S_ISREG(st.st_mode):
                     continue
                 try:
-                    pfd = open_dir_beneath(dst_root, os.path.dirname(rel), create=True)
+                    pfd = open_dir_beneath(dst_root, rel.split(b"/")[:-1], create=True)
                 except SymlinkInPath as exc:
                     raise ForkWorktreeError(
                         f"untracked path escapes the fork: {os.fsdecode(rel)}") from exc
@@ -933,6 +934,14 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
             raise ForkWorktreeError("the source has no index to fork from")
         if os.path.lexists(dest):
             raise ForkWorktreeError(f"fork dest already exists: {dest}", "FORK_DEST_EXISTS")
+        # The overrides below are scanned in the SOURCE's config context, but the
+        # checkout and apply run in the child's (new gitdir, fork branch): an
+        # ``includeIf "onbranch:…"``/``"gitdir:…"`` could add a driver only there.
+        # Fail closed on any repo-scope conditional include.
+        if conditional := untrusted_conditional_includes(top):
+            raise ForkWorktreeError(
+                f"repository config has conditional includes: {', '.join(conditional)}",
+                "FORK_UNSAFE_CONFIG")
         git = (*_FORK_SAFE, *filter_overrides(top), *merge_driver_overrides(top))
 
         # Read the source: only objects are written, never its index or tree.
@@ -970,11 +979,19 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
                 raise ForkWorktreeError(f"fork dest already exists: {dest}",
                                         "FORK_DEST_EXISTS")
             branch = _next_fork_branch(repo_top, source_session_id)
-            added = run_git(repo_top, *git, "worktree", "add", "-q", "-b", branch,
-                            dest, "--", head_sha, timeout=FORK_GIT_TIMEOUT_S)
         except DiskSpaceError as exc:
             raise ForkWorktreeError(str(exc), "FORK_DISK_FULL") from exc
         except GitTimeout as exc:
+            raise ForkWorktreeError("git timed out naming the fork branch") from exc
+        try:
+            added = run_git(repo_top, *git, "worktree", "add", "-q", "-b", branch,
+                            dest, "--", head_sha, timeout=FORK_GIT_TIMEOUT_S)
+        except GitTimeout as exc:
+            # git was killed mid-add. Unlike a refused add, dest and branch were both
+            # confirmed new under this lock moments ago, so what is there is ours.
+            log.info("worktree.fork_failed step=add dest=%s branch=%s err=timeout",
+                     dest, branch)
+            _discard_fork(repo_top, dest, branch)
             raise ForkWorktreeError("git timed out creating the fork worktree") from exc
         if added is None:
             # Not discarded: a failed add may have hit a dest or branch that is not ours.

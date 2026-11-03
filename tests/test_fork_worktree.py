@@ -445,3 +445,60 @@ def test_copy_never_creates_through_a_child_symlink(tmp_path: Path) -> None:
     with pytest.raises(ForkWorktreeError):
         worktrees._copy_untracked(str(src), str(dst), [b"out/deeper/x"])
     assert list(outside.iterdir()) == []
+
+
+# -- fix round 2 ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("mode", ["onbranch", "gitdir"])
+def test_conditional_include_refuses_the_fork(repo: Path, tmp_path: Path, mode: str,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    """An includeIf that only matches the CHILD's context (fork branch / new gitdir)
+    could add a filter the source-context scan never sees: refuse outright."""
+    marker = tmp_path / "pwned"
+    evil = tmp_path / "evil.cfg"
+    evil.write_text(f'[filter "x"]\n\tsmudge = touch {marker} && cat\n')
+    (repo / ".gitattributes").write_text("*.txt filter=x\n")
+    _git(repo, "add", ".gitattributes")
+    _git(repo, "commit", "-qm", "attrs")
+    cond = (f"onbranch:{brand.BRANCH_PREFIX}fork-**" if mode == "onbranch"
+            else f"gitdir:{repo}/.git/worktrees/**")
+    with open(repo / ".git" / "config", "a") as fh:
+        fh.write(f'[includeIf "{cond}"]\n\tpath = {evil}\n')
+    (repo / "a.txt").write_text("changed\n")
+    before = _snapshot(repo)
+
+    dest = tmp_path / "wt"
+    with pytest.raises(ForkWorktreeError) as ei:
+        _fork(repo, dest)
+    assert ei.value.code == "FORK_UNSAFE_CONFIG"
+    assert not marker.exists()
+    assert _snapshot(repo) == before
+    _assert_no_half_fork(repo, dest)
+
+    # Sanity: without the guard the probe really does fire in the child's context.
+    monkeypatch.setattr(worktrees, "untrusted_conditional_includes", lambda _top: [])
+    _fork(repo, tmp_path / "wt2")
+    assert marker.exists()
+
+
+def test_non_ascii_digit_suffix_does_not_break_naming(repo: Path) -> None:
+    _git(repo, "branch", worktrees.fork_branch_name(SID, 1)[:-1] + "²")   # "…-²"
+    assert worktrees._next_fork_branch(str(repo), SID) == worktrees.fork_branch_name(SID, 1)
+
+
+def test_timeout_during_add_discards_what_it_made(
+        repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = worktrees.run_git
+
+    def killed_mid_add(cwd: str, *args: str, **kw: object) -> bytes | None:
+        out = real(cwd, *args, **kw)  # type: ignore[arg-type]
+        if "worktree" in args and "add" in args:
+            raise worktrees.GitTimeout
+        return out
+
+    monkeypatch.setattr(worktrees, "run_git", killed_mid_add)
+    dest = tmp_path / "wt"
+    with pytest.raises(ForkWorktreeError) as ei:
+        _fork(repo, dest)
+    assert ei.value.code == "FORK_FAILED"
+    _assert_no_half_fork(repo, dest)
