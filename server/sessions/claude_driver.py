@@ -2349,13 +2349,18 @@ class ClaudeAgentDriver:
                  target_uuid)
         return resp
 
+    def rewind_busy(self) -> bool:
+        """Is a turn starting, running, or waiting on a permission card or question? The
+        one busy test behind every rewind refusal, and the orchestrator's undo gate."""
+        return bool(self._starting_turn or self._turn_live() or self._reg.pending(self.session_id)
+                    or self._qreg.pending(self.session_id))
+
     def _rewind_check_idle(self) -> None:
         """Refuse unless the client is live and idle. Synchronous: no await between this
         check and whatever the caller does next."""
         if self._client is None or self._stream_ended:
             raise self._rewind_refused(RewindError(REWIND_UNAVAILABLE, "session not live"))
-        if (self._starting_turn or self._turn_live() or self._reg.pending(self.session_id)
-                or self._qreg.pending(self.session_id)):
+        if self.rewind_busy():
             raise self._rewind_refused(RewindError(REWIND_BUSY,
                                                    "a turn is running or awaiting input"))
 

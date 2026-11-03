@@ -60,6 +60,8 @@ PROMPTS = {U1: "first prompt", U2: "second prompt", U3: "third prompt"}
 PRECEDING = {U1: None, U2: A1, U3: A2}
 #: Live (driver-minted) user turn ids, as the record holds them after the echo.
 LIVE = {"live-1": U1, "live-2": U2, "live-3": U3}
+#: A clean undo's answer.
+OK = {"ok": True, "skipped": []}
 
 
 def _git(cwd: str | Path, *args: str) -> str:
@@ -211,9 +213,33 @@ class FakeCli:
                         {"type": "cost-state", "totalCostUSD": 0.004}):
                 fh.write(json.dumps(row) + "\n")
 
+    def active_prompts(self) -> list[str]:
+        """The prompts on the transcript's active chain, as the CLI sees them: every
+        user row in order, minus each rewind row's cut prompt and those after it."""
+        assert self.transcript is not None
+        prompts: list[str] = []
+        for line in self.transcript.read_text().splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("type") == "user":
+                prompts.append(row["uuid"])
+            elif row.get("type") == "last-prompt" and row.get("rewound"):
+                cut = row["cutUuid"]
+                if cut in prompts:
+                    del prompts[prompts.index(cut):]
+        return prompts
+
     def _conv(self, request: dict) -> dict:
         assert self.transcript is not None
         target = request["target_message_uuid"]
+        active = self.active_prompts()
+        if target not in active:
+            return {"rewound": False, "reason": "target_not_found", "error": "not found"}
+        # The CLI refuses a cut whose caller has not seen the newest prompt (spike §3).
+        if request.get("last_seen_user_message_uuid") != active[-1]:
+            return {"rewound": False, "reason": "stale_target", "error": "unseen later turn"}
         self.conv_saw_len = self.transcript.stat().st_size
         self.apply_conv(target)
         return {"rewound": True, "targetMessageUuid": target, "prefillText": PROMPTS[target],
@@ -501,7 +527,7 @@ async def test_undo_truncates_restores_and_resumes(env: Env, emitted) -> None:
     (row,) = await _rows(env.src.id)
     spawns_before = len(env.spawns.calls)
 
-    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == {"ok": True}
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == OK
 
     # Exactly the recorded length: the pre-rewind file, byte for byte.
     assert env.transcript.stat().st_size == row.jsonl_len
@@ -529,7 +555,7 @@ async def test_undo_after_a_rotation_uses_the_recorded_transcript(env: Env) -> N
     (beta_cfg / ".claude.json").write_text("{}")
     env.compose.return_value = beta_cfg
     env.src.account = "beta"
-    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == {"ok": True}
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == OK
     assert env.transcript.read_bytes() == before_jsonl
     assert env.spawns.calls[-1]["config_dir"] == str(beta_cfg)
     assert env.spawns.calls[-1]["resume"] == SDK_SID
@@ -559,7 +585,7 @@ async def test_only_the_latest_rewind_is_undoable(env: Env) -> None:
     with pytest.raises(rw.RewindError) as ei:
         await env.orch.undo_rewind(env.src.id, first["rewindId"])
     assert ei.value.code == rw.REWIND_UNDO_EXPIRED
-    assert await env.orch.undo_rewind(env.src.id, second["rewindId"]) == {"ok": True}
+    assert await env.orch.undo_rewind(env.src.id, second["rewindId"]) == OK
 
 
 @pytest.mark.asyncio
@@ -601,8 +627,7 @@ async def test_the_same_request_id_returns_the_same_rewind_once(env: Env) -> Non
     assert env.cli.kinds().count("conv") == 1
     env.orch.__dict__["_rewind_results"].clear()        # e.g. after a daemon restart
     later = await _rewind(env.orch, env.src.id, request_id=rid)
-    assert later["rewindId"] == first["rewindId"]
-    assert later["filesRestored"] == first["filesRestored"]
+    assert later == first                    # the prefill survives too (the row keeps it)
     assert env.cli.kinds().count("conv") == 1
     assert len(await _rows(env.src.id)) == 1
 
@@ -613,7 +638,7 @@ async def test_concurrent_undos_apply_once(env: Env, emitted) -> None:
     spawns_before = len(env.spawns.calls)
     a, b = await asyncio.gather(env.orch.undo_rewind(env.src.id, out["rewindId"]),
                                 env.orch.undo_rewind(env.src.id, out["rewindId"]))
-    assert a == b == {"ok": True}
+    assert a == b == OK
     assert len(env.spawns.calls) == spawns_before + 1
     assert len([e for e in emitted if isinstance(e, ev.RewindUndone)]) == 1
 
@@ -625,7 +650,7 @@ async def test_undo_first_then_a_prompt_is_a_clean_undo(env: Env) -> None:
     undo = asyncio.ensure_future(env.orch.undo_rewind(env.src.id, out["rewindId"]))
     await asyncio.sleep(0)                      # the undo holds the session's lock
     sent = await env.orch.send_prompt(env.src.id, "after the undo")
-    assert await undo == {"ok": True}
+    assert await undo == OK
     assert sent == "sent"
     # The prompt waited for the undo, then went to the RESUMED client.
     assert env.spawns.clients[-1].sent and env.spawns.clients[-2].sent == []
@@ -739,7 +764,8 @@ async def test_symlinks_in_the_backup_set_are_never_followed(env: Env) -> None:
     blobs = Path(str(row.backup_dir), "blobs")
     assert all(b"SECRET" not in p.read_bytes() for p in blobs.iterdir())
     secret.write_text("changed outside\n")
-    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == {"ok": True}
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == {
+        "ok": True, "skipped": ["link.txt", "sub/secret.txt"]}
     assert secret.read_text() == "changed outside\n"
     assert os.path.islink(Path(env.cwd, "link.txt"))
 
@@ -779,6 +805,326 @@ def test_replace_file_beneath_refuses_a_symlinked_parent_and_replaces_a_symlink_
     assert (outside / "f").read_text() == "keep"
 
 
+# --- fix round 1: undo never truncates a real turn or drops the only backup ----------
+
+def _restart(orch) -> None:
+    """What a daemon restart forgets: every in-memory rewind state."""
+    for key in ("_rewind_undoable", "_rewind_locks", "_rewind_results", "_rewind_cut_prompts"):
+        orch.__dict__.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_a_restart_then_a_prompt_expires_the_rewind(env: Env) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    _restart(env.orch)
+    await env.orch._seed_undoable_rewinds()      # what rehydrate runs at boot
+    assert await env.orch.send_prompt(env.src.id, "after the restart") == "sent"
+    with pytest.raises(rw.RewindError) as ei:
+        await env.orch.undo_rewind(env.src.id, out["rewindId"])
+    assert ei.value.code == rw.REWIND_UNDO_EXPIRED
+    (row,) = await _rows(env.src.id)
+    assert row.expired_at is not None
+    assert _state(env.cwd)["a.txt"] == AT_U2["a.txt"]          # still rewound
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_seeds_the_undoable_rewind(env: Env) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    _restart(env.orch)
+    await env.orch.rehydrate()
+    assert env.orch.__dict__["_rewind_undoable"] == {env.src.id: out["rewindId"]}
+
+
+@pytest.mark.asyncio
+async def test_a_turn_written_while_the_client_closes_is_never_truncated(env: Env) -> None:
+    """The CLI starts a turn on its own while undo stops it: its rows land after the
+    pre-check. The tail is re-checked once the client is down; nothing is truncated or
+    restored, the session is resumed as it is, and the undo is refused."""
+    out = await _rewind(env.orch, env.src.id)
+    driver = env.orch._drivers[env.src.id]
+    real_close = driver.aclose
+    late = {"type": "user", "uuid": str(uuid.uuid4()), "parentUuid": A1,
+            "message": {"role": "user", "content": "<task-notification>"}}
+
+    async def close_with_a_late_turn(**kw: Any) -> None:
+        with env.transcript.open("a") as fh:
+            fh.write(json.dumps(late) + "\n")
+        await real_close(**kw)
+    driver.aclose = close_with_a_late_turn  # type: ignore[method-assign,assignment]
+    rewound_files, jsonl = _state(env.cwd), env.transcript.read_bytes()
+    with pytest.raises(rw.RewindError) as ei:
+        await env.orch.undo_rewind(env.src.id, out["rewindId"])
+    assert ei.value.code == rw.REWIND_UNDO_EXPIRED
+    # Nothing truncated: the rewind's rows and the late turn are all still there.
+    assert env.transcript.read_bytes() == jsonl + (json.dumps(late) + "\n").encode()
+    assert _state(env.cwd) == rewound_files
+    assert env.orch._drivers.get(env.src.id) is not None   # resumed, untouched
+    assert env.spawns.calls[-1]["resume"] == SDK_SID
+
+
+@pytest.mark.asyncio
+async def test_a_torn_trailing_line_refuses_the_undo(env: Env) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    with env.transcript.open("a") as fh:
+        fh.write('{"type": "cost-st')
+    jsonl = env.transcript.read_bytes()
+    with pytest.raises(rw.RewindError) as ei:
+        await env.orch.undo_rewind(env.src.id, out["rewindId"])
+    assert ei.value.code == rw.REWIND_UNDO_EXPIRED
+    assert env.transcript.read_bytes() == jsonl
+
+
+def test_the_tail_check_allows_only_the_rewinds_own_rows(tmp_path: Path) -> None:
+    p = tmp_path / "t.jsonl"
+    p.write_text("x\n")
+    base = p.stat().st_size
+    rows = [{"type": "last-prompt", "leafUuid": A1, "explicit": True, "rewound": True,
+             "cutUuid": U2, "sessionId": SDK_SID},
+            {"type": "last-prompt", "lastPrompt": "p", "leafUuid": A1, "sessionId": SDK_SID},
+            {"type": "cost-state", "totalCostUSD": 0.1}]
+    with p.open("a") as fh:
+        fh.write("".join(json.dumps(r) + "\n" for r in rows))
+    assert rw.tail_is_rewind_only(str(p), base) is True
+    for bad in ({"type": "system", "uuid": "x"}, {"type": "attachment"},
+                {"type": "cost-state", "uuid": "x"}):
+        q = tmp_path / f"{bad['type']}.jsonl"
+        q.write_bytes(p.read_bytes() + (json.dumps(bad) + "\n").encode())
+        assert rw.tail_is_rewind_only(str(q), base) is False, bad
+    assert rw.tail_is_rewind_only(str(p), base + 10_000) is False     # shorter: rewritten
+
+
+@pytest.mark.asyncio
+async def test_undo_refuses_while_a_turn_is_starting(env: Env) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    env.orch._drivers[env.src.id]._starting_turn = True  # type: ignore[attr-defined]
+    with pytest.raises(rw.RewindError) as ei:
+        await env.orch.undo_rewind(env.src.id, out["rewindId"])
+    assert ei.value.code == rw.REWIND_BUSY
+
+
+@pytest.mark.parametrize("damage", ["no_manifest", "bad_manifest", "other_host"])
+@pytest.mark.asyncio
+async def test_undo_prechecks_the_backup_before_stopping_anything(env: Env, damage: str) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    (row,) = await _rows(env.src.id)
+    manifest = Path(str(row.backup_dir), "manifest.json")
+    if damage == "no_manifest":
+        manifest.unlink()
+    elif damage == "bad_manifest":
+        manifest.write_text("{not json")
+    else:
+        async with db_session() as db:
+            row_ = await db.get(SessionRewind, out["rewindId"])
+            assert row_ is not None
+            row_.host = "some-other-host"
+    spawns_before, jsonl = len(env.spawns.calls), env.transcript.read_bytes()
+    with pytest.raises(rw.RewindError) as ei:
+        await env.orch.undo_rewind(env.src.id, out["rewindId"])
+    assert ei.value.code == rw.REWIND_UNDO_EXPIRED
+    assert len(env.spawns.calls) == spawns_before           # nothing was stopped
+    assert env.transcript.read_bytes() == jsonl
+
+
+@pytest.mark.asyncio
+async def test_undo_restores_the_files_before_it_truncates(env: Env, monkeypatch) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    order: list[str] = []
+    real_restore, real_truncate = rw.restore_backup, rw.truncate_transcript
+
+    def restore(*a, **k):
+        order.append("restore")
+        return real_restore(*a, **k)
+
+    def truncate(*a, **k):
+        order.append("truncate")
+        return real_truncate(*a, **k)
+    monkeypatch.setattr(rw, "restore_backup", restore)
+    monkeypatch.setattr(rw, "truncate_transcript", truncate)
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == OK
+    assert order == ["restore", "truncate"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_keeps_the_backup_and_names_the_paths(
+        env: Env, monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    (row,) = await _rows(env.src.id)
+    real = rw.replace_file_beneath
+
+    def eacces(root_fd, rel, data, mode):
+        if rel == "a.txt":
+            raise PermissionError(13, "Permission denied", rel)
+        return real(root_fd, rel, data, mode)
+    monkeypatch.setattr(rw, "replace_file_beneath", eacces)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(rw.RewindError) as ei:
+        await env.orch.undo_rewind(env.src.id, out["rewindId"])
+    assert ei.value.code == rw.REWIND_FAILED
+    assert ei.value.error_data["failed"] == ["a.txt"]
+    assert Path(str(row.backup_dir), "manifest.json").is_file()     # kept
+    (row,) = await _rows(env.src.id)
+    assert row.undone_at is None
+    assert any(r.levelno == logging.WARNING and "restore" in r.getMessage()
+               for r in caplog.records)
+    # The same undo retried once the path is writable again finishes the job.
+    monkeypatch.setattr(rw, "replace_file_beneath", real)
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == OK
+    assert _state(env.cwd)["a.txt"] == NOW["a.txt"]
+    assert not Path(str(row.backup_dir)).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_whose_reset_returns_early_still_restores(env: Env, monkeypatch) -> None:
+    before = _state(env.cwd)
+
+    def applied_then_lost(request: dict) -> dict:
+        env.cli.apply_files()
+        raise TimeoutError("Control request timeout: rewind_files")
+    env.cli.override["files"] = applied_then_lost
+
+    async def no_swap(*a, **k):
+        return "failed"                       # e.g. a prior swap still in flight
+    monkeypatch.setattr(env.orch, "_reassign", no_swap)
+    with pytest.raises(rw.RewindError):
+        await _rewind(env.orch, env.src.id)
+    assert _state(env.cwd) == before
+    assert _backups(env.src.id) == []
+
+
+@pytest.mark.asyncio
+async def test_no_reply_to_rewind_files_stops_the_client_before_restoring(
+        env: Env, monkeypatch) -> None:
+    spawns_before = len(env.spawns.calls)
+    inside_swap: list[bool] = []
+    real = rw.restore_backup
+
+    def restore(*a, **k):
+        inside_swap.append(env.src.id in env.orch._swapping)
+        return real(*a, **k)
+    monkeypatch.setattr(rw, "restore_backup", restore)
+
+    def applied_then_lost(request: dict) -> dict:
+        env.cli.apply_files()
+        raise TimeoutError("Control request timeout: rewind_files")
+    env.cli.override["files"] = applied_then_lost
+    jsonl = env.transcript.read_bytes()
+    with pytest.raises(rw.RewindError):
+        await _rewind(env.orch, env.src.id)
+    assert inside_swap == [True]               # the old client was already stopped
+    assert len(env.spawns.calls) == spawns_before + 1
+    assert env.transcript.read_bytes() == jsonl  # nothing to truncate
+
+
+@pytest.mark.asyncio
+async def test_last_seen_is_the_newest_prompt_again_after_an_undo(env: Env) -> None:
+    out = await _rewind(env.orch, env.src.id, to="live-2")
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == OK
+    env.cli.sent.clear()
+    again = await _rewind(env.orch, env.src.id, to="live-1")
+    conv = [s for s in env.cli.sent if s["subtype"] == "rewind_conversation"]
+    assert conv[-1]["last_seen_user_message_uuid"] == U3
+    assert again["prefill"] == PROMPTS[U1]
+
+
+@pytest.mark.asyncio
+async def test_a_rotation_after_a_rewind_replays_no_cut_prompt(env: Env) -> None:
+    env.orch._last_prompt[env.src.id] = PROMPTS[U3]
+    await _rewind(env.orch, env.src.id)
+    assert await env.orch._reassign(env.src, env.src.account, reason="manual_rotate") == "rotated"
+    assert env.spawns.clients[-1].sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_waits_a_bounded_time_for_a_rewind_in_flight(
+        env: Env, monkeypatch) -> None:
+    import server.sessions.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "_SWAP_PROMPT_HOLD_S", 0.05)
+    lock = env.orch._rewind_lock(env.src.id)
+    await lock.acquire()                       # a rewind that never finishes
+    try:
+        assert await env.orch.send_prompt(env.src.id, "hello") == "recovering"
+    finally:
+        lock.release()
+    assert env.spawns.clients[-1].sent == []
+
+
+@pytest.mark.asyncio
+async def test_undo_publishes_no_rotation_and_keeps_a_pause(env: Env, emitted) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    published: list[dict] = []
+    real = env.orch._publish_event
+    def spy(event: dict) -> None:
+        published.append(event)
+        real(event)
+    env.orch._publish_event = spy  # type: ignore[method-assign,assignment]
+    env.src.status, env.src.paused_reason = "limited", "usage_limit"
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == OK
+    assert [e for e in published if e.get("type") == "rotated"] == []
+    assert (env.src.status, env.src.paused_reason) == ("limited", "usage_limit")
+    assert [e for e in emitted if isinstance(e, ev.RewindUndone)]
+
+
+@pytest.mark.asyncio
+async def test_an_expiry_failure_still_delivers_the_prompt(
+        env: Env, caplog: pytest.LogCaptureFixture) -> None:
+    out = await _rewind(env.orch, env.src.id)
+
+    async def broken(*a, **k):
+        raise RuntimeError("database is locked")
+    env.orch._expire_rewinds = broken  # type: ignore[method-assign]
+    caplog.set_level(logging.INFO)
+    assert await env.orch.send_prompt(env.src.id, "next") == "sent"
+    assert env.orch.__dict__["_rewind_undoable"] == {env.src.id: out["rewindId"]}
+    assert any(r.levelno == logging.WARNING and "expire" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_archive_waits_for_an_undo_in_flight(env: Env) -> None:
+    out = await _rewind(env.orch, env.src.id)
+    lock = env.orch._rewind_lock(env.src.id)
+    await lock.acquire()
+    try:
+        task = asyncio.ensure_future(env.orch._drop_session_rewinds(env.src.id))
+        await asyncio.sleep(0.05)
+        assert not task.done() and _backups(env.src.id) == [out["rewindId"]]
+    finally:
+        lock.release()
+    await task
+    assert _backups(env.src.id) == []
+
+
+@pytest.mark.asyncio
+async def test_undo_reports_skipped_paths(env: Env) -> None:
+    outside = env.tmp / "outside"; outside.mkdir()
+    (outside / "s.txt").write_text("s\n")
+    os.symlink(outside / "s.txt", Path(env.cwd, "link.txt"))
+    real_dry = env.cli._dry
+    env.cli.override["dry"] = lambda r: {**real_dry(r), "filesChanged": [
+        *real_dry(r)["filesChanged"], os.path.join(env.cwd, "link.txt")]}
+    out = await _rewind(env.orch, env.src.id)
+    assert await env.orch.undo_rewind(env.src.id, out["rewindId"]) == {
+        "ok": True, "skipped": ["link.txt"]}
+
+
+def test_a_mode_000_file_is_restored_as_mode_000(tmp_path: Path) -> None:
+    """A recorded mode of 0 is a real mode, not "missing" (a non-root user cannot
+    read a mode-000 file to back it up, so the manifest records it directly)."""
+    root = tmp_path / "w"; root.mkdir()
+    f = root / "locked"; f.write_text("x")
+    dest = tmp_path / "b"
+    rw.take_backup(dest, str(root), [str(f)])
+    manifest = json.loads((dest / "manifest.json").read_text())
+    manifest["entries"][0]["mode"] = 0
+    (dest / "manifest.json").write_text(json.dumps(manifest))
+    f.write_text("changed")
+    rw.restore_backup(dest)
+    try:
+        assert stat.S_IMODE(f.stat().st_mode) == 0
+    finally:
+        os.chmod(f, 0o644)
+
+
 # --- RPC / remote / fleet / facade --------------------------------------------------
 
 @pytest.mark.asyncio
@@ -801,8 +1147,8 @@ async def test_rpc_round_trip_runs_on_the_owner_daemon_and_keeps_codes(
                 await _rewind(ro, env.src.id, to="live-1")
             with pytest.raises(KeyError):
                 await _rewind(ro, "nope")
-            assert await ro.undo_rewind(env.src.id, out["rewindId"]) == {"ok": True}
-            assert await ro.undo_rewind(env.src.id, out["rewindId"]) == {"ok": True}
+            assert await ro.undo_rewind(env.src.id, out["rewindId"]) == OK
+            assert await ro.undo_rewind(env.src.id, out["rewindId"]) == OK
         finally:
             await client.aclose()
     assert preview["checkpointAvailable"] is True
@@ -944,12 +1290,12 @@ def test_http_rewind_and_dry_run_are_200() -> None:
 def test_http_undo_is_200() -> None:
     async def fake(self, session_id, rewind_id, identity="system"):
         assert (session_id, rewind_id) == (SID, "r1")
-        return {"ok": True}
+        return {"ok": True, "skipped": ["link.txt"]}
 
     with patch.dict(os.environ, _ENV), _client() as c, \
             patch.object(SessionOrchestrator, "undo_rewind", fake):
         r = _post(c, {"rewindId": "r1"}, path="rewind/undo")
-    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert r.status_code == 200 and r.json() == {"ok": True, "skipped": ["link.txt"]}
 
 
 def test_http_unknown_session_404() -> None:

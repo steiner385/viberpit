@@ -2207,16 +2207,22 @@ async def undo_session_rewind(
     db=Depends(get_db),
 ) -> Any:
     """Undo the session's latest rewind (D-9): transcript and files back as they were
-    before it. 200 ``{ok: true}`` (again for a repeat). Unknown session 404; 409
-    ``REWIND_UNDO_EXPIRED`` once a prompt was sent since (or a newer rewind exists),
-    another ``REWIND_CODES`` code, or ``daemon_outdated`` from an old daemon."""
+    before it. 200 ``{ok: true, skipped: [paths]}`` — ``skipped`` the paths left alone
+    by design (a symlink on the path is never followed); a repeat answers ok again.
+    Unknown session 404; 409 ``REWIND_UNDO_EXPIRED`` once a turn ran since (or a newer
+    rewind exists, or the backup is gone or on another host), ``REWIND_FAILED`` with
+    ``failed: [paths]`` when some files could not be restored (the backup is kept; a
+    retry finishes the undo), another ``REWIND_CODES`` code, or ``daemon_outdated``
+    from an old daemon."""
     from server.sessions import rewind as rw
     try:
         result = await _get_orchestrator(request).undo_rewind(
             session_id, rewind_id=body.rewindId, identity=identity)
     except rw.RewindError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                            detail={"code": exc.code, "message": str(exc)}) from exc
+        detail: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+        if exc.failed:
+            detail["failed"] = exc.failed
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:

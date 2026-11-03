@@ -111,15 +111,19 @@ class RewindError(Exception):
     """An expected rewind refusal; ``code`` is one of ``REWIND_CODES``."""
 
     def __init__(self, code: str, message: str | None = None, *,
-                 reason: str | None = None) -> None:
+                 reason: str | None = None, failed: list[str] | None = None) -> None:
         if code not in REWIND_CODES:
             raise ValueError(f"unknown rewind code {code!r}")
         super().__init__(message or code)
         self.code = code
         self.reason = reason
-        self.error_data: dict[str, str] = {"code": code}
+        self.failed = list(failed) if failed else []
+        self.error_data: dict[str, Any] = {"code": code}
         if reason is not None:
             self.error_data["reason"] = reason
+        if self.failed:
+            # An undo that could not put these paths back (its backup is kept).
+            self.error_data["failed"] = list(self.failed)
 
     @property
     def outcome_unknown(self) -> bool:
@@ -330,28 +334,39 @@ def tracked_since(jsonl_path: str, target_uuid: str, cwd: str) -> TrackedFiles:
                         frozenset(p for p, existed in tracked.items() if not existed))
 
 
-def prompted_since(jsonl_path: str, offset: int) -> bool:
-    """Has a turn been written to the transcript past byte *offset* — the length it had
-    just before a rewind cut the conversation? A ``rewind_conversation`` appends only
-    ``last-prompt`` / ``cost-state`` rows, so any conversation entry after it is a turn
-    an undo's truncation would drop. A file now SHORTER than *offset* (rewritten) also
-    answers True: truncating it is no longer an undo."""
+#: Row types a ``rewind_conversation`` appends (verification doc §3 and the second
+#: probe): a ``last-prompt`` row marked ``rewound`` with its ``cutUuid``, a plain
+#: ``last-prompt`` pointer re-stating the leaf, and ``cost-state``. None carries a
+#: ``uuid`` (they are not conversation entries).
+_REWIND_TAIL_TYPES = frozenset({"last-prompt", "cost-state"})
+
+
+def tail_is_rewind_only(jsonl_path: str, offset: int) -> bool:
+    """Is everything past byte *offset* — the transcript's length just before a rewind
+    cut it — only the rows that cut appended? Then truncating back to *offset* drops
+    nothing but the cut. An allowlist: any row of another type, any row carrying a
+    ``uuid`` (a conversation entry — a turn written since), an unparseable line or a
+    torn last line (no newline yet), and a file now shorter than *offset* (rewritten),
+    all answer False. So does a file that cannot be read."""
     try:
         with open(jsonl_path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             if fh.tell() < offset:
-                return True
+                return False
             fh.seek(offset)
             for line in fh:
+                if not line.endswith(b"\n"):
+                    return False
                 try:
                     row = json.loads(line)
                 except ValueError:
-                    continue
-                if isinstance(row, dict) and row.get("type") in ("user", "assistant"):
-                    return True
+                    return False
+                if (not isinstance(row, dict) or "uuid" in row
+                        or row.get("type") not in _REWIND_TAIL_TYPES):
+                    return False
     except OSError:
-        return True
-    return False
+        return False
+    return True
 
 
 def truncate_transcript(jsonl_path: str, length: int) -> None:
@@ -430,37 +445,74 @@ def take_backup(dest: Path, cwd: str, files: Iterable[str], *,
     return entries
 
 
-def restore_backup(dest: Path) -> list[str]:
+def backup_ok(dest: Path) -> bool:
+    """Is undo backup *dest* usable: its manifest present and parseable?"""
+    try:
+        manifest = json.loads((dest / _MANIFEST).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(manifest, dict) and isinstance(manifest.get("entries"), list)
+
+
+@dataclass(frozen=True)
+class RestoreResult:
+    """What ``restore_backup`` did, by absolute path. ``skipped``: never restored by
+    design (a symlink on the path, at backup or at restore time — never followed).
+    ``failed``: a real error writing or removing it; the backup must be kept."""
+    restored: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
+
+
+def restore_backup(dest: Path) -> RestoreResult:
     """Put every path in backup *dest* back: write a file's bytes and mode, delete a
     path recorded absent (a regular file only), leave a skipped one alone. Nothing is
-    followed through a symlink; a path that cannot be restored that way is logged at
-    INFO and left. Returns the paths restored (absolute)."""
+    followed through a symlink. Every path is attempted; one that fails is reported
+    in ``failed`` (and logged at INFO here — the caller decides what it means).
+    Raises only when the manifest itself cannot be read."""
     manifest = json.loads((dest / _MANIFEST).read_text())
     restored: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
     roots: dict[str, int] = {}
     try:
         for e in manifest.get("entries", []):
             state, root, rel = e.get("state"), e.get("root"), e.get("rel")
-            if state == STATE_SKIPPED or not isinstance(root, str) or not isinstance(rel, str):
+            path = str(e.get("path"))
+            if state == STATE_SKIPPED:
+                skipped.append(path)
                 continue
-            if root not in roots:
-                roots[root] = _open_root(root)
+            if not isinstance(root, str) or not isinstance(rel, str):
+                failed.append(path)
+                continue
             try:
+                if root not in roots:
+                    roots[root] = _open_root(root)
                 if state == STATE_FILE:
                     data = (dest / _BLOBS / str(e["blob"])).read_bytes()
-                    replace_file_beneath(roots[root], rel, data, int(e.get("mode") or 0o644))
-                    restored.append(e["path"])
+                    mode = e.get("mode")
+                    replace_file_beneath(roots[root], rel, data,
+                                         0o644 if mode is None else int(mode))
+                    restored.append(path)
                 elif state == STATE_ABSENT:
                     if unlink_file_beneath(roots[root], rel):
-                        restored.append(e["path"])
-            except (OSError, ValueError) as exc:
-                log.info("rewind.restore_skipped path=%s state=%s: %s", e.get("path"),
-                         state, exc)
+                        restored.append(path)
+            except SymlinkInPath as exc:
+                log.info("rewind.restore_skipped path=%s state=%s: %s", path, state, exc)
+                skipped.append(path)
+            except (OSError, ValueError, KeyError) as exc:
+                log.info("rewind.restore_failed path=%s state=%s: %s", path, state, exc)
+                failed.append(path)
     finally:
         for fd in roots.values():
             os.close(fd)
-    log.info("rewind.backup_restored dir=%s restored=%d", dest, len(restored))
-    return restored
+    log.info("rewind.backup_restored dir=%s restored=%d skipped=%d failed=%d", dest,
+             len(restored), len(skipped), len(failed))
+    return RestoreResult(tuple(restored), tuple(skipped), tuple(failed))
 
 
 def drop_backup(dest: str | Path | None) -> None:

@@ -668,6 +668,10 @@ class SessionRewind(Base):
     jsonl_len: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     backup_dir: Mapped[str | None] = mapped_column(String, nullable=True)
     files_restored: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #: The cut prompt's text (the composer prefill), returned to a retried request.
+    prefill: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The host that ran the rewind and holds its backup; only it can undo.
+    host: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False,
                                                  default=datetime.utcnow)
     undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

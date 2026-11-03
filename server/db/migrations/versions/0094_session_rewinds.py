@@ -4,8 +4,8 @@ Revision ID: 0094_session_rewinds
 Revises: 0093_session_fork_resume
 
 One row per rewind of a session to an earlier prompt: the target, the transcript's
-pre-rewind byte length and the undo backup's dir, so the latest rewind can be undone
-until the next prompt. ``create_all`` makes the table on both dialects; this revision
+pre-rewind byte length, the undo backup's dir and the host holding it, and the cut
+prompt's text, so the latest rewind can be undone until the next prompt. ``create_all`` makes the table on both dialects; this revision
 is the reviewable record.
 """
 import sqlalchemy as sa
@@ -28,6 +28,8 @@ def upgrade() -> None:
         sa.Column("jsonl_len", sa.BigInteger(), nullable=True),
         sa.Column("backup_dir", sa.String(), nullable=True),
         sa.Column("files_restored", sa.JSON(), nullable=True),
+        sa.Column("prefill", sa.Text(), nullable=True),
+        sa.Column("host", sa.String(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("undone_at", sa.DateTime(), nullable=True),
         sa.Column("expired_at", sa.DateTime(), nullable=True),

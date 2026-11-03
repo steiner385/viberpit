@@ -98,8 +98,9 @@ def _rewind_error(exc: DaemonError) -> Exception:
     data = exc.data or {}
     code = data.get("code")
     if exc.err_type == "RewindError" and code in REWIND_CODES:
-        reason = data.get("reason")
-        return RewindError(code, exc.message, reason=reason if isinstance(reason, str) else None)
+        reason, failed = data.get("reason"), data.get("failed")
+        return RewindError(code, exc.message, reason=reason if isinstance(reason, str) else None,
+                           failed=[str(p) for p in failed] if isinstance(failed, list) else None)
     return exc
 
 
