@@ -2601,20 +2601,14 @@ class SessionOrchestrator:
 
     async def _automation_before_execution(self, session_id: str, *, execution_id: str | None = None) -> bool:
         from server.automations.ownership import (
-            StaleOwnership, ancestors_unowned, begin_session_execution, execution_snapshot,
-            lineage_unowned,
+            begin_session_execution, execution_snapshot, lineage_unowned,
         )
         record = self._records.get(session_id)
-        parent = getattr(record, "parent_session_id", None)
-        if (getattr(record, "is_fork", False) is True
-                and not await ancestors_unowned(session_id, parent_session_id=parent)):
-            # A fork (D-8) never joins an automation operation that owns its source's
-            # lineage — not even one that went live after fork admission checked: it
-            # could not prove stopped until a human closed the fork. Refused before
-            # begin_session_execution; fork_session turns it into
-            # FORK_OWNERSHIP_STALE and removes the worktree and row. The same holds
-            # for a fork rebuilt from its row (is_fork is persisted).
-            raise StaleOwnership("a fork never runs under its source's automation")
+        # The trusted pre-launch parent hint: at a fresh spawn this fence runs before
+        # the row exists. A fork (D-8) is an ownership-lineage boundary (#3230) — its
+        # source's operations never reach it — so its hint is None (the one rule,
+        # child_sessions.steering_parent); a persisted fork row says so itself.
+        parent = _cs.steering_parent(record)
         prior = await execution_snapshot(session_id, parent_session_id=parent)
         if prior is not None and await lineage_unowned(session_id, parent_session_id=parent):
             # Every operation in the lineage is finished and none names this session —
@@ -17492,9 +17486,10 @@ class SessionOrchestrator:
         Returns ``{"sessionId", "prefill"}``. Raises ``KeyError`` for an unknown
         session; ``ModelBlockedError`` for a blocked model; ``ForkError``
         (``FORK_UNAVAILABLE`` / ``TURN_NOT_FORKABLE`` / ``PREFILL_TOO_LONG`` /
-        ``FORK_AT_CAPACITY`` / ``FORK_NEEDS_APPROVAL`` / ``FORK_OWNED_BY_AUTOMATION`` /
-        ``FORK_OWNERSHIP_STALE``) and ``ForkWorktreeError`` (its
-        ``code``) for the other expected refusals — each carries ``error_data``.
+        ``FORK_AT_CAPACITY`` / ``FORK_NEEDS_APPROVAL``) and ``ForkWorktreeError`` (its
+        ``code``) for the other expected refusals — each carries ``error_data``. An
+        automation owning the source never refuses a fork: the fork is read-only on
+        the source and an ownership-lineage boundary (#3230).
         """
         from server.sessions import fork as fk
         rec = self._worktree_record(session_id)
@@ -17541,7 +17536,6 @@ class SessionOrchestrator:
     async def _fork_once(self, rec: SessionRecord, child_id: str, *, at_turn_id: str | None,
                          mode: str, prefill: str | None, identity: str) -> None:
         """One fork attempt for ``fork_session`` (see there)."""
-        from server.automations.ownership import StaleOwnership, lineage_unowned
         from server.sessions import fork as fk
         from server.sessions.engine import fork_supported
         session_id = rec.id
@@ -17599,13 +17593,6 @@ class SessionOrchestrator:
                      session_id, worktrees.FORK_NOT_A_REPO)
             raise worktrees.ForkWorktreeError("the source has no worktree",
                                               worktrees.FORK_NOT_A_REPO)
-        # A fork never joins a live automation operation: while one owns the source's
-        # lineage (anywhere in it, a live successor of a transfer included), refuse
-        # BEFORE any git work. Once every owner has finished, the child is unowned and
-        # its driver starts like any human session's.
-        if not await lineage_unowned(child_id, parent_session_id=session_id):
-            refuse(fk.FORK_OWNED_BY_AUTOMATION,
-                   "An automation is running this session — fork it after the run finishes")
         repo_root = await self._effective_repo_root()
         try:
             dest = worktrees.fork_worktree_dir(rec.cwd, repo_root, child_id)
@@ -17618,10 +17605,12 @@ class SessionOrchestrator:
             # NOTE: parent_session_id makes the fork one of the source's live children,
             # so it counts toward dispatch_session's per-parent child cap like a
             # dispatched child (ruled: intended, documented with the D-8 product docs).
-            # Unlike a dispatched child it is never registered into an automation
-            # operation (admission above refused any source a live automation owns),
-            # and it never notifies, wakes or is steered by the source
-            # (child_sessions.steering_parent reads is_fork).
+            # Unlike a dispatched child it is an ownership-lineage boundary (#3230):
+            # an automation owning the source never fences it and its driver never
+            # registers into that operation (the ownership walks stop at a fork, so a
+            # source may be forked while an automation drives it — the fork is
+            # read-only on the source), and it never notifies, wakes or is steered by
+            # the source (child_sessions.steering_parent reads is_fork for both).
             await self._spawn_session(
                 child_id, name=fk.fork_title(rec.name), account=rec.account,
                 initial_prompt=None, cols=rec.cols, rows=rec.rows, cwd=fork_wt.cwd,
@@ -17630,14 +17619,10 @@ class SessionOrchestrator:
                 name_is_auto=False, origin=None, origin_ref=None, model=rec.model,
                 reasoning_effort=rec.reasoning_effort, engine=rec.engine,
                 parent_session_id=session_id, fork_worktree=fork_wt, fork_from=fork_from)
-        except BaseException as exc:
+        except BaseException:
             await self._run_rollback_shielded(
                 asyncio.to_thread(worktrees.discard_fork_worktree, fork_wt),
                 name=f"session-fork-rollback-{child_id}")
-            # An operation went live on the lineage between admission and the driver's
-            # ownership fence: still a coded refusal, never a 500.
-            if isinstance(exc, StaleOwnership):
-                refuse(fk.FORK_OWNERSHIP_STALE, str(exc))
             raise
         log.info("session.fork source=%s child=%s mode=%s at=%s branch=%s",
                  session_id, child_id, mode, fork_from[1] if fork_from else "-",

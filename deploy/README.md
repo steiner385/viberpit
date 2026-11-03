@@ -251,6 +251,12 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
   by hand on the live Postgres DB after this deploy:
   `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_sessions_kind_owner ON sessions (kind,
   owner_identity);` — the assistant works without it, just slower once session volume grows.
+  Likewise the `automation_operations` lookup indexes (migration 0094, #3230), each walked once per
+  ancestor level / transfer hop of every ownership lineage check:
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_automation_operations_predecessor_token ON
+  automation_operations (predecessor_token);` and the same for `session_id`
+  (`ix_automation_operations_session_id`) and `reserved_session_id`
+  (`ix_automation_operations_reserved_session_id`).
 
 ## Where the logs are (`/var/log/viberpit`, per host, per process) — #1010
 

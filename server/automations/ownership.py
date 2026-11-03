@@ -329,24 +329,49 @@ class ExecutionSnapshot:
     execution_id: str | None
 
 
+async def _lineage_parent(db: AsyncSession, session_id: str, *,
+                          hint: str | None = None) -> str | None:
+    """The next session up *session_id*'s OWNERSHIP lineage, or None at its top.
+
+    A fork (D-8) is a lineage boundary (#3230): its ``parent_session_id`` links it
+    to its source for the sessions tree and the per-parent child cap, but a fork is
+    the user's own branch — never the source's operation's work — so every ancestor
+    walk stops at a fork row and never steps above it. ``hint`` is the trusted
+    pre-launch parent for a session whose row does not exist yet (a launch; the
+    caller passes None for a fork, ``child_sessions.steering_parent``); a persisted
+    row answers for itself."""
+    row = (await db.execute(select(DbSession.parent_session_id, DbSession.is_fork).where(
+        DbSession.id == session_id))).first()
+    if row is None:
+        return hint or None
+    return None if row.is_fork else (row.parent_session_id or None)
+
+
+def _lineage_children(parent_session_id: str):
+    """The persisted sessions in *parent_session_id*'s OWNERSHIP lineage one level
+    down: its children minus forks (``_lineage_parent``'s boundary, walked downward:
+    a fork never blocks its source's stopped-work proof)."""
+    return select(DbSession.id).where(DbSession.parent_session_id == parent_session_id,
+                                      DbSession.is_fork.is_not(True))
+
+
 async def execution_snapshot(session_id: str, *, parent_session_id: str | None = None,
                              execution_id: str | None = None) -> ExecutionSnapshot | None:
     """Find the one operation for this session or its trusted ancestor lineage.
 
     The parent hint comes only from the canonical pre-launch SessionRecord, while
-    creation has not yet inserted its DB row. Public input cannot supply it.
+    creation has not yet inserted its DB row. Public input cannot supply it. The
+    walk stops at a fork (``_lineage_parent``).
     """
     async with db_session() as db:
-        current, seen = session_id, set()
+        current: str | None = session_id
+        seen: set[str] = set()
         while current:
             if current in seen:
                 raise StaleOwnership("cyclic session ownership ancestry")
             seen.add(current)
-            operations = (await db.scalars(select(AutomationOperation).where(or_(
-                AutomationOperation.session_id == current,
-                AutomationOperation.reserved_session_id == current,
-                AutomationOperation.execution_sessions[current]["current"].as_string().is_not(None),
-            )).order_by(AutomationOperation.created_at.desc()))).all()
+            operations = (await db.scalars(_naming(current).order_by(
+                AutomationOperation.created_at.desc()))).all()
             if operations:
                 active = [op for op in operations if op.phase not in ("released", "transferred")]
                 if len(active) > 1:
@@ -358,11 +383,8 @@ async def execution_snapshot(session_id: str, *, parent_session_id: str | None =
                 return ExecutionSnapshot(operation.token, session_id, state.get("generation"),
                                          operation.execution_generation, state.get("stopped"),
                                          operation.stopped_generation, selected)
-            if current == session_id and parent_session_id:
-                current = parent_session_id
-            else:
-                current = await db.scalar(select(DbSession.parent_session_id).where(
-                    DbSession.id == current))
+            current = await _lineage_parent(
+                db, current, hint=parent_session_id if current == session_id else None)
         return None
 
 
@@ -399,24 +421,17 @@ async def lineage_unowned(session_id: str, *, parent_session_id: str | None = No
     True only when no operation names the session itself (in any phase: a session
     an operation registered or reserved stays fenced even once it is released), AND
     every operation naming any ancestor, at EVERY level of the parent walk, is
-    finished (``_finished``). A lineage with no operations at all is unowned.
+    finished (``_finished``). A lineage with no operations at all is unowned. The
+    walk stops at a fork (``_lineage_parent``): a fork, and everything under it, is
+    outside its source's operations — its own later runs are its own.
 
     The parent hint is for a session whose row does not exist yet (a launch); it is
     the trusted pre-launch parent, as in ``execution_snapshot``."""
     async with db_session() as db:
         if (await db.scalars(_naming(session_id))).first() is not None:
             return False
-    return await ancestors_unowned(session_id, parent_session_id=parent_session_id)
-
-
-async def ancestors_unowned(session_id: str, *, parent_session_id: str | None = None) -> bool:
-    """``lineage_unowned``'s ancestor half: every operation naming any ancestor of
-    *session_id*, at EVERY level of the parent walk, is finished. Operations naming
-    the session itself are not considered (a fork's own later runs are its own)."""
-    async with db_session() as db:
         seen = {session_id}
-        current = parent_session_id or await db.scalar(
-            select(DbSession.parent_session_id).where(DbSession.id == session_id))
+        current = await _lineage_parent(db, session_id, hint=parent_session_id)
         while current:
             if current in seen:
                 return False   # cyclic ancestry: never conclude "unowned"
@@ -424,8 +439,7 @@ async def ancestors_unowned(session_id: str, *, parent_session_id: str | None = 
             for operation in (await db.scalars(_naming(current))).all():
                 if not await _finished(db, operation):
                     return False
-            current = await db.scalar(
-                select(DbSession.parent_session_id).where(DbSession.id == current))
+            current = await _lineage_parent(db, current)
         return True
 
 
@@ -533,8 +547,7 @@ async def _aggregate_tree_stopped(tx: "OwnershipTransaction", root: str | None) 
                 # native-entry generation write never happened. Terminal row
                 # PLUS that durable not-started record proves no native effect.
                 states[current] = _pending_execution(stopped=True)
-        pending.extend((await tx.db.scalars(select(DbSession.id).where(
-            DbSession.parent_session_id == current))).all())
+        pending.extend((await tx.db.scalars(_lineage_children(current))).all())
     tx.operation.execution_sessions = dict(states)
     # Unknown legacy children and queued children with no execution evidence
     # retain ownership. Completed children retain their OWN proof when their

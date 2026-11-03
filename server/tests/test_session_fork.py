@@ -469,31 +469,65 @@ async def _operation(token: str):
 
 
 @pytest.mark.asyncio
-async def test_a_live_owner_refuses_the_fork_before_any_git_work(env) -> None:
+async def test_a_live_owner_does_not_block_the_fork_and_the_fork_never_blocks_its_proof(env) -> None:
+    """A fork is an ownership-lineage boundary (#3230). While an automation owns the
+    source, the fork still happens (it is read-only on the source), the child is
+    unowned (no operation names it, the walk stops at the fork) and it is never
+    registered into the operation. The fork's row, a DB child of the root, is left
+    out of the whole-tree stop walk, so the source's stopped-work proof and release
+    go through with the fork live."""
     from server.automations.ownership import (
         ReleaseProof, attest_session_stopped, begin_session_execution, execution_snapshot,
-        owned)
+        lineage_unowned, owned)
     orch, spawns, src, _, clone = env
     token = await _own_source(src.id)
-    before = len(spawns.calls)
-    with patch.object(worktrees, "create_fork_worktree") as made:
-        with pytest.raises(fk.ForkError) as ei:
-            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
-    assert ei.value.code == fk.FORK_OWNED_BY_AUTOMATION
-    assert ei.value.error_data == {"code": fk.FORK_OWNED_BY_AUTOMATION}
-    assert "fork it after the run finishes" in str(ei.value)
-    made.assert_not_called()
-    assert len(spawns.calls) == before and _fork_branches(clone) == []
+    before = await _operation(token)
+    out = await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    child = orch.record(out["sessionId"])
+    assert child.parent_session_id == src.id and child.is_fork is True
+    assert out["sessionId"] in orch._drivers and spawns.calls[-1]["fork_session"] is True
+    assert len(_fork_branches(clone)) == 1
+    assert await execution_snapshot(child.id) is None
+    assert await lineage_unowned(child.id)
+    await begin_session_execution(child.id)                      # early return, no raise
     op = await _operation(token)
-    assert set(op.execution_sessions or {}) <= {src.id}       # no pending fork entry
-    # Orphan check: the refused fork left nothing that blocks the stopped-work proof.
+    assert child.id not in (op.execution_sessions or {})
+    assert (op.execution_generation, op.phase) == (before.execution_generation, before.phase)
+    # The live fork row never blocks the operation's stopped-work proof.
     await begin_session_execution(src.id)
     snap = await execution_snapshot(src.id)
     assert snap is not None and snap.generation is not None
     assert await attest_session_stopped(token, snap.generation, session_id=src.id)
+    op = await _operation(token)
+    assert op.stopped_generation == op.execution_generation
     async with owned(token) as tx:
         tx.release(ReleaseProof.WORK_STOPPED, "run finished")
     assert (await _operation(token)).phase == "released"
+    assert out["sessionId"] in orch._drivers                     # the fork ran on
+
+
+@pytest.mark.asyncio
+async def test_a_fork_of_a_fork_and_a_forks_dispatched_child_are_unowned(env) -> None:
+    """The boundary holds at every depth: a fork's own child (dispatched, not a
+    fork) and a fork of the fork are both outside the source's operation."""
+    from server.automations.ownership import (
+        execution_snapshot, lineage_unowned, register_child_execution)
+    orch, _, src, *_ = env
+    token = await _own_source(src.id)
+    fork_id = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    # A child the fork dispatches: a plain child of an unowned parent.
+    await register_child_execution("kid-of-fork", fork_id)        # no live owner: no-op
+    assert await lineage_unowned("kid-of-fork", parent_session_id=fork_id)
+    assert await execution_snapshot("kid-of-fork", parent_session_id=fork_id) is None
+    # A fork of the fork (its source row is itself a fork).
+    orch.record(fork_id).engine_session_id = "fork-sdk"
+    orch.record(fork_id).record_turn_anchor("t9", "uuid-1")
+    _write_cli_transcript(orch.record(fork_id).cwd, "fork-sdk", [("u0", "q0", "uuid-1", "r0")])
+    grand = (await _fork(orch, fork_id, at_turn_id="t9", mode="reply"))["sessionId"]
+    assert orch.record(grand).is_fork is True
+    assert await lineage_unowned(grand) and await execution_snapshot(grand) is None
+    assert not (set((await _operation(token)).execution_sessions or {}) & {fork_id, grand,
+                                                                           "kid-of-fork"})
 
 
 @pytest.mark.asyncio
@@ -516,15 +550,16 @@ async def test_a_finished_owner_does_not_block_the_fork(env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_transfer_window_still_owns_the_source(env) -> None:
-    """Root transferred, successor still claimed: the lineage is owned."""
+async def test_the_transfer_window_still_owns_a_dispatched_child_but_not_a_fork(env) -> None:
+    """Root transferred, successor still claimed: the lineage is owned, so a plain
+    (dispatched) child of the source is fenced — but a fork is not the source's
+    child for ownership and goes ahead."""
     from server.automations.ownership import lineage_unowned
     orch, _, src, _, clone = env
     await _own_source(src.id, transferred=True)
     assert not await lineage_unowned("new-child", parent_session_id=src.id)
-    with pytest.raises(fk.ForkError) as ei:
-        await _fork(orch, src.id, at_turn_id="t1", mode="reply")
-    assert ei.value.code == fk.FORK_OWNED_BY_AUTOMATION and _fork_branches(clone) == []
+    child_id = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
+    assert await lineage_unowned(child_id) and len(_fork_branches(clone)) == 1
 
 
 @pytest.mark.asyncio
@@ -533,7 +568,8 @@ async def test_a_live_ancestor_above_a_finished_level_still_owns_the_lineage(env
     (transferred → released) operation, but B's parent A is held by a live one. G is
     not unowned, and begin_session_execution fences it."""
     from server.automations.ownership import (
-        ReleaseProof, StaleOwnership, begin_session_execution, lineage_unowned, owned)
+        ReleaseProof, StaleOwnership, begin_session_execution, execution_snapshot,
+        lineage_unowned, owned)
     from server.db.models import AutomationOperation
     from server.tests.test_automation_ownership import claim, target
     async with db_session() as db:
@@ -556,6 +592,15 @@ async def test_a_live_ancestor_above_a_finished_level_still_owns_the_lineage(env
     assert not await lineage_unowned("G", parent_session_id="B")
     with pytest.raises(StaleOwnership):
         await begin_session_execution("G", parent_session_id="B")
+    # A fork F of B is a lineage boundary (#3230): the walk from F's child G' stops
+    # at F, so A's live operation never reaches it, and F itself has no owner.
+    async with db_session() as db:
+        db.add(DbSession(id="F", name="F", account_name="alpha", cwd="/tmp", status="idle",
+                         parent_session_id="B", is_fork=True))
+        await db.commit()
+    assert await execution_snapshot("F") is None
+    assert await lineage_unowned("F") and await lineage_unowned("G2", parent_session_id="F")
+    await begin_session_execution("G2", parent_session_id="F")           # no raise
     # With A's operation finished too, the same grandchild is unowned.
     async with owned(live) as tx:
         tx.release(ReleaseProof.NOT_STARTED, "done")
@@ -578,11 +623,11 @@ async def test_retry_after_a_failure_returns_the_same_child(env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_owner_going_live_mid_fork_is_a_coded_refusal(env) -> None:
-    """Real store: an automation claims the source and starts its action AFTER fork
-    admission passed (here, while the worktree is being made). The child's driver
-    refuses to begin under it: FORK_OWNERSHIP_STALE, no worktree, no row, and the
-    operation's execution_sessions untouched."""
+async def test_an_owner_going_live_mid_fork_still_forks(env) -> None:
+    """Real store: an automation claims the source and starts its action AFTER the
+    fork began (here, while the worktree is being made). The fork is a lineage
+    boundary, so the child's driver starts anyway; the operation's
+    execution_sessions stay untouched and the fork keeps its worktree and row."""
     from server.automations.ownership import owned
     from server.tests.test_automation_ownership import claim, target
     orch, spawns, src, _, clone = env
@@ -602,21 +647,22 @@ async def test_an_owner_going_live_mid_fork_is_a_coded_refusal(env) -> None:
         return info
 
     with patch.object(worktrees, "create_fork_worktree", racing):
-        with pytest.raises(fk.ForkError) as ei:
-            await _fork(orch, src.id, at_turn_id="t1", mode="reply")
-    assert ei.value.code == fk.FORK_OWNERSHIP_STALE
+        out = await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert out["sessionId"] in orch._drivers and spawns.calls[-1]["fork_session"] is True
     op = await _operation(token)
     assert op.phase == "active" and op.session_id == src.id
     assert (op.execution_sessions or {}) == {}
-    assert len(made) == 1 and not os.path.lexists(made[0])
-    assert _fork_branches(clone) == [] and await _rows_with_parent(src.id) == []
+    assert len(made) == 1 and os.path.isdir(made[0])
+    assert len(_fork_branches(clone)) == 1
+    assert [r.id for r in await _rows_with_parent(src.id)] == [out["sessionId"]]
 
 
 @pytest.mark.asyncio
-async def test_a_fork_rebuilt_from_its_row_keeps_the_rule(env) -> None:
-    """A fork restored after a restart (is_fork from its row) refuses to start under a
-    source automation that went live since; with no live owner it starts."""
-    from server.automations.ownership import StaleOwnership, owned
+async def test_a_fork_rebuilt_from_its_row_starts_under_a_live_source_automation(env) -> None:
+    """A fork restored after a restart (is_fork from its row, the record's parent hint
+    is the source) starts whether or not a source automation went live since: the
+    fence finds no owner and registers nothing."""
+    from server.automations.ownership import owned
     from server.tests.test_automation_ownership import claim, target
     orch, _, src, *_ = env
     child_id = (await _fork(orch, src.id, at_turn_id="t1", mode="reply"))["sessionId"]
@@ -629,9 +675,35 @@ async def test_a_fork_rebuilt_from_its_row_keeps_the_rule(env) -> None:
     token = await claim([target()])
     async with owned(token) as tx:
         tx.start_action(session_id=src.id)
-    with pytest.raises(StaleOwnership):
-        await orch._automation_before_execution(child_id)
-    assert child_id not in ((await _operation(token)).execution_sessions or {})
+    assert await orch._automation_before_execution(child_id) is False   # still none
+    op = await _operation(token)
+    assert child_id not in (op.execution_sessions or {}) and op.execution_generation is None
+
+
+@pytest.mark.asyncio
+async def test_a_dispatched_child_of_an_owned_source_is_still_fenced(env) -> None:
+    """The boundary is the fork flag, not the parent link: a plain child row of an
+    owned source (what dispatch_session makes) stays in the lineage and in the
+    whole-tree stop walk."""
+    from server.automations.ownership import (
+        attest_session_stopped, begin_session_execution, execution_snapshot, lineage_unowned)
+    orch, _, src, *_ = env
+    token = await _own_source(src.id)
+    async with db_session() as db:
+        db.add(DbSession(id="kid", name="kid", account_name="alpha", cwd="/tmp",
+                         status="idle", parent_session_id=src.id))
+        await db.commit()
+    assert not await lineage_unowned("kid")
+    kid_snap = await execution_snapshot("kid")
+    assert kid_snap is not None and kid_snap.token == token
+    await begin_session_execution(src.id)
+    snap = await execution_snapshot(src.id)
+    assert snap is not None and snap.generation is not None
+    assert await attest_session_stopped(token, snap.generation, session_id=src.id)
+    op = await _operation(token)
+    assert op.stopped_generation is None            # the unknown child keeps it owned
+    await begin_session_execution("kid")            # joins the operation it is under
+    assert "kid" in ((await _operation(token)).execution_sessions or {})
 
 
 @pytest.mark.asyncio

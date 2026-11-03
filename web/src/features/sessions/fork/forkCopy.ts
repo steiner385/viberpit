@@ -22,8 +22,6 @@ export const FORK_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   PREFILL_TOO_LONG: 'That message is too long to carry into a fork',
   FORK_AT_CAPACITY: 'Too many sessions are running — fork once one finishes',
   FORK_NEEDS_APPROVAL: "This session's model needs approval, so it can't be forked",
-  FORK_OWNED_BY_AUTOMATION: 'An automation is running this session — fork it after the run finishes',
-  FORK_OWNERSHIP_STALE: 'An automation started on this session — fork it after the run finishes',
   FORK_UNTRACKED_TOO_LARGE: 'The untracked files are too large to copy into a fork',
   FORK_NOT_A_REPO: "This session's folder isn't a git repository, so it can't be forked",
   FORK_NO_HEAD: "This session's repository has no commits yet, so it can't be forked",

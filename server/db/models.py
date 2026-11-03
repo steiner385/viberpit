@@ -737,13 +737,16 @@ class AutomationOperation(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     # The Session primary key is the launch correlation. No new Session column;
     # no FK here because this reservation must survive before session creation.
-    reserved_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # These three and ``predecessor_token`` are what every ownership lineage walk
+    # filters on (``ownership._naming`` per ancestor level, ``_finished`` per transfer
+    # hop), so they are indexed (migration 0094, #3230).
+    reserved_session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     execution_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stopped_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     execution_sessions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     predecessor_token: Mapped[str | None] = mapped_column(
-        String, ForeignKey("automation_operations.token"), nullable=True)
+        String, ForeignKey("automation_operations.token"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
