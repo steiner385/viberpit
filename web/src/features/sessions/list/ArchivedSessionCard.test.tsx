@@ -28,6 +28,17 @@ describe('ArchivedSessionCard', () => {
     expect(screen.getByText('alice')).toBeInTheDocument()
   })
 
+  it('titles a read session at 500, an unread one in bold and says "unread" in its name (D-10)', () => {
+    const { unmount } = render(<ArchivedSessionCard {...props()} />)
+    expect(screen.getByText('Old project')).toHaveClass('font-medium')
+    expect(screen.getByText('Old project')).not.toHaveClass('font-bold')
+    expect(screen.getByRole('button', { name: 'Review Old project' })).toBeInTheDocument()
+    unmount()
+    render(<ArchivedSessionCard {...props({ session: archivedSession({ id: 'a1', name: 'Old project', unread: true }) })} />)
+    expect(screen.getByText('Old project')).toHaveClass('font-bold')
+    expect(screen.getByRole('button', { name: 'Review Old project, unread' })).toBeInTheDocument()
+  })
+
   it('falls back to a short id when the session has no name', () => {
     render(<ArchivedSessionCard {...props({ session: archivedSession({ id: 'abcdef123456', name: '' }) })} />)
     expect(screen.getByText('abcdef12')).toBeInTheDocument()

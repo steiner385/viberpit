@@ -15,10 +15,12 @@ import { fetchOlderTurns } from '@/api/transcript'
 import { mutationResult, queryResult } from '@/test/reactQuery'
 import { resetDocumentTitle } from '@/shell/documentTitle'
 
+const markViewed = vi.hoisted(() => vi.fn())
 vi.mock('@/api/hooks', () => ({
   useSessionTranscript: vi.fn(),
   useUnarchiveSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useArchivedSessions: vi.fn(() => ({ data: undefined })),
+  useMarkSessionViewed: vi.fn(() => ({ mutate: markViewed })),
 }))
 vi.mock('@/api/transcript', () => ({ fetchOlderTurns: vi.fn() }))
 
@@ -66,6 +68,13 @@ describe('ArchivedReviewPage', () => {
     vi.clearAllMocks()
     resetDocumentTitle()
     vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult(ARCHIVED) as never)
+  })
+
+  it('marks the archived session read for this viewer on the auto path (D-10)', () => {
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }) as never)
+    renderPage()
+    expect(hooks.useMarkSessionViewed).toHaveBeenCalledWith({ auto: true })
+    expect(markViewed).toHaveBeenCalledWith('arc-99')
   })
 
   it('is a Reader page: h1 = session name, document.title, variant, Back link', async () => {

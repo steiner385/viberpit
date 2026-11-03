@@ -303,6 +303,7 @@ function LiveScopeBody({
         accounts={accounts}
         isLoading={isLoading}
         selectedId={selectedId ?? nav.highlightedSession?.id}
+        openId={selectedId}
         selectedGroupKey={nav.highlightedGroupKey ?? null}
         onOpen={onOpen}
         onRename={onRename}

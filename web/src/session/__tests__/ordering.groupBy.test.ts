@@ -173,6 +173,16 @@ describe('group by PR state', () => {
       { key: 'pr:merged', label: 'Merged', ids: ['merged-beats-closed'] },
     ])
   })
+
+  it('files a session whose payload has no prs array under No PR instead of throwing', () => {
+    // `prs` is typed required, but an older server / a pending placeholder row
+    // can omit it; grouping must not take the whole list down.
+    const missing = { ...mk('missing'), prs: undefined } as unknown as Session
+    expect(summary(orderSessions([missing, mk('open', { prs: prs('open') })], 'pr', 'name'))).toEqual([
+      { key: 'pr:open', label: 'Open', ids: ['open'] },
+      { key: 'pr:none', label: 'No PR', ids: ['missing'] },
+    ])
+  })
 })
 
 describe('persistence of the new values', () => {

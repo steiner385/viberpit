@@ -66,6 +66,10 @@ interface SessionCardProps {
   session: Session
   account: Account | undefined
   selected?: boolean
+  /** This card is the session open in the main pane. Unlike `selected` (which
+   *  also follows the keyboard cursor), it suppresses the unread styling: the
+   *  open session is being read, and its flag is about to clear (D-10). */
+  open?: boolean
   onOpen: (id: string) => void
   onRename: (id: string) => void
   /** Archive the session (stops the driver, moves it to the Archived tab). */
@@ -104,9 +108,12 @@ interface SessionCardProps {
   parentName?: string | null
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, onResolveSuspectedComplete, onSetUnread, childSessions = [], parentName = null }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, open = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, onResolveSuspectedComplete, onSetUnread, childSessions = [], parentName = null }: SessionCardProps) {
   // Per-viewer read state (D-10): a turn ended since this viewer last looked.
+  // `unread` is the server's flag (it drives the menu); `showUnread` is what the
+  // card displays — never bold for the session open right now.
   const unread = session.unread === true
+  const showUnread = unread && !open
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const hasChildren = childSessions.length > 0
@@ -290,7 +297,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             className="inline-block h-3 w-3 flex-shrink-0 animate-spin rounded-full border-2 border-edge-strong border-t-transparent"
             aria-hidden="true"
           />
-          <span className="flex-1 min-w-0 truncate text-sm font-semibold text-ink">
+          <span className="flex-1 min-w-0 truncate text-sm font-medium text-ink">
             {session.name}
           </span>
         </div>
@@ -318,7 +325,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   return (
     <CardFrame
       id={session.id}
-      openLabel={unread ? `Open session ${session.name}, unread` : `Open session ${session.name}`}
+      openLabel={showUnread ? `Open session ${session.name}, unread` : `Open session ${session.name}`}
       railClass={accent.rail}
       selected={selected}
       listMode={listMode}
@@ -423,8 +430,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           {/* Unread is the weight, not another chip: read titles drop to medium so
               bold reads as a difference on fonts where semibold renders as bold. */}
           <span
-            data-unread={unread ? 'true' : undefined}
-            className={cn('min-w-0 truncate text-sm text-ink', unread ? 'font-bold' : 'font-medium')}
+            data-unread={showUnread ? 'true' : undefined}
+            className={cn('min-w-0 truncate text-sm text-ink', showUnread ? 'font-bold' : 'font-medium')}
             title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
           >
             {session.name}

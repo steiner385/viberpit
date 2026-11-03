@@ -49,6 +49,8 @@ export function ArchivedSessionCard({
   session, selected = false, listMode = false, onReview, onUnarchive, onDelete, unarchiving = false,
 }: ArchivedSessionCardProps) {
   const name = displayNameOf(session)
+  // Per-viewer read state (D-10), set by opening the archived Reader page.
+  const unread = session.unread === true
   // Prefer the accurate repo field (GitHub nameWithOwner); fall back to the
   // cwd-derived name only for legacy/scratch rows that never recorded one.
   const repoLabel = formatRepoLabel(session.repo ?? repoFromCwd(session.cwd))
@@ -63,7 +65,7 @@ export function ArchivedSessionCard({
   return (
     <CardFrame
       id={session.id}
-      openLabel={`Review ${name}`}
+      openLabel={unread ? `Review ${name}, unread` : `Review ${name}`}
       // Muted: an archived session has no status tier to colour.
       railClass="bg-neutral/40"
       selected={selected}
@@ -88,7 +90,10 @@ export function ArchivedSessionCard({
         className: 'bg-danger-strong text-on-strong',
       }}
       identity={
-        <span className="min-w-0 truncate text-sm font-semibold text-ink">
+        <span
+          data-unread={unread ? 'true' : undefined}
+          className={cn('min-w-0 truncate text-sm text-ink', unread ? 'font-bold' : 'font-medium')}
+        >
           {name}
         </span>
       }

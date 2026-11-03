@@ -215,6 +215,22 @@ describe('SessionListColumn — selection cursor', () => {
     )
   })
 
+  it("never shows the open session's card as unread; a highlighted one still is (D-10)", async () => {
+    renderColumn({
+      sessions: [
+        session({ id: 'sess-1', name: 'First', unread: true }),
+        session({ id: 'sess-2', name: 'Second', unread: true }),
+      ],
+      selectedId: 'sess-2',
+      highlight: 'sess-1',
+    })
+    // The open session is being read right now: its flag is about to clear, so
+    // it never flashes bold. The keyboard highlight is not "open".
+    await waitFor(() => expect(screen.getByText('Second')).not.toHaveClass('font-bold'))
+    expect(screen.getByRole('button', { name: 'Open session Second' })).toHaveAccessibleName('Open session Second')
+    expect(screen.getByText('First')).toHaveClass('font-bold')
+  })
+
   it('falls back to the keyboard highlight when no session is open', async () => {
     renderColumn({
       sessions: [session({ id: 'sess-1', name: 'First' }), session({ id: 'sess-2', name: 'Second' })],

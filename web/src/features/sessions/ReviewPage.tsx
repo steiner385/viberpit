@@ -28,6 +28,7 @@ import { PageContent } from '@/ui/PageContent'
 import { Skeleton } from '@/ui/Skeleton'
 import { EmptyState } from '@/ui/EmptyState'
 import { Button } from '@/ui/Button'
+import { useAutoMarkViewed } from './useAutoMarkViewed'
 
 /** Initial payload cap: the last N turns; older history pages in on scroll-up. */
 const INITIAL_TURN_LIMIT = 100
@@ -39,6 +40,9 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
   const unarchive = useUnarchiveSession()
   const record = useArchivedSessions().data?.find((s) => s.id === sessionId)
   const title = record?.name || sessionId.slice(0, 8)
+  // Opening the Reader marks it read, so the archived card's bold clears (D-10).
+  // An archived session takes no new turns: there is no `updatedAt` to follow.
+  useAutoMarkViewed(sessionId, null)
 
   // Fold every transcript event into turns once the data arrives, then close
   // the replay: replayComplete stores earliestTurn/totalTurns (which drive the

@@ -508,40 +508,64 @@ export function useRenameSession() {
   })
 }
 
-/** Flip one session's per-viewer `unread` flag in both list caches (D-10). */
-async function setUnreadInCaches(qc: QueryClient, id: string, unread: boolean) {
-  await Promise.all([qc.cancelQueries({ queryKey: QK.sessions }), qc.cancelQueries({ queryKey: QK.archived })])
+/** Which list caches an optimistic read-state flip changed. */
+type UnreadFlip = { live: boolean; archived: boolean }
+
+/** Flip one session's per-viewer `unread` flag in both list caches (D-10).
+ *  Resolves to which caches had a row that actually changed — an absent flag
+ *  counts as read, so "viewed" on it is no change. Only a cache with a row to
+ *  flip has its in-flight fetch cancelled: a cancelled fetch is refetched only
+ *  by the `onSettled` invalidate, and that runs only for a changed cache. */
+async function setUnreadInCaches(qc: QueryClient, id: string, unread: boolean): Promise<UnreadFlip> {
+  const needsFlip = (rows: { id: string; unread?: boolean }[] | undefined) =>
+    rows?.some((s) => s.id === id && (s.unread === true) !== unread) === true
+  const changed: UnreadFlip = {
+    live: needsFlip(qc.getQueryData<Session[]>(QK.sessions)),
+    archived: needsFlip(qc.getQueryData<ArchivedSession[]>(QK.archived)),
+  }
   const flip = <T extends { id: string; unread?: boolean }>(rows: T[] | undefined) =>
-    rows?.map((s) => (s.id === id && s.unread !== unread ? { ...s, unread } : s))
-  qc.setQueryData<Session[]>(QK.sessions, flip)
-  qc.setQueryData<ArchivedSession[]>(QK.archived, flip)
+    rows?.map((s) => (s.id === id && (s.unread === true) !== unread ? { ...s, unread } : s))
+  if (changed.live) {
+    await qc.cancelQueries({ queryKey: QK.sessions })
+    qc.setQueryData<Session[]>(QK.sessions, flip)
+  }
+  if (changed.archived) {
+    await qc.cancelQueries({ queryKey: QK.archived })
+    qc.setQueryData<ArchivedSession[]>(QK.archived, flip)
+  }
+  return changed
 }
 
-function invalidateSessionLists(qc: QueryClient) {
-  qc.invalidateQueries({ queryKey: QK.sessions })
-  qc.invalidateQueries({ queryKey: QK.archived })
+/** Refetch a list only when the optimistic flip changed a row in it: a no-op
+ *  flip means the cache already agreed, so a refetch would be a wasted list
+ *  read on every auto-viewed post. The auto path never refetches the archived
+ *  list — its optimistic flip is enough. */
+function invalidateSessionLists(qc: QueryClient, changed: UnreadFlip | undefined, auto: boolean) {
+  if (changed?.live) qc.invalidateQueries({ queryKey: QK.sessions })
+  if (changed?.archived && !auto) qc.invalidateQueries({ queryKey: QK.archived })
 }
 
 /** POST /sessions/{id}/viewed: the caller has seen the session up to now (D-10).
- *  Fired automatically by `useAutoMarkViewed` and by the card's "Mark as read",
- *  so a failure never toasts — the next refetch shows the real state. */
-export function useMarkSessionViewed() {
+ *  Fired automatically by `useAutoMarkViewed` (`auto: true`) and by the card's
+ *  "Mark as read", so a failure never toasts — the next refetch shows the real
+ *  state. */
+export function useMarkSessionViewed({ auto = false }: { auto?: boolean } = {}) {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string>({
+  return useMutation<void, ApiRequestError, string, UnreadFlip>({
     mutationFn: (id) => api.post<void>(`/sessions/${id}/viewed`),
     meta: { suppressErrorToast: true },
     onMutate: (id) => setUnreadInCaches(qc, id, false),
-    onSettled: () => invalidateSessionLists(qc),
+    onSettled: (_data, _err, _id, changed) => invalidateSessionLists(qc, changed, auto),
   })
 }
 
 /** POST /sessions/{id}/unread: the card's "Mark as unread" (D-10). */
 export function useMarkSessionUnread() {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string>({
+  return useMutation<void, ApiRequestError, string, UnreadFlip>({
     mutationFn: (id) => api.post<void>(`/sessions/${id}/unread`),
     onMutate: (id) => setUnreadInCaches(qc, id, true),
-    onSettled: () => invalidateSessionLists(qc),
+    onSettled: (_data, _err, _id, changed) => invalidateSessionLists(qc, changed, false),
   })
 }
 

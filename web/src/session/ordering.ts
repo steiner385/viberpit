@@ -137,7 +137,7 @@ const PR_BUCKETS: Record<PullRequestInfo['state'] | 'none', { label: string; ord
 
 function prBucket(s: Session): { key: string; label: string; order: number } {
   let best: keyof typeof PR_BUCKETS = 'none'
-  for (const pr of s.prs) {
+  for (const pr of s.prs ?? []) {
     if (PR_BUCKETS[pr.state] && PR_BUCKETS[pr.state].order < PR_BUCKETS[best].order) best = pr.state
   }
   return { key: `pr:${best}`, ...PR_BUCKETS[best] }

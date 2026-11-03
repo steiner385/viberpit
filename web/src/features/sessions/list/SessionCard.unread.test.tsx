@@ -17,13 +17,13 @@ const base: Session = session({
 
 const noop = () => {}
 
-function renderCard(s: Session, onSetUnread?: (id: string, unread: boolean) => void) {
+function renderCard(s: Session, onSetUnread?: (id: string, unread: boolean) => void, open = false) {
   return render(
     <ViewportProvider kiosk={null}>
       <MemoryRouter>
         <SessionCard session={s} account={undefined}
           onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop}
-          onSetUnread={onSetUnread} />
+          onSetUnread={onSetUnread} open={open} />
       </MemoryRouter>
     </ViewportProvider>,
   )
@@ -44,6 +44,14 @@ describe('SessionCard unread state (D-10)', () => {
   it('keeps a read session title out of bold and "unread" out of its accessible name', () => {
     renderCard({ ...base, unread: false })
     expect(screen.getByText('Fix login bug')).not.toHaveClass('font-bold')
+    expect(screen.getByRole('button', { name: /open session fix login bug/i }))
+      .not.toHaveAccessibleName(expect.stringMatching(/unread/i))
+  })
+
+  it('never shows the open session as unread', () => {
+    renderCard({ ...base, unread: true }, undefined, true)
+    expect(screen.getByText('Fix login bug')).not.toHaveClass('font-bold')
+    expect(screen.getByText('Fix login bug')).toHaveClass('font-medium')
     expect(screen.getByRole('button', { name: /open session fix login bug/i }))
       .not.toHaveAccessibleName(expect.stringMatching(/unread/i))
   })

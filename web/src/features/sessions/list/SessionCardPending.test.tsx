@@ -23,4 +23,14 @@ describe('SessionCard pending placeholder', () => {
     fireEvent.click(screen.getByText('My new session'))
     expect(onOpen).not.toHaveBeenCalled()
   })
+
+  it('titles the placeholder at the card title weight, 500 (D-10)', () => {
+    render(
+      <ViewportProvider kiosk={null}>
+        <SessionCard session={base} account={undefined} onOpen={vi.fn()} onRename={vi.fn()} onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()} />
+      </ViewportProvider>,
+    )
+    expect(screen.getByText('My new session')).toHaveClass('font-medium')
+    expect(screen.getByText('My new session')).not.toHaveClass('font-semibold')
+  })
 })

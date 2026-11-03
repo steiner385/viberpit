@@ -1083,6 +1083,15 @@ async def test_session_read_state_writers_on_postgres(pg_engine, pg_url):
             assert sid not in await read_state.unread_ids(who)
             await read_state.mark_unread(who, sid)
             assert sid in await read_state.unread_ids(who)
+
+            # A worker clock ahead of the DB: viewed_at = max(db now, last_turn_at).
+            ahead = datetime.utcnow() + timedelta(hours=1)
+            async with Session() as s:
+                await s.execute(update(DbSession).where(DbSession.id == sid).values(
+                    last_turn_at=ahead))
+                await s.commit()
+            await read_state.mark_viewed(who, sid)
+            assert sid not in await read_state.unread_ids(who)
     finally:
         async with Session() as s:            # session-scoped fixture: clean up
             await s.execute(delete(SessionView).where(SessionView.session_id == sid))

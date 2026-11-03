@@ -56,13 +56,25 @@ async def _last_turn_at(db, session_id: str):
 
 
 async def mark_viewed(identity: str, session_id: str) -> None:
-    """``viewed_at`` = the DB clock now. Raises :class:`UnknownSession`."""
+    """``viewed_at`` = max(the DB clock now, the session's ``last_turn_at``).
+    Raises :class:`UnknownSession`.
+
+    ``last_turn_at`` is stamped by whichever host ran the turn; a worker whose clock
+    runs ahead of the DB's would otherwise leave a session the viewer has just read
+    bold until real time caught up. Taking the max means "viewed" always covers the
+    last turn, and only a later turn reads as new."""
     async with db_session() as db:
-        await _last_turn_at(db, session_id)
-        # DB clock rule: read the expression as a scalar so the stored value is a
-        # concrete naive-UTC datetime in the same format as last_turn_at.
-        now = (await db.execute(select(db_utc_now()))).scalar_one()
-        await _upsert(db, identity, session_id, now)
+        # One SELECT, one transaction: the row's last turn and the DB clock. DB clock
+        # rule: db_utc_now() comes back as a concrete naive-UTC datetime on both
+        # dialects, so the max is a plain Python comparison — no dialect GREATEST/MAX.
+        row = (await db.execute(
+            select(DbSession.last_turn_at, db_utc_now()).where(DbSession.id == session_id)
+        )).first()
+        if row is None:
+            raise UnknownSession(session_id)
+        last_turn_at, now = row
+        viewed_at = now if last_turn_at is None else max(now, last_turn_at)
+        await _upsert(db, identity, session_id, viewed_at)
 
 
 async def mark_unread(identity: str, session_id: str) -> None:

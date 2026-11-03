@@ -8,8 +8,8 @@
  *   until the viewer comes back, and coming back posts once.
  * - An optimistic placeholder (`isPendingSessionId`) has no server row; skipped.
  *
- * Mounted once, by `SessionBody` — the live open session. The archived Reader
- * page does not mount it: archived cards carry no unread display.
+ * Mounted by `SessionBody` (the live open session) and by the archived Reader
+ * page (`ArchivedReviewPage`), whose card shows the same unread bold.
  */
 import { useEffect, useRef } from 'react'
 import { useMarkSessionViewed } from '@/api/hooks'
@@ -20,7 +20,7 @@ export const VIEWED_DEBOUNCE_MS = 2000
 
 export function useAutoMarkViewed(sessionId: string, updatedAt: string | null | undefined): void {
   const visible = usePageVisible()
-  const { mutate } = useMarkSessionViewed()
+  const { mutate } = useMarkSessionViewed({ auto: true })
   // The session posted for the current visible stretch; cleared while hidden so
   // the tab coming back posts once.
   const openedRef = useRef<string | null>(null)

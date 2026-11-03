@@ -20,6 +20,9 @@ interface SessionListProps {
   accounts: Account[]
   isLoading?: boolean
   selectedId?: string | null
+  /** The session open in the main pane — `selectedId` may be the keyboard
+   *  cursor instead. Its card never shows unread (D-10). */
+  openId?: string | null
   isFiltered?: boolean
   onClearSearch?: () => void
   onOpen: (id: string) => void
@@ -45,6 +48,7 @@ export function SessionList({
   accounts,
   isLoading,
   selectedId,
+  openId,
   isFiltered,
   onClearSearch,
   onOpen,
@@ -171,6 +175,7 @@ export function SessionList({
         childSessions={childSessions}
         parentName={parentName}
         selected={session.id === selectedId}
+        open={session.id === openId}
         listMode={listMode}
         onOpen={onOpen}
         onRename={onRename}

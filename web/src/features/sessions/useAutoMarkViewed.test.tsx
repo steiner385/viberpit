@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 
 const mutate = vi.fn()
+const useMarkSessionViewed = vi.fn<(opts?: { auto?: boolean }) => { mutate: typeof mutate }>(() => ({ mutate }))
 vi.mock('@/api/hooks', () => ({
-  useMarkSessionViewed: () => ({ mutate }),
+  useMarkSessionViewed: (opts?: { auto?: boolean }) => useMarkSessionViewed(opts),
 }))
 
 import { useAutoMarkViewed, VIEWED_DEBOUNCE_MS } from './useAutoMarkViewed'
@@ -29,6 +30,11 @@ describe('useAutoMarkViewed (D-10)', () => {
   afterEach(() => {
     vi.useRealTimers()
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+  })
+
+  it('posts on the auto path, so it never refetches the archived list', () => {
+    mount({ id: 's1', updatedAt: 't1' })
+    expect(useMarkSessionViewed).toHaveBeenCalledWith({ auto: true })
   })
 
   it('debounces to 2 s', () => {

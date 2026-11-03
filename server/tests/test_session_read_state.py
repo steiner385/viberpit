@@ -9,6 +9,7 @@ POST routes write the row.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,22 +33,24 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _db(d) -> sqlite3.Connection:
-    return sqlite3.connect(str(d / "ccswitch.db"))
+def _db() -> sqlite3.Connection:
+    # The file `_app_with_orch` pointed the app at — read back from the env it set,
+    # so this test never spells the DB filename itself.
+    return sqlite3.connect(os.environ["VIBERPIT_DB_URL"].removeprefix("sqlite+aiosqlite:///"))
 
 
 def _fmt(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
-def _set_last_turn(d, sid: str, when: datetime | None) -> None:
-    with _db(d) as conn:
+def _set_last_turn(sid: str, when: datetime | None) -> None:
+    with _db() as conn:
         conn.execute("UPDATE sessions SET last_turn_at = ? WHERE id = ?",
                      (None if when is None else _fmt(when), sid))
 
 
-def _viewed_at(d, identity: str, sid: str) -> datetime | None:
-    with _db(d) as conn:
+def _viewed_at(identity: str, sid: str) -> datetime | None:
+    with _db() as conn:
         row = conn.execute(
             "SELECT viewed_at FROM session_views WHERE identity = ? AND session_id = ?",
             (identity, sid)).fetchone()
@@ -70,7 +73,7 @@ def _post(client, sid: str, action: str, headers=A) -> int:
 def test_no_row_means_read_even_after_a_turn():
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "Fresh")
-        _set_last_turn(d, sid, _utcnow_naive())
+        _set_last_turn(sid, _utcnow_naive())
         assert _unread(client, sid) is False
 
 
@@ -78,19 +81,34 @@ def test_viewed_then_later_turn_then_viewed_then_mark_unread():
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "Cycle")
         assert _post(client, sid, "viewed") == 204
-        viewed = _viewed_at(d, "alice@example.com", sid)
+        viewed = _viewed_at("alice@example.com", sid)
         assert viewed is not None
         assert _unread(client, sid) is False
 
-        _set_last_turn(d, sid, viewed + timedelta(minutes=1))
+        _set_last_turn(sid, viewed + timedelta(minutes=1))
         assert _unread(client, sid) is True
 
         # Viewed again after that turn: the DB clock is now past it.
-        _set_last_turn(d, sid, _utcnow_naive() - timedelta(minutes=1))
+        _set_last_turn(sid, _utcnow_naive() - timedelta(minutes=1))
         assert _post(client, sid, "viewed") == 204
         assert _unread(client, sid) is False
 
         assert _post(client, sid, "unread") == 204
+        assert _unread(client, sid) is True
+
+
+def test_viewed_covers_a_last_turn_stamped_ahead_of_the_db_clock():
+    # A worker whose clock runs ahead stamps last_turn_at in the DB's future. Viewing
+    # the session must still read it: viewed_at = max(db now, last_turn_at).
+    with temp_env() as d, _app_with_orch(d) as (client, _orch):
+        sid = _create(client, "Skewed")
+        ahead = (_utcnow_naive() + timedelta(hours=1)).replace(microsecond=250000)
+        _set_last_turn(sid, ahead)
+        assert _post(client, sid, "viewed") == 204
+        assert _viewed_at("alice@example.com", sid) == ahead
+        assert _unread(client, sid) is False
+        # A turn past that skewed one still reads as new.
+        _set_last_turn(sid, ahead + timedelta(seconds=1))
         assert _unread(client, sid) is True
 
 
@@ -98,39 +116,39 @@ def test_mark_unread_sets_viewed_just_before_the_last_turn():
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "Precise")
         turn = datetime(2026, 11, 3, 12, 0, 0, 500000)
-        _set_last_turn(d, sid, turn)
+        _set_last_turn(sid, turn)
         assert _post(client, sid, "unread") == 204
-        assert _viewed_at(d, "alice@example.com", sid) == turn - timedelta(microseconds=1)
+        assert _viewed_at("alice@example.com", sid) == turn - timedelta(microseconds=1)
         assert _unread(client, sid) is True
 
 
 def test_mark_unread_without_a_turn_deletes_the_row():
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "NoTurn")
-        _set_last_turn(d, sid, None)
+        _set_last_turn(sid, None)
         assert _post(client, sid, "viewed") == 204
-        assert _viewed_at(d, "alice@example.com", sid) is not None
+        assert _viewed_at("alice@example.com", sid) is not None
         assert _post(client, sid, "unread") == 204
-        assert _viewed_at(d, "alice@example.com", sid) is None
+        assert _viewed_at("alice@example.com", sid) is None
         assert _unread(client, sid) is False
 
 
 def test_one_viewers_state_never_leaks_to_another():
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "Shared")
-        _set_last_turn(d, sid, datetime(2026, 1, 1))
+        _set_last_turn(sid, datetime(2026, 1, 1))
         assert _post(client, sid, "unread", headers=A) == 204
         assert _unread(client, sid, headers=A) is True
         assert _unread(client, sid, headers=B) is False
-        assert _viewed_at(d, "bob@example.com", sid) is None
+        assert _viewed_at("bob@example.com", sid) is None
 
 
 def test_archived_sessions_carry_unread():
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "Old")
         other = _create(client, "OldToo")
-        _set_last_turn(d, sid, datetime(2026, 1, 1))
-        _set_last_turn(d, other, datetime(2026, 1, 1))
+        _set_last_turn(sid, datetime(2026, 1, 1))
+        _set_last_turn(other, datetime(2026, 1, 1))
         assert _post(client, sid, "unread") == 204
         for s in (sid, other):
             assert client.delete(f"/api/sessions/{s}", headers=A).status_code == 204
@@ -148,8 +166,8 @@ def test_permanent_delete_drops_every_viewers_row():
         resp = client.post("/api/sessions/batch/permanent-delete",
                            json={"ids": [sid]}, headers=A)
         assert resp.status_code == 200, resp.text
-        assert _viewed_at(d, "alice@example.com", sid) is None
-        assert _viewed_at(d, "bob@example.com", sid) is None
+        assert _viewed_at("alice@example.com", sid) is None
+        assert _viewed_at("bob@example.com", sid) is None
 
 
 def _count_read_state_queries(client, path: str) -> int:
@@ -190,7 +208,7 @@ def test_list_endpoints_degrade_to_read_when_the_lookup_fails():
 
     with temp_env() as d, _app_with_orch(d) as (client, _orch):
         sid = _create(client, "Resilient")
-        _set_last_turn(d, sid, datetime(2026, 1, 1))
+        _set_last_turn(sid, datetime(2026, 1, 1))
         assert _post(client, sid, "unread") == 204
         with patch("server.sessions.read_state.unread_ids", side_effect=_boom):
             assert _unread(client, sid) is False
