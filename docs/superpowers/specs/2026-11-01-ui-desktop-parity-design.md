@@ -220,13 +220,45 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 ## 7. Sidebar and navigation
 
 - **Group/sort** `[A-D12]`: group by none / repo / status / **branch** / **host** / **date** / **PR state**; sort
-  is unchanged. `session/ordering.ts` stays the single owner.
-- **Read/unread** `[A-D12]`: a session is unread when it has assistant output newer than the viewer's per-user
-  `last_viewed_seq`, which is stored server-side so it follows the user across devices. Unread shows as a bold
-  title, and the card menu has Mark read/unread. It complements the amber needs-you badge and does not replace it.
+  is unchanged. `session/ordering.ts` stays the single owner. **Shipped (D-10):** `date` buckets `updatedAt`
+  into Today / Yesterday / Previous 7 days / Older in local time; `pr` files a session under its most advanced
+  PR (Open › Draft › Merged › Closed › No PR); sessions with no branch or host trail as "No branch" / "No host".
+  Archived ordering is unchanged.
+- **Read/unread** `[A-D12]`: unread shows as a bold title, and the card menu has Mark as read / Mark as unread.
+  It complements the amber needs-you badge and does not replace it. **Shipped (D-10), with a deliberate
+  deviation:** there is no `last_viewed_seq`. The daemon's event seq resets on restart, so nothing durable could
+  be compared against it. Instead a per-viewer `session_views` row stores `viewed_at` (server-side, so it follows
+  the viewer across devices), compared against the session's persisted `last_turn_at`:
+  - a session is unread for a viewer iff that viewer has a row **and** `last_turn_at > viewed_at`;
+  - **no row means read**, so pre-existing and automation-only sessions never turn bold on day one; opening a
+    session creates the row;
+  - "viewed" stores `max(DB now, last_turn_at)`, so a worker whose clock runs ahead of the DB cannot leave a
+    session the viewer has just read bold; "Mark as unread" stores a timestamp just before `last_turn_at` (or
+    drops the row when there is no turn yet);
+  - the open session posts "viewed" on open, when the tab becomes visible again, and 2 s after each new turn end
+    while it stays open; nothing posts from a hidden tab. Its own card never shows bold. Opening an archived
+    session's Reader page marks it read too, and archived cards show the same bold.
 - **⌘K palette** `[A-D5]`: ⌘K/Ctrl+K opens a palette over sessions (including archived), repos and branches,
   sections (`navDefs`), settings sections (`settingsDefs`) and app actions (`shortcuts`). It mounts in
   `app.overlays` at `z-palette`. It adds no new index of its own; every entry derives from an existing registry.
+  **Shipped (D-10)** as `AppPalette` (`features/palette/`, lazy-loaded on first open):
+  - sections in order: **Sessions** (live, background, then archived), **Actions** (New session plus every
+    `app`/`in-session` shortcut row with a no-event handler whose `when` passes, showing its chord), **Navigate**
+    (`NAV_DEFS`, kiosk-filtered), **Settings** (`SETTINGS_META`), **Repos** (`useGithubRepos`) and **Branches**
+    (distinct live-session branches; archived sessions carry no branch). An empty query shows the 8 most recent
+    sessions, then Actions. ↑/↓ move, Enter runs, Esc or ⌘K again closes.
+  - **Repos and branches drill down inside the palette.** A repo the list's Project filter offers sets that
+    filter and reveals the list; any other repo, and every branch, rewrites the palette query to the
+    `repo:<owner/name>` or `branch:<name>` facet, which matches that exact value (case-insensitively), leaving
+    that repo's or branch's sessions to pick from. Facets combine with each other and with free text. Branches
+    are not checked out or started from the palette.
+  - **Opening a live session from the palette clears list filters or search that would hide it,** so the list
+    beside the open session shows it. Pre-spawn sessions (queued, awaiting approval) are the exception; they are
+    left as they are.
+  - **Phone:** the palette is keyboard-only (⌘K / Ctrl+K from a hardware keyboard). There is no touch opener. At 390 px the panel fits the screen and hides chords.
+  - **Deviation:** `settingsMeta.ts` holds id, group, label, description and keywords but **not `icon`**. The icon
+    stays with the page half in `settingsDefs.ts`, so the palette chunk imports no icon set. No palette row
+    shows an icon.
 - **Keyboard** `[A-D20]`: all bindings are registered in `shell/shortcuts.ts`, and each is checked against
   browser-reserved chords (Chrome on Linux/macOS/Windows) in a test.
 
@@ -235,9 +267,9 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | Alt+Shift+M / I / E (⌥⇧ on Apple) | mode / model / effort menus. Desktop's ⌘⇧M/I/E is browser-reserved (Ctrl+Shift+I DevTools, ⌘/Ctrl+Shift+M profile menu), so this is the fallback chord; matched on `e.code`. |
 | ⌘⌥↑ / ⌘⌥↓ (Alt+↑/↓ on Linux/Windows) | jump to previous / next own prompt. On Chrome Mac ⌘⌥↑/↓ shadows pane focus, which is not reserved, so the page may take it. It is chosen over ⌥↑/↓ because that one moves the caret in a textarea. Never ⌘⌥←/→, which is Chrome Mac's previous/next tab. |
 | ⌘⌥[ / ⌘⌥] (Alt+[ / Alt+] on Linux/Windows) | previous / next session in list order. A bare ⌥ chord types on Mac non-US layouts (German ⌥5/⌥6 are `[` `]`), so Apple adds ⌘. |
-| ⌘⌥1–9 (Alt+Shift+1–9 on Linux/Windows) | jump to the nth session in list order; presets in the dispatch bar. Not bare Alt+1–9: Chrome and Firefox on Linux use it to select tabs, and taking it would break tab switching. |
-| ⌘K | palette |
-| Ctrl+O | cycle transcript view mode |
+| ⌘⌥1–9 (Alt+Shift+1–9 on Linux/Windows) | jump to the nth session in list order, from anywhere outside a non-prompt text field (the composer and dispatch prompt included). Not bare Alt+1–9: Chrome and Firefox on Linux use it to select tabs, and taking it would break tab switching. Presets (§8) therefore need a different chord. |
+| ⌘K (Ctrl+K on Linux/Windows) | palette; pressing it again closes it. Matched on `e.key` `k`, falling back to the `KeyK` code only for a non-Latin layout, so Dvorak's physical K does not open it. Not Ctrl+Shift+K (Firefox console). |
+| Ctrl+O (⌘O on Apple) | cycle transcript view mode |
 | Esc | stop while busy (§3) |
 
 ## 8. Configuration surfaces
@@ -249,7 +281,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | MCP | Per-tool enable/disable per server (Settings) and per session (Context card). | `[A-D15]` |
 | Output styles | Settings list and default; per-session picker in the `+` menu. | `[A-D15]` |
 | App slash commands | `/fork /rewind /btw /plan /effort /fast /model` are added to `server/sessions/commands/catalog.py` and dispatch to the same actions as the UI. | `[A-D15]` |
-| Presets | The dispatch bar's `+` menu and ⌘⌥1–9 select existing presets and templates, which today have no consumer. | `[A-D16]` |
+| Presets | The dispatch bar's `+` menu selects existing presets and templates, which today have no consumer. ⌘⌥1–9 shipped as the session jump (D-10, §7), so a preset chord is still to be chosen. | `[A-D16]` |
 | Worktrees | Settings › Sessions gains worktree location and branch prefix (today server-only). | `[A-D16]` |
 | Sandbox | A session default plus a per-session toggle (Environment card). | `[A-D16]` |
 | PR auto-fix | A per-session toggle mapped onto the existing PR Doctor / autopilot, with no new mechanism. | `[A-D16]` |
@@ -277,7 +309,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | `POST /sessions/{id}/rewind` `{to_message_id}` + `POST …/rewind/undo` — **shipped (D-9)** as `POST /sessions/{id}/rewind` `{toTurnId, mode: "files_and_conversation" \| "conversation", dryRun?, requestId}` → dry run `{files, deleted, insertions, deletions, checkpointAvailable}`, real run `{rewindId, prefill, filesRestored}`; and `POST …/rewind/undo` `{rewindId}` → `{ok, skipped}`. 404 for an unknown session, 409 `{code, message}` with a `REWIND_CODES` code, 409 `daemon_outdated` | Rewind, Edit & resend, Rewind & retry |
 | live `set_permission_mode` / effort / fast on the driver | prompt row |
 | `scope=session` rule creation from the card | permission card |
-| per-viewer `last_viewed_seq` | read/unread |
+| per-viewer read state — **shipped (D-10)** as `last_viewed_at`, not a seq (§7): table `session_views (identity, session_id, viewed_at)`; `GET /sessions` and `GET /sessions/archived` add `unread: bool` per row for the calling identity (one batched query; a lookup failure degrades to all-read rather than failing the list); `POST /sessions/{id}/viewed` → 204, stores `max(DB now, last_turn_at)`; `POST /sessions/{id}/unread` → 204, stores just before `last_turn_at` or drops the row with no turn yet; both 404 for an unknown session. Served by the edge from the DB, so no daemon RPC | read/unread |
 | `GET /sessions/{id}/search?q=` | transcript search |
 | memory-file discovery (loaded `CLAUDE.md` set) + user-level write/sync | Context card, Settings › Memory |
 | MCP per-tool toggles, output styles, plugin marketplace ops | Settings |
