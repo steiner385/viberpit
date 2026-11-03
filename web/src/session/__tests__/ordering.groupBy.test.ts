@@ -5,7 +5,7 @@
 // constructor, so the buckets hold in any timezone and on any calendar day.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { orderSessions, buildNavItems, GROUP_BY_VALUES } from '../ordering'
+import { orderSessions, buildNavItems, GROUP_BY_VALUES, groupKeyOf, LIVE_ORDERING } from '../ordering'
 import { useItemOrdering, LIVE_SPEC, BACKGROUND_SPEC } from '../useSessionOrdering'
 import { loadSessionOrder, saveSessionOrder } from '@/lib/sessionOrder'
 import type { Session, PullRequestInfo } from '@/api/types'
@@ -182,6 +182,19 @@ describe('group by PR state', () => {
       { key: 'pr:open', label: 'Open', ids: ['open'] },
       { key: 'pr:none', label: 'No PR', ids: ['missing'] },
     ])
+  })
+})
+
+describe('groupKeyOf', () => {
+  it.each(GROUP_BY_VALUES)('names the group orderSessions files each session under (%s)', (g) => {
+    const now = new Date(2026, 10, 3, 12)
+    const s = [
+      mk('a', { branch: 'main', host: 'rocky', updatedAt: new Date(2026, 10, 3, 9).toISOString(), prs: prs('open') }),
+      mk('b', { branch: null, host: null, updatedAt: new Date(2026, 9, 1).toISOString() }),
+    ]
+    for (const group of orderSessions(s, g, 'name', now)) {
+      for (const item of group.sessions) expect(groupKeyOf(item, g, LIVE_ORDERING, now)).toBe(group.key)
+    }
   })
 })
 

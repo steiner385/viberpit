@@ -348,6 +348,41 @@ describe('the list', () => {
     expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('acme/rocket')
   })
 
+  it('opening a session from the palette expands its collapsed group, so ] steps on from it', async () => {
+    // Two sessions three days old: whatever today is, they share the
+    // "Previous 7 days" bucket, and by name Alpha sorts right before Beta.
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString()
+    const added = [
+      session({ id: 'sa', name: 'Alpha probe', updatedAt: threeDaysAgo }),
+      session({ id: 'sb', name: 'Beta probe', updatedAt: threeDaysAgo }),
+    ]
+    SESSIONS.push(...added)
+    try {
+      const user = userEvent.setup()
+      const app = await renderList()
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Group by' }), 'date')
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Sort by' }), 'name')
+      const header = () => screen.getByRole('button', { name: /previous 7 days/i })
+      await user.click(header())
+      expect(header()).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByLabelText('Open session Alpha probe')).not.toBeInTheDocument()
+
+      await openFromRail(user)
+      await user.keyboard('alpha probe')
+      await waitFor(() => expect(sessionOptions()).toEqual(['Alpha probe']))
+      await user.keyboard('{Enter}')
+      await waitFor(() => expect(app.path()).toBe('/sessions/sa'))
+      // The session it opened is visible in the list beside it…
+      await waitFor(() => expect(header()).toHaveAttribute('aria-expanded', 'true'))
+      expect(screen.getByLabelText('Open session Alpha probe')).toBeInTheDocument()
+      // …so the list keys step on from it, not from the top of the list.
+      fireEvent.keyDown(railLink(), { key: ']', code: 'BracketRight', altKey: true })
+      await waitFor(() => expect(app.path()).toBe('/sessions/sb'))
+    } finally {
+      SESSIONS.splice(SESSIONS.length - added.length, added.length)
+    }
+  })
+
   it('with a Project filter for repo A, a branch of repo B never leaves the list filtered to A', async () => {
     const user = userEvent.setup()
     const app = await renderList()

@@ -25,6 +25,8 @@ import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import { stepSessionId } from '@/session/listStep'
 import { NO_FILTERS, isFiltered } from '@/session/listFilters'
+import { groupKeyOf } from '@/session/ordering'
+import { LIVE_SPEC } from '@/session/useSessionOrdering'
 import {
   BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, listScopeForPath, readerRouteForPath, sessionPath,
   type ListScope,
@@ -687,18 +689,23 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   }
   /**
    * The palette's open path: the list's own (`openIn`), except that a live
-   * session the list's filters or search currently hide clears them first —
-   * otherwise the session opens beside a list that does not contain it, and
-   * the ‹ › chevrons and Alt+[ ] have no place to step from. A pre-spawn
-   * session (queued, pending approval) is exempt: it is never in the ordered
-   * list, and its own section shows it whatever the filters say.
+   * session the list currently hides is revealed first — its filters or search
+   * are cleared, and its group is expanded if collapsed. Otherwise the session
+   * opens beside a list that does not contain it, and the ‹ › chevrons and
+   * Alt+[ ] have no place to step from. A pre-spawn session (queued, pending
+   * approval) is exempt: it is never in the ordered list, and its own section
+   * shows it whatever the filters say.
    */
   const openFromPalette = (id: string, inScope: 'live' | 'background') => {
-    const preSpawn = list.sessions.some((s) => s.id === id && isPreSpawnStatus(s.status))
-    if (inScope === 'live' && !preSpawn && !orderedIds.includes(id)
-      && (isFiltered(list.filters) || list.search.query !== '')) {
-      list.setFilters(NO_FILTERS)
-      list.search.setQuery('')
+    const session = list.sessions.find((s) => s.id === id)
+    if (inScope === 'live' && session && !isPreSpawnStatus(session.status) && !orderedIds.includes(id)) {
+      if (isFiltered(list.filters) || list.search.query !== '') {
+        list.setFilters(NO_FILTERS)
+        list.search.setQuery('')
+      }
+      // From the ordering config, not `list.ordering.groups`: those are built
+      // from the filtered list, which may not hold the session yet.
+      list.ordering.expandGroup(groupKeyOf(session, list.ordering.groupBy, LIVE_SPEC.config))
     }
     openIn(id, inScope)
   }

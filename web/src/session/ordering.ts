@@ -59,6 +59,22 @@ const COMPARATORS: Record<SortBy, (a: Session, b: Session) => number> = {
 }
 
 /** Generic group+sort engine. Buckets via config.groupings[groupBy]; 'none' = flat. */
+/** The single group's key when nothing groups the list. */
+const UNGROUPED_KEY = 'all'
+
+/** The key of the group `orderItems` files `item` under — the same `bucketOf`,
+ *  so a caller can find an item's group (e.g. to expand it) even when the item
+ *  is filtered out of the groups it currently holds. */
+export function groupKeyOf<T>(
+  item: T,
+  groupBy: string,
+  config: OrderingConfig<T>,
+  now: Date = new Date(),
+): string {
+  const def = config.groupings[groupBy]
+  return groupBy === 'none' || !def ? UNGROUPED_KEY : def.bucketOf(item, now).key
+}
+
 export function orderItems<T>(
   items: readonly T[],
   groupBy: string,
@@ -70,7 +86,7 @@ export function orderItems<T>(
   const sorted = [...items].sort(config.sorts[sortBy])
   const def = config.groupings[groupBy]
   if (groupBy === 'none' || !def) {
-    return [{ key: 'all', label: null, count: sorted.length, sessions: sorted }]
+    return [{ key: UNGROUPED_KEY, label: null, count: sorted.length, sessions: sorted }]
   }
   const buckets = new Map<string, { label: string; order: number; sessions: T[] }>()
   for (const it of sorted) {
