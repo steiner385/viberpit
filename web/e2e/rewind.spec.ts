@@ -4,7 +4,8 @@
  * which sends `mode: "conversation"`). The `rewound` event cuts the turns and leaves the
  * divider; its Undo posts the rewindId, and `rewindUndone` brings the turns back through
  * a fresh replay. Edit & resend refills the composer, a 409 says why, `/rewind` picks a
- * prompt, and an engine without the capability offers no rewind. The API is mocked with
+ * prompt, an error card's Rewind & retry rewinds to the failed prompt and sends it again
+ * once, and an engine without the capability offers no rewind. The API is mocked with
  * `page.route`, the socket with `page.routeWebSocket`, like `fork.spec.ts`.
  */
 import { test, expect, type Page, type Request, type WebSocketRoute } from '@playwright/test'
@@ -37,16 +38,22 @@ const CAVEAT = 'Changes made by shell commands are not restored, and edits made 
 
 type Reply = { status: number; json: unknown }
 
-interface Opened { posts: Request[]; undos: Request[]; attaches: () => number; socket: () => WebSocketRoute }
+interface Opened {
+  posts: Request[]; undos: Request[]; prompts: string[]; attaches: () => number; socket: () => WebSocketRoute
+}
 
-async function openSession(page: Page, opts: { rewind?: boolean; preview?: Reply; reply?: Reply } = {}): Promise<Opened> {
+async function openSession(
+  page: Page, opts: { rewind?: boolean; preview?: Reply; reply?: Reply; history?: SessionEvent[] } = {},
+): Promise<Opened> {
   const {
     rewind = true,
+    history = HISTORY,
     preview = { status: 200, json: PREVIEW },
     reply = { status: 200, json: RESULT },
   } = opts
   const posts: Request[] = []
   const undos: Request[] = []
+  const prompts: string[] = []
   let attaches = 0
   let socket: WebSocketRoute | null = null
   await page.setViewportSize({ width: 1440, height: 900 })
@@ -73,17 +80,18 @@ async function openSession(page: Page, opts: { rewind?: boolean; preview?: Reply
   await page.routeWebSocket('**/ws', (ws) => {
     socket = ws
     ws.onMessage((msg) => {
-      const frame = JSON.parse(msg.toString()) as { type: string; sessionId?: string }
+      const frame = JSON.parse(msg.toString()) as { type: string; sessionId?: string; text?: string }
+      if (frame.type === 'prompt' && frame.sessionId === sid) prompts.push(frame.text ?? '')
       if (frame.type !== 'attach' || frame.sessionId !== sid) return
       attaches += 1
-      ws.send(wire(replayFrame(sid, HISTORY, { totalTurns: 4 })))
+      ws.send(wire(replayFrame(sid, history, { totalTurns: 4 })))
       ws.send(JSON.stringify({ type: 'commands', sessionId: sid, commands: rewind ? [REWIND_CMD] : [] }))
     })
   })
   await page.goto('/')
   await page.getByRole('button', { name: /open session rewind me/i }).click()
   await expect(page.getByText('Second answer')).toBeVisible()
-  return { posts, undos, attaches: () => attaches, socket: () => socket! }
+  return { posts, undos, prompts, attaches: () => attaches, socket: () => socket! }
 }
 
 /** Open the "⋯" menu of the prompt whose text is `text`. */
@@ -178,4 +186,45 @@ test('an engine that cannot rewind offers no rewind', async ({ page }) => {
   await expect(page.getByRole('menuitem', { name: 'Copy as Markdown' })).toBeVisible()
   await expect(page.getByRole('menuitem', { name: 'Rewind to here' })).toHaveCount(0)
   await expect(page.getByRole('menuitem', { name: 'Edit & resend' })).toHaveCount(0)
+})
+
+// The second turn failed: its reply carries an error, so its card offers Rewind & retry.
+const FAILED: SessionEvent[] = [
+  ...HISTORY.slice(0, -1),
+  { type: 'error', turnId: 't2', code: 'api_error', message: 'Overloaded — try again' },
+  { type: 'turnEnd', turnId: 't2' },
+]
+
+test("Rewind & retry on an error card rewinds to the failed prompt and sends it again, once", async ({ page }) => {
+  const { posts, prompts } = await openSession(page, { history: FAILED })
+  const transcript = page.getByTestId('transcript-scroll')
+  await transcript.getByRole('button', { name: 'Rewind & retry' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Rewind to this message?' })
+  await expect(dialog.getByText('src/app.ts')).toBeVisible()
+  expect(prompts).toEqual([])
+  await dialog.getByRole('button', { name: 'Rewind' }).click()
+  await expect(dialog).toBeHidden()
+  expect(posts.map((p) => p.postDataJSON())).toEqual([
+    expect.objectContaining({ toTurnId: U2, dryRun: true }),
+    expect.objectContaining({ toTurnId: U2, mode: 'files_and_conversation', dryRun: false }),
+  ])
+  await expect.poll(() => prompts).toEqual([RESULT.prefill])
+  // Settle: still exactly one send.
+  await page.waitForTimeout(300)
+  expect(prompts).toEqual([RESULT.prefill])
+})
+
+test('a refused Rewind & retry says why and sends nothing', async ({ page }) => {
+  const { prompts } = await openSession(page, {
+    history: FAILED, reply: { status: 409, json: { detail: { code: 'REWIND_SPLITS_TOOL_CALL', message: 'split' } } } })
+  await page.getByTestId('transcript-scroll').getByRole('button', { name: 'Rewind & retry' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Rewind' }).click()
+  await expect(page.getByText("Can't rewind here — it would split a tool call from its result")).toBeVisible()
+  expect(prompts).toEqual([])
+})
+
+test('an engine that cannot rewind offers no Rewind & retry', async ({ page }) => {
+  await openSession(page, { rewind: false, history: FAILED })
+  await expect(page.getByTestId('transcript-scroll').getByText('Overloaded — try again')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Rewind & retry' })).toHaveCount(0)
 })

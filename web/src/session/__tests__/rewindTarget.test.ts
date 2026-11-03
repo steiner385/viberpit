@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { Turn } from '../reducer'
-import { recentRewindTargets, rewindBlocked, rewindTargetFor } from '../rewindTarget'
+import { failedPrompts, recentRewindTargets, rewindBlocked, rewindTargetFor } from '../rewindTarget'
 
 const UUID = '0b9c7a52-6f1e-4c55-9d1e-2f3a4b5c6d7e'
 const user = (id: string, extra: Partial<Turn> = {}): Turn =>
@@ -41,4 +41,22 @@ describe('rewindBlocked — exactly the states the server refuses (driver.rewind
     'blocks %s', (state) => expect(rewindBlocked(state)).toBe(true))
   it.each(['idle', 'done', 'handed_back', 'needs_attention', 'limited', 'complete', 'pending_approval'])(
     'allows %s', (state) => expect(rewindBlocked(state)).toBe(false))
+})
+
+describe('failedPrompts — the prompt behind each reply that carries an error (Rewind & retry)', () => {
+  const reply = (id: string, failed: boolean): Turn => ({ id, role: 'assistant', blocks: failed
+    ? [{ kind: 'error', id: `${id}:err:0`, code: 'api_error', message: 'boom' }]
+    : [{ kind: 'text', id: `${id}:t`, text: 'ok' }] })
+
+  it('maps each failed reply to the latest user turn before it, and only failed replies', () => {
+    const p1 = user('p1'), p2 = user('p2'), p3 = user('p3')
+    const got = failedPrompts([p1, reply('a1', false), p2, reply('a2', true), reply('a2b', true), p3, reply('a3', false)])
+    expect([...got.keys()]).toEqual(['a2', 'a2b'])
+    expect(got.get('a2')).toBe(p2)
+    expect(got.get('a2b')).toBe(p2)
+  })
+
+  it('leaves out a failed reply with no prompt before it', () => {
+    expect(failedPrompts([reply('a0', true)]).size).toBe(0)
+  })
 })

@@ -7,6 +7,7 @@ import { RotationDivider } from './RotationDivider'
 import { ModelSwitchDivider } from './ModelSwitchDivider'
 import { RewindDividerSlot } from '@/features/sessions/rewind/RewindDividerSlot'
 import { modelName } from '@/session/modelName'
+import { failedPrompts } from '@/session/rewindTarget'
 import { buildRenderRows, type RenderRow } from './transcriptRows'
 import { prefetchMarkdown } from './markdownChunk'
 import { useStickToBottom } from './useStickToBottom'
@@ -90,6 +91,8 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
     () => buildRenderRows(turns, rotations, { loadingOlder, earliestTurn, rewind }),
     [turns, rotations, loadingOlder, earliestTurn, rewind],
   )
+  // Each failed reply's prompt, for its error card's Rewind & retry (D-9).
+  const promptOfFailed = useMemo(() => failedPrompts(turns), [turns])
 
   // The virtualizer moves scrollTop on its own: when a row *above* the viewport
   // measures for the first time (or is remeasured), virtual-core compensates
@@ -185,6 +188,7 @@ export function TranscriptView({ turns, rotations = [], rewind, model, toolDetai
             sessionModel={model}
             variant={variant}
             onAsk={onAsk}
+            failedPrompt={promptOfFailed.get(row.turn.id) ?? null}
           />
         )
     }

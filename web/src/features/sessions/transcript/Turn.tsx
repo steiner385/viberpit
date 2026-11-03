@@ -42,6 +42,9 @@ interface Props {
   /** Wired to a noticeCard's "Ask about it" button. Absent in read-only views, where the
    *  button hides (NoticeCard has nothing to hand the prefilled text to). */
   onAsk?: (text: string) => void
+  /** When this reply failed: the user prompt behind it (`failedPrompts`), which its
+   *  error card's Rewind & retry rewinds to. */
+  failedPrompt?: TurnType | null
 }
 
 /**
@@ -60,7 +63,7 @@ const PROSE_MEASURE = 'max-w-[70ch]'
 
 export const Turn = memo(function Turn({
   turn, isLastTurn, toolDetailMode, thinkingCollapsed, viewModeEpoch = 0, streamingBlockId = null,
-  onAnswer, subAgents, sessionModel, variant = 'session', onAsk,
+  onAnswer, subAgents, sessionModel, variant = 'session', onAsk, failedPrompt = null,
 }: Props) {
   const isUser = turn.role === 'user'
   // Suppress live questions and open permissions inline — they are rendered by the
@@ -158,7 +161,7 @@ export const Turn = memo(function Turn({
               </BlockRow>
             )
           case 'error':
-            return <BlockRow key={block.id} ts={rowTs}><ErrorCard code={block.code} message={block.message} resetsAt={block.resetsAt} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><ErrorCard code={block.code} message={block.message} resetsAt={block.resetsAt} prompt={failedPrompt} /></BlockRow>
           case 'recovering':
             return <BlockRow key={block.id} ts={rowTs}><RecoveringCard message={block.message} /></BlockRow>
           case 'noticeCard':

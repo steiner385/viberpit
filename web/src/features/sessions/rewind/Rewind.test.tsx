@@ -53,7 +53,7 @@ function host(ui: ReactNode, { enabled = true, status = 'idle', composer = false
   return render(
     <QueryClientProvider client={qc}>
       <SessionGestureProvider>
-        <RewindProvider sessionId="s1" enabled={enabled} status={status} onExpired={onExpired}>{ui}</RewindProvider>
+        <RewindProvider sessionId="s1" enabled={enabled} status={status} send={vi.fn()} onExpired={onExpired}>{ui}</RewindProvider>
         {composer && <FakeComposer draft={draft} />}
       </SessionGestureProvider>
     </QueryClientProvider>,

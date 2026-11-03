@@ -28,6 +28,21 @@ export function rewindTargetFor(turn: Turn): string | null {
   return turn.promptUuid || CLI_UUID.test(turn.id) ? turn.id : null
 }
 
+/**
+ * Rewind & retry's prompts: each reply turn that carries an error block, mapped to the
+ * latest user turn before it — the prompt that failed. A failed reply with no prompt
+ * before it (the start of a paged-in window) is left out.
+ */
+export function failedPrompts(turns: readonly Turn[]): Map<string, Turn> {
+  const out = new Map<string, Turn>()
+  let prompt: Turn | null = null
+  for (const t of turns) {
+    if (t.role === 'user') prompt = t
+    else if (prompt && t.blocks.some((b) => b.kind === 'error')) out.set(t.id, prompt)
+  }
+  return out
+}
+
 /** `/rewind`'s picker: the prompts with a target, newest first, at most 20. */
 export function recentRewindTargets(turns: readonly Turn[]): Turn[] {
   return turns.filter((t) => rewindTargetFor(t) !== null).reverse().slice(0, 20)
