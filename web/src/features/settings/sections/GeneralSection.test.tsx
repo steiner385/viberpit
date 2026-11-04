@@ -52,13 +52,17 @@ describe('GeneralSection', () => {
   it('shows effective defaults as placeholders and a Reset that clears to default', async () => {
     const { container } = mount()
     expect(screen.getByRole('heading', { level: 2, name: 'General' })).toBeInTheDocument()
-    const repo = screen.getByLabelText('Repo clone root')
-    expect(repo).toHaveAttribute('placeholder', '/home/tony/GitHub · server default')
-    expect(screen.getByLabelText('Archive storage path')).toHaveAttribute('placeholder', '/var/ccswitch/archives · server default')
-    await userEvent.type(repo, '/srv/x')
-    await userEvent.click(screen.getByRole('button', { name: 'Reset repo clone root to default' }))
-    expect(repo).toHaveValue('')
+    const archive = screen.getByLabelText('Archive storage path')
+    expect(archive).toHaveAttribute('placeholder', '/var/ccswitch/archives · server default')
+    await userEvent.type(archive, '/srv/x')
+    await userEvent.click(screen.getByRole('button', { name: 'Reset archive storage path to default' }))
+    expect(archive).toHaveValue('')
     expect(await axe(container)).toHaveNoViolations()
+  })
+
+  it('no longer edits the repo root — it moved to Settings › Sessions (D-14), one editor', () => {
+    mount()
+    expect(screen.queryByLabelText(/repo clone root|worktree location/i)).toBeNull()
   })
 
   it('while /settings is in flight it shows the chassis and a skeleton, not nothing', () => {
@@ -95,7 +99,7 @@ describe('GeneralSection', () => {
     )
     mount()
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Repo clone root')).toBeInTheDocument()
+    expect(screen.getByLabelText('Archive storage path')).toBeInTheDocument()
     // Scoped through the banner's own title: SaveBar owns a `role="status"` region
     // too, so a bare role query matches both live regions.
     const notice = screen.getByText('Could not refresh settings').closest('[role="status"]')
@@ -120,7 +124,7 @@ describe('GeneralSection', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: 'Auto-archive completed sessions' }))
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({
-      repoRoot: null, archiveHome: '', maxArchivedSessions: 0, autoArchiveEnabled: false,
+      archiveHome: '', maxArchivedSessions: 0, autoArchiveEnabled: false,
       assistantEnabled: true, assistantModel: null, assistantOperatorTools: false,
     }))
   })

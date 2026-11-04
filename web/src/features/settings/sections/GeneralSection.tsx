@@ -2,7 +2,6 @@ import * as React from 'react'
 import { useSettings, useUpdateSettings, useArchivedSessions, useModels, type AppSettings } from '@/api/hooks'
 import { Input } from '@/ui/Input'
 import { Banner } from '@/ui/Banner'
-import { Button } from '@/ui/Button'
 import { Checkbox } from '@/ui/Checkbox'
 import { Select } from '@/ui/Select'
 import { Skeleton } from '@/ui/Skeleton'
@@ -12,6 +11,7 @@ import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
+import { PathControl } from '../chassis/PathControl'
 import { useSettingsForm } from '../useSettingsForm'
 
 /**
@@ -20,7 +20,6 @@ import { useSettingsForm } from '../useSettingsForm'
  * turned a half-deleted "10" into 1 and then into an accidental save.
  */
 interface GeneralDraft {
-  repoRoot: string
   archiveHome: string
   autoArchiveEnabled: boolean
   maxArchived: string
@@ -38,7 +37,6 @@ interface GeneralDraft {
 
 function toDraft(s: AppSettings): GeneralDraft {
   return {
-    repoRoot: s.repoRoot ?? '',
     archiveHome: s.archiveHome ?? '',
     autoArchiveEnabled: s.autoArchiveEnabled,
     maxArchived: s.maxArchivedSessions != null ? String(s.maxArchivedSessions) : '',
@@ -51,13 +49,13 @@ function toDraft(s: AppSettings): GeneralDraft {
 /**
  * The PUT body, unchanged from the old form (inventory §1a) — the server's
  * null/0/"" conventions are not symmetrical and each one is load-bearing:
- * `repoRoot` null clears it, `archiveHome` clears with "" (null would mean "no
- * change"), `maxArchivedSessions` clears with 0 (the backend maps <=0 to null).
+ * `archiveHome` clears with "" (null would mean "no change"),
+ * `maxArchivedSessions` clears with 0 (the backend maps <=0 to null). The repo
+ * root moved to Settings › Sessions (D-14), so it is no part of this PUT.
  */
 function toPayload(d: GeneralDraft): Partial<AppSettings> {
   const archived = Number.parseInt(d.maxArchived, 10)
   return {
-    repoRoot: d.repoRoot.trim() || null,
     // "" clears to default (null would mean "no change"), so this is a string
     // and never null. Trimmed, unlike the old form, for one reason: the S16
     // gate compares trimmed paths, so an untrimmed payload would let a
@@ -70,44 +68,6 @@ function toPayload(d: GeneralDraft): Partial<AppSettings> {
     assistantModel: d.assistantModel.trim() || null,
     assistantOperatorTools: d.assistantOperatorTools,
   }
-}
-
-/**
- * A path input plus its Reset-to-default affordance, as the ONE control a
- * SettingRow holds. It forwards `aria-describedby` to the input the way
- * `ui/Checkbox` does: the row clones its child to attach the description id, and
- * a bare wrapping `<span>` would swallow it — leaving the input undescribed and
- * the description announced on nothing.
- */
-function PathControl({ id, value, placeholder, resetLabel, onChange, ...aria }: {
-  id: string
-  value: string
-  placeholder: string
-  resetLabel: string
-  onChange: (next: string) => void
-  'aria-describedby'?: string
-}) {
-  return (
-    <span className="flex w-full items-center gap-2">
-      <Input
-        id={id}
-        value={value}
-        placeholder={placeholder}
-        aria-describedby={aria['aria-describedby']}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        aria-label={resetLabel}
-        onClick={() => onChange('')}
-        disabled={value === ''}
-      >
-        Reset
-      </Button>
-    </span>
-  )
 }
 
 function archiveCount(n: number): string {
@@ -208,19 +168,6 @@ export function GeneralSection() {
       )}
 
       <SettingsGroup legend="Paths">
-        <SettingRow
-          label="Repo clone root"
-          htmlFor="general-repo-root"
-          description="New sessions clone repositories under this directory."
-        >
-          <PathControl
-            id="general-repo-root"
-            value={draft.repoRoot}
-            placeholder={`${eff.repoRoot} · server default`}
-            resetLabel="Reset repo clone root to default"
-            onChange={(v) => set('repoRoot', v)}
-          />
-        </SettingRow>
         <SettingRow
           label="Archive storage path"
           htmlFor="general-archive-home"

@@ -12,7 +12,7 @@ import type { MentionSource } from './MentionMenu'
 import { PromptRow, type PromptRowMenus } from './PromptRow'
 import { useMentionSessions } from './useMentionSessions'
 import { deriveHistory } from '@/session/history'
-import { useEngineCapabilities, useGenerateSuggestions, useModels, useSessions } from '@/api/hooks'
+import { useEngineCapabilities, useGenerateSuggestions, useModels, useSessions, useSetFastMode } from '@/api/hooks'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { PromptContext } from '@/session/events'
 
@@ -94,12 +94,18 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
 }
 
 /** The prompt row plus the lookups only it needs: the session record, its
- *  engine's capabilities and its engine's model catalog. A component of its own
- *  so a composer without session controls never runs them. */
+ *  engine's capabilities, its engine's model catalog and the fast-mode write.
+ *  A component of its own so a composer without session controls never runs them. */
 function SessionPromptRow({ rt, menuRef }: { rt: SessionRuntime; menuRef?: Ref<PromptRowMenus> }) {
   const { data: sessions } = useSessions()
   const session = sessions?.find((s) => s.id === rt.sessionId)
   const caps = useEngineCapabilities(session?.engine)
   const { data: models } = useModels(session?.engine, session?.accountName)
-  return <PromptRow rt={rt} session={session} caps={caps} models={models} menuRef={menuRef} />
+  const setFast = useSetFastMode()
+  return (
+    <PromptRow
+      rt={rt} session={session} caps={caps} models={models} menuRef={menuRef}
+      onToggleFast={(enabled) => setFast.mutate({ id: rt.sessionId, enabled })}
+    />
+  )
 }

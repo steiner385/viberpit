@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ArchivedSession, Session } from '@/api/types'
+import type { ArchivedSession, Session, SessionPreset } from '@/api/types'
 import type { GithubRepo } from '@/api/hooks'
 import type { ShortcutContext } from '@/shell/shortcuts'
 import { SETTINGS_META } from '@/features/settings/settingsMeta'
@@ -34,7 +34,7 @@ const repo = (nameWithOwner: string): GithubRepo => ({
 function host(over: Partial<PaletteHost> = {}): PaletteHost {
   return {
     context: ctx(), actions: {}, live: [],
-    openSession: vi.fn(), openArchived: vi.fn(), newSession: vi.fn(), navigate: vi.fn(),
+    openSession: vi.fn(), openArchived: vi.fn(), newSession: vi.fn(), newSessionFromPreset: vi.fn(), navigate: vi.fn(),
     canFilterRepo: () => false, filterRepo: vi.fn(), close: vi.fn(),
     ...over,
   }
@@ -197,5 +197,34 @@ describe('paletteSections', () => {
     expect(sections.map((s) => s.id)).toEqual(['sessions', 'settings'])
     // Prefix (Hooks) before a keyword substring (Channels: "webhook").
     expect(sections[1].entries.map((e) => e.label)).toEqual(['Hooks', 'Channels'])
+  })
+})
+
+describe('preset actions (D-14)', () => {
+  const preset = (id: string, name: string): SessionPreset => ({
+    id, name, repo: null, account: null, model: null, permissionMode: null, initialPrompt: null,
+    branchStrategy: null, permissionProfileId: null, createdAt: null, updatedAt: null,
+  })
+  const presets = [preset('p1', 'Bug bash'), preset('p2', 'Docs pass')]
+
+  it('offers "New session from preset: <name>" per preset, after New session', () => {
+    const h = host()
+    const actions = inSection(buildPaletteEntries(h, { ...NO_DATA, presets }), 'actions')
+    expect(actions.map((e) => e.label).slice(0, 3)).toEqual([
+      'New session', 'New session from preset: Bug bash', 'New session from preset: Docs pass',
+    ])
+    actions[2].run!()
+    expect(h.newSessionFromPreset).toHaveBeenCalledWith('p2')
+  })
+
+  it('is found by searching for the preset name', () => {
+    const prepared = preparePalette(buildPaletteEntries(host(), { ...NO_DATA, presets }))
+    const hits = paletteSections(prepared, 'docs pass').flatMap((s) => s.entries)
+    expect(hits[0]?.key).toBe('action:preset:p2')
+  })
+
+  it('kiosk offers none — it cannot create sessions', () => {
+    const entries = buildPaletteEntries(host({ context: ctx({ interactive: false }) }), { ...NO_DATA, presets })
+    expect(entries.some((e) => e.key.startsWith('action:preset:'))).toBe(false)
   })
 })

@@ -1,14 +1,17 @@
 /**
  * Rail card: where the session runs — the agent (non-default engines only),
  * the account (switch / unpin, through `AccountSwitcher`), the
- * runner host, the display, the git branch and worktree, and the session's PRs.
+ * runner host, the display, the git branch and worktree, and the session's PRs —
+ * with the PR auto-fix switch beside them (D-14).
  */
+import { useId } from 'react'
 import type { AgentEngine, PullRequestInfo } from '@/api/types'
 import { engineBadge } from '@/session/modelName'
 import { AccountSwitcher } from '../AccountSwitcher'
 import { displayReadout } from '../displayFallback'
 import { PrList } from '../list/PrList'
 import { CopyablePath } from '../transcript/CopyablePath'
+import { Switch } from '@/ui/Switch'
 import { RailCard, RailField, RailFields } from './RailCard'
 
 /** Shown for a value the server does not know. */
@@ -30,12 +33,22 @@ interface Props {
   /** `session.cwd` — the worktree path; null when unknown. */
   cwd?: string | null
   prs?: PullRequestInfo[] | null
+  /** PR Doctor's automatic fixes for this session's PRs (D-14): `enabled` is the
+   *  inverse of `prAutofixPaused`. Shown only while the session has a PR — the
+   *  draft guard's `owns_pr` is a per-PR check, not a session field. */
+  prAutofix?: { enabled: boolean; onChange: (enabled: boolean) => void; pending?: boolean }
 }
+
+export const PR_AUTOFIX_COPY = "PR Doctor fixes failing checks and conflicts on this session's PRs"
+
 
 export function EnvironmentCard({
   engine = null, account, accounts, accountPinned, onSelectAccount, onUnpin,
   host = null, displayMode = null, displayFallbackReason = null, branch = null, cwd = null, prs = null,
+  prAutofix,
 }: Props) {
+  const autofixLabelId = useId()
+  const autofixCopyId = useId()
   const agent = engineBadge(engine)
   const display = displayReadout(displayMode, displayFallbackReason)
   return (
@@ -72,6 +85,21 @@ export function EnvironmentCard({
       {prs && prs.length > 0 && (
         <div className="flex flex-wrap items-center gap-1">
           <PrList prs={prs} />
+        </div>
+      )}
+      {prs && prs.length > 0 && prAutofix && (
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div id={autofixLabelId} className="text-ink">PR auto-fix</div>
+            <p id={autofixCopyId} className="text-ink-muted">{PR_AUTOFIX_COPY}</p>
+          </div>
+          <Switch
+            checked={prAutofix.enabled}
+            onChange={prAutofix.onChange}
+            disabled={prAutofix.pending}
+            aria-labelledby={autofixLabelId}
+            aria-describedby={autofixCopyId}
+          />
         </div>
       )}
     </RailCard>

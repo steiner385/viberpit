@@ -39,7 +39,7 @@ function capabilities(over: Partial<EngineOffer['capabilities']> = {}): EngineOf
     models: true, reasoningEffort: false, steer: true, interrupt: true,
     approvals: true, questions: true, fork: true, adopt: true,
     selfModelSwitch: true, subagents: true, attachments: true, accountRotation: true,
-    accountSwitchNewThread: true, rewind: false,
+    accountSwitchNewThread: true, rewind: false, flagSettings: false,
     ...over,
   }
 }

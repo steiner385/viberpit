@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSessionDraft, NEW_SESSION_DRAFT_ID } from '@/features/sessions/composer/useSessionDraft'
-import { Paperclip, Sparkles } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
 import { useAssessDispatch } from '@/api/hooks'
-import type { AgentEngine, Account, EngineOffer, ModelOption } from '@/api/types'
+import type { AgentEngine, Account, EngineOffer, ModelOption, PromptTemplate, SessionPreset } from '@/api/types'
 import {
   AGENT_ENGINE_LABELS, DEFAULT_AGENT_ENGINE, accountEngine,
 } from '@/api/types'
@@ -18,6 +18,7 @@ import { isGatedTier, modelName } from '@/session/modelName'
 import { useImageAttachments } from '@/features/sessions/composer/useImageAttachments'
 import { AttachmentChips } from '@/features/sessions/composer/AttachmentChips'
 import { MicButton } from '@/features/sessions/composer/MicButton'
+import { PlusMenu, type PlusMenuEntry } from '@/features/sessions/composer/PlusMenu'
 import { useDictationField } from '@/lib/useDictationField'
 import { DispatchError } from './dispatchError'
 import { useRepoSuggestion, type UseRepoSuggestionOptions } from './useRepoSuggestion'
@@ -62,6 +63,9 @@ export interface DispatchBarProps {
     reasoningEffort: string | null
     autopilot: boolean
     autoArchive: boolean
+    /** The preset chosen in the + menu (D-14), or null. The server fills only the
+     *  fields this input leaves unset from it. */
+    presetId: string | null
   }) => Promise<void>
   /**
    * The engine/account the model list must be fetched for.
@@ -118,6 +122,17 @@ export interface DispatchBarProps {
    * short values so they can run in real time; production takes the defaults.
    */
   repoCheckOptions?: Pick<UseRepoSuggestionOptions, 'debounceMs' | 'minChars' | 'submitWaitMs'>
+  /** Saved presets for the + menu's Presets › (D-14). Fetched by the dock. */
+  presets?: SessionPreset[]
+  /** Prompt templates for the + menu's Templates ›. */
+  templates?: PromptTemplate[]
+  /** Render a template on the server (`POST /templates/{id}/render`); without it
+   *  there is no Templates › entry — the server is the one renderer. */
+  renderTemplate?: (id: string, variables: Record<string, string>) => Promise<string>
+  /** A preset to select from outside the bar (⌘K "New session from preset"). A
+   *  fresh object per request; acknowledged through `onPresetRequestHandled`. */
+  presetRequest?: { id: string } | null
+  onPresetRequestHandled?: () => void
 }
 
 export function DispatchBar({
@@ -144,6 +159,11 @@ export function DispatchBar({
   activeDescendantIsHeader,
   drivesList = true,
   repoCheckOptions,
+  presets = [],
+  templates = [],
+  renderTemplate,
+  presetRequest = null,
+  onPresetRequestHandled,
 }: DispatchBarProps) {
   // The unsent prompt survives navigation/refresh via the same per-session draft
   // store the Composer uses, under a fixed key. Text only: attachments are
@@ -187,6 +207,10 @@ export function DispatchBar({
   // True when Enter / Create was intercepted by the wrong-repository card: the
   // draft is intact and the card's Switch / Keep buttons finish the dispatch.
   const [heldDispatch, setHeldDispatch] = useState(false)
+  // The + menu's preset (D-14): a removable chip; its id rides on the next create.
+  const [preset, setPreset] = useState<SessionPreset | null>(null)
+  // Where an inserted template's caret goes once React has written the new text.
+  const caretRef = useRef<number | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
@@ -267,6 +291,63 @@ export function DispatchBar({
     setReasoning(models.find((m) => m.id === id)?.defaultReasoningEffort ?? '')
   }
 
+  /**
+   * Choose a preset: the chip, plus the bar's visible picks filled from it — repo,
+   * account, model, and the prompt when none is typed — so what the bar shows is
+   * what is sent. The server fills only what the create leaves unset (permission
+   * mode, profile) from `presetId`, and never overrides an explicit value.
+   */
+  function applyPreset(p: SessionPreset) {
+    setPreset(p)
+    if (p.repo) setRepo(p.repo)
+    if (p.account) setAccount(p.account)
+    if (p.model) selectModel(p.model)
+    if (p.initialPrompt && text.trim() === '') setText(p.initialPrompt)
+  }
+
+  // ⌘K's "New session from preset: <name>": taken while rendering, once per request
+  // object, as soon as the list holds it (an empty list may still be loading); the
+  // effect only tells the shell it can drop the request.
+  const [takenRequest, setTakenRequest] = useState<{ id: string } | null>(null)
+  if (presetRequest && presetRequest !== takenRequest) {
+    const p = presets.find((x) => x.id === presetRequest.id)
+    if (p || presets.length > 0) {
+      setTakenRequest(presetRequest)
+      if (p) applyPreset(p)
+    }
+  }
+  useEffect(() => {
+    if (takenRequest) onPresetRequestHandled?.()
+  }, [takenRequest, onPresetRequestHandled])
+
+  /** Insert a template's server-rendered text at the caret, replacing any selection.
+   *  Variables take their declared defaults; an unset one stays as `{{name}}`. */
+  async function insertTemplate(t: PromptTemplate) {
+    if (!renderTemplate) return
+    const el = textareaRef.current
+    const start = el?.selectionStart ?? text.length
+    const end = el?.selectionEnd ?? text.length
+    const variables: Record<string, string> = {}
+    for (const v of t.variables) if (v.default != null) variables[v.name] = v.default
+    try {
+      const rendered = await renderTemplate(t.id, variables)
+      setText((prev) => prev.slice(0, start) + rendered + prev.slice(end))
+      caretRef.current = start + rendered.length
+    } catch {
+      setDispatchError(`Couldn't insert the template "${t.name}".`)
+    }
+  }
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (caretRef.current === null || !el) return
+    el.focus()
+    el.setSelectionRange(caretRef.current, caretRef.current)
+    caretRef.current = null
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 192)}px`
+  }, [text])
+
   async function handleAssess() {
     setAssessing(true)
     try {
@@ -340,8 +421,10 @@ export function DispatchBar({
         reasoningEffort: reasoning || null,
         autopilot,
         autoArchive,
+        presetId: preset?.id ?? null,
       })
       setText('')
+      setPreset(null)
       setRefinedPrompt(null)
       att.clear()
       if (textareaRef.current) {
@@ -553,6 +636,28 @@ export function DispatchBar({
     if (names.length === 0) return 'unavailable'
     return `no runner can run it (${names.map((n) => `${n}: ${engineReasonLabel(o.unavailableReasons[n])}`).join(', ')})`
   }
+
+  // The + menu (D-14): Attach image, Presets ›, Templates › (only with a renderer).
+  const plusEntries: PlusMenuEntry[] = [
+    { id: 'attach', label: 'Attach image', run: () => fileRef.current?.click() },
+    { id: 'presets', label: 'Presets', submenu: {
+      label: 'Presets',
+      items: presets.length > 0
+        ? presets.map((p) => ({ id: p.id, label: p.name }))
+        : [{ id: 'none', label: 'No presets yet — add one in Settings › Presets', disabled: true }],
+      onSelect: (id) => {
+        const p = presets.find((x) => x.id === id)
+        if (p) { applyPreset(p); textareaRef.current?.focus() }
+      },
+    } },
+    ...(renderTemplate ? [{ id: 'templates', label: 'Templates', submenu: {
+      label: 'Templates',
+      items: templates.length > 0
+        ? templates.map((t) => ({ id: t.id, label: t.name }))
+        : [{ id: 'none', label: 'No templates yet — add one in Settings › Templates', disabled: true }],
+      onSelect: (id: string) => { const t = templates.find((x) => x.id === id); if (t) void insertTemplate(t) },
+    } }] : []),
+  ]
 
   // Narrowed once so the card's JSX needs no non-null assertions.
   const repoSuggestion = repoHint.suggestion
@@ -798,6 +903,22 @@ export function DispatchBar({
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
 
+      {preset && (
+        <div className="flex">
+          <span className="inline-flex items-center gap-1 rounded-pill border border-accent bg-accent-wash px-2 py-0.5 text-xs text-ink">
+            <span>Preset: {preset.name}</span>
+            <button
+              type="button"
+              aria-label={`Remove preset ${preset.name}`}
+              onClick={() => setPreset(null)}
+              className="rounded-sm text-ink-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
+          </span>
+        </div>
+      )}
+
       {/* The last failed dispatch, beside the draft it kept — not a toast over
           the page header. Cleared on the next edit or attempt. */}
       {dispatchError && (
@@ -862,8 +983,8 @@ export function DispatchBar({
           onToggle={voice.toggle}
         />
 
-        {/* Programmatic picker only — the labelled control is the "Attach image"
-            button beside it. Kept out of the a11y tree (and out of the tab
+        {/* Programmatic picker only — the labelled control is the + menu's
+            "Attach image". Kept out of the a11y tree (and out of the tab
             order, which `aria-hidden` on a focusable element would otherwise
             break) so it is not announced as an unlabelled form field: `hidden`
             is a class, and axe under jsdom sees no stylesheet. */}
@@ -877,23 +998,7 @@ export function DispatchBar({
           className="hidden"
           onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}
         />
-        <button
-          type="button"
-          aria-label="Attach image"
-          onClick={() => fileRef.current?.click()}
-          className={cn(
-            'flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-target',
-            'border border-edge-strong',
-            'text-ink-muted',
-            'hover:bg-surface-raised',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-          )}
-        >
-          {/* The same drawn icon the in-session Composer's attach button uses —
-              an emoji standing in for an icon renders in the platform's colour
-              emoji face, not the icon set's stroke (2026-09-29 critique). */}
-          <Paperclip size={16} aria-hidden="true" />
-        </button>
+        <PlusMenu entries={plusEntries} />
         <button
           type="button"
           aria-label="Create session"

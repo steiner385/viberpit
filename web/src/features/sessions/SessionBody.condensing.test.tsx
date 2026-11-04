@@ -32,6 +32,7 @@ vi.mock('@/api/hooks', () => ({
   useRewindSession: vi.fn(() => ({ preview: vi.fn(), rewind: vi.fn() })),
   useUndoRewind: vi.fn(() => ({ undo: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetPrAutofix: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

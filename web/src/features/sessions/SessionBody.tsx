@@ -29,7 +29,7 @@ import { statusTier } from '@/session/statusTier'
 import { summaryOutcome } from '@/session/turnSummary'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
-import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff } from '@/api/hooks'
+import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff, useSetPrAutofix } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { useFileTarget, useSessionView, type SessionView } from './sessionView'
 import { FileRefContext, type FileRefActions } from '@/features/sessions/transcript/fileRefContext'
@@ -60,6 +60,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   const caps = useEngineCapabilities(sessionRecord?.engine)
   const { mutate: modelApproval, isPending: modelApprovalPending } = useModelApproval()
   const setAccountPin = useSetAccountPin()
+  const setPrAutofix = useSetPrAutofix()
   // "Mark complete" / "Not done" on a handed-back session's summary card — the same
   // mutation the list card offers, so the decision is taken beside the evidence.
   const resolveSuspected = useResolveSuspectedComplete()
@@ -172,6 +173,11 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           branch: sessionRecord?.branch,
           cwd: sessionRecord?.cwd,
           prs: sessionRecord?.prs,
+          prAutofix: {
+            enabled: sessionRecord?.prAutofixPaused !== true,
+            onChange: (enabled) => setPrAutofix.mutate({ id: rt.sessionId, enabled }),
+            pending: setPrAutofix.isPending,
+          },
         }}
         tasks={{
           sessionId: rt.sessionId,

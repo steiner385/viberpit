@@ -1,6 +1,6 @@
 /**
  * PromptRow — the compact control row under the session composer (sub-spec D §3):
- * Mode ▾ · Model ▾ · Effort ▾ · usage ring. It reads the live
+ * Mode ▾ · Model ▾ · Effort ▾ · usage ring · ⚡. It reads the live
  * runtime directly; the session record, engine capabilities and model catalog are
  * passed in so capability-gated controls hide (never disable) themselves.
  */
@@ -16,6 +16,7 @@ import { ModelPicker } from './ModelPicker'
 import { EffortPicker } from './EffortPicker'
 import { UsageRing } from '@/ui/UsageRing'
 import { contextSeverity, contextUsedLabel } from '@/lib/contextWindow'
+import FastToggle from './FastToggle'
 
 /** Imperative openers for the row's menus (the Alt+Shift+M / I / E shortcuts). */
 export interface PromptRowMenus {
@@ -37,13 +38,24 @@ export interface PromptRowProps {
   /** The session engine's model catalog (`GET /api/models`). */
   models?: readonly ModelOption[]
   menuRef?: Ref<PromptRowMenus>
+  /** Turn fast mode on/off (D-14, `POST /sessions/{id}/fast`). Without it no ⚡. */
+  onToggleFast?: (enabled: boolean) => void
 }
 
 const NO_MODELS: readonly ModelOption[] = []
 
+/**
+ * The Claude CLI's effort levels (its `supportedEffortLevels` enum, 2.1.318). The
+ * server does not yet send the per-model list to the browser, so a Claude session
+ * with live flag settings is offered all of them; the server checks the pick against
+ * the model's own row and refuses one it lacks (`SETTINGS_INVALID`), which surfaces
+ * as the session's error banner like any other refused effort.
+ */
+const CLAUDE_EFFORT_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
 // `caps` gates nothing for the mode picker: no engine restricts permission modes
 // (AgentCapabilities has no mode field and Codex maps all seven).
-export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: PromptRowProps) {
+export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onToggleFast }: PromptRowProps) {
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null)
   const menuOpener = (menu: OpenMenu) => (next: boolean) => setOpenMenu(next ? menu : null)
 
@@ -51,10 +63,19 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: Pr
   // choice is the account default, which the catalog flags (Codex) when it knows it.
   const chosenModel = models.find((m) => m.id === rt.model)
     ?? (rt.model == null ? models.find((m) => m.default) : undefined)
-  const efforts = chosenModel?.reasoningEfforts ?? []
-  const showEffort = canUseEngine(caps, 'reasoningEffort') && efforts.length > 0
+  // The catalog row's own efforts (Codex) win. Otherwise a Claude session whose
+  // engine REPORTS live flag settings gets the CLI's levels — reported, not assumed:
+  // `canUseEngine` treats an unknown capability as present, which is right for a
+  // control the catalog vouches for and wrong for this fallback list.
+  const catalogEfforts = canUseEngine(caps, 'reasoningEffort') ? chosenModel?.reasoningEfforts ?? [] : []
+  const efforts = catalogEfforts.length > 0
+    ? catalogEfforts
+    : caps?.flagSettings === true ? CLAUDE_EFFORT_LEVELS : []
+  const showEffort = efforts.length > 0
   const effort = session?.reasoningEffort ?? chosenModel?.defaultReasoningEffort ?? null
   const busy = statusTier(rt.state.status.state) === 'busy'
+  const fastOn = session?.fastMode === true
+  const showFast = session?.fastModeAvailable === true && onToggleFast !== undefined
 
   useImperativeHandle(menuRef, () => ({
     openMode: () => setOpenMenu('mode'),
@@ -97,6 +118,9 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef }: Pr
         />
       )}
       {rt.contextPct != null && <ContextRing remainingPct={rt.contextPct} />}
+      {showFast && (
+        <FastToggle on={fastOn} onToggle={onToggleFast} />
+      )}
     </div>
   )
 }

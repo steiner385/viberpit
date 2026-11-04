@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import { useArchivedSessions, useGithubRepos, type GithubRepo } from '@/api/hooks'
-import type { ArchivedSession } from '@/api/types'
+import { useArchivedSessions, useGithubRepos, usePresets, type GithubRepo } from '@/api/hooks'
+import type { ArchivedSession, SessionPreset } from '@/api/types'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { TIER_LABEL } from '@/session/statusTier'
 import { triageTier } from '@/session/triageTier'
@@ -54,6 +54,8 @@ export const MAX_PER_SECTION = 30
 export interface PaletteData {
   archived: readonly ArchivedSession[]
   repos: readonly GithubRepo[]
+  /** Saved presets, one "New session from preset" action each (D-14). */
+  presets?: readonly SessionPreset[]
 }
 
 const time = (iso: string | null | undefined): number => {
@@ -115,6 +117,14 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
 
   if (c.interactive) {
     out.push({ key: 'action:new-session', section: 'actions', label: 'New session', run: host.newSession })
+    // No chord: every digit family is taken (D-14 spike §4); the palette is the
+    // keyboard path to a preset.
+    for (const p of data.presets ?? []) {
+      out.push({
+        key: `action:preset:${p.id}`, section: 'actions', label: `New session from preset: ${p.name}`,
+        keywords: ['preset', p.name], run: () => host.newSessionFromPreset(p.id),
+      })
+    }
   }
   // Rows sharing one handler (← / Esc / Ctrl+Z all detach) are ONE action:
   // the first row in registry order names it.
@@ -206,16 +216,17 @@ export function paletteSections(prepared: PreparedPalette, query: string): Palet
 }
 
 /**
- * The palette's entries, prepared for search. The archived list and the GitHub
- * repos are fetched HERE, inside the lazy chunk, so nothing loads them until
+ * The palette's entries, prepared for search. The archived list, the GitHub
+ * repos and the presets are fetched HERE, inside the lazy chunk, so nothing loads them until
  * the palette first opens — and the shell's many `@/api/hooks` test mocks never
- * meet these two hooks.
+ * meet these hooks.
  */
 export function usePaletteEntries(host: PaletteHost): PreparedPalette {
   const { data: archived = [] } = useArchivedSessions()
   const { data: repos = [] } = useGithubRepos()
+  const { data: presets = [] } = usePresets()
   return useMemo(
-    () => preparePalette(buildPaletteEntries(host, { archived, repos })),
-    [host, archived, repos],
+    () => preparePalette(buildPaletteEntries(host, { archived, repos, presets })),
+    [host, archived, repos, presets],
   )
 }

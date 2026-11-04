@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect, useId, useImperativeHandle, type Ref } from 'react'
-import { Paperclip, X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
+import { X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useQuickReplies } from '@/api/quickReplies'
@@ -11,6 +11,7 @@ import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
 import { MentionMenu, type MentionMenuHandle, type MentionSource } from './MentionMenu'
 import { FileMentionMenu } from './FileMentionMenu'
 import { MicButton } from './MicButton'
+import { PlusMenu, type PlusMenuEntry } from './PlusMenu'
 import { useDictationField } from '@/lib/useDictationField'
 import type { Command, QueuedItem, PromptContext } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
@@ -396,6 +397,21 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     // Shift+Enter: let the browser insert a newline naturally (no action needed)
   }
 
+  // The + menu (D-14): Attach and the slash palette. Presets apply at creation, so
+  // they are the dispatch bar's alone. "Slash commands" seeds the `/` the palette
+  // opens on, re-armed even if Esc dismissed it at that text before.
+  const plusEntries: PlusMenuEntry[] = [
+    { id: 'attach', label: 'Attach file', run: () => fileRef.current?.click() },
+    ...(commands.length > 0 ? [{
+      id: 'slash', label: 'Slash commands',
+      run: () => {
+        setDismissedSlashAt(null)
+        setText('/')
+        textareaRef.current?.focus()
+      },
+    }] : []),
+  ]
+
   return (
     <div
       className={cn(
@@ -561,8 +577,8 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
           onToggle={voice.toggle}
         />
 
-        {/* Programmatic picker only — the labelled control is the "Attach image"
-            button beside it. Kept out of the a11y tree (and out of the tab
+        {/* Programmatic picker only — the labelled control is the + menu's
+            "Attach file". Kept out of the a11y tree (and out of the tab
             order, which `aria-hidden` on a focusable element would otherwise
             break) so it is not announced as an unlabelled form field: `hidden`
             is a class, and axe under jsdom sees no stylesheet. */}
@@ -576,20 +592,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
           className="hidden"
           onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}
         />
-        <button
-          type="button"
-          aria-label="Attach image"
-          onClick={() => fileRef.current?.click()}
-          className={cn(
-            'flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-target',
-            'border border-edge-strong',
-            'text-ink-muted',
-            'hover:bg-surface-raised',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-          )}
-        >
-          <Paperclip size={16} aria-hidden="true" />
-        </button>
+        <PlusMenu entries={plusEntries} />
 
         {showResume && (
           <div className="relative flex items-center">

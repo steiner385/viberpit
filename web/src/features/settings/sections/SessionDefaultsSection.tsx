@@ -13,6 +13,8 @@ import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
+import { PathControl } from '../chassis/PathControl'
+import { BRANCH_PREFIX } from '@/brand'
 import { useSettingsForm } from '../useSettingsForm'
 
 /** '' is the draft's "server default" — the payload turns it back into null. */
@@ -25,7 +27,13 @@ interface DefaultsDraft {
   denylist: string
   toolDetail: ToolDetail
   thinkingCollapsed: boolean
+  /** '' = the server default (`VIBERPIT_REPO_ROOT`, else ~/GitHub). */
+  repoRoot: string
 }
+
+/** D-14 copy: one root for clones AND worktrees, and what a change does not do. */
+export const REPO_ROOT_COPY =
+  "Where repos are cloned and session worktrees are created. Changing it doesn't move existing worktrees — they keep working but cleanup skips them."
 
 /** Modes that let a session act without a human in the loop; saving one asks first (S17). */
 const UNSAFE_MODES = new Set(['full-auto', 'bypassPermissions'])
@@ -53,6 +61,7 @@ function toDraft(s: AppSettings): DefaultsDraft {
     denylist: s.modelApprovalDenylist ?? '',
     toolDetail: s.defaultToolDetail,
     thinkingCollapsed: s.thinkingCollapsed,
+    repoRoot: s.repoRoot ?? '',
   }
 }
 
@@ -68,6 +77,9 @@ function toPayload(d: DefaultsDraft): Partial<AppSettings> {
     modelApprovalDenylist: d.denylist.trim() || null,
     defaultToolDetail: d.toolDetail,
     thinkingCollapsed: d.thinkingCollapsed,
+    // Blank sends null, the same convention Settings › General used before the
+    // field moved here (D-14).
+    repoRoot: d.repoRoot.trim() || null,
   }
 }
 
@@ -255,6 +267,23 @@ export function SessionDefaultsSection() {
             checked={draft.thinkingCollapsed}
             onChange={(v) => set('thinkingCollapsed', v)}
           />
+        </SettingRow>
+      </SettingsGroup>
+
+      {/* D-14: the repo root moved here from General — one setting, one editor
+          (settingsMeta has no cross-link, so it is moved, not mirrored). */}
+      <SettingsGroup legend="Worktrees">
+        <SettingRow label="Worktree location" htmlFor="defaults-repo-root" description={REPO_ROOT_COPY}>
+          <PathControl
+            id="defaults-repo-root"
+            value={draft.repoRoot}
+            placeholder={`${eff.repoRoot} · server default`}
+            resetLabel="Reset worktree location to default"
+            onChange={(v) => set('repoRoot', v)}
+          />
+        </SettingRow>
+        <SettingRow label="Branch prefix" htmlFor="defaults-branch-prefix" description="Fixed — it guards automatic branch cleanup." selfLabelled>
+          <code id="defaults-branch-prefix" className="font-mono text-sm text-ink">{BRANCH_PREFIX}</code>
         </SettingRow>
       </SettingsGroup>
 

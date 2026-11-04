@@ -46,7 +46,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 expect.extend(toHaveNoViolations)
 
-import type { EngineOffer, ModelOption, Session } from '@/api/types'
+import type { EngineOffer, ModelOption, PromptTemplate, Session, SessionPreset } from '@/api/types'
 import type { GithubRepo } from '@/api/hooks'
 import type { FleetHost } from '@/api/fleet'
 import { account, fleetHost, githubRepo, session as makeSession } from '@/test/factories'
@@ -75,6 +75,8 @@ let MODELS: ModelOption[] = []
  *  told apart from the legacy Claude one. */
 let MODELS_BY_URL: Record<string, ModelOption[]> = {}
 let ENGINES: EngineOffer[] = []
+let PRESETS: SessionPreset[] = []
+let TEMPLATES: PromptTemplate[] = []
 /** The accounts the shell hands the dock (it already holds them for the list). */
 let ACCOUNTS = [account()]
 /** Resolves the next `POST /sessions`; a test may swap in a rejection. */
@@ -91,6 +93,8 @@ const fakeGet = vi.fn(async (path: string): Promise<unknown> => {
   if (path === '/models') return MODELS
   if (path.startsWith('/models?')) return MODELS_BY_URL[path] ?? []
   if (path === '/accounts') return [account()]
+  if (path === '/presets') return PRESETS
+  if (path === '/templates') return TEMPLATES
   if (path === '/config') {
     return { repoRoot: '/repos', adoptionEnabled: false, engines: ENGINES }
   }
@@ -239,6 +243,8 @@ beforeEach(() => {
   MODELS = [model()]
   MODELS_BY_URL = {}
   ENGINES = []
+  PRESETS = []
+  TEMPLATES = []
   ACCOUNTS = [account()]
   POST_SESSIONS = async () => session({ id: 'new-1' })
   posted.length = 0
@@ -261,7 +267,7 @@ function engineOffer(over: Partial<EngineOffer> = {}): EngineOffer {
       models: true, reasoningEffort: false, steer: true, interrupt: true,
       approvals: true, questions: true, fork: true, adopt: true,
       selfModelSwitch: true, subagents: true, attachments: true, accountRotation: true,
-      accountSwitchNewThread: true, rewind: false,
+      accountSwitchNewThread: true, rewind: false, flagSettings: false,
     },
     ...over,
   }
@@ -586,6 +592,84 @@ describe('PromptDock — dispatch', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/re-authenticate/)
     expect(onAllLimited).not.toHaveBeenCalled()
+  })
+})
+
+// ── presets and templates in the + menu (D-14) ───────────────────────────────
+
+function preset(over: Partial<SessionPreset> = {}): SessionPreset {
+  return {
+    id: 'p1', name: 'Bug bash', repo: null, account: null, model: null, permissionMode: 'plan',
+    initialPrompt: null, branchStrategy: null, permissionProfileId: null, createdAt: null, updatedAt: null,
+    ...over,
+  }
+}
+
+async function pickPreset(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(await screen.findByRole('button', { name: 'Add' }))
+  await user.click(screen.getByRole('menuitem', { name: /Presets/ }))
+  await user.click(await screen.findByRole('menuitem', { name: new RegExp(name) }))
+}
+
+describe('PromptDock — presets and templates (D-14)', () => {
+  it('sends the chosen preset as presetId on POST /sessions', async () => {
+    const user = userEvent.setup()
+    PRESETS = [preset()]
+    renderAt('/sessions')
+    await pickPreset(user, 'Bug bash')
+    await user.type(screen.getByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].body).toMatchObject({ presetId: 'p1', initialPrompt: 'go' })
+  })
+
+  it('sends no presetId when none is chosen', async () => {
+    const user = userEvent.setup()
+    renderAt('/sessions')
+    await user.type(await screen.findByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].body).not.toHaveProperty('presetId')
+  })
+
+  // Review Focus 4: a preset pinning a model the account cannot use is refused by
+  // the create route (`ModelBlockedError` → 409), and that refusal arrives through
+  // the bar's existing inline error — no second path, draft and chip kept.
+  it("a preset whose model the account can't use is refused inline, like any create failure", async () => {
+    const user = userEvent.setup()
+    PRESETS = [preset({ model: 'fable' })]
+    POST_SESSIONS = async () => { throw new ApiRequestError(409, { detail: 'model blocked by policy' }) }
+    renderAt('/sessions')
+    await pickPreset(user, 'Bug bash')
+    // The gated-tier hint the Model select already shows.
+    expect(screen.getByText(/requires approval/)).toBeInTheDocument()
+    await user.type(screen.getByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].body).toMatchObject({ presetId: 'p1', model: 'fable' })
+    expect(await screen.findByRole('alert')).toHaveTextContent('model blocked by policy')
+    expect(screen.getByLabelText('New session prompt')).toHaveValue('go')
+    expect(screen.getByText('Preset: Bug bash')).toBeInTheDocument()
+  })
+
+  it('renders a template through POST /templates/{id}/render and inserts the text', async () => {
+    const user = userEvent.setup()
+    TEMPLATES = [{
+      id: 't1', name: 'Review', content: 'Review {{area}}', variables: [{ name: 'area', default: 'auth' }],
+      tags: [], createdAt: null, updatedAt: null,
+    }]
+    const realPost = fakePost.getMockImplementation()!
+    fakePost.mockImplementation(async (path: string, body?: unknown) => {
+      if (path === '/templates/t1/render') { posted.push({ path, body }); return { rendered: 'Review auth' } }
+      return realPost(path, body)
+    })
+    renderAt('/sessions')
+    await user.click(await screen.findByRole('button', { name: 'Add' }))
+    await user.click(screen.getByRole('menuitem', { name: /Templates/ }))
+    await user.click(await screen.findByRole('menuitem', { name: /Review/ }))
+    await waitFor(() => expect(screen.getByLabelText('New session prompt')).toHaveValue('Review auth'))
+    expect(posted).toContainEqual({ path: '/templates/t1/render', body: { variables: { area: 'auth' } } })
+    fakePost.mockImplementation(realPost)
   })
 })
 
