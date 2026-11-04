@@ -6,7 +6,7 @@ import { ApiRequestError, apiErrorDetail } from '@/api/client'
 import { HighlightedCode, LineNumber } from '../diff/DiffRenderer'
 import { useHighlighter } from '../diff/highlightChunk'
 import { TextAction } from './TextAction'
-import { MAX_READ_BYTES } from './types'
+import { MAX_READ_BYTES, kib } from './types'
 
 /** One line's height in px: the frame's `leading-5`. Rows never wrap, so it is exact. */
 const ROW_PX = 20
@@ -50,11 +50,7 @@ export default function FileViewer({ sessionId, path, line }: {
   }
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {data.truncated && (
-        <p role="note" className="shrink-0 border-b border-edge px-3 py-1 text-xs text-ink-muted">
-          Large file — showing the first {kib(MAX_READ_BYTES)} of {kib(data.size)}.
-        </p>
-      )}
+      {data.truncated && <TruncatedNote limit={MAX_READ_BYTES} size={data.size} />}
       <FileLines key={data.path} path={data.path} text={data.text} line={line} />
     </div>
   )
@@ -177,12 +173,25 @@ const Row = memo(function Row({ n, text, start, numWidth, highlight, target, row
   )
 })
 
-/** The server's copy for an error it explains; this viewer's for the rest. */
-function FileError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+/** The note over a read cut at the server's cap: `limit` bytes shown, of `size` when the server says. */
+export function TruncatedNote({ limit, size }: { limit: number; size?: number }) {
+  return (
+    <p role="note" className="shrink-0 border-b border-edge px-3 py-1 text-xs text-ink-muted">
+      Large file — showing the first {kib(limit)}{size === undefined ? '' : ` of ${kib(size)}`}.
+    </p>
+  )
+}
+
+/**
+ * The server's copy for an error it explains; this viewer's for the rest.
+ * `notFound` replaces the 404 sentence for a reader whose 404 means something
+ * narrower (the memory viewer's `MEMORY_FILE_UNKNOWN`).
+ */
+export function FileError({ error, onRetry, notFound }: { error: unknown; onRetry: () => void; notFound?: string }) {
   const status = error instanceof ApiRequestError ? error.status : null
   if (status === 400) return <p className="p-4 text-sm text-ink-muted">Can&apos;t open this path</p>
   if (status === 404) {
-    return <p className="p-4 text-sm text-ink-muted">File not found — it may have been moved or deleted.</p>
+    return <p className="p-4 text-sm text-ink-muted">{notFound ?? 'File not found — it may have been moved or deleted.'}</p>
   }
   if (status === 409) {
     return (
@@ -221,8 +230,4 @@ function widestColumns(lines: string[]): number {
     widest = Math.max(widest, l.length + tabs * (TAB_COLS - 1))
   }
   return Math.min(widest, MAX_HIGHLIGHT_LINE_CHARS)
-}
-
-function kib(bytes: number): string {
-  return `${Math.ceil(bytes / 1024).toLocaleString('en-US')} KiB`
 }

@@ -197,12 +197,17 @@ describe('ContextCard', () => {
         'User/home/u/.claude-accounts/cfg/work/CLAUDE.md1,234 tokens',
         'ProjectCLAUDE.md958 tokens',
         'LocalCLAUDE.local.md4 tokens',
-        'AutoMem/home/u/.claude-accounts/cfg/work/projects/p/memory/MEMORY.md80 tokens',
+        'Auto memory/home/u/.claude-accounts/cfg/work/projects/p/memory/MEMORY.md80 tokens',
         // An unknown type is shown as the CLI sent it.
         'Plugin/etc/claude-code/CLAUDE.md7 tokens',
       ])
       // The full path is the row's title, so a truncated one can still be read.
-      expect(within(rows[1]).getByText('CLAUDE.md')).toHaveAttribute('title', '/home/u/wt/CLAUDE.md')
+      expect(within(rows[1]).getByText('CLAUDE.md').parentElement).toHaveAttribute('title', '/home/u/wt/CLAUDE.md')
+      // A long path is cut from the START, so the file name stays: an RTL box around an LTR span.
+      const shown = within(rows[0]).getByText('/home/u/.claude-accounts/cfg/work/CLAUDE.md')
+      expect(shown).toHaveAttribute('dir', 'ltr')
+      expect(shown.parentElement).toHaveAttribute('dir', 'rtl')
+      expect(shown.parentElement).toHaveAttribute('title', '/home/u/.claude-accounts/cfg/work/CLAUDE.md')
     })
 
     it('shows absolute paths when the worktree is unknown', () => {
@@ -246,7 +251,7 @@ describe('ContextCard', () => {
       const dialog = await screen.findByRole('dialog')
       expect(await within(dialog).findByText('always test')).toBeInTheDocument()
       expect(within(dialog).getByRole('link', { name: 'Edit in Settings' })).toHaveAttribute('href', '/settings/memory')
-      expect(within(dialog).getByText(/showing the first 256 KiB/)).toBeInTheDocument()
+      expect(within(dialog).getByText('Large file — showing the first 256 KiB.')).toBeInTheDocument()
     })
 
     it('says so when the file can no longer be read', async () => {
@@ -259,6 +264,30 @@ describe('ContextCard', () => {
       fireEvent.click(screen.getByRole('button', { name: /^Local / }))
       const dialog = await screen.findByRole('dialog')
       expect(within(dialog).getByText(/no longer loaded or no longer readable/i)).toBeInTheDocument()
+    })
+
+    it('a daemon too old to read memory files says so (the shared 409 branch)', async () => {
+      const { ApiRequestError } = await import('@/api/client')
+      memoryFile.mockReturnValue({
+        data: undefined, isError: true,
+        error: new ApiRequestError(409, { detail: { code: 'daemon_outdated', message: 'The session daemon is too old for this.' } }),
+        refetch: vi.fn(),
+      })
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /^Local / }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText('The session daemon is too old for this.')).toBeInTheDocument()
+    })
+
+    it('any other failure offers Retry', async () => {
+      const { ApiRequestError } = await import('@/api/client')
+      const refetch = vi.fn()
+      memoryFile.mockReturnValue({ data: undefined, isError: true, error: new ApiRequestError(500, {}), refetch })
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /^Local / }))
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }))
+      expect(refetch).toHaveBeenCalled()
     })
   })
 })

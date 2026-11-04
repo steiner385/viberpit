@@ -1864,14 +1864,15 @@ export function useLibraryMcp() {
 /**
  * The shared user memory file: `{text, etag, exists}`. A link, an oversize file and
  * non-UTF-8 bytes are 409 `MEMORY_FILE_IS_LINK`, 413 `MEMORY_TOO_LARGE` and 422
- * `MEMORY_NOT_UTF8`. No refetch on window focus: the editor bases its draft on the
- * etag it loaded, and a silent refetch would move that base under it.
+ * `MEMORY_NOT_UTF8`. No refetch on focus or reconnect: the editor seeds once from
+ * the read made when it mounted, and nothing else needs a fresh copy.
  */
 export function useUserMemory() {
   return useQuery<UserMemory>({
     queryKey: QK.userMemory,
     queryFn: () => api.get<UserMemory>('/settings/memory'),
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   })
 }
 
@@ -1884,6 +1885,8 @@ export function useSaveUserMemory() {
   const qc = useQueryClient()
   return useMutation<UserMemorySaved, ApiRequestError, { text: string; etag: string }>({
     mutationFn: (body) => api.put<UserMemorySaved>('/settings/memory', body),
+    // The editor says every failure inline (conflict panel, field error); a toast would say it twice.
+    meta: { suppressErrorToast: true },
     onSuccess: (data, { text }) => {
       qc.setQueryData<UserMemory>(QK.userMemory, { text, etag: data.etag, exists: true })
     },

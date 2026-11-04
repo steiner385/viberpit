@@ -97,6 +97,15 @@ for (const width of [1440, 390]) {
     await expect(rows.nth(0)).toContainText('User')
     await expect(rows.nth(0)).toContainText('1,234 tokens')
     await expect(rows.nth(1)).toContainText('ProjectCLAUDE.md958 tokens')
+    // A long path is cut from the start: the file name (the path's end) stays inside the box.
+    const box = rows.nth(0).locator('[dir="rtl"]')
+    const end = await box.evaluate((el) => {
+      const outer = el.getBoundingClientRect()
+      const inner = (el.firstElementChild as HTMLElement).getBoundingClientRect()
+      return { innerRight: inner.right, outerRight: outer.right, cut: inner.left < outer.left - 1 }
+    })
+    expect(end.innerRight).toBeLessThanOrEqual(end.outerRight + 1)
+    if (width === 390) expect(end.cut).toBe(true)
     await noOverflow(page)
 
     // A project file opens read-only, with no Edit link.

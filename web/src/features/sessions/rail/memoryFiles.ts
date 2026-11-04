@@ -1,33 +1,16 @@
 /**
- * How the Context card names a loaded memory file (D-13). The engine reports
- * each file as `{path, type, tokens}` with the CLI's own `type` and an absolute
- * path; this module is the ONE place that turns those into a label and a
- * shorter path.
+ * How the Context card labels a loaded memory file (D-13). The engine reports
+ * each file with the CLI's own `type` (`User`, `Project`, `Local`, `Managed`,
+ * `AutoMem`); most read as they are, and only the ones that do not are mapped.
+ * The path is shown through `worktreeRelativePath`, the transcript's one
+ * worktree-path rule.
  */
 
-/** Label per CLI memory type. A type not listed here is shown exactly as the CLI sent it. */
+/** Only the CLI types that do not read as words. Anything else is shown as sent. */
 const TYPE_LABEL: Readonly<Record<string, string>> = {
-  User: 'User',
-  Project: 'Project',
-  Local: 'Local',
-  Rule: 'Rule',
-  Import: 'Import',
-  Managed: 'Managed',
-  AutoMem: 'AutoMem',
+  AutoMem: 'Auto memory',
 }
 
 export function memoryTypeLabel(type: string): string {
   return TYPE_LABEL[type] ?? type
-}
-
-/**
- * The path as the card shows it: relative to the session's worktree when the
- * file is inside it, otherwise absolute. The browser does not know the host's
- * HOME, so a `~/…` form is not attempted — a guess would be wrong on any host
- * whose HOME is not `/home/<user>`.
- */
-export function memoryDisplayPath(path: string, worktree: string | null | undefined): string {
-  if (!worktree) return path
-  const root = worktree.endsWith('/') ? worktree : `${worktree}/`
-  return path.startsWith(root) && path.length > root.length ? path.slice(root.length) : path
 }

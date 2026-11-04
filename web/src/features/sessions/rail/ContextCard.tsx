@@ -16,10 +16,16 @@ import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import { DeferredMcpInlineList } from '../DeferredMcpStatusReadout'
 import { SessionRulesReadout } from '../SessionRulesReadout'
 import { RailCard } from './RailCard'
-import { memoryDisplayPath, memoryTypeLabel } from './memoryFiles'
+import { worktreeRelativePath } from '../transcript/filePathRef'
+import { memoryTypeLabel } from './memoryFiles'
 
 // Lazy: the viewer (and the Files tab frame it reuses) loads when a file is opened.
 const MemoryFileDialog = lazy(() => import('./MemoryFileDialog'))
+
+/** Worktree-relative inside the worktree, absolute otherwise (the browser has no HOME for `~/`). */
+function shownPath(path: string, cwd: string | null): string {
+  return (cwd ? worktreeRelativePath(path, cwd) : null) ?? path
+}
 
 const METER_FILL: Record<ContextSeverity, string> = {
   neutral: 'bg-accent',
@@ -92,7 +98,7 @@ export function ContextCard({
           <ul aria-label="Memory files" className="flex min-w-0 flex-col">
             {memoryFiles.map((f, i) => {
               const label = memoryTypeLabel(f.type)
-              const shown = memoryDisplayPath(f.path, cwd)
+              const shown = shownPath(f.path, cwd)
               const tokens = f.tokens.toLocaleString('en-US')
               return (
                 // The CLI can load one path twice (as itself and as an import), so the index is part of the key.
@@ -108,7 +114,11 @@ export function ContextCard({
                     )}
                   >
                     <span className="shrink-0 rounded bg-surface-2 px-1 text-ink-muted">{label}</span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-ink" title={f.path}>{shown}</span>
+                    {/* Cut from the START so the file name stays: the RTL box puts the
+                        ellipsis on the left, the LTR span keeps the path's own order. */}
+                    <span dir="rtl" className="min-w-0 flex-1 truncate text-left font-mono text-ink" title={f.path}>
+                      <span dir="ltr">{shown}</span>
+                    </span>
                     <span className="shrink-0 tabular-nums text-ink-muted">{tokens} tokens</span>
                   </button>
                 </li>
@@ -122,7 +132,7 @@ export function ContextCard({
           <MemoryFileDialog
             sessionId={sessionId}
             file={openFile}
-            displayPath={memoryDisplayPath(openFile.path, cwd)}
+            displayPath={shownPath(openFile.path, cwd)}
             onClose={() => setOpenFile(null)}
           />
         </Suspense>

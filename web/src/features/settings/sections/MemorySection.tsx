@@ -8,23 +8,29 @@
  * based on (`""` for a file that does not exist yet, which creates it). A file
  * changed elsewhere since is a 409 `MEMORY_CONFLICT` carrying the current
  * `{text, etag}`; the section shows that text beside the untouched draft until
- * the user chooses Reload. A file that cannot be edited safely here — a link,
- * over the size cap, not UTF-8 — is explained, with no editor.
+ * the user chooses Reload (take theirs) or Keep my draft (the next Save
+ * overwrites theirs, knowingly). A file that cannot be edited safely here — a
+ * link, over the size cap, not UTF-8 — is explained, with no editor.
  *
- * It does not import `Banner`/`QueryFailureBanner`: those live in a preloaded
- * shared chunk, and a lazy importer splits that chunk (+0.6 kB gzip on the
- * initial load, over the budget). The conflict notice uses the warning tokens.
+ * The footer is the Settings `SaveBar`, and a dirty draft is guarded against
+ * navigation by the same `useUnsavedChangesGuard` the form sections use.
  */
 import { useId, useState } from 'react'
 import { useSaveUserMemory, useUserMemory } from '@/api/hooks'
 import { ApiRequestError, apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { UserMemory } from '@/api/types'
+import { MAX_MEMORY_BYTES, kib } from '@/features/sessions/files/types'
+import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Field } from '@/ui/Field'
+import { QueryFailureBanner } from '@/ui/QueryFailureBanner'
 import { Textarea } from '@/ui/Textarea'
+import { SaveBar } from '../chassis/SaveBar'
+import { useUnsavedChangesGuard } from '../useUnsavedChangesGuard'
 
 const FILE = '~/.claude/CLAUDE.md'
+const CAP = kib(MAX_MEMORY_BYTES)
 
 /** Verbatim (D-13 spec): a running session read its memory at start. */
 const APPLIES_COPY = 'Applies to new sessions. Running sessions keep the instructions they started with.'
@@ -32,24 +38,22 @@ const APPLIES_COPY = 'Applies to new sessions. Running sessions keep the instruc
 /** Why the file cannot be edited here, per refusal code; shared by the read and the save. */
 const REFUSAL: Record<string, string> = {
   MEMORY_FILE_IS_LINK: `${FILE} is a symbolic link, so it is not edited here. Edit the file it points to on the host.`,
-  MEMORY_TOO_LARGE: `${FILE} is larger than 256 kB, too large to edit here. Edit it on the host.`,
+  MEMORY_TOO_LARGE: `${FILE} is larger than ${CAP}, too large to edit here. Edit it on the host.`,
   MEMORY_NOT_UTF8: `${FILE} is not valid UTF-8 text, so it is not edited here: saving would rewrite its bytes. Edit it on the host.`,
 }
-const SAVE_TOO_LARGE = 'The text is larger than 256 kB, the most the user memory file can hold. Nothing was saved.'
+const SAVE_TOO_LARGE = `The text is larger than ${CAP}, the most the user memory file can hold. Nothing was saved.`
 
 export default function MemorySection() {
-  const { data, error, isError, refetch } = useUserMemory()
-  if (data) return <MemoryEditor initial={data} />
-  if (isError) {
+  const { data, error, isError, isFetchedAfterMount, refetch } = useUserMemory()
+  // Seeded only from a read made for THIS visit: a cached copy from an earlier
+  // one may predate an edit made elsewhere, and its etag would turn the first
+  // save into a needless conflict.
+  if (isFetchedAfterMount && isError) {
     const refusal = REFUSAL[apiErrorCode(error) ?? '']
     if (refusal) return <p className="text-sm text-ink-muted">{refusal}</p>
-    return (
-      <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-danger">
-        Couldn’t load the user memory file.
-        <Button size="sm" variant="secondary" onClick={() => void refetch()}>Retry</Button>
-      </div>
-    )
+    return <QueryFailureBanner message="Couldn’t load the user memory file." hasData={false} onRetry={() => void refetch()} />
   }
+  if (isFetchedAfterMount && data) return <MemoryEditor initial={data} />
   return <p className="text-sm text-ink-muted" aria-busy="true">Loading…</p>
 }
 
@@ -70,8 +74,8 @@ function saveErrorMessage(err: unknown): string {
 
 /**
  * Mounted once the file has loaded, and seeded from it once: the draft's base
- * (`base`) moves only on a save, or on Reload after a conflict — never under the
- * user from a background refetch.
+ * (`base`) moves only on a save, or on Reload / Keep my draft after a conflict —
+ * never under the user from a background refetch.
  */
 function MemoryEditor({ initial }: { initial: UserMemory }) {
   const id = useId()
@@ -82,36 +86,44 @@ function MemoryEditor({ initial }: { initial: UserMemory }) {
   const [conflict, setConflict] = useState<Snapshot | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [propagation, setPropagation] = useState<string | null>(null)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
 
   const dirty = draft !== base.text || (!exists && draft !== '')
+  const blocker = useUnsavedChangesGuard(dirty)
 
-  const onSave = () => {
+  const onSave = async (): Promise<boolean> => {
     const text = draft
     setSaveError(null)
     setPropagation(null)
-    save.mutate({ text, etag: base.etag }, {
-      onSuccess: (out) => {
-        setBase({ text, etag: out.etag })
-        setExists(true)
-        setConflict(null)
-        setPropagation(out.propagation ?? null)
-      },
-      onError: (err) => {
-        const current = conflictSnapshot(err)
-        if (current) setConflict(current)
-        else setSaveError(saveErrorMessage(err))
-      },
-    })
+    try {
+      const out = await save.mutateAsync({ text, etag: base.etag })
+      setBase({ text, etag: out.etag })
+      setExists(true)
+      setConflict(null)
+      setPropagation(out.propagation ?? null)
+      setSavedAt(Date.now())
+      return true
+    } catch (err) {
+      const current = conflictSnapshot(err)
+      if (current) setConflict(current)
+      else setSaveError(saveErrorMessage(err))
+      return false
+    }
   }
 
-  const onReload = () => {
-    if (!conflict) return
-    setBase(conflict)
-    setDraft(conflict.text)
-    setExists(true)
+  /** Adopt the file as it now is; `""` is the etag of a file deleted elsewhere. */
+  const adopt = (current: Snapshot) => {
+    setBase(current)
+    setExists(current.etag !== '')
     setConflict(null)
     setSaveError(null)
   }
+  const onReload = () => {
+    if (!conflict) return
+    adopt(conflict)
+    setDraft(conflict.text)
+  }
+  const onKeepDraft = () => { if (conflict) adopt(conflict) }
 
   return (
     <div className="flex flex-col gap-4">
@@ -119,23 +131,29 @@ function MemoryEditor({ initial }: { initial: UserMemory }) {
         <p className="text-sm text-ink-muted">No user memory file yet. Saving creates {FILE}.</p>
       )}
       {conflict && (
-        <div role="status" className="flex flex-col gap-2 rounded-lg border border-warning/40 bg-warning-wash px-4 py-3 text-ink">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="font-medium">Changed elsewhere</p>
-            <Button size="sm" variant="secondary" onClick={onReload}>Reload</Button>
-          </div>
+        <Banner
+          tone="warning"
+          title="Changed elsewhere"
+          actions={(
+            <>
+              <Button size="sm" variant="secondary" onClick={onReload}>Reload</Button>
+              <Button size="sm" variant="ghost" onClick={onKeepDraft}>Keep my draft</Button>
+            </>
+          )}
+        >
           <p className="text-sm">
-            {FILE} changed since you opened it. Your draft is kept below; Reload replaces it with the current file.
+            {FILE} changed since you opened it. Reload replaces your draft with the current file;
+            Keep my draft keeps it, and the next Save overwrites the other change.
           </p>
           <div
             role="region"
             aria-label="Current file"
             tabIndex={0}
-            className="max-h-48 overflow-auto rounded-md border border-edge bg-canvas p-2 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere]"
+            className="mt-2 max-h-48 overflow-auto rounded-md border border-edge bg-canvas p-2 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere]"
           >
             {conflict.text}
           </div>
-        </div>
+        </Banner>
       )}
       <Field label="User memory (CLAUDE.md)" htmlFor={id} help={APPLIES_COPY} error={saveError}>
         <Textarea
@@ -147,14 +165,17 @@ function MemoryEditor({ initial }: { initial: UserMemory }) {
           className="font-mono"
         />
       </Field>
-      <div className="flex flex-wrap items-center gap-3">
-        {propagation && !dirty && (
-          <p role="status" className="text-sm text-ink-muted">Saved. <span>{propagation}</span></p>
-        )}
-        <Button type="button" variant="primary" size="lg" className="ml-auto" onClick={onSave} disabled={!dirty} loading={save.isPending}>
-          Save
-        </Button>
-      </div>
+      {propagation && !dirty && (
+        <p role="note" className="text-sm text-ink-muted"><span>{propagation}</span></p>
+      )}
+      <SaveBar form={{
+        dirty,
+        saving: save.isPending,
+        savedAt,
+        save: onSave,
+        discard: () => { setDraft(base.text); setSaveError(null) },
+        blocker,
+      }} />
     </div>
   )
 }

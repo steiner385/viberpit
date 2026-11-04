@@ -23,6 +23,14 @@ export type SessionFileContent = {
 
 export const MAX_SCAN_ENTRIES = 20_000
 export const MAX_READ_BYTES = 512 * 1024
+/** The memory-file read and user-memory size cap (D-13), mirroring `server/sessions/memory_files.py`
+ *  `MAX_MEMORY_BYTES`: the viewer's truncation note and the editor's too-large copy name it. */
+export const MAX_MEMORY_BYTES = 256 * 1024
+
+/** A byte count as the notices name a cap: whole KiB, rounded up. */
+export function kib(bytes: number): string {
+  return `${Math.ceil(bytes / 1024).toLocaleString('en-US')} KiB`
+}
 
 /** The debounce on a files query typed by the user — the Files tab's search box and
  *  the composer's `@` menu ask the same endpoint at the same pace. */

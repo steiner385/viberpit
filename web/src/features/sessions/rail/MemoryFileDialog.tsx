@@ -10,18 +10,17 @@
  */
 import { Link } from 'react-router-dom'
 import { useMemoryFile } from '@/api/hooks'
-import { ApiRequestError } from '@/api/client'
 import type { MemoryFile } from '@/session/events'
 import { settingsSectionPath } from '@/shell/navDefs'
 import { cn } from '@/lib/utils'
 import { Button, buttonVariants } from '@/ui/Button'
 import { Dialog } from '@/ui/Dialog'
-import { FileLines } from '../files/FileViewer'
-import { TextAction } from '../files/TextAction'
+import { FileError, FileLines, TruncatedNote } from '../files/FileViewer'
+import { MAX_MEMORY_BYTES } from '../files/types'
 import { memoryTypeLabel } from './memoryFiles'
 
-/** The server's read cap (`memory_files.MAX_MEMORY_BYTES`), for the truncation note. */
-const MAX_MEMORY_KIB = 256
+/** `MEMORY_FILE_UNKNOWN`: every viewer refusal, not only a missing file. */
+const NOT_LOADED = 'This file is no longer loaded or no longer readable. It may have been moved, or the session reloaded its memory.'
 
 export default function MemoryFileDialog({ sessionId, file, displayPath, onClose }: {
   sessionId: string
@@ -47,24 +46,11 @@ export default function MemoryFileDialog({ sessionId, file, displayPath, onClose
         <div className="flex max-h-[60vh] min-h-0 flex-col overflow-hidden rounded-md border border-edge">
           {data ? (
             <>
-              {data.truncated && (
-                <p role="note" className="shrink-0 border-b border-edge px-3 py-1 text-xs text-ink-muted">
-                  Large file — showing the first {MAX_MEMORY_KIB} KiB.
-                </p>
-              )}
+              {data.truncated && <TruncatedNote limit={MAX_MEMORY_BYTES} />}
               <FileLines path={data.path} text={data.text} line={null} />
             </>
           ) : isError ? (
-            error instanceof ApiRequestError && error.status === 404 ? (
-              <p className="p-4 text-sm text-ink-muted">
-                This file is no longer loaded or no longer readable. It may have been moved, or the session reloaded its memory.
-              </p>
-            ) : (
-              <p className="p-4 text-sm text-ink-muted">
-                Couldn&apos;t load this file.{' '}
-                <TextAction onClick={() => void refetch()}>Retry</TextAction>
-              </p>
-            )
+            <FileError error={error} onRetry={() => void refetch()} notFound={NOT_LOADED} />
           ) : (
             <p className="p-4 text-sm text-ink-muted" aria-busy="true">Loading file…</p>
           )}
