@@ -36,7 +36,14 @@ Show whether each MCP server actually works, per account and per host, and let t
 
 ## Settings › MCP
 
-Each server row carries a status pill showing the worst status across its rows, ranked failed > needs-auth > pending > connected. `disabled` renders neutral. A server with no rows reads **Not checked yet**. Expanding a row lists every account x host observation: status, error, tool count, and "checked 3m ago" with its source (`session` or `probe`).
+Each server shows one **overall** status, derived on the server (`server/mcp_health/overall.py`, returned as `overall` by `GET /api/library/mcp`), in this order:
+
+1. A counted row is `failed` → **Failed**, with its reason. A configuration problem signing in cannot fix.
+2. The shared grant in `store/mcp.shared.json` is never/dead/expired → **Needs auth**. The grant is matched by server name and the configured `url`, so orphaned bundles are ignored.
+3. The grant is live or expiring, but a live session observed the server rejecting the token → **Failed**, "token rejected".
+4. Otherwise, the best counted row status. No counted rows → **Not checked yet**.
+
+Rows that count: enabled accounts only; probe rows always; session rows only while their session is not ended or archived. `disabled` renders neutral. Expanding Details still lists every account x host row, with status, error, tool count, and "checked 3m ago" with its source (`session` or `probe`). Uncounted rows are dimmed and marked "not counted".
 
 Plugin servers appear under their CLI name (`plugin:<p>:<s>`); the pill and readout show the short name. Only user-scope and plugin servers are covered; project `.mcp.json` servers are out of scope.
 
@@ -52,7 +59,7 @@ Plugin servers appear under their CLI name (`plugin:<p>:<s>`); the pill and read
 
 ## Reauth follow-through
 
-**Reauth** on a `needs-auth` row opens the existing paste-back `McpAuthFlow`. On success the edge:
+**Fix auth** appears once per server when the grant is never/dead/expired (http/sse only) and opens the paste-back `McpAuthFlow` with no account picker. One sign-in covers every account and runner; the edge runs the login in an enabled account's dir. On success the edge:
 
 1. Syncs only the `mcpOAuth` key of each account's `.credentials.json` (`sync_cfg_mcp_oauth`), with a stat guard against a concurrent CLI write, using the same merge policy as `merge_shared_mcp`. The dir receives the bundle's public view, which has no refresh token.
 2. Reconnects that server in every live session whose latest row for it is `needs-auth` or `failed` (bounded fan-out: 4 concurrent, 15 s each).
