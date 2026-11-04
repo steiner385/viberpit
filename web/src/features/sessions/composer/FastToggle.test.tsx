@@ -10,9 +10,9 @@ describe('fastModeLiveNote', () => {
     expect(fastModeLiveNote(true, undefined, null)).toBeNull()
   })
   it('names the cooldown and the CLI-disabled reason', () => {
-    expect(fastModeLiveNote(true, 'cooldown', null)).toMatch(/cooling down/)
+    expect(fastModeLiveNote(true, 'cooldown', null)).toMatch(/Cooling down/)
     expect(fastModeLiveNote(true, 'off', 'out_of_credits')).toMatch(/out of credits/)
-    expect(fastModeLiveNote(true, 'off', null)).toMatch(/disabled/)
+    expect(fastModeLiveNote(true, 'off', null)).toMatch(/Disabled/)
   })
 })
 
@@ -24,9 +24,8 @@ describe('FastToggle live state', () => {
   it('leads the tooltip with the cooldown', () => {
     render(<FastToggle on onToggle={vi.fn()} liveState="cooldown" />)
     const b = screen.getByRole('button', { name: 'Fast mode' })
-    expect(b.getAttribute('title')).toMatch(/^Fast mode is cooling down/)
+    expect(b.getAttribute('title')).toMatch(/^Cooling down/)
     expect(b.getAttribute('title')).toContain(FAST_MODE_COPY)
-    expect(b.getAttribute('data-live-state')).toBe('cooldown')
   })
   it('shows the disabled reason', () => {
     render(<FastToggle on onToggle={vi.fn()} liveState="off" disabledReason="out_of_credits" />)

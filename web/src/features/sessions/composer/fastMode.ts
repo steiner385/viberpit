@@ -9,20 +9,17 @@ import { storageKey } from '@/lib/storageKey'
 export const FAST_MODE_COPY =
   'Fast mode — faster output on the same model. Bills usage credits at a higher rate, outside your plan.'
 
-/** What the CLI is actually doing, when it differs from the stored choice (#3254): the
- *  ⚡ tooltip's first line. Null = nothing to add (live state agrees, or unreported). */
+/** What the CLI is actually doing when fast mode is on but not running (#3254): the ⚡
+ *  tooltip's first line. Null = nothing to add (agrees, off, or not yet reported). */
 export function fastModeLiveNote(
   on: boolean,
   liveState: string | null | undefined,
   disabledReason: string | null | undefined,
 ): string | null {
   if (!on) return null
-  if (liveState === 'cooldown') return 'Fast mode is cooling down — running at standard speed for about 10 minutes.'
-  if (liveState === 'off') {
-    const why = disabledReason ? ` (${disabledReason.replace(/_/g, ' ')})` : ''
-    return `Fast mode is on but the CLI has it disabled${why} — running at standard speed.`
-  }
-  return null
+  if (liveState === 'cooldown') return 'Cooling down — standard speed for ~10 min.'
+  if (liveState !== 'off') return null
+  return `Disabled by the CLI${disabledReason ? `: ${disabledReason.replace(/_/g, ' ')}` : ''}.`
 }
 
 /** Set once the note has been shown in this browser. */

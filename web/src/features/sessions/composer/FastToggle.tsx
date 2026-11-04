@@ -38,7 +38,6 @@ export default function FastToggle({ on, onToggle, pending = false, liveState, d
         aria-label="Fast mode"
         aria-pressed={on}
         title={liveNote ? `${liveNote}\n${FAST_MODE_COPY}` : FAST_MODE_COPY}
-        data-live-state={degraded ? liveState ?? undefined : undefined}
         disabled={pending}
         aria-busy={pending || undefined}
         onClick={() => onToggle(!on)}
