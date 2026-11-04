@@ -20,7 +20,7 @@ import { Button } from '@/ui/Button'
 import { Select } from '@/ui/Select'
 import { SectionHeading } from '@/ui/SectionHeading'
 import { useConfirm } from '@/ui/useConfirm'
-import { useFixPr, useMergePr, usePrDetail, useSessionFiles, useSetAutoMerge } from '@/api/hooks'
+import { useFixPr, useMergePr, usePrDetail, useSetAutoMerge } from '@/api/hooks'
 import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { PrArmResult, PrDetail, PrDetailCheck, PrMutationResult, PrReviewThread, PullRequestInfo } from '@/api/types'
@@ -60,8 +60,15 @@ const STATE_BADGE: Record<PullRequestInfo['state'], { label: string; tone: Tone 
 const GROUP_LABEL: Record<CheckGroupName, string> = { failing: 'Failing', pending: 'Pending', passing: 'Passing' }
 
 export default function PrTab({ sessionId, prs, hasFiles, onOpenFile, onShowConversation }: PrTabProps) {
-  const [picked, setPicked] = useState<string | null>(null)
+  // The pick is latched: re-deriving the default every render would jump to the next
+  // open PR the moment the shown one merges, hiding its Merged state (Review Focus 5).
+  const [picked, setPicked] = useState<string | null>(() => {
+    const first = defaultPr(prs)
+    return first ? prKey(first) : null
+  })
   const current = prs.find((p) => prKey(p) === picked) ?? defaultPr(prs)
+  // Latch too when the list arrives after mount, or the latched PR left it.
+  if (current && picked !== prKey(current)) setPicked(prKey(current))
   if (!current) return null
   return (
     <div className="h-full min-h-0 overflow-y-auto">
@@ -291,14 +298,14 @@ function PrPanel({ sessionId, pr, hasFiles, onOpenFile, onShowConversation }: Om
         <section aria-labelledby={`pr-threads-${pr.number}`} className="flex min-w-0 flex-col gap-2">
           <SectionHeading id={`pr-threads-${pr.number}`}>Review threads</SectionHeading>
           {unresolved.map((t) => (
-            <Thread key={t.id} thread={t} sessionId={sessionId} hasFiles={hasFiles} onOpenFile={onOpenFile}
+            <Thread key={t.id} thread={t} hasFiles={hasFiles} onOpenFile={onOpenFile}
                     onAddress={() => void onAddress(t)} />
           ))}
           {resolved.length > 0 && (
             <Collapsible open={false} summary={`${resolved.length} resolved`}>
               <div className="flex flex-col gap-2 pt-1">
                 {resolved.map((t) => (
-                  <Thread key={t.id} thread={t} sessionId={sessionId} hasFiles={hasFiles} onOpenFile={onOpenFile} />
+                  <Thread key={t.id} thread={t} hasFiles={hasFiles} onOpenFile={onOpenFile} />
                 ))}
               </div>
             </Collapsible>
@@ -338,15 +345,13 @@ function CheckLine({ check }: { check: PrDetailCheck }) {
   )
 }
 
-/** `path:line` — a Files-tab link when the path is in the session's worktree (asked
- *  of the worktree's own file search, exact match), plain text otherwise. */
-function ThreadPath({ sessionId, thread, hasFiles, onOpenFile }: {
-  sessionId: string; thread: PrReviewThread; hasFiles: boolean; onOpenFile: PrTabProps['onOpenFile']
+/** `path:line` — a Files-tab link whenever the session has a worktree (the Files tab
+ *  says so itself when the file is not there, `FILE_NOT_FOUND`), plain text otherwise. */
+function ThreadPath({ thread, hasFiles, onOpenFile }: {
+  thread: PrReviewThread; hasFiles: boolean; onOpenFile: PrTabProps['onOpenFile']
 }) {
-  const files = useSessionFiles(sessionId, thread.path, { enabled: hasFiles })
-  const exists = hasFiles && !!files.data?.files.some((f) => f.path === thread.path)
   const label = threadLocation(thread)
-  return exists ? (
+  return hasFiles ? (
     <button type="button" onClick={() => onOpenFile(thread.path, thread.line)}
             className="min-w-0 break-all text-left font-mono text-xs text-accent hover:underline">
       {label}
@@ -354,14 +359,14 @@ function ThreadPath({ sessionId, thread, hasFiles, onOpenFile }: {
   ) : <span className="min-w-0 break-all font-mono text-xs text-ink">{label}</span>
 }
 
-function Thread({ thread, sessionId, hasFiles, onOpenFile, onAddress }: {
-  thread: PrReviewThread; sessionId: string; hasFiles: boolean
+function Thread({ thread, hasFiles, onOpenFile, onAddress }: {
+  thread: PrReviewThread; hasFiles: boolean
   onOpenFile: PrTabProps['onOpenFile']; onAddress?: () => void
 }) {
   return (
     <article aria-label={threadLocation(thread)} className="flex min-w-0 flex-col gap-2 rounded-md border border-edge bg-surface p-3">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <ThreadPath sessionId={sessionId} thread={thread} hasFiles={hasFiles} onOpenFile={onOpenFile} />
+        <ThreadPath thread={thread} hasFiles={hasFiles} onOpenFile={onOpenFile} />
         {thread.outdated && <Badge tone="neutral">Outdated</Badge>}
       </div>
       {thread.comments.map((c, i) => (
@@ -376,7 +381,7 @@ function Thread({ thread, sessionId, hasFiles, onOpenFile, onAddress }: {
             )}
           </div>
           <div className="min-w-0 break-words text-sm text-ink">
-            <Markdown>{c.body}</Markdown>
+            <Markdown untrusted>{c.body}</Markdown>
           </div>
         </div>
       ))}

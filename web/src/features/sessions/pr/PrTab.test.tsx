@@ -17,7 +17,6 @@ const h = vi.hoisted(() => ({
   merge: vi.fn(),
   autoMerge: vi.fn(),
   fix: vi.fn(),
-  files: vi.fn(),
 }))
 
 vi.mock('@/api/hooks', () => ({
@@ -25,7 +24,6 @@ vi.mock('@/api/hooks', () => ({
   useMergePr: () => ({ mutateAsync: h.merge, isPending: false }),
   useSetAutoMerge: () => ({ mutateAsync: h.autoMerge, isPending: false }),
   useFixPr: () => ({ mutateAsync: h.fix, isPending: false }),
-  useSessionFiles: h.files,
 }))
 
 const PR: PullRequestInfo = {
@@ -66,20 +64,23 @@ function ComposerStub() {
 
 const onOpenFile = vi.fn()
 const onShowConversation = vi.fn()
-function renderTab(prs: PullRequestInfo[] = [PR], hasFiles = true) {
-  return render(
+/** The same tree for render and rerender, so a rerender updates PrTab rather than remounting it. */
+function tree(prs: PullRequestInfo[] = [PR], hasFiles = true) {
+  return (
     <SessionGestureProvider>
       <ComposerStub />
       <PrTab sessionId="s1" prs={prs} hasFiles={hasFiles} onOpenFile={onOpenFile} onShowConversation={onShowConversation} />
-    </SessionGestureProvider>,
+    </SessionGestureProvider>
   )
+}
+function renderTab(prs: PullRequestInfo[] = [PR], hasFiles = true) {
+  return render(tree(prs, hasFiles))
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   draftText = ''
   live(detail())
-  h.files.mockImplementation((_id: string, q: string) => ({ data: { files: q === 'src/a.ts' ? [{ path: 'src/a.ts' }] : [], truncated: false } }))
   h.merge.mockResolvedValue({ ok: true, error: '' })
   h.autoMerge.mockResolvedValue({ ok: true, error: '' })
   h.fix.mockResolvedValue({})
@@ -166,13 +167,14 @@ describe('PrTab — review threads', () => {
     expect(within(resolved).getByText('src/old.ts:12')).toBeInTheDocument()
   })
 
-  it('links path:line to the Files tab when the path is in the worktree', () => {
+  it('links every path:line to the Files tab when the session has a worktree', () => {
     live(detail({ threads: [thread({}), thread({ id: 'T2', path: 'gone.ts', line: 3 })] }))
     renderTab()
     fireEvent.click(screen.getByRole('button', { name: 'src/a.ts:12' }))
     expect(onOpenFile).toHaveBeenCalledWith('src/a.ts', 12)
-    expect(screen.queryByRole('button', { name: 'gone.ts:3' })).toBeNull()
-    expect(screen.getByText('gone.ts:3')).toBeInTheDocument()
+    // No per-path existence query: a missing file is the Files tab's FILE_NOT_FOUND.
+    fireEvent.click(screen.getByRole('button', { name: 'gone.ts:3' }))
+    expect(onOpenFile).toHaveBeenLastCalledWith('gone.ts', 3)
   })
 
   it('no Files link without a worktree', () => {
@@ -219,6 +221,32 @@ describe('PrTab — review threads', () => {
     // The comment's own link is not rendered for a non-http(s) url.
     expect(screen.queryByRole('link', { name: /View comment on GitHub/ })).toBeNull()
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined()
+  })
+
+  it('never fetches a comment image: alt text plus an http(s) link, no <img> (privacy)', async () => {
+    live(detail({ threads: [thread({ comments: [{
+      author: 'eve', createdAt: null, url: null,
+      body: 'Tracked ![pixel](https://evil.example/t.png) and <img src="https://evil.example/raw.png" alt="raw"> and ![bad](javascript:alert(1))',
+    }] })] }))
+    const { container } = renderTab()
+    const link = await screen.findByRole('link', { name: '[pixel]' })
+    expect(link).toHaveAttribute('href', 'https://evil.example/t.png')
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.queryByRole('link', { name: '[bad]' })).toBeNull()
+    expect(screen.getByText('[bad]')).toBeInTheDocument()
+  })
+
+  it('keeps only absolute http(s) links clickable in a comment', async () => {
+    live(detail({ threads: [thread({ comments: [{
+      author: 'eve', createdAt: null, url: null,
+      body: '[api](/api/sessions/s1/archive) [rel](../x) [anchor](#top) [ok](https://example.com/doc)',
+    }] })] }))
+    renderTab()
+    expect(await screen.findByRole('link', { name: 'ok' })).toHaveAttribute('href', 'https://example.com/doc')
+    for (const name of ['api', 'rel', 'anchor']) {
+      expect(screen.queryByRole('link', { name })).toBeNull()
+      expect(screen.getByText(name)).toBeInTheDocument()
+    }
   })
 
   it('links a comment with an https url', () => {
@@ -327,14 +355,39 @@ describe('PrTab — actions', () => {
     const view = renderTab([{ ...PR, checks: 'failing' }])
     expect(actionNames().length).toBeGreaterThan(0)
     live(detail({ state: 'merged', merged: true, autoMergeEnabled: false, mergeStateStatus: 'UNKNOWN' }))
-    view.rerender(
-      <SessionGestureProvider>
-        <PrTab sessionId="s1" prs={[{ ...PR, checks: 'failing' }]} hasFiles onOpenFile={onOpenFile} onShowConversation={onShowConversation} />
-      </SessionGestureProvider>,
-    )
+    view.rerender(tree([{ ...PR, checks: 'failing' }]))
     expect(within(screen.getByRole('region', { name: 'Pull request #42' })).getByText('Merged')).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Pull request actions' })).toBeNull()
     expect(screen.getByRole('link', { name: /Open on GitHub/ })).toBeInTheDocument()
+  })
+})
+
+describe('PrTab — the pick is latched (Review Focus 5)', () => {
+  it('with two open PRs, merging the shown one keeps the tab on it, Merged, with only Open on GitHub', () => {
+    let merged = false
+    h.detail.mockImplementation((_repo: string, n: number) => ({
+      isPending: false, isError: false, error: null,
+      data: detail({ number: n, title: `PR ${n}`, url: `https://github.com/acme/widgets/pull/${n}`,
+                     ...(n === 10 && merged ? { state: 'merged', merged: true, mergeStateStatus: 'UNKNOWN' } : {}) }),
+    }))
+    const open = (n: number): PullRequestInfo => ({ ...PR, number: n, title: `PR ${n}`, url: `https://github.com/acme/widgets/pull/${n}` })
+    const view = renderTab([open(10), open(12)])
+    expect(screen.getByRole('combobox', { name: 'Pull request' })).toHaveDisplayValue('#10 PR 10')
+    // The poll (and the sessions refetch) report #10 merged.
+    merged = true
+    view.rerender(tree([{ ...open(10), state: 'merged' }, open(12)]))
+    expect(screen.getByRole('combobox', { name: 'Pull request' })).toHaveDisplayValue('#10 PR 10')
+    const header = screen.getByRole('region', { name: 'Pull request #10' })
+    expect(within(header).getByText('Merged')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Pull request actions' })).toBeNull()
+    expect(within(header).getByRole('link', { name: /Open on GitHub/ })).toBeInTheDocument()
+  })
+
+  it('latches the default when the PR list arrives after mount', () => {
+    const view = renderTab([])
+    expect(screen.queryByRole('region', { name: /Pull request #/ })).toBeNull()
+    view.rerender(tree([{ ...PR, number: 42 }, { ...PR, number: 50 }]))
+    expect(screen.getByRole('combobox', { name: 'Pull request' })).toHaveDisplayValue('#42 Add the widget')
   })
 })
 
