@@ -113,3 +113,80 @@ def test_guide_reapplied_on_respawn(tmp_path, monkeypatch):
 
     asyncio.run(go())
     assert seen == [GUIDE, GUIDE, None]
+
+
+class _GuideSpawns:
+    """A fake SDK factory that DECLARES ``platform_guide`` — as the real one does — and
+    records the system-prompt append the real factory would compose from it."""
+
+    def __init__(self) -> None:
+        self.appends: list[str] = []
+
+    def __call__(self, cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
+                 on_pre_compact=None, options_overlay=None, platform_guide=None, **kw):
+        from server.sessions.claude_sdk_factory import _build_append_string
+        from server.tests.fakes.fake_sdk import FakeSDKClient
+        self.appends.append(_build_append_string(platform_guide))
+        return FakeSDKClient([], on_can_use_tool=can_use_tool)
+
+
+import pytest  # noqa: E402
+from server.tests.test_session_fork import env  # noqa: E402,F401 — the real-orchestrator fixture
+
+
+@pytest.mark.asyncio
+async def test_fresh_fork_and_child_spawns_get_the_guide(env, tmp_path, monkeypatch):  # noqa: F811
+    """The REAL create path, no stub of ``_session_platform``: a fresh spawn's factory
+    runs inside ``driver.start()`` BEFORE its row is INSERTed, so the platform must reach
+    the guide without the row (final review, Critical #1). Fork and child are fresh rows
+    too; a Linux session on the same host gets nothing."""
+    from sqlalchemy import update as sa_update
+
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    from server.tests.test_session_fork import _fork
+    orch, _spawns, src, _root, clone = env
+    monkeypatch.setenv("VIBERPIT_HOST_PLATFORM_GUIDE_WINDOWS", str(_guide_file(tmp_path)))
+    rec = _GuideSpawns()
+    orch._sdk_factory = rec
+
+    await orch.create_session("Win", cwd=str(clone), platform="windows")
+    await orch.create_session("Lin", cwd=str(clone))
+    assert len(rec.appends) == 2
+    assert GUIDE in rec.appends[0]
+    assert GUIDE not in rec.appends[1] and "winrun" not in rec.appends[1]
+
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == src.id)
+                         .values(platform="windows"))
+    rec.appends.clear()
+    await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    await orch.dispatch_child_session(src.id, name="Child", prompt="do X", model=None,
+                                      permission_mode=None, identity="u@x")
+    assert len(rec.appends) == 2
+    assert all(GUIDE in a for a in rec.appends), rec.appends
+
+
+def test_platform_read_failure_is_none_at_info(monkeypatch, caplog):
+    """An unreadable DB yields no platform (so no guide), logged at INFO — never a
+    spawn failure, and never a WARNING (which would auto-file an issue)."""
+    from server.sessions import orchestrator as orch_mod
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    class _Boom:
+        async def __aenter__(self):
+            raise RuntimeError("db down")
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(orch_mod, "db_session", lambda: _Boom())
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    with caplog.at_level(logging.DEBUG):
+        assert asyncio.run(orch._session_platform("s1")) is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("platform_read_failed" in r.getMessage() and r.levelno == logging.INFO
+               for r in caplog.records)
+    # The in-flight spawn's platform wins over the (here unreadable) row.
+    orch._spawn_platforms = {"s2": "windows"}
+    assert asyncio.run(orch._session_platform("s2")) == "windows"

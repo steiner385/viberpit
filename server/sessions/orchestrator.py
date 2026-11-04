@@ -1276,6 +1276,11 @@ class SessionOrchestrator:
         # by the idle reap's teardown — and dropped by every other teardown (the
         # session has ended). In-memory, like the drivers it describes.
         self._assistant_scopes: dict[str, str | None] = {}
+        # session_id → the platform a spawn was routed for (host-platforms spec §4),
+        # set before the driver is built and dropped by _teardown_driver_state. The
+        # SDK factory reads it (via _session_platform) inside driver.start(), before a
+        # fresh spawn's row exists to carry the stamp.
+        self._spawn_platforms: dict[str, str] = {}
         # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
         # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
         # skipped during selection so one un-deletable archive can't wedge the whole
@@ -5362,9 +5367,24 @@ class SessionOrchestrator:
 
     async def _session_platform(self, session_id: str) -> str | None:
         """``Session.platform`` of *session_id* — what a fork or a child inherits
-        (design call 7). ``None`` for an unknown id."""
-        async with db_session() as db:
-            row = await db.get(DbSession, session_id)
+        (design call 7), and what ``_session_factory`` reads the platform guide by.
+
+        The in-flight spawn's own platform (``_spawn_platforms``) wins: a fresh spawn's
+        factory runs inside ``driver.start()``, BEFORE its row is INSERTed, so the DB
+        read alone returned ``None`` and a new Windows session never got its guide.
+        The row is the fallback for every later rebuild (respawn after a daemon
+        restart, an idle-reap resume). ``None`` for an unknown id or an unreadable DB —
+        logged at INFO, never raised: a missing guide must not fail the spawn."""
+        pending = getattr(self, "_spawn_platforms", {}).get(session_id)
+        if pending is not None:
+            return pending
+        try:
+            async with db_session() as db:
+                row = await db.get(DbSession, session_id)
+        except Exception:
+            log.info("session.platform_read_failed id=%s — treated as no platform",
+                     session_id, exc_info=True)
+            return None
         return row.platform if row is not None else None
 
     async def _local_host_serves_platform(self, platform: str) -> bool:
@@ -6059,6 +6079,10 @@ class SessionOrchestrator:
             # MCP server, no builtin tools) or a coding session's `viberpit` MCP
             # surface: _session_factory picks it up from self._overlays the moment the
             # SDK factory closure runs inside driver.start() below.
+            # The routed platform, likewise: the factory loads the platform guide by it
+            # inside driver.start(), and a fresh spawn's row is only INSERTed after.
+            if platform is not None:
+                self._spawn_platforms[session_id] = platform
             assistant_api = await self._setup_overlay_for_kind(
                 session_id, kind=kind, identity=identity, model=model,
                 engine=selected_engine)
@@ -6493,6 +6517,9 @@ class SessionOrchestrator:
         # teardown paths drop it, and re-armed by _setup_overlay_for_kind at every
         # driver build — never preserved across one.
         self._overlays.pop(session_id, None)
+        # Only bridges a fresh spawn to its not-yet-INSERTed row; every rebuild after
+        # this reads the row (see _session_platform).
+        getattr(self, "_spawn_platforms", {}).pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
 
         # Release this session's claim on its account's Codex app-server (a no-op
