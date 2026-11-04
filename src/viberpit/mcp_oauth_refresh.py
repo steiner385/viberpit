@@ -360,11 +360,11 @@ def _swap_if_unchanged(key: str, used_refresh_token: str, replacement: dict) -> 
     return swapped
 
 
-def _publish_all(names: list[str]) -> int:
+def _publish_all(names: list[str], *, drop: frozenset[str] = frozenset()) -> int:
     written = 0
     for name in names:
         try:
-            written += bool(creds.sync_cfg_mcp_oauth(paths.account_cfg_dir(name)))
+            written += bool(creds.sync_cfg_mcp_oauth(paths.account_cfg_dir(name), drop=drop))
         except Exception:
             log.debug("mcp oauth publish failed account=%s", name, exc_info=True)
     return written
@@ -413,10 +413,12 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
 
 
 def run_once(*, accounts_list: list[str] | None = None, post_form: PostForm | None = None,
-             fetch_json: FetchJson | None = None, now_ms: int | None = None) -> dict:
+             fetch_json: FetchJson | None = None, now_ms: int | None = None,
+             drop_keys: frozenset[str] = frozenset()) -> dict:
     """One refresher tick. Never raises.
 
-    1. Capture + publish every Anthropic account dir (strips any refresh-token copy).
+    1. Capture + publish every Anthropic account dir (strips any refresh-token copy), purging
+       *drop_keys* (the keys the edge's grant reconcile just deleted or moved) from each.
     2. Refresh each due store bundle outside the store lock; write back compare-and-swap.
     3. If the store changed, publish again."""
     summary: dict = {"refreshed": [], "dead": [], "transient": [], "published": 0}
@@ -429,12 +431,12 @@ def run_once(*, accounts_list: list[str] | None = None, post_form: PostForm | No
             names = []
     else:
         names = list(accounts_list)
-    summary["published"] += _publish_all(names)
+    summary["published"] += _publish_all(names, drop=drop_keys)
     try:
         changed = _refresh_due(summary, post_form, fetch_json, now_ms)
     except Exception:
         log.debug("mcp oauth refresher: tick failed", exc_info=True)
         changed = False
     if changed:
-        summary["published"] += _publish_all(names)
+        summary["published"] += _publish_all(names, drop=drop_keys)
     return summary

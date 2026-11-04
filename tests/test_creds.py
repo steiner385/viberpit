@@ -266,3 +266,36 @@ def test_primary_writes_store(monkeypatch):
     with temp_env():
         assert creds.merge_shared_mcp({"srv|1": {"accessToken": "a", "expiresAt": 1}}) == 1
         assert "srv|1" in json.loads(paths.shared_mcp_path().read_text())
+
+
+def test_dropped_key_not_recaptured_and_purged_from_dir(monkeypatch):
+    from viberpit import creds, fleet_role, paths
+    from viberpit.configdir import CREDENTIALS_NAME
+    monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    with temp_env():
+        _seed_store({"live|1": {"serverName": "live", "accessToken": "a", "refreshToken": "r",
+                                "expiresAt": 1}})
+        cfg = paths.account_cfg_dir("d")
+        cfg.mkdir(parents=True, exist_ok=True)
+        orphan = {"serverName": "linear", "serverUrl": "https://mcp.linear.app/mcp"}
+        (cfg / CREDENTIALS_NAME).write_text(json.dumps(
+            {"claudeAiOauth": {"accessToken": "c"}, "mcpOAuth": {"linear|0": orphan}}))
+        assert creds.sync_cfg_mcp_oauth(cfg, drop=frozenset({"linear|0"})) is True
+        data = json.loads((cfg / CREDENTIALS_NAME).read_text())
+        assert "linear|0" not in data["mcpOAuth"] and "live|1" in data["mcpOAuth"]
+        assert data["claudeAiOauth"] == {"accessToken": "c"}
+        assert "linear|0" not in creds.read_shared_mcp()
+
+
+def test_capture_and_publish_skip_drop_keys(monkeypatch):
+    from viberpit import creds, fleet_role
+    monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    with temp_env():
+        _seed_store({})
+        offered = creds.capture_cfg_mcp(
+            {"old|1": {"serverName": "old", "accessToken": "a", "refreshToken": "r", "expiresAt": 9}},
+            drop=frozenset({"old|1"}))
+        assert offered == 0 and creds.read_shared_mcp() == {}
+        published = creds.publish_mcp({"old|1": {"accessToken": "a"}, "keep|2": {"accessToken": "k"}},
+                                      {"old|1": {"accessToken": "s"}}, drop=frozenset({"old|1"}))
+        assert published == {"keep|2": {"accessToken": "k"}}
