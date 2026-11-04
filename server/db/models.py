@@ -1587,7 +1587,7 @@ class McpGrantHealth(Base):
     """Durable refresh health per shared-store grant key (MCP overhaul phase 3).
 
     Written by the edge's refresh tick (``server/mcp_health/grant_health.py``). ``alerted_for``
-    is ``f"{outcome}:{generation}"`` (generation = ``last_ok_at`` ISO+Z, or ``never``) so a
+    is ``f"{state}:{generation}"`` (generation = ``last_ok_at`` ISO+Z, or ``never``) so a
     dead or expired grant pushes at most once per generation. Every non-PK column is nullable
     so reconcile can add any of them on both dialects."""
 
