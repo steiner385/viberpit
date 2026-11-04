@@ -253,6 +253,11 @@ def test_every_skip_reason_is_in_the_vocabulary():
         got = skip_reason(row, **kw)
         assert got == expected
         seen.add(got)
+    # ``platform_busy`` needs a live fleet: a Windows host whose only slot is taken.
+    got = skip_reason(_row(labels=("env: windows",)), platforms=frozenset({"linux", "windows"}),
+                      busy_platforms=frozenset({"windows"}), **kw)
+    assert got == "platform_busy"
+    seen.add(got)
     assert seen == set(SKIP_REASONS)
 
 
@@ -663,3 +668,68 @@ def test_ghostdriver_28_windows_real_target_is_not_dispatched():
     assert skip_reason(row, **ENV_KW) == "environment"
     # Not a policy choice: a product that works its trackers still cannot run it.
     assert skip_reason(row, skip_trackers=False, **ENV_KW) == "environment"
+
+
+# ── live platforms and platform_busy (host-platforms §2) ───────────────────────
+WIN = frozenset({"linux", "windows"})
+
+
+def test_env_windows_runs_when_fleet_advertises_windows():
+    row = _row(labels=("env: windows",))
+    assert skip_reason(row, platforms=WIN, **ENV_KW) is None
+    entries, skipped = rank([row], platforms=WIN, **{k: v for k, v in ENV_KW.items()})
+    assert len(entries) == 1 and skipped == {}
+
+
+def test_env_windows_still_environment_skip_without_windows_host():
+    """The #2983 regression: no advertiser, the issue is still not dispatched."""
+    assert skip_reason(_row(labels=("env: windows",)), **ENV_KW) == "environment"
+    assert skip_reason(_row(labels=("env: windows",)), platforms=frozenset({"linux"}),
+                       busy_platforms=frozenset({"windows"}), **ENV_KW) == "environment"
+
+
+def test_real_target_still_skipped_with_windows_host():
+    row = _row(labels=("real-target", "env: windows"))
+    assert skip_reason(row, platforms=WIN, **ENV_KW) == "environment"
+
+
+@pytest.mark.parametrize("labels,expected", [
+    (("env: windows",), "windows"), (("env: macos",), "macos"), (("env: mac",), "macos"),
+    (("env: windows", "env: macos"), "macos"),
+    (("env: both",), None), (("env: any",), None), ((), None), (("real-target",), None),
+    (("env: linux",), None), (("env: staging",), None),
+])
+def test_gated_platform(labels, expected):
+    from server.pm.queue import gated_platform
+    assert gated_platform(labels) == expected
+
+
+def test_gated_platform_both_is_none():
+    from server.pm.queue import gated_platform
+    assert gated_platform(("env: both",)) is None
+
+
+def test_gated_platform_union_with_linux_is_ungated():
+    from server.pm.queue import gated_platform
+    assert gated_platform(("env: windows", "env: linux")) is None
+
+
+def test_platform_busy_after_environment():
+    busy = frozenset({"windows"})
+    row = _row(labels=("env: windows",))
+    # No advertiser: environment wins over platform_busy.
+    assert skip_reason(row, busy_platforms=busy, **ENV_KW) == "environment"
+    assert skip_reason(row, platforms=WIN, busy_platforms=busy, **ENV_KW) == "platform_busy"
+    entries, skipped = rank([row], platforms=WIN, busy_platforms=busy, **ENV_KW)
+    assert entries == [] and skipped == {"platform_busy": 1}
+
+
+def test_platform_busy_spares_ungated_work():
+    busy = frozenset({"windows"})
+    for labels in ((), ("env: both",), ("env: windows", "env: linux")):
+        assert skip_reason(_row(labels=labels), platforms=WIN, busy_platforms=busy,
+                           **ENV_KW) is None
+
+
+def test_platform_busy_is_a_skip_reason():
+    assert "platform_busy" in SKIP_REASONS

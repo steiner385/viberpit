@@ -30,7 +30,7 @@ from datetime import datetime
 from server.automations.product_policy import (skip_labels, skips_self_closing_trackers,
                                                trusted_authors)
 from server.pm.holds import actor_class
-from server.pm.queue import (QueueRow, is_bot_noise, is_parked, is_self_closing_tracker,
+from server.pm.queue import (FLEET_PLATFORMS, QueueRow, is_bot_noise, is_parked, is_self_closing_tracker,
                              is_trusted_author, needs_unavailable_environment)
 
 
@@ -53,17 +53,19 @@ def not_work_by_policy(*, author: str, labels: Iterable[str], title: str,
 
 
 def skipped_by_policy(*, author: str, author_id: int | None, labels: Iterable[str],
-                      title: str, policy: Mapping | None) -> bool:
+                      title: str, policy: Mapping | None,
+                      platforms: frozenset[str] = FLEET_PLATFORMS) -> bool:
     """Whether the queue would skip this issue as ``bot``, ``tracker``, ``parked``,
     ``untrusted`` or ``environment`` under *policy* — ``not_work_by_policy``, a
     person's ``parked`` label, an author (by GitHub id) outside its ``trusted_authors``, or an
-    environment gate no fleet host meets (#2983): the approve-escalation tap's
+    environment gate no fleet host meets (#2983; *platforms* is the live set
+    ``fleet_platforms.fleet_platform_state`` reads): the approve-escalation tap's
     refusal. ``None`` (no policy for the product) applies the built-in filters and
     trusts only automation logins (fail-closed)."""
     if not is_trusted_author(author, trusted_authors(policy), author_id=author_id):
         return True
     labels = tuple(labels)
-    return (is_parked(labels) or needs_unavailable_environment(labels)
+    return (is_parked(labels) or needs_unavailable_environment(labels, platforms)
             or not_work_by_policy(author=author, labels=labels, title=title, policy=policy))
 
 

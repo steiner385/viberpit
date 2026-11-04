@@ -21,6 +21,7 @@ from server.pm.attention import (WAITING_KEYS, assigned_to_owner, owner_logins,
                                  waiting_reason_for_skip)
 from server.pm.desired_state import LIVE_SESSION_STATUSES
 from server.pm.drift import is_open_blocker
+from server.pm.fleet_platforms import fleet_platform_state
 from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.mirror_store import blocker_states, blocker_states_stmt
 from server.pm.outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
@@ -67,6 +68,7 @@ async def _waiting_by_product(db, now: datetime) -> dict[str, dict[str, int]]:
     disagree about why something is not moving. A product without a board has
     no rows and is absent here."""
     rows, policies = await _queue_inputs(db, now)
+    platforms, busy = await fleet_platform_state(db)
     by_product: dict[str, list[QueueRow]] = {}
     for r in rows:
         by_product.setdefault(r.product, []).append(r)
@@ -74,7 +76,8 @@ async def _waiting_by_product(db, now: datetime) -> dict[str, dict[str, int]]:
     for key, prows in by_product.items():
         policy = policies.get(key) or effective_policy(None)
         skipped: list[tuple[QueueRow, str]] = []
-        rank(prows, now=now, **rank_kwargs(policy), skipped_out=skipped)
+        rank(prows, now=now, **rank_kwargs(policy), skipped_out=skipped,
+             platforms=platforms, busy_platforms=busy)
         owners = owner_logins(policy)
         counts = dict.fromkeys(WAITING_KEYS, 0)
         for row, why in skipped:

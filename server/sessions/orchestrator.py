@@ -8415,6 +8415,7 @@ class SessionOrchestrator:
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
         from server.pm.queue import rank, rank_key, to_candidate
+        from server.pm.fleet_platforms import fleet_platform_state
         from server.pm.queue_store import load_queue_rows, runner_claims
 
         now = datetime.now(timezone.utc)
@@ -8453,6 +8454,7 @@ class SessionOrchestrator:
             # Best-effort here and NOT on the loader seam: this read has no
             # skip-refill escape, so it degrades to the last verdicts instead.
             policies = await self._backlog_clamp_ladder_tops(db, policies, best_effort=True)
+            platforms, busy = await fleet_platform_state(db)
         # Cached for the other seams in this same tick (selection's repo order,
         # the spawn's model) so they cannot read a different answer.
         self._backlog_last_policies = policies
@@ -8468,7 +8470,8 @@ class SessionOrchestrator:
             if not is_on(policy):
                 continue
             rows_p = by_product.get(slug, [])
-            entries_p, skipped_p = rank(rows_p, now=now, **rank_kwargs(policy))
+            entries_p, skipped_p = rank(rows_p, now=now, **rank_kwargs(policy),
+                                         platforms=platforms, busy_platforms=busy)
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
@@ -14777,11 +14780,13 @@ class SessionOrchestrator:
         from server.automations.product_policy import effective_policy, is_on
         from server.pm import decisions
         from server.pm.escalation import product_escalation
+        from server.pm.fleet_platforms import fleet_platform_state
         from server.pm.queue_store import queue_inputs
         now = datetime.now(timezone.utc)
         only = {str(s) for s in (config.get("products") or [])}
         async with db_session() as db:
             rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            platforms, busy = await fleet_platform_state(db)
             proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in await decisions.pending_list(db)
                                 if w is not None and w.repo and w.number}
         by_product: dict[str, list] = {}
@@ -14797,7 +14802,8 @@ class SessionOrchestrator:
             try:
                 out.append(product_escalation(
                     slug, by_product[slug], proposals_by_ref, policy, now=now,
-                    starving_max=int(config.get("starving_max_dispatchable", 1))))
+                    starving_max=int(config.get("starving_max_dispatchable", 1)),
+                    platforms=platforms, busy_platforms=busy))
             except Exception:
                 # One product's bad rows/policy must not silence every other product.
                 log.warning("decision_escalation.product_load_failed slug=%s", slug,

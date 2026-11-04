@@ -53,6 +53,7 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
     from server.automations.product_policy import (policy_for_repo, skip_labels,
                                                    skips_self_closing_trackers,
                                                    trusted_authors)
+    from server.pm.fleet_platforms import fleet_platform_state
     from server.pm.policy_skip import skipped_by_policy
     from server.pm.queue import (is_parked, is_self_closing_tracker, is_trusted_author,
                                  needs_unavailable_environment)
@@ -67,15 +68,16 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
     # override. The backlog tick ends such holds on its own (``policy_skip``);
     # until it does, Retry (release without dispatch) is the honest tap.
     policy = await policy_for_repo(db, wi.repo or "")
+    platforms, _busy = await fleet_platform_state(db)
     if skipped_by_policy(author=wi.author or "", author_id=wi.author_id, labels=wi.labels or (), title=wi.title or "",
-                         policy=policy):
+                         policy=policy, platforms=platforms):
         named = sorted({str(lbl).strip().lower() for lbl in (wi.labels or ())}
                        & skip_labels(policy))
         if named:
             why = f"it carries {', '.join(named)}"
         elif is_parked(wi.labels or ()):
             why = "a person parked it"
-        elif needs_unavailable_environment(wi.labels or ()):
+        elif needs_unavailable_environment(wi.labels or (), platforms):
             why = "it needs an environment no fleet host has"
         elif not is_trusted_author(wi.author or "", trusted_authors(policy),
                                   author_id=wi.author_id):
