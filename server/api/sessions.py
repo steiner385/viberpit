@@ -2196,8 +2196,9 @@ async def session_memory_file(
     """``{path, type, text, truncated, editable}`` of one of the session's loaded memory
     files (D-13 Context card viewer), read on the daemon that owns it. ``path`` must be
     exactly a path of the session's current ``memoryFiles``; anything else — or a set
-    entry resolving outside the work tree and the user files — is 404
-    ``MEMORY_FILE_UNKNOWN``. Unknown session 404; an old daemon 409 ``daemon_outdated``."""
+    entry resolving outside the roots the CLI loads memory from (see
+    ``server/sessions/memory_files.py``) — is 404 ``MEMORY_FILE_UNKNOWN``. Unknown
+    session 404; an old daemon 409 ``daemon_outdated``."""
     try:
         return await _get_orchestrator(request).memory_file(session_id, path=path)
     except memory_files.MemoryFileError as exc:
