@@ -367,8 +367,12 @@ async def _rows(sid: str) -> list[SessionRewind]:
 
 def _backups(sid: str) -> list[str]:
     from viberpit import paths
-    d = paths.rewind_dir() / sid
-    return sorted(os.listdir(d)) if d.is_dir() else []
+    # No is_dir() pre-check: a background drop (archive's rmtree in a worker thread)
+    # can remove the directory between the check and the listdir (#3244).
+    try:
+        return sorted(os.listdir(paths.rewind_dir() / sid))
+    except FileNotFoundError:
+        return []
 
 
 # --- dry run ----------------------------------------------------------------------
@@ -608,7 +612,7 @@ async def test_archive_drops_every_backup_and_expires_the_rewind(env: Env) -> No
     out = await _rewind(env.orch, env.src.id)
     assert _backups(env.src.id) == [out["rewindId"]]
     await env.orch.archive_session(env.src.id)
-    for _ in range(50):
+    for _ in range(250):        # the drop runs as a background task; allow a loaded host
         if not _backups(env.src.id):
             break
         await asyncio.sleep(0.02)
