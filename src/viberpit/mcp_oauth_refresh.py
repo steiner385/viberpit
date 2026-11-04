@@ -348,6 +348,10 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
     # Only a well-formed OAuth error code (RFC 6749 §5.2 token charset) survives into the
     # exception text, which is logged and stored: a body field is never echoed verbatim.
     code = raw_code if isinstance(raw_code, str) and _OAUTH_CODE_RE.fullmatch(raw_code) else None
+    # A hostile or buggy endpoint could echo a credential as the "code"; never repeat one.
+    if code is not None and any(isinstance(v, str) and v and v in code
+                                for v in (refresh_token, bundle.get("clientSecret"))):
+        code = None
     # Case-insensitive: AWS sign-in answers in upper case (INVALID_GRANT, INVALID_TARGET).
     if status in (400, 401) and code is not None and code.lower() in DEAD_GRANT_ERRORS:
         raise McpGrantDead(f"token endpoint returned {status} {code}")
@@ -447,10 +451,11 @@ def run_once(*, accounts_list: list[str] | None = None, post_form: PostForm | No
 
     1. Capture + publish every Anthropic account dir (strips any refresh-token copy), purging
        *drop_keys* (the keys the edge's grant reconcile just deleted or moved) from each.
-    2. Refresh each due store bundle (except *skip_keys*: superseded grants) outside the store lock; write back compare-and-swap.
+    2. Refresh each due store bundle (except *skip_keys*: superseded grants) outside the
+       store lock; write back compare-and-swap.
     3. If the store changed, publish again."""
     summary: dict = {"refreshed": [], "dead": [], "transient": [], "published": 0,
-               "outcomes": []}
+                     "outcomes": []}
     if accounts_list is None:
         try:
             from . import accounts

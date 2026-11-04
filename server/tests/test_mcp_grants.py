@@ -243,21 +243,32 @@ def _w(key):
 
 
 def test_superseded_refresh_keys():
-    store = {"wanted|1": {"refreshToken": "r"}, "stale|1": {"refreshToken": "r"},
-             "stale-empty|1": {"serverName": "x"}, "stale-blank|1": {"refreshToken": ""},
-             "junk|1": "not-a-dict"}
-    assert grants.superseded_refresh_keys(store, [_w("wanted|1")]) == frozenset({"stale|1"})
-    assert grants.superseded_refresh_keys(store, [_w("wanted|1"), _w("stale|1")]) == frozenset()
+    def rt(name, **kw):
+        return {"serverName": name, "refreshToken": "r", **kw}
+
+    wanted = [WantedServer(key="wanted|1", store_name="srv", url="https://x.example/mcp")]
+    store = {"wanted|1": rt("srv"), "stale|1": rt("srv"),
+             "stale-empty|1": {"serverName": "srv"}, "stale-blank|1": rt("srv", refreshToken=""),
+             "unconfigured|1": rt("projsrv"), "junk|1": "not-a-dict"}
+    assert grants.superseded_refresh_keys(store, wanted) == frozenset({"stale|1"})
+    assert grants.superseded_refresh_keys(store, wanted + [_w("stale|1")]) == frozenset()
 
 
-def test_reconcile_reports_superseded_keys_to_skip(shared: Path, monkeypatch):  # noqa: F811
+def test_superseded_refresh_keys_empty_wanted_skips_nothing():
+    store = {"a|1": {"serverName": "a", "refreshToken": "r"}, "b|1": {"serverName": "b", "refreshToken": "r"}}
+    assert grants.superseded_refresh_keys(store, []) == frozenset()
+
+
+def test_reconcile_skips_old_key_of_configured_server_not_unconfigured(shared: Path, monkeypatch):  # noqa: F811
     _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL}})
     creds.write_json_secure(paths.shared_mcp_path(), {
         NEW_KEY: {"serverName": "aws-oauth", "refreshToken": "RT-live-secret"},
+        OLD_KEY: {"serverName": "aws-oauth", "refreshToken": "RT-old"},
         "projsrv|0": {"serverName": "projsrv", "refreshToken": "RT-proj"}})
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", lambda *a, **k: None)
     result = grants.reconcile_grants()
-    assert result.skip == frozenset({"projsrv|0"})
+    assert result.skip == frozenset({OLD_KEY})
+    assert "projsrv|0" not in result.skip
 
 
 def test_reconcile_error_paths_skip_nothing(shared: Path, monkeypatch):  # noqa: F811

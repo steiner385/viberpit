@@ -452,3 +452,14 @@ def test_oauth_error_code_that_is_not_a_code_is_not_echoed(code):
     out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
     [o] = out["outcomes"]
     assert "RT-OLD-secret" not in o["error"] and "400" in o["error"] and len(o["error"]) < 100
+
+
+@pytest.mark.parametrize("field", ["refreshToken", "clientSecret"])
+def test_oauth_error_code_equal_to_a_credential_is_not_echoed(field):
+    _seed({"aws|1": _bundle(clientSecret="CLIENT-SECRET-x")}, {})
+    secret = {"refreshToken": "RT-OLD-secret", "clientSecret": "CLIENT-SECRET-x"}[field]
+    http = FakeHttp(metadata=_meta(token_endpoint_auth_methods_supported=["client_secret_post"]),
+                    responses=[(400, {"error": secret})])
+    out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    [o] = out["outcomes"]
+    assert o["error"] == "token endpoint returned 400"

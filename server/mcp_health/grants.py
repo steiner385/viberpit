@@ -79,11 +79,16 @@ class ReconcileResult:
 
 
 def superseded_refresh_keys(store: dict, wanted: list[WantedServer]) -> frozenset[str]:
-    """Store keys that hold a refresh token but are no wanted server's key. Refreshing one
-    could rotate a single-use token the live key's twin still depends on."""
+    """Old keys of a configured server: they hold a refresh token, are no wanted server's
+    key, and their ``serverName`` is a wanted server's store name. Refreshing one could rotate
+    a single-use token its live twin depends on. A refresh-bearing bundle of an unconfigured
+    name (a repo or local ``.mcp.json`` server, or one :func:`key_for` cannot key) is not
+    superseded and keeps being refreshed."""
     live = {w.key for w in wanted}
+    names = {w.store_name for w in wanted}
     return frozenset(k for k, blob in store.items()
-                     if k not in live and isinstance(blob, dict) and blob.get("refreshToken"))
+                     if k not in live and isinstance(blob, dict) and blob.get("refreshToken")
+                     and blob.get("serverName") in names)
 
 
 def _user_config_unreadable() -> bool:
