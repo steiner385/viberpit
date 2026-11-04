@@ -12,6 +12,9 @@ links:
     - server/mcp_health/store.py
     - server/mcp_health/status.py
     - server/mcp_health/after_login.py
+    - server/mcp_health/one_tap.py
+    - server/api/mcp_oauth.py
+    - src/viberpit/mcp_oauth_client.py
     - server/api/library.py
     - server/api/sessions.py
     - server/sessions/claude_driver.py
@@ -66,6 +69,29 @@ Plugin servers appear under their CLI name (`plugin:<p>:<s>`); the pill and read
 3. Re-probes the account.
 
 Reconnect failures are logged and show up in the next status poll; they never fail the login response.
+
+## One-tap sign-in
+
+**What the user sees** - when `VIBERPIT_PUBLIC_ORIGIN` is set (`GET /api/config` reports `oneTapEnabled`), a server that needs auth (http/sse, grant never/dead/expired) shows a **Sign in** link in Settings › MCP instead of the paste-back form. It goes to the provider, then back to Settings, which toasts the result. The `mcp_auth_needed` push deep-links straight to `/api/mcp/oauth/start?server=<name>` (to `/settings/mcp` when one-tap is off), so one tap from the notification starts the sign-in.
+
+**How it works** (`src/viberpit/mcp_oauth_client.py`, `server/mcp_health/one_tap.py`, routes in `server/api/mcp_oauth.py`)
+- **Discovery** - the protected-resource metadata (RFC 9728) is looked for at the `WWW-Authenticate` `resource_metadata` URL (same origin only), then the path-inserted well-known URL, then the origin root. Its `resource` must sit on both its own origin and the server's. Authorization-server metadata follows (RFC 8414, then OIDC).
+- **Client** - ViberPit registers itself by Dynamic Client Registration (RFC 7591) once per authorization server and caches the client in `store/mcp.clients.json`. A cached client is reused only for the same redirect URI (`{VIBERPIT_PUBLIC_ORIGIN}/api/mcp/oauth/callback`).
+- **Authorize** - PKCE S256, an RFC 8707 `resource` indicator, and a random `state` that is single-use, expires in 10 minutes and is bound to the tailnet identity that tapped (at most 100 pending). A callback with an unknown, replayed or foreign-identity state is refused and writes nothing.
+- **Store** - the code exchange writes the bundle to `store/mcp.shared.json` at the CLI's exact key (`grants.key_for`), then schedules the same `after_login` follow-through as paste-back (account-dir sync, reconnect, re-probe).
+- **Audit** - `library_mcp_auth_started` / `library_mcp_auth_completed`, carrying the server name only (never the URL, which holds the state).
+
+**Fallback to paste-back** - the redirect carries `?pasteBack=<server>` and Settings opens the paste-back `McpAuthFlow` for that server when: no public origin is set; the server has no knowable CLI key; discovery fails; the provider offers no dynamic client registration (logged at INFO) or refuses registration; or the token exchange answers `invalid_client` (the cached client is forgotten, so the next tap re-registers).
+
+**Results** - every route answers a 302 to a relative `/settings/mcp?...`; provider text is never reflected, and the UI maps each code to fixed copy.
+- `signedIn=<server>` - "Signed in to {server} — every account and runner can use it now."
+- `signInError=` `state_invalid` (link expired or already used), `denied` (cancelled at the provider, or no code), `exchange_failed` (the provider rejected the code, or the grant could not be stored), `not_configured` (not a single configured http/sse server); `registration_failed` exists in the set but a refused registration falls back to paste-back instead.
+
+**Security limits** - the authorization server and every endpoint it names must be https; discovery, registration and token requests never follow redirects and cap responses at 1 MiB; the server name is validated before it is echoed anywhere. The routes are reachable only with a human tailnet identity: assistant and internal tokens are not on their allowlist. The origin comes from settings, never from request headers.
+
+**First live use** - the first tap per provider registers ViberPit as an OAuth client with that provider.
+
+**KinDash** - its authorization server offers no dynamic client registration, so one-tap (like the CLI) cannot sign in to it and it stays on its Failed row. Tracked in cairnea/KinDash#20485; ViberPit adds no static-client config.
 
 ## Token refresh
 

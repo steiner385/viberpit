@@ -72,6 +72,7 @@ value disables one-tap and logs an error (the daemon reads the same env file, so
 startup). Unset, one-tap
 is off and every MCP server signs in by paste-back; `GET /api/config` reports
 `oneTapEnabled`. The origin is never taken from request headers. `VIBERPIT_` spelling only.
+First live use: the first tap per provider registers ViberPit as an OAuth client with that provider.
 
 ## Install
 
