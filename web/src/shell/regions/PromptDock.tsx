@@ -135,13 +135,12 @@ function LiveComposer() {
   // transcript's latest reply and opens the child. Every other command goes on to
   // the session as before. `/rewind` (D-9) likewise: it opens a picker of the prompts.
   // `/btw` (D-12) opens the Assistant drawer as a side chat about this session.
-  // `/btw` also filters the catalog: it is absent while the Assistant is off in Settings.
   const forkOnCommand = useForkCommand(rt)
-  const btw = useBtwCommand({ ...rt, onCommand: forkOnCommand })
-  const { onCommand, element: rewindUi } = useRewindCommand({ ...rt, ...btw })
+  const btwOnCommand = useBtwCommand({ ...rt, onCommand: forkOnCommand })
+  const { onCommand, element: rewindUi } = useRewindCommand({ ...rt, onCommand: btwOnCommand })
   return (
     <>
-      <SessionComposer rt={{ ...rt, commands: btw.commands, onCommand }} promptRowMenus={promptRowMenus} attachRef={attachRef} />
+      <SessionComposer rt={{ ...rt, onCommand }} promptRowMenus={promptRowMenus} attachRef={attachRef} />
       {rewindUi}
     </>
   )

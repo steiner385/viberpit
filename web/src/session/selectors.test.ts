@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents, selectOldestDeniablePermId } from './selectors'
+import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents, selectOldestDeniablePermId, selectPromptScope } from './selectors'
 import { initialTranscript } from './reducer'
 import type { Turn, TranscriptState, SubThread } from './reducer'
 
@@ -135,5 +135,37 @@ describe('selectOldestDeniablePermId', () => {
   it('is null with no permission, or only a plan card', () => {
     expect(selectOldestDeniablePermId([])).toBeNull()
     expect(selectOldestDeniablePermId([turn('t1', [perm('plan-1', true)])])).toBeNull()
+  })
+})
+
+
+// D-12: the Assistant side chat's scope is the context of the newest STARTED turn —
+// the server emits a user turn's context exactly when the turn starts (live and on
+// replay), so a queued, answered or still-pending prompt never moves it.
+describe('selectPromptScope', () => {
+  const user = (id: string, context?: Turn['context'], extra: Partial<Turn> = {}): Turn =>
+    ({ id, role: 'user', blocks: [{ kind: 'text', id: `${id}:t`, text: id }], ...(context ? { context } : {}), ...extra })
+  const reply = (id: string): Turn => ({ id, role: 'assistant', blocks: [{ kind: 'text', id: `${id}:a`, text: 'ok' }] })
+
+  it('is undefined before any turn carried a context', () => {
+    expect(selectPromptScope([])).toBeUndefined()
+    expect(selectPromptScope([user('u1'), reply('a1')])).toBeUndefined()
+  })
+
+  it('is the newest context-bearing turn\'s session, skipping turns without one', () => {
+    const turns = [user('u1', { route: '/sessions/x', sessionId: 'x' }), reply('a1'),
+      user('u2', { route: '/sessions/y', sessionId: 'y' }), reply('a2'), user('u3'), reply('a3')]
+    expect(selectPromptScope(turns)).toBe('y')
+  })
+
+  it('is null when that context names no session', () => {
+    expect(selectPromptScope([user('u1', { route: '/sessions/x', sessionId: 'x' }), user('u2', { route: '/settings' })]))
+      .toBeNull()
+  })
+
+  it('ignores a pending (optimistic) bubble, whatever it carries', () => {
+    const turns = [user('u1', { route: '/sessions/x', sessionId: 'x' }),
+      user('pending:3', { route: '/sessions/y', sessionId: 'y' }, { pending: 'sent' })]
+    expect(selectPromptScope(turns)).toBe('x')
   })
 })

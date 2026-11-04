@@ -14,6 +14,8 @@ import { useBtwCommand } from './useBtwCommand'
 
 const status = { data: { enabled: true } as { enabled: boolean } | undefined }
 vi.mock('@/api/assistant', () => ({ useAssistantStatus: () => status }))
+vi.mock('sonner', () => ({ toast: vi.fn() }))
+import { toast } from 'sonner'
 
 const BTW: Command = { name: 'btw', description: '', argumentHint: '<question>', kind: 'client', source: 'app' }
 
@@ -36,8 +38,7 @@ function setup(commands: Command[] = [BTW]) {
     () => ({ btw: useBtwCommand(rt), pending: usePendingAssistantSend() }), { wrapper })
   return {
     onCommand,
-    run: (name: string, args = '') => act(() => result.current.btw.onCommand(name, args)),
-    commands: () => result.current.btw.commands.map((c) => c.name),
+    run: (name: string, args = '') => act(() => result.current.btw(name, args)),
     pendingSession: () => result.current.pending.pendingSend?.sessionId ?? null,
     drawer: () => new URLSearchParams(search).get('drawer'),
     pending: () => result.current.pending.pendingSend?.text ?? null,
@@ -45,7 +46,7 @@ function setup(commands: Command[] = [BTW]) {
 }
 
 describe('useBtwCommand', () => {
-  beforeEach(() => { status.data = { enabled: true } })
+  beforeEach(() => { status.data = { enabled: true }; vi.mocked(toast).mockClear() })
 
   it('/btw alone opens the drawer and sends nothing', () => {
     const t = setup()
@@ -87,18 +88,12 @@ describe('useBtwCommand', () => {
     expect(t.drawer()).toBeNull()
   })
 
-  it('offers /btw in the menu while the Assistant is on, or its status is not known yet', () => {
-    expect(setup().commands()).toEqual(['btw'])
-    status.data = undefined
-    expect(setup().commands()).toEqual(['btw'])
-  })
-
-  it('with the Assistant switched off in Settings, /btw is absent: not in the menu, and not ours', () => {
+  it('with the Assistant switched off in Settings, /btw stays ours: it says so and sends nothing', () => {
     status.data = { enabled: false }
     const t = setup()
-    expect(t.commands()).toEqual([])
     t.run('btw', 'hi')
-    expect(t.onCommand).toHaveBeenCalledWith('btw', 'hi')
+    expect(toast).toHaveBeenCalledWith('The Assistant is off — turn it on in Settings')
+    expect(t.onCommand).not.toHaveBeenCalled()
     expect(t.drawer()).toBeNull()
     expect(t.pending()).toBeNull()
   })

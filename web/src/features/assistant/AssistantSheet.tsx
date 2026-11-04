@@ -37,7 +37,8 @@ import { AssistantHeader } from './AssistantHeader'
 import { FollowUpChips, StarterChips } from './StarterChips'
 import { startersFor } from './starters'
 import { toast } from 'sonner'
-import { useAssistantGestures, useAssistantSentScope, usePendingAssistantSend } from '@/shell/assistantGestures'
+import { useAssistantGestures, usePendingAssistantSend } from '@/shell/assistantGestures'
+import { selectPromptScope } from '@/session/selectors'
 import type { PromptContext } from '@/session/events'
 import { AssistantScope } from './AssistantScope'
 
@@ -93,14 +94,11 @@ function AssistantSheetBody() {
   const [draftSeed, setDraftSeed] = useState<{ text: string } | null>(null)
 
   // What every prompt from this drawer carries — composer, Send now, chips and a parked
-  // `/btw` alike: the route, and the session the side chat is about (D-12). Building it
-  // records that session as the scope the server now holds, which is what the header
-  // reads while a turn is in flight. Read at send time, never captured.
-  const { sentScope, recordSentScope } = useAssistantSentScope()
-  const scopedContext = useCallback((sessionId: string | null): PromptContext => {
-    recordSentScope(sessionId)
-    return { route: pathname, ...(sessionId ? { sessionId } : {}) }
-  }, [pathname, recordSentScope])
+  // `/btw` alike: the route, and the session the side chat is about (D-12). Read at
+  // send time, never captured.
+  const scopedContext = useCallback((sessionId: string | null): PromptContext => (
+    { route: pathname, ...(sessionId ? { sessionId } : {}) }
+  ), [pathname])
   const contextProvider = useCallback(() => scopedContext(openSessionId), [scopedContext, openSessionId])
 
   // `/btw <question>` (D-12): send the question `requestAssistant` parked, once the
@@ -139,7 +137,7 @@ function AssistantSheetBody() {
       <AssistantHeader scope={
         <AssistantScope
           current={openSessionId}
-          sent={sentScope}
+          scope={selectPromptScope(rt.state.turns)}
           inFlight={turnLive || rt.state.queued.length > 0}
         />
       } />

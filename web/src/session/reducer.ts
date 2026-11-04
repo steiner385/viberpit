@@ -23,7 +23,8 @@ const NOTICE_TURN_PREFIX = 'notice-turn:'
 const NOTICE_COLLAPSE_AGE_MS = 24 * 60 * 60 * 1000
 
 /** True for a turn that is a sent-but-unconfirmed prompt still awaiting its echo. */
-const isPendingTurn = (t: Turn): boolean => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
+/** A sent-but-unconfirmed (optimistic) user bubble — no server echo has adopted it yet. */
+export const isPendingTurn = (t: Turn): boolean => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
 
 // ── Block types ───────────────────────────────────────────────────────────────
 

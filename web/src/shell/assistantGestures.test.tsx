@@ -7,7 +7,7 @@ import { useEffect, type ReactNode } from 'react'
 import { act, renderHook } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
 import {
-  AssistantRequestProvider, useAssistantSentScope, usePendingAssistantSend, useRequestAssistant,
+  AssistantRequestProvider, usePendingAssistantSend, useRequestAssistant,
   type PendingAssistantSend,
 } from './assistantGestures'
 import { useCloseDrawer, useOpenDrawer } from './drawerParam'
@@ -34,7 +34,7 @@ function harness(path = '/sessions/s1') {
 function useBoth() {
   return {
     request: useRequestAssistant(), pending: usePendingAssistantSend(),
-    close: useCloseDrawer(), open: useOpenDrawer(), scope: useAssistantSentScope(),
+    close: useCloseDrawer(), open: useOpenDrawer(),
   }
 }
 
@@ -102,16 +102,6 @@ describe('assistantGestures — the open-and-send channel', () => {
     expect(new URLSearchParams(h.search()).get('drawer')).toBe('help')
     act(() => result.current.close())
     expect(result.current.pending.pendingSend?.text).toBe('why')
-  })
-
-  it('records the session the drawer last sent a context about', () => {
-    const h = harness()
-    const { result } = renderHook(useBoth, { wrapper: h.wrapper })
-    expect(result.current.scope.sentScope).toBeUndefined()
-    act(() => result.current.scope.recordSentScope('s1'))
-    expect(result.current.scope.sentScope).toBe('s1')
-    act(() => result.current.scope.recordSentScope(null))
-    expect(result.current.scope.sentScope).toBeNull()
   })
 
   it('outside the provider the reader is inert rather than throwing', () => {

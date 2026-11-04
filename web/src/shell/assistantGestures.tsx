@@ -90,8 +90,7 @@ export interface PendingAssistantSend {
 }
 
 /**
- * The drawer's side-chat state that outlives one mount of the sheet: the parked send,
- * and the session the drawer's last sent context named (`undefined`: nothing sent yet).
+ * The parked send, which outlives one mount of the sheet.
  *
  * Why a store in context rather than a ref (the Escape bridge's shape): the writer
  * (`/btw` in the dock composer) and the reader (`AssistantSheet`) are both mounted
@@ -105,35 +104,30 @@ export interface PendingAssistantSend {
  * Closing the Assistant (`useCloseDrawer`) clears it too: a question parked behind a
  * drawer the user dismissed is never sent later. Help opened over it is not a close.
  */
-interface AssistantRequestState {
-  pending: PendingAssistantSend | null
-  sentScope: string | null | undefined
-}
-
 interface AssistantRequestStore {
-  get: () => AssistantRequestState
-  update: (patch: Partial<AssistantRequestState>) => void
+  get: () => PendingAssistantSend | null
+  set: (send: PendingAssistantSend | null) => void
   subscribe: (cb: () => void) => () => void
 }
 
 function createAssistantRequestStore(): AssistantRequestStore {
-  let state: AssistantRequestState = { pending: null, sentScope: undefined }
+  let pending: PendingAssistantSend | null = null
   const listeners = new Set<() => void>()
   return {
-    get: () => state,
-    update: (patch) => { state = { ...state, ...patch }; listeners.forEach((l) => l()) },
+    get: () => pending,
+    set: (send) => { pending = send; listeners.forEach((l) => l()) },
     subscribe: (cb) => { listeners.add(cb); return () => { listeners.delete(cb) } },
   }
 }
 
 const AssistantRequestContext = React.createContext<AssistantRequestStore | null>(null)
 
-/** Owns the side-chat state. Mounted by `AppShell` around the whole shell, because
+/** Owns the pending-send slot. Mounted by `AppShell` around the whole shell, because
  *  the writer (the dock composer) and the reader (the drawer) are siblings there. */
 export function AssistantRequestProvider({ children }: { children: React.ReactNode }) {
   const [store] = React.useState(createAssistantRequestStore)
   React.useEffect(() => subscribeDrawerClosed((name) => {
-    if (name === 'assistant' && store.get().pending) store.update({ pending: null })
+    if (name === 'assistant' && store.get()) store.set(null)
   }), [store])
   return <AssistantRequestContext.Provider value={store}>{children}</AssistantRequestContext.Provider>
 }
@@ -149,20 +143,12 @@ export function useRequestAssistant(): (request?: { send?: string; sessionId?: s
   const openDrawer = useOpenDrawer()
   return React.useCallback((request?: { send?: string; sessionId?: string | null }) => {
     const text = request?.send?.trim() ?? ''
-    if (store && text) store.update({ pending: { text, sessionId: request?.sessionId ?? null } })
+    if (store && text) store.set({ text, sessionId: request?.sessionId ?? null })
     openDrawer('assistant')
   }, [store, openDrawer])
 }
 
-const NO_STATE: AssistantRequestState = { pending: null, sentScope: undefined }
-const INERT_STORE = {
-  get: () => NO_STATE, update: () => {}, subscribe: () => () => {},
-} satisfies AssistantRequestStore
-
-function useRequestState(): [AssistantRequestState, AssistantRequestStore] {
-  const store = React.useContext(AssistantRequestContext) ?? INERT_STORE
-  return [React.useSyncExternalStore(store.subscribe, store.get, store.get), store]
-}
+const NO_SEND = { get: () => null, set: () => {}, subscribe: () => () => {} } satisfies AssistantRequestStore
 
 /**
  * The sheet's side: the parked send (re-renders when one arrives) and `take`, which
@@ -173,27 +159,12 @@ export function usePendingAssistantSend(): {
   pendingSend: PendingAssistantSend | null
   take: () => PendingAssistantSend | null
 } {
-  const [{ pending }, store] = useRequestState()
+  const store = React.useContext(AssistantRequestContext) ?? NO_SEND
+  const pendingSend = React.useSyncExternalStore(store.subscribe, store.get, store.get)
   const take = React.useCallback(() => {
-    const parked = store.get().pending
-    if (parked !== null) store.update({ pending: null })
+    const parked = store.get()
+    if (parked !== null) store.set(null)
     return parked
   }, [store])
-  return { pendingSend: pending, take }
-}
-
-/**
- * The session the drawer's last sent context named — the scope the server holds for
- * the turn it is running (D-12) — and the recorder every drawer send goes through.
- * `undefined` until the drawer has sent anything; `null` for a context naming none.
- */
-export function useAssistantSentScope(): {
-  sentScope: string | null | undefined
-  recordSentScope: (sessionId: string | null) => void
-} {
-  const [{ sentScope }, store] = useRequestState()
-  const recordSentScope = React.useCallback((sessionId: string | null) => {
-    if (store.get().sentScope !== sessionId) store.update({ sentScope: sessionId })
-  }, [store])
-  return { sentScope, recordSentScope }
+  return { pendingSend, take }
 }

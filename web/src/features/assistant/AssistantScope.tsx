@@ -1,14 +1,14 @@
 /**
- * The drawer header's scope line (D-12). It never claims a scope the server is not
- * enforcing.
+ * The drawer header's scope line (D-12). It shows the scope the SERVER holds, never
+ * what the client merely sent.
  *
- * The server's scope is the session named by the last context the drawer SENT
- * (`sent`, recorded by every drawer send). While that is still in play — a turn
- * running, or prompts queued behind it — and the open session (`current`) differs,
- * the line says both: "About: <sent>" and what the next message will be about. With
- * nothing in flight the next send decides, so it names the open session, with its
- * status dot. Outside a session, with nothing in flight, it renders nothing and the
- * drawer reads exactly as it always has.
+ * `scope` is `selectPromptScope(turns)`: the session named by the newest started turn's
+ * context — moved only when a turn starts, so queued sends, sends mid-turn and sends
+ * taken as answers leave it where the server left it, and a reload or another tab
+ * shows the same. The line is "About: <scope>"; while a turn runs or prompts are
+ * queued and the open session (`current`) differs, it adds what the next message will
+ * be about. Before any context-bearing turn the first send sets the scope, so it names
+ * the open session — and outside one, renders nothing, as the drawer always has.
  */
 import { useSessions } from '@/api/hooks'
 import { useSessionPromptFlight } from '@/lib/promptFlight'
@@ -20,23 +20,24 @@ import { SessionStatusDot } from '@/features/sessions/SessionStatusDot'
 interface Props {
   /** The open session — what the next drawer send will be about. */
   current: string | null
-  /** The session the last sent context named (`undefined`: nothing sent yet). */
-  sent: string | null | undefined
-  /** A turn is running or prompts are queued: the server still holds `sent`. */
+  /** The server's scope (`selectPromptScope`); `undefined` before any context-bearing turn. */
+  scope: string | null | undefined
+  /** A turn is running or prompts are queued. */
   inFlight: boolean
 }
 
-export function AssistantScope({ current, sent, inFlight }: Props) {
+export function AssistantScope({ current, scope, inFlight }: Props) {
   const { data: sessions } = useSessions()
   const find = (id: string | null) => (id ? sessions?.find((s) => s.id === id) ?? { id } : null)
-  const lagging = inFlight && sent !== undefined && sent !== current
-  const about = find(lagging ? sent : current)
-  if (!about && !lagging) return null
+  const held = scope === undefined ? current : scope
+  const about = find(held)
+  const showNext = inFlight && held !== current
+  if (!about && !showNext) return null
   const next = find(current)
   return (
     <div data-testid="assistant-scope" className="mt-0.5 min-w-0 text-xs text-ink-muted">
       {about && <ScopeLine session={about} />}
-      {lagging && (
+      {showNext && (
         <p className="truncate">
           {next ? <>Next message will be about <span className="text-ink">{displayNameOf(next)}</span></>
             : 'Next message won’t be about a session'}

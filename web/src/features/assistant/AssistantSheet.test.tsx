@@ -416,17 +416,18 @@ describe('AssistantSheet', () => {
     expect(rt.onPlainPrompt).toHaveBeenCalledTimes(1)
   })
 
-  it('with the assistant switched off, /btw is not ours: the drawer stays shut', async () => {
+  it('with the assistant switched off in Settings, /btw says so and sends nothing', async () => {
     vi.mocked(useAssistantStatus).mockReturnValue(
       { data: { enabled: false, sessionId: null, model: 'sonnet' }, isLoading: false } as never,
     )
-    withBtw()
+    const rt = withBtw()
     const user = userEvent.setup()
     renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
-    await user.type(dock(), '/btw why')
-    expect(screen.queryByRole('option', { name: /btw/i })).toBeNull()
-    await user.type(dock(), '{Enter}')
+    await user.type(dock(), '/btw why{Enter}')
+    expect(toast).toHaveBeenCalledWith('The Assistant is off — turn it on in Settings')
     expect(drawer()).toBeNull()
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(rt.onCommand).not.toHaveBeenCalled()
   })
 
   it('a question parked when the assistant is then switched off is dropped, never sent later', async () => {
@@ -490,27 +491,69 @@ describe('AssistantSheet', () => {
     expect(rt.onPlainPrompt).toHaveBeenLastCalledWith('and this?', [], CTX1)
   })
 
-  it('switching sessions mid-turn: the header keeps the scope the server has, and says what the next message is about', async () => {
+  // The header reads the server's scope off the transcript: the context of the newest
+  // STARTED user turn (the server emits it when the turn starts, and replays it). What
+  // the client sent is not evidence — a queued send, a send mid-turn, or one taken as
+  // an answer never moves it.
+  const asked = (id: string, sessionId: string) => ({
+    id, role: 'user', blocks: [{ kind: 'text', id: `${id}:t`, text: id }],
+    context: { route: `/sessions/${sessionId}`, sessionId },
+  })
+  const answered = (id: string) => ({ id, role: 'assistant', blocks: [{ kind: 'text', id: `${id}:a`, text: 'ok' }] })
+  const header = () => within(drawer()!).getByTestId('assistant-scope')
+
+  it('a turn about X keeps "About: X" after moving to Y and sending, until the Y turn starts', async () => {
     enabled('a1')
     const rt = withBtw()
+    rt.state = { ...rt.state, turns: [asked('u1', 's1')] as never, status: { state: 'in_progress', count: 0 } }
     const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s2?drawer=assistant', mode: 'desktop', queryClient: seeded() })
+    expect(header()).toHaveTextContent('About: Fix the flaky login test')
+    expect(header()).toHaveTextContent('Next message will be about Ship the release notes')
+    // Sending about Y mid-turn queues it: the server still holds X.
+    await user.type(within(drawer()!).getByRole('textbox', { name: /message/i }), 'and now?{Enter}')
+    expect(rt.onPrompt).toHaveBeenLastCalledWith('and now?', [], { route: '/sessions/s2', sessionId: 's2' })
+    rt.state = { ...rt.state, queued: [{ text: 'and now?', images: [] }] as never }
+    await act(() => app.router.navigate('/sessions/s2?drawer=assistant&r=1'))
+    expect(header()).toHaveTextContent('About: Fix the flaky login test')
+    // The Y turn starts: its user message carries the Y context.
+    rt.state = { ...rt.state, queued: [], turns: [asked('u1', 's1'), answered('a1'), asked('u2', 's2')] as never }
+    await act(() => app.router.navigate('/sessions/s2?drawer=assistant&r=2'))
+    expect(header()).toHaveTextContent('About: Ship the release notes')
+    expect(header()).not.toHaveTextContent(/Next message/)
+  })
+
+  it('a send taken as the answer to the assistant\'s question keeps "About: X"', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    rt.state = { ...rt.state, turns: [asked('u1', 's1'), answered('a1')] as never }
+    rt.armedQuestionId = 'q1' as never
+    rt.chatArmed = true
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s2?drawer=assistant', mode: 'desktop', queryClient: seeded() })
+    await user.type(within(drawer()!).getByRole('textbox', { name: /message/i }), 'yes, that one{Enter}')
+    await act(() => app.router.navigate('/sessions/s2?drawer=assistant&r=1'))
+    expect(header()).toHaveTextContent('About: Fix the flaky login test')
+  })
+
+  it('after a reload the header is the replayed context, not the open session', () => {
+    enabled('a1')
+    const rt = withBtw()
+    rt.state = { ...rt.state, turns: [asked('u1', 's2'), answered('a1')] as never }
+    renderApp({ path: '/sessions/s1?drawer=assistant', mode: 'desktop', queryClient: seeded() })
+    expect(header()).toHaveTextContent('About: Ship the release notes')
+    expect(header()).not.toHaveTextContent('Fix the flaky login test')
+  })
+
+  it('another tab\'s prompt (a user message with a context) moves the header', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    rt.state = { ...rt.state, turns: [asked('u1', 's1'), answered('a1')] as never }
     const app = renderApp({ path: '/sessions/s1?drawer=assistant', mode: 'desktop', queryClient: seeded() })
-    await user.type(within(drawer()!).getByRole('textbox', { name: /message/i }), 'what broke?{Enter}')
-    rt.state = { ...rt.state, status: { state: 'in_progress', count: 0 } }
-    await act(() => app.router.navigate('/sessions/s2'))
-    const scope = within(drawer()!).getByTestId('assistant-scope')
-    expect(scope).toHaveTextContent('About: Fix the flaky login test')
-    expect(scope).toHaveTextContent('Next message will be about Ship the release notes')
-    // Queued prompts hold it too, after the turn ends.
-    rt.state = { ...rt.state, status: { state: 'idle', count: 0 }, queued: [{ text: 'later', images: [] }] as never }
-    await act(() => app.router.navigate('/sessions/s2?r=1'))
-    expect(within(drawer()!).getByTestId('assistant-scope')).toHaveTextContent('About: Fix the flaky login test')
-    // Nothing in flight: the next message decides, so the header names the current session.
-    rt.state = { ...rt.state, queued: [] }
-    await act(() => app.router.navigate('/sessions/s2?r=2'))
-    const settled = within(drawer()!).getByTestId('assistant-scope')
-    expect(settled).toHaveTextContent('About: Ship the release notes')
-    expect(settled).not.toHaveTextContent(/Next message/)
+    expect(header()).toHaveTextContent('About: Fix the flaky login test')
+    rt.state = { ...rt.state, turns: [asked('u1', 's1'), answered('a1'), asked('u9', 's2')] as never }
+    await act(() => app.router.navigate('/sessions/s1?drawer=assistant&r=1'))
+    expect(header()).toHaveTextContent('About: Ship the release notes')
   })
 
   it('a parked /btw whose session is no longer open is dropped, with a toast, never sent about another one', async () => {
