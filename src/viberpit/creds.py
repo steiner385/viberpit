@@ -135,12 +135,13 @@ def update_shared_mcp(update: Callable[[dict], dict]) -> dict:
     *update* receives a deep copy of the store and returns the desired store. The file is
     rewritten only when the result differs. The one locked writer of the store, and only
     on the refresh authority: on a worker *update* is not called, nothing is written, and
-    the current store is returned (logged once per process at DEBUG)."""
+    the current store is returned (logged once per process at INFO)."""
     global _warned_worker
     if fleet_role.is_worker():
         if not _warned_worker:
             _warned_worker = True
-            log.debug("shared MCP store is read-only on a worker; skipping write")
+            log.info("shared MCP store is written only by the refresh authority; "
+                     "this worker leaves bundles in the account dir for the edge to capture")
         return read_shared_mcp()
     with _shared_mcp_locked() as path:
         existing = read_json(path) if path.exists() else {}
@@ -157,7 +158,11 @@ def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = No
     metadata must come from the same observation. Empty/discovery-only snapshots
     cannot revoke shared credentials. Explicit server login can replace a bundle
     without a later expiry; background sync must prove its token is newer.
+    Returns 0 on a worker, which never writes the store.
     """
+    if fleet_role.is_worker():
+        update_shared_mcp(lambda store: store)  # log the once-per-process notice
+        return 0
     def merge(existing: dict) -> dict:
         merged = dict(existing)
         for key, new in incoming.items():
@@ -190,7 +195,9 @@ def capture_cfg_mcp(dir_mcp: dict) -> int:
     provider that issues no refresh token. A bundle without a refresh token is offered only
     for a key the store lacks: for any other key it is the store's own public copy, and
     offering it back would resurrect an access token the refresher has since cleared as dead.
-    Returns the number of bundles offered."""
+    Returns the number of bundles offered (0 on a worker, which never writes the store)."""
+    if fleet_role.is_worker():
+        return merge_shared_mcp({})
     store = read_shared_mcp()
     held = {k: v for k, v in dir_mcp.items()
             if isinstance(v, dict) and (_holds_refresh_token(v) or k not in store)}

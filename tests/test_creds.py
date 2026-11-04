@@ -237,8 +237,9 @@ def test_worker_never_writes_store(monkeypatch):
             return {}
 
         assert creds.update_shared_mcp(update) == creds.read_shared_mcp()
-        creds.merge_shared_mcp({"x|3": {"accessToken": "z", "expiresAt": 1}})
-        creds.capture_cfg_mcp({"srv|1": {"accessToken": "b", "refreshToken": "r2", "expiresAt": 99}})
+        assert creds.merge_shared_mcp({"x|3": {"accessToken": "z", "expiresAt": 1}}) == 0
+        assert creds.capture_cfg_mcp(
+            {"srv|1": {"accessToken": "b", "refreshToken": "r2", "expiresAt": 99}}) == 0
         creds.sync_cfg_mcp_oauth(cfg)
         assert calls == []
         assert paths.shared_mcp_path().read_bytes() == before
