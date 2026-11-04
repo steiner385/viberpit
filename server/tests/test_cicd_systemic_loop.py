@@ -82,6 +82,7 @@ class Seams:
         self.merge_group: list[RunObs] = []
         self.push: list[RunObs] = []
         self.fail_fetch = False
+        self.fetch_exc: Exception | None = None
         self.fail_edit = False
         self.fail_label = False
         self.issues: dict[int, dict] = {}
@@ -116,7 +117,7 @@ class Seams:
 
     async def fetch_runs(self, repo, event, since, branch):
         if self.fail_fetch:
-            raise RuntimeError("gh down")
+            raise self.fetch_exc or RuntimeError("gh down")
         pool = self.merge_group if event == "merge_group" else self.push
         return [r for r in pool if since <= r.created_ts <= self.now]
 
@@ -545,6 +546,28 @@ def test_fetch_failure_changes_nothing():
     _tick(loop)  # must not raise
     assert ctx.states == before
     assert s.calls[calls:] == [] and len(s.notes) == 1
+
+
+def _fetch_warnings(caplog, exc):
+    import logging
+    s, ctx = Seams(), FakeCtx()
+    loop = s.loop(ctx)
+    s.fail_fetch, s.fetch_exc = True, exc
+    with caplog.at_level(logging.DEBUG, logger="server.automations.cicd.systemic_loop"):
+        _tick(loop)
+    assert ctx.states == {}
+    return [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_transient_github_502_fetch_failure_is_not_a_warning(caplog):
+    from viberpit import gitrepos
+    assert _fetch_warnings(caplog, gitrepos.GhError("gh: Server Error (HTTP 502)")) == []
+
+
+def test_non_transient_gherror_fetch_failure_still_warns(caplog):
+    from viberpit import gitrepos
+    recs = _fetch_warnings(caplog, gitrepos.GhError("gh: Not Found (HTTP 404)"))
+    assert [r.getMessage() for r in recs] == [f"cicd_systemic.fetch_failed repo={REPO}"]
 
 
 def test_thrash_alerts_once_until_it_resets():

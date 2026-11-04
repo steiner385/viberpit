@@ -15,6 +15,10 @@ import logging
 import time
 from typing import Any, Awaitable, Callable
 
+from viberpit import gitrepos
+
+from server.github.host_failures import is_transient_github_edge_failure
+
 from ..base import ActionableItem, ActionSpec
 from ..context import observation_failed
 from . import systemic as sy
@@ -145,8 +149,13 @@ class SystemicRedLoop:
         try:  # both reads first: a failed read changes nothing this tick
             cands = await self._fetch_runs(repo, "merge_group", now - max(window_s, quiet_s), None)
             pushes = await self._fetch_runs(repo, "push", now - _DAY_S, "main")
-        except Exception:  # noqa: BLE001
-            log.warning("cicd_systemic.fetch_failed repo=%s", repo, exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
+                # GitHub's own edge failing, self-healing next tick: WARNING would
+                # file a non-actionable auto-error (same stance as cicd_doctor).
+                log.info("cicd_systemic.fetch_unavailable repo=%s: %s", repo, exc)
+            else:
+                log.warning("cicd_systemic.fetch_failed repo=%s", repo, exc_info=True)
             return
         mains: dict[int, RunObs] = {}
         for r in pushes:
