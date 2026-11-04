@@ -46,11 +46,12 @@ async def rows(server: str | None = None) -> list[dict]:
     return [r for r in out if server is None or short_name(r["server"]) == short_name(server)]
 
 
-async def needs_auth_by_server() -> dict[str, list[str]]:
-    """Short server name -> sorted accounts whose latest row is ``needs-auth``."""
+async def needs_auth_by_server(*, enabled_accounts: set[str] | None = None) -> dict[str, list[str]]:
+    """Short server name -> sorted accounts whose latest row is ``needs-auth``;
+    only *enabled_accounts* when given."""
     acc: dict[str, set[str]] = {}
     for r in await rows():
-        if r["status"] == "needs-auth":
+        if r["status"] == "needs-auth" and (enabled_accounts is None or r["account"] in enabled_accounts):
             acc.setdefault(short_name(r["server"]), set()).add(r["account"])
     return {k: sorted(v) for k, v in acc.items()}
 

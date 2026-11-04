@@ -28,6 +28,7 @@ async def test_needs_auth_and_login_key_use_short_names(isolated_db):
     await store.upsert_states("bob", "dobby", [S("plugin:railway:railway", "needs-auth", None, None, "user")], source="session", session_id="s")
     await store.upsert_states("al", "dobby", [S("plugin:railway:railway", "needs-auth", None, None, "user")], source="session", session_id="s")
     assert await store.needs_auth_by_server() == {"railway": ["al", "bob"]}
+    assert await store.needs_auth_by_server(enabled_accounts={"al"}) == {"railway": ["al"]}
     assert await store.login_key_for("railway") == "plugin:railway:railway"
     assert await store.login_key_for("custom") == "custom"
 

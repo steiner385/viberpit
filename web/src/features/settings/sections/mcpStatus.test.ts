@@ -1,17 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { relativeAge, shortName, toneFor, worstStatus } from './mcpStatus'
-
-describe('worstStatus', () => {
-  it('ranks failed > needs-auth > pending > connected', () => {
-    expect(worstStatus(['connected', 'needs-auth', 'pending'])).toBe('needs-auth')
-    expect(worstStatus(['connected', 'failed'])).toBe('failed')
-  })
-  it('returns null for no rows', () => expect(worstStatus([])).toBeNull())
-  it('keeps unknown statuses but ranks them below known problems', () => {
-    expect(worstStatus(['connecting'])).toBe('connecting')
-    expect(worstStatus(['connecting', 'failed'])).toBe('failed')
-  })
-})
+import { relativeAge, shortName, toneFor } from './mcpStatus'
 
 describe('toneFor', () => {
   it('maps the vocabulary', () => {

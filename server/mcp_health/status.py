@@ -68,25 +68,29 @@ def oauth_bundles(credentials: dict | None, name: str) -> list[dict]:
             if isinstance(b, dict) and b.get("serverName") == name]
 
 
-def _expiry(bundle: dict) -> float | None:
+def bundle_expiry(bundle: dict) -> float | None:
     exp = bundle.get("expiresAt")
     return float(exp) if isinstance(exp, (int, float)) and not isinstance(exp, bool) else None
 
 
-def _token(bundle: dict) -> bool:
+def has_token(bundle: dict) -> bool:
     tok = bundle.get("accessToken")
     return isinstance(tok, str) and bool(tok)
+
+
+def format_utc_ms(ms: float) -> str:
+    """A UTC ``YYYY-MM-DD HH:MM`` rendering of an epoch-ms instant (the one expiry format)."""
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 def _auth_error(bundles: list[dict], now_ms: int) -> str | None:
     """None when some bundle holds a usable token (non-empty, unexpired or no expiry; an
     ``expiresAt`` of 0 is a cleared bundle), else the user-facing reason."""
-    if any(_token(b) and ((exp := _expiry(b)) is None or exp > now_ms) for b in bundles):
+    if any(has_token(b) and ((exp := bundle_expiry(b)) is None or exp > now_ms) for b in bundles):
         return None
-    expired = [exp for b in bundles if _token(b) and (exp := _expiry(b)) is not None and exp > 0]
+    expired = [exp for b in bundles if has_token(b) and (exp := bundle_expiry(b)) is not None and exp > 0]
     if expired:
-        when = datetime.fromtimestamp(max(expired) / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-        return f"Sign-in expired {when} UTC — re-authenticate."
+        return f"Sign-in expired {format_utc_ms(max(expired))} UTC — re-authenticate."
     return "Not signed in — authenticate to use this server."
 
 
@@ -160,7 +164,7 @@ def server_for_tool(tool_name: str | None, server_names: list[str]) -> str | Non
 def token_fingerprint(credentials: dict | None, name: str) -> str:
     """A hash of server *name*'s current access token(s): detects a re-auth without
     keeping the token. In memory only; never logged."""
-    tokens = sorted(b["accessToken"] for b in oauth_bundles(credentials, name) if _token(b))
+    tokens = sorted(b["accessToken"] for b in oauth_bundles(credentials, name) if has_token(b))
     return hashlib.sha256("\0".join(tokens).encode()).hexdigest()
 
 

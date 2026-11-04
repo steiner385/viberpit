@@ -44,9 +44,11 @@ const mcpResponse = {
       readonly: false,
       transport: 'stdio' as const,
       config: { type: 'stdio', command: 'npx', args: ['-y', 'some-mcp'] },
+      overall: { status: 'needs-auth', error: null, grant: 'never' },
       status: ['acct1', 'acct2'].map((account) => ({
         account, host: 'dobby', server: 'my-server', status: 'needs-auth', error: null, toolCount: null,
         scope: 'user', source: 'probe' as const, sessionId: null, observedAt: '2026-10-09T12:00:00Z',
+        counted: true,
       })),
     },
     {
@@ -55,6 +57,7 @@ const mcpResponse = {
       readonly: true,
       transport: 'http' as const,
       config: { type: 'http', url: 'https://plugin.example/mcp' },
+      overall: { status: null, error: null, grant: 'none' },
       status: [],
     },
     {
@@ -63,6 +66,7 @@ const mcpResponse = {
       readonly: false,
       transport: 'http' as const,
       config: { type: 'http', httpUrl: 'https://via-httpurl.example/mcp' },
+      overall: { status: null, error: null, grant: 'none' },
       status: [],
     },
     {
@@ -71,6 +75,7 @@ const mcpResponse = {
       readonly: false,
       transport: 'stdio' as const,
       config: { type: 'stdio', command: 'my-cmd', args: [], customKey: 'preserve-me' },
+      overall: { status: null, error: null, grant: 'none' },
       status: [],
     },
   ],
@@ -88,7 +93,8 @@ beforeEach(() => {
 function row(over: Record<string, unknown> = {}) {
   return {
     account: 'a', host: 'dobby', server: 'x', status: 'connected', error: null, toolCount: null,
-    scope: 'user', source: 'probe' as const, sessionId: null, observedAt: '2026-10-09T12:00:00Z', ...over,
+    scope: 'user', source: 'probe' as const, sessionId: null, observedAt: '2026-10-09T12:00:00Z',
+    counted: true, ...over,
   }
 }
 
@@ -97,13 +103,16 @@ function mockServers(servers: unknown[]) {
     path === '/library/mcp' ? Promise.resolve({ servers }) : otherGet(path))
 }
 
-const srv = (name: string, transport: string, status: unknown[]) => ({
-  name, source: 'user', readonly: false, transport, config: { type: transport }, status,
+const NO_OVERALL = { status: null, error: null, grant: 'none' }
+
+const srv = (name: string, transport: string, status: unknown[], overall: unknown = NO_OVERALL) => ({
+  name, source: 'user', readonly: false, transport, config: { type: transport }, overall, status,
 })
 
 describe('McpSection', () => {
-  it('shows the worst status pill and per-account detail', async () => {
-    mockServers([srv('notion', 'http', [row({ account: 'a' }), row({ account: 'b', status: 'needs-auth', error: 'token expired' })])])
+  it('shows the overall status pill and per-account detail', async () => {
+    mockServers([srv('notion', 'http', [row({ account: 'a' }), row({ account: 'b', status: 'needs-auth', error: 'token expired' })],
+      { status: 'needs-auth', error: null, grant: 'expired' })])
     renderSection()
     expect(await screen.findByText('Needs auth')).toBeTruthy()
     const toggle = screen.getByRole('button', { name: /details for notion/i })
@@ -142,21 +151,71 @@ describe('McpSection', () => {
   })
 
   it('offers Reauth only for http/sse rows that need auth', async () => {
-    mockServers([srv('notion', 'http', [row({ status: 'needs-auth' })]), srv('ok', 'http', [row({ server: 'ok' })])])
+    mockServers([
+      srv('notion', 'http', [row({ status: 'needs-auth' })], { status: 'needs-auth', error: null, grant: 'never' }),
+      srv('ok', 'http', [row({ server: 'ok' })], { status: 'connected', error: null, grant: 'live' }),
+    ])
     renderSection()
     expect(await screen.findAllByRole('button', { name: /fix auth/i })).toHaveLength(1)
   })
 
-  it('lets the user pick which needs-auth account to reauthorize', async () => {
-    mockServers([srv('notion', 'http', [row({ account: 'a', status: 'needs-auth' }), row({ account: 'b', status: 'needs-auth' })])])
+  it('shows the overall status, not the worst row', async () => {
+    mockServers([srv('notion', 'http', [row({ status: 'needs-auth', counted: false })],
+      { status: 'connected', error: null, grant: 'live' })])
     renderSection()
-    await userEvent.selectOptions(await screen.findByRole('combobox'), 'b')
-    await userEvent.click(screen.getByRole('button', { name: /fix auth/i }))
-    expect(api.post).toHaveBeenCalledWith('/library/mcp/notion/auth', { account: 'b' })
+    expect(await screen.findByText('Connected')).toBeTruthy()
+    expect(screen.queryByText('Needs auth')).toBeNull()
+  })
+
+  it('offers one Fix auth with no account picker when grant is never', async () => {
+    mockServers([srv('notion', 'http', [row({ account: 'a', status: 'needs-auth' }), row({ account: 'b', status: 'needs-auth' })],
+      { status: 'needs-auth', error: null, grant: 'never' })])
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: /fix auth/i }))
+    expect(screen.queryByLabelText(/^account to reauth/i)).toBeNull()
+    expect(screen.queryByRole('combobox')).toBeNull()
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/notion/auth', undefined)
+  })
+
+  it('renders no Fix auth when the server failed for a non-auth reason', async () => {
+    mockServers([srv('notion', 'http', [row({ status: 'failed' })],
+      { status: 'failed', error: 'Incompatible auth server…', grant: 'never' })])
+    renderSection()
+    expect(await screen.findByText('Incompatible auth server…')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /fix auth/i })).toBeNull()
+  })
+
+  it('offers Fix auth when needs-auth with a dead grant', async () => {
+    mockServers([srv('notion', 'http', [row({ status: 'needs-auth' })],
+      { status: 'needs-auth', error: null, grant: 'dead' })])
+    renderSection()
+    expect(await screen.findByRole('button', { name: /fix auth/i })).toBeTruthy()
+  })
+
+  it('renders no Fix auth for grant none', async () => {
+    mockServers([srv('notion', 'http', [row({ status: 'needs-auth' })],
+      { status: 'needs-auth', error: null, grant: 'none' })])
+    renderSection()
+    expect(await screen.findByText('Needs auth')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /fix auth/i })).toBeNull()
+  })
+
+  it('shows overall.error under the card', async () => {
+    mockServers([srv('notion', 'http', [], { status: 'failed', error: 'refresh token revoked', grant: 'dead' })])
+    renderSection()
+    expect(await screen.findByText('refresh token revoked')).toBeTruthy()
+  })
+
+  it('marks uncounted rows in details', async () => {
+    mockServers([srv('notion', 'http', [row({ account: 'a' }), row({ account: 'b', counted: false })],
+      { status: 'connected', error: null, grant: 'live' })])
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: /details for notion/i }))
+    expect(screen.getAllByText(/not counted/)).toHaveLength(1)
   })
 
   it('renders an unknown status verbatim as neutral', async () => {
-    mockServers([srv('x', 'http', [row({ status: 'weird-state' })])])
+    mockServers([srv('x', 'http', [row({ status: 'weird-state' })], { status: 'weird-state', error: null, grant: 'none' })])
     renderSection()
     expect(await screen.findByText('weird-state')).toBeTruthy()
   })
@@ -175,7 +234,7 @@ describe('McpSection', () => {
     }])
     renderSection()
     await userEvent.click(await screen.findByRole('button', { name: /fix auth/i }))
-    expect(api.post).toHaveBeenCalledWith('/library/mcp/my-server/auth', { account: 'acct1' })
+    expect(api.post).toHaveBeenCalledWith('/library/mcp/my-server/auth', undefined)
   })
 
   it('keys each row\'s scope control by serverKey (manifest name for plugins), outside the card button', async () => {
@@ -183,7 +242,8 @@ describe('McpSection', () => {
       if (path === '/library/mcp') {
         return Promise.resolve({ servers: [{
           name: 'notion', source: 'notion@claude-plugins-official', pluginName: 'Notion', readonly: true,
-          transport: 'http', config: { type: 'http', url: 'https://x' }, status: [],
+          transport: 'http', config: { type: 'http', url: 'https://x' },
+          overall: { status: null, error: null, grant: 'none' }, status: [],
         }] })
       }
       if (path === '/library/mcp/scope') {
@@ -225,7 +285,7 @@ describe('McpSection', () => {
     expect((await screen.findAllByText('http')).length).toBeGreaterThan(0)
     // Plugin source badge
     expect(await screen.findByText('alpha@m')).toBeTruthy()
-    // Worst-status pill for my-server
+    // Overall-status pill for my-server
     expect(await screen.findByText('Needs auth')).toBeTruthy()
   })
 
