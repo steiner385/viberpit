@@ -1,10 +1,15 @@
 /**
  * ExportMenu — an "Export" button that opens a two-item dropdown menu
  * (Markdown / Raw JSONL) and triggers a transcript download on pick.
+ *
+ * Markdown is redacted server-side. Raw JSONL streams a native transcript file
+ * byte for byte, secrets included (the deliberate exception in the
+ * `/export.jsonl` route, #3239), so that pick asks first.
  */
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { downloadTranscript } from '@/api/transcript'
+import { useConfirm } from '@/ui/useConfirm'
 
 interface Props {
   sessionId: string
@@ -12,9 +17,20 @@ interface Props {
 
 export function ExportMenu({ sessionId }: Props) {
   const [open, setOpen] = useState(false)
+  const { confirm, dialog } = useConfirm()
 
-  function pick(format: 'md' | 'jsonl') {
+  async function pick(format: 'md' | 'jsonl') {
     setOpen(false)
+    if (format === 'jsonl') {
+      const ok = await confirm({
+        title: 'Download the raw transcript?',
+        description:
+          'Raw JSONL is the unredacted transcript file, so it may contain secrets (API keys, tokens or passwords) that appeared in the session. Choose Markdown for a redacted copy.',
+        confirmLabel: 'Download raw',
+        tone: 'warning',
+      })
+      if (!ok) return
+    }
     downloadTranscript(sessionId, format)
   }
 
@@ -48,7 +64,7 @@ export function ExportMenu({ sessionId }: Props) {
           <button
             type="button"
             role="menuitem"
-            onClick={() => pick('md')}
+            onClick={() => void pick('md')}
             className={cn(
               'w-full text-left px-3 py-1.5 text-xs',
               'hover:bg-surface-raised',
@@ -61,7 +77,7 @@ export function ExportMenu({ sessionId }: Props) {
           <button
             type="button"
             role="menuitem"
-            onClick={() => pick('jsonl')}
+            onClick={() => void pick('jsonl')}
             className={cn(
               'w-full text-left px-3 py-1.5 text-xs',
               'hover:bg-surface-raised',
@@ -73,6 +89,7 @@ export function ExportMenu({ sessionId }: Props) {
           </button>
         </div>
       )}
+      {dialog}
     </div>
   )
 }

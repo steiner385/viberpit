@@ -2774,24 +2774,33 @@ async def export_session_jsonl(
     request: Request,
     _identity: str = Depends(current_identity),
 ):
-    """Download the session transcript as an unredacted machine-readable JSONL file.
+    """Download the session transcript as a machine-readable JSONL file.
 
     Two shapes, because the engines genuinely differ and pretending otherwise is the
     bug (#1277):
 
     * A session with a native transcript file (Claude) streams that file VERBATIM,
-      byte for byte, exactly as before — the user's own data over an
-      already-authenticated connection (deliberate exception to the redaction rule).
+      byte for byte and UNREDACTED. This is the one deliberate exception to the
+      redaction rule every other transcript path follows (#3239): the native file is
+      the only artifact that can be re-imported or diffed against the engine's own
+      state, and a regex pass would break that fidelity (the base64 rule would also
+      chew up the inline image payloads). It is the user's own data over an
+      already-authenticated connection, and the web UI asks for confirmation that the
+      file may contain secrets before downloading it. Pinned by
+      ``test_export_jsonl_native_file_is_deliberately_unredacted``.
     * A session without one (Codex keeps its history inside the app-server) gets
       ViberPit's normalized replay events as NDJSON, led by a header record naming
       the format. It is NOT relabelled as Claude-native JSONL: the two schemas share
       no field names, so a consumer that assumed otherwise would silently read
-      garbage instead of failing. See ``export.normalized_ndjson``.
+      garbage instead of failing. See ``export.normalized_ndjson``. These events are
+      a ViberPit-derived view with no fidelity to preserve, so they are redacted
+      with ``redact_event`` exactly like ``/export.md`` (#3239).
 
     Resolution uses ``resolve_transcript_path`` rather than ``transcript_path``, so an
     ARCHIVED Claude session now streams its real file instead of 404ing — the
     in-memory-driver-state limitation this route used to document.
     """
+    from server.audit import redact_event
     from server.sessions.export import normalized_ndjson, safe_filename
     from server.sessions.orchestrator import TRANSCRIPT_EXPORT_CEILING_S
     orch = _get_orchestrator(request)
@@ -2835,7 +2844,8 @@ async def export_session_jsonl(
     body = normalized_ndjson(
         # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
         # orchestrator returns already-serialised wire dicts. Handle both (#172).
-        [e.to_wire() if hasattr(e, "to_wire") else e for e in window.events],
+        # Redacted like /export.md: this is a derived view, not the native file (#3239).
+        [redact_event(e.to_wire() if hasattr(e, "to_wire") else e) for e in window.events],
         session_id=session_id,
         engine=getattr(engine, "value", None) or str(engine or "unknown"),
         model=getattr(record, "model", None) if record else None,
