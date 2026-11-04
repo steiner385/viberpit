@@ -234,6 +234,20 @@ VIBERPIT_HOST_PLATFORM_GUIDE_WINDOWS=/etc/viberpit/windows-guide.md
 # VIBERPIT_WINDOWS_VM_SSH_HOST=win11
 ```
 
+**Leave room for the guest.** The VM holds its 8 GB permanently, so the daemon unit's stock limits
+(`MemoryHigh=75%`, `MemoryMax=88%` of the host) no longer fit: on a 32 GB runner a daemon at its cap
+would leave the host and QEMU with less than nothing, and the OOM killer could take the Windows
+desktop. Cap the daemon with a drop-in that sorts after every other one:
+
+```bash
+printf '[Service]\nMemoryHigh=20G\nMemoryMax=22G\n' |
+  sudo tee /etc/systemd/system/viberpit-daemon.service.d/zz-memory-vm.conf
+sudo systemctl daemon-reload    # applies to the running daemon at once; no restart needed
+cat /sys/fs/cgroup/system.slice/viberpit-daemon.service/memory.max   # 23622320128
+```
+
+Scale the two numbers to the host: total RAM minus the guest's RAM minus about 2 GB for the host.
+
 Then restart the daemon, **only when the Sessions page shows nothing mid-turn**: a restart touches
 every live session (`deploy/README.md` § "Stopping / restarting the daemon"):
 
