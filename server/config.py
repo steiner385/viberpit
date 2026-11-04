@@ -203,6 +203,10 @@ try:
         # reachable at `windows_vm_ssh_host`). Advertised on the daemon's /info.
         host_platforms: str = Field(default="", alias="VIBERPIT_HOST_PLATFORMS")
         windows_vm_ssh_host: str = Field(default="win11", alias="VIBERPIT_WINDOWS_VM_SSH_HOST")
+        # Path of the guide appended to a `windows` session's instructions
+        # (server/sessions/platform_guide.py). Unset = no guide.
+        host_platform_guide_windows: str | None = Field(
+            default=None, alias="VIBERPIT_HOST_PLATFORM_GUIDE_WINDOWS")
         # Native OpenAI Codex (server/codex). Both flags default FALSE — this is a
         # launch flag, and absence or incompatibility must disable Codex ONLY. The
         # external-token API is the experimental app-server surface runners use to
@@ -598,6 +602,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         windows_vm_ssh_host: str = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_WINDOWS_VM_SSH_HOST", "win11")
+        )
+        host_platform_guide_windows: str | None = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_HOST_PLATFORM_GUIDE_WINDOWS") or None
         )
         codex_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_CODEX_ENABLED", "false").lower() in ("1","true","yes","on")

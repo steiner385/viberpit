@@ -2507,10 +2507,24 @@ class SessionOrchestrator:
             # overlay IS a dict, so it passes through here unchanged.
             if isinstance(overlay, dict):
                 kw["options_overlay"] = overlay
-            if extra:
-                return base(cwd, config_dir, can_use_tool, mode, resume,
-                            extra_env=extra, **kw)
-            return base(cwd, config_dir, can_use_tool, mode, resume, **kw)
+            def _call(**more):
+                if extra:
+                    return base(cwd, config_dir, can_use_tool, mode, resume,
+                                extra_env=extra, **kw, **more)
+                return base(cwd, config_dir, can_use_tool, mode, resume, **kw, **more)
+            if "platform_guide" not in declared:
+                return _call()
+            async def _with_guide():
+                # Read on EVERY spawn (new, resume, fork, respawn) so the guide follows
+                # the session's persisted platform and an edited file is picked up.
+                from server.config import get_settings
+                from server.sessions.platform_guide import load_platform_guide
+                guide = await asyncio.to_thread(
+                    load_platform_guide, await self._session_platform(session_id),
+                    get_settings())
+                client = _call(platform_guide=guide)
+                return await client if inspect.isawaitable(client) else client
+            return _with_guide()
         return _factory
 
     def install_codex_manager(self, manager) -> None:

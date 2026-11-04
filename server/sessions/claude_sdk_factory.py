@@ -12,7 +12,7 @@ from .merge_hold_guard import merge_hold_guard
 from .permissions import to_sdk_permission_mode
 
 
-def _build_append_string() -> str:
+def _build_append_string(platform_guide: str | None = None) -> str:
     """This engine's system-prompt append, through the shared ``session_instructions``
     (session tools spec §9), which the Codex driver's fresh ``thread/start`` calls for
     the same purpose.
@@ -38,7 +38,8 @@ def _build_append_string() -> str:
         signalling_tools=(cfg.session_tools_enabled
                           and ClaudeAgentDriver.capabilities.durable_tool_surface),
         self_model_switch=cfg.self_model_switch_enabled,
-        child_sessions=cfg.child_sessions_enabled)
+        child_sessions=cfg.child_sessions_enabled,
+        platform_guide=platform_guide)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
@@ -108,7 +109,7 @@ def session_tmpdir_env() -> dict[str, str]:
 async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
                      ready_grants=None, fork_session=False, extra_args=None,
-                     enable_file_checkpointing=False):
+                     enable_file_checkpointing=False, platform_guide=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -125,6 +126,9 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     ``CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`` in the CLI's env, so turns run by this
     process get file checkpoints ``rewind_files`` can restore. Spawn-time only — the
     orchestrator passes it on every coding spawn while rewind is on.
+
+    *platform_guide*: the session's per-platform guide text (``platform_guide.py``),
+    appended to the system prompt; ``None`` for a Linux session.
 
     *options_overlay*: the assistant's overlay (see ``server/assistant/options.py``)
     replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
@@ -158,7 +162,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
-            "append": _build_append_string(),
+            "append": _build_append_string(platform_guide),
         },
         **(await asyncio.to_thread(_cli_path_kwargs)),
     )

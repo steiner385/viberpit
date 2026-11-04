@@ -117,7 +117,8 @@ def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: boo
 
 
 def session_instructions(*, session_tools: bool, signalling_tools: bool,
-                         self_model_switch: bool, child_sessions: bool = False) -> str:
+                         self_model_switch: bool, child_sessions: bool = False,
+                         platform_guide: str | None = None) -> str:
     """THE one composition of "engine instructions + session-tools paragraph", called by
     both engines: ``claude_sdk_factory._build_append_string`` (the SDK's system-prompt
     append) and ``CodexAgentDriver.start``'s fresh ``thread/start``
@@ -137,6 +138,10 @@ def session_instructions(*, session_tools: bool, signalling_tools: bool,
 
     Every path also receives the same problem-solving policy, even with tools off.
 
+    *platform_guide* (``platform_guide.load_platform_guide``): the per-platform guide of
+    a platform-routed session, appended LAST. Only the Claude path passes it; Codex
+    never gets platform work.
+
     Every argument is the caller's already-resolved answer, not a re-read of a flag: the
     Claude path knows them from ``session_tools_enabled`` / ``self_model_switch_enabled``
     and the Codex path from whether a ``CodexSessionTools`` was handed to the driver and
@@ -151,7 +156,8 @@ def session_instructions(*, session_tools: bool, signalling_tools: bool,
             child_sessions=child_sessions)
         instructions = tools_paragraph if signalling_tools else (
             f"{marker_instructions(self_model_switch=self_model_switch)}\n\n{tools_paragraph}")
-    return f"{instructions}\n\n{FOLLOW_THROUGH_INSTRUCTION}"
+    out = f"{instructions}\n\n{FOLLOW_THROUGH_INSTRUCTION}"
+    return f"{out}\n\n{platform_guide}" if platform_guide else out
 
 
 def finish_signal_instruction(*, signalling_tools: bool, mcp_namespaced: bool) -> str:
