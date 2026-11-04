@@ -25,11 +25,6 @@ _ROW_RANK = ("connected", "pending", "needs-auth")
 FRESH_S = 24 * 3600
 
 
-def store_key_name(name: str, plugin_name: str | None) -> str:
-    """The ``serverName`` a bundle carries: plain for user servers, namespaced for plugins."""
-    return name if plugin_name is None else f"plugin:{plugin_name}:{name}"
-
-
 def _matching(store: dict, key_name: str, url: str | None) -> list[dict]:
     return [b for b in store.values()
             if isinstance(b, dict) and b.get("serverName") == key_name

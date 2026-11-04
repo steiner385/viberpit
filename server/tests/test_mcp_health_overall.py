@@ -7,11 +7,6 @@ def b(name="aws", url="https://u?x=1", tok="t", exp=NOW + 3_600_000, rt="r"):
     return {"serverName": name, "serverUrl": url, "accessToken": tok, "expiresAt": exp, "refreshToken": rt}
 
 
-def test_store_key_name():
-    assert o.store_key_name("aws-oauth", None) == "aws-oauth"
-    assert o.store_key_name("railway", "railway") == "plugin:railway:railway"
-
-
 def test_grant_none_without_bundle():
     assert o.grant_state({}, key_name="aws", url="https://u?x=1", now_ms=NOW) == "none"
 
