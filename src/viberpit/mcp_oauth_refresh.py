@@ -190,7 +190,7 @@ _resource_cache: dict[str, str] = {}
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def _url_href(url: str) -> str:
+def url_href(url: str) -> str:
     """*url* as the CLI serializes it (WHATWG ``new URL(url).href``) for the http(s) parts that
     differ from the raw string: lower-case scheme and host, no default port, and ``/`` for an
     empty path. Railway's metadata names the bare origin ``https://mcp.railway.com``; the CLI
@@ -212,11 +212,11 @@ def _url_href(url: str) -> str:
 def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
     """The ``resource`` to send, chosen as the CLI's MCP SDK does: the protected-resource
     metadata's ``resource`` when ``discoveryState.resourceMetadataUrl`` serves one, else the
-    server URL minus its fragment, serialized as the URL's ``href`` (:func:`_url_href`). The
+    server URL minus its fragment, serialized as the URL's ``href`` (:func:`url_href`). The
     token endpoint rejects any other value: aws-oauth is configured as
     ``…/mcp?oauth=initialize`` but its metadata names ``…/mcp``."""
     server_url = bundle.get("serverUrl")
-    fallback = _url_href(urllib.parse.urldefrag(server_url)[0]) if isinstance(server_url, str) else ""
+    fallback = url_href(urllib.parse.urldefrag(server_url)[0]) if isinstance(server_url, str) else ""
     prm_url = _discovery_state(bundle).get("resourceMetadataUrl")
     if not (isinstance(prm_url, str) and prm_url):
         return fallback
@@ -229,10 +229,39 @@ def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> 
         doc = None
     resource = doc.get("resource") if isinstance(doc, dict) else None
     if isinstance(resource, str) and resource:
-        resource = _url_href(resource)
+        resource = url_href(resource)
         _resource_cache[prm_url] = resource
         return resource
     return fallback
+
+
+# --- grant identity (RFC 9728) --------------------------------------------------------------
+
+_identity_cache: dict[str, tuple[str, str]] = {}
+
+
+def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tuple[str, str] | None:
+    """``(authorization_server, resource)`` named by the protected-resource metadata at
+    *prm_url*, both serialized by :func:`url_href`; None when the fetch fails or either field
+    is missing. Two grants with an equal identity are interchangeable, so the re-key plan
+    may move one to the other's key. Cached per *prm_url*; a None is never cached."""
+    if prm_url in _identity_cache:
+        return _identity_cache[prm_url]
+    try:
+        doc = (fetch_json or _default_fetch_json)(prm_url)
+    except Exception:
+        log.debug("mcp oauth grant identity fetch failed url=%s", prm_url, exc_info=True)
+        return None
+    if not isinstance(doc, dict):
+        return None
+    servers = doc.get("authorization_servers")
+    resource = doc.get("resource")
+    auth_server = servers[0] if isinstance(servers, list) and servers else None
+    if not (isinstance(auth_server, str) and auth_server and isinstance(resource, str) and resource):
+        return None
+    identity = (url_href(auth_server), url_href(resource))
+    _identity_cache[prm_url] = identity
+    return identity
 
 
 # --- the grant ----------------------------------------------------------------------------
