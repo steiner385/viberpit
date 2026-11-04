@@ -147,6 +147,16 @@ _SHUTDOWN_DB_TIMEOUT_S = 10.0
 _security_warned = False
 
 
+async def _mcp_oauth_tick() -> None:
+    """One refresher tick: reconcile grants onto their CLI keys, then refresh and republish,
+    purging the keys the reconcile dropped or moved."""
+    from server.mcp_health import grants as mcp_grants
+    from viberpit import mcp_oauth_refresh
+
+    drop = await asyncio.to_thread(mcp_grants.reconcile_grants)
+    await asyncio.to_thread(lambda: mcp_oauth_refresh.run_once(drop_keys=drop))
+
+
 async def seed_host_ssh_from_env() -> None:
     """One-time bridge from the retired VIBERPIT_DAEMON_SSH_HOST/_REPO deploy path: when
     both are set and a Host row is named after the ssh host's hostname part with NULL
@@ -573,15 +583,11 @@ async def _lifespan(app: FastAPI):
 
     if (_mcp_refresh_settings().mcp_oauth_refresh_enabled
             and _vp_accounts.is_refresh_authority()):
-        from server.mcp_health import grants as _mcp_grants
-        from viberpit import mcp_oauth_refresh as _mcp_oauth_refresh
-
         async def _mcp_oauth_refresh_loop() -> None:
             _log = _logging.getLogger("server.mcp_oauth")
             while True:
                 try:
-                    drop = await asyncio.to_thread(_mcp_grants.reconcile_grants)
-                    await asyncio.to_thread(lambda: _mcp_oauth_refresh.run_once(drop_keys=drop))
+                    await _mcp_oauth_tick()
                 except Exception:
                     # Neither call raises by contract; this guards the loop itself.
                     _log.warning("mcp oauth refresh tick failed", exc_info=True)

@@ -18,20 +18,28 @@ log = logging.getLogger(__name__)
 _OAUTH_TRANSPORTS = ("http", "sse")
 
 
+def is_oauth_candidate(server: dict) -> bool:
+    """Whether a scanned server can hold a CLI OAuth grant at a knowable key: http/sse with an
+    explicit ``type`` (the CLI hashes ``type`` into the key, so a guessed one names a key it
+    never reads)."""
+    config = server.get("config")
+    return (server.get("transport") in _OAUTH_TRANSPORTS and isinstance(config, dict)
+            and "type" in config)
+
+
 def wanted_servers() -> list[WantedServer]:
     """Every configured http/sse server whose CLI key is knowable.
 
-    Only a config with an explicit ``type`` counts: the CLI hashes ``type`` into the key, so a
-    guessed type would name a key the CLI never reads."""
+    See :func:`is_oauth_candidate` for which configs count."""
     from server.library import scan
 
     wanted: list[WantedServer] = []
     for s in scan.list_mcp_servers()["servers"]:
-        config = s.get("config")
-        if s.get("transport") not in _OAUTH_TRANSPORTS or not isinstance(config, dict):
+        if not is_oauth_candidate(s):
             continue
+        config = s["config"]
         url = config.get("url")
-        if "type" not in config or not isinstance(url, str) or not url:
+        if not isinstance(url, str) or not url:
             continue
         name = store_name(s["name"], s.get("pluginName"))
         wanted.append(WantedServer(key=cli_oauth_key(name, config), store_name=name, url=url))
@@ -52,7 +60,9 @@ def reconcile_grants() -> frozenset[str]:
             # last read is never rolled back. grant_identity does network IO while the store
             # lock is held; acceptable: this runs in the refresher thread, each fetch has its
             # timeout, PRM identities are cached, and a steady-state tick fetches nothing.
-            plan = plan_rekey(store, wanted, lambda prm: mcp_oauth_refresh.grant_identity(prm))
+            plan = plan_rekey(store, wanted, # The lambda defers the attribute lookup to call time, so a monkeypatch of
+            # mcp_oauth_refresh.grant_identity is seen (a bare reference would bind it now).
+            lambda prm: mcp_oauth_refresh.grant_identity(prm))
             return plan.store
 
         creds.update_shared_mcp(apply)

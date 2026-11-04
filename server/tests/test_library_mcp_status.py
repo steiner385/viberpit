@@ -13,6 +13,7 @@ from server.auth.middleware import current_identity
 from server.ipc.client import DaemonTimeout
 from server.library import scan
 from server.sessions.facade import rpc_deadline
+from viberpit.mcp_keys import cli_oauth_key
 from server.tests.test_library_scan import _seed_plugin, shared  # noqa: F401 — fixture
 
 
@@ -254,10 +255,13 @@ def test_picker_with_only_bad_preferred_and_no_accounts_raises(monkeypatch):
         mcp_auth.default_account_picker("notion", ["../x"])
 
 
-def _write_store(bundle: dict) -> None:
+AWS_KEY = cli_oauth_key("aws", {"type": "http", "url": "https://u?x=1"})
+
+
+def _write_store(bundle: dict, key: str = AWS_KEY) -> None:
     from viberpit import paths
     from viberpit.creds import write_json_secure
-    write_json_secure(paths.shared_mcp_path(), {"aws|k": bundle})
+    write_json_secure(paths.shared_mcp_path(), {key: bundle})
 
 
 def _overall_client(monkeypatch, rows, enabled=("a",), live=()):
@@ -306,6 +310,34 @@ def test_get_mcp_overall_never_signed_in(shared: Path, monkeypatch):  # noqa: F8
     assert s["overall"]["status"] == "needs-auth"
     assert s["overall"]["grant"] == "never"
     assert s["status"][0]["counted"] is True
+
+
+def test_get_mcp_grant_is_none_when_stored_under_another_key(shared: Path, monkeypatch):  # noqa: F811
+    _write_aws()
+    _write_store({"serverName": "aws", "serverUrl": "https://u?x=1", "accessToken": "t"},
+                 key="aws|ffffffffffffffff")
+    [s] = _overall_client(monkeypatch, []).get("/api/library/mcp").json()["servers"]
+    assert s["overall"]["grant"] == "none"
+
+
+def test_get_mcp_reads_aws_oauth_at_its_real_cli_key(shared: Path, monkeypatch):  # noqa: F811
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
+    url = "https://aws-mcp.us-east-1.api.aws/mcp"
+    cfg = {"type": "http", "url": url}
+    write_json_secure(paths.shared_claude_json_path(), {"mcpServers": {"aws-oauth": cfg}})
+    _write_store({"accessToken": "t"}, key=cli_oauth_key("aws-oauth", cfg))
+    [s] = _overall_client(monkeypatch, []).get("/api/library/mcp").json()["servers"]
+    assert s["overall"]["grant"] == "live"
+
+
+def test_get_mcp_untyped_server_has_no_grant_lookup(shared: Path, monkeypatch):  # noqa: F811
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
+    write_json_secure(paths.shared_claude_json_path(), {"mcpServers": {"aws": {"url": "https://u?x=1"}}})
+    _write_store({"accessToken": "t"}, key=cli_oauth_key("aws", {"url": "https://u?x=1"}))
+    [s] = _overall_client(monkeypatch, []).get("/api/library/mcp").json()["servers"]
+    assert s["overall"]["grant"] == "none"
 
 
 def test_get_mcp_survives_corrupt_shared_store(shared: Path, monkeypatch, caplog):  # noqa: F811

@@ -11,6 +11,7 @@ from server.library import scan
 from server.mcp_health import grants
 from server.tests.test_library_scan import _seed_plugin, shared  # noqa: F401 — fixture
 from viberpit import creds, fleet_role, mcp_oauth_refresh, paths
+from viberpit.mcp_keys import cli_oauth_key
 from viberpit.mcp_rekey import WantedServer
 
 NEW_URL = "https://aws-mcp.us-east-1.api.aws/mcp?oauth=initialize"
@@ -41,7 +42,7 @@ def test_wanted_servers_http_sse_with_explicit_type_only(shared: Path):  # noqa:
         {"mcpServers": {"railway": {"type": "http", "url": "https://mcp.railway.com"}}}))
     wanted = {w.key: w for w in grants.wanted_servers()}
     assert set(wanted) == {NEW_KEY, "plugin:railway:railway|b12ecd269c942ba3",
-                           next(k for k in wanted if k.startswith("events|"))}
+                           cli_oauth_key("events", {"type": "sse", "url": "https://sse.example.com/s"})}
     assert wanted[NEW_KEY] == WantedServer(key=NEW_KEY, store_name="aws-oauth", url=NEW_URL)
     assert wanted["plugin:railway:railway|b12ecd269c942ba3"].store_name == "plugin:railway:railway"
 
@@ -94,3 +95,15 @@ def test_reconcile_grants_swallows_errors(shared: Path, monkeypatch, caplog):  #
     with caplog.at_level(logging.WARNING):
         assert grants.reconcile_grants() == frozenset()
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(monkeypatch):
+    from server import app as app_mod
+
+    calls: list = []
+    monkeypatch.setattr(grants, "reconcile_grants", lambda: calls.append("reconcile") or frozenset({"old|k"}))
+    monkeypatch.setattr(mcp_oauth_refresh, "run_once",
+                        lambda **kw: calls.append(("run_once", kw)))
+    await app_mod._mcp_oauth_tick()
+    assert calls == ["reconcile", ("run_once", {"drop_keys": frozenset({"old|k"})})]
