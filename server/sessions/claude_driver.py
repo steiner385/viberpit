@@ -2332,6 +2332,20 @@ class ClaudeAgentDriver:
         if live_effort:
             await self.apply_flag_settings({EFFORT_KEY: effort})
 
+    async def set_effort(self, effort: str | None, *, model: str | None = None) -> None:
+        """Change ONLY the live effort (D-14): validate it against *model* (the
+        session's current choice, used for nothing else), then
+        ``apply_flag_settings {effortLevel}``. Never touches the model — unlike
+        ``set_model``, whose ``client.set_model(None)`` resets the CLI to its default
+        model, which may be a gated one the session was never moved onto. A dead stream
+        raises ``SETTINGS_UNAVAILABLE`` (the caller keeps the effort for the next
+        spawn); with the ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch off it is a
+        no-op, as the effort half of ``set_model`` is."""
+        if not flag_settings_enabled():
+            return
+        await self.check_effort(model, effort)
+        await self.apply_flag_settings({EFFORT_KEY: effort})
+
     async def check_effort(self, model: str | None, effort: str | None) -> None:
         """Refuse (``SETTINGS_INVALID``) an effort the live *model* does not list. ``None``
         (the model default) and an unknown list pass: the CLI accepts any string, so this

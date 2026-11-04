@@ -1276,3 +1276,31 @@ async def test_slash_effort_on_a_gated_default_model_persists_without_parking(en
         refused = await env.orch.run_command(env.rec.id, "effort", "low")
     assert refused is not None and "Effort unchanged" in refused["data"]["text"]
     assert (await _row(env.rec.id)).reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_effort_on_a_gated_inherited_default_never_sends_a_model_switch(env) -> None:
+    """``client.set_model(None)`` resets the CLI to its default model — the gated one.
+    An exempted effort-only pick must write only the effort: one apply_flag_settings,
+    zero set_model calls, no park."""
+    env.rec.model = None
+    client = env.spawns.clients[-1]
+    calls: list = []
+    real = client.set_model
+
+    async def spy(model=None):
+        calls.append(model)
+        await real(model)
+
+    client.set_model = spy
+    before = len(env.control.patches)
+
+    async def _require(*a, **k):
+        return "require_approval"
+    with patch("server.sessions.model_policy.resolve_model_policy", _require):
+        out = await env.orch.run_command(env.rec.id, "effort", "high")
+    assert out is not None and out["data"]["text"] == "Effort → high"
+    assert calls == []
+    assert env.control.patches[before:] == [{"effortLevel": "high"}]
+    assert env.rec.pending_model is None
+    assert (await _row(env.rec.id)).reasoning_effort == "high"

@@ -25630,9 +25630,26 @@ class SessionOrchestrator:
             driver is not None and _same_choice
             and not isinstance(reasoning_effort, _EffortUnchanged)
             and flag_settings_supported(getattr(driver, "capabilities", None)))
+
+        async def _set_driver_effort(d: AgentDriver) -> None:
+            # The same choice: write ONLY the effort. ``set_model(None)`` would reset
+            # the CLI to its default model — possibly a gated one this pick was exempted
+            # from parking for. Same error contract as ``_set_driver_model``.
+            nonlocal effort_error
+            set_effort = getattr(d, "set_effort", None)
+            if set_effort is None:          # a test double without the method
+                await _set_driver_model(d)
+                return
+            try:
+                await set_effort(reasoning_effort, model=getattr(record, "model", None))
+            except flag_settings.SettingsError as exc:
+                if exc.code == flag_settings.SETTINGS_INVALID:
+                    raise
+                effort_error = exc
+
         if driver is not None:
             if _live_effort:
-                await _set_driver_model(driver)
+                await _set_driver_effort(driver)
             elif driver.turn_active and when == "after_turn":
                 await _set_driver_model(driver)
                 pending = True
