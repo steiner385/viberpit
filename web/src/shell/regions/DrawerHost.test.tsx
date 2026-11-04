@@ -426,6 +426,16 @@ describe('DrawerHost', () => {
       expect(region()).toBeNull()
     })
 
+    it('closes on the first click while ?drawer=assistant is still in the URL', async () => {
+      enableAssistant()
+      const user = userEvent.setup()
+      renderAt(['/sessions?drawer=assistant'])
+      expect(screen.getByRole('dialog', { name: /assistant/i })).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Close Assistant' }))
+      expect(screen.getByTestId('url')).toHaveTextContent(/^\/sessions$/)
+      expect(region()).toBeNull()
+    })
+
     it('Help opened over it closes back to the assistant', async () => {
       enableAssistant()
       const user = userEvent.setup()
