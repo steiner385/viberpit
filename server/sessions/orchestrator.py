@@ -134,7 +134,8 @@ from server.sessions.draft_hold_guard import DraftReadyGrants, SessionGrants
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
-from server.sessions.replay import TranscriptAnchors, replay_events, transcript_anchor_facts
+from server.sessions.replay import (TranscriptAnchors, last_prompt_context, replay_events,
+                                    transcript_anchor_facts)
 from server.sessions import status as _status_mod
 from server.sessions.suggestions import (
     SuggestionService, build_codex_suggest_prompt, last_turn_context, parse_suggestions,
@@ -2158,10 +2159,19 @@ class SessionOrchestrator:
         #
         # A rebuild while the outgoing driver is still registered (rotation, 401
         # recompose, crash recovery) records its scope now, for `_create_driver` to seed
-        # the new driver with; the idle reap recorded it at teardown instead.
+        # the new driver with; the idle reap recorded it at teardown instead. Either
+        # in-memory record wins over the journal fallback below.
         outgoing = self._drivers.get(session_id)
         if outgoing is not None:
             self._assistant_scopes[session_id] = getattr(outgoing, "context_scope", None)
+        elif session_id not in self._assistant_scopes:
+            # Nothing in memory: a NEW daemon process (deploy, crash, restart). Fall back
+            # to the journal — the newest context header in the thread's transcript, the
+            # same one the drawer's "About:" line reads back — so its first turn (a
+            # replayed or re-sent prompt with no context) is not run unscoped.
+            ctx = await asyncio.to_thread(
+                lambda: last_prompt_context(self.transcript_path(session_id)))
+            self._assistant_scopes[session_id] = ctx.get("sessionId") if ctx else None
 
         def current_scope() -> str | None:
             return getattr(self._drivers.get(session_id), "context_scope", None)
@@ -21521,6 +21531,10 @@ class SessionOrchestrator:
         reason = self._resume_eligible(rec)
         if reason is not None:
             return f"skipped:{reason}"
+        if is_assistant(rec):
+            # Same rule as auto_resume_interrupted and the deploy-restore replay: never
+            # nudge the drawer's thread into a turn of its own after a restart.
+            return "skipped:assistant"
         if await self.ensure_driver(session_id, identity) is None:
             return "no_driver"
         result = await self.send_prompt(session_id, RESUME_NUDGE, replayable=False)
@@ -27296,6 +27310,15 @@ class SessionOrchestrator:
                 continue
             restored.append(sid)
             last = entry.get("lastPrompt")
+            if last and entry.get("status") in _REPLAY_STATUSES and is_assistant(rec):
+                # Never auto-send an assistant's turn (as _rearm_session and
+                # auto_resume_interrupted already refuse): the drawer re-asking the
+                # user's last question on its own after a deploy is unexpected, and it
+                # would be the turn whose side-chat scope this process knows least about.
+                # The record and its driver stay; the user re-sends if they want to.
+                log_event(log, logging.INFO, "deploy.restore.replay_skipped",
+                          session_id=sid, reason="assistant")
+                continue
             if last and entry.get("status") in _REPLAY_STATUSES:
                 # At most one replay per restart (#2922): never while a re-offered
                 # card is waiting on the user (the turn would consume it), and never

@@ -44,6 +44,7 @@ from typing import Any, Final
 from viberpit import brand
 from server.codex import schema
 from server.sessions import events as ev
+from server.assistant.context import strip_context_header
 from server.sessions.prompt_origin import strip_origin_header
 from server.sessions.completion import (has_completion_marker, note_from_marker_text,
                                         parse_hand_back_marker, parse_turn_signal,
@@ -545,10 +546,15 @@ class CodexEventTranslator:
             # without this a re-read thread would render the marker as part of the
             # user's own words and lose the provenance the live echo carried.
             body, origin = strip_origin_header(item.text)
+            # Then the assistant's `<viberpit-context …/>` header (D-12), in the same
+            # order Claude's replay strips them: the driver puts the context header
+            # after any origin marker. Kept as `context` so the drawer's "About:"
+            # line reads a Codex thread the way it reads a Claude transcript.
+            body, context = strip_context_header(body)
             # Several user items can belong to one native turn (steering).
             # Each needs its own display identity or later prompts overwrite
             # earlier ones when history is reduced in the browser.
-            return [ev.UserMessage(item.id, body, origin=origin)]
+            return [ev.UserMessage(item.id, body, origin=origin, context=context)]
         if isinstance(item, (schema.AgentMessageItem, schema.ReasoningItem)):
             # An `item/started` for a text item announces an EMPTY item — the
             # content arrives as deltas or on the completion. Rendering (and so

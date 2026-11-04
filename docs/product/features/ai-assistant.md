@@ -174,7 +174,13 @@ assistant mutation does not make subsequent harness cleanup safe.
   recompose, crash recovery, idle reap) is seeded, as it is built (`_create_driver`), with its
   predecessor's scope — recorded from the outgoing driver by the overlay rebuild or by the idle
   reap's teardown, and dropped when the session ends — so the pre-card checks see it on the first
-  turn; the seed lapses when the new driver sends a context of its own.
+  turn; the seed lapses when the new driver sends a context of its own. A new daemon process has no
+  such record, so a Claude assistant falls back to the journal: the newest context header in its
+  transcript (`replay.last_prompt_context`, the same header the drawer's "About:" line reads back);
+  the in-memory record wins when there is one. The deploy-restore replay and
+  `SessionOrchestrator.resume_interrupted` never auto-send an assistant turn. The Codex driver renders
+  the same `context.render_context_header` line into its turn input (deduped like Claude's), and
+  Codex replay strips it back into `context`.
   - **Opening and header.** ⌘; opens the drawer; `/btw` (coding sessions only) opens it, and `/btw <q>` opens it
     and sends `<q>` once, tied to the session it was typed in. The header's `About: <session>` is the scope
     the server holds — the newest started turn's context — not client intent. With the Assistant off in

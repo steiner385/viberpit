@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 from viberpit import brand
-from server.assistant.context import strip_context_header
+from server.assistant.context import PromptContext, strip_context_header
 from server.sessions.prompt_origin import strip_origin_header
 from server.config import env_float
 from . import events as ev
@@ -998,6 +998,67 @@ async def replay_window(jsonl_path: str, *, before: int | None = None, limit: in
 async def replay_events(jsonl_path: str, *, max_turns: int | None = 20,
                         until_uuid: str | None = None) -> list:
     return await asyncio.to_thread(_parse_and_trim, jsonl_path, max_turns, until_uuid)
+
+
+# How much of a transcript's END `last_prompt_context` reads first. An assistant's
+# context header rides its latest page-changing prompt, which is near the end; a header
+# older than this costs one further full pass, never a wrong answer.
+_CONTEXT_TAIL_BYTES = 256 * 1024
+
+
+def _prompt_context_of(o: dict) -> PromptContext | None:
+    """The journalled context of one human prompt entry, read the way
+    `_parse_transcript` reads it when it rebuilds a UserMessage: harness entries skipped
+    (`is_harness_user_entry`), the origin marker split first, then the context header."""
+    if o.get("type") != "user" or o.get("isSidechain"):
+        return None
+    content = _content_blocks(o.get("message") or {})
+    text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+    if not text or is_harness_user_entry(o, text):
+        return None
+    return strip_context_header(strip_origin_header(text)[0])[1]
+
+
+def _newest_context(entries: Iterator) -> PromptContext | None:
+    found: PromptContext | None = None
+    for o in entries:
+        found = _prompt_context_of(o) or found
+    return found
+
+
+def last_prompt_context(path: str | None) -> PromptContext | None:
+    """The context of the newest prompt in *path* that carried a context header, or None.
+
+    The D-12 side-chat scope's fallback seed when a new daemon process rebuilds an
+    assistant driver with nothing in memory: the same journalled header the drawer's
+    "About:" line reads back through replay (`strip_context_header`). Reads the tail
+    first and only re-reads the whole file when the tail holds no header. Synchronous
+    file I/O — call it through ``asyncio.to_thread``. Never raises."""
+    if not path:
+        return None
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > _CONTEXT_TAIL_BYTES:
+                fh.seek(size - _CONTEXT_TAIL_BYTES)
+                fh.readline()  # drop the partial first line
+            tail = fh.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return None
+
+    def parsed(raw_lines):
+        for raw in raw_lines:
+            try:
+                o = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(o, dict):
+                yield o
+
+    found = _newest_context(parsed(ln for ln in tail.splitlines() if ln.strip()))
+    if found is None and size > _CONTEXT_TAIL_BYTES:
+        found = _newest_context(_read_jsonl(path))
+    return found
 
 
 def last_question_events(path: str) -> list["ev.Question"]:

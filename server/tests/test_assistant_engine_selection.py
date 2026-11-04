@@ -64,6 +64,7 @@ def _orch():
     orch._records = {}
     orch._overlays = {}
     orch._drivers = {}
+    orch._assistant_scopes = {}
     orch._clock = time.time
     return orch
 

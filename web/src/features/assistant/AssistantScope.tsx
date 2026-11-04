@@ -7,8 +7,9 @@
  * taken as answers leave it where the server left it, and a reload or another tab
  * shows the same. The line is "About: <scope>"; while a turn runs or prompts are
  * queued and the open session (`current`) differs, it adds what the next message will
- * be about. Before any context-bearing turn the first send sets the scope, so it names
- * the open session — and outside one, renders nothing, as the drawer always has.
+ * be about. Before any context-bearing turn the first send sets the scope, so while
+ * idle it names the open session; while in flight it names none (the running turn
+ * carried no session). Outside a session it renders nothing, as the drawer always has.
  */
 import { useSessions } from '@/api/hooks'
 import { useSessionPromptFlight } from '@/lib/promptFlight'
@@ -29,7 +30,11 @@ interface Props {
 export function AssistantScope({ current, scope, inFlight }: Props) {
   const { data: sessions } = useSessions()
   const find = (id: string | null) => (id ? sessions?.find((s) => s.id === id) ?? { id } : null)
-  const held = scope === undefined ? current : scope
+  // No context-bearing turn yet: while idle, the first send sets the scope, so the open
+  // session is what it will be. While a turn runs or prompts are queued, that turn
+  // carried no session, so the server holds none — claim nothing rather than a guard
+  // that is not in force.
+  const held = scope === undefined ? (inFlight ? null : current) : scope
   const about = find(held)
   const showNext = inFlight && held !== current
   if (!about && !showNext) return null

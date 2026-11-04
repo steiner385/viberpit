@@ -848,6 +848,7 @@ async def test_the_overlay_build_wires_the_scope_to_the_live_driver(tmp_path, mo
     orch._records = {}
     orch._overlays = {}
     orch._drivers = {}
+    orch._assistant_scopes = {}
     orch._clock = time.time
     await orch._setup_assistant_overlay("s-asst", identity="u@example.com", model="sonnet",
                                         engine=AgentEngine.CLAUDE_CODE)
@@ -861,3 +862,137 @@ async def test_the_overlay_build_wires_the_scope_to_the_live_driver(tmp_path, mo
     assert scope() == X
     _D.context_scope = Y
     assert scope() == Y
+
+
+# --------------------------------------------------------------------------- #
+# A new daemon process: the journal is the fallback seed
+# --------------------------------------------------------------------------- #
+
+def _user_line(text: str, **extra) -> str:
+    return json.dumps({"type": "user", "uuid": extra.pop("uuid", "u"),
+                       "message": {"role": "user", "content": text}, **extra}) + "\n"
+
+
+def _header(sid: str | None) -> str:
+    from server.assistant.context import render_context_header
+    ctx: dict = {"route": f"/sessions/{sid}" if sid else "/pipeline"}
+    if sid:
+        ctx["sessionId"] = sid
+    return render_context_header(ctx, host="dobby")  # type: ignore[arg-type]
+
+
+def test_last_prompt_context_reads_the_newest_journalled_header(tmp_path):
+    from server.sessions.replay import last_prompt_context
+    p = tmp_path / "t.jsonl"
+    p.write_text(
+        _user_line(f"{_header(Y)}\nfirst")
+        + json.dumps({"type": "assistant", "message": {"content": [{"type": "text",
+                                                                    "text": "ok"}]}}) + "\n"
+        + _user_line(f"{_header(X)}\nsecond")
+        + _user_line("a follow-up on the same page: no header re-sent")
+        + _user_line(f"{_header(Y)}\nmeta", isMeta=True))
+    ctx = last_prompt_context(str(p))
+    assert ctx is not None and ctx.get("sessionId") == X
+
+
+def test_last_prompt_context_honours_a_route_only_context_and_origin(tmp_path):
+    from server.sessions.prompt_origin import PromptOrigin, render_origin_header
+    from server.sessions.replay import last_prompt_context
+    p = tmp_path / "t.jsonl"
+    origin = render_origin_header(PromptOrigin(kind="autopilot"))
+    p.write_text(_user_line(f"{_header(X)}\nq") + _user_line(f"{origin}\n{_header(None)}\nq2"))
+    ctx = last_prompt_context(str(p))
+    assert ctx is not None and "sessionId" not in ctx and ctx["route"] == "/pipeline"
+
+
+def test_last_prompt_context_finds_a_header_older_than_the_tail_window(tmp_path):
+    from server.sessions.replay import last_prompt_context
+    p = tmp_path / "t.jsonl"
+    p.write_text(_user_line(f"{_header(X)}\nold")
+                 + "".join(_user_line("x" * 2000, uuid=f"u{i}") for i in range(400)))
+    ctx = last_prompt_context(str(p))
+    assert ctx is not None and ctx.get("sessionId") == X
+
+
+def test_last_prompt_context_is_none_without_a_transcript(tmp_path):
+    from server.sessions.replay import last_prompt_context
+    assert last_prompt_context(str(tmp_path / "missing.jsonl")) is None
+    assert last_prompt_context(None) is None
+
+
+def _db_stub(monkeypatch):
+    import server.db as db_mod
+
+    class _Result:
+        def scalar_one_or_none(self): return None
+
+    class _Ctx:
+        async def __aenter__(self):
+            class _Db:
+                async def execute(self, *a, **k): return _Result()
+            return _Db()
+
+        async def __aexit__(self, *a): return False
+
+    monkeypatch.setattr(db_mod, "db_session", lambda: _Ctx())
+
+
+def _claude_registry(reg):
+    from server.sessions.claude_driver import ClaudeAgentDriver
+
+    class _Registry:
+        def create(self, engine, config):
+            return ClaudeAgentDriver(config.session_id, config.account, config.cwd,
+                                     config.config_dir, mode="interactive",
+                                     sdk_factory=lambda *a, **k: None, registry=reg,
+                                     identity="me", assistant_api=config.assistant_api)
+    return _Registry()
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_process_seeds_an_assistant_from_its_journal(tmp_path, monkeypatch):
+    """No in-memory seed (a new daemon process): the assistant's driver is seeded from
+    the newest context header in its transcript, so a scoped write is refused, before
+    any card, on the replayed or first turn."""
+    from claude_agent_sdk import PermissionResultDeny
+
+    from server.sessions.engine import AgentEngine
+    from server.sessions.permissions import PermissionRegistry
+
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    _db_stub(monkeypatch)
+    p = tmp_path / "asst.jsonl"
+    p.write_text(_user_line(f"{_header(X)}\nwhat changed?"))
+    orch = _real_orch()
+    monkeypatch.setattr(orch, "transcript_path", lambda sid: str(p))
+    reg = PermissionRegistry()
+    orch._engine_registry = _claude_registry(reg)
+    api = await orch._setup_assistant_overlay("s-asst", identity="u@example.com",
+                                              model="sonnet", engine=AgentEngine.CLAUDE_CODE)
+    d = orch._create_driver(engine=AgentEngine.CLAUDE_CODE, session_id="s-asst", account="a",
+                            cwd="/tmp/r", config_dir="/tmp/cfg", mode="interactive",
+                            identity="me", resume="r", on_sync_back=lambda: None,
+                            assistant_api=api)
+    assert d.context_scope == X
+    events: list = []
+    d._emit = events.append  # type: ignore[method-assign]
+    out = await d._can_use_tool("mcp__viberpit__send_prompt", {"id": X, "text": "go"})
+    assert isinstance(out, PermissionResultDeny) and events == []
+    await api.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_in_memory_seed_beats_the_journal(tmp_path, monkeypatch):
+    from server.sessions.engine import AgentEngine
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    _db_stub(monkeypatch)
+    p = tmp_path / "asst.jsonl"
+    p.write_text(_user_line(f"{_header(X)}\nq"))
+    orch = _real_orch()
+    read: list = []
+    monkeypatch.setattr(orch, "transcript_path", lambda sid: read.append(sid) or str(p))
+    orch._assistant_scopes["s-asst"] = Y          # recorded by the idle reap
+    api = await orch._setup_assistant_overlay("s-asst", identity="u@example.com",
+                                              model="sonnet", engine=AgentEngine.CLAUDE_CODE)
+    assert orch._assistant_scopes["s-asst"] == Y and read == []
+    await api.aclose()

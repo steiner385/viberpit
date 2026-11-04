@@ -598,6 +598,25 @@ def test_user_message_replays_once_as_a_user_event() -> None:
     assert out[0].turn_id == "it_u"  # type: ignore[attr-defined]
 
 
+def test_a_journalled_context_header_is_stripped_and_exposed_as_context() -> None:
+    """D-12: the Codex driver now journals the `<viberpit-context …/>` header into the
+    thread, after any origin marker. A re-read splits both back off, as Claude's
+    replay does, so the drawer's "About:" header works for a Codex assistant too."""
+    from server.assistant.context import render_context_header
+    from server.sessions.prompt_origin import render_origin_header
+    sid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    header = render_context_header({"route": f"/sessions/{sid}", "sessionId": sid}, "dobby")
+    origin = render_origin_header({"kind": "assistant"})
+    translator, _ = _fresh()
+    out = _item_completed(translator, {
+        "type": "userMessage", "id": "it_u",
+        "content": [{"type": "text", "text": f"{origin}\n{header}\nwhat changed?"}]})
+    [msg] = out
+    assert msg.text == "what changed?"  # type: ignore[attr-defined]
+    assert msg.context == {"route": f"/sessions/{sid}", "sessionId": sid}  # type: ignore[attr-defined]
+    assert msg.origin == {"kind": "assistant"}  # type: ignore[attr-defined]
+
+
 # ---------------------------------------------------------------------------
 # Truncation
 # ---------------------------------------------------------------------------
