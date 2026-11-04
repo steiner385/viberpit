@@ -8,7 +8,7 @@ import urllib.parse
 
 import pytest
 
-from viberpit import mcp_oauth_client as moc, paths
+from viberpit import mcp_oauth_client as moc, mcp_oauth_refresh as mor, paths
 
 NOW = 1_000_000_000_000
 REDIRECT = "https://dobby.example.ts.net/api/mcp/oauth/callback"
@@ -178,14 +178,70 @@ def test_discover_rejects_resource_on_another_origin():
         moc.discover("https://mcp.example.com/mcp", fetch_json=fake.fetch, probe=fake.probe)
 
 
-def test_discover_rejects_header_pointing_at_another_origin():
-    # The PRM is self-consistent but lives on, and names, another origin than the server.
+@pytest.mark.parametrize("header_url", [
+    "file:///dev/zero",
+    "https://evil.example.net/.well-known/oauth-protected-resource",
+    "http://qa.kindash.com/.well-known/oauth-protected-resource",  # same host, other scheme
+])
+def test_discover_never_fetches_an_off_origin_header_url(header_url):
+    p = PROVIDERS["kindash"]
+    docs = {header_url: {"resource": "https://evil.example.net/", "authorization_servers": [AWS_AS]},
+            **p["docs"]}
+    fake = Fake(docs, {"WWW-Authenticate": f'Bearer resource_metadata="{header_url}"'})
+    d = moc.discover(KINDASH_SERVER, fetch_json=fake.fetch, probe=fake.probe)
+    assert header_url not in fake.fetched
+    assert d.prm_url == "https://qa.kindash.com/.well-known/oauth-protected-resource"
+
+
+def test_discover_off_origin_header_alone_fails_without_fetching_it():
     evil_prm = "https://evil.example.net/.well-known/oauth-protected-resource"
     docs = {evil_prm: {"resource": "https://evil.example.net/", "authorization_servers": [AWS_AS]},
             **PROVIDERS["aws"]["docs"]}
     fake = Fake(docs, {"WWW-Authenticate": f'Bearer resource_metadata="{evil_prm}"'})
     with pytest.raises(moc.DiscoveryFailed):
         moc.discover("https://mcp.example.com/mcp", fetch_json=fake.fetch, probe=fake.probe)
+    assert evil_prm not in fake.fetched
+
+
+def _aws_with(prm_extra=None, **meta_over):
+    docs = dict(PROVIDERS["aws"]["docs"])
+    prm = "https://aws-mcp.us-east-1.api.aws/.well-known/oauth-protected-resource/mcp"
+    docs[prm] = {**docs[prm], **(prm_extra or {})}
+    meta = "https://us-east-1.oauth.signin.aws/.well-known/oauth-authorization-server"
+    docs[meta] = {**docs[meta], **meta_over}
+    return Fake(docs)
+
+
+@pytest.mark.parametrize("over", [
+    {"token_endpoint": "file:///etc/passwd"},
+    {"authorization_endpoint": "javascript:alert(1)"},
+    {"authorization_endpoint": "http://us-east-1.oauth.signin.aws/authorize"},
+    {"registration_endpoint": "http://us-east-1.oauth.signin.aws/v1/register"},
+    {"token_endpoint": "https://user@us-east-1.oauth.signin.aws/token"},
+])
+def test_discover_rejects_non_https_endpoints(over):
+    fake = _aws_with(**over)
+    with pytest.raises(moc.DiscoveryFailed):
+        moc.discover(AWS_SERVER, fetch_json=fake.fetch, probe=fake.probe)
+
+
+def test_discover_rejects_non_https_authorization_server():
+    fake = _aws_with({"authorization_servers": ["http://us-east-1.oauth.signin.aws/"]})
+    with pytest.raises(moc.DiscoveryFailed):
+        moc.discover(AWS_SERVER, fetch_json=fake.fetch, probe=fake.probe)
+    assert not any(u.startswith("http://") for u in fake.fetched)
+
+
+@pytest.mark.parametrize("issuer", ["https://evil.example.net/", None, "https://us-east-1.oauth.signin.aws/x"])
+def test_discover_rejects_issuer_mismatch(issuer):
+    fake = _aws_with(issuer=issuer)
+    with pytest.raises(moc.DiscoveryFailed):
+        moc.discover(AWS_SERVER, fetch_json=fake.fetch, probe=fake.probe)
+
+
+def test_discover_accepts_issuer_differing_only_in_href_spelling():
+    fake = _aws_with(issuer="HTTPS://US-EAST-1.oauth.signin.aws:443")
+    assert moc.discover(AWS_SERVER, fetch_json=fake.fetch, probe=fake.probe).authorization_server == AWS_AS
 
 
 def test_discover_without_prm_fails():
@@ -313,8 +369,26 @@ def test_ensure_client_failure_is_sanitised(status, payload):
 
 def test_registration_error_code_survives():
     d, _ = _discover("aws")
-    with pytest.raises(moc.RegistrationFailed, match="400 invalid_redirect_uri"):
+    with pytest.raises(moc.RegistrationFailed, match="400 invalid_redirect_uri") as exc:
         moc.ensure_client(d, REDIRECT, post_json=Poster((400, {"error": "invalid_redirect_uri"})))
+    assert exc.value.code == "invalid_redirect_uri"
+
+
+def test_registration_failure_without_code_has_none():
+    d, _ = _discover("aws")
+    with pytest.raises(moc.RegistrationFailed) as exc:
+        moc.ensure_client(d, REDIRECT, post_json=Poster((500, b"oops")))
+    assert exc.value.code is None
+
+
+def test_ensure_client_keeps_the_echoed_auth_method():
+    d, _ = _discover("aws")
+    post = Poster((201, {"client_id": "cid-1", "client_secret": "CLIENT-SECRET-789",
+                         "token_endpoint_auth_method": "client_secret_post"}))
+    client = moc.ensure_client(d, REDIRECT, post_json=post)
+    assert client.token_endpoint_auth_method == "client_secret_post"
+    again = moc.ensure_client(d, REDIRECT, post_json=Poster())
+    assert again == client
 
 
 # --- authorize URL ------------------------------------------------------------------------
@@ -380,13 +454,58 @@ def test_exchange_code_access_only_response():
     assert "clientSecret" not in bundle
 
 
-def test_exchange_code_sends_client_secret_post():
+def test_exchange_code_honours_the_echoed_client_secret_post():
     d, _ = _discover("aws")
     post = Poster((200, {"access_token": "AT-secret-123", "expires_in": 60}))
-    bundle = moc.exchange_code(d, moc.Client("cid", "CLIENT-SECRET-789", REDIRECT), code="C",
-                               verifier="V", server_name="aws-oauth", now_ms=NOW, post_form=post)
+    client = moc.Client("cid", "CLIENT-SECRET-789", REDIRECT, "client_secret_post")
+    bundle = moc.exchange_code(d, client, code="C", verifier="V", server_name="aws-oauth",
+                               now_ms=NOW, post_form=post)
     assert post.calls[0][1]["client_secret"] == "CLIENT-SECRET-789"
+    assert post.calls[0][2] == {}
     assert bundle["clientSecret"] == "CLIENT-SECRET-789"
+
+
+def test_exchange_code_picks_the_auth_method_as_the_refresher_does():
+    # No echoed method and no methods list in the metadata: client_secret_basic, like the refresher.
+    d, _ = _discover("aws")
+    post = Poster((200, {"access_token": "AT-secret-123"}))
+    moc.exchange_code(d, moc.Client("cid", "CLIENT-SECRET-789", REDIRECT), code="C", verifier="V",
+                      server_name="aws-oauth", now_ms=NOW, post_form=post)
+    _, form, headers = post.calls[0]
+    assert "client_secret" not in form
+    assert headers["Authorization"] == "Basic " + base64.b64encode(b"cid:CLIENT-SECRET-789").decode()
+
+
+def test_exchange_code_error_code_is_structured():
+    d, _ = _discover("aws")
+    with pytest.raises(moc.ExchangeFailed) as exc:
+        moc.exchange_code(d, moc.Client("cid", None, REDIRECT), code="C", verifier="V",
+                          server_name="aws-oauth", now_ms=NOW,
+                          post_form=Poster((401, {"error": "invalid_client"})))
+    assert exc.value.code == "invalid_client"
+    with pytest.raises(moc.ExchangeFailed) as exc:
+        moc.exchange_code(d, moc.Client("cid", None, REDIRECT), code="C", verifier="V",
+                          server_name="aws-oauth", now_ms=NOW, post_form=Poster((502, b"x")))
+    assert exc.value.code is None
+
+
+def test_exchange_bundle_round_trips_through_the_refresher():
+    d, fake = _discover("railway")
+    bundle = moc.exchange_code(
+        d, moc.Client("cid-1", None, REDIRECT), code="C", verifier="V",
+        server_name="plugin:railway:railway", now_ms=NOW,
+        post_form=Poster((200, {"access_token": "AT-1", "refresh_token": "RT-1", "expires_in": 60})))
+    mor._metadata_cache.clear()
+    mor._resource_cache.clear()
+    post = Poster((200, {"access_token": "AT-2", "refresh_token": "RT-2", "expires_in": 3600}))
+    new = mor.refresh_bundle(bundle, post_form=post, fetch_json=fake.fetch, now_ms=NOW)
+    url, form, headers = post.calls[0]
+    assert url == "https://backboard.railway.com/token"
+    assert form == {"grant_type": "refresh_token", "refresh_token": "RT-1", "client_id": "cid-1",
+                    "resource": d.resource}
+    assert new["accessToken"] == "AT-2" and new["expiresAt"] == NOW + 3_600_000
+    mor._metadata_cache.clear()
+    mor._resource_cache.clear()
 
 
 @pytest.mark.parametrize("status,payload", [

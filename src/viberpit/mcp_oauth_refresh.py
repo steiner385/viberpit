@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
 from . import creds, paths
-from .mcp_keys import DEFAULT_PORTS, url_origin
+from .mcp_keys import DEFAULT_PORTS, is_https_url, url_origin
 from .mcp_names import short_name
 
 log = logging.getLogger(__name__)
@@ -213,10 +213,14 @@ def _auth_metadata(bundle: dict, fetch_json: FetchJson | None) -> dict:
 
 
 def _endpoint_from(bundle: dict, metadata: dict) -> str:
+    """The token endpoint, or "" when there is none or it is not https: a refresh token is
+    never sent to a ``file:``/``http:`` URL a metadata document named."""
     if metadata.get("token_endpoint"):
-        return str(metadata["token_endpoint"])
-    origin = _origin(_auth_server_url(bundle))
-    return f"{origin}/token" if origin else ""
+        url = str(metadata["token_endpoint"])
+    else:
+        origin = _origin(_auth_server_url(bundle))
+        url = f"{origin}/token" if origin else ""
+    return url if is_https_url(url) else ""
 
 
 def token_endpoint(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
@@ -334,6 +338,31 @@ def prm_identity(prm_url: str, doc: object) -> tuple[str, str] | None:
     return identity
 
 
+_SECRET_METHODS = ("client_secret_basic", "client_secret_post")
+
+
+def client_auth(client_id: str, secret: str | None, metadata: dict,
+                method: str | None = None) -> tuple[dict, dict]:
+    """``(extra form fields, headers)`` authenticating a confidential client at the token
+    endpoint. *method* is the registration's ``token_endpoint_auth_method`` when known;
+    otherwise ``client_secret_basic`` unless the metadata lists only ``client_secret_post``.
+    A public client (no secret) sends nothing extra."""
+    if not secret:
+        return {}, {}
+    if method not in _SECRET_METHODS:
+        methods = metadata.get("token_endpoint_auth_methods_supported")
+        if not isinstance(methods, list) or "client_secret_basic" in methods:
+            method = "client_secret_basic"
+        elif "client_secret_post" in methods:
+            method = "client_secret_post"
+        else:
+            return {}, {}
+    if method == "client_secret_post":
+        return {"client_secret": secret}, {}
+    pair = f"{urllib.parse.quote(client_id, safe='')}:{urllib.parse.quote(secret, safe='')}"
+    return {}, {"Authorization": "Basic " + base64.b64encode(pair.encode()).decode()}
+
+
 # --- the grant ----------------------------------------------------------------------------
 
 def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
@@ -356,16 +385,10 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
     resource = resource_indicator(bundle, fetch_json=fetch_json)
     if resource:
         form["resource"] = resource
-    headers: dict = {}
     secret = bundle.get("clientSecret")
-    if isinstance(secret, str) and secret:
-        methods = metadata.get("token_endpoint_auth_methods_supported")
-        if not isinstance(methods, list) or "client_secret_basic" in methods:
-            pair = (f"{urllib.parse.quote(str(client_id or ''), safe='')}:"
-                    f"{urllib.parse.quote(secret, safe='')}")
-            headers["Authorization"] = "Basic " + base64.b64encode(pair.encode()).decode()
-        elif "client_secret_post" in methods:
-            form["client_secret"] = secret
+    extra, headers = client_auth(str(client_id or ""), secret if isinstance(secret, str) else None,
+                                 metadata)
+    form.update(extra)
     try:
         status, body = (post_form or default_post_form)(url, form, headers)
     except Exception as exc:

@@ -471,3 +471,18 @@ def test_oauth_error_code_equal_to_a_credential_is_not_echoed(field):
     out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
     [o] = out["outcomes"]
     assert o["error"] == "token endpoint returned 400"
+
+
+@pytest.mark.parametrize("bad", ["file:///etc/passwd", "http://auth.example.com/token",
+                                 "gopher://auth.example.com/token"])
+def test_non_https_token_endpoint_is_never_posted_to(bad):
+    http = FakeHttp(metadata=_meta(token_endpoint=bad), responses=[_ok()])
+    assert mor.token_endpoint(_bundle(), fetch_json=http.fetch_json) == ""
+    with pytest.raises(mor.McpRefreshTransient):
+        mor.refresh_bundle(_bundle(), post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    assert http.posts == []
+
+
+def test_non_https_auth_server_has_no_fallback_endpoint():
+    b = _bundle(discoveryState={"authorizationServerUrl": "http://auth.example.com/"})
+    assert mor.token_endpoint(b, fetch_json=FakeHttp().fetch_json) == ""

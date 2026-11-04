@@ -53,3 +53,12 @@ def url_origin(url: str) -> tuple[str, str, int] | None:
     except ValueError:
         return None
     return scheme, parts.hostname, port if port is not None else DEFAULT_PORTS[scheme]
+
+
+def is_https_url(url: object) -> bool:
+    """True for an ``https://`` URL with a host and no userinfo: the only shape an OAuth
+    endpoint taken from remote metadata may have before ViberPit sends anything to it."""
+    if not isinstance(url, str):
+        return False
+    origin = url_origin(url)
+    return origin is not None and origin[0] == "https" and "@" not in urllib.parse.urlsplit(url).netloc

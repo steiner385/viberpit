@@ -32,10 +32,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import creds
-from .mcp_keys import prm_url_for, url_origin
-from .mcp_oauth_refresh import (FetchJson, PostForm, default_fetch_json, default_post_form,
-                                json_or_none, metadata_urls, oauth_error_code, prm_identity,
-                                url_href)
+from .mcp_keys import is_https_url, prm_url_for, url_origin
+from .mcp_oauth_refresh import (FetchJson, PostForm, client_auth, default_fetch_json,
+                                default_post_form, json_or_none, metadata_urls, oauth_error_code,
+                                prm_identity, url_href)
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +49,12 @@ PostJson = Callable[[str, dict], "tuple[int, bytes]"]
 
 
 class McpOAuthClientError(Exception):
-    """Base of this module's errors. The message is safe to log and show (no secrets)."""
+    """Base of this module's errors. The message is safe to log and show (no secrets);
+    ``code`` is the sanitised OAuth ``error`` code of the response, when there was one."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class DiscoveryFailed(McpOAuthClientError):
@@ -84,13 +89,15 @@ class Client:
     client_id: str
     client_secret: str | None
     redirect_uri: str
+    token_endpoint_auth_method: str | None = None  # as the registration echoed it
 
 
 # --- HTTP defaults ------------------------------------------------------------------------
 
 def _default_probe(url: str) -> dict[str, str]:
     """Response headers of an unauthenticated GET to *url*, for any status. ``http_request``
-    returns no headers, so this one read uses urllib directly with the same User-Agent."""
+    returns no headers, so this one read uses urllib directly with the same User-Agent; it
+    never reads the body."""
     from . import oauth
     req = urllib.request.Request(url, method="GET", headers={
         "Accept": "application/json, text/event-stream", "User-Agent": oauth.USER_AGENT})
@@ -125,8 +132,14 @@ def _header_prm_url(server_url: str, probe: Probe) -> str | None:
     for name, value in (headers or {}).items():
         if name.lower() == "www-authenticate" and isinstance(value, str):
             match = _RESOURCE_METADATA_RE.search(value)
-            if match:
-                return urllib.parse.urljoin(server_url, match.group(1))
+            if not match:
+                continue
+            url = urllib.parse.urljoin(server_url, match.group(1))
+            # Never fetch a URL the server names on another origin (or a file:/http: one):
+            # that is an SSRF and endless-body vector. Path-insert and root still follow.
+            if url_origin(url) == url_origin(server_url):
+                return url
+            log.debug("mcp oauth client: off-origin resource_metadata ignored server=%s", server_url)
     return None
 
 
@@ -154,11 +167,25 @@ def _has_prm_fields(doc: dict) -> bool:
 
 
 def _as_metadata(authorization_server: str, fetch: FetchJson) -> tuple[str, dict]:
+    """The authorization server's metadata URL and document. Every endpoint ViberPit will
+    send a user or a credential to is checked here, once: https only, and the document's
+    ``issuer`` must be the authorization server itself (RFC 8414 §3.3)."""
+    if not is_https_url(authorization_server):
+        raise DiscoveryFailed("authorization server is not https")
     for url in metadata_urls(authorization_server):
         doc = _fetch(fetch, url)
-        if doc and all(isinstance(doc.get(k), str) and doc[k]
-                       for k in ("authorization_endpoint", "token_endpoint")):
-            return url, doc
+        if not (doc and all(isinstance(doc.get(k), str) and doc[k]
+                            for k in ("authorization_endpoint", "token_endpoint"))):
+            continue
+        issuer = doc.get("issuer")
+        if not (isinstance(issuer, str) and url_href(issuer) == authorization_server):
+            raise DiscoveryFailed("authorization server metadata names another issuer")
+        endpoints = ["authorization_endpoint", "token_endpoint"]
+        if doc.get("registration_endpoint") is not None:
+            endpoints.append("registration_endpoint")
+        if not all(is_https_url(doc[k]) for k in endpoints):
+            raise DiscoveryFailed("authorization server endpoint is not https")
+        return url, doc
     raise DiscoveryFailed("no authorization server metadata")
 
 
@@ -231,8 +258,9 @@ def ensure_client(discovery: Discovery, redirect_uri: str, *, post_json: PostJso
     if (isinstance(entry, dict) and entry.get("redirect_uri") == redirect_uri
             and isinstance(entry.get("client_id"), str) and entry["client_id"]):
         secret = entry.get("client_secret")
+        method = entry.get("token_endpoint_auth_method")
         return Client(entry["client_id"], secret if isinstance(secret, str) and secret else None,
-                      redirect_uri)
+                      redirect_uri, method if isinstance(method, str) and method else None)
     endpoint = discovery.as_metadata.get("registration_endpoint")
     if not (isinstance(endpoint, str) and endpoint):
         raise RegistrationUnsupported("authorization server offers no dynamic client registration")
@@ -250,13 +278,17 @@ def ensure_client(discovery: Discovery, redirect_uri: str, *, post_json: PostJso
         code = oauth_error_code(payload, (payload.get("client_secret"),))
         raise RegistrationFailed(f"registration endpoint returned {status}"
                                  + (f" {code}" if code else " without a client_id"
-                                    if 200 <= status < 300 else ""))
+                                    if 200 <= status < 300 else ""), code=code)
     secret = payload.get("client_secret")
     secret = secret if isinstance(secret, str) and secret else None
     record: dict = {"client_id": client_id, "redirect_uri": redirect_uri,
                     "registered_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     if secret:
         record["client_secret"] = secret
+    method = payload.get("token_endpoint_auth_method")
+    method = method if isinstance(method, str) and method else None
+    if method:
+        record["token_endpoint_auth_method"] = method
 
     def store(cache: dict) -> dict:
         cache[key] = record
@@ -264,7 +296,7 @@ def ensure_client(discovery: Discovery, redirect_uri: str, *, post_json: PostJso
 
     creds.update_mcp_clients(store, cache_path)
     log.info("mcp oauth client registered issuer=%s", key)
-    return Client(client_id, secret, redirect_uri)
+    return Client(client_id, secret, redirect_uri, method)
 
 
 def forget_client(issuer: str, *, cache_path: Path | None = None) -> None:
@@ -299,11 +331,12 @@ def exchange_code(discovery: Discovery, client: Client, *, code: str, verifier: 
     form = {"grant_type": "authorization_code", "code": code,
             "redirect_uri": client.redirect_uri, "client_id": client.client_id,
             "code_verifier": verifier, "resource": discovery.resource}
-    if client.client_secret:
-        form["client_secret"] = client.client_secret
+    extra, headers = client_auth(client.client_id, client.client_secret, discovery.as_metadata,
+                                 client.token_endpoint_auth_method)
+    form.update(extra)
     try:
         status, raw = (post_form or default_post_form)(
-            str(discovery.as_metadata["token_endpoint"]), form, {})
+            str(discovery.as_metadata["token_endpoint"]), form, headers)
     except Exception as exc:
         raise ExchangeFailed(f"token request failed: {type(exc).__name__}") from None
     payload = json_or_none(raw)
@@ -315,7 +348,7 @@ def exchange_code(discovery: Discovery, client: Client, *, code: str, verifier: 
                                            payload.get("refresh_token")))
         raise ExchangeFailed(f"token endpoint returned {status}"
                              + (f" {error}" if error else " without an access token"
-                                if status == 200 else ""))
+                                if status == 200 else ""), code=error)
     bundle: dict = {"serverName": server_name, "serverUrl": discovery.server_url,
                     "accessToken": access_token}
     refresh_token = payload.get("refresh_token")

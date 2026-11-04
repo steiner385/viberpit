@@ -121,6 +121,18 @@ def _retry_delay(http_headers, attempt: int, rng=random.random) -> float:
     return base * (0.5 + 0.5 * rng())  # equal jitter: [base/2, base)
 
 
+# Every outbound body is read through this cap: a metadata URL an MCP server names could
+# otherwise stream without end (defence in depth; the largest real body is a few KiB).
+MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+def _read_capped(resp) -> bytes:
+    body = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise TransientError(f"response body over {MAX_RESPONSE_BYTES} bytes")
+    return body
+
+
 def http_request(method: str, url: str, headers: dict | None = None,
                  data: bytes | None = None, timeout: int = 15, *,
                  max_retries: int = _DEFAULT_MAX_RETRIES,
@@ -166,10 +178,10 @@ def http_request(method: str, url: str, headers: dict | None = None,
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 _note_network(True)
-                return r.status, r.read()
+                return r.status, _read_capped(r)
         except urllib.error.HTTPError as e:
             _note_network(True)  # the server answered: the network is fine
-            status, body = e.code, e.read()
+            status, body = e.code, _read_capped(e)
             # Non-idempotent (single-use token POST): only retry edge rejects that
             # never reached the origin (403 Cloudflare 1010 / 429). A 5xx may mean
             # the origin already processed + rotated the token, so resending would
