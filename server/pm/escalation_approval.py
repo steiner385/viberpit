@@ -55,7 +55,7 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
                                                    trusted_authors)
     from server.pm.fleet_platforms import fleet_platform_state
     from server.pm.policy_skip import skipped_by_policy
-    from server.pm.queue import (is_parked, is_self_closing_tracker, is_trusted_author,
+    from server.pm.queue import (gated_platform, is_parked, is_self_closing_tracker, is_trusted_author,
                                  needs_unavailable_environment)
     escalation = escalation_for(wi.hold_kind, wi.hold_reason)
     if escalation is None:
@@ -68,7 +68,7 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
     # override. The backlog tick ends such holds on its own (``policy_skip``);
     # until it does, Retry (release without dispatch) is the honest tap.
     policy = await policy_for_repo(db, wi.repo or "")
-    platforms, _busy = await fleet_platform_state(db)
+    platforms, busy = await fleet_platform_state(db)
     if skipped_by_policy(author=wi.author or "", author_id=wi.author_id, labels=wi.labels or (), title=wi.title or "",
                          policy=policy, platforms=platforms):
         named = sorted({str(lbl).strip().lower() for lbl in (wi.labels or ())}
@@ -92,6 +92,14 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
             "skipped_by_policy",
             f"{wi.repo}#{wi.number} is skipped by this product's policy ({why}); the runner "
             "does not work it, so there is nothing to escalate — Retry releases the hold")
+    # Busy is not a policy verdict (the queue only defers it), but this tap dispatches
+    # without re-ranking, so it must hold the same line: one live session per VM.
+    if (pinned := gated_platform(wi.labels or ())) is not None and pinned in busy:
+        raise EscalationApprovalError(
+            "platform_busy",
+            f"{wi.repo}#{wi.number} needs the {pinned} host, which already has a working "
+            "session; approve again when it frees up, or Retry to release the hold and "
+            "let the queue take it", 409)
     model = model.strip().lower()
     if model not in TIER_ORDER:
         raise EscalationApprovalError("bad_model", f"unknown ladder tier: {model}")

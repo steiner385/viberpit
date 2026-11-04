@@ -14,11 +14,10 @@ from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 
 
 def _cand(name: str, platforms=None, **kw) -> HostCandidate:
-    extra = {} if platforms is None else {"platforms": frozenset(platforms)}
     return HostCandidate(
         name=name, enabled=True, healthy=True, weight=kw.pop("weight", 100),
         active_sessions=0, max_sessions=None, load_avg=None, mem_available_mb=None,
-        **extra)
+        platforms=frozenset({"linux"}) if platforms is None else frozenset(platforms))
 
 
 async def _seed(tmp_path, dbname, rows) -> FleetRouter:

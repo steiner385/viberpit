@@ -30,8 +30,9 @@ from datetime import datetime
 from server.automations.product_policy import (skip_labels, skips_self_closing_trackers,
                                                trusted_authors)
 from server.pm.holds import actor_class
-from server.pm.queue import (FLEET_PLATFORMS, QueueRow, is_bot_noise, is_parked, is_self_closing_tracker,
-                             is_trusted_author, needs_unavailable_environment)
+from server.pm.queue import (FLEET_PLATFORMS, QueueRow, is_bot_noise, is_parked,
+                             is_self_closing_tracker, is_trusted_author,
+                             needs_unavailable_environment)
 
 
 def not_work_by_policy(*, author: str, labels: Iterable[str], title: str,

@@ -3561,6 +3561,51 @@ def test_approve_escalation_refuses_an_issue_the_products_policy_skips():
         orch.backlog_runner_dispatch.assert_awaited_once_with(["o/r#1"], model="fable")
 
 
+def test_approve_escalation_refuses_an_env_windows_issue_while_the_vm_is_busy():
+    """The tap dispatches without re-ranking, so it must hold the queue's
+    ``platform_busy`` line itself: a second live session on the one Windows VM is
+    what design call 1 forbids. Free VM: the same tap goes through."""
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import Host, Session, WorkItem
+
+        async def _setup():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(WorkItem.id == wid))).scalar_one()
+                w.labels = ["env: windows"]
+                w.author = "app/github-actions"
+                db.add(Host(name="w", endpoint="https://w:9443", enabled=True, healthy=True,
+                            weight=100, platforms=["windows"]))
+                db.add(Session(id="busy", name="busy", account_name="a", cwd="/tmp",
+                               host="w", platform="windows", status="in_progress"))
+        c.portal.call(_setup)
+        _hold_for_escalation(c, wid)
+        orch = c.app.state.sessions
+        orch.backlog_runner_dispatch = AsyncMock(return_value={
+            "status": "spawned", "session_id": "s-1", "session_name": None})
+        orch.resolve_model_approval = AsyncMock(return_value=None)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "platform_busy"
+        orch.backlog_runner_dispatch.assert_not_awaited()
+
+        async def _free():
+            async with db_session() as db:
+                row = (await db.execute(select(Session).where(Session.id == "busy"))).scalar_one()
+                row.status = "handed_back"
+        c.portal.call(_free)
+        r = c.post(f"/api/pm/work-items/{wid}/hold/approve-escalation",
+                   json={"model": "fable"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        orch.backlog_runner_dispatch.assert_awaited_once_with(["o/r#1"], model="fable")
+
+
 def test_approve_escalation_refuses_a_self_closing_tracker_unless_the_product_works_them():
     """#2683: a ``[flaky]`` tracker is skipped by the queue as ``tracker`` by default,
     so approving its escalation would dispatch what the policy says is not work. A

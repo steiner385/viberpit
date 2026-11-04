@@ -677,7 +677,7 @@ WIN = frozenset({"linux", "windows"})
 def test_env_windows_runs_when_fleet_advertises_windows():
     row = _row(labels=("env: windows",))
     assert skip_reason(row, platforms=WIN, **ENV_KW) is None
-    entries, skipped = rank([row], platforms=WIN, **{k: v for k, v in ENV_KW.items()})
+    entries, skipped = rank([row], platforms=WIN, **ENV_KW)
     assert len(entries) == 1 and skipped == {}
 
 
