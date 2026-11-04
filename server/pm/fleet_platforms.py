@@ -16,13 +16,23 @@ from server.pm.desired_state import ACTIVE_SESSION_STATUSES
 from server.pm.queue import FLEET_PLATFORMS
 from server.sessions.host_platforms import parse_platforms_info, platform_routing_enabled
 
+#: What holds a platform host's VM: a turn running (``ACTIVE_SESSION_STATUSES``) or
+#: queued to run — ``queued`` is the capacity queue's status. A queued gated session
+#: is persisted on the platform host and the drain starts it there with no busy check,
+#: so leaving it out let a second gated issue queue behind it and both start together.
+PLATFORM_HOLDING_STATUSES = ACTIVE_SESSION_STATUSES | frozenset({"queued"})
+
 
 async def fleet_platform_state(db: AsyncSession) -> tuple[frozenset[str], frozenset[str]]:
     """``(advertised, busy)``. *advertised* is Linux plus every platform an enabled,
     healthy host advertises. A non-Linux platform is *busy* when every such advertiser
-    already hosts a session pinned to it whose turn is running or queued
-    (``ACTIVE_SESSION_STATUSES``): a handed-back or waiting session does not hold the
+    already hosts a session pinned to it whose turn is running or queued to run
+    (``PLATFORM_HOLDING_STATUSES``): a handed-back or waiting session does not hold the
     VM, so the next issue may start.
+
+    Keyed on ``Session.host``, which is stamped for worker-hosted sessions only; a
+    platform host that is the PRIMARY (NULL stamp) would never read busy. Today every
+    platform host is a worker.
 
     With automation host routing off, no non-Linux platform is reachable — the spawn
     would refuse every gated dispatch (``require_platform_routing``) — so the answer
@@ -41,7 +51,7 @@ async def fleet_platform_state(db: AsyncSession) -> tuple[frozenset[str], frozen
     rows = (await db.execute(
         select(Session.host, Session.platform).where(
             Session.platform.in_(by_platform),
-            Session.status.in_(ACTIVE_SESSION_STATUSES)))).all()
+            Session.status.in_(PLATFORM_HOLDING_STATUSES)))).all()
     held = {(host, platform) for host, platform in rows}
     busy = frozenset(p for p, names in by_platform.items()
                      if all((n, p) in held for n in names))

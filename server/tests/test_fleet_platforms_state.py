@@ -60,6 +60,15 @@ async def test_platform_busy_when_only_advertiser_has_working_session(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_capacity_queued_session_holds_platform(tmp_path):
+    """A gated session parked in the platform host's capacity queue holds the VM too:
+    the drain starts it there with no busy check, so a second ``env: windows`` issue
+    dispatched meanwhile would queue behind it and both would start together."""
+    await _setup(tmp_path, [("w", ["windows"], True, True)], [("w", "windows", "queued")])
+    assert (await _state())[1] == frozenset({"windows"})
+
+
+@pytest.mark.asyncio
 async def test_handed_back_session_does_not_hold_platform(tmp_path):
     await _setup(tmp_path, [("w", ["windows"], True, True)],
                  [("w", "windows", "handed_back"), ("w", "windows", "waiting_question")])
