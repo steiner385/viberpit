@@ -220,8 +220,8 @@ sudo install -D -m 0644 docs/runbooks/windows-vm-session-guide.md /etc/viberpit/
 ```
 
 Re-run these after any change to `scripts/winvm/` or the guide; deploys do not install them. Sessions
-find the helpers through the daemon's `PATH`, which already includes `/usr/local/bin`
-(`/home/tony/GitHub/ccswitch/.venv/bin:/usr/local/sbin:/usr/local/bin:...`), so no `PATH` change is
+find the helpers through the daemon's `PATH`
+(it already lists `/usr/local/bin`: check with `systemctl show viberpit-daemon -p Environment` or the daemon process environment), so no `PATH` change is
 needed. Check with `which winrun winsync` as the daemon user.
 
 In that same daemon env file:
