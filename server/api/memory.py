@@ -111,9 +111,13 @@ def _mode_for(dfd: int, name: str) -> int:
     """Keep the existing file's permission bits across a save (a user who tightened
     it to 0600 must not find it world-readable afterwards); ``FILE_MODE`` on create."""
     try:
-        return stat.S_IMODE(os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mode)
+        st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
     except FileNotFoundError:
         return FILE_MODE
+    if not stat.S_ISREG(st.st_mode):
+        return FILE_MODE
+    # Only ever tighten: never add bits beyond 0644, and drop suid/sgid/sticky.
+    return stat.S_IMODE(st.st_mode) & FILE_MODE
 
 
 def read_user_memory() -> dict[str, Any]:

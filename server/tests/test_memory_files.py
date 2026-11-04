@@ -689,6 +689,16 @@ def test_a_save_keeps_the_existing_file_mode(editor) -> None:
     assert stat.S_IMODE(editor.file.stat().st_mode) == 0o600
 
 
+def test_a_save_never_loosens_the_mode_beyond_0644(editor) -> None:
+    """A world-writable or setuid file is saved back at most 0644."""
+    editor.file.write_bytes(b"v0\n")
+    editor.file.chmod(0o4777)
+    r = editor.c.put("/api/settings/memory",
+                     json={"text": "v1\n", "etag": _etag(b"v0\n")}, headers=_H)
+    assert r.status_code == 200, r.text
+    assert stat.S_IMODE(editor.file.stat().st_mode) == 0o644
+
+
 def test_two_tabs_second_save_conflicts_and_nothing_is_lost(
         editor, caplog: pytest.LogCaptureFixture) -> None:
     """Review Focus 3."""
