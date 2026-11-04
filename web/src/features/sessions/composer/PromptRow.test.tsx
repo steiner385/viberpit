@@ -178,24 +178,31 @@ describe('PromptRow', () => {
     const CLAUDE_CAPS: AgentCapabilities = { ...CODEX_CAPS, reasoningEffort: false, flagSettings: true }
     const CLAUDE_MODELS: ModelOption[] = [{ id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }]
 
-    it('offers the CLI effort levels for a Claude session with live flag settings', async () => {
-      render(<PromptRow rt={fakeRuntime({ model: 'opus' })} session={{ engine: 'claude_code', reasoningEffort: 'high' }}
+    it("offers only the current model's supportedEffortLevels", async () => {
+      render(<PromptRow rt={fakeRuntime({ model: 'opus' })}
+        session={{ engine: 'claude_code', reasoningEffort: 'high', supportedEffortLevels: ['low', 'medium', 'high'] }}
         caps={CLAUDE_CAPS} models={CLAUDE_MODELS} />)
       await userEvent.click(screen.getByRole('button', { name: 'Effort: high' }))
       const items = within(screen.getByRole('menu', { name: 'Reasoning effort' })).getAllByRole('menuitemradio')
-      expect(items.map((i) => i.textContent?.replace(/\d$/, ''))).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+      expect(items.map((i) => i.textContent?.replace(/\d$/, ''))).toEqual(['low', 'medium', 'high'])
     })
 
     it('posts the pick through rt.onSetModel on the current model, now when idle', async () => {
       const rt = fakeRuntime({ model: 'opus' })
-      render(<PromptRow rt={rt} session={{ engine: 'claude_code' }} caps={CLAUDE_CAPS} models={CLAUDE_MODELS} />)
+      render(<PromptRow rt={rt} session={{ engine: 'claude_code', supportedEffortLevels: ['low', 'max'] }} caps={CLAUDE_CAPS} models={CLAUDE_MODELS} />)
       await userEvent.click(screen.getByRole('button', { name: 'Effort: Default' }))
       await userEvent.click(screen.getByRole('menuitemradio', { name: /^max/ }))
       expect(rt.onSetModel).toHaveBeenCalledWith('opus', 'now', 'max')
     })
 
+    it.each([[[]], [null], [undefined]])('hides the picker when the model lists no levels (%j)', (levels) => {
+      render(<PromptRow rt={fakeRuntime({ model: 'opus' })}
+        session={{ engine: 'claude_code', supportedEffortLevels: levels }} caps={CLAUDE_CAPS} models={CLAUDE_MODELS} />)
+      expect(screen.queryByRole('button', { name: /^Effort:/ })).toBeNull()
+    })
+
     it('stays hidden for Claude when live flag settings are off (or not reported)', () => {
-      const { rerender } = render(<PromptRow rt={fakeRuntime({ model: 'opus' })} session={{ engine: 'claude_code' }}
+      const { rerender } = render(<PromptRow rt={fakeRuntime({ model: 'opus' })} session={{ engine: 'claude_code', supportedEffortLevels: ['low'] }}
         caps={{ ...CLAUDE_CAPS, flagSettings: false }} models={CLAUDE_MODELS} />)
       expect(screen.queryByRole('button', { name: /^Effort:/ })).toBeNull()
       rerender(<PromptRow rt={fakeRuntime({ model: 'opus' })} session={{ engine: 'claude_code' }} models={CLAUDE_MODELS} />)

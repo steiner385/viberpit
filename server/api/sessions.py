@@ -340,6 +340,10 @@ def _record_to_dict(
         "fastModeDisabledReason": getattr(record, "fast_mode_disabled_reason", None),
         "fastModeAvailable": flag_settings.fast_mode_available(
             getattr(record, "fast_mode_models", None), getattr(record, "model", None)),
+        # The effort levels the current model accepts (CLI `supportedEffortLevels`): the
+        # picker offers exactly these; [] hides it, null = not reported yet.
+        "supportedEffortLevels": (record.effort_levels_now()
+                                  if hasattr(record, "effort_levels_now") else None),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "inferredGoal": getattr(record, "inferred_goal", None),

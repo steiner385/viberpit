@@ -1190,3 +1190,17 @@ def test_http_unknown_session_old_daemon_and_bad_body() -> None:
 def test_http_requires_identity() -> None:
     with patch.dict(os.environ, _ENV), _client() as c:
         assert c.post(f"/api/sessions/{SID}/fast", json={"enabled": True}).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_payload_serves_the_current_models_supported_effort_levels(env) -> None:
+    """#3260: the levels ride the daemon→edge copy, follow a model switch, and a model
+    listing none serves [] (the picker hides); no list yet serves null."""
+    assert _payload(env.rec)["supportedEffortLevels"] == _LEVELS
+    env.rec.model_options = [{"value": "opus", "supportedEffortLevels": ["low"]},
+                             {"value": "sonnet", "supportedEffortLevels": []}]
+    assert _payload(env.rec)["supportedEffortLevels"] == ["low"]
+    env.rec.model = "sonnet"
+    assert _payload(env.rec)["supportedEffortLevels"] == []
+    env.rec.model_options = None
+    assert _payload(env.rec)["supportedEffortLevels"] is None

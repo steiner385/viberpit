@@ -233,6 +233,10 @@ class SessionRecord:
     # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
     # owning daemon. None until a Claude driver has started there.
     model_options: list | None = None
+    # The current model's ``supportedEffortLevels`` as mirrored from the owning daemon
+    # (``effort_levels_now`` computes it from ``model_options`` where those live). On the
+    # edge only this mirror exists. None = the CLI has not said; [] = the model has none.
+    supported_effort_levels: list[str] | None = None
     # Fork anchors (D-8): turn id -> the CLI transcript uuid that turn can be forked
     # from, fed live by the driver's TurnAnchor events and merged from the transcript
     # on a lookup miss (SessionOrchestrator.resolve_turn_anchor). Insertion-ordered and
@@ -299,6 +303,15 @@ class SessionRecord:
         poll and the live WS patch carries the newer `rev_at`, so a stale in-flight poll
         cannot overwrite a fresher live status."""
         return iso_utc(self.updated_at)
+
+    def effort_levels_now(self) -> list[str] | None:
+        """The effort levels the CLI says the CURRENT model accepts — computed from the
+        daemon-local ``model_options`` when present (so a model switch is reflected at
+        once), else the mirrored copy an edge record carries. None = unknown."""
+        if self.model_options is not None:
+            from server.sessions import flag_settings
+            return flag_settings.effort_levels({"models": self.model_options}, self.model)
+        return self.supported_effort_levels
 
     def to_dict(self) -> dict:
         # `updatedAt` is the "active … ago" / last-activity time, matching the HTTP
@@ -369,6 +382,7 @@ class SessionRecord:
             "fastModeModels": self.fast_mode_models,
             "fastModeState": self.fast_mode_state,
             "fastModeDisabledReason": self.fast_mode_disabled_reason,
+            "supportedEffortLevels": self.effort_levels_now(),
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
             "kind": self.kind,
@@ -443,6 +457,7 @@ class SessionRecord:
             fast_mode_models=d.get("fastModeModels"),
             fast_mode_state=d.get("fastModeState"),
             fast_mode_disabled_reason=d.get("fastModeDisabledReason"),
+            supported_effort_levels=d.get("supportedEffortLevels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),
             sub_agents=d.get("subAgents"),
