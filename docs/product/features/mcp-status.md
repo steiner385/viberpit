@@ -79,6 +79,16 @@ Reconnect failures are logged and show up in the next status poll; they never fa
 - **Purge:** the dropped keys and moved bundles' old keys are purged from every account dir in the same tick's publish, so capture never offers a stale copy back. Each purged key stays tombstoned for 30 minutes, so a dir that missed a tick still gets it purged. If `claude.shared.json` exists but can't be read, the tick skips reconcile (one WARNING) and purges only tombstoned keys; an absent file just means no user servers.
 - **Single writer:** only the refresh-authority host (dobby: the edge, the primary daemon and the CLI) writes the shared store, serialised by its lock; workers never do. A worker's reconcile is a no-op, and its merge and capture leave the store alone. Logs carry keys and counts, never token values.
 
+**Heal on refresh** - when a refresh succeeds for a grant that was failing (`consecutive_failures > 0`, or health state `dead`/`expired`), the edge runs the reauth follow-through (`after_login`) for that server, probing at most once per tick. A routine refresh of a healthy grant never heals.
+
+**Push when a shared sign-in dies** - one push, event class `mcp_auth_needed` (web label "MCP sign-in needed", delivered even with no rules configured), deep link `/settings/mcp`. Title `MCP sign-in needed: {server}`. Body for a dead grant: `{server}'s sign-in was revoked or expired. Sign in once to restore it for every account and runner.` Body for an expired grant that refresh keeps failing: `{server}'s sign-in expired — background refresh is failing: {reason}. Sign in again.` (reason truncated to 160 chars). Dedupe is one push per grant generation: the generation is the grant's last successful refresh (`last_ok_at`, or "never"), recorded in the health row's `alerted_for` as `{outcome}:{generation}`. A successful refresh or a fresh sign-in starts a new generation. A grant that goes expired and later dead in one generation may push twice, as an escalation.
+
+**Status** - a cleared grant whose health row says `dead` reads "Sign-in revoked or expired"; an expired grant shows the last refresh failure in the same `overall.error` text. A live or expiring bundle always wins over a stale health row.
+
+**Health table** - `mcp_grant_health` (migration `0101`), one row per store key: `server`, `state`, `last_attempt_at`, `last_ok_at`, `last_outcome`, `last_error` (refresh error text, at most 500 chars, never a token), `consecutive_failures`, `alerted_for`, `alerted_at`, `updated_at`. It is durable, so alert dedupe and healing survive restarts.
+
+**Superseded keys are inert** - a key holding a refresh token that is not any wanted (configured) key's is never refreshed. Rotating a refresh token on an old key of a configured server would invalidate the grant the CLI actually uses.
+
 **Kill switch** - `VIBERPIT_MCP_OAUTH_REFRESH_ENABLED` (default on). When off, nothing refreshes MCP grants, and a token stays valid only until it expires. Reconcile runs in the same tick, so the switch disables it too.
 
 ## In-session readout
