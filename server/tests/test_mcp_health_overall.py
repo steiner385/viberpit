@@ -113,3 +113,31 @@ def test_non_oauth_server_uses_rows_only():
     rows = [{"status": "pending", "error": None, "source": "probe"}, {"status": "connected", "error": None, "source": "probe"}]
     assert o.derive_overall(grant="none", rows=rows, now_ms=NOW, expires_at_ms=None) == {"status": "connected", "error": None, "grant": "none"}
     assert o.derive_overall(grant="none", rows=[], now_ms=NOW, expires_at_ms=None)["status"] is None
+
+
+def test_dead_from_health_row():
+    cleared = {KEY: b(tok="", exp=0, rt=None)}
+    dead = {"state": "dead", "lastOutcome": "dead", "lastError": "invalid_grant"}
+    assert o.grant_state(cleared, key=KEY, now_ms=NOW, health=dead) == "dead"
+    assert o.grant_state(cleared, key=KEY, now_ms=NOW, health={"state": "live"}) == "never"
+    assert o.grant_state(cleared, key=KEY, now_ms=NOW) == "never"
+    # a fresh sign-in wins over a stale dead row
+    assert o.grant_state({KEY: b()}, key=KEY, now_ms=NOW, health=dead) == "live"
+    out = o.derive_overall(grant="dead", rows=[], now_ms=NOW, expires_at_ms=None)
+    assert out == {"status": "needs-auth", "grant": "dead",
+                   "error": "Sign-in revoked or expired — one sign-in restores it for every account and runner."}
+
+
+def test_expired_copy_includes_refresh_error():
+    out = o.derive_overall(grant="expired", rows=[], now_ms=NOW, expires_at_ms=1_799_996_400_000,
+                           refresh_error="HTTP 503")
+    assert out["error"] == ("Sign-in expired 2027-01-15 07:00 UTC — background refresh is failing: "
+                            "HTTP 503; sign in again.")
+    out = o.derive_overall(grant="expired", rows=[], now_ms=NOW, expires_at_ms=None, refresh_error="HTTP 503")
+    assert out["error"] == "Sign-in expired — background refresh is failing: HTTP 503; sign in again."
+    assert o.refresh_error_for("expired", {"lastOutcome": "transient", "lastError": "HTTP 503"}) == "HTTP 503"
+    assert o.refresh_error_for("dead", {"lastOutcome": "dead", "lastError": "invalid_grant"}) == "invalid_grant"
+    assert o.refresh_error_for("live", {"lastOutcome": "transient", "lastError": "x"}) is None
+    assert o.refresh_error_for("expired", {"lastOutcome": "refreshed", "lastError": "x"}) is None
+    assert o.refresh_error_for("expired", {"lastOutcome": "transient", "lastError": ""}) is None
+    assert o.refresh_error_for("expired", None) is None

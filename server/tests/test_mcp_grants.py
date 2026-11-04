@@ -75,7 +75,7 @@ def test_reconcile_grants_moves_and_reports(shared: Path, monkeypatch, caplog): 
         return AWS_ID
 
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
-    drop = grants.reconcile_grants()
+    drop = grants.reconcile_grants().drop
     assert drop == frozenset({OLD_KEY, "plugin:linear:linear|0"})
     store = creds.read_shared_mcp()
     assert set(store) == {NEW_KEY, "projsrv|0"}
@@ -95,7 +95,7 @@ def test_reconcile_grants_steady_state_is_quiet(shared: Path, monkeypatch, caplo
         "serverName": "aws-oauth", "accessToken": "AT-live-secret", "refreshToken": "RT-live-secret"}})
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity",
                         lambda *a, **k: pytest.fail("steady state must not fetch"))
-    assert grants.reconcile_grants() == frozenset()
+    assert grants.reconcile_grants().drop == frozenset()
     assert not [r for r in caplog.records if "reconciled" in r.getMessage()]
 
 
@@ -105,20 +105,23 @@ def test_reconcile_grants_swallows_errors(shared: Path, monkeypatch, caplog):  #
 
     monkeypatch.setattr(scan, "list_mcp_servers", boom)
     with caplog.at_level(logging.WARNING):
-        assert grants.reconcile_grants() == frozenset()
+        assert grants.reconcile_grants().drop == frozenset()
     assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(monkeypatch):
+async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(isolated_db, monkeypatch):
     from server import app as app_mod
 
     calls: list = []
-    monkeypatch.setattr(grants, "reconcile_grants", lambda: calls.append("reconcile") or frozenset({"old|k"}))
+    monkeypatch.setattr(grants, "reconcile_grants", lambda: calls.append("reconcile") or grants.ReconcileResult(
+                            drop=frozenset({"old|k"}), skip=frozenset({"sup|1"})))
     monkeypatch.setattr(mcp_oauth_refresh, "run_once",
-                        lambda **kw: calls.append(("run_once", kw)))
-    await app_mod._mcp_oauth_tick()
-    assert calls == ["reconcile", ("run_once", {"drop_keys": frozenset({"old|k"})})]
+                        lambda **kw: calls.append(("run_once", kw)) or {"outcomes": []})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: {})
+    await app_mod._mcp_oauth_tick(lambda: None)
+    assert calls == ["reconcile", ("run_once", {"drop_keys": frozenset({"old|k"}),
+                                          "skip_keys": frozenset({"sup|1"})})]
 
 
 def test_key_for_skips_placeholders_and_non_candidates():
@@ -165,7 +168,7 @@ def test_identity_fetched_outside_the_store_lock(shared: Path, monkeypatch):  # 
 
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
     monkeypatch.setattr(creds, "update_shared_mcp", update)
-    assert grants.reconcile_grants() == frozenset()
+    assert grants.reconcile_grants().drop == frozenset()
     assert fetched == []
     assert set(creds.read_shared_mcp()) == {NEW_KEY, OLD_KEY}  # nothing moved
 
@@ -192,7 +195,7 @@ def test_identity_prefetch_feeds_the_locked_plan(shared: Path, monkeypatch):  # 
 
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
     monkeypatch.setattr(creds, "update_shared_mcp", update)
-    assert grants.reconcile_grants() == frozenset({OLD_KEY})
+    assert grants.reconcile_grants().drop == frozenset({OLD_KEY})
     assert fetched and not any(locked for _, locked in fetched)  # prefetched before the lock
     assert creds.read_shared_mcp()[NEW_KEY]["refreshToken"] == "RT-live-secret"
 
@@ -202,10 +205,10 @@ def test_purged_keys_tombstoned_for_thirty_minutes(shared: Path, monkeypatch):  
     dead = {"serverName": "plugin:linear:linear", "serverUrl": "https://mcp.linear.app/mcp"}
     creds.write_json_secure(paths.shared_mcp_path(), {"plugin:linear:linear|0": dead})
     t0 = 5000.0
-    assert grants.reconcile_grants(clock=lambda: t0) == frozenset({"plugin:linear:linear|0"})
+    assert grants.reconcile_grants(clock=lambda: t0).drop == frozenset({"plugin:linear:linear|0"})
     assert creds.read_shared_mcp() == {}
-    assert grants.reconcile_grants(clock=lambda: t0 + 10 * 60) == frozenset({"plugin:linear:linear|0"})
-    assert grants.reconcile_grants(clock=lambda: t0 + 31 * 60) == frozenset()
+    assert grants.reconcile_grants(clock=lambda: t0 + 10 * 60).drop == frozenset({"plugin:linear:linear|0"})
+    assert grants.reconcile_grants(clock=lambda: t0 + 31 * 60).drop == frozenset()
 
 
 def test_tombstone_not_returned_once_the_key_is_back_in_the_store(shared: Path):  # noqa: F811
@@ -213,7 +216,7 @@ def test_tombstone_not_returned_once_the_key_is_back_in_the_store(shared: Path):
     grants._tombstones["back|1"] = 10_000.0
     creds.write_json_secure(paths.shared_mcp_path(), {"back|1": {
         "serverName": "back", "accessToken": "a", "refreshToken": "r"}})
-    assert grants.reconcile_grants(clock=lambda: 100.0) == frozenset()
+    assert grants.reconcile_grants(clock=lambda: 100.0).drop == frozenset()
 
 
 def test_unreadable_user_config_skips_the_tick(shared: Path, monkeypatch, caplog):  # noqa: F811
@@ -224,7 +227,7 @@ def test_unreadable_user_config_skips_the_tick(shared: Path, monkeypatch, caplog
     grants._tombstones["gone|1"] = 10_000.0
     monkeypatch.setattr(creds, "update_shared_mcp", lambda fn: pytest.fail("must not write"))
     with caplog.at_level(logging.WARNING):
-        assert grants.reconcile_grants(clock=lambda: 100.0) == frozenset({"gone|1"})
+        assert grants.reconcile_grants(clock=lambda: 100.0).drop == frozenset({"gone|1"})
     assert creds.read_shared_mcp() == store
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
 
@@ -233,4 +236,367 @@ def test_absent_user_config_is_no_user_servers(shared: Path):  # noqa: F811
     assert not paths.shared_claude_json_path().exists()
     dead = {"serverName": "plugin:linear:linear", "serverUrl": "https://mcp.linear.app/mcp"}
     creds.write_json_secure(paths.shared_mcp_path(), {"plugin:linear:linear|0": dead})
-    assert grants.reconcile_grants() == frozenset({"plugin:linear:linear|0"})
+    assert grants.reconcile_grants().drop == frozenset({"plugin:linear:linear|0"})
+
+
+def _w(key):
+    return WantedServer(key=key, store_name="n", url="https://x.example/mcp")
+
+
+def test_superseded_refresh_keys():
+    def rt(name, **kw):
+        return {"serverName": name, "refreshToken": "r", **kw}
+
+    wanted = [WantedServer(key="wanted|1", store_name="srv", url="https://x.example/mcp")]
+    store = {"wanted|1": rt("srv"), "stale|1": rt("srv"),
+             "stale-empty|1": {"serverName": "srv"}, "stale-blank|1": rt("srv", refreshToken=""),
+             "unconfigured|1": rt("projsrv"), "junk|1": "not-a-dict"}
+    assert grants.superseded_refresh_keys(store, wanted) == frozenset({"stale|1"})
+    assert grants.superseded_refresh_keys(store, wanted + [_w("stale|1")]) == frozenset()
+
+
+def test_superseded_refresh_keys_empty_wanted_skips_nothing():
+    store = {"a|1": {"serverName": "a", "refreshToken": "r"}, "b|1": {"serverName": "b", "refreshToken": "r"}}
+    assert grants.superseded_refresh_keys(store, []) == frozenset()
+
+
+def test_reconcile_skips_old_key_of_configured_server_not_unconfigured(shared: Path, monkeypatch):  # noqa: F811
+    _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL}})
+    creds.write_json_secure(paths.shared_mcp_path(), {
+        NEW_KEY: {"serverName": "aws-oauth", "refreshToken": "RT-live-secret"},
+        OLD_KEY: {"serverName": "aws-oauth", "refreshToken": "RT-old"},
+        "projsrv|0": {"serverName": "projsrv", "refreshToken": "RT-proj"}})
+    monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", lambda *a, **k: None)
+    result = grants.reconcile_grants()
+    assert result.skip == frozenset({OLD_KEY})
+    assert "projsrv|0" not in result.skip
+
+
+def test_reconcile_error_paths_skip_nothing(shared: Path, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(scan, "list_mcp_servers", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert grants.reconcile_grants() == grants.ReconcileResult(drop=frozenset(), skip=frozenset())
+
+
+# --- heal on refresh (phase 3, task 3) ---------------------------------------------------
+
+K1 = "plugin:railway:railway|b12ecd269c942ba3"
+K2 = "notion|0123456789abcdef"
+
+
+class _HealOrch:
+    def __init__(self):
+        self.probes = 0
+
+    async def probe_mcp(self, account=None):
+        assert account is None
+        self.probes += 1
+        return {"rows": [], "skipped": []}
+
+
+@pytest.fixture
+def tick(monkeypatch):
+    """Drive app._mcp_oauth_tick with scripted per-tick outcomes; record after_login calls."""
+    from server import app as app_mod
+    from server.mcp_health import after_login as al_mod
+    from viberpit import accounts
+
+    state: dict = {"outcomes": [], "store": {}, "heals": [],
+                   "reconcile": grants.ReconcileResult(drop=frozenset(), skip=frozenset())}
+    monkeypatch.setattr(grants, "reconcile_grants", lambda: state["reconcile"])
+    monkeypatch.setattr(mcp_oauth_refresh, "run_once",
+                        lambda **kw: {"outcomes": state["outcomes"].pop(0)})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: state["store"])
+    monkeypatch.setattr(accounts, "_anthropic_account_names", lambda: ["alice", "bob"])
+
+    async def fake_after_login(orch, server, accts, *, probe=True, signed_in=False):
+        state["heals"].append((server, list(accts), probe, signed_in))
+        return {"refreshed": 0, "reconnected": 0}
+    monkeypatch.setattr(al_mod, "after_login", fake_after_login)
+    from server.sessions import push as push_mod
+    state["pushes"] = []
+
+    async def fake_notify_event(event_class, title, body, **kw):
+        state["pushes"].append({"event_class": event_class, "title": title, "body": body, **kw})
+    monkeypatch.setattr(push_mod, "notify_event", fake_notify_event)
+    orch = _HealOrch()
+    state["orch"] = orch
+
+    async def run(*outcomes: dict):
+        state["outcomes"].append(list(outcomes))
+        return await app_mod._mcp_oauth_tick(lambda: orch)
+    state["run"] = run
+    return state
+
+
+def _out(outcome: str, key: str = K1, label: str = "railway", error: str | None = None) -> dict:
+    return {"key": key, "label": label, "outcome": outcome, "error": error}
+
+
+@pytest.mark.asyncio
+async def test_transient_then_refreshed_heals_without_alert(isolated_db, tick):
+    t1 = await tick["run"](_out("transient", error="HTTP 503"))
+    assert t1 == [] and tick["heals"] == [] and tick["orch"].probes == 0
+    t2 = await tick["run"](_out("refreshed"))
+    assert [t.kind for t in t2] == ["healed"]  # a heal, never an alert
+    assert tick["heals"] == [("railway", ["alice", "bob"], False, False)]
+    assert tick["orch"].probes == 1
+    assert tick["pushes"] == []
+
+
+@pytest.mark.asyncio
+async def test_routine_refresh_does_not_heal(isolated_db, tick):
+    assert await tick["run"](_out("refreshed")) == []
+    assert await tick["run"](_out("refreshed")) == []
+    assert tick["heals"] == [] and tick["orch"].probes == 0
+
+
+@pytest.mark.asyncio
+async def test_heal_probes_once_per_tick(isolated_db, tick):
+    await tick["run"](_out("transient"), _out("dead", key=K2, label="notion"))
+    healed = await tick["run"](_out("refreshed"), _out("refreshed", key=K2, label="notion"))
+    assert sorted(t.server for t in healed) == ["notion", "railway"]
+    assert sorted(h[0] for h in tick["heals"]) == ["notion", "railway"]
+    assert all(h[2] is False for h in tick["heals"])  # per-server probe suppressed
+    assert tick["orch"].probes == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_returns_alert_transitions_without_healing(isolated_db, tick):
+    out = await tick["run"](_out("dead", error="invalid_grant"))
+    assert [(t.kind, t.key) for t in out] == [("alert_dead", K1)]
+    assert tick["heals"] == [] and tick["orch"].probes == 0
+
+
+@pytest.mark.asyncio
+async def test_tick_marks_past_expiry_keys_expired(isolated_db, tick, monkeypatch):
+    import time as _time
+    now_ms = int(_time.time() * 1000)
+    tick["store"] = {K1: {"expiresAt": now_ms - 60_000, "refreshToken": "RT"},
+                     K2: {"expiresAt": now_ms + 3_600_000},
+                     "cleared|0": {"expiresAt": 0}, "odd|1": {"expiresAt": "soon"}, "bare|2": "x"}
+    seen: list = []
+    from server.mcp_health import grant_health
+    real_record = grant_health.record
+
+    async def spy(outcomes, *, expired_keys):
+        seen.append(expired_keys)
+        return await real_record(outcomes, expired_keys=expired_keys)
+    monkeypatch.setattr(grant_health, "record", spy)
+    out = await tick["run"](_out("transient", error="HTTP 503"))
+    assert seen == [frozenset({K1})]
+    assert [t.kind for t in out] == ["alert_expired"]
+
+
+@pytest.mark.asyncio
+async def test_heal_failure_is_logged_and_never_breaks_the_tick(isolated_db, tick, monkeypatch, caplog):
+    from server.mcp_health import after_login as al_mod
+
+    async def boom(orch, server, accts, *, probe=True, signed_in=False):
+        raise RuntimeError("fleet down")
+    monkeypatch.setattr(al_mod, "after_login", boom)
+    await tick["run"](_out("transient"), _out("transient", key=K2, label="notion"))
+    out = await tick["run"](_out("refreshed"), _out("refreshed", key=K2, label="notion"))
+    assert len(out) == 2
+    assert tick["orch"].probes == 1  # the other server's heal and the probe still ran
+    assert any(r.levelno == logging.WARNING and "heal" in r.getMessage() for r in caplog.records)
+
+
+async def _alerted_for(key: str = K1) -> str | None:
+    from server.mcp_health import grant_health
+    return (await grant_health.load([key])).get(key, {}).get("alertedFor")
+
+
+LIVE_BUNDLE = {"serverName": "plugin:railway:railway", "accessToken": "AT", "refreshToken": "RT",
+               "expiresAt": 9_999_999_999_999}
+
+
+def _cleared_bundle() -> dict:
+    return mcp_oauth_refresh.cleared(LIVE_BUNDLE)
+
+
+@pytest.mark.asyncio
+async def test_dead_grant_alerts_once_across_ticks(isolated_db, tick):
+    """Production sequence: the refresher reports ``dead`` once and clears the bundle; later
+    ticks have no outcome for the key at all."""
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead", error="invalid_grant"))
+    await tick["run"]()
+    await tick["run"]()
+    assert len(tick["pushes"]) == 1
+    [p] = tick["pushes"]
+    assert p["event_class"] == "mcp_auth_needed"
+    assert p["title"] == "MCP sign-in needed: railway"
+    assert p["body"] == ("railway's sign-in was revoked or expired. Sign in once to restore it "
+                         "for every account and runner.")
+    assert p["url"] == "/settings/mcp"
+    assert p["fanout_when_unconfigured"] is True
+    assert p["orch"] is tick["orch"]
+    assert await _alerted_for() == "dead:never"
+
+
+@pytest.mark.asyncio
+async def test_record_failure_on_the_dead_tick_still_alerts_once(isolated_db, tick, monkeypatch):
+    """The ``dead`` outcome is reported once. If recording it fails, the death is found from
+    the cleared bundle next tick and pushed exactly once."""
+    from server.mcp_health import grant_health
+
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"](_out("refreshed"))               # signed in and refreshing: last_ok_at set
+    real_record = grant_health.record
+
+    async def boom(outcomes, *, expired_keys):
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(grant_health, "record", boom)
+    tick["store"] = {K1: _cleared_bundle()}             # the refresher swapped in the cleared shape
+    with pytest.raises(RuntimeError):
+        await tick["run"](_out("dead"))
+    assert tick["pushes"] == []
+    monkeypatch.setattr(grant_health, "record", real_record)
+
+    out = await tick["run"]()                          # no outcome: the key left the due set
+    assert [(t.kind, t.key) for t in out] == [("alert_dead", K1)]
+    assert len(tick["pushes"]) == 1
+    assert (await grant_health.load([K1]))[K1]["state"] == "dead"
+    await tick["run"]()
+    assert len(tick["pushes"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_never_signed_in_cleared_bundle_never_alerts(isolated_db, tick):
+    from server.mcp_health import grant_health
+
+    tick["store"] = {"plugin:kindash:kindash|0": {"serverName": "plugin:kindash:kindash",
+                                                  "accessToken": "", "expiresAt": 0}}
+    for _ in range(3):
+        assert await tick["run"]() == []
+    assert tick["pushes"] == []
+    assert await grant_health.load() == {}
+
+
+@pytest.mark.asyncio
+async def test_cleared_bundle_of_a_dropped_key_is_not_promoted(isolated_db, tick):
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"](_out("refreshed"))
+    tick["store"] = {K1: _cleared_bundle()}
+    tick["reconcile"] = grants.ReconcileResult(drop=frozenset({K1}), skip=frozenset())
+    await tick["run"]()
+    assert tick["pushes"] == []
+
+
+@pytest.mark.asyncio
+async def test_new_generation_alerts_again(isolated_db, tick):
+    from server.mcp_health import grant_health
+
+    # Start at generation "never": SQLite's clock is second-resolution, so a refresh and a
+    # sign-in inside one test second would share a generation.
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))
+    await tick["run"]()
+    assert len(tick["pushes"]) == 1
+    first = await _alerted_for()
+    assert first == "dead:never"
+    await grant_health.mark_signed_in([K1], server="railway")   # the user signed in again
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"]()
+    assert len(tick["pushes"]) == 1
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))
+    await tick["run"]()
+    assert len(tick["pushes"]) == 2
+    assert (await _alerted_for()).startswith("dead:") and await _alerted_for() != first
+
+
+@pytest.mark.asyncio
+async def test_expired_then_dead_pushes_twice(isolated_db, tick):
+    import time as _time
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"](_out("refreshed"))
+    tick["store"] = {K1: {**LIVE_BUNDLE, "expiresAt": int(_time.time() * 1000) - 60_000}}
+    await tick["run"](_out("transient", error="HTTP 503"))
+    await tick["run"](_out("transient", error="HTTP 503"))
+    assert len(tick["pushes"]) == 1
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))
+    await tick["run"]()
+    assert len(tick["pushes"]) == 2
+    assert (await _alerted_for()).startswith("dead:")
+
+
+@pytest.mark.asyncio
+async def test_expired_while_failing_alerts_once(isolated_db, tick):
+    import time as _time
+    tick["store"] = {K1: {"expiresAt": int(_time.time() * 1000) - 60_000, "refreshToken": "RT"}}
+    reason = "HTTP 503 " + "x" * 300
+    for _ in range(3):
+        await tick["run"](_out("transient", error=reason))
+    [p] = tick["pushes"]
+    assert p["event_class"] == "mcp_auth_needed"
+    assert p["title"] == "MCP sign-in needed: railway"
+    assert p["body"] == (f"railway's sign-in expired — background refresh is failing: "
+                         f"{reason[:160]}. Sign in again.")
+    assert await _alerted_for() == "expired:never"
+
+
+@pytest.mark.asyncio
+async def test_alert_failure_retries_next_tick(isolated_db, tick, monkeypatch, caplog):
+    """Recorded fine, but building the push failed: the next tick (no outcomes, bundles
+    cleared) pushes each grant exactly once."""
+    from server.mcp_health import alerts
+    from server.mcp_health import grant_health
+
+    marks: list = []
+    real_mark = grant_health.mark_alerted
+
+    async def spy_mark(key, alerted_for):
+        marks.append((key, alerted_for))
+        await real_mark(key, alerted_for)
+    monkeypatch.setattr(grant_health, "mark_alerted", spy_mark)
+
+    def boom(t):
+        raise RuntimeError("copy exploded")
+    real_copy = alerts.alert_copy
+    monkeypatch.setattr(alerts, "alert_copy", boom)
+    tick["store"] = {K1: _cleared_bundle(), K2: _cleared_bundle()}
+    out = await tick["run"](_out("dead"), _out("dead", key=K2, label="notion"))
+    assert len(out) == 2  # the tick still completed
+    assert marks == [] and tick["pushes"] == []
+    assert await _alerted_for() is None
+    assert any(r.levelno == logging.WARNING and "alert" in r.getMessage() for r in caplog.records)
+
+    monkeypatch.setattr(alerts, "alert_copy", real_copy)
+    await tick["run"]()
+    await tick["run"]()
+    assert sorted(p["title"] for p in tick["pushes"]) == [
+        "MCP sign-in needed: notion", "MCP sign-in needed: railway"]
+    assert sorted(marks) == sorted([(K1, "dead:never"), (K2, "dead:never")])
+
+
+@pytest.mark.asyncio
+async def test_mark_alerted_failure_repeats_the_push_once(isolated_db, tick, monkeypatch, caplog):
+    from server.mcp_health import grant_health
+
+    real_mark = grant_health.mark_alerted
+
+    async def boom(key, alerted_for):
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(grant_health, "mark_alerted", boom)
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))
+    assert len(tick["pushes"]) == 1
+    assert any(r.levelno == logging.WARNING and "recording" in r.getMessage() for r in caplog.records)
+    monkeypatch.setattr(grant_health, "mark_alerted", real_mark)
+    await tick["run"]()
+    await tick["run"]()
+    assert len(tick["pushes"]) == 2
+
+
+def test_keys_for_server_maps_short_name_to_cli_keys(shared: Path):  # noqa: F811
+    _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL},
+                    "local": {"type": "stdio", "command": "x"}})
+    install = _seed_plugin(shared, "railway")
+    (install / ".mcp.json").write_text(json.dumps(
+        {"mcpServers": {"railway": {"type": "http", "url": "https://mcp.railway.com"}}}))
+    assert grants.keys_for_server("railway") == [K1]
+    assert grants.keys_for_server("aws-oauth") == [NEW_KEY]
+    assert grants.keys_for_server("local") == []
+    assert grants.keys_for_server("nope") == []

@@ -209,7 +209,7 @@ Each phase is a separate PR, and each ships value on its own:
 
 1. **Truthful status:** §7 plus removing the picker. This alone clears today's false reds. — plan: `docs/superpowers/plans/2026-11-04-mcp-auth-overhaul-phase1-truthful-status.md`
 2. **Keying and a single writer:** §2 plus §1, including the duplicate-bundle migration. — plan: `docs/superpowers/plans/2026-11-04-mcp-auth-overhaul-phase2-keying-single-writer.md`
-3. **Heal and alert:** §4 plus the push half of §5.
+3. **Heal and alert:** §4 plus the push half of §5. — plan: `docs/superpowers/plans/2026-11-04-mcp-auth-overhaul-phase3-heal-and-alert.md`
 4. **One-tap sign-in:** the OAuth client half of §5, with the paste-back fallback.
 5. **Distribution off the mount:** §3 runners via `creds_sync`, plus §6 runner capture.
 

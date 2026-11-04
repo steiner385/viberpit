@@ -24,7 +24,7 @@ class FakeMgr:
 
     async def submit_redirect(self, server: str, url: str) -> McpAuthState:
         self.calls.append(("redirect", server, url))
-        return McpAuthState(state="success", server=server, accounts=["a"])
+        return McpAuthState(state="success", server=server)
 
     async def cancel(self, server: str) -> McpAuthState:
         self.calls.append(("cancel", server))
@@ -103,7 +103,6 @@ def test_redirect_submits(client: TestClient) -> None:
         json={"redirectUrl": "http://localhost/cb?code=1"},
     )
     assert r.json()["state"] == "success"
-    assert r.json()["accounts"] == ["a"]
 
 
 def test_cancel(client: TestClient) -> None:

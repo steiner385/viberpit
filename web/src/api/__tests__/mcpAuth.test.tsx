@@ -30,7 +30,6 @@ const MCP_SUCCESS_STATE = {
   server: 'notion',
   message: null,
   authUrl: null,
-  accounts: ['tony@example.com'],
   startedAt: 1234567890,
 }
 
@@ -39,7 +38,6 @@ const MCP_AWAITING_STATE = {
   server: 'notion',
   message: 'Awaiting redirect',
   authUrl: 'https://api.notion.com/v1/oauth/authorize?...',
-  accounts: [],
   startedAt: 1234567890,
 }
 

@@ -87,6 +87,7 @@ export const EVENT_CLASSES: { value: string; label: string }[] = [
   { value: 'decision_needed', label: 'Decision needed' },
   { value: 'ci_systemic_red', label: 'CI systemic red' },
   { value: 'ci_spend_alarm', label: 'CI spend alarm' },
+  { value: 'mcp_auth_needed', label: 'MCP sign-in needed' },
 ]
 
 export const ACTIONS: { value: string; label: string }[] = [

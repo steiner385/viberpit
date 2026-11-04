@@ -50,7 +50,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: null,
         authUrl: 'https://api.notion.com/v1/oauth/authorize?client_id=abc',
-        accounts: [],
         startedAt: 123,
       }))
 
@@ -72,14 +71,13 @@ describe('McpAuthFlow', () => {
     expect(screen.getByText(/failing to load is expected/i)).toBeTruthy()
   })
 
-  // (b) success state renders "cleared for N account(s)"
-  it('shows "cleared for N account(s)" on success', () => {
+  // (b) success state says the whole fleet is being restored, not a per-account count
+  it('shows "restoring every account and runner" on success', () => {
     vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult({
         state: 'success',
         server: 'notion',
         message: null,
         authUrl: null,
-        accounts: ['acct1', 'acct2'],
         startedAt: 123,
       }))
 
@@ -88,7 +86,8 @@ describe('McpAuthFlow', () => {
       { wrapper: makeWrapper() },
     )
 
-    expect(screen.getByText(/cleared for 2 account\(s\)/i)).toBeTruthy()
+    expect(screen.getByText('Authorized — restoring every account and runner.')).toBeTruthy()
+    expect(screen.queryByText(/cleared for/i)).toBeNull()
   })
 
   // (c) error state renders the verbatim status.message
@@ -98,7 +97,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: 'OAuth provider returned 401 — check credentials.',
         authUrl: null,
-        accounts: [],
         startedAt: 123,
       }))
 
@@ -128,7 +126,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: null,
         authUrl: null,
-        accounts: [],
         startedAt: 123,
       }))
 
@@ -149,7 +146,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: null,
         authUrl: null,
-        accounts: [],
         startedAt: 123,
       }))
 

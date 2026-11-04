@@ -798,7 +798,6 @@ export interface McpAuthState {
   server?: string | null
   message?: string | null
   authUrl?: string | null
-  accounts: string[]
   startedAt?: number | null
 }
 

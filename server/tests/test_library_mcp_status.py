@@ -137,6 +137,10 @@ def test_get_returns_status_and_kill_switch_empties_it(shared, monkeypatch):  # 
     async def live():
         return set()
 
+    async def no_health(keys=None):
+        return {}
+
+    monkeypatch.setattr(library.grant_health, "load", no_health)
     monkeypatch.setattr(library.mcp_store, "rows", fake_rows)
     monkeypatch.setattr(library, "_enabled_accounts", enabled)
     monkeypatch.setattr(library, "_live_session_ids", live)
@@ -359,3 +363,95 @@ async def test_live_session_ids_excludes_ended_and_archived(isolated_db):
         for sid, status in (("e", "ended"), ("a", "archived"), ("i", "idle")):
             db.add(Session(id=sid, name=sid, account_name="x", cwd="/tmp", status=status))
     assert await library._live_session_ids() == {"i"}
+
+
+def test_get_mcp_reads_health_once(shared, monkeypatch):  # noqa: F811
+    from viberpit import creds
+    from viberpit.mcp_keys import cli_oauth_key
+    _write_user_server()
+    key = cli_oauth_key("notion", {"type": "http", "url": "https://x"})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: {key: {
+        "serverName": "notion", "serverUrl": "https://x", "accessToken": "", "expiresAt": 0}})
+    calls: list = []
+
+    async def load(keys=None):
+        calls.append(keys)
+        return {key: {"state": "dead", "lastOutcome": "dead", "lastError": "invalid_grant"}}
+
+    async def none_rows():
+        return []
+
+    async def enabled():
+        return {"a"}
+
+    async def live():
+        return set()
+
+    monkeypatch.setattr(library.grant_health, "load", load)
+    monkeypatch.setattr(library.mcp_store, "rows", none_rows)
+    monkeypatch.setattr(library, "_enabled_accounts", enabled)
+    monkeypatch.setattr(library, "_live_session_ids", live)
+    [s] = _client(None, monkeypatch).get("/api/library/mcp").json()["servers"]
+    assert len(calls) == 1
+    assert s["overall"]["grant"] == "dead"
+    assert s["overall"]["error"].startswith("Sign-in revoked or expired")
+
+
+def test_get_mcp_expired_grant_surfaces_refresh_error_with_status_rows(shared, monkeypatch):  # noqa: F811
+    from viberpit import creds
+    _write_user_server()
+    key = cli_oauth_key("notion", {"type": "http", "url": "https://x"})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: {key: {
+        "serverName": "notion", "serverUrl": "https://x", "accessToken": "t", "expiresAt": 1000}})
+    reason = "token endpoint returned 400 invalid_grant"
+
+    async def load(keys=None):
+        return {key: {"state": "expired", "lastOutcome": "transient", "lastError": reason}}
+
+    async def rows():
+        return [ROWS[0]]
+
+    async def enabled():
+        return {"a"}
+
+    async def live():
+        return set()
+
+    monkeypatch.setattr(library.grant_health, "load", load)
+    monkeypatch.setattr(library.mcp_store, "rows", rows)
+    monkeypatch.setattr(library, "_enabled_accounts", enabled)
+    monkeypatch.setattr(library, "_live_session_ids", live)
+    [s] = _client(None, monkeypatch).get("/api/library/mcp").json()["servers"]
+    assert any(r["counted"] for r in s["status"])
+    assert s["overall"]["grant"] == "expired" and reason in s["overall"]["error"]
+
+
+def test_get_mcp_survives_unreadable_grant_health(shared, monkeypatch, caplog):  # noqa: F811
+    from viberpit import creds
+    _write_user_server()
+    key = cli_oauth_key("notion", {"type": "http", "url": "https://x"})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: {key: {
+        "serverName": "notion", "serverUrl": "https://x", "accessToken": "", "expiresAt": 0}})
+
+    async def load(keys=None):
+        raise RuntimeError("db down")
+
+    async def none_rows():
+        return []
+
+    async def enabled():
+        return {"a"}
+
+    async def live():
+        return set()
+
+    monkeypatch.setattr(library.grant_health, "load", load)
+    monkeypatch.setattr(library.mcp_store, "rows", none_rows)
+    monkeypatch.setattr(library, "_enabled_accounts", enabled)
+    monkeypatch.setattr(library, "_live_session_ids", live)
+    r = _client(None, monkeypatch).get("/api/library/mcp")
+    assert r.status_code == 200
+    [s] = r.json()["servers"]
+    assert s["overall"]["grant"] == "never"   # derived from the store alone
+    assert any(rec.levelname == "WARNING" and "grant health" in rec.getMessage()
+               for rec in caplog.records)

@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import math
+import re
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -38,6 +39,9 @@ _backoff_until_ms: dict[str, float] = {}
 # client error (invalid_client) cannot be fixed by clearing the token.
 DEAD_GRANT_ERRORS = frozenset({"invalid_grant", "invalid_refresh_token", "expired_refresh_token",
                                "token_expired"})
+
+_OAUTH_CODE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+MAX_ERROR_CHARS = 500
 
 FetchJson = Callable[[str], "dict | None"]
 PostForm = Callable[[str, dict, dict], "tuple[int, bytes]"]
@@ -107,12 +111,34 @@ def due_keys(store: dict, now_ms: int, lead_s: float = LEAD_S) -> list[str]:
     return out
 
 
+def expired_keys(store: dict, now_ms: int) -> frozenset[str]:
+    """Store keys whose bundle has a positive ``expiresAt`` already in the past. A cleared
+    (dead) bundle's ``expiresAt`` is 0, so it is never counted as expired."""
+    out = set()
+    for key, blob in store.items():
+        if not isinstance(blob, dict):
+            continue
+        expiry = _expiry_ms(blob)
+        if expiry is not None and 0 < expiry < now_ms:
+            out.add(key)
+    return frozenset(out)
+
+
 def cleared(bundle: dict) -> dict:
     """The CLI's own cleared shape for a dead grant: no access or refresh token."""
     out = {k: v for k, v in bundle.items() if k != "refreshToken"}
     out["accessToken"] = ""
     out["expiresAt"] = 0
     return out
+
+
+def cleared_keys(store: dict) -> frozenset[str]:
+    """Store keys whose bundle is in the :func:`cleared` shape: no refresh token and an empty
+    access token. A never-signed-in discovery stub has the same shape, so callers must not
+    read this alone as "died"."""
+    return frozenset(k for k, blob in store.items()
+                     if isinstance(blob, dict) and not blob.get("refreshToken")
+                     and not blob.get("accessToken"))
 
 
 # --- token endpoint discovery -----------------------------------------------------------
@@ -340,7 +366,14 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
         if isinstance(payload.get("scope"), str) and payload["scope"]:
             new["scope"] = payload["scope"]
         return new
-    code = payload.get("error") if isinstance(payload.get("error"), str) else None
+    raw_code = payload.get("error")
+    # Only a well-formed OAuth error code (RFC 6749 §5.2 token charset) survives into the
+    # exception text, which is logged and stored: a body field is never echoed verbatim.
+    code = raw_code if isinstance(raw_code, str) and _OAUTH_CODE_RE.fullmatch(raw_code) else None
+    # A hostile or buggy endpoint could echo a credential as the "code"; never repeat one.
+    if code is not None and any(isinstance(v, str) and v and v in code
+                                for v in (refresh_token, bundle.get("clientSecret"))):
+        code = None
     # Case-insensitive: AWS sign-in answers in upper case (INVALID_GRANT, INVALID_TARGET).
     if status in (400, 401) and code is not None and code.lower() in DEAD_GRANT_ERRORS:
         raise McpGrantDead(f"token endpoint returned {status} {code}")
@@ -389,12 +422,12 @@ def _publish_all(names: list[str], *, drop: frozenset[str] = frozenset()) -> int
 
 
 def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJson | None,
-                 now_ms: int | None) -> bool:
+                 now_ms: int | None, skip_keys: frozenset[str] = frozenset()) -> bool:
     store = creds.read_shared_mcp()
     now = int(time.time() * 1000) if now_ms is None else now_ms
     changed = False
     for key in due_keys(store, now):
-        if _backoff_until_ms.get(key, 0) > now:
+        if key in skip_keys or _backoff_until_ms.get(key, 0) > now:
             continue
         old = store[key]
         label = _server_label(key, old)
@@ -409,6 +442,8 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
         except Exception as exc:
             _backoff_until_ms[key] = now + TRANSIENT_BACKOFF_S * 1000
             summary["transient"].append(label)
+            summary["outcomes"].append({"key": key, "label": label, "outcome": "transient",
+                                        "error": str(exc)[:MAX_ERROR_CHARS]})
             # INFO, not DEBUG: an unrefreshed grant silently expires, so the status and error
             # code (never a token) must be visible. Backoff caps this at one line per 5 min.
             log.info("mcp oauth refresh not done, will retry server=%s key=%s: %s", label, key, exc)
@@ -423,6 +458,7 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
             continue
         changed = True
         summary[outcome].append(label)
+        summary["outcomes"].append({"key": key, "label": label, "outcome": outcome, "error": None})
         if outcome == "refreshed":
             log.info("mcp oauth refreshed server=%s key=%s expires=%s", label, key, _expiry_label(replacement))
         else:
@@ -432,14 +468,16 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
 
 def run_once(*, accounts_list: list[str] | None = None, post_form: PostForm | None = None,
              fetch_json: FetchJson | None = None, now_ms: int | None = None,
-             drop_keys: frozenset[str] = frozenset()) -> dict:
+             drop_keys: frozenset[str] = frozenset(), skip_keys: frozenset[str] = frozenset()) -> dict:
     """One refresher tick. Never raises.
 
     1. Capture + publish every Anthropic account dir (strips any refresh-token copy), purging
        *drop_keys* (the keys the edge's grant reconcile just deleted or moved) from each.
-    2. Refresh each due store bundle outside the store lock; write back compare-and-swap.
+    2. Refresh each due store bundle (except *skip_keys*: superseded grants) outside the
+       store lock; write back compare-and-swap.
     3. If the store changed, publish again."""
-    summary: dict = {"refreshed": [], "dead": [], "transient": [], "published": 0}
+    summary: dict = {"refreshed": [], "dead": [], "transient": [], "published": 0,
+                     "outcomes": []}
     if accounts_list is None:
         try:
             from . import accounts
@@ -451,7 +489,7 @@ def run_once(*, accounts_list: list[str] | None = None, post_form: PostForm | No
         names = list(accounts_list)
     summary["published"] += _publish_all(names, drop=drop_keys)
     try:
-        changed = _refresh_due(summary, post_form, fetch_json, now_ms)
+        changed = _refresh_due(summary, post_form, fetch_json, now_ms, skip_keys)
     except Exception:
         log.debug("mcp oauth refresher: tick failed", exc_info=True)
         changed = False

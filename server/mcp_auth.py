@@ -16,7 +16,7 @@ import select
 import shlex
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Protocol, Sequence
 
@@ -39,7 +39,6 @@ class McpAuthState:
     server: str | None = None
     message: str | None = None
     auth_url: str | None = None
-    accounts: list[str] = field(default_factory=list)  # accounts whose badge this run clears
     started_at: float | None = None
 
     def to_dict(self) -> dict:
@@ -48,7 +47,6 @@ class McpAuthState:
             "server": self.server,
             "message": self.message,
             "authUrl": self.auth_url,
-            "accounts": list(self.accounts),
             "startedAt": self.started_at,
         }
 
@@ -59,7 +57,6 @@ class McpAuthState:
             server=d.get("server"),
             message=d.get("message"),
             auth_url=d.get("authUrl"),
-            accounts=list(d.get("accounts", [])),
             started_at=d.get("startedAt"),
         )
 
@@ -148,8 +145,7 @@ class McpAuthManager:
         if s.server is not None and s.server != server:
             return McpAuthState()  # scope: other servers see a fresh idle
         return McpAuthState(state=s.state, server=s.server, message=s.message,
-                            auth_url=s.auth_url, accounts=list(s.accounts),
-                            started_at=s.started_at)
+                            auth_url=s.auth_url, started_at=s.started_at)
 
     async def start(self, server: str, *, preferred: Sequence[str] = (),
                     login_key: str | None = None) -> McpAuthState:
@@ -159,7 +155,7 @@ class McpAuthManager:
             account, cfg_dir = self._pick(server, list(preferred))
             self._session = self._factory(server, account, cfg_dir, login_key)
             self._state = McpAuthState(state="starting", server=server,
-                                       accounts=[account], started_at=self._clock())
+                                       started_at=self._clock())
             self._task = asyncio.create_task(self._read_url(server))
         return self.status(server)
 
@@ -198,12 +194,12 @@ class McpAuthManager:
         try:
             await session.complete(redirect_url, self._complete_timeout)
             n_merged = merge_mcp_oauth_from_cfg(session.cfg_dir, server=server)
-            cleared = clear_needs_auth_cache(server)
+            # The needs-auth cache is cleared once, by the on_success follow-through
+            # (server/mcp_health/after_login.py), before it reconnects.
             flipped = False
             async with self._lock:
                 if self._state.server == server and self._state.state == "exchanging":
                     self._state.state = "success"
-                    self._state.accounts = cleared or self._state.accounts
                     self._state.message = None
                     flipped = True
             if flipped and self._on_success is not None:
@@ -211,8 +207,7 @@ class McpAuthManager:
                 task = asyncio.create_task(self._fire_success(server))
                 self._success_tasks.add(task)
                 task.add_done_callback(self._success_tasks.discard)
-            log.info("mcp auth: %s ok (shared_keys=%d, cleared=%d accounts)",
-                     server, n_merged, len(cleared))
+            log.info("mcp auth: %s ok (shared_keys=%d)", server, n_merged)
         except McpAuthError as exc:
             await self._fail(server, str(exc))
         except Exception as exc:

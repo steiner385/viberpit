@@ -56,8 +56,8 @@ async def test_submit_redirect_success_merges_and_clears(monkeypatch, tmp_path):
     assert st.state == "success"
     assert sess.submitted == "http://localhost:1/callback?code=abc"
     assert ("merge", sess.cfg_dir) in calls
-    assert ("clear", "notion") in calls
-    assert st.accounts == ["alice"]
+    # The needs-auth cache is cleared once, in after_login (the on_success follow-through).
+    assert ("clear", "notion") not in calls
 
 @pytest.mark.asyncio
 async def test_submit_redirect_failure_sets_error(monkeypatch, tmp_path):

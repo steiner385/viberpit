@@ -37,6 +37,7 @@ from server.api.repos import known_repo_slugs
 from server.mcp_auth import McpAuthBusy
 from server.mcp_scope import store as scope_store
 from server.mcp_scope.servers import configured_server_keys
+from server.mcp_health import grant_health
 from server.mcp_health import grants as mcp_grants
 from server.mcp_health import overall as mcp_overall
 from server.mcp_health import store as mcp_store
@@ -237,15 +238,24 @@ async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
     if not isinstance(store, dict):
         log.warning("shared MCP store is not an object; reporting no grants")
         store = {}
+    try:
+        health = await grant_health.load()
+    except Exception:
+        # Health only refines the grant state; the MCP list must not fail without it.
+        log.warning("mcp grant health unreadable; reporting grants without it", exc_info=True)
+        health = {}
     now_ms = int(time.time() * 1000)
     for server in out["servers"]:
         key = mcp_grants.key_for(server)  # None: no knowable CLI key, so no grant lookup
+        hrow = health.get(key) if key else None
+        grant = mcp_overall.grant_state(store, key=key, now_ms=now_ms, health=hrow) if key else "none"
         for row in server["status"]:
             row["counted"] = mcp_overall.counted(row, enabled_accounts=enabled, live_session_ids=live, now_ms=now_ms)
         server["overall"] = mcp_overall.derive_overall(
-            grant=mcp_overall.grant_state(store, key=key, now_ms=now_ms) if key else "none",
+            grant=grant,
             rows=[r for r in server["status"] if r["counted"]], now_ms=now_ms,
-            expires_at_ms=mcp_overall.best_expiry(store, key=key) if key else None)
+            expires_at_ms=mcp_overall.best_expiry(store, key=key) if key else None,
+            refresh_error=mcp_overall.refresh_error_for(grant, hrow))
     return out
 
 
