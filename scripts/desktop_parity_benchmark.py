@@ -55,7 +55,7 @@ D=[
  ("Plugins + marketplace browse/install",2,"P","enable/disable + detail; no marketplace"),
  ("Skills management",1,"Y",""),
  ("MCP servers + per-tool toggles",2,"P","servers, OAuth, scope; no per-tool toggles"),
- ("CLAUDE.md / memory-file editor",2,"N",""),
+ ("CLAUDE.md / memory-file editor",2,"Y","as decided (D8): the Context card lists every memory file the CLI loaded, with tokens, each viewable; Settings › Memory edits the user CLAUDE.md shared by every account (etag conflict, Keep my draft); repo files read-only. Claude only (Codex reports none); type labels are the CLI's (rules/imports show as User/Project); rocky sees a save after up to 10 min (#3246) (D-13)"),
  ("Hooks editor",1,"Y","Desktop has none — VP ahead"),
  ("Output styles",1,"N",""),
  ("Custom commands",1,"Y",""),

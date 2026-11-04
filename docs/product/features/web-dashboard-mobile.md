@@ -196,7 +196,8 @@ right-hand session rail (20rem, collapsible, remembered per browser) shows four 
 - **Changes** — totals, the first 5 files, and an Open Changes button.
 - **Context** — a meter matching the prompt-row ring with an "Auto-compacts soon" line, a
   "Compact now" button near the limit (when the engine supports `/compact`), the inline MCP
-  server list with a Manage link, always-allow rules, and quota.
+  server list with a Manage link, the loaded memory files (see below), always-allow rules, and
+  quota.
 - **Environment** — engine, account switch and Unpin, host, display mode, branch, worktree
   path, and PR pills.
 - **Tasks** — sub-agents and background work.
@@ -355,6 +356,27 @@ ways into it from the composer and the transcript.
   so a session started in a subdirectory sees only the files beneath it. Reads are capped at 512 KiB,
   refuse `.git` and anything outside the cwd, and links that escape the worktree are refused. An unknown
   session is an expected refusal, logged at INFO, not filed as an auto-error.
+
+**Memory files (Context card and Settings › Memory)** — what the agent was told, and where you change it.
+- **Context card:** a **Memory** list of every memory file the CLI actually loaded for the session, in its load
+  order. It comes from the CLI's own `get_context_usage().memoryFiles`, refreshed after each turn and
+  re-sent on attach. Each row shows the type (User, Project, Local, Managed, Auto memory; any other type as the
+  CLI sends it), the path (relative to the worktree inside it, absolute otherwise, cut from the start so the
+  file name stays) and its tokens. The list is hidden when nothing is loaded; Codex reports none. Rules and
+  imports carry the type of the file that loaded them.
+- **Viewer:** a row opens a read-only dialog using the Files tab's frame. It is read on the session's host, and
+  only for a path in that session's loaded set (`GET /api/sessions/{id}/memory-file?path=`); anything else is
+  "no longer loaded or no longer readable". Reads are capped at 256 KiB. The user file adds **Edit in Settings**.
+- **Settings › Claude config › Memory:** edits `~/.claude/CLAUDE.md` on the edge host, the one user memory file
+  every account loads (see [config-dir isolation](config-dir-isolation.md)). "Applies to new sessions. Running
+  sessions keep the instructions they started with." Saving checks the file has not changed since you opened
+  it. If it has, a **Changed elsewhere** panel shows the current text beside your draft, with **Reload** (take
+  theirs) and **Keep my draft** (the next Save overwrites theirs). A missing file opens empty and Save creates
+  it. A file that is a link, over 256 KiB or not UTF-8 is explained and not editable here. Leaving with unsaved
+  changes asks first. After a save a note says sessions on other hosts can take up to 10 minutes to see it
+  (rocky's sshfs cache, #3246).
+- **Server:** `GET`/`PUT /api/settings/memory` (`server/api/memory.py`, etag = sha256, atomic write, audit row
+  `settings.memory_saved`); the viewer is `server/sessions/memory_files.py`.
 
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a
