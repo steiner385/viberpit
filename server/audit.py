@@ -42,6 +42,20 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     # payload or signature — which an OpenAI access token can have — slips past it.
     # The literal prefix keeps this cheap and effectively free of false positives.
     re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
+    # GitHub tokens: classic/OAuth/user/server/refresh (`ghp_`, `gho_`, `ghu_`, `ghs_`,
+    # `ghr_`) and fine-grained PATs (`github_pat_`). The literal prefix + length floor
+    # keeps false positives off ordinary identifiers.
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    # AWS access key IDs: `AKIA…` (long-term) / `ASIA…` (STS), 16 upper-alnum after the
+    # 4-char prefix. Word-bounded so it cannot match inside a longer identifier.
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    # PEM private keys, BEGIN through END. A chunk that was cut before its END line
+    # (diff caps, transcript truncation) is redacted to the end of the text rather than
+    # leaking the key body.
+    re.compile(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)"
+    ),
     # ViberPit envelope-encrypted token prefix
     re.compile(r"ccenc1:[A-Za-z0-9+/=]+"),
     # Generic long base64 blobs that are clearly padded secrets (≥60 chars + mandatory
