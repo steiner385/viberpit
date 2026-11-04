@@ -44,8 +44,14 @@ def _client():
                                      "VIBERPIT_TAILNET_ALLOWLIST": ""}):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             app = create_app(orchestrator=orch)
-            with TestClient(app, raise_server_exceptions=False) as c:
-                yield c
+            # Pinned to worker so the primary-only control loops (backlog runner,
+            # pm-sync, ...) never start: each ticks once immediately and its SQLite
+            # commit can land between a request's read and write, failing the
+            # upgrade with an instant "database is locked" (#3270). These tests
+            # exercise the PM API, not the loops.
+            with patch("server.sessions.orchestrator.daemon_role", lambda: "worker"):
+                with TestClient(app, raise_server_exceptions=False) as c:
+                    yield c
 
 
 def test_project_lifecycle():
