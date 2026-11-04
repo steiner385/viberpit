@@ -1,6 +1,6 @@
 /**
  * The dispatch bar's `+` menu (D-14): Attach image moved in from its own button,
- * Presets › (a removable chip, `presetId` on the next create) and Templates ›
+ * Presets › (a removable chip; its fields ride explicitly on the next create) and Templates ›
  * (the server-rendered text inserted into the prompt).
  */
 import { render, screen, waitFor } from '@testing-library/react'
@@ -67,7 +67,7 @@ describe('DispatchBar + menu', () => {
   })
 
   it('a preset shows a removable chip and its id rides on the next create, once', async () => {
-    const { onDispatch } = mount({ presets: [preset(), preset({ id: 'p2', name: 'Docs pass' })] })
+    const { onDispatch } = mount({ presets: [preset(), preset({ id: 'p2', name: 'Docs pass', permissionMode: 'acceptEdits' })] })
     await openAdd()
     await userEvent.click(screen.getByRole('menuitem', { name: /Presets/ }))
     expect(screen.getByRole('menu', { name: 'Presets' })).toBeInTheDocument()
@@ -77,12 +77,12 @@ describe('DispatchBar + menu', () => {
 
     await userEvent.type(screen.getByLabelText('New session prompt'), 'go{Enter}')
     await waitFor(() => expect(onDispatch).toHaveBeenCalledTimes(1))
-    expect(onDispatch.mock.calls[0][0]).toMatchObject({ presetId: 'p2', initialPrompt: 'go' })
+    expect(onDispatch.mock.calls[0][0]).toMatchObject({ permissionMode: 'acceptEdits', initialPrompt: 'go' })
     // One create: the chip clears with the draft.
     expect(screen.queryByText('Preset: Docs pass')).toBeNull()
     await userEvent.type(screen.getByLabelText('New session prompt'), 'again{Enter}')
     await waitFor(() => expect(onDispatch).toHaveBeenCalledTimes(2))
-    expect(onDispatch.mock.calls[1][0]).toMatchObject({ presetId: null })
+    expect(onDispatch.mock.calls[1][0]).toMatchObject({ permissionMode: null, permissionProfileId: null })
   })
 
   it('removing the chip drops the preset', async () => {
@@ -94,7 +94,7 @@ describe('DispatchBar + menu', () => {
     expect(screen.queryByText('Preset: Bug bash')).toBeNull()
     await userEvent.type(screen.getByLabelText('New session prompt'), 'go{Enter}')
     await waitFor(() => expect(onDispatch).toHaveBeenCalledTimes(1))
-    expect(onDispatch.mock.calls[0][0]).toMatchObject({ presetId: null })
+    expect(onDispatch.mock.calls[0][0]).toMatchObject({ permissionMode: null, permissionProfileId: null })
   })
 
   it("a preset fills the bar's visible picks, so what is shown is what is sent", async () => {
@@ -110,7 +110,7 @@ describe('DispatchBar + menu', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await waitFor(() => expect(onDispatch).toHaveBeenCalledTimes(1))
     expect(onDispatch.mock.calls[0][0]).toMatchObject({
-      presetId: 'p1', repo: 'o/b', model: 'sonnet', initialPrompt: 'Triage the open bugs',
+      repo: 'o/b', model: 'sonnet', initialPrompt: 'Triage the open bugs',
     })
   })
 
@@ -174,7 +174,7 @@ describe('DispatchBar + menu', () => {
     expect(screen.getByText('preset model unavailable', { exact: false })).toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('New session prompt'), 'go{Enter}')
     await waitFor(() => expect(onDispatch).toHaveBeenCalledTimes(1))
-    expect(onDispatch.mock.calls[0][0]).toMatchObject({ presetId: 'p1', account: null, model: null })
+    expect(onDispatch.mock.calls[0][0]).toMatchObject({ account: null, model: null })
   })
 
   it("applies a preset's account and model when the bar offers them", async () => {

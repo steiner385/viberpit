@@ -8048,6 +8048,7 @@ class SessionOrchestrator:
         rec.fast_mode_models = (
             [] if _provider_of(rec.account) == _copilot_mod.PROVIDER
             else flag_settings.fast_mode_models({"models": rows}))
+        self._announce_catalog_change(session_id)
         if rec.fast_mode and not self.fast_mode_available(session_id):
             await self._persist_fast_mode(session_id, False)
             log.info("session.fast_mode cleared id=%s model=%s (not available at start)",
@@ -8064,6 +8065,20 @@ class SessionOrchestrator:
             rec.fast_mode_state = state
             rec.fast_mode_disabled_reason = reason
 
+    def _announce_catalog_change(self, session_id: str) -> None:
+        """Tell attached clients to re-fetch this session's command catalog (D-14):
+        `/fast` is gated on the current model, so a switch or a new model list can add
+        or drop it. Best-effort — a driverless session has no attached live stream, and
+        its next attach builds the catalog fresh anyway."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            return
+        try:
+            d.emit(ev.CommandsChanged())
+        except Exception:
+            log.info("command catalog refresh not announced session=%s", session_id,
+                     exc_info=True)
+
     def _spawn_flag_settings(self, session_id: str) -> dict:
         """The flag-layer settings a spawn of this session starts with (D-14): fast mode
         when it is on, and the effort a live change persisted. Empty for anything else,
@@ -8072,7 +8087,7 @@ class SessionOrchestrator:
 
         Fast mode is passed only when the stored flag is on AND the account is not
         Copilot AND either the model is known to have it or the list is unknown (a
-        respawn after a restart, before the CLI reported it; ``_record_fast_mode_models``
+        respawn after a restart, before the CLI reported it; ``_record_model_options``
         then drops it if the model lacks it)."""
         rec = self._records.get(session_id)
         if rec is None or not flag_settings_supported(self._capabilities_of(session_id)):
@@ -24112,6 +24127,18 @@ class SessionOrchestrator:
         # catalog was ever consulted (#1286).
         capabilities = self._capabilities_of(session_id)
         app_cmd = cmd_catalog.app_command(name, capabilities)
+        # An APP_ONLY name (D-14: `/fast`, `/effort`) whose app entry is gated off for
+        # this session never reaches the CLI: the CLI's own toggle would change the
+        # running process behind the record (and fast mode bills credits). Answer it.
+        bare = str(name).lstrip("/")
+        if bare in cmd_catalog.APP_ONLY and cmd_catalog.app_command(
+                bare, capabilities,
+                fast_mode_available=self.fast_mode_available(session_id)) is None:
+            why = ("this session's model doesn't offer fast mode" if bare == "fast"
+                   else "live settings are off for this session")
+            log.info("command.app_only_gated session=%s name=%s", session_id, bare)
+            return {"name": bare, "render": "notice",
+                    "data": {"text": f"/{bare} isn't available — {why}."}}
         # /account is an orchestrator-level operation: it doesn't touch the driver
         # subprocess at all, so it must work even when no driver exists (e.g. the
         # session is driverless because the Copilot proxy died).
@@ -25521,6 +25548,13 @@ class SessionOrchestrator:
         _same_model = (
             record is not None and record.model not in (None, "default")
             and record.model == model)
+        # An effort-only pick (D-14: the same model CHOICE, a new effort) changes no
+        # model either — including on a session that runs the inherited default — so it
+        # never parks an approval: the park would drop the effort and ask to approve the
+        # model the session already runs. A ``block`` verdict still refuses it below.
+        _effort_only = (
+            record is not None and not isinstance(reasoning_effort, _EffortUnchanged)
+            and (record.model or "default") == (model or "default"))
         # UI-only: the same CHOICE (None == "default") queues no model change, so it
         # must not raise model_pending ("after this turn").
         _same_choice = record is not None and (
@@ -25549,7 +25583,7 @@ class SessionOrchestrator:
             _policy = await resolve_model_policy(_db, model=gate_model, account=_account)
         if _policy == "block":
             raise ModelBlockedError(gate_model)
-        if _policy == "require_approval" and not _same_model:
+        if _policy == "require_approval" and not (_same_model or _effort_only):
             park_kwargs = (
                 {"reason": INHERITED_DEFAULT_REASON} if gate_model != model else {})
             await self._park_model(
@@ -25636,6 +25670,7 @@ class SessionOrchestrator:
             await self._persist_model(session_id, model, reasoning_effort=reasoning_effort)
         if not _same_choice:
             await self._resync_fast_mode(session_id)
+            self._announce_catalog_change(session_id)
         if effort_error is not None and not effort_stands:
             raise effort_error
         return restarted

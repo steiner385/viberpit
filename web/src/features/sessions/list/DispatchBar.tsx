@@ -63,9 +63,12 @@ export interface DispatchBarProps {
     reasoningEffort: string | null
     autopilot: boolean
     autoArchive: boolean
-    /** The preset chosen in the + menu (D-14), or null. The server fills only the
-     *  fields this input leaves unset from it. */
-    presetId: string | null
+    /** From the preset chosen in the + menu (D-14) — the fields the bar has no
+     *  control for; null without a preset. Never a `presetId`: the server would fill
+     *  anything this input leaves absent (an "unavailable" account, a cleared repo)
+     *  from the preset, and the bar must send exactly what it shows. */
+    permissionMode: string | null
+    permissionProfileId: string | null
   }) => Promise<void>
   /**
    * The engine/account the model list must be fetched for.
@@ -296,8 +299,9 @@ export function DispatchBar({
   /**
    * Choose a preset: the chip, plus the bar's visible picks filled from it — repo,
    * account, model, and the prompt when none is typed — so what the bar shows is
-   * what is sent. The server fills only what the create leaves unset (permission
-   * mode, profile) from `presetId`, and never overrides an explicit value.
+   * what is sent. The create carries every preset field explicitly — repo, account
+   * and model as the bar shows them, permission mode and profile from the preset
+   * (the bar has no control for those) — and never a `presetId`.
    *
    * An account or model the bar does not offer for the current engine is NOT
    * applied — the field keeps its pick and the chip says so. Setting it anyway
@@ -438,7 +442,8 @@ export function DispatchBar({
         reasoningEffort: reasoning || null,
         autopilot,
         autoArchive,
-        presetId: preset?.id ?? null,
+        permissionMode: preset?.permissionMode ?? null,
+        permissionProfileId: preset?.permissionProfileId ?? null,
       })
       setText('')
       setPreset(null)

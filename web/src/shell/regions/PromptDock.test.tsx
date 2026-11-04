@@ -612,15 +612,46 @@ async function pickPreset(user: ReturnType<typeof userEvent.setup>, name: string
 }
 
 describe('PromptDock — presets and templates (D-14)', () => {
-  it('sends the chosen preset as presetId on POST /sessions', async () => {
+  // The bar sends what it shows, field by field — never `presetId`, which would
+  // let the server fill anything the bar left absent from the preset.
+  it('sends the preset as explicit fields — its permission fields included — and no presetId', async () => {
     const user = userEvent.setup()
-    PRESETS = [preset()]
+    PRESETS = [preset({ permissionMode: 'plan', permissionProfileId: 'prof-1' })]
     renderAt('/sessions')
     await pickPreset(user, 'Bug bash')
     await user.type(screen.getByLabelText('New session prompt'), 'go')
     await user.keyboard('{Enter}')
     await waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0].body).toMatchObject({ presetId: 'p1', initialPrompt: 'go' })
+    expect(posted[0].body).toMatchObject({ initialPrompt: 'go', permissionMode: 'plan', permissionProfileId: 'prof-1' })
+    expect(posted[0].body).not.toHaveProperty('presetId')
+  })
+
+  it('an unavailable preset account is not sent — and no presetId lets the server fill it', async () => {
+    const user = userEvent.setup()
+    PRESETS = [preset({ account: 'gone' })]
+    renderAt('/sessions')
+    await pickPreset(user, 'Bug bash')
+    expect(screen.getByText('preset account unavailable', { exact: false })).toBeInTheDocument()
+    await user.type(screen.getByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(posted).toHaveLength(1))
+    // Undefined is dropped from the JSON body: no account reaches the server.
+    expect((posted[0].body as { account?: string }).account).toBeUndefined()
+    expect(posted[0].body).not.toHaveProperty('presetId')
+  })
+
+  it('a preset repo the user then cleared sends no repo', async () => {
+    const user = userEvent.setup()
+    PRESETS = [preset({ repo: 'acme/api' })]
+    renderAt('/sessions')
+    await pickPreset(user, 'Bug bash')
+    expect(screen.getByLabelText('Repository')).toHaveValue('acme/api')
+    await user.selectOptions(screen.getByLabelText('Repository'), '')
+    await user.type(screen.getByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect((posted[0].body as { repo?: string }).repo).toBeUndefined()
+    expect(posted[0].body).not.toHaveProperty('presetId')
   })
 
   it('sends no presetId when none is chosen', async () => {
@@ -630,6 +661,7 @@ describe('PromptDock — presets and templates (D-14)', () => {
     await user.keyboard('{Enter}')
     await waitFor(() => expect(posted).toHaveLength(1))
     expect(posted[0].body).not.toHaveProperty('presetId')
+    expect(posted[0].body).not.toHaveProperty('permissionMode')
   })
 
   // Review Focus 4: a preset pinning a model the account cannot use is refused by
@@ -648,7 +680,7 @@ describe('PromptDock — presets and templates (D-14)', () => {
     await user.type(screen.getByLabelText('New session prompt'), 'go')
     await user.keyboard('{Enter}')
     await waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0].body).toMatchObject({ presetId: 'p1', model: 'fable' })
+    expect(posted[0].body).toMatchObject({ model: 'fable', permissionMode: 'plan' })
     expect(await screen.findByRole('alert')).toHaveTextContent('model blocked by policy')
     expect(screen.getByLabelText('New session prompt')).toHaveValue('go')
     expect(screen.getByText('Preset: Bug bash')).toBeInTheDocument()

@@ -73,7 +73,7 @@ from server.obs.context import bind_session, log_event
 from server.obs.logdedupe import LogThrottle, log_throttled
 from server.obs.metrics import assistant_mentions_total, assistant_prompts_total
 from server.obs.tasks import supervise
-from server.sessions.commands.catalog import parse_command_line
+from server.sessions.commands.catalog import APP_ONLY, parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.orchestrator import DriverStartTimeout, ENSURE_DRIVER_WORST_CASE_S
@@ -281,7 +281,8 @@ class _TeardownMarks:
         log.debug("ws.teardown.mark %s +%.2fs", phase, elapsed)
 
 
-async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
+async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *,
+                        on_commands_changed=None) -> None:
     """Forward a driver stream's live events into *out_q* as wire dicts.
 
     *stream* is a ``DriverStream``/``RemoteDriverStream`` opened by
@@ -303,6 +304,10 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -
     warning per attach so production loss between daemon and edge becomes visible; the
     GAP-consumption skip already forces a from-disk resync, so it re-baselines the
     source-seq tracker to avoid double-counting that known, expected jump.
+
+    ``commandsChanged`` (D-14) is consumed here, never forwarded: it calls
+    *on_commands_changed(session_id)* — the attach path's own top-level catalog push —
+    so a model switch refreshes the palette through the one push there is.
     """
     with bind_session(session_id):
         seq = 0
@@ -315,6 +320,13 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -
                 except Exception:
                     log.exception("ws.to_wire session=%s", session_id)
                     seq += 1  # consume a seq so the client sees a gap and re-attaches
+                    continue
+                if wire.get("type") == "commandsChanged":
+                    src = getattr(e, "src_seq", None)
+                    if src is not None:
+                        prev_src = src     # consumed, not lost: no srcSeq-gap warning
+                    if on_commands_changed is not None:
+                        await on_commands_changed(session_id)
                     continue
                 if wire.get("type") == proto.GAP:
                     # A daemon replay-gap sentinel (issue #185): events were evicted from
@@ -1300,7 +1312,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 return
             task = supervise(
                 asyncio.create_task(
-                    _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}"),
+                    _forward_live(stream, out_q, session_id,
+                                  on_commands_changed=_emit_command_catalog),
+                    name=f"ws-live-{session_id}"),
                 name=f"ws-live-{session_id}", on_failure=_on_forward_task_failed)
             live_tasks[session_id] = task
 
@@ -1916,6 +1930,16 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             ensured = time.monotonic()
             text = msg.get("text", "")
             attachment_ids = msg.get("attachmentIds")
+            # `/fast` / `/effort` typed as a prompt (D-14) — e.g. while gated off, when
+            # the palette does not list them — never reach the CLI, whose own toggles
+            # change the process behind the session's record. They run as commands,
+            # which answer a gated one with a notice.
+            parsed = parse_command_line(text.strip()) if isinstance(text, str) else None
+            if parsed is not None and parsed[0] in APP_ONLY and not attachment_ids:
+                await _run_command_and_reply(session_id, parsed[0], parsed[1])
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "delivered"})
+                return
             # "Interrupt and post": stop the in-flight turn and run this
             # prompt next instead of queueing it behind the turn. Only
             # forwarded when set so the plain contract is untouched.

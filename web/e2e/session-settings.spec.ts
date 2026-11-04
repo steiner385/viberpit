@@ -1,7 +1,7 @@
 /**
  * D-14 session settings in a real browser, at desktop and phone width: the dispatch
  * bar's + menu (Attach image, Presets ›, Templates ›) and its preset chip reaching
- * POST /sessions as `presetId`; ⌘K's "New session from preset"; the prompt row's ⚡
+ * POST /sessions as explicit fields (never `presetId`); ⌘K's "New session from preset"; the prompt row's ⚡
  * (POST …/fast) with its once-per-browser cost note; the composer's + menu; the
  * Environment card's PR auto-fix switch; Settings › Sessions' worktree location.
  * Route-mocked: no backend.
@@ -92,7 +92,9 @@ for (const width of [1440, 390]) {
 
       await page.getByRole('button', { name: 'Create session' }).click()
       await expect.poll(() => posts.find((p) => p.url === '/api/sessions')?.body)
-        .toMatchObject({ presetId: 'p1', initialPrompt: 'Triage the open bugs' })
+        .toMatchObject({ permissionMode: 'plan', initialPrompt: 'Triage the open bugs' })
+      // The bar sends what it shows, never the preset id (D-14 final review).
+      expect(posts.find((p) => p.url === '/api/sessions')?.body).not.toHaveProperty('presetId')
 
       await prompt.fill('')
       await page.getByRole('button', { name: 'Add' }).click()
