@@ -295,7 +295,21 @@ ssh. It does three things:
 Keep the task out of `\viberpit\`: `winrun` sweeps that folder as leftovers. Sign in as `viber` with the
 password in `~/.config/viberpit/win11-vm.secret` on the runner.
 
-Direct ssh or RDP bypasses `winrun`'s desktop lock. That's fine for a person looking in, but sessions
+**RustDesk** is a second way to view the desktop. It works without Tailscale, through RustDesk's public
+servers, which the fleet's other RustDesk clients use too. Unlike RDP, it shares the live console
+session rather than taking it over. Install the signed MSI from the latest GitHub release as a
+service, then set a permanent password and read the ID, both over admin ssh:
+
+```bash
+ssh win11 '$ProgressPreference="SilentlyContinue"; Invoke-WebRequest <release>/rustdesk-<ver>-x86_64.msi -OutFile C:\setup\rustdesk.msi; Start-Process msiexec.exe -ArgumentList "/i","C:\setup\rustdesk.msi","/qn","/norestart" -Wait'
+umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(15))' > ~/.config/viberpit/win11-rustdesk.secret
+ssh win11 "& 'C:\Program Files\RustDesk\rustdesk.exe' --password '$(cat ~/.config/viberpit/win11-rustdesk.secret)'; & 'C:\Program Files\RustDesk\rustdesk.exe' --get-id"
+```
+
+On rocky the RustDesk ID is `1561221` (RustDesk 1.5.1, 2026-11-04). The password is in
+`~/.config/viberpit/win11-rustdesk.secret` on the runner.
+
+Direct ssh, RDP or RustDesk bypasses `winrun`'s desktop lock. That's fine for a person looking in, but sessions
 doing UI work should still go through `winrun` on the runner (`ssh rocky winrun -- …`).
 
 ## 11. Operating it
