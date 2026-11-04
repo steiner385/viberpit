@@ -7,12 +7,7 @@ import { McpAuthFlow } from './McpAuthFlow'
 import { McpStatusPill } from './McpStatusPill'
 import { McpScopeControl } from './McpScopeControl'
 import { serverKey } from './mcpServerKey'
-import { relativeAge, worstStatus } from './mcpStatus'
-
-// Accounts whose latest status row for this server is needs-auth (de-duplicated).
-function needsAuthAccounts(s: LibraryMcpServer): string[] {
-  return [...new Set(s.status.filter((r) => r.status === 'needs-auth').map((r) => r.account))]
-}
+import { relativeAge } from './mcpStatus'
 
 function testErrorMessage(err: unknown): string {
   switch (apiErrorCode(err)) {
@@ -47,34 +42,6 @@ function TestOutcomeNote({ outcome, target }: { outcome: TestOutcome | null; tar
         </p>
       )}
     </>
-  )
-}
-
-// Reauth for one server: McpAuthFlow starts auth for a single account, so with several
-// needs-auth accounts a picker chooses which one (default: the first).
-function ServerReauth({ server, accounts }: { server: string; accounts: string[] }) {
-  const [picked, setPicked] = useState(accounts[0])
-  const account = accounts.includes(picked) ? picked : accounts[0]
-  return (
-    <div>
-      {accounts.length > 1 && (
-        <label className="mt-1 px-3 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-          Account to reauthorize
-          <select
-            value={account}
-            onChange={(e) => setPicked(e.target.value)}
-            className="rounded border border-edge-strong bg-surface text-ink px-1 py-0.5 text-xs"
-          >
-            {accounts.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      <McpAuthFlow key={account} server={server} accounts={[account]} />
-    </div>
   )
 }
 
@@ -127,7 +94,7 @@ export function McpSection() {
       <ul className="space-y-2">
         {servers.map((s) => {
           const key = `${s.source}/${s.name}`
-          const needsAuth = needsAuthAccounts(s)
+          const signInNeeded = ['never', 'dead', 'expired'].includes(s.overall.grant)
           const open = expanded.has(key)
           return (
           <li key={key}>
@@ -148,9 +115,12 @@ export function McpSection() {
                     {s.source}
                   </span>
                 )}
-                <McpStatusPill status={worstStatus(s.status.map((r) => r.status))} />
+                <McpStatusPill status={s.overall.status} />
               </div>
             </button>
+            {s.overall.error && (
+              <p className="mt-1 px-3 text-xs text-ink-muted break-words">{s.overall.error}</p>
+            )}
             {/* Siblings below the card (never nested inside the card button). */}
             <div className="mt-1 px-3 flex flex-wrap items-center gap-2">
               {s.status.length > 0 && (
@@ -184,7 +154,7 @@ export function McpSection() {
                 {s.status.map((r) => (
                   <li
                     key={`${r.account}/${r.host}`}
-                    className="border-l-2 border-edge pl-2 text-xs"
+                    className={`border-l-2 border-edge pl-2 text-xs${r.counted ? '' : ' opacity-60'}`}
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <span>
@@ -194,17 +164,17 @@ export function McpSection() {
                     </div>
                     {r.error && <p className="text-ink-muted break-words">{r.error}</p>}
                     <p className="text-ink-muted break-words">
-                      checked {relativeAge(r.observedAt)} · from {r.source}
+                      checked {relativeAge(r.observedAt)} · from {r.source}{r.counted ? '' : ' · not counted'}
                     </p>
                   </li>
                 ))}
               </ul>
             )}
             {/* Inline auth flow — sibling below the card button to avoid nesting interactive elements */}
-            {needsAuth.length > 0 && (s.transport === 'http' || s.transport === 'sse') && (
-              <ServerReauth server={s.name} accounts={needsAuth} />
+            {signInNeeded && (s.transport === 'http' || s.transport === 'sse') && (
+              <McpAuthFlow server={s.name} accounts={[]} />
             )}
-            {needsAuth.length > 0 && s.transport === 'stdio' && (
+            {s.overall.status === 'needs-auth' && s.transport === 'stdio' && (
               <p className="mt-1 px-3 pb-2 text-sm text-ink-muted">
                 This server cannot use browser OAuth here. Configure credentials on the host
                 running the session using the server’s setup instructions, then start a new session.

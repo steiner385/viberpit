@@ -876,6 +876,18 @@ export interface McpStatusRow {
   source: 'session' | 'probe'
   sessionId: string | null
   observedAt: string
+  /** False when the server ignores this row (stale, or a probe of a non-enabled account). */
+  counted: boolean
+}
+
+/** Standing of the shared OAuth grant: never signed in, dead, expired, expiring soon, live, or n/a. */
+export type McpGrant = 'never' | 'dead' | 'expired' | 'expiring' | 'live' | 'none'
+
+/** The server's one truthful status — what the card shows, instead of folding rows client-side. */
+export interface McpOverall {
+  status: string | null
+  error: string | null
+  grant: McpGrant
 }
 
 export interface LibraryMcpServer {
@@ -886,6 +898,7 @@ export interface LibraryMcpServer {
   readonly: boolean
   transport: 'stdio' | 'http' | 'sse'
   config: McpServerConfig
+  overall: McpOverall
   status: McpStatusRow[]
 }
 
