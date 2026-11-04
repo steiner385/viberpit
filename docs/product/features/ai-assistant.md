@@ -154,7 +154,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   | F — fixes & foundations | 6 | repos/branches/stage-models listing, tool-result drill-in, session export, gap reporting |
   | P — product & delivery | 20 | SDLC initiatives (incl. closing a finished one — refused unless its epic and every sub-issue are closed), PM products/queue/triage/onboarding, decision proposal accept/reject, held items and pending decisions listing, stale dependency edges: preview + prune (≤20 per card, each re-checked; hygiene only — a resolved blocker already blocks nothing); `list_queue_items` (the queue's skipped issues, each with its reason in its own terms and age, paged) and `release_hold` (≤20 issues per confirmed card: releases owner_action/evidence/stronger_model holds and removes the `parked` label; decision holds are refused, and a hold or label another person placed is refused by the same owner rule `dispatch_backlog` applies); `get_owner_digest` (today's owner digest: every needs-you item per product with its one recommended action, or none when only the owner can decide) |
   | A — automations control | 17 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools; the Session Feedback inbox (#2936): clusters + issue draft (read), and four destructive-class writes — file as one issue, dismiss (optionally as fixed by a PR), attach to an issue (one public comment) or to a live session (sent as a prompt) |
-  | S — session power | 15 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card; the side chat's two reads, `get_session_diff` (the session worktree's diff — a per-file summary by default, patches for at most 10 files on request) and `search_session_transcript` (where one session's conversation mentions the given words, ≤50 hits) |
+  | S — session power | 15 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card; the side chat's two reads, `get_session_diff` (the session worktree's diff — a per-file summary by default; on request the diff route's redacted `format=patch` view, at most 10 files / 24 kB of patch, every cut reported) and `search_session_transcript` (where one session's conversation mentions the given words, ≤50 hits) |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
   | G — GitHub | 7 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session) and its changed files with patches (capped at 100 files / 24 kB of patch per call, every cut reported, framed as the PR author's untrusted text), plus the writes that leave ViberPit, each signed with an authorship trailer: PR comment, issue creation, issue comment (unmarked, so it counts as the operator's word), and the bulk (≤20 refs) triage writes — `set_board_status` (add to the owning product's Project and/or set Status, journaled, validated against the board's real options) and the destructive `close_issue` (completed / not planned / duplicate-of, a signed comment posted first) |
@@ -166,19 +166,40 @@ assistant mutation does not make subsequent harness cleanup safe.
 - **Side chat (D-12)** — opened while a session is on screen, the drawer is a side chat ABOUT that
   session: it answers from the session's transcript, diff (`get_session_diff`) and in-session search
   (`search_session_transcript`), and it can never write to it. The scope is the `sessionId` of the
-  latest context the driver sent (`ClaudeAgentDriver.context_scope`, advanced as each turn starts),
-  read at tool-call time through the `current_scope` callable `build_server` takes — tool input can
-  never set it, and it moves with the user: opened in A, then asked from B, the chat may act on A
-  and not on B. `build_tools.guarded` refuses any mutation- or destructive-class call whose target
-  set contains the scoped session BEFORE its handler, so no endpoint is called: the tool error is
-  `SCOPED_READ_ONLY: This chat is about session X and can't change it — ask in the session itself,
-  or close the side chat`, logged at INFO, metered with outcome `refused` and audited with
-  `refused` in the detail. A batch naming the session is refused whole. Targets come from one helper,
-  `tool_targets`, over `SESSION_TARGET_KEYS`; every other write tool sits in `NO_SESSION_TARGET`
-  with its reason, and `server/tests/test_assistant_scope.py` fails until a new write tool (operator
-  tier included) is placed in one of the two. Reads, writes to other sessions, and a context with
-  no session are unaffected. The system prompt carries one static line describing the role. Eval
-  cases may carry a `session_id`, rendered into the context header and armed as the scope.
+  latest context the driver sent (`context_scope` on both engines' drivers — part of the
+  `AgentDriver` contract — advanced as each prompt goes out), read at tool-call time through the
+  `current_scope` callable the overlay build hands to `build_tools` (via `build_server` for Claude,
+  `assistant_codex_options` for Codex). Tool input can never set it, and it moves with the user:
+  opened in A, then asked from B, the chat may act on A and not on B. A rebuilt driver (rotation,
+  recompose, crash recovery, idle reap) is seeded with the session's last scope until it sends a
+  context of its own.
+  - **One predicate, two places.** `scope_refusal` (`server/assistant/tools.py`) runs before the
+    permission card — in the Claude driver's `_can_use_tool` and the Codex driver's dynamic-tool
+    gate — so no card is raised for a write that would be refused, and again in `build_tools.guarded`
+    as the backstop, before the handler, so no endpoint is called. The tool error is
+    `SCOPED_READ_ONLY: This chat is about session X and can't change it — ask in the session itself,
+    or close the side chat`, logged at INFO, metered with outcome `refused` and audited with
+    `refused` in the detail.
+  - **Targets.** Write tools that name sessions are listed in `SESSION_TARGET_KEYS`; `tool_targets`
+    reads them through `session_id_arg`, which admits only a bare session UUID (the route
+    allowlist's own pattern, `policy.SESSION_ID`) and lowercases it, and `guarded` hands the handler
+    that canonical id — the id checked is the id sent. A malformed target (`Y/../X`, `X?`, `X#`, a
+    percent-escape) refuses the whole call while scoped and is an argument error otherwise; a batch
+    naming the session is refused whole. Independently, `AssistantApi` refuses any request path
+    with a dot segment, `?`, `#`, `%`, `\` or whitespace, so no other path argument (a watch id, a
+    question id) can climb onto a session route.
+  - **Blocked while scoped** (`BLOCKED_WHILE_SCOPED`): `trigger_automation_action` and
+    `consolidate_prs` reach sessions their input does not name (PR Doctor prompts a PR's owning
+    session, Archive Audit's reopen unarchives one), so they are refused while ANY session is
+    scoped.
+  - **Outside the guard** (`NO_SESSION_TARGET`, each with its reason): tools keyed by something
+    other than a session — notably the PR-keyed `ready_merge_pr`, `comment_on_pr` and the issue
+    writes, which act on GitHub, not on the session that owns the PR — plus `create_session`,
+    `dispatch_backlog` and `apply_owner_digest`, which only start new sessions.
+  - `server/tests/test_assistant_scope.py` fails until a new write tool, operator tier included, is
+    in exactly one of the three tables. Reads, writes to other sessions, and a context with no
+    session are unaffected. The system prompt carries one static line describing the role. Eval
+    cases may carry a `session_id`, rendered into the context header and armed as the scope.
 - **Token is loopback-only** — `server/assistant/token.py` mints an identity- and session-bound,
   HMAC-signed `ccas1:` bearer token, never persisted, accepted only from loopback by
   `IdentityMiddleware` (spec §4.3). It cannot authenticate a request that didn't originate from the

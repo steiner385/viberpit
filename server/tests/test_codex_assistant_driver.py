@@ -347,3 +347,53 @@ async def test_a_dynamic_tool_card_carries_the_registrys_rule_suggestions(harnes
     assert card.rule_suggestions == offered
     driver.resolve_permission(card.perm_id, "deny", "user@example.com")
     await _await_reply(harness, request_id)
+
+
+# ---------------------------------------------------------------------------
+# D-12 side-chat scope on the Codex engine
+# ---------------------------------------------------------------------------
+
+_SCOPED = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+
+@pytest.mark.asyncio
+async def test_the_codex_driver_tracks_the_last_sent_context_scope(harness, overlay):
+    driver = await harness.boot(assistant_overlay=overlay)
+    assert driver.context_scope is None
+    await driver.send_prompt("what changed?", context={"route": f"/sessions/{_SCOPED}",
+                                                       "sessionId": _SCOPED})
+    await harness.settle()
+    assert driver.context_scope == _SCOPED
+    driver.seed_context_scope(None)  # a seed never overrides a sent context
+    assert driver.context_scope == _SCOPED
+
+
+@pytest.mark.asyncio
+async def test_a_codex_assistant_refuses_a_scoped_write_without_a_card(harness, tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    holder: dict[str, Any] = {}
+    overlay = oc.assistant_codex_options(
+        api=_api(), model="gpt-5.6-sol",
+        current_scope=lambda: holder["driver"].context_scope)
+    driver = await harness.boot(assistant_overlay=overlay)
+    holder["driver"] = driver
+    driver.seed_context_scope(_SCOPED)
+    request_id = harness.server.request(
+        TOOL_CALL, _call("send_prompt", {"id": _SCOPED, "text": "continue"}))
+    reply = await _await_reply(harness, request_id)
+    assert reply["result"]["success"] is False
+    assert reply["result"]["contentItems"][0]["text"].startswith("SCOPED_READ_ONLY: ")
+    await harness.settle()
+    assert harness.of(ev.PermissionRequest) == []
+
+
+@pytest.mark.asyncio
+async def test_the_codex_overlay_handlers_carry_the_scope_guard(tmp_path, monkeypatch):
+    """The backstop: the overlay's own handlers refuse even past an approved card."""
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    overlay = oc.assistant_codex_options(api=_api(), model="gpt-5.6-sol",
+                                         current_scope=lambda: _SCOPED)
+    out = await overlay.handlers["archive_session"]({"id": _SCOPED})
+    assert out["is_error"] is True
+    assert out["content"][0]["text"].startswith("SCOPED_READ_ONLY: ")

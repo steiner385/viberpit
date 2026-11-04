@@ -1670,6 +1670,13 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             if sid not in fixture.rows:
                 return httpx.Response(404, json={"detail": "session not found"})
             if tail == "diff":
+                if params.get("format") == "patch":
+                    # The route's own patch view over the full fixture diff.
+                    from server.sessions.diff_patch import patch_view
+                    return httpx.Response(200, json=patch_view(
+                        _session_diff(sid, summary=False),
+                        max_files=int(params.get("max_files") or 300),
+                        max_patch_bytes=int(params.get("max_patch_bytes") or 60_000)))
                 return httpx.Response(200, json=_session_diff(
                     sid, summary=params.get("summary") in ("1", "true")))
             return _session_search(sid, params.get("q") or "", params.get("limit"))

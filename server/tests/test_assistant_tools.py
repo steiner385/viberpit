@@ -1679,8 +1679,10 @@ _INBOX_WRITE_TOOLS = ("file_feedback_cluster", "dismiss_feedback_cluster",
      f"{_FB}/dismiss", {"ids": ["r1"], "fixedBy": 2950}),
     ("attach_feedback_to_issue", {"ids": ["r1"], "issue": "77"}, "POST",
      f"{_FB}/attach", {"ids": ["r1"], "issue": 77}),
-    ("attach_feedback_to_session", {"ids": ["r1"], "session_id": "s-9"}, "POST",
-     f"{_FB}/attach", {"ids": ["r1"], "sessionId": "s-9"}),
+    # session_id is a real session id: the D-12 guard admits only that shape.
+    ("attach_feedback_to_session",
+     {"ids": ["r1"], "session_id": "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a"}, "POST",
+     f"{_FB}/attach", {"ids": ["r1"], "sessionId": "9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a"}),
 ])
 async def test_feedback_inbox_tools_hit_their_endpoint(name, args, method, path, body):
     seen: list[tuple[str, str, object]] = []

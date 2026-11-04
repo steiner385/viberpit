@@ -17,9 +17,10 @@ import pytest
 from server.assistant.client import AssistantApi
 from server.assistant.policy import route_allowed
 from server.assistant.prompt import ASSISTANT_SYSTEM_PROMPT
-from server.assistant.tools import (NO_SESSION_TARGET, OPERATOR_TOOLS, SCOPED_READ_ONLY,
-                                    SESSION_TARGET_KEYS, TOOL_SPECS, ToolClass, build_tools,
-                                    scoped_refusal, tool_targets)
+from server.assistant.tools import (BLOCKED_WHILE_SCOPED, NO_SESSION_TARGET, OPERATOR_TOOLS,
+                                    SCOPED_READ_ONLY, SESSION_TARGET_KEYS, TOOL_SPECS,
+                                    ToolArgError, ToolClass, build_tools, scope_refusal,
+                                    scoped_refusal, session_id_arg, tool_targets)
 
 X = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 Y = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -185,6 +186,141 @@ async def test_operator_tier_on_the_scope_still_blocks_writes_to_the_scoped_sess
     assert _refused(out, X) and rec.seen == []
 
 
+# --------------------------------------------------------------------------- #
+# C1: a crafted id must not reach the scoped session by another spelling
+# --------------------------------------------------------------------------- #
+
+_CRAFTED = [f"{Y}/../{X}", f"{X}?", f"{X}#", f"{X}/prompt?x=", f"{X}%2F..", f"{X}/",
+            f"{X}\x00", f"{X[:-1]}"]
+
+
+@pytest.mark.parametrize("raw", _CRAFTED + ["", "abc", 7, None])
+def test_session_id_arg_rejects_anything_but_a_bare_session_id(raw):
+    with pytest.raises(ToolArgError):
+        session_id_arg(raw)
+
+
+def test_session_id_arg_canonicalises_case_and_padding():
+    assert session_id_arg(f"  {X.upper()} ") == X
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", _CRAFTED)
+async def test_a_crafted_single_id_is_refused_while_scoped(raw):
+    rec = _Recorder()
+    tools = build_tools(rec.api(), current_scope=_Scope(X))
+    out = await _tool(tools, "send_prompt").handler({"id": raw, "text": "go"})
+    assert _refused(out, X) and rec.seen == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", _CRAFTED)
+async def test_a_crafted_id_in_a_batch_refuses_the_whole_batch_while_scoped(raw):
+    rec = _Recorder()
+    tools = build_tools(rec.api(), current_scope=_Scope(X))
+    out = await _tool(tools, "archive_sessions").handler(
+        {"ids": [Y, raw], "titles": ["other", "crafted"]})
+    assert _refused(out, X) and rec.seen == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", _CRAFTED)
+async def test_a_crafted_id_is_an_argument_error_with_no_scope(raw):
+    rec = _Recorder()
+    out = await _tool(build_tools(rec.api()), "archive_session").handler({"id": raw})
+    assert out["is_error"] is True and "session id" in _text(out)
+    assert rec.seen == []
+
+
+@pytest.mark.asyncio
+async def test_an_uppercase_scoped_id_is_the_scoped_session():
+    rec = _Recorder()
+    tools = build_tools(rec.api(), current_scope=_Scope(X))
+    assert _refused(await _tool(tools, "send_prompt").handler(
+        {"id": X.upper(), "text": "go"}), X)
+    assert _refused(await _tool(tools, "archive_sessions").handler(
+        {"ids": [Y, X.upper()], "titles": ["a", "b"]}), X)
+    assert rec.seen == []
+
+
+@pytest.mark.asyncio
+async def test_an_uppercase_scope_still_matches():
+    rec = _Recorder()
+    tools = build_tools(rec.api(), current_scope=_Scope(X.upper()))
+    assert _refused(await _tool(tools, "send_prompt").handler({"id": X, "text": "go"}), X)
+    assert rec.seen == []
+
+
+@pytest.mark.asyncio
+async def test_the_checked_id_is_the_id_that_is_sent():
+    """`guarded` hands the handler the canonical id it checked, never the raw one."""
+    rec = _Recorder()
+    tools = build_tools(rec.api(), current_scope=_Scope(X))
+    await _tool(tools, "send_prompt").handler({"id": f" {Y.upper()} ", "text": "go"})
+    await _tool(tools, "archive_sessions").handler(
+        {"ids": [Y.upper()], "titles": ["a"]})
+    assert [(m, p) for m, p, _ in rec.seen] == [
+        ("POST", f"/api/sessions/{Y}/prompt"), ("POST", "/api/sessions/batch/archive")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    # Path arguments OTHER than the session id: a dot-segment in any of them would
+    # normalise onto a session route, so the client refuses the path outright.
+    ("delete_watch", {"id": f"../../sessions/{X}"}),
+    ("delete_notification_rule", {"id": f"../../sessions/{X}"}),
+    ("answer_question", {"id": Y, "question_id": f"../../{X}/prompt", "selected": ["a"]}),
+    ("resolve_permission", {"id": Y, "perm_id": f"../../{X}/prompt", "decision": "allow"}),
+    ("set_automation_enabled", {"id": f"../sessions/{X}", "enabled": False}),
+])
+async def test_no_path_argument_can_climb_onto_another_route(name, args):
+    rec = _Recorder()
+    out = await _tool(build_tools(rec.api(), current_scope=_Scope(X)), name).handler(args)
+    assert out["is_error"] is True
+    assert rec.seen == []
+
+
+# --------------------------------------------------------------------------- #
+# I1: writes whose session target cannot be read off their input
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("trigger_automation_action", {"id": "pr-doctor", "kind": "fix", "item_id": "o/r#1"}),
+    ("consolidate_prs", {"repo": "o/r", "numbers": [1, 2]}),
+])
+async def test_indirect_writes_are_blocked_while_any_session_is_scoped(name, args):
+    rec = _Recorder()
+    out = await _tool(build_tools(rec.api(), current_scope=_Scope(X)), name).handler(args)
+    assert _refused(out, X) and rec.seen == []
+    # Unscoped, they run as before.
+    rec2 = _Recorder()
+    out2 = await _tool(build_tools(rec2.api()), name).handler(args)
+    assert out2.get("is_error") is not True, _text(out2)
+    assert len(rec2.seen) == 1
+
+
+# --------------------------------------------------------------------------- #
+# M1: one predicate, used before the card and in `guarded`
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("name,args,scope,refused", [
+    ("send_prompt", {"id": X, "text": "t"}, X, True),
+    ("mcp__viberpit__send_prompt", {"id": X, "text": "t"}, X, True),
+    ("send_prompt", {"id": X.upper(), "text": "t"}, X, True),
+    ("send_prompt", {"id": f"{Y}/../{X}", "text": "t"}, X, True),
+    ("send_prompt", {"id": Y, "text": "t"}, X, False),
+    ("send_prompt", {"id": X, "text": "t"}, None, False),
+    ("get_session", {"id": X}, X, False),
+    ("trigger_automation_action", {"id": "pr-doctor"}, X, True),
+    ("create_session", {"repo": "o/r", "prompt": X}, X, False),
+    ("not_a_tool", {"id": X}, X, False),
+])
+def test_scope_refusal(name, args, scope, refused):
+    msg = scope_refusal(name, args, scope)
+    assert (msg == scoped_refusal(X)) if refused else msg is None
+
+
 @pytest.mark.asyncio
 async def test_a_refusal_is_metered_and_audited_as_refused(monkeypatch):
     from server.obs.metrics import assistant_tool_calls_total
@@ -219,12 +355,20 @@ def test_every_write_tool_is_classified_exactly_once():
     is placed in SESSION_TARGET_KEYS or NO_SESSION_TARGET (with a reason)."""
     writes = {n for n, s in TOOL_SPECS.items() if s.tool_class in _WRITE_CLASSES}
     assert OPERATOR_TOOLS <= writes
-    targeted, exempt = set(SESSION_TARGET_KEYS), set(NO_SESSION_TARGET)
-    assert not (targeted & exempt), f"classified twice: {sorted(targeted & exempt)}"
-    assert writes == targeted | exempt, (
-        f"unclassified: {sorted(writes - targeted - exempt)}; "
-        f"not write tools: {sorted((targeted | exempt) - writes)}")
-    assert all(isinstance(r, str) and r.strip() for r in NO_SESSION_TARGET.values())
+    tables = {"SESSION_TARGET_KEYS": set(SESSION_TARGET_KEYS),
+              "NO_SESSION_TARGET": set(NO_SESSION_TARGET),
+              "BLOCKED_WHILE_SCOPED": set(BLOCKED_WHILE_SCOPED)}
+    seen: dict[str, str] = {}
+    for table, names in tables.items():
+        for n in names:
+            assert n not in seen, f"{n} is in both {seen[n]} and {table}"
+            seen[n] = table
+    classified = set(seen)
+    assert writes == classified, (
+        f"unclassified: {sorted(writes - classified)}; "
+        f"not write tools: {sorted(classified - writes)}")
+    for reasons in (NO_SESSION_TARGET, BLOCKED_WHILE_SCOPED):
+        assert all(isinstance(r, str) and r.strip() for r in reasons.values())
 
 
 def test_targeted_keys_are_real_schema_properties():
@@ -244,15 +388,28 @@ def test_targeted_keys_are_real_schema_properties():
     ("attach_feedback_to_session", {"ids": ["r1", "r2"], "session_id": Y}, {Y}),
     ("create_session", {"repo": "o/r", "prompt": X}, set()),
     ("set_automation_enabled", {"id": X, "enabled": False}, set()),
-    # A bare string where a list belongs still names its target (refuse, don't guess);
-    # malformed input never raises — the handler's own validation reports it.
+    ("send_prompt", {"id": X.upper()}, {X}),
+    ("send_prompt", {"id": f" {X}\n"}, {X}),
+    # A bare string where a list belongs still names its target (the handler rejects
+    # the shape; the guard must not let it slip past first).
     ("archive_sessions", {"ids": X}, {X}),
-    ("send_prompt", {"id": 7}, set()),
+    # A missing target is the handler's to report.
+    ("send_prompt", {"text": "t"}, set()),
     ("send_prompt", None, set()),
-    ("list_sessions", {"id": X}, set()),
+    ("list_sessions", {"id": "anything"}, set()),
 ])
 def test_tool_targets(name, args, expected):
     assert tool_targets(name, args) == expected
+
+
+@pytest.mark.parametrize("name,args", [
+    ("archive_sessions", {"ids": [Y, f"{X}?"]}),
+    ("send_prompt", {"id": 7}),
+    ("send_prompt", {"id": f"{Y}/../{X}"}),
+])
+def test_tool_targets_refuses_a_malformed_target(name, args):
+    with pytest.raises(ToolArgError):
+        tool_targets(name, args)
 
 
 # --------------------------------------------------------------------------- #
@@ -292,22 +449,23 @@ async def test_get_session_diff_caps_the_file_list_and_reports_the_cut():
 
 
 @pytest.mark.asyncio
-async def test_get_session_diff_full_renders_hunks_as_patch_text():
-    body = {"files": [{"path": "a.py", "status": "modified", "additions": 1, "deletions": 1,
-                       "hunks": [{"oldStart": 3, "oldLines": 1, "newStart": 3, "newLines": 1,
-                                  "header": "def f():", "lines": [
-                                      {"kind": "del", "text": "    return 1"},
-                                      {"kind": "add", "text": "    return 2"},
-                                      {"kind": "context", "text": ""}]}]}],
-            "additions": 1, "deletions": 1, "truncated": False}
+async def test_get_session_diff_full_asks_the_endpoint_for_bounded_patch_text():
+    """summary=false is the endpoint's `format=patch` view: it renders, budgets and
+    redacts; the tool only chunks each patch for the envelope's per-string cap."""
+    patch = "".join(f"+line {i}\n" for i in range(400))
+    body = {"files": [{"path": "a.py", "status": "modified", "additions": 400,
+                       "deletions": 0, "patch": patch}],
+            "additions": 400, "deletions": 0, "truncated": False,
+            "cut": {"filesOmitted": 0, "patchesTruncated": 0, "patchesOmitted": 0,
+                    "patchBytesOmitted": 0, "maxFiles": 10, "maxPatchBytes": 24000}}
     rec = _Recorder(body)
     out = await _tool(build_tools(rec.api()), "get_session_diff").handler(
         {"session_id": X, "summary": False})
-    assert rec.seen == [("GET", f"/api/sessions/{X}/diff", {})]
-    f = json.loads(_text(out))["data"]["files"][0]
-    assert "hunks" not in f
-    patch = "".join(f["patch"])
-    assert patch == "@@ -3,1 +3,1 @@ def f():\n-    return 1\n+    return 2\n \n"
+    assert rec.seen == [("GET", f"/api/sessions/{X}/diff",
+                         {"format": "patch", "max_files": "10", "max_patch_bytes": "24000"})]
+    data = json.loads(_text(out))["data"]
+    assert "".join(data["files"][0]["patch"]) == patch
+    assert data["cut"] == body["cut"]
 
 
 @pytest.mark.asyncio
@@ -323,6 +481,15 @@ async def test_search_session_transcript_calls_the_in_session_search(limit, sent
     assert rec.seen == [("GET", f"/api/sessions/{X}/search", {"q": "refund", "limit": sent})]
     assert route_allowed("GET", f"/api/sessions/{X}/search")
     assert json.loads(_text(out))["data"] == body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["ten", 2.5, True, [3]])
+async def test_search_session_transcript_rejects_a_non_integer_limit(limit):
+    rec = _Recorder()
+    out = await _tool(build_tools(rec.api()), "search_session_transcript").handler(
+        {"session_id": X, "q": "refund", "limit": limit})
+    assert out["is_error"] is True and "limit" in _text(out) and rec.seen == []
 
 
 @pytest.mark.asyncio
@@ -393,6 +560,160 @@ def test_the_driver_scope_follows_the_last_sent_context():
             await d.aclose()
 
     asyncio.run(run())
+
+
+def test_a_seed_applies_only_until_a_context_is_sent():
+    """M2: a rebuilt driver inherits its predecessor's scope until its own first
+    context — which then wins, even when it names no session."""
+    async def run():
+        d = _driver("scope2")
+        d.seed_context_scope(X)
+        assert d.context_scope == X
+        await d.start()
+        try:
+            await d.send_prompt("q", context={"route": "/pipeline"})
+            await asyncio.sleep(0.05)
+            assert d.context_scope is None
+            d.seed_context_scope(Y)  # too late: a context was already sent
+            assert d.context_scope is None
+        finally:
+            await d.aclose()
+
+    asyncio.run(run())
+
+
+def test_a_prompt_without_context_keeps_the_seed():
+    async def run():
+        d = _driver("scope3")
+        d.seed_context_scope(X)
+        await d.start()
+        try:
+            await d.send_prompt("re-sent after a crash")
+            await asyncio.sleep(0.05)
+            assert d.context_scope == X
+        finally:
+            await d.aclose()
+
+    asyncio.run(run())
+
+
+def test_a_scoped_write_is_denied_before_any_permission_card():
+    """M1: the same predicate runs in `_can_use_tool`, so the user is never asked to
+    approve a call `guarded` would refuse."""
+    from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.permissions import PermissionRegistry
+
+    async def run():
+        reg = PermissionRegistry()
+        d = ClaudeAgentDriver("asst-scope", "primary", "/tmp/r", "/tmp/cfg",
+                              mode="interactive", sdk_factory=lambda *a, **k: None,
+                              registry=reg, identity="me",
+                              assistant_api=_Recorder().api())
+        d.seed_context_scope(X)
+        events: list = []
+        d._emit = events.append  # type: ignore[method-assign]
+        denied = await d._can_use_tool("mcp__viberpit__send_prompt", {"id": X, "text": "go"})
+        assert isinstance(denied, PermissionResultDeny)
+        assert denied.message == f"{SCOPED_READ_ONLY}: {scoped_refusal(X)}"
+        crafted = await d._can_use_tool("mcp__viberpit__archive_sessions",
+                                        {"ids": [Y, f"{X}#"], "titles": ["a", "b"]})
+        assert isinstance(crafted, PermissionResultDeny)
+        assert reg.pending("asst-scope") == [] and events == []
+        # A read of the scoped session still goes through, card-free.
+        ok = await asyncio.wait_for(
+            d._can_use_tool("mcp__viberpit__get_session", {"id": X}), 2)
+        assert isinstance(ok, PermissionResultAllow)
+
+    asyncio.run(run())
+
+
+class _FakeDriver:
+    def __init__(self, scope: str | None = None) -> None:
+        self._scope, self._sent = scope, scope is not None
+
+    @property
+    def context_scope(self) -> str | None:
+        return self._scope
+
+    def seed_context_scope(self, scope: str | None) -> None:
+        if not self._sent:
+            self._scope = scope
+
+
+async def _overlay_scope(orch, monkeypatch, sid: str = "s-asst"):
+    import server.assistant.server as server_mod
+    captured: dict = {}
+    real = server_mod.build_server
+
+    def spy(api, **kw):
+        captured.update(kw)
+        return real(api, **kw)
+
+    monkeypatch.setattr(server_mod, "build_server", spy)
+    from server.sessions.engine import AgentEngine
+    await orch._setup_assistant_overlay(sid, identity="u@example.com", model="sonnet",
+                                        engine=AgentEngine.CLAUDE_CODE)
+    return captured["current_scope"]
+
+
+def _bare_orch(tmp_path, monkeypatch):
+    import time
+
+    import server.db as db_mod
+    from server.sessions.orchestrator import SessionOrchestrator
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+
+    class _Result:
+        def scalar_one_or_none(self): return None
+
+    class _Ctx:
+        async def __aenter__(self):
+            class _Db:
+                async def execute(self, *a, **k): return _Result()
+            return _Db()
+
+        async def __aexit__(self, *a): return False
+
+    monkeypatch.setattr(db_mod, "db_session", lambda: _Ctx())
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._sdk_factory = None
+    orch._x11 = None
+    orch._records = {}
+    orch._overlays = {}
+    orch._drivers = {}
+    orch._clock = time.time
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_a_rotation_rebuild_seeds_the_new_driver_from_the_old(tmp_path, monkeypatch):
+    """M2: rotation / 401 recompose / crash recovery rebuild the overlay while the old
+    driver is still registered."""
+    orch = _bare_orch(tmp_path, monkeypatch)
+    orch._drivers["s-asst"] = _FakeDriver(X)
+    scope = await _overlay_scope(orch, monkeypatch)
+    orch._drivers["s-asst"] = _FakeDriver()   # the rebuilt driver, no context yet
+    assert scope() == X
+
+
+@pytest.mark.asyncio
+async def test_an_idle_reap_rebuild_seeds_from_the_last_observed_scope(tmp_path, monkeypatch):
+    """M2: after an idle reap the old driver is gone by the time the overlay is
+    rebuilt; the scope last read for the session seeds the new one."""
+    orch = _bare_orch(tmp_path, monkeypatch)
+    orch._drivers["s-asst"] = _FakeDriver(X)
+    first = await _overlay_scope(orch, monkeypatch)
+    assert first() == X
+    del orch._drivers["s-asst"]                # reaped
+    scope = await _overlay_scope(orch, monkeypatch)
+    orch._drivers["s-asst"] = _FakeDriver()
+    assert scope() == X
+    # Its own first context wins over the seed.
+    fresh = _FakeDriver(Y)
+    orch._drivers["s-asst"] = fresh
+    assert scope() == Y
 
 
 @pytest.mark.asyncio

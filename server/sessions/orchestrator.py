@@ -2149,14 +2149,33 @@ class SessionOrchestrator:
         # D-12 side-chat scope: the session the drawer's last sent context names. Read
         # late, at tool-call time, off whichever driver is registered for this session —
         # the driver is built FROM this overlay, so it does not exist yet here.
+        #
+        # A rebuild (rotation, 401 recompose, crash recovery, idle reap) starts a driver
+        # that has sent no context yet, so it is seeded with the scope this session last
+        # had: the outgoing driver's when it is still registered (every rebuild but the
+        # reap), else the scope last read at a tool call (the reap drops the driver
+        # first). The seed lapses once the new driver sends a context of its own.
+        scopes: dict[str, str | None] = self.__dict__.setdefault("_assistant_scopes", {})
+        outgoing = self._drivers.get(session_id)
+        seed = (getattr(outgoing, "context_scope", None) if outgoing is not None
+                else scopes.get(session_id))
+
         def current_scope() -> str | None:
-            return getattr(self._drivers.get(session_id), "context_scope", None)
+            driver = self._drivers.get(session_id)
+            if driver is None:
+                return None
+            if driver is not outgoing and seed is not None:
+                getattr(driver, "seed_context_scope", lambda _s: None)(seed)
+            scope = getattr(driver, "context_scope", None)
+            scopes[session_id] = scope
+            return scope
 
         server = (build_server(api, operator=operator, current_scope=current_scope)
                   if selected is AgentEngine.CLAUDE_CODE else None)
         self.register_overlay(session_id, assistant_overlay_for(
             selected, api=api, server=server, max_turns=cfg.assistant_max_turns,
-            model=model or cfg.assistant_model, operator=operator))
+            model=model or cfg.assistant_model, operator=operator,
+            current_scope=current_scope))
         return api
 
     async def _setup_session_overlay(self, session_id: str, *, identity: str,

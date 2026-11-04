@@ -474,6 +474,9 @@ class ClaudeAgentDriver:
         # reset whenever the model may have forgotten the header (compaction, /clear,
         # reconnect) — the user has not moved, so the scope must survive those resets.
         self._context_scope: str | None = None
+        # False until this driver sends its first context: until then a rebuild may
+        # seed the scope its predecessor had (`seed_context_scope`).
+        self._context_sent = False
         # Broadcast fan-out: each events() subscriber gets its own queue. A single
         # asyncio.Queue is a WORK queue (each item to one getter) — fatal when
         # "attach" happens more than once per session (reconnect, 2nd viewer).
@@ -595,6 +598,12 @@ class ClaudeAgentDriver:
         starts — a queued prompt has not moved the conversation yet — and a prompt with
         no context leaves it as it was."""
         return self._context_scope
+
+    def seed_context_scope(self, scope: str | None) -> None:
+        """Carry a predecessor's scope across a rebuild (rotation, recompose, idle
+        reap). A no-op once this driver has sent a context of its own."""
+        if not self._context_sent:
+            self._context_scope = scope
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -1072,6 +1081,16 @@ class ClaudeAgentDriver:
         # keeping this at call time avoids a module-load-order cycle (mirrors
         # PermissionRegistry.request's own lazy import of the same module).
         from server.assistant import tools as assistant_tools
+        if is_assistant_kind(self.kind):
+            # The D-12 side-chat guard, BEFORE the card: a write `guarded` would refuse
+            # must not first ask the user to approve it. `guarded` re-runs the same
+            # predicate as the backstop.
+            refusal = assistant_tools.scope_refusal(tool_name, tool_input, self.context_scope)
+            if refusal is not None:
+                log.info("driver._can_use_tool: scoped side chat session=%s tool=%s",
+                         self.session_id, tool_name)
+                return PermissionResultDeny(
+                    message=f"{assistant_tools.SCOPED_READ_ONLY}: {refusal}")
         items = assistant_tools.batch_items(tool_name, tool_input)
         perm_id, fut, always_allowed = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
@@ -1315,6 +1334,7 @@ class ClaudeAgentDriver:
                 sdk_text = f"{header}\n{text}" if text else header
             self._last_context_header = header
             self._context_scope = context.get("sessionId")
+            self._context_sent = True
         if origin is not None:
             # Deliberately NOT deduped the way the context header is. Origin is a
             # property of THIS prompt, not of the conversation's current state: two

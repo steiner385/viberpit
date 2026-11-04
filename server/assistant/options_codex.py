@@ -339,8 +339,9 @@ class CodexAssistantOverlay:
                                        log_label="assistant codex overlay")
 
 
-def assistant_codex_options(*, api: AssistantApi, model: str,
-                            operator: bool = False) -> CodexAssistantOverlay:
+def assistant_codex_options(*, api: AssistantApi, model: str, operator: bool = False,
+                            current_scope: Callable[[], str | None] | None = None,
+                            ) -> CodexAssistantOverlay:
     """Build the Codex overlay for one assistant session.
 
     *api* is the loopback ``AssistantApi`` the tool handlers close over — the same
@@ -358,7 +359,7 @@ def assistant_codex_options(*, api: AssistantApi, model: str,
     reap and the operator's own quota. That is a real difference, stated rather
     than papered over with a lookalike field nothing reads.
     """
-    tools = build_tools(api, operator=operator)
+    tools = build_tools(api, operator=operator, current_scope=current_scope)
     specs: list[schema.FunctionDynamicToolSpec] = []
     handlers: dict[str, ToolHandler] = {}
     for spec in tools:

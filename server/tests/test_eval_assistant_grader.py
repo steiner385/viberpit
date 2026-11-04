@@ -517,12 +517,16 @@ def test_public_report_cannot_inject_markup_or_overwrite(tmp_path):
         assert bad not in text
 
 
+_MISSING = "00000000-0000-4000-8000-000000000000"
+
+
 @pytest.mark.asyncio
 async def test_trace_retains_partial_batch_failure(isolated_query):
     import json
     source, _, _, _, registry = isolated_query
     async def query_fn(**kwargs):
-        await registry['unarchive_sessions'].handler({'ids': [eval_assistant.S1, 'missing'], 'titles': ['one', 'missing']})
+        # A well-formed id the fixture does not hold: the guard admits only session ids.
+        await registry['unarchive_sessions'].handler({'ids': [eval_assistant.S1, _MISSING], 'titles': ['one', 'missing']})
         yield _message('Partial failure reported.')
     evidence, outcome = await eval_assistant.run_turn(_case(fixture_state={'sessions': {
         eval_assistant.S1: {'archived': True}}}), config_dir=str(source), model='sonnet', query_fn=query_fn)
@@ -531,7 +535,7 @@ async def test_trace_retains_partial_batch_failure(isolated_query):
     assert not result.get('isError')
     data = json.loads(result['content'][0]['text'])['data']
     assert data['succeeded'] == [eval_assistant.S1]
-    assert data['failed'][0]['id'] == 'missing'
+    assert data['failed'][0]['id'] == _MISSING
 
 
 @pytest.mark.asyncio

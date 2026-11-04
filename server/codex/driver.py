@@ -364,6 +364,11 @@ class CodexAgentDriver:
         #: (``_open_assistant_thread``, #2714), its permission mode is
         #: pinned, and every built-in approval is declined without a card.
         self._assistant = assistant_overlay
+        # D-12 side-chat scope: the sessionId of the latest context sent (see
+        # `context_scope`), and whether one has been sent (a rebuild's seed stops
+        # applying once it has).
+        self._context_scope: str | None = None
+        self._context_sent = False
         #: Set for a CODING session when the session-tools flag is on
         #: (server/sessions/tools/codex.py). Unlike ``_assistant`` it changes exactly
         #: ONE thing about this driver: a fresh `thread/start` declares the ViberPit
@@ -537,6 +542,19 @@ class CodexAgentDriver:
     @property
     def last_progress_at(self) -> float:
         return self._last_progress_at
+
+    @property
+    def context_scope(self) -> str | None:
+        """The session the latest SENT prompt context names, or None (D-12). Advanced
+        in `_emit_user_message`, when a prompt actually goes to the app-server (start
+        or steer) — a queued prompt has not moved the conversation yet."""
+        return self._context_scope
+
+    def seed_context_scope(self, scope: str | None) -> None:
+        """Carry a predecessor's scope across a rebuild; a no-op once a context of
+        this driver's own has been sent."""
+        if not self._context_sent:
+            self._context_scope = scope
 
     @property
     def last_hand_back_reason(self) -> str | None:
@@ -1172,6 +1190,9 @@ class CodexAgentDriver:
         return self._manager.finish_turn(token)
 
     def _emit_user_message(self, entry: _QueuedPrompt) -> None:
+        if entry.context is not None:
+            self._context_scope = entry.context.get("sessionId")
+            self._context_sent = True
         wire_images = [
             {"url": im.get("url", ""), "mime": im.get("mime", ""),
              "name": im.get("name", "")}
@@ -1614,6 +1635,17 @@ class CodexAgentDriver:
         arguments = (
             dict(params.arguments) if isinstance(params.arguments, Mapping) else {}
         )
+        if self._assistant is not None:
+            # The D-12 side-chat guard, before the card (the Claude driver's
+            # `_can_use_tool` runs the same predicate); the tool's `guarded` backstop
+            # runs it again.
+            from server.assistant.tools import SCOPED_READ_ONLY, scope_refusal
+
+            refusal = scope_refusal(tool, arguments, self._context_scope)
+            if refusal is not None:
+                log_event(logger, logging.INFO, "codex.driver.dynamic_tool_refused",
+                          session=self.session_id, reason="scoped_side_chat")
+                return tool_error(f"{SCOPED_READ_ONLY}: {refusal}")
         perm_id, future, always_allowed = await self._reg.request(
             self.session_id,
             params.turn_id,

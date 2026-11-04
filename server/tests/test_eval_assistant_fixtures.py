@@ -97,6 +97,11 @@ def test_session_diff_and_search_fixtures_serve_the_endpoint_shapes():
         assert all(f["hunks"] == [] for f in summary["files"])
         full = c.get(f"/api/sessions/{ev.S2}/diff").json()
         assert all(f["hunks"] for f in full["files"])
+        patched = c.get(f"/api/sessions/{ev.S2}/diff",
+                        params={"format": "patch", "max_files": 10,
+                                "max_patch_bytes": 24000}).json()
+        assert "+    for item in order.items:\n" in patched["files"][0]["patch"]
+        assert patched["cut"]["maxPatchBytes"] == 24000
         assert c.get(f"/api/sessions/{ev.S1}/diff").json()["files"] == []
         assert c.get("/api/sessions/00000000-0000-4000-8000-000000000000/diff").status_code == 404
         hits = c.get(f"/api/sessions/{ev.S2}/search", params={"q": "test suite"}).json()
