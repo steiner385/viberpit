@@ -11,12 +11,13 @@ import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from . import paths
+from . import fleet_role, paths
 from .mcp_names import short_name
 
 log = logging.getLogger(__name__)
 
 _mcp_write_lock = threading.Lock()
+_warned_worker = False
 
 
 def read_json(path: Path) -> dict:
@@ -132,8 +133,15 @@ def update_shared_mcp(update: Callable[[dict], dict]) -> dict:
     """Read-modify-write the shared MCP store under its lock; return the new contents.
 
     *update* receives a deep copy of the store and returns the desired store. The file is
-    rewritten only when the result differs. The one locked writer of the store: the
-    per-key merge and the refresher's compare-and-swap both go through it."""
+    rewritten only when the result differs. The one locked writer of the store, and only
+    on the refresh authority: on a worker *update* is not called, nothing is written, and
+    the current store is returned (logged once per process at DEBUG)."""
+    global _warned_worker
+    if fleet_role.is_worker():
+        if not _warned_worker:
+            _warned_worker = True
+            log.debug("shared MCP store is read-only on a worker; skipping write")
+        return read_shared_mcp()
     with _shared_mcp_locked() as path:
         existing = read_json(path) if path.exists() else {}
         updated = update(copy.deepcopy(existing))
