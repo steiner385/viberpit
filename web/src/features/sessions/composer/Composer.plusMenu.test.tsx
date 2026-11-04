@@ -54,4 +54,23 @@ describe('Composer + menu', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect(screen.queryByRole('menuitem', { name: /Slash commands/ })).toBeNull()
   })
+
+  it('Slash commands keeps a typed draft — it only focuses the box', async () => {
+    mount()
+    const box = screen.getByLabelText('Message')
+    await userEvent.type(box, 'half a thought')
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /Slash commands/ }))
+    expect(box).toHaveValue('half a thought')
+    expect(box).toHaveFocus()
+  })
+
+  it('Slash commands seeds / over a whitespace-only box', async () => {
+    mount()
+    const box = screen.getByLabelText('Message')
+    await userEvent.type(box, '   ')
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /Slash commands/ }))
+    expect(box).toHaveValue('/')
+  })
 })

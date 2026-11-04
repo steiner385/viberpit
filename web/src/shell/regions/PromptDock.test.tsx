@@ -638,6 +638,8 @@ describe('PromptDock — presets and templates (D-14)', () => {
   it("a preset whose model the account can't use is refused inline, like any create failure", async () => {
     const user = userEvent.setup()
     PRESETS = [preset({ model: 'fable' })]
+    // Offered (gated) on this account's list, so the bar applies it explicitly.
+    MODELS = [model(), model({ id: 'fable', label: 'Fable' })]
     POST_SESSIONS = async () => { throw new ApiRequestError(409, { detail: 'model blocked by policy' }) }
     renderAt('/sessions')
     await pickPreset(user, 'Bug bash')

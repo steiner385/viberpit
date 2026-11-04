@@ -8,7 +8,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { PromptTemplate, SessionPreset } from '@/api/types'
 import type { GithubRepo } from '@/api/hooks'
-import { githubRepo } from '@/test/factories'
+import { account, githubRepo } from '@/test/factories'
 import { DispatchBar, type DispatchBarProps } from './DispatchBar'
 
 const preset = (over: Partial<SessionPreset> = {}): SessionPreset => ({
@@ -158,5 +158,36 @@ describe('DispatchBar + menu', () => {
     mount({ presets: [preset()], presetRequest: { id: 'p1' }, onPresetRequestHandled })
     expect(await screen.findByText('Preset: Bug bash')).toBeInTheDocument()
     expect(onPresetRequestHandled).toHaveBeenCalledTimes(1)
+  })
+
+  it("leaves a preset's account and model alone when the bar does not offer them, and says so", async () => {
+    const { onDispatch } = mount({
+      accounts: [account({ name: 'work' })],
+      presets: [preset({ account: 'gone', model: 'mystery-model' })],
+    })
+    await openAdd()
+    await userEvent.click(screen.getByRole('menuitem', { name: /Presets/ }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /Bug bash/ }))
+    expect(screen.getByLabelText('Account')).toHaveValue('')
+    expect(screen.getByLabelText('Model')).not.toHaveValue('mystery-model')
+    expect(screen.getByText('preset account unavailable', { exact: false })).toBeInTheDocument()
+    expect(screen.getByText('preset model unavailable', { exact: false })).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('New session prompt'), 'go{Enter}')
+    await waitFor(() => expect(onDispatch).toHaveBeenCalledTimes(1))
+    expect(onDispatch.mock.calls[0][0]).toMatchObject({ presetId: 'p1', account: null, model: null })
+  })
+
+  it("applies a preset's account and model when the bar offers them", async () => {
+    const { onDispatch } = mount({
+      accounts: [account({ name: 'work' })],
+      presets: [preset({ account: 'work', model: 'sonnet' })],
+    })
+    await openAdd()
+    await userEvent.click(screen.getByRole('menuitem', { name: /Presets/ }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /Bug bash/ }))
+    expect(screen.queryByText(/unavailable/)).toBeNull()
+    await userEvent.type(screen.getByLabelText('New session prompt'), 'go{Enter}')
+    await waitFor(() => expect(onDispatch).toHaveBeenCalledTimes(1))
+    expect(onDispatch.mock.calls[0][0]).toMatchObject({ account: 'work', model: 'sonnet' })
   })
 })

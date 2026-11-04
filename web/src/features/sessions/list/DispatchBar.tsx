@@ -209,6 +209,8 @@ export function DispatchBar({
   const [heldDispatch, setHeldDispatch] = useState(false)
   // The + menu's preset (D-14): a removable chip; its id rides on the next create.
   const [preset, setPreset] = useState<SessionPreset | null>(null)
+  // What of the preset the bar could not apply (shown on the chip).
+  const [presetNotes, setPresetNotes] = useState<string[]>([])
   // Where an inserted template's caret goes once React has written the new text.
   const caretRef = useRef<number | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -296,12 +298,27 @@ export function DispatchBar({
    * account, model, and the prompt when none is typed — so what the bar shows is
    * what is sent. The server fills only what the create leaves unset (permission
    * mode, profile) from `presetId`, and never overrides an explicit value.
+   *
+   * An account or model the bar does not offer for the current engine is NOT
+   * applied — the field keeps its pick and the chip says so. Setting it anyway
+   * would send a value no select shows. (Inline lookups, not `engineAccounts`:
+   * this also runs while rendering, above where that memo is declared.)
    */
   function applyPreset(p: SessionPreset) {
+    const notes: string[] = []
     setPreset(p)
     if (p.repo) setRepo(p.repo)
-    if (p.account) setAccount(p.account)
-    if (p.model) selectModel(p.model)
+    if (p.account) {
+      const offered = accounts.some((a) =>
+        a.name === p.account && a.enabled !== false && accountEngine(a) === engine)
+      if (offered) setAccount(p.account)
+      else notes.push('preset account unavailable')
+    }
+    if (p.model) {
+      if (models.some((m) => m.id === p.model)) selectModel(p.model)
+      else notes.push('preset model unavailable')
+    }
+    setPresetNotes(notes)
     if (p.initialPrompt && text.trim() === '') setText(p.initialPrompt)
   }
 
@@ -907,6 +924,9 @@ export function DispatchBar({
         <div className="flex">
           <span className="inline-flex items-center gap-1 rounded-pill border border-accent bg-accent-wash px-2 py-0.5 text-xs text-ink">
             <span>Preset: {preset.name}</span>
+            {presetNotes.map((n) => (
+              <span key={n} className="text-warning"><span aria-hidden="true">· </span>{n}</span>
+            ))}
             <button
               type="button"
               aria-label={`Remove preset ${preset.name}`}

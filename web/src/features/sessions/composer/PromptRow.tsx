@@ -40,6 +40,8 @@ export interface PromptRowProps {
   menuRef?: Ref<PromptRowMenus>
   /** Turn fast mode on/off (D-14, `POST /sessions/{id}/fast`). Without it no ⚡. */
   onToggleFast?: (enabled: boolean) => void
+  /** The fast-mode POST is in flight: ⚡ is disabled until it answers. */
+  fastPending?: boolean
 }
 
 const NO_MODELS: readonly ModelOption[] = []
@@ -50,12 +52,13 @@ const NO_MODELS: readonly ModelOption[] = []
  * with live flag settings is offered all of them; the server checks the pick against
  * the model's own row and refuses one it lacks (`SETTINGS_INVALID`), which surfaces
  * as the session's error banner like any other refused effort.
+ * Follow-up #3260: offer only the current model's `supportedEffortLevels`.
  */
 const CLAUDE_EFFORT_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 // `caps` gates nothing for the mode picker: no engine restricts permission modes
 // (AgentCapabilities has no mode field and Codex maps all seven).
-export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onToggleFast }: PromptRowProps) {
+export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onToggleFast, fastPending = false }: PromptRowProps) {
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null)
   const menuOpener = (menu: OpenMenu) => (next: boolean) => setOpenMenu(next ? menu : null)
 
@@ -119,7 +122,7 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onTo
       )}
       {rt.contextPct != null && <ContextRing remainingPct={rt.contextPct} />}
       {showFast && (
-        <FastToggle on={fastOn} onToggle={onToggleFast} />
+        <FastToggle on={fastOn} onToggle={onToggleFast} pending={fastPending} />
       )}
     </div>
   )

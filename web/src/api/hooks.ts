@@ -2022,6 +2022,8 @@ export function useUpdateTemplate() {
 export function useRenderTemplate() {
   return useMutation<{ rendered: string }, ApiRequestError, { id: string; variables: Record<string, string> }>({
     mutationFn: ({ id, variables }) => api.post<{ rendered: string }>(`/templates/${id}/render`, { variables }),
+    // The dispatch bar says a failed render inline, beside the prompt.
+    meta: { suppressErrorToast: true },
   })
 }
 

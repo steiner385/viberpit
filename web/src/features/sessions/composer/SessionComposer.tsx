@@ -106,6 +106,7 @@ function SessionPromptRow({ rt, menuRef }: { rt: SessionRuntime; menuRef?: Ref<P
     <PromptRow
       rt={rt} session={session} caps={caps} models={models} menuRef={menuRef}
       onToggleFast={(enabled) => setFast.mutate({ id: rt.sessionId, enabled })}
+      fastPending={setFast.isPending}
     />
   )
 }

@@ -9,7 +9,12 @@ import { X, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FAST_MODE_COPY, hasSeenFastNote, markFastNoteSeen } from './fastMode'
 
-export default function FastToggle({ on, onToggle }: { on: boolean; onToggle: (enabled: boolean) => void }) {
+export default function FastToggle({ on, onToggle, pending = false }: {
+  on: boolean
+  onToggle: (enabled: boolean) => void
+  /** The POST is in flight: no second toggle until it answers. */
+  pending?: boolean
+}) {
   // Adjusted while rendering on the off → on edge (no effect-driven setState); the
   // effect only records, in storage, that the note has been shown.
   const [prevOn, setPrevOn] = useState(on)
@@ -27,12 +32,15 @@ export default function FastToggle({ on, onToggle }: { on: boolean; onToggle: (e
         aria-label="Fast mode"
         aria-pressed={on}
         title={FAST_MODE_COPY}
+        disabled={pending}
+        aria-busy={pending || undefined}
         onClick={() => onToggle(!on)}
         className={cn(
           'inline-flex items-center rounded-md px-2 py-0.5 min-h-7 text-xs',
           on ? 'text-warning' : 'text-ink-muted',
           'hover:bg-edge active:bg-edge-strong',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+          'disabled:opacity-50',
         )}
       >
         <Zap size={14} aria-hidden="true" />

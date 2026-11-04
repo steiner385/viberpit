@@ -399,14 +399,17 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
 
   // The + menu (D-14): Attach and the slash palette. Presets apply at creation, so
   // they are the dispatch bar's alone. "Slash commands" seeds the `/` the palette
-  // opens on, re-armed even if Esc dismissed it at that text before.
+  // opens on — only into an empty (or blank) box, never over a typed draft, which
+  // it just focuses — re-armed even if Esc dismissed it at that text before.
   const plusEntries: PlusMenuEntry[] = [
     { id: 'attach', label: 'Attach file', run: () => fileRef.current?.click() },
     ...(commands.length > 0 ? [{
       id: 'slash', label: 'Slash commands',
       run: () => {
-        setDismissedSlashAt(null)
-        setText('/')
+        if (text.trim() === '') {
+          setDismissedSlashAt(null)
+          setText('/')
+        }
         textareaRef.current?.focus()
       },
     }] : []),

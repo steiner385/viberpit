@@ -151,6 +151,12 @@ describe('PromptRow', () => {
       expect(onToggleFast).toHaveBeenLastCalledWith(false)
     })
 
+    it('disables ⚡ while its POST is in flight', () => {
+      render(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: true }}
+        caps={CLAUDE_CAPS} onToggleFast={vi.fn()} fastPending />)
+      expect(screen.getByRole('button', { name: 'Fast mode' })).toBeDisabled()
+    })
+
     it('shows the cost note inline the first time fast mode is on in this browser, and never again', async () => {
       const props = { rt: claudeRt(), caps: CLAUDE_CAPS, onToggleFast: vi.fn() }
       const { rerender, unmount } = render(
