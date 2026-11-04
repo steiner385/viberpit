@@ -165,6 +165,16 @@ describe('handleLiveBatch', () => {
     expect(r.dispatch).toHaveLength(1)   // frame is still delivered
   })
 
+  it('treats srcSeqSkip as contiguous (edge-consumed commandsChanged, #3278)', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 10 })], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 1, sessionId: 's1', srcSeq: 12, srcSeqSkip: 1 })], { activeSessionId: 's1', state })
+    expect(r.srcSeqGaps).toEqual([])
+    expect(state.srcContiguous.get('s1')).not.toBe(false)
+    const r2 = handleLiveBatch([ev({ seq: 2, sessionId: 's1', srcSeq: 14 })], { activeSessionId: 's1', state })
+    expect(r2.srcSeqGaps).toHaveLength(1)   // without the stamp it is still a gap
+  })
+
   it('names the frame a reused seq dropped in the gap record (two producers, #3094)', () => {
     // Two producers stamp the same per-attach seq: the second frame (seq 1, srcSeq 11) is
     // eaten by the seq === prev dedup, so the next frame opens a srcSeq hole with a

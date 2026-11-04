@@ -121,7 +121,8 @@ export const MAX_SKIPPED_IN_GAP = 5
 
 // `seq` is the per-attach dedup/heal key; `srcSeq` is the daemon's additive
 // end-to-end source seq (loss telemetry only — see GapState).
-export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; epoch?: string }
+export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; srcSeqSkip?: number; epoch?: string }
+// `srcSeqSkip`: source seqs the edge consumed (never forwarded) just before this frame.
 
 /**
  * Filter a live batch to the active session and detect a sequence gap.
@@ -261,7 +262,7 @@ export function handleLiveBatch(
     // retransmit already `continue`d), so a retransmit can't register a false gap.
     if (typeof meta.srcSeq === 'number' && meta.sessionId) {
       const prevSrc = state.lastSrcSeq.get(meta.sessionId)
-      if (prevSrc !== undefined && meta.srcSeq !== prevSrc + 1) {
+      if (prevSrc !== undefined && meta.srcSeq !== prevSrc + 1 + (meta.srcSeqSkip ?? 0)) {
         srcSeqGaps.push({
           sessionId: meta.sessionId, prev: prevSrc, got: meta.srcSeq,
           seq: meta.seq, prevSeq, type: etype, skipped: [...skipped],

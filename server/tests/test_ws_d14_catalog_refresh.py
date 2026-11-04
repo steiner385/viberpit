@@ -60,3 +60,19 @@ def test_a_typed_slash_fast_never_reaches_the_cli_and_answers_with_a_notice(ws_e
     result = next(f for f in frames if f.get("type") == "commandResult")
     assert result["render"] == "notice" and "isn't available" in result["data"]["text"]
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_consumed_commands_changed_stamps_src_seq_skip_on_the_next_frame():
+    """#3278: the client's srcSeq tracker never sees the consumed seq; the next frame says so."""
+    from server.bridge.ws import _forward_live
+    out_q: asyncio.Queue = asyncio.Queue()
+
+    class _Src(_Ev):
+        def __init__(self, wire, src): super().__init__(wire); self.src_seq = src
+
+    stream = _Stream([_Src({"type": "textDelta"}, 5), _Src({"type": "commandsChanged"}, 6),
+                      _Src({"type": "textDelta"}, 7), _Src({"type": "textDelta"}, 8)])
+    await _forward_live(stream, out_q, "s1")
+    frames = [out_q.get_nowait() for _ in range(out_q.qsize())]
+    assert [f.get("srcSeqSkip") for f in frames] == [None, 1, None]

@@ -307,12 +307,15 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *
 
     ``commandsChanged`` (D-14) is consumed here, never forwarded: it calls
     *on_commands_changed(session_id)* — the attach path's own top-level catalog push —
-    so a model switch refreshes the palette through the one push there is.
+    so a model switch refreshes the palette through the one push there is. Its source
+    seq is invisible to the client, so the next forwarded frame carries ``srcSeqSkip`` (the
+    count of consumed seqs just before it) and the client's tracker treats that as contiguous.
     """
     with bind_session(session_id):
         seq = 0
         prev_src: int | None = None      # last daemon source seq seen on THIS attach
         src_gap_logged = False           # rate-limit the srcSeq-gap warning to once/attach
+        consumed_src = 0                 # consumed (never forwarded) src seqs since the last frame
         try:
             async for e in stream.events():
                 try:
@@ -325,6 +328,9 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *
                     src = getattr(e, "src_seq", None)
                     if src is not None:
                         prev_src = src     # consumed, not lost: no srcSeq-gap warning
+                        # The client keeps its own srcSeq tracker and never saw this seq:
+                        # tell it via ``srcSeqSkip`` on the next forwarded frame.
+                        consumed_src += 1
                     if on_commands_changed is not None:
                         await on_commands_changed(session_id)
                     continue
@@ -340,12 +346,16 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *
                     # The srcSeq jump ACROSS a GAP is expected (events really were lost and
                     # a resync is already forced) — re-baseline so it isn't also flagged.
                     prev_src = None
+                    consumed_src = 0
                     continue
                 wire["sessionId"] = session_id
                 wire["seq"] = seq
                 src = getattr(e, "src_seq", None)
                 if src is not None:
                     wire["srcSeq"] = src
+                    if consumed_src:
+                        wire["srcSeqSkip"] = consumed_src
+                    consumed_src = 0
                     if prev_src is not None and src != prev_src + 1 and not src_gap_logged:
                         log_event(log, logging.WARNING, "transcript.srcseq.gap",
                                   session_id=session_id, prev=prev_src, got=src)
