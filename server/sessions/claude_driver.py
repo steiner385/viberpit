@@ -42,7 +42,8 @@ from .flag_settings import (EFFORT_KEY, SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAI
 from .memory_files import normalize_memory_files
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
-                     AgentDriverFactory, AgentEngine, _EffortUnchanged)
+                     AgentDriverFactory, AgentEngine, _EffortUnchanged,
+                     flag_settings_enabled)
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .orphaned_asks import (AUTOPILOT_ANSWER_PREFIX, CLOSE_REASON_RESTART,
@@ -2307,17 +2308,33 @@ class ClaudeAgentDriver:
         request already in flight is untouched, and nothing is interrupted. ``None``
         clears it back to the model's default. A level the live model does not list is
         refused (``SETTINGS_INVALID``) before anything is sent — the CLI itself accepts
-        any string."""
-        if self._client:
+        any string.
+
+        Order: validate, then switch the model, then write the effort — so a bad level
+        never leaves the CLI on a model the caller's record does not have. A failed
+        effort write after the switch raises ``SettingsError``; the model DID switch.
+        A CLI whose stream has ended gets no write at all: the switch is the record's,
+        applied at the next spawn, and the effort raises ``SETTINGS_UNAVAILABLE``. With
+        the ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch off the effort is ignored,
+        as before D-14."""
+        live_effort = not isinstance(effort, _EffortUnchanged) and flag_settings_enabled()
+        if live_effort:
+            await self.check_effort(model, effort)  # type: ignore[arg-type]
+        if self._client and not self._stream_ended:
             await self._client.set_model(model)
-        if isinstance(effort, _EffortUnchanged):
+        if live_effort:
+            await self.apply_flag_settings({EFFORT_KEY: effort})
+
+    async def check_effort(self, model: str | None, effort: str | None) -> None:
+        """Refuse (``SETTINGS_INVALID``) an effort the live *model* does not list. ``None``
+        (the model default) and an unknown list pass: the CLI accepts any string, so this
+        is the only check there is. Sends nothing."""
+        if effort is None:
             return
-        if effort is not None:
-            levels = effort_levels(await self.server_info(), model)
-            if levels is not None and effort not in levels:
-                raise self._settings_refused(SettingsError(
-                    SETTINGS_INVALID, f"effort {effort!r} is not one of {levels}"))
-        await self.apply_flag_settings({EFFORT_KEY: effort})
+        levels = effort_levels(await self.server_info(), model)
+        if levels is not None and effort not in levels:
+            raise self._settings_refused(SettingsError(
+                SETTINGS_INVALID, f"effort {effort!r} is not one of {levels}"))
 
     async def server_info(self) -> dict | None:
         if self._client is None or self._stream_ended:
@@ -2346,6 +2363,9 @@ class ClaudeAgentDriver:
         before the next goes out. A write whose reply never came (timeout, transport)
         is ``SETTINGS_FAILED``: it may or may not have landed."""
         async with self._flag_settings_lock:
+            if not flag_settings_enabled():
+                raise self._settings_refused(SettingsError(
+                    SETTINGS_UNAVAILABLE, "flag settings are off (VIBERPIT_FLAG_SETTINGS_ENABLED)"))
             if self._client is None or self._stream_ended:
                 raise self._settings_refused(SettingsError(SETTINGS_UNAVAILABLE,
                                                            "session not live"))

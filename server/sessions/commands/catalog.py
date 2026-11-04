@@ -30,7 +30,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from server.sessions.engine import AgentCapabilities, fork_supported, rewind_supported
+from server.sessions.engine import (AgentCapabilities, flag_settings_supported,
+                                    fork_supported, rewind_supported)
 from server.sessions.types import is_assistant_kind
 
 # Split a raw prompt into (command-name, args) IFF it is a single-line
@@ -60,12 +61,13 @@ CLIENT = {"help", "context", "mcp", "fork", "rewind", "btw", "fast"}
 # in; the drawer has no side chat about itself.
 CODING_ONLY = frozenset({"btw"})
 # Commands ViberPit owns outright: the engine's own entry of that name is never offered,
-# not even as a passthrough. The CLI publishes `/fast`, but its toggle would bypass the
-# session's persisted choice (D-14) — and fast mode bills usage credits at a higher rate,
-# so it must only ever change through ViberPit's gated, recorded path.
-APP_ONLY = frozenset({"fast"})
+# not even as a passthrough. The CLI publishes `/fast` and `/effort`, but its own toggles
+# would change the running process behind the session's persisted record (D-14) — and
+# fast mode bills usage credits at a higher rate — so both only ever change through
+# ViberPit's gated, recorded path.
+APP_ONLY = frozenset({"fast", "effort"})
 # Commands executed via a dedicated SDK method (not raw passthrough).
-CONTROL = {"model", "clear"}
+CONTROL = {"model", "clear", "effort"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
 # Tunable; see docs/superpowers/spikes/2026-06-22-slash-commands-verdicts.md.
 EXCLUDED = {
@@ -194,8 +196,16 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
     AppCommand(
         Command(name="fast", description="Toggle fast mode: faster output on the same model",
                 argument_hint="[on|off]", kind="client", source=APP),
-        gate=lambda caps: caps.flag_settings,
+        gate=flag_settings_supported,
         needs_fast_mode=True,
+    ),
+    # `/effort <level>` (D-14) changes the session's effort live — `run_command` routes
+    # it through the same `set_model(effort=…)` action as the prompt row's picker, so
+    # the record and the CLI never diverge. Claude with live flag settings only.
+    AppCommand(
+        Command(name="effort", description="Set this session's effort level (default clears it)",
+                argument_hint="<level|default>", kind="control", source=APP),
+        gate=flag_settings_supported,
     ),
 )
 

@@ -144,6 +144,20 @@ def rewind_supported(caps: AgentCapabilities | None) -> bool:
     return caps is not None and caps.rewind and rewind_enabled()
 
 
+def flag_settings_enabled() -> bool:
+    """The ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch (D-14, default on)."""
+    from server.config import get_settings
+    return bool(get_settings().flag_settings_enabled)
+
+
+def flag_settings_supported(caps: AgentCapabilities | None) -> bool:
+    """Can a session on an engine with *caps* write live flag settings right now? THE
+    gate, shaped like ``rewind_supported``: the engine declares ``flag_settings`` and the
+    kill switch is on. Fast mode, ``/fast``, ``/effort``, a live Claude effort and the
+    spawn's session flags all read it."""
+    return caps is not None and caps.flag_settings and flag_settings_enabled()
+
+
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     """The browser shape of one capability set.
 
@@ -159,6 +173,7 @@ def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     }
     wire["fork"] = fork_supported(caps)
     wire["rewind"] = rewind_supported(caps)
+    wire["flagSettings"] = flag_settings_supported(caps)
     return wire
 
 

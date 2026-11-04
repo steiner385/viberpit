@@ -363,6 +363,12 @@ try:
         # CLI control requests (rewind_files dry runs, rewind_conversation), per
         # constitution I.
         rewind_enabled: bool = Field(default=True, alias="VIBERPIT_REWIND_ENABLED")
+        # Live flag settings (D-14) kill switch: off = no engine advertises
+        # ``flag_settings``, so fast mode is unavailable, spawns carry no session flags,
+        # and a live Claude effort is refused as before D-14. Gates the internal CLI
+        # control request apply_flag_settings, per constitution I.
+        flag_settings_enabled: bool = Field(default=True,
+                                            alias="VIBERPIT_FLAG_SETTINGS_ENABLED")
         # Live (not complete/done/ended/archived) children one parent may have at once.
         child_session_cap: int = Field(default=3, alias="VIBERPIT_CHILD_SESSION_CAP")
         # Deepest nesting: 1 = children only, 2 = grandchildren, …
@@ -723,6 +729,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         rewind_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_REWIND_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        flag_settings_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_FLAG_SETTINGS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         child_session_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_CHILD_SESSION_CAP", "")) and v.isdigit() else 3

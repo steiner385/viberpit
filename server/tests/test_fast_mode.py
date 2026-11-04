@@ -479,7 +479,9 @@ async def test_an_unsupported_model_is_fast_unavailable_and_sends_nothing(env, c
     with pytest.raises(fs.SettingsError) as ei:
         await env.orch.set_fast_mode(env.rec.id, True)
     assert ei.value.code == fs.FAST_UNAVAILABLE
-    assert env.control.patches == [] and (await _row(env.rec.id)).fast_mode is None
+    # Only the switch's re-sync of the (off) record went out; the refused enable sent nothing.
+    assert env.control.patches == [{"fastMode": False}]
+    assert not (await _row(env.rec.id)).fast_mode
     assert await env.orch.set_fast_mode(env.rec.id, False) == {"enabled": False}  # always ok
     assert _no_warnings(caplog) == []
 
@@ -492,6 +494,33 @@ async def test_an_engine_without_flag_settings_is_fast_unavailable(env) -> None:
         with pytest.raises(fs.SettingsError) as ei:
             await env.orch.set_fast_mode(env.rec.id, True)
     assert ei.value.code == fs.FAST_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_the_kill_switch_turns_flag_settings_off(env, monkeypatch) -> None:
+    from server.sessions.engine import capabilities_to_wire, flag_settings_supported
+    monkeypatch.setenv("VIBERPIT_FLAG_SETTINGS_ENABLED", "false")
+    assert flag_settings_supported(ClaudeAgentDriver.capabilities) is False
+    assert capabilities_to_wire(ClaudeAgentDriver.capabilities)["flagSettings"] is False
+    assert env.orch.fast_mode_available(env.rec.id) is False
+    with pytest.raises(fs.SettingsError) as ei:
+        await env.orch.set_fast_mode(env.rec.id, True)
+    assert ei.value.code == fs.FAST_UNAVAILABLE
+    env.rec.fast_mode = True
+    env.rec.reasoning_effort = "high"
+    assert env.orch._spawn_flag_settings(env.rec.id) == {}
+    names = {c["name"] for c in await env.orch.command_catalog(env.rec.id)}
+    assert "fast" not in names and "effort" not in names
+    async with db_session() as db:       # live effort falls back to the old refusal
+        with pytest.raises(ActionError) as refused:
+            await session_actions.set_model(env.orch, db, session_id=env.rec.id,
+                                            model="opus", identity="u", effort="max")
+    assert (refused.value.code, refused.value.http) == ("unsupported_reasoning_effort", 400)
+    await env.orch.set_model_for_session(env.rec.id, "sonnet")
+    assert env.control.patches == []                # no control request at all
+    with pytest.raises(fs.SettingsError):
+        await env.orch._drivers[env.rec.id].apply_flag_settings({"fastMode": False})
+    assert env.control.patches == []
 
 
 def test_codex_record_is_never_fast_available() -> None:
@@ -511,12 +540,13 @@ async def test_a_copilot_session_caches_no_fast_models(env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_cli_refusal_persists_nothing(env) -> None:
+async def test_a_cli_refusal_keeps_the_record_off(env) -> None:
     env.control.replies = [_control_error("nope")]
     with pytest.raises(fs.SettingsError) as ei:
         await env.orch.set_fast_mode(env.rec.id, True)
     assert ei.value.code == fs.SETTINGS_REFUSED
-    assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is None
+    assert env.control.patches == [{"fastMode": True}]      # definite refusal: no compensation
+    assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
 
 
 @pytest.mark.asyncio
@@ -546,27 +576,82 @@ async def test_switching_to_a_model_without_fast_mode_clears_it(env, caplog) -> 
 
 
 @pytest.mark.asyncio
-async def test_the_clear_is_sent_only_when_fast_mode_was_on(env) -> None:
+async def test_every_model_switch_resyncs_the_cli_to_the_record(env) -> None:
+    """The record is authoritative: each live switch re-asserts its fast mode, so a
+    CLI that drifted (a lost write, a refused clear) is put back on the next switch."""
     await env.orch.set_model_for_session(env.rec.id, "sonnet")
     await env.orch.set_model_for_session(env.rec.id, "opus")
-    assert env.control.patches == []
+    assert env.control.patches == [{"fastMode": False}, {"fastMode": False}]
+    assert env.rec.fast_mode is False
 
 
 @pytest.mark.asyncio
-async def test_a_refused_clear_never_fails_the_switch(env, caplog) -> None:
+async def test_a_refused_clear_is_reasserted_on_the_next_switch(env, caplog) -> None:
     caplog.set_level(logging.INFO)
     await env.orch.set_fast_mode(env.rec.id, True)
-    env.control.replies = [_control_error("busy")]
+    env.control.replies = [_control_error("busy")]           # the clear is refused
     await env.orch.set_model_for_session(env.rec.id, "haiku")
     assert env.rec.model == "haiku" and env.rec.fast_mode is False
+    assert (await _row(env.rec.id)).fast_mode is False
+    await env.orch.set_model_for_session(env.rec.id, "opus")  # back on a fast model
+    # The refused clear, then the next switch re-asserts the record: the CLI ends off.
+    assert env.control.patches == [{"fastMode": True}, {"fastMode": False},
+                                   {"fastMode": False}]
+    assert env.rec.fast_mode is False
+    await env.orch._drivers[env.rec.id].reconnect()           # and a respawn starts off
+    assert "fastMode" not in (env.spawns.calls[-1]["flag_settings"] or {})
     assert _no_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_switch_with_an_unknown_model_list_clears_fast_mode(env) -> None:
+    """Fail closed: with no model list there is no proof the new model has it."""
+    await env.orch.set_fast_mode(env.rec.id, True)
+    env.rec.fast_mode_models = None
+    await env.orch.set_model_for_session(env.rec.id, "claude-opus-5-5")
+    assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
+    assert env.control.patches[-1] == {"fastMode": False}
 
 
 @pytest.mark.asyncio
 async def test_staying_on_a_fast_model_keeps_fast_mode(env) -> None:
     await env.orch.set_fast_mode(env.rec.id, True)
     await env.orch.set_model_for_session(env.rec.id, "claude-opus-5-5")
-    assert env.rec.fast_mode is True and env.control.patches == [{"fastMode": True}]
+    assert env.rec.fast_mode is True
+    assert env.control.patches == [{"fastMode": True}, {"fastMode": True}]
+
+
+@pytest.mark.asyncio
+async def test_an_enable_with_no_reply_is_compensated_and_kept_off(env, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    env.control.replies = [_timeout_error()]                  # may or may not have landed
+    with pytest.raises(fs.SettingsError) as ei:
+        await env.orch.set_fast_mode(env.rec.id, True)
+    assert ei.value.code == fs.SETTINGS_FAILED
+    assert env.control.patches == [{"fastMode": True}, {"fastMode": False}]
+    assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
+    assert _no_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_disable_still_records_off(env) -> None:
+    await env.orch.set_fast_mode(env.rec.id, True)
+    env.control.replies = [_timeout_error()]
+    with pytest.raises(fs.SettingsError):
+        await env.orch.set_fast_mode(env.rec.id, False)
+    assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_on_a_model_without_fast_mode_clears_the_stored_flag(env) -> None:
+    """After a restart the list is unknown, so the spawn passes the stored flag; once
+    the CLI reports its list and the model has no fast mode, the record drops it."""
+    await env.orch.set_model_for_session(env.rec.id, "sonnet")
+    env.rec.fast_mode = True                       # as a pre-fix row could hold it
+    env.rec.fast_mode_models = None
+    await env.orch._drivers[env.rec.id].reconnect()
+    assert env.spawns.calls[-1]["flag_settings"] == {"fastMode": True}
+    assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
 
 
 # Review Focus 2
@@ -587,6 +672,26 @@ async def test_a_daemon_restart_respawns_with_fast_mode_from_the_row(env) -> Non
         assert orch2._records[sid].fast_mode_models == FAST_IDS
     finally:
         await orch2.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_copilot_spawn_never_carries_fast_mode(env) -> None:
+    from viberpit import copilot
+    env.rec.fast_mode = True
+    for models in (None, FAST_IDS):
+        env.rec.fast_mode_models = models
+        with patch("server.sessions.orchestrator._provider_of",
+                   return_value=copilot.PROVIDER):
+            assert "fastMode" not in env.orch._spawn_flag_settings(env.rec.id)
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_on_a_known_unsupported_model_carries_no_fast_mode(env) -> None:
+    env.rec.fast_mode = True
+    env.rec.model = "sonnet"
+    assert "fastMode" not in env.orch._spawn_flag_settings(env.rec.id)
+    env.rec.model = "opus"
+    assert env.orch._spawn_flag_settings(env.rec.id) == {"fastMode": True}
 
 
 @pytest.mark.asyncio
@@ -638,6 +743,73 @@ async def test_effort_on_a_driverless_session_applies_at_the_next_spawn(env) -> 
 
 
 @pytest.mark.asyncio
+async def test_a_switch_with_an_invalid_effort_changes_nothing(env) -> None:
+    """opus -> sonnet with an effort sonnet does not list: refused before ANY write —
+    no interrupt, no model switch on the CLI, nothing persisted."""
+    driver = env.orch._drivers[env.rec.id]
+    client = env.spawns.clients[-1]
+    interrupts: list = []
+
+    async def _interrupt(**kw):
+        interrupts.append(kw)
+
+    driver.interrupt = _interrupt  # type: ignore[method-assign]
+    driver._turn_active = True
+    env.orch._last_prompt[env.rec.id] = "keep going"
+    with pytest.raises(fs.SettingsError) as ei:
+        await env.orch.set_model_for_session(env.rec.id, "sonnet", when="now",
+                                             reasoning_effort="turbo")
+    assert ei.value.code == fs.SETTINGS_INVALID
+    assert interrupts == [] and client.model == "opus"
+    assert env.rec.model == "opus" and (await _row(env.rec.id)).model == "opus"
+    assert env.control.patches == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_effort_after_the_switch_keeps_the_model_and_the_turn(env) -> None:
+    """The model switched before the effort write was refused: the record follows the
+    CLI's model, the effort stays as it was, the interrupted turn is re-sent, and the
+    refusal still reaches the caller."""
+    driver = env.orch._drivers[env.rec.id]
+    client = env.spawns.clients[-1]
+    sent: list = []
+
+    async def _interrupt(**kw):
+        return None
+
+    async def _send(text, *a, **k):
+        sent.append(text)
+
+    driver.interrupt = _interrupt  # type: ignore[method-assign]
+    driver.send_prompt = _send  # type: ignore[method-assign]
+    driver._turn_active = True
+    env.orch._last_prompt[env.rec.id] = "keep going"
+    env.control.replies = [_control_error("nope")]
+    with pytest.raises(fs.SettingsError) as ei:
+        await env.orch.set_model_for_session(env.rec.id, "sonnet", when="now",
+                                             reasoning_effort="high")
+    assert ei.value.code == fs.SETTINGS_REFUSED
+    assert client.model == "sonnet" and env.rec.model == "sonnet"
+    assert (await _row(env.rec.id)).model == "sonnet"
+    assert env.rec.reasoning_effort is None
+    assert (await _row(env.rec.id)).reasoning_effort is None
+    assert sent == ["keep going"]
+
+
+@pytest.mark.asyncio
+async def test_effort_on_a_dead_cli_persists_for_the_next_spawn(env) -> None:
+    driver = env.orch._drivers[env.rec.id]
+    driver._stream_ended = True
+    async with db_session() as db:
+        out = await session_actions.set_model(env.orch, db, session_id=env.rec.id,
+                                              model="opus", identity="u", effort="high")
+    assert out["ok"] is True
+    assert env.rec.reasoning_effort == "high"
+    assert (await _row(env.rec.id)).reasoning_effort == "high"
+    assert env.orch._spawn_flag_settings(env.rec.id) == {"effortLevel": "high"}
+
+
+@pytest.mark.asyncio
 async def test_an_invalid_effort_changes_nothing(env) -> None:
     with pytest.raises(fs.SettingsError) as ei:
         await env.orch.set_model_for_session(env.rec.id, "opus", reasoning_effort="turbo")
@@ -683,6 +855,41 @@ async def test_fast_reaching_the_dispatcher_is_a_notice() -> None:
     assert cmd is not None
     out = await dispatcher.dispatch(object(), cmd, "on")
     assert out is not None and out["render"] == "notice" and "/fast" in out["data"]["text"]
+
+
+def test_effort_is_an_app_control_command_gated_on_flag_settings() -> None:
+    by = {c.name: c for c in build_catalog(INFO | {"commands": [{"name": "effort"}]},
+                                           CLAUDE, kind=None)}
+    assert by["effort"].source == APP and by["effort"].kind == "control"
+    assert app_command("effort", CLAUDE) is not None
+    codex = AgentCapabilities(models=True, reasoning_effort=True)
+    assert "effort" not in {c.name for c in build_catalog(
+        {"commands": [{"name": "effort"}]}, codex, kind=None)}   # never the CLI's own
+    assert app_command("effort", codex) is None
+
+
+@pytest.mark.asyncio
+async def test_slash_effort_applies_live_through_the_set_model_action(env) -> None:
+    out = await env.orch.run_command(env.rec.id, "effort", "high")
+    assert out is not None and out["render"] == "notice" and "high" in out["data"]["text"]
+    assert env.control.patches == [{"effortLevel": "high"}]
+    assert (await _row(env.rec.id)).reasoning_effort == "high"
+    out = await env.orch.run_command(env.rec.id, "effort", "default")
+    assert env.control.patches[-1] == {"effortLevel": None}
+    assert env.rec.reasoning_effort is None
+    bad = await env.orch.run_command(env.rec.id, "effort", "turbo")
+    assert bad is not None and bad["render"] == "notice" and "turbo" in bad["data"]["text"]
+    usage = await env.orch.run_command(env.rec.id, "effort", "")
+    assert usage is not None and "Usage: /effort" in usage["data"]["text"]
+    assert len(env.control.patches) == 2
+
+
+@pytest.mark.asyncio
+async def test_slash_effort_on_a_detached_session_saves_for_the_next_spawn(env) -> None:
+    env.orch._drivers.pop(env.rec.id)
+    out = await env.orch.run_command(env.rec.id, "effort", "low")
+    assert out is not None and "saved" in out["data"]["text"]
+    assert (await _row(env.rec.id)).reasoning_effort == "low"
 
 
 @pytest.mark.asyncio
@@ -758,7 +965,7 @@ async def test_uds_round_trip_on_the_owner_daemon(env, caplog) -> None:
         finally:
             await client.aclose()
     assert refused.value.code == fs.FAST_UNAVAILABLE
-    assert env.control.patches == [{"fastMode": True}]
+    assert env.control.patches[-1] == {"fastMode": True}
     rpc_errors = [r for r in caplog.records
                   if r.name == "server.ipc.daemon" and "rpc.error" in r.getMessage()]
     assert rpc_errors and all(r.levelno == logging.INFO for r in rpc_errors)
