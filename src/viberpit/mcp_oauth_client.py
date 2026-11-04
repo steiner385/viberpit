@@ -96,13 +96,13 @@ class Client:
 
 def _default_probe(url: str) -> dict[str, str]:
     """Response headers of an unauthenticated GET to *url*, for any status. ``http_request``
-    returns no headers, so this one read uses urllib directly with the same User-Agent; it
-    never reads the body."""
+    returns no headers, so this one read uses urllib directly with the same User-Agent and
+    the same no-redirect opener; it never reads the body. A 3xx yields the 3xx's headers."""
     from . import oauth
     req = urllib.request.Request(url, method="GET", headers={
         "Accept": "application/json, text/event-stream", "User-Agent": oauth.USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_S) as resp:
+        with oauth.no_redirect_opener().open(req, timeout=_PROBE_TIMEOUT_S) as resp:
             return dict(resp.headers.items())
     except urllib.error.HTTPError as exc:
         return dict(exc.headers.items()) if exc.headers else {}
@@ -115,7 +115,8 @@ def _default_post_json(url: str, body: dict) -> tuple[int, bytes]:
     return oauth.http_request("POST", url, headers={"Content-Type": "application/json",
                                                     "Accept": "application/json"},
                               data=json.dumps(body).encode(), timeout=_HTTP_TIMEOUT_S,
-                              max_retries=1, max_total_sec=20.0, idempotent=False)
+                              max_retries=1, max_total_sec=20.0, idempotent=False,
+                              follow_redirects=False)
 
 
 # --- discovery ----------------------------------------------------------------------------

@@ -61,10 +61,13 @@ class McpRefreshTransient(Exception):
 # --- HTTP defaults (viberpit.oauth.http_request is the one outbound choke point) -----------
 
 def default_fetch_json(url: str) -> dict | None:
+    # Redirects are never followed here or in default_post_form: callers validate the URL
+    # (origin, https) before the request, and a 3xx would bypass that.
     from . import oauth
     try:
         status, body = oauth.http_request("GET", url, headers={"Accept": "application/json"},
-                                          timeout=_HTTP_TIMEOUT_S, max_retries=1, max_total_sec=15.0)
+                                          timeout=_HTTP_TIMEOUT_S, max_retries=1, max_total_sec=15.0,
+                                          follow_redirects=False)
     except oauth.TransientError:
         return None
     if status != 200:
@@ -80,7 +83,7 @@ def default_post_form(url: str, form: dict, headers: dict) -> tuple[int, bytes]:
     # never resent (the origin may already have rotated it).
     return oauth.http_request("POST", url, headers=hdrs, data=urllib.parse.urlencode(form).encode(),
                               timeout=_HTTP_TIMEOUT_S, max_retries=2, max_total_sec=20.0,
-                              idempotent=False)
+                              idempotent=False, follow_redirects=False)
 
 
 def json_or_none(body: bytes) -> object:

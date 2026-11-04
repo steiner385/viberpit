@@ -1,14 +1,16 @@
 """ViberPit's own MCP OAuth client (phase 4 task 2): fake HTTP, isolated store."""
 import base64
 import hashlib
+import http.server
 import json
 import os
 import stat
+import threading
 import urllib.parse
 
 import pytest
 
-from viberpit import mcp_oauth_client as moc, mcp_oauth_refresh as mor, paths
+from viberpit import mcp_oauth_client as moc, mcp_oauth_refresh as mor, oauth, paths
 
 NOW = 1_000_000_000_000
 REDIRECT = "https://dobby.example.ts.net/api/mcp/oauth/callback"
@@ -237,6 +239,22 @@ def test_discover_rejects_issuer_mismatch(issuer):
     fake = _aws_with(issuer=issuer)
     with pytest.raises(moc.DiscoveryFailed):
         moc.discover(AWS_SERVER, fetch_json=fake.fetch, probe=fake.probe)
+
+
+@pytest.mark.parametrize("prm_as,issuer", [
+    # Live pairs (controller probe, 2026-11-04): the PRM names the AS with a slash, the
+    # metadata's issuer without (AWS), or both bare (Railway).
+    ("https://us-east-1.oauth.signin.aws/", "https://us-east-1.oauth.signin.aws"),
+    ("https://backboard.railway.com", "https://backboard.railway.com"),
+])
+def test_discover_accepts_live_issuer_pairs(prm_as, issuer):
+    meta_url = moc.metadata_urls(prm_as)[0]
+    docs = {"https://mcp.example.com/.well-known/oauth-protected-resource/mcp":
+            {"resource": "https://mcp.example.com/mcp", "authorization_servers": [prm_as]},
+            meta_url: {**_as_meta(issuer, register=None), "issuer": issuer}}
+    fake = Fake(docs)
+    d = moc.discover("https://mcp.example.com/mcp", fetch_json=fake.fetch, probe=fake.probe)
+    assert d.as_metadata["issuer"] == issuer
 
 
 def test_discover_accepts_issuer_differing_only_in_href_spelling():
@@ -536,3 +554,112 @@ def test_exchange_code_transport_error_is_sanitised():
                           verifier="VERIFIER-secret-xyz", server_name="aws-oauth", now_ms=NOW,
                           post_form=boom)
     assert "CODE-secret-abc" not in str(exc.value)
+
+
+# --- redirects are never followed on the MCP discovery and token paths --------------------
+
+class _Recorder(http.server.BaseHTTPRequestHandler):
+    hits: list  # set per server class
+
+    def _handle(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        self.hits.append((self.command, self.path, dict(self.headers)))
+        if self.path.startswith("/redirect"):
+            self.send_response(302)
+            self.send_header("Location", self.server.target)  # type: ignore[attr-defined]
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = json.dumps({"resource": "x", "token_endpoint": "https://t", "access_token": "AT-secret-123"}
+                          ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("WWW-Authenticate", 'Bearer resource_metadata="https://evil/x"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _handle
+
+    def log_message(self, *a):
+        pass
+
+
+def _serve(target: str = ""):
+    hits: list = []
+    handler = type("H", (_Recorder,), {"hits": hits})
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.target = target  # type: ignore[attr-defined]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, hits, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+@pytest.fixture
+def redirect_pair():
+    """``(source_url, target_hits, target_url)``: the source 302s to another origin."""
+    target, target_hits, target_base = _serve()
+    source, _, source_base = _serve(f"{target_base}/target")
+    yield f"{source_base}/redirect", target_hits, f"{target_base}/target"
+    source.shutdown()
+    target.shutdown()
+
+
+def test_http_request_follows_by_default(redirect_pair):
+    # Control: proves the fixture can observe a followed redirect.
+    url, target_hits, _ = redirect_pair
+    status, _ = oauth.http_request("GET", url, max_retries=0)
+    assert status == 200 and len(target_hits) == 1
+
+
+def test_http_request_without_redirects_reports_the_3xx(redirect_pair):
+    url, target_hits, _ = redirect_pair
+    status, _ = oauth.http_request("GET", url, max_retries=0, follow_redirects=False)
+    assert status == 302
+    assert target_hits == []
+
+
+def test_post_redirect_never_carries_the_client_secret(redirect_pair):
+    url, target_hits, _ = redirect_pair
+    status, _ = oauth.http_request("POST", url, headers={"Authorization": "Basic Q0xJRU5ULVNFQ1JFVA=="},
+                                   data=b"a=1", max_retries=0, idempotent=False,
+                                   follow_redirects=False)
+    assert status == 302
+    assert target_hits == []
+
+
+def test_default_post_form_does_not_follow(redirect_pair):
+    url, target_hits, _ = redirect_pair
+    status, _ = mor.default_post_form(url, {"grant_type": "refresh_token"},
+                                      {"Authorization": "Basic Q0xJRU5ULVNFQ1JFVA=="})
+    assert status == 302 and target_hits == []
+
+
+def test_default_fetch_json_does_not_follow(redirect_pair):
+    url, target_hits, _ = redirect_pair
+    assert mor.default_fetch_json(url) is None
+    assert target_hits == []
+
+
+def test_default_post_json_does_not_follow(redirect_pair):
+    url, target_hits, _ = redirect_pair
+    status, _ = moc._default_post_json(url, {"client_name": "ViberPit"})
+    assert status == 302 and target_hits == []
+
+
+def test_default_probe_does_not_follow(redirect_pair):
+    url, target_hits, _ = redirect_pair
+    headers = moc._default_probe(url)
+    assert target_hits == []
+    assert not any(k.lower() == "www-authenticate" for k in headers)
+
+
+def test_exchange_code_redirect_is_a_failure(redirect_pair):
+    url, target_hits, _ = redirect_pair
+    d, _ = _discover("aws")
+    d = moc.Discovery(**{**d.__dict__, "as_metadata": {**d.as_metadata, "token_endpoint": url}})
+    with pytest.raises(moc.ExchangeFailed, match="302"):
+        moc.exchange_code(d, moc.Client("cid", "CLIENT-SECRET-789", REDIRECT), code="CODE-secret-abc",
+                          verifier="V", server_name="aws-oauth", now_ms=NOW)
+    assert target_hits == []
