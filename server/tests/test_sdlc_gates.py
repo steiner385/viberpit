@@ -98,5 +98,8 @@ def test_auto_resolved_view_inside_and_outside_the_window():
     refused = auto_gate_record("artifact.merge", "balanced", at, outcome="refused",
                                detail={"kind": "spec", "pr": 7, "message": "auto-merge is not allowed"})
     assert auto_resolved_view(refused, at)["summary"] == "auto-merge unavailable"
+    unknown = auto_gate_record("artifact.merge", "balanced", at, outcome="refused",
+                               detail={"kind": "spec", "pr": 7, "code": "PR_HUMAN_HOLD_UNKNOWN"})
+    assert auto_resolved_view(unknown, at)["summary"] == "hold check failed"
     assert auto_resolved_view(auto_gate_record("artifact.merge", "balanced", at,
                                                detail={"kind": "spec"}), at)["summary"] == "merged spec"

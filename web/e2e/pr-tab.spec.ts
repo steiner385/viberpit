@@ -47,6 +47,9 @@ async function openSession(page: Page, width: number, opts: { hold?: boolean } =
   await page.setViewportSize({ width, height: 900 })
   let merged = false
   const posts: { url: string; body: unknown }[] = []
+  // Frames the page sends over any WebSocket — a prompt sent from the composer would travel here, not /api/prs.
+  const wsFrames: unknown[] = []
+  page.on('websocket', (ws) => ws.on('framesent', (f) => wsFrames.push(f.payload)))
   await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
   await page.route('**/api/sessions', (route) => route.fulfill({ json: [{
     id: sid, name: 'PR tab', accountName: 'alice', engine: 'claude_code', status: 'idle',
@@ -79,7 +82,7 @@ async function openSession(page: Page, width: number, opts: { hold?: boolean } =
   await page.getByRole('button', { name: /open session pr tab/i }).click()
   await page.getByRole('tab', { name: 'PR' }).click()
   await expect(page).toHaveURL(/view=pr/)
-  return { posts }
+  return { posts, wsFrames }
 }
 
 async function noOverflow(page: Page) {
@@ -125,13 +128,14 @@ test('the thread path opens the Files tab at its line', async ({ page }) => {
 })
 
 test('"Ask session to address" prefills the composer and shows the conversation, without sending', async ({ page }) => {
-  const { posts } = await openSession(page, 390)
+  const { posts, wsFrames } = await openSession(page, 390)
   await page.getByRole('article', { name: `${THREADS[1].path}:120` })
     .getByRole('button', { name: 'Ask session to address' }).click()
   await expect(page.getByRole('tab', { name: 'Conversation' })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('textbox', { name: /^message$/i }))
     .toHaveValue(`Address this review comment on ${THREADS[1].path}:120:\n\n> ${THREADS[1].comments[0].body}`)
   expect(posts).toEqual([])
+  expect(wsFrames.filter((f) => /prompt/i.test(String(f)))).toEqual([])
 })
 
 test('Merge now confirms, posts squash, and a merged PR keeps only Open on GitHub', async ({ page }) => {
