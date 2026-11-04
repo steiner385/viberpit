@@ -272,10 +272,10 @@ def test_provider_error_is_denied_and_never_reflected(client: TestClient, fakes:
     assert _callback(client, code="c", state=state) == "/settings/mcp?signInError=state_invalid"
 
 
+@pytest.mark.parametrize("code", ["invalid_client", "INVALID_CLIENT"])
 def test_invalid_client_forgets_registration_and_pastes_back(
-        client: TestClient, fakes: Fakes) -> None:
-    fakes.exchange_exc = ExchangeFailed("token endpoint returned 401 invalid_client",
-                                        code="invalid_client")
+        client: TestClient, fakes: Fakes, code: str) -> None:
+    fakes.exchange_exc = ExchangeFailed(f"token endpoint returned 401 {code}", code=code)
     state = _start(client)
     assert _callback(client, code="c", state=state) == "/settings/mcp?pasteBack=railway"
     assert fakes.forgotten == [DISCOVERY.authorization_server]
@@ -329,7 +329,8 @@ def test_real_start_failures_still_warn(client: TestClient, fakes: Fakes, exc: E
     assert [r.levelno for r in caplog.records] == [30]
 
 
-@pytest.mark.parametrize("code,level", [("invalid_grant", 20), ("server_error", 30)])
+@pytest.mark.parametrize("code,level", [("invalid_grant", 20), ("INVALID_GRANT", 20),
+                                        ("server_error", 30)])
 def test_exchange_failure_log_level(client: TestClient, fakes: Fakes, code: str, level: int,
                                     caplog: pytest.LogCaptureFixture) -> None:
     fakes.exchange_exc = ExchangeFailed(f"token endpoint returned 400 {code}", code=code)
@@ -379,3 +380,122 @@ def test_shutdown_reaps_follow_through_tasks() -> None:
         return task.cancelled() and not one_tap._background
 
     assert asyncio.run(run())
+
+
+@pytest.mark.parametrize("error,expected", [("access_denied", "denied"),
+                                            ("ACCESS_DENIED", "denied"),
+                                            ("server_error", "exchange_failed"),
+                                            ("invalid_scope", "exchange_failed")])
+def test_provider_error_maps_to_a_closed_code(client: TestClient, fakes: Fakes, error: str,
+                                              expected: str) -> None:
+    state = _start(client)
+    loc = _callback(client, error=error, state=state)
+    assert loc == f"/settings/mcp?signInError={expected}"
+    assert error not in loc and fakes.exchanges == [] and fakes.merges == []
+
+
+def test_start_on_a_worker_is_not_configured(client: TestClient, fakes: Fakes,
+                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    from viberpit import fleet_role
+    monkeypatch.setenv(fleet_role.ROLE_ENV, "worker")
+    resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    assert resp.headers["location"] == "/settings/mcp?signInError=not_configured"
+    assert fakes.redirect_uris == [] and one_tap.pending_count() == 0
+
+
+@pytest.mark.parametrize("where", ["ensure", "scan"])
+def test_unexpected_start_failure_pastes_back(client: TestClient, fakes: Fakes, where: str,
+                                              monkeypatch: pytest.MonkeyPatch,
+                                              caplog: pytest.LogCaptureFixture) -> None:
+    if where == "ensure":  # e.g. the clients-cache write after a successful registration
+        fakes.ensure_exc = OSError("disk full")
+    else:
+        def boom(status_rows=None):  # noqa: ANN001, ANN202
+            raise RuntimeError("scan broke")
+        monkeypatch.setattr(one_tap.scan, "list_mcp_servers", boom)
+    with caplog.at_level("INFO"):
+        resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
+    warnings = [r for r in caplog.records if r.levelno == 30]
+    assert len(warnings) == 1 and "disk full" not in warnings[0].getMessage()
+
+
+def test_unexpected_start_failure_with_an_invalid_name_is_not_configured(
+        client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def boom(identity, name):  # noqa: ANN001, ANN202
+        raise RuntimeError("x")
+    monkeypatch.setattr(one_tap, "start", boom)
+    resp = client.get("/api/mcp/oauth/start", params={"server": "<script>"})
+    assert resp.headers["location"] == "/settings/mcp?signInError=not_configured"
+
+
+@pytest.mark.parametrize("where", ["forget", "exchange"])
+def test_unexpected_callback_failure_is_exchange_failed(
+        client: TestClient, fakes: Fakes, monkeypatch: pytest.MonkeyPatch, where: str,
+        caplog: pytest.LogCaptureFixture) -> None:
+    if where == "forget":
+        fakes.exchange_exc = ExchangeFailed("401 invalid_client", code="invalid_client")
+
+        def forget(issuer, **_kw):  # noqa: ANN001, ANN202
+            raise OSError("read-only")
+        monkeypatch.setattr(one_tap, "forget_client", forget)
+    else:
+        fakes.exchange_exc = RuntimeError("bug")
+    state = _start(client)
+    with caplog.at_level("INFO"):
+        assert _callback(client, code="the-code", state=state) == \
+            "/settings/mcp?signInError=exchange_failed"
+    assert fakes.merges == []
+    assert any(r.levelno == 30 and r.name == mcp_oauth.log.name for r in caplog.records)
+    assert not any("the-code" in r.getMessage() for r in caplog.records
+                   if r.name.startswith("server."))
+
+
+def test_route_never_swallows_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    async def cancelled(*_a, **_kw):  # noqa: ANN202
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(one_tap, "start", cancelled)
+    monkeypatch.setattr(one_tap, "complete", cancelled)
+    request = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mcp_oauth.oauth_start(server="railway", identity="t", db=None))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mcp_oauth.oauth_callback(request, code="c", state="s", error=None,  # type: ignore[arg-type]
+                                             identity="t", db=None))
+
+
+def _access_record(path: str, status: int = 302):  # noqa: ANN202
+    import logging
+    return logging.LogRecord("uvicorn.access", 20, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                             ("100.64.0.1:5000", "GET", path, "1.1", status), None)
+
+
+def test_access_filter_redacts_the_callback_query() -> None:
+    f = mcp_oauth.CallbackAccessFilter()
+    rec = _access_record("/api/mcp/oauth/callback?code=SECRET-CODE&state=SECRET-STATE")
+    assert f.filter(rec) is True
+    msg = rec.getMessage()
+    assert "SECRET" not in msg and "/api/mcp/oauth/callback?<redacted>" in msg
+    for path in ("/api/mcp/oauth/start?server=railway", "/api/mcp/oauth/callback",
+                 "/api/sessions?x=1"):
+        rec = _access_record(path)
+        assert f.filter(rec) is True and path in rec.getMessage()
+    odd = _access_record("/x")
+    odd.args = ("only", "three", "args")
+    assert f.filter(odd) is True
+
+
+def test_access_filter_install_is_idempotent() -> None:
+    import logging
+    access = logging.getLogger("uvicorn.access")
+    before = list(access.filters)
+    try:
+        mcp_oauth.install_callback_access_filter()
+        mcp_oauth.install_callback_access_filter()
+        assert sum(isinstance(f, mcp_oauth.CallbackAccessFilter) for f in access.filters) == 1
+    finally:
+        access.filters[:] = before

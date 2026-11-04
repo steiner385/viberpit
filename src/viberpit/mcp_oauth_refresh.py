@@ -55,7 +55,12 @@ class McpGrantDead(Exception):
 
 
 class McpRefreshTransient(Exception):
-    """The refresh failed for a reason that does not prove the grant dead. Retry later."""
+    """The refresh failed for a reason that does not prove the grant dead. Retry later.
+    ``code`` is the sanitised OAuth ``error`` code of the response, when there was one."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # --- HTTP defaults (viberpit.oauth.http_request is the one outbound choke point) -----------
@@ -417,7 +422,8 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
     # Case-insensitive: AWS sign-in answers in upper case (INVALID_GRANT, INVALID_TARGET).
     if status in (400, 401) and code is not None and code.lower() in DEAD_GRANT_ERRORS:
         raise McpGrantDead(f"token endpoint returned {status} {code}")
-    raise McpRefreshTransient(f"token endpoint returned {status}" + (f" {code}" if code else ""))
+    raise McpRefreshTransient(f"token endpoint returned {status}" + (f" {code}" if code else ""),
+                              code=code)
 
 
 # --- the tick -----------------------------------------------------------------------------
@@ -461,6 +467,24 @@ def _publish_all(names: list[str], *, drop: frozenset[str] = frozenset()) -> int
     return written
 
 
+def _forget_stale_client(bundle: dict, label: str, key: str) -> None:
+    """``invalid_client``: the provider no longer knows the bundle's DCR client. Drop the
+    cached registration when it is that very client, so the next one-tap sign-in registers
+    afresh instead of reusing it. The outcome stays transient (the grant is not proven dead)."""
+    client_id = bundle.get("clientId")
+    issuer = _auth_server_url(bundle)
+    if not (isinstance(client_id, str) and client_id and issuer):
+        return
+    from .mcp_oauth_client import forget_client  # imports this module
+    try:
+        if forget_client(issuer, client_id=client_id):
+            log.info("mcp oauth client rejected, cached registration forgotten server=%s key=%s",
+                     label, key)
+    except Exception:
+        log.debug("mcp oauth client cache write failed server=%s key=%s", label, key,
+                  exc_info=True)
+
+
 def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJson | None,
                  now_ms: int | None, skip_keys: frozenset[str] = frozenset()) -> bool:
     store = creds.read_shared_mcp()
@@ -481,6 +505,8 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
             log.debug("mcp oauth grant dead server=%s key=%s: %s", label, key, exc)
         except Exception as exc:
             _backoff_until_ms[key] = now + TRANSIENT_BACKOFF_S * 1000
+            if isinstance(exc, McpRefreshTransient) and (exc.code or "").lower() == "invalid_client":
+                _forget_stale_client(old, label, key)
             summary["transient"].append(label)
             summary["outcomes"].append({"key": key, "label": label, "outcome": "transient",
                                         "error": str(exc)[:MAX_ERROR_CHARS]})

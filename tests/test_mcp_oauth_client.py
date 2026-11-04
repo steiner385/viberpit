@@ -365,6 +365,27 @@ def test_forget_client_forces_re_registration():
     assert moc.ensure_client(d, REDIRECT, post_json=post).client_id == "cid-2"
 
 
+def test_forget_client_with_client_id_keeps_a_newer_registration():
+    d, _ = _discover("railway")
+    moc.ensure_client(d, REDIRECT, post_json=Poster((201, {"client_id": "cid-1"})))
+    assert moc.forget_client(d.authorization_server, client_id="cid-old") is False
+    assert moc.ensure_client(d, REDIRECT, post_json=Poster()).client_id == "cid-1"
+    assert moc.forget_client(d.authorization_server, client_id="cid-1") is True
+    assert moc.forget_client(d.authorization_server, client_id="cid-1") is False
+    post = Poster((201, {"client_id": "cid-2"}))
+    assert moc.ensure_client(d, REDIRECT, post_json=post).client_id == "cid-2"
+
+
+def test_client_cache_is_never_written_on_a_worker(monkeypatch):
+    from viberpit import fleet_role
+    d, _ = _discover("railway")
+    moc.ensure_client(d, REDIRECT, post_json=Poster((201, {"client_id": "cid-1"})))
+    before = paths.shared_mcp_clients_path().read_text()
+    monkeypatch.setenv(fleet_role.ROLE_ENV, "worker")
+    assert moc.forget_client(d.authorization_server) is False
+    assert paths.shared_mcp_clients_path().read_text() == before
+
+
 def test_ensure_client_kindash_unsupported():
     d, _ = _discover("kindash")
     with pytest.raises(moc.RegistrationUnsupported):

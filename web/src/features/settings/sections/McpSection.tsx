@@ -204,7 +204,14 @@ export function McpSection() {
             )}
             {/* Inline auth flow — sibling below the card button to avoid nesting interactive elements */}
             {((signInNeeded && !oneTap) || pasteBack === s.name) && (s.transport === 'http' || s.transport === 'sse') && (
-              <McpAuthFlow server={s.name} accounts={[]} />
+              <>
+                {pasteBack === s.name && (
+                  <p className="mt-1 px-3 text-xs text-ink-muted">
+                    One-tap sign-in isn't available for this server; sign in manually below.
+                  </p>
+                )}
+                <McpAuthFlow server={s.name} accounts={[]} />
+              </>
             )}
             {signInNeeded && oneTap && pasteBack !== s.name && (s.transport === 'http' || s.transport === 'sse') && (
               <div className="mt-1 px-3 pb-2">

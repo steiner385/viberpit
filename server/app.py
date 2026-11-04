@@ -231,6 +231,10 @@ async def _lifespan(app: FastAPI):
     # Structured JSON logging (stdout→journald + rotating file) with correlation
     # ids and credential redaction. Idempotent; installs the redacting filter too.
     configure_logging()
+    # The one-tap MCP callback's query carries an authorization code: keep it out of the
+    # uvicorn access log.
+    from server.api.mcp_oauth import install_callback_access_filter
+    install_callback_access_filter()
 
     # In single-process mode the edge owns the drivers too, so it sees the same
     # unowned async-generator finalizations the daemon does (#1869, #1870). Must run

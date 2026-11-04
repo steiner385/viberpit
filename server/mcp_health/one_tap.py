@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from viberpit import accounts, creds
+from viberpit import accounts, creds, fleet_role
 from viberpit.mcp_keys import store_name
 from viberpit.mcp_oauth_client import (Client, Discovery, DiscoveryFailed, ExchangeFailed,
                                        RegistrationFailed, RegistrationUnsupported,
@@ -97,6 +97,12 @@ def _prune(now: float) -> None:
         del _pending[state]
 
 
+def _oauth_code(exc: Exception) -> str:
+    """*exc*'s OAuth ``error`` code, lower-cased: providers differ in case (AWS answers
+    ``INVALID_GRANT``), the standard codes are lower-case."""
+    return (getattr(exc, "code", None) or "").lower()
+
+
 def _account_names() -> list[str]:
     return list(accounts._anthropic_account_names())
 
@@ -113,7 +119,10 @@ def _server(name: str) -> dict:
 async def start(identity: str, server_name: str) -> str:
     """The provider authorize URL for *server_name*. Raises :class:`PasteBack` when one-tap
     is off or the provider cannot take ViberPit as a client, and
-    ``SignInFailed("not_configured")`` for a name that is no single http/sse server."""
+    ``SignInFailed("not_configured")`` for a name that is no single http/sse server, or
+    on a worker host (it cannot write the shared store)."""
+    if fleet_role.is_worker():
+        raise SignInFailed("not_configured")
     # Validate the name first, so an arbitrary string is never echoed into a redirect.
     server = await asyncio.to_thread(_server, server_name)
     origin = get_settings().public_origin
@@ -162,7 +171,11 @@ async def complete(identity: str, *, state: str | None, code: str | None, error:
     The state is consumed before anything else, so a replay or a foreign identity's
     callback is refused and writes nothing."""
     pending = await _take(identity, state)
-    if error is not None or not code:
+    if error is not None:
+        # Only the user's refusal reads as "denied"; any other provider error is a failed
+        # sign-in. The provider's text is never reflected.
+        raise SignInFailed("denied" if error.lower() == "access_denied" else "exchange_failed")
+    if not code:
         raise SignInFailed("denied")
     try:
         bundle = await asyncio.to_thread(
@@ -172,10 +185,10 @@ async def complete(identity: str, *, state: str | None, code: str | None, error:
     except ExchangeFailed as exc:
         # invalid_grant is usually a code that outlived its lifetime (the user lingered on
         # the provider page): expected, so INFO. Anything else is WARNING.
-        level = logging.INFO if exc.code == "invalid_grant" else logging.WARNING
+        level = logging.INFO if _oauth_code(exc) == "invalid_grant" else logging.WARNING
         log.log(level, "mcp one-tap: code exchange failed server=%s reason=%s code=%s",
                     pending.server, type(exc).__name__, exc.code)
-        if exc.code == "invalid_client":
+        if _oauth_code(exc) == "invalid_client":
             await asyncio.to_thread(forget_client, pending.discovery.authorization_server)
             raise PasteBack(pending.server) from None
         raise SignInFailed("exchange_failed") from None

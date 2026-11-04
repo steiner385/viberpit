@@ -148,7 +148,10 @@ def read_mcp_clients(path: Path | None = None) -> dict:
 
 def update_mcp_clients(update: Callable[[dict], dict], path: Path | None = None) -> dict:
     """Read-modify-write the MCP client-registration cache under its lock (0600).
-    Written only on the edge, which runs the sign-in routes."""
+    Written only on the edge, which runs the sign-in routes: on a worker (like
+    :func:`update_shared_mcp`) *update* is not called and the current cache is returned."""
+    if fleet_role.is_worker():
+        return read_mcp_clients(path)
     with _clients_locked(path) as locked:
         existing = read_mcp_clients(locked)
         updated = update(copy.deepcopy(existing))

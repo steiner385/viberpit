@@ -300,15 +300,26 @@ def ensure_client(discovery: Discovery, redirect_uri: str, *, post_json: PostJso
     return Client(client_id, secret, redirect_uri, method)
 
 
-def forget_client(issuer: str, *, cache_path: Path | None = None) -> None:
-    """Drop the cached registration for *issuer* (e.g. after ``invalid_client``)."""
+def forget_client(issuer: str, *, client_id: str | None = None,
+                  cache_path: Path | None = None) -> bool:
+    """Drop the cached registration for *issuer* (e.g. after ``invalid_client``); with
+    *client_id*, only when the cached entry is that client (a newer registration stays).
+    Returns whether an entry was dropped."""
     key = _cache_key(issuer)
+    dropped = False
 
     def drop(cache: dict) -> dict:
-        cache.pop(key, None)
+        nonlocal dropped
+        entry = cache.get(key)
+        if entry is not None and (client_id is None
+                                  or (isinstance(entry, dict)
+                                      and entry.get("client_id") == client_id)):
+            del cache[key]
+            dropped = True
         return cache
 
     creds.update_mcp_clients(drop, cache_path)
+    return dropped
 
 
 # --- authorize + exchange -----------------------------------------------------------------

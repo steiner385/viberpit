@@ -461,6 +461,19 @@ describe('McpSection', () => {
       expect(window.location.search).toBe('')
     })
 
+    it('explains the manual flow above it for ?pasteBack, and only then', async () => {
+      const note = "One-tap sign-in isn't available for this server; sign in manually below."
+      mockConfig(true)
+      window.history.replaceState(null, '', '/settings/mcp?pasteBack=notion')
+      const { unmount } = renderSection()
+      expect(await screen.findByText(note)).toBeTruthy()
+      unmount()
+      mockConfig(false)
+      renderSection()
+      expect(await screen.findByRole('button', { name: 'Fix auth' })).toBeTruthy()
+      expect(screen.queryByText(note)).toBeNull()
+    })
+
     it('toasts success for ?signedIn and cleans the URL', async () => {
       mockConfig(true)
       window.history.replaceState(null, '', '/settings/mcp?signedIn=notion')
