@@ -177,6 +177,11 @@ class Session(Base):
     # Per-session autopilot opt-out. NULL/False = governed by autopilot; True = pinned to
     # manual. Nullable so init_db backfills on dev SQLite without a migration.
     autopilot_paused: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Per-session PR auto-fix opt-out (D-14). NULL/False = PR Doctor may fix this
+    # session's PRs; True = it skips them (notifications still fire). Independent of
+    # autopilot_paused. Read from the row by _pr_doctor_step, which can meet a PR whose
+    # session has no live record. Nullable so init_db backfills without a migration.
+    pr_autofix_paused: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # Sticky auto-archive opt-out. NULL = eligible for auto-archive; a reason string
     # ("manual-unarchive") = a human unarchived this session, so autopilot and the
     # backlog-runner must NEVER auto-archive it again (only archiving is blocked — other

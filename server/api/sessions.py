@@ -140,6 +140,10 @@ class AutoArchiveOptOutRequest(BaseModel):
     optedOut: bool
 
 
+class PrAutofixRequest(BaseModel):
+    enabled: bool
+
+
 class SuspectedCompleteRequest(BaseModel):
     """The user's answer to a "likely complete" hand-back: ``confirm`` archives the
     session (the objective was met), ``reject`` clears the overlay (it was not)."""
@@ -340,6 +344,7 @@ def _record_to_dict(
         "effectiveGoal": goal_text,
         "goalSource": goal_source,
         "autopilotPaused": getattr(record, "autopilot_paused", False),
+        "prAutofixPaused": getattr(record, "pr_autofix_paused", False),
         "autopilotCooldownUntil": cooldown_until,
         "autoArchiveOptOut": getattr(record, "auto_archive_opt_out_reason", None),
         "prs": [p.to_dict() for p in (prs or [])],
@@ -1584,6 +1589,30 @@ async def set_auto_archive_opt_out(
     updated = await orch.get_session(session_id)
     final = updated or record
     return _record_to_dict(final, repo=await _resolve_repo(final))
+
+
+@router.post("/{session_id}/pr-autofix")
+async def set_pr_autofix(
+    session_id: str,
+    body: PrAutofixRequest,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Let PR Doctor fix this session's PRs (enabled=true) or pause it for them (D-14).
+    Notifications still fire while paused; ``autopilot_paused`` is untouched. Returns
+    ``{enabled}``; 404 for an unknown session; 409 ``daemon_outdated`` from a daemon
+    that predates the RPC."""
+    orch = _get_orchestrator(request)
+    if await orch.get_session(session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    try:
+        await orch.set_pr_autofix_paused(session_id, not body.enabled)
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "pause PR auto-fix per session")
+    return {"enabled": body.enabled}
 
 
 @router.post("/{session_id}/suspected-complete")

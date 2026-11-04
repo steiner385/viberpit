@@ -203,6 +203,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     "get_session", "send_prompt", "ensure_driver", "session_queue_move",
     "session_queue_cancel", "start_queued_now", "cancel_queued", "archive_session", "permanent_delete",
     "rename_session", "note_user_interaction", "set_autopilot_paused",
+    # D-14 PR auto-fix opt-out: the row is shared, but the live record mirror is the
+    # owning host's.
+    "set_pr_autofix_paused",
     "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
     "stop_subagent", "mcp_status_for", "mcp_reconnect", "mcp_toggle",
     # The diff reads the session's worktree, which lives on its owning host.

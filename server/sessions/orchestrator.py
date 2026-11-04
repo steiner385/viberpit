@@ -6042,6 +6042,9 @@ class SessionOrchestrator:
                 id=session_id, name=name, account=account,
                 account_pinned=account_pinned,
                 autopilot_paused=autopilot_paused,
+                # Set only by its toggle, which writes the row: carry the prior record's
+                # mirror so a queued → live hand-off doesn't blank the payload field.
+                pr_autofix_paused=bool(getattr(_prior, "pr_autofix_paused", False)),
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                 engine=selected_engine,
                 engine_session_id=resume or "",
@@ -17179,6 +17182,21 @@ class SessionOrchestrator:
         failure_mode = engine.classify(info)
         if failure_mode == "stuck_checks":
             await self._pr_doctor_alert_stuck_checks(repo, info, rec)
+        # Per-session opt-out (D-14), at the one point both the sweep and _on_pr_change
+        # reach. Alerts and the caller's "PR broke" push still fire; no recovery is
+        # planned, so no attempt is consumed and a later un-pause gets a fresh try.
+        if failure_mode is not None:
+            paused_sid = await self._pr_autofix_paused_session(repo, branch)
+            if paused_sid is not None:
+                reason = "pr_autofix_paused"
+                seen = self.__dict__.get("_pr_doctor_skip_seen", ())
+                if (target, failure_mode, info.head_sha, reason) not in seen:
+                    log.info("pr_doctor.autofix_paused target=%s session=%s failure=%s",
+                             target, paused_sid, failure_mode)
+                await self._pr_doctor_report_skip(
+                    target, failure_mode, info.head_sha, reason,
+                    f"skipped {failure_mode} fix for {target}: auto-fix is paused on its session")
+                return False
         action = engine.plan_recovery(failure_mode, mode, config, rearmed)
         if engine.acted_at_head(rearmed, action, info.head_sha):
             if isinstance(action, (engine.Mechanical, engine.SessionFix)):
@@ -19324,6 +19342,7 @@ class SessionOrchestrator:
             inferred_goal=getattr(row, "inferred_goal", None),
             initial_prompt=getattr(row, "initial_prompt", None),
             autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
+            pr_autofix_paused=bool(getattr(row, "pr_autofix_paused", False)),
             auto_archive_opt_out_reason=getattr(row, "auto_archive_opt_out_reason", None),
             authored_branches=list(getattr(row, "authored_branches", None) or []),
             context_used_tokens=getattr(row, "context_used_tokens", None),
@@ -25766,6 +25785,37 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id)
                 .values(autopilot_paused=paused)
             )
+
+    async def set_pr_autofix_paused(self, session_id: str, paused: bool) -> None:
+        """Pause (paused=True) or resume PR Doctor's auto-fix of this session's PRs (D-14).
+        Independent of autopilot_paused. The ROW is what ``_pr_doctor_step`` reads (the
+        primary's sweep often holds no record for the session); the record mirror only
+        feeds the session payload."""
+        record = self._records.get(session_id)
+        if record is not None:
+            record.pr_autofix_paused = paused
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(pr_autofix_paused=paused)
+            )
+
+    async def _pr_autofix_paused_session(self, repo: str, branch: str) -> str | None:
+        """The id of a session that owns PR branch *branch* in *repo* (its ``branch`` or
+        one of its ``authored_branches`` — the set ``_pr_doctor_owning_rec`` matches) and
+        has PR auto-fix paused, else None. Reads the DB rows, not ``_records``: the sweep
+        runs on the primary and meets PRs whose session lives on a worker or is archived."""
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession.id, DbSession.branch, DbSession.authored_branches)
+                .where(DbSession.repo == repo, DbSession.pr_autofix_paused.is_(True))
+            )).all()
+        for sid, row_branch, authored in rows:
+            if branch == row_branch or branch in (authored or ()):
+                return sid
+        return None
 
     async def set_auto_archive_opt_out(self, session_id: str, opted_out: bool) -> None:
         """Opt a session out of auto-archive (opted_out=True) or restore its eligibility.

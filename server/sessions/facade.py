@@ -131,6 +131,7 @@ class InProcessOrchestratorAdapter:
     async def rename_session(self, *a, **k): return await _maybe_await(self._orch.rename_session(*a, **k))
     async def note_user_interaction(self, *a, **k): return await _maybe_await(self._orch.note_user_interaction(*a, **k))
     async def set_autopilot_paused(self, *a, **k): return await _maybe_await(self._orch.set_autopilot_paused(*a, **k))
+    async def set_pr_autofix_paused(self, *a, **k): return await _maybe_await(self._orch.set_pr_autofix_paused(*a, **k))
     async def set_auto_archive_opt_out(self, *a, **k): return await _maybe_await(self._orch.set_auto_archive_opt_out(*a, **k))
     async def dismiss_suspected_complete(self, *a, **k): return await _maybe_await(self._orch.dismiss_suspected_complete(*a, **k))
     async def list_archived(self, *a, **k): return await _maybe_await(self._orch.list_archived(*a, **k))

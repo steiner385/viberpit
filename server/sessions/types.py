@@ -127,6 +127,7 @@ class SessionRecord:
     # without it on the record those reads were silently None (#2600).
     initial_prompt: str | None = None
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
+    pr_autofix_paused: bool = False   # per-session PR Doctor opt-out (D-14); the row is authoritative
     kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
     owner_identity: str | None = None # identity owning an assistant thread (idempotency key)
     # Monotonic time of the last prompt or `activity` WS frame. In-memory only — drives
@@ -331,6 +332,7 @@ class SessionRecord:
             "activeGoal": self.active_goal,
             "inferredGoal": self.inferred_goal,
             "autopilotPaused": self.autopilot_paused,
+            "prAutofixPaused": self.pr_autofix_paused,
             "autoArchiveOptOut": self.auto_archive_opt_out_reason,
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
@@ -404,6 +406,7 @@ class SessionRecord:
             active_goal=d.get("activeGoal"),
             inferred_goal=d.get("inferredGoal"),
             autopilot_paused=bool(d.get("autopilotPaused", False)),
+            pr_autofix_paused=bool(d.get("prAutofixPaused", False)),
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),

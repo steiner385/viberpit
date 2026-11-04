@@ -866,6 +866,11 @@ class RemoteOrchestrator:
     async def set_autopilot_paused(self, session_id, paused):
         return await self._client.call("set_autopilot_paused", session_id=session_id, paused=paused)
 
+    async def set_pr_autofix_paused(self, session_id, paused):
+        # An old daemon answers UnknownMethod (DaemonError); the route maps it to 409
+        # daemon_outdated.
+        return await self._client.call("set_pr_autofix_paused", session_id=session_id, paused=paused)
+
     async def set_auto_archive_opt_out(self, session_id, opted_out):
         return await self._client.call(
             "set_auto_archive_opt_out", session_id=session_id, opted_out=opted_out)
