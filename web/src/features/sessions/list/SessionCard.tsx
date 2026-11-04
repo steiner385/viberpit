@@ -27,6 +27,7 @@ import { useViewport } from '@/shell/useViewport'
 import { useNow } from '@/hooks/useNow'
 import type { Session, Account } from '@/api/types'
 import { displayFallbackTitle } from '../displayFallback'
+import { SessionStatusDot } from '../SessionStatusDot'
 
 // Meta-row marker: a 12px icon with the full text demoted to tooltip + sr-only.
 // Wide-card only (`hidden @md:inline-flex`), same declutter gate the old chips
@@ -364,15 +365,7 @@ export function SessionCard({ session, account, selected = false, open = false, 
       ) : undefined}
       identity={
         <>
-          <span
-            data-testid="card-status-dot"
-            aria-hidden="true"
-            className={cn(
-              'h-2 w-2 rounded-full flex-shrink-0',
-              accent.dot,
-              accent.pulse && !reduceMotion && 'motion-safe:animate-pulse',
-            )}
-          />
+          <SessionStatusDot tier={presentation.tier} still={reduceMotion} testId="card-status-dot" />
           {/* Autopilot marker — non-interactive, safe inside the open button.
               Pulses only while the robot is actively working (autopilotLive),
               and degrades to a static glyph under reduced-motion. */}

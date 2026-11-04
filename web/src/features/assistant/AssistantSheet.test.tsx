@@ -30,6 +30,12 @@ vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
   useSessionRuntimeContext: vi.fn(),
 }))
 
+// The session page itself (transcript, rail, header) is not under test here — only the
+// dock composer beside it and the drawer. A stub keeps the fake runtime minimal.
+vi.mock('@/features/sessions/MainPaneSession', () => ({
+  MainPaneSession: () => <div data-testid="session-page-stub" />,
+}))
+
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
 import { ApiRequestError } from '@/api/client'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
@@ -256,6 +262,150 @@ describe('AssistantSheet', () => {
     expect(within(listbox).getByText('Fix the login bug')).toBeInTheDocument()
     await user.keyboard('{Enter}')
     expect(box).toHaveValue('help with [Fix the login bug](/sessions/sess-42) ')
+  })
+
+  // --- D-12: /btw and the scope indicator ------------------------------------------
+
+  const BTW = { name: 'btw', description: '', argumentHint: '<question>', kind: 'client', source: 'app' }
+  const OPEN: Session = {
+    id: 's1', name: 'Fix the flaky login test', accountName: 'a',
+    engine: 'claude_code', engineSessionId: null,
+    status: 'in_progress', createdAt: '2026-06-21T00:00:00Z', updatedAt: '2026-06-21T00:00:00Z',
+    prs: [],
+  }
+  function seeded() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(QK.sessions, [OPEN])
+    return qc
+  }
+  function withBtw() {
+    const rt = fakeRuntime()
+    rt.commands = [BTW] as never
+    vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+    return rt
+  }
+  const enabled = (sessionId: string | null) => vi.mocked(useAssistantStatus).mockReturnValue(
+    { data: { enabled: true, sessionId, model: 'sonnet' }, isLoading: false } as never,
+  )
+  const dock = () => within(document.querySelector<HTMLElement>('[data-region="app.dock"]')!)
+    .getByRole('textbox', { name: /message/i })
+  const drawer = () => screen.queryByRole('dialog', { name: /assistant/i })
+  // Remount the sheet: open Help over the (sticky) Assistant, then drop it — the
+  // Assistant comes back as a fresh mount. That is also how the sheet re-reads the
+  // (mocked) assistant status: its drawer element is static, so a navigation alone
+  // never re-renders it.
+  const remount = async (router: { navigate: (to: string) => Promise<void> }) => {
+    await act(() => router.navigate('/sessions/s1?drawer=help'))
+    expect(drawer()).toBeNull()
+    await act(() => router.navigate('/sessions/s1'))
+    expect(drawer()).not.toBeNull()
+  }
+
+  it('inside a session the header says what the side chat is about, with its status dot', () => {
+    enabled('a1')
+    withBtw()
+    renderApp({ path: '/sessions/s1?drawer=assistant', mode: 'desktop', queryClient: seeded() })
+    const about = within(drawer()!).getByTestId('assistant-scope')
+    expect(about).toHaveTextContent('About: Fix the flaky login test')
+    expect(within(about).getByTestId('session-status-dot').className).toMatch(/bg-success/)
+  })
+
+  it('outside a session the header names nothing', () => {
+    enabled('a1')
+    withBtw()
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop', queryClient: seeded() })
+    expect(within(drawer()!).queryByTestId('assistant-scope')).toBeNull()
+    expect(within(drawer()!).queryByText(/^About:/)).toBeNull()
+  })
+
+  it('/btw alone opens the drawer and sends nothing', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    expect(drawer()).toBeNull()
+    // Enter on the open slash menu picks `/btw ` (it takes an argument); Enter again sends it bare.
+    await user.type(dock(), '/btw{Enter}')
+    expect(dock()).toHaveValue('/btw ')
+    await user.type(dock(), '{Enter}')
+    expect(drawer()).not.toBeNull()
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(rt.onCommand).not.toHaveBeenCalled()
+    expect(dock()).toHaveValue('')
+  })
+
+  it('/btw <question> with the assistant session already there opens the drawer and sends it once, scoped', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    await user.type(dock(), '/btw why is it failing{Enter}')
+    expect(drawer()).not.toBeNull()
+    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+    expect(rt.onPrompt).toHaveBeenCalledWith(
+      'why is it failing', [], { route: '/sessions/s1', sessionId: 's1' })
+    expect(rt.onCommand).not.toHaveBeenCalled()
+    // The composer the user typed in is cleared, as for any client command.
+    expect(dock()).toHaveValue('')
+    // Re-rendering (a navigation) and remounting the sheet never resend.
+    await act(() => app.router.navigate('/sessions/s1?drawer=assistant'))
+    await remount(app.router)
+    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('/btw <question> while the assistant session is still being created sends it once it exists (Review Focus 3)', async () => {
+    enabled(null)
+    const rt = withBtw()
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    await user.type(dock(), '/btw why is it failing{Enter}')
+    expect(drawer()).not.toBeNull()
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    // The create lands: the sheet now has a session (re-read on the remount).
+    enabled('a1')
+    await remount(app.router)
+    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+    expect(rt.onPrompt).toHaveBeenCalledWith(
+      'why is it failing', [], { route: '/sessions/s1', sessionId: 's1' })
+    await remount(app.router)
+    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for the replay to settle before sending', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    rt.state.replaying = true
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    await user.type(dock(), '/btw why{Enter}')
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    rt.state = { ...rt.state, replaying: false }
+    await act(() => app.router.navigate('/sessions/s1?drawer=assistant'))
+    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('with the assistant disabled a parked question is dropped, never sent later', async () => {
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: false, sessionId: null, model: 'sonnet' }, isLoading: false } as never,
+    )
+    const rt = withBtw()
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    await user.type(dock(), '/btw why{Enter}')
+    expect(within(drawer()!).getByText(/enable it in settings/i)).toBeInTheDocument()
+    enabled('a1')
+    await remount(app.router)
+    expect(within(drawer()!).getByTestId('runtime')).toBeInTheDocument()
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+  })
+
+  it('⌘; still just opens the drawer — no send', () => {
+    enabled('a1')
+    const rt = withBtw()
+    renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    fireEvent.keyDown(window, { key: ';', ctrlKey: true })
+    expect(drawer()).not.toBeNull()
+    expect(rt.onPrompt).not.toHaveBeenCalled()
   })
 
   it('a failed create names the reason instead of "API error <status>"', () => {

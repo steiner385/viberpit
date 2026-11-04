@@ -151,3 +151,14 @@ async def test_rewind_that_reaches_the_server_says_where_to_send_it():
     res = await dispatch(FakeDriver(), _cmd("rewind", "client"), "")
     assert res["name"] == "rewind" and res["render"] == "notice"
     assert "/rewind" in res["data"]["text"]
+
+
+@pytest.mark.anyio
+async def test_btw_that_reaches_the_server_says_where_to_send_it():
+    """The browser runs /btw (D-12: it opens the Assistant drawer). One that arrives
+    here (a new session's first prompt) has no drawer to open: a notice, never a turn."""
+    driver = FakeDriver()
+    res = await dispatch(driver, _cmd("btw", "client"), "why is it failing")
+    assert res["name"] == "btw" and res["render"] == "notice"
+    assert "/btw" in res["data"]["text"]
+    assert driver.prompts == []

@@ -5,7 +5,7 @@ import { useDrawerName, useCloseDrawer, type DrawerName } from '@/shell/drawerPa
 import { DRAWER_MIN, DRAWER_MAX, useDrawerWidth } from '@/shell/drawerWidth'
 import { useViewport } from '@/shell/useViewport'
 import { AssistantSheet } from '@/features/assistant/AssistantSheet'
-import { AssistantGestureProvider, useAssistantGestureHandle } from '@/features/assistant/assistantGestures'
+import { AssistantGestureProvider, useAssistantGestureHandle } from '@/shell/assistantGestures'
 import { HelpSheet } from './HelpSheet'
 
 /**

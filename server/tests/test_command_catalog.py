@@ -210,3 +210,44 @@ def test_the_clis_own_rewind_takes_our_render_where_the_gate_holds():
     info = {"commands": [{"name": "rewind", "description": "Restore the code and/or conversation"}]}
     [rewind] = [c for c in build_catalog(info, CLAUDE) if c.name == "rewind"]
     assert rewind.kind == "client"
+
+
+# --- /btw (D-12) ---------------------------------------------------------------------------
+
+
+def test_btw_is_an_app_client_command_with_a_question_hint():
+    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    assert by["btw"].kind == "client" and by["btw"].source == APP
+    assert by["btw"].argument_hint == "<question>"
+    assert app_command("btw", CLAUDE) is not None
+    # Any engine: the side chat is the drawer's, not the engine's.
+    assert "btw" in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+
+
+def test_btw_is_left_out_of_the_assistants_own_catalog():
+    """Review Focus 4: the drawer's composer must not offer a side chat about itself —
+    neither our entry nor a vendor `/btw` (the CLI publishes one of its own)."""
+    info = {"commands": [{"name": "btw", "description": "Ask a quick side question"}]}
+    for server_info in (None, info):
+        assert "btw" not in {c.name for c in build_catalog(server_info, CLAUDE, kind="assistant")}
+        assert "btw" in {c.name for c in build_catalog(server_info, CLAUDE, kind=None)}
+    # Nothing else changes for the assistant.
+    coding = {c.name for c in build_catalog(None, CLAUDE)} - {"btw"}
+    assert {c.name for c in build_catalog(None, CLAUDE, kind="assistant")} == coding
+
+
+def test_the_clis_own_btw_takes_our_render_in_a_coding_session():
+    info = {"commands": [{"name": "btw", "description": "Ask a quick side question"}]}
+    [btw] = [c for c in build_catalog(info, CLAUDE) if c.name == "btw"]
+    assert btw.kind == "client"
+
+
+def test_btw_follows_the_assistant_kill_switch():
+    import os
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, {"VIBERPIT_ASSISTANT_ENABLED": "false"}):
+        assert "btw" not in {c.name for c in build_catalog(None, CLAUDE)}
+        assert app_command("btw", CLAUDE) is None
+        assert classify("btw", CLAUDE) == "passthrough"
+    assert classify("btw", CLAUDE) == "client"

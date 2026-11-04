@@ -16,22 +16,9 @@ import { repoFromCwd } from '@/lib/repoFromCwd'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { useNow } from '@/hooks/useNow'
 import type { ArchivedSession } from '@/api/types'
+import { displayNameOf } from '@/session/displayName'
 import { CardFrame } from '@/ui/list/CardFrame'
 import { CardMenu, Sep, menuItem } from '@/ui/list/CardMenu'
-
-/** An archived row's display name: its name, or a short id for the unnamed.
- *  Exported alongside the component (not split into a separate module) because
- *  the card is what renders the name — Task 9's list needs the same rule for a
- *  delete-dialog's names, and duplicating it there would be the parallel
- *  implementation this plan exists to avoid. This trips
- *  react-refresh/only-export-components; waived per the same precedent as
- *  card/CardMenu.tsx's `menuItem`/`actionBtn` (and ui/Button.tsx's
- *  `buttonVariants`) — one concept belongs in one file even when Fast Refresh
- *  would rather it didn't. */
-// eslint-disable-next-line react-refresh/only-export-components
-export function displayNameOf(s: ArchivedSession): string {
-  return s.name || s.id.slice(0, 8)
-}
 
 interface ArchivedSessionCardProps {
   session: ArchivedSession

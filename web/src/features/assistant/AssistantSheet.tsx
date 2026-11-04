@@ -16,7 +16,7 @@
  * here so it can call `useSessionRuntimeContext()` — the provider's own descendant,
  * not the component that renders the provider.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
@@ -36,7 +36,8 @@ import { Button } from '@/ui/Button'
 import { AssistantHeader } from './AssistantHeader'
 import { FollowUpChips, StarterChips } from './StarterChips'
 import { startersFor } from './starters'
-import { useAssistantGestures } from './assistantGestures'
+import { useAssistantGestures, usePendingAssistantSend } from '@/shell/assistantGestures'
+import { AssistantScope } from './AssistantScope'
 
 export function AssistantSheet() {
   const status = useAssistantStatus()
@@ -54,6 +55,14 @@ export function AssistantSheet() {
     // actually change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status.data?.enabled, status.data?.sessionId])
+
+  // A `/btw` question parked while the assistant is off is dropped, not kept for later:
+  // sending it after a re-enable, out of the blue, is never what was asked.
+  const { pendingSend, take } = usePendingAssistantSend()
+  const disabled = status.data?.enabled === false
+  useEffect(() => {
+    if (disabled && pendingSend) take()
+  }, [disabled, pendingSend, take])
 
   if (status.isLoading) return <AssistantSkeleton />
   if (!status.data?.enabled) return <AssistantDisabled />
@@ -81,6 +90,27 @@ function AssistantSheetBody() {
   // twice, so Composer's prefill effect re-fires (see Composer.tsx's externalDraft).
   const [draftSeed, setDraftSeed] = useState<{ text: string } | null>(null)
 
+  // What every prompt from this drawer carries: the route, and the open session — the
+  // session the side chat is about (D-12). Read at send time, never captured.
+  const contextProvider = useCallback(
+    () => ({ route: pathname, ...(openSessionId ? { sessionId: openSessionId } : {}) }),
+    [pathname, openSessionId],
+  )
+
+  // `/btw <question>` (D-12): send the question `requestAssistant` parked, through the
+  // same path the composer uses (so a running turn queues it), once the replay has
+  // settled. `take()` clears the slot as it reads it, so a remount, a re-render or a
+  // second effect run never sends it twice; a question parked before this session
+  // existed is sent as soon as it does, because this body only mounts then.
+  const { pendingSend, take } = usePendingAssistantSend()
+  const settled = !rt.state.replaying
+  const { onPrompt } = rt
+  useEffect(() => {
+    if (!settled || !pendingSend) return
+    const text = take()
+    if (text !== null) onPrompt(text, [], contextProvider())
+  }, [settled, pendingSend, take, onPrompt, contextProvider])
+
   // `@` session mentions (spec v2 §10.2): only the assistant drawer's composer gets
   // this — a coding session's Composer never receives mentionSource at all.
   const mentionSource = useMentionSessions()
@@ -94,7 +124,7 @@ function AssistantSheetBody() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <AssistantHeader />
+      <AssistantHeader scope={<AssistantScope sessionId={openSessionId} />} />
       {/* Session-level errors (a failed wake, an unknown thread) used to reach this
           runtime's reducer and render nowhere — SessionBody was the only surface. */}
       <SessionErrorBanner rt={rt} />
@@ -148,7 +178,7 @@ function AssistantSheetBody() {
       <SessionComposer
         rt={rt}
         hideSessionControls
-        contextProvider={() => ({ route: pathname, ...(openSessionId ? { sessionId: openSessionId } : {}) })}
+        contextProvider={contextProvider}
         externalDraft={draftSeed}
         mentionSource={mentionSource}
       />

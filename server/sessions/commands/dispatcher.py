@@ -46,6 +46,12 @@ async def dispatch(driver, cmd: Command, args: str) -> dict | None:
             # session's first prompt, which has nothing to rewind to.
             return {"name": "rewind", "render": "notice",
                     "data": {"text": "/rewind picks one of your messages — send it from the session's message box"}}
+        if cmd.name == "btw":
+            # The browser runs /btw itself (D-12: it opens the Assistant drawer and
+            # sends the question there). Reaching here means it arrived another way —
+            # e.g. as a new session's first prompt, which has no drawer to open.
+            return {"name": "btw", "render": "notice",
+                    "data": {"text": "/btw opens the Assistant side chat — send it from the session's message box"}}
         # /help (and any other client command) renders from the client's cached catalog.
         return {"name": cmd.name, "render": "help", "data": None}
 

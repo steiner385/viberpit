@@ -208,3 +208,25 @@ async def test_command_catalog_serves_cache_quietly_when_client_not_connected(mo
     with caplog.at_level("DEBUG"):
         assert await orch.command_catalog("s1") == cached
     assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind,offered", [(None, True), ("assistant", False)])
+async def test_command_catalog_offers_btw_to_coding_sessions_only(kind, offered):
+    """D-12 Review Focus 4: the live catalog is built with the record's kind, so the
+    Assistant drawer's own composer never offers `/btw`."""
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.permissions import PermissionRegistry
+    from server.sessions.types import SessionRecord
+    orch, client = _orch_with_driver(server_info={"commands": []})
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="Live", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
+        cols=80, rows=24, cwd="/tmp", kind=kind,
+    )
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+                      sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
+                      identity="t")
+    await d.start()
+    orch._drivers["s1"] = d
+    catalog = await orch.command_catalog("s1")
+    assert any(c["name"] == "btw" for c in catalog) is offered

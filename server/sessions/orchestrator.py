@@ -23614,7 +23614,9 @@ class SessionOrchestrator:
                 return cached
         catalog = [
             c.to_wire()
-            for c in cmd_catalog.build_catalog(info, self._capabilities_of(session_id))
+            for c in cmd_catalog.build_catalog(
+                info, self._capabilities_of(session_id),
+                kind=getattr(self._records.get(session_id), "kind", None))
         ]
         if catalog:
             rec = self._records.get(session_id)

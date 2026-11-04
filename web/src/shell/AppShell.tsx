@@ -44,6 +44,8 @@ import {
   SessionGestureProvider, useSessionGestureHandle, usePromptRowMenusHandle, useTranscriptJumpHandle,
 } from './sessionGestures'
 import { SessionListNavProvider } from './sessionListNav'
+import { AssistantRequestProvider } from './assistantGestures'
+import { displayNameOf } from '@/session/displayName'
 import { altDigit, type ShortcutContext } from './shortcuts'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts, type ShortcutHandlers } from './useShortcuts'
@@ -202,9 +204,13 @@ export function AppShell() {
               — see `shell/sessionGestures`. It wraps the guard so the handle
               survives the kiosk redirect rather than being recreated by it. */}
           <SessionGestureProvider>
-            <KioskPageGuard>
-              <AppShellInner />
-            </KioskPageGuard>
+            {/* `/btw`'s open-and-send slot (D-12): the dock composer writes it, the
+                drawer's AssistantSheet takes it — siblings, so it wraps both. */}
+            <AssistantRequestProvider>
+              <KioskPageGuard>
+                <AppShellInner />
+              </KioskPageGuard>
+            </AssistantRequestProvider>
           </SessionGestureProvider>
         </DeployControllerProvider>
       </InteractionProvider>
@@ -715,8 +721,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     openIn(id, inScope)
   }
 
-  const nameOf = (id: string) =>
-    sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
+  const nameOf = (id: string) => displayNameOf(sessions.find((s) => s.id === id) ?? { id })
 
   const listProps: SessionListColumnProps = {
     scope,
