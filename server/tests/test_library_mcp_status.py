@@ -395,3 +395,32 @@ def test_get_mcp_reads_health_once(shared, monkeypatch):  # noqa: F811
     assert len(calls) == 1
     assert s["overall"]["grant"] == "dead"
     assert s["overall"]["error"].startswith("Sign-in revoked or expired")
+
+
+def test_get_mcp_expired_grant_surfaces_refresh_error_with_status_rows(shared, monkeypatch):  # noqa: F811
+    from viberpit import creds
+    _write_user_server()
+    key = cli_oauth_key("notion", {"type": "http", "url": "https://x"})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: {key: {
+        "serverName": "notion", "serverUrl": "https://x", "accessToken": "t", "expiresAt": 1000}})
+    reason = "token endpoint returned 400 invalid_grant"
+
+    async def load(keys=None):
+        return {key: {"state": "expired", "lastOutcome": "transient", "lastError": reason}}
+
+    async def rows():
+        return [ROWS[0]]
+
+    async def enabled():
+        return {"a"}
+
+    async def live():
+        return set()
+
+    monkeypatch.setattr(library.grant_health, "load", load)
+    monkeypatch.setattr(library.mcp_store, "rows", rows)
+    monkeypatch.setattr(library, "_enabled_accounts", enabled)
+    monkeypatch.setattr(library, "_live_session_ids", live)
+    [s] = _client(None, monkeypatch).get("/api/library/mcp").json()["servers"]
+    assert any(r["counted"] for r in s["status"])
+    assert s["overall"]["grant"] == "expired" and reason in s["overall"]["error"]

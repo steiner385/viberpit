@@ -242,15 +242,15 @@ async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
     now_ms = int(time.time() * 1000)
     for server in out["servers"]:
         key = mcp_grants.key_for(server)  # None: no knowable CLI key, so no grant lookup
-        row = health.get(key) if key else None
-        grant = mcp_overall.grant_state(store, key=key, now_ms=now_ms, health=row) if key else "none"
+        hrow = health.get(key) if key else None
+        grant = mcp_overall.grant_state(store, key=key, now_ms=now_ms, health=hrow) if key else "none"
         for row in server["status"]:
             row["counted"] = mcp_overall.counted(row, enabled_accounts=enabled, live_session_ids=live, now_ms=now_ms)
         server["overall"] = mcp_overall.derive_overall(
             grant=grant,
             rows=[r for r in server["status"] if r["counted"]], now_ms=now_ms,
             expires_at_ms=mcp_overall.best_expiry(store, key=key) if key else None,
-            refresh_error=mcp_overall.refresh_error_for(grant, row))
+            refresh_error=mcp_overall.refresh_error_for(grant, hrow))
     return out
 
 
