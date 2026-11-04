@@ -79,7 +79,8 @@ jobs:
           # ci.yml counts here too, exactly as it does for web: an edit to THIS detection
           # must be proven against a real run before it lands. So does the composite
           # action both server-test jobs run their steps from.
-          if grep -qE '^(src/|server/|tests/|pyproject\.toml$|\.github/workflows/ci\.yml$|\.github/actions/server-tests/)' <<<"$changed"; then
+          # scripts/: the winvm host helpers are tested in server/tests and linted below.
+          if grep -qE '^(src/|server/|tests/|scripts/|pyproject\.toml$|\.github/workflows/ci\.yml$|\.github/actions/server-tests/)' <<<"$changed"; then
             py=true
           else
             py=false
@@ -126,6 +127,13 @@ jobs:
       - name: Mypy
         if: needs.changes.outputs.py == 'true'
         run: mypy server/ --ignore-missing-imports
+      - name: Ruff + mypy (winvm host helpers)
+        # Stdlib-only scripts installed onto a runner, outside src/ and server/, so the two
+        # steps above never saw them (docs/runbooks/windows-vm-on-a-session-runner.md).
+        if: needs.changes.outputs.py == 'true'
+        run: |
+          ruff check scripts/winvm
+          mypy scripts/winvm --ignore-missing-imports
       - name: Core unit tests
         if: needs.changes.outputs.py == 'true'
         run: python -m pytest tests/ -q --junitxml=test-results/core.xml
