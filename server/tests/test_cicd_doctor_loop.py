@@ -371,6 +371,51 @@ def test_analyze_windows_out_stale_history(tmp_path):
     asyncio.run(run())
 
 
+def test_missing_junit_counts_test_evidence_older_than_raw_window(tmp_path):
+    """#3257: a quiet repo whose latest run is older than raw_retention_days
+    still has JUnit evidence — its passed rows were rolled into CiTestDaily (or
+    are raw but past the raw window, awaiting the fold). The probe must look at
+    the same horizon the run count does, or every quiet repo re-files
+    "CI emits no JUnit artifacts" a few days after its last push."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from datetime import datetime, timezone
+        from server.db.models import CiRun, CiTestDaily, CiTestResult
+        ctx = AutomationContext("cicd-doctor")
+        now = 100 * 86400.0
+        cfg = {"retention_days": 90, "raw_retention_days": 3}
+        loop = _loop(ctx, runs=[], junit_by_run={}, config=cfg)
+        loop._clock = lambda: now
+        config = (await loop._read_config())[1]
+        run_ts = now - 5 * 86400.0  # inside the horizon, outside the raw window
+        async with db_session() as db:
+            db.add(CiRun(id=1, repo="o/r", workflow_path="wf.yml", event="push",
+                         head_sha="s", head_branch="main", conclusion="success",
+                         created_ts=run_ts, duration_s=1.0))
+            db.add(CiTestDaily(repo="o/r", test_id="t::a", passed=1, failed=0, skipped=0,
+                               day=datetime.fromtimestamp(run_ts, timezone.utc)
+                               .strftime("%Y-%m-%d")))
+        fresh = await loop._analyze("o/r", config)
+        assert not any(f.kind == "missing_junit" for f in fresh), \
+            "rolled-up test evidence inside the horizon must count"
+
+        async with db_session() as db:
+            await db.execute(CiTestDaily.__table__.delete())
+            db.add(CiTestResult(repo="o/r", run_id=1, suite="junit-tests", test_id="t::a",
+                                outcome="passed", head_sha="s", head_branch="main",
+                                created_ts=run_ts))
+        fresh = await loop._analyze("o/r", config)
+        assert not any(f.kind == "missing_junit" for f in fresh), \
+            "raw rows past the raw window but not yet folded must count"
+
+        async with db_session() as db:
+            await db.execute(CiTestResult.__table__.delete())
+        fresh = await loop._analyze("o/r", config)
+        assert any(f.kind == "missing_junit" for f in fresh), \
+            "no test evidence at all is still a missing_junit finding"
+    asyncio.run(run())
+
+
 def _finding():
     from server.automations.cicd.types import Finding
     return Finding(kind="flaky_test", repo="o/r", key="t::a",

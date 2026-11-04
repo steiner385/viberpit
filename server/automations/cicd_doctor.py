@@ -14,7 +14,7 @@ from .context import observation_failed, publish_observation
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import islice
 from typing import Any, Awaitable, Callable
 
@@ -629,7 +629,7 @@ class CicdDoctorLoop:
     async def _analyze(self, repo: str, config: dict) -> list:
         from sqlalchemy import func, select
         from server.db import db_session
-        from server.db.models import CiRun, CiTestResult
+        from server.db.models import CiRun, CiTestDaily, CiTestResult
         from .cicd.findings import (check_transition_findings, flaky_test_findings,
                                     missing_junit_finding)
         from .cicd.gates import check_verdict
@@ -675,14 +675,24 @@ class CicdDoctorLoop:
                 flake_counts_stmt(repo, test_since_ts))).all()
             msg_rows = (await db.execute(
                 latest_failure_messages_stmt(repo, test_since_ts))).all()
-            # missing_junit_finding asks whether ANY raw test row exists in the
-            # window — including outcomes the flake aggregate filters out — so it
-            # needs its own probe. LIMIT 1: existence, not a count.
+            # missing_junit_finding asks whether ANY test evidence exists in the
+            # SAME horizon run_count spans — including outcomes the flake aggregate
+            # filters out — so it needs its own probe. Not the raw window:
+            # _rollup_passed folds passing rows older than raw_retention_days into
+            # CiTestDaily and deletes them, so a quiet repo's last run looked
+            # JUnit-less days after its push and re-filed the finding (#3257).
+            # LIMIT 1: existence, not a count.
             any_test_row = (await db.execute(
                 select(CiTestResult.id)
                 .where(CiTestResult.repo == repo,
-                       CiTestResult.created_ts >= test_since_ts)
+                       CiTestResult.created_ts >= since_ts)
                 .limit(1))).first() is not None
+            if not any_test_row:
+                since_day = datetime.fromtimestamp(since_ts, timezone.utc).strftime("%Y-%m-%d")
+                any_test_row = (await db.execute(
+                    select(CiTestDaily.id)
+                    .where(CiTestDaily.repo == repo, CiTestDaily.day >= since_day)
+                    .limit(1))).first() is not None
             run_count = (await db.execute(
                 select(func.count()).select_from(CiRun)
                 .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
