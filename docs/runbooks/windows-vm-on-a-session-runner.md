@@ -267,6 +267,51 @@ bash scripts/winvm/smoke.sh     # full live smoke: sync, desktop, exit code, tim
 
 `GET /api/fleet` should list `windows` among the runner's `platforms`.
 
+### Optional: reach the VM over Tailscale, with Remote Desktop
+
+The NAT network keeps the VM reachable from the runner only. To reach it from other machines, join it
+to the tailnet as its own device rather than port-forwarding or bridging the runner's NIC:
+
+```bash
+ssh win11 '$ProgressPreference="SilentlyContinue"; Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi -OutFile C:\setup\tailscale.msi; Start-Process msiexec.exe -ArgumentList "/i","C:\setup\tailscale.msi","/quiet","/norestart","TS_UNATTENDEDMODE=always" -Wait'
+ssh win11 '& "C:\Program Files\Tailscale\tailscale.exe" up --unattended --hostname=win11-rocky --timeout=20s'
+```
+
+`up` prints a login URL. The tailnet owner opens it and approves the device. Then add each client's
+public key to `C:\ProgramData\ssh\administrators_authorized_keys`, which stays key-only. On rocky the
+device is `win11-rocky.tail0dd570.ts.net`, and the path to it is relayed (DERP) because it sits behind
+double NAT.
+
+For Remote Desktop, run `docs/runbooks/windows-vm/enable-rdp.ps1` in the VM, as an administrator over
+ssh. It does three things:
+- Turns on RDP with Network Level Authentication.
+- Scopes the built-in Remote Desktop firewall rules to `100.64.0.0/10`, so only the tailnet can
+  connect.
+- Registers `\viberpit-host\rdp-return-to-console`. An RDP logon as `viber` takes the console session
+  away from the autologon desktop, and on disconnect it would stay disconnected, with no display, so
+  `winrun`'s UI automation would see nothing. The task runs `tscon … /dest:console` as SYSTEM on every
+  disconnect (LocalSessionManager event 24).
+
+Keep the task out of `\viberpit\`: `winrun` sweeps that folder as leftovers. Sign in as `viber` with the
+password in `~/.config/viberpit/win11-vm.secret` on the runner.
+
+**RustDesk** is a second way to view the desktop. It works without Tailscale, through RustDesk's public
+servers, which the fleet's other RustDesk clients use too. Unlike RDP, it shares the live console
+session rather than taking it over. Install the signed MSI from the latest GitHub release as a
+service, then set a permanent password and read the ID, both over admin ssh:
+
+```bash
+ssh win11 '$ProgressPreference="SilentlyContinue"; Invoke-WebRequest <release>/rustdesk-<ver>-x86_64.msi -OutFile C:\setup\rustdesk.msi; Start-Process msiexec.exe -ArgumentList "/i","C:\setup\rustdesk.msi","/qn","/norestart" -Wait'
+umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(15))' > ~/.config/viberpit/win11-rustdesk.secret
+ssh win11 "& 'C:\Program Files\RustDesk\rustdesk.exe' --password '$(cat ~/.config/viberpit/win11-rustdesk.secret)'; & 'C:\Program Files\RustDesk\rustdesk.exe' --get-id"
+```
+
+On rocky the RustDesk ID is `1561221` (RustDesk 1.5.1, 2026-11-04). The password is in
+`~/.config/viberpit/win11-rustdesk.secret` on the runner.
+
+Direct ssh, RDP or RustDesk bypasses `winrun`'s desktop lock. That's fine for a person looking in, but sessions
+doing UI work should still go through `winrun` on the runner (`ssh rocky winrun -- …`).
+
 ## 11. Operating it
 
 - **Restore to clean** (a session left the desktop dirty, or Windows misbehaves). Hold the desktop lock
