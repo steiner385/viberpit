@@ -253,10 +253,14 @@ def helper_config_dir(config_dir: str, *, isolated: bool = False) -> str:
     ordinary mirror, so the two variants of one account never overwrite each other's
     links.
 
-    Note what a config dir CANNOT isolate: ``$HOME/.claude/CLAUDE.md`` is resolved from
-    HOME, not from ``CLAUDE_CONFIG_DIR``, so user memory still loads. The assistant's
-    system prompt states that its role overrides those instructions rather than HOME
-    being repointed (which would also move credentials, caches and git config).
+    User memory still loads in the isolated variant, deliberately: the CLI reads it from
+    ``$CLAUDE_CONFIG_DIR/CLAUDE.md``, the account dir links that to the shared
+    ``~/.claude/CLAUDE.md`` (``configdir.SHARE_ALLOWLIST``), and ``CLAUDE.md`` is not in
+    ``ISOLATED_EXCLUDED_SHARED``. Dropping the link would not remove it either: a cwd under
+    HOME reaches ``$HOME/.claude/CLAUDE.md`` through the CLI's project walk, as a Project
+    file (D-13 verification spike §1/§2). The assistant's system prompt states that its
+    role overrides those instructions rather than HOME being repointed (which would also
+    move credentials, caches and git config).
     """
     if not config_dir or not _enabled():
         return config_dir

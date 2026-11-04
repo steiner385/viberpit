@@ -23,14 +23,25 @@ CLAUDE_JSON_NAME = ".claude.json"
 # `file-history` (D-9 rewind) holds the CLI's file-checkpoint backups, not credentials:
 # shared so a session rotated onto another account can still restore its files (a
 # private copy makes that rewind silently partial — D-9 verification spike §4).
+# `CLAUDE.md` (D-13) is the user memory file: the CLI reads it from
+# $CLAUDE_CONFIG_DIR/CLAUDE.md, never from HOME, so without the link no account loads the
+# operator's instructions as user memory (D-13 verification spike §1/§2).
 SHARE_ALLOWLIST = {"plugins", "commands", "settings.json", "settings.local.json", "projects",
-                   "file-history"}
+                   "file-history", "CLAUDE.md"}
 
 # Allowlisted DIRECTORIES the CLI creates on demand and that must be shared from an
 # account's first spawn: created in shared_base() when missing, and an account's real
 # copy (written by an interactive run before it was shared) is merged into the shared
 # one rather than deleted when the link replaces it.
 SHARED_STATE_DIRS = {"file-history"}
+
+# Allowlisted user-authored FILES. An account's real copy (an interactive run's /memory)
+# is user content: kept private, never deleted, never merged — the link simply is not
+# made for that account. The link IS made while the shared file is still missing: the CLI
+# treats a dangling user-memory link as absent (pinned by
+# server/tests/test_memory_cli_contract.py), so a shared file created later reaches every
+# account with no recompose, and nothing ever invents an empty shared file.
+SHARED_USER_FILES = {"CLAUDE.md"}
 
 
 _AT_FDCWD = -100
@@ -157,7 +168,7 @@ def reconcile_links(name: str) -> None:
         source = base / entry_name
         if entry_name in SHARED_STATE_DIRS and not source.exists() and not source.is_symlink():
             source.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not source.exists():
+        if not source.exists() and entry_name not in SHARED_USER_FILES:
             continue  # only symlink entries that actually exist in shared_base
         link = cfg_dir / entry_name
         if link.is_symlink():
@@ -165,6 +176,10 @@ def reconcile_links(name: str) -> None:
                 continue  # already correct — nothing to do
             link.unlink()
         elif link.exists():
+            if entry_name in SHARED_USER_FILES:
+                log.info("configdir.share_kept_private account=%s entry=%s "
+                         "reason=private_file", name, entry_name)
+                continue
             if entry_name in SHARED_STATE_DIRS:
                 # Never delete state: merge, then remove only an EMPTY dir. A dir the
                 # CLI refilled mid-merge (ENOTEMPTY) or a collision stays private; the
@@ -198,10 +213,11 @@ def reconcile_links(name: str) -> None:
         try:
             link.symlink_to(source)
         except FileExistsError:
-            if entry_name not in SHARED_STATE_DIRS:
+            if entry_name not in SHARED_STATE_DIRS and entry_name not in SHARED_USER_FILES:
                 raise
             # The CLI (or another composer) recreated the entry after the merge emptied
-            # it: never fail the spawn over it — the next compose finishes the job.
+            # it, or wrote a private CLAUDE.md since the check: never fail the spawn over
+            # it — the next compose finishes the job (or keeps the private file).
             continue
 
 

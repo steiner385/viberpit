@@ -14,9 +14,11 @@ that matters; the ban is on values that VARY by caller, not on f-strings as such
 
 Role override clause: the persistent ``ClaudeSDKClient`` cannot be given
 ``setting_sources=[]`` (it hangs init on SDK 0.2.105 + CLI 2.1.259 — see
-docs/superpowers/spikes/2026-09-04-assistant-sdk-findings.md), and the user's
-``$HOME/.claude/CLAUDE.md`` is anchored to HOME rather than ``CLAUDE_CONFIG_DIR``, so
-an assistant session still loads the operator's coding instructions. The scratch config
+docs/superpowers/spikes/2026-09-04-assistant-sdk-findings.md), so an assistant session
+still loads the operator's coding instructions: as user memory through the scratch
+dir's ``CLAUDE.md`` link to the shared ``~/.claude/CLAUDE.md`` (the CLI reads the user
+file from ``CLAUDE_CONFIG_DIR``), and, from a cwd under HOME, through the project walk
+past ``$HOME/.claude/CLAUDE.md`` (D-13 verification spike §1/§2). The scratch config
 dir removes plugins/commands/settings (see server/sessions/scratch_config.py); this
 prompt closes the remaining gap by stating that the assistant's role and tool surface
 win over anything it inherited.

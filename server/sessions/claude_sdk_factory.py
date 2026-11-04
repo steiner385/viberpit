@@ -43,8 +43,9 @@ def _build_append_string(platform_guide: str | None = None) -> str:
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
-# never fires.  We inject it here rather than via a settings *file* because ViberPit does not
-# pass `setting_sources`, so the binary loads no filesystem settings — only this inline layer.
+# never fires.  ViberPit passes no `setting_sources`, so the binary loads EVERY filesystem
+# source — user, project and local settings and CLAUDE.md memory (D-13 verification spike §1);
+# this inline layer sits above the user, project and local layers, so none of them overrides it.
 _MCP_TRUST_SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 
 # Per-line cap on the SDK's stdout reader (``ClaudeAgentOptions.max_buffer_size``). The
