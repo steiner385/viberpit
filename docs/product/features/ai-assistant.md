@@ -140,7 +140,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 112 tools are registered in `server/assistant/tools.py`; 105 are exposed by
+- **Tool surface (v2)** — 114 tools are registered in `server/assistant/tools.py`; 107 are exposed by
   default, Pack O's operator tools registering only once the operator tier is enabled. Packs X and
   U (external access, UX/feedback) add no new `TOOL_SPECS` rows — X reaches the existing table
   through a different transport (see "Use from other agents" below) and U instruments how the
@@ -154,7 +154,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   | F — fixes & foundations | 6 | repos/branches/stage-models listing, tool-result drill-in, session export, gap reporting |
   | P — product & delivery | 20 | SDLC initiatives (incl. closing a finished one — refused unless its epic and every sub-issue are closed), PM products/queue/triage/onboarding, decision proposal accept/reject, held items and pending decisions listing, stale dependency edges: preview + prune (≤20 per card, each re-checked; hygiene only — a resolved blocker already blocks nothing); `list_queue_items` (the queue's skipped issues, each with its reason in its own terms and age, paged) and `release_hold` (≤20 issues per confirmed card: releases owner_action/evidence/stronger_model holds and removes the `parked` label; decision holds are refused, and a hold or label another person placed is refused by the same owner rule `dispatch_backlog` applies); `get_owner_digest` (today's owner digest: every needs-you item per product with its one recommended action, or none when only the owner can decide) |
   | A — automations control | 17 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools; the Session Feedback inbox (#2936): clusters + issue draft (read), and four destructive-class writes — file as one issue, dismiss (optionally as fixed by a PR), attach to an issue (one public comment) or to a live session (sent as a prompt) |
-  | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
+  | S — session power | 15 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card; the side chat's two reads, `get_session_diff` (the session worktree's diff — a per-file summary by default, patches for at most 10 files on request) and `search_session_transcript` (where one session's conversation mentions the given words, ≤50 hits) |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
   | G — GitHub | 7 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session) and its changed files with patches (capped at 100 files / 24 kB of patch per call, every cut reported, framed as the PR author's untrusted text), plus the writes that leave ViberPit, each signed with an authorship trailer: PR comment, issue creation, issue comment (unmarked, so it counts as the operator's word), and the bulk (≤20 refs) triage writes — `set_board_status` (add to the owning product's Project and/or set Status, journaled, validated against the board's real options) and the destructive `close_issue` (completed / not planned / duplicate-of, a signed comment posted first) |
@@ -163,6 +163,22 @@ assistant mutation does not make subsequent harness cleanup safe.
   These counts are pinned by `test_feature_doc_tool_counts_match_the_registry` — a new tool fails
   CI until this table places it in a pack, because the numbers above went stale within a day of
   first being written by hand.
+- **Side chat (D-12)** — opened while a session is on screen, the drawer is a side chat ABOUT that
+  session: it answers from the session's transcript, diff (`get_session_diff`) and in-session search
+  (`search_session_transcript`), and it can never write to it. The scope is the `sessionId` of the
+  latest context the driver sent (`ClaudeAgentDriver.context_scope`, advanced as each turn starts),
+  read at tool-call time through the `current_scope` callable `build_server` takes — tool input can
+  never set it, and it moves with the user: opened in A, then asked from B, the chat may act on A
+  and not on B. `build_tools.guarded` refuses any mutation- or destructive-class call whose target
+  set contains the scoped session BEFORE its handler, so no endpoint is called: the tool error is
+  `SCOPED_READ_ONLY: This chat is about session X and can't change it — ask in the session itself,
+  or close the side chat`, logged at INFO, metered with outcome `refused` and audited with
+  `refused` in the detail. A batch naming the session is refused whole. Targets come from one helper,
+  `tool_targets`, over `SESSION_TARGET_KEYS`; every other write tool sits in `NO_SESSION_TARGET`
+  with its reason, and `server/tests/test_assistant_scope.py` fails until a new write tool (operator
+  tier included) is placed in one of the two. Reads, writes to other sessions, and a context with
+  no session are unaffected. The system prompt carries one static line describing the role. Eval
+  cases may carry a `session_id`, rendered into the context header and armed as the scope.
 - **Token is loopback-only** — `server/assistant/token.py` mints an identity- and session-bound,
   HMAC-signed `ccas1:` bearer token, never persisted, accepted only from loopback by
   `IdentityMiddleware` (spec §4.3). It cannot authenticate a request that didn't originate from the

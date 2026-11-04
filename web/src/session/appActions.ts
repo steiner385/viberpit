@@ -16,6 +16,8 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   get_tool_result: 'Read a tool result',
   export_session: 'Exported session transcript',
   search_sessions: 'Searched sessions',
+  get_session_diff: "Read a session's diff",
+  search_session_transcript: "Searched a session's transcript",
   list_archived_sessions: 'Listed archived sessions',
   list_accounts: 'Listed accounts',
   list_hosts: 'Listed fleet hosts',

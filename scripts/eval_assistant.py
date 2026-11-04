@@ -48,6 +48,8 @@ import httpx
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
+from server.assistant.context import (PromptContext, render_context_header,  # noqa: E402
+                                      validate_context)
 from server.pm.escalation import RELEASED_BY  # noqa: E402 - needs the sys.path entry above
 
 DEFAULT_CASES_PATH = _REPO_ROOT / "docs/superpowers/evals/assistant/cases.jsonl"
@@ -87,6 +89,10 @@ class EvalCase:
     # `select_cases`.
     operator: bool = False
     fixture_state: dict[str, Any] | None = None
+    # D-12: the session the drawer is open on. Rendered into the context header as
+    # `session=`, exactly as the drawer sends it, and armed as the tool layer's scope —
+    # a scoped case runs the side chat, writes to that session refused.
+    session_id: str | None = None
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
@@ -108,6 +114,11 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
             raise ValueError(f"{path}:{lineno}: case {doc['id']!r} has pack {pack!r}; "
                              f"every case needs a pack, one of {', '.join(PACKS)}")
         operator = bool(doc.get("operator", False))
+        session_id = doc.get("session_id")
+        if session_id is not None and validate_context(
+                {"route": doc["route"], "sessionId": session_id}) is None:
+            raise ValueError(f"{path}:{lineno}: case {doc['id']!r} has session_id "
+                             f"{session_id!r}, which the drawer could never send")
         if operator and pack != "O":
             raise ValueError(f"{path}:{lineno}: operator case {doc['id']!r} must be pack 'O', "
                              f"not {pack!r}")
@@ -118,6 +129,7 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
             rubric=doc.get("rubric", ""),
             operator=operator,
             fixture_state=doc.get("fixture_state"),
+            session_id=session_id,
         ))
     for case in cases:
         EvalFixture(case.fixture_state)  # Validate declarative setup before any model call.
@@ -1011,6 +1023,63 @@ def _transcript(session_id: str) -> dict[str, Any]:
     return {"events": events, "totalTurns": len(events)}
 
 
+def _session_diff(session_id: str, *, summary: bool) -> dict[str, Any]:
+    """`GET /api/sessions/{id}/diff` (D-4's `SessionDiff`): S2's flaky-test fix touches
+    the test and the refund code; every other session's worktree is clean."""
+    if session_id != S2:
+        return {"base": "main", "head": None, "files": [], "additions": 0, "deletions": 0,
+                "truncated": False}
+    files = [
+        {"path": "src/checkout/refund.py", "oldPath": None, "status": "modified",
+         "additions": 2, "deletions": 2, "binary": False, "tooLarge": False, "hunks": [
+             {"oldStart": 14, "oldLines": 3, "newStart": 14, "newLines": 3,
+              "header": "def refund_total(order):", "lines": [
+                  {"kind": "context", "oldNo": 14, "newNo": 14, "text": "    cents = 0"},
+                  {"kind": "del", "oldNo": 15, "newNo": None,
+                   "text": "    for item in order.items[1:]:"},
+                  {"kind": "add", "oldNo": None, "newNo": 15,
+                   "text": "    for item in order.items:"},
+                  {"kind": "del", "oldNo": 16, "newNo": None, "text": "        cents += item.price"},
+                  {"kind": "add", "oldNo": None, "newNo": 16,
+                   "text": "        cents += item.price * item.qty"}]}]},
+        {"path": "tests/test_checkout.py", "oldPath": None, "status": "modified",
+         "additions": 3, "deletions": 1, "binary": False, "tooLarge": False, "hunks": [
+             {"oldStart": 40, "oldLines": 2, "newStart": 40, "newLines": 4,
+              "header": "def test_refund_total():", "lines": [
+                  {"kind": "del", "oldNo": 40, "newNo": None,
+                   "text": "    assert refund_total(order) == 1980"},
+                  {"kind": "add", "oldNo": None, "newNo": 40,
+                   "text": "    assert refund_total(order) == 2000"},
+                  {"kind": "add", "oldNo": None, "newNo": 41, "text": ""},
+                  {"kind": "add", "oldNo": None, "newNo": 42,
+                   "text": "    # qty > 1 rows were undercounted"},
+                  {"kind": "context", "oldNo": 41, "newNo": 43, "text": ""}]}]},
+    ]
+    if summary:
+        files = [{**f, "hunks": []} for f in files]
+    return {"base": "main", "head": "fix/flaky-checkout", "files": files, "additions": 5,
+            "deletions": 3, "truncated": False}
+
+
+def _session_search(session_id: str, q: str, limit: Any) -> httpx.Response:
+    """`GET /api/sessions/{id}/search` (D-11) over the fixture transcript, through the
+    real matcher (`server.sessions.search`), with the route's 400 for an empty query."""
+    from server.sessions.search import SEARCH_EMPTY, parse_terms, search_events
+
+    terms = parse_terms(q)
+    if not terms:
+        return httpx.Response(400, json={"detail": {
+            "code": SEARCH_EMPTY, "message": "Search needs at least one term."}})
+    try:
+        n = int(limit) if limit is not None else 200
+    except ValueError:
+        return httpx.Response(422, json={"detail": "limit must be an integer"})
+    events = _transcript(session_id)["events"]
+    hits, truncated = search_events(events, terms, n)
+    return httpx.Response(200, json={"hits": hits, "truncated": truncated,
+                                     "totalTurns": len(events)})
+
+
 def _repos() -> list[dict[str, Any]]:
     return [
         {"nameWithOwner": "acme/billing", "defaultBranch": "main", "cloned": True},
@@ -1596,6 +1665,14 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             return httpx.Response(404, json={"error": {"code": "NOT_FOUND", "message": path}})
         if path.startswith("/api/sessions/") and path.endswith("/transcript"):
             return httpx.Response(200, json=_transcript(path.split("/")[3]))
+        if path.startswith("/api/sessions/") and path.endswith(("/diff", "/search")):
+            sid, tail = path.split("/")[3], path.rsplit("/", 1)[-1]
+            if sid not in fixture.rows:
+                return httpx.Response(404, json={"detail": "session not found"})
+            if tail == "diff":
+                return httpx.Response(200, json=_session_diff(
+                    sid, summary=params.get("summary") in ("1", "true")))
+            return _session_search(sid, params.get("q") or "", params.get("limit"))
         if path.startswith("/api/sessions/"):
             sid = path.split("/")[3]
             row = fixture.rows.get(sid)
@@ -1848,7 +1925,8 @@ class TurnEvidence:
 
 def _instrumented_tools(observed: list[str], *, operator: bool = False,
                         fixture: EvalFixture | None = None,
-                        evidence: TurnEvidence | None = None) -> list[Any]:
+                        evidence: TurnEvidence | None = None,
+                        scope: str | None = None) -> list[Any]:
     from server.assistant.client import AssistantApi
     from server.assistant.tools import build_tools
 
@@ -1858,7 +1936,7 @@ def _instrumented_tools(observed: list[str], *, operator: bool = False,
                        session_id="eval-session", identity=_EVAL_IDENTITY,
                        transport=httpx.MockTransport(fixture.handle))
 
-    tools = build_tools(api, operator=operator)
+    tools = build_tools(api, operator=operator, current_scope=lambda: scope)
     for t in tools:
         original = t.handler
 
@@ -2011,6 +2089,15 @@ async def _evidence_stream(query_fn: Callable[..., Any], *, prompt: str, options
         raise error
 
 
+def case_context_header(case: EvalCase) -> str:
+    """The `<viberpit-context …/>` header a case's prompt carries: its route, plus its
+    `session_id` when the case is scoped to one (D-12)."""
+    ctx: PromptContext = {"route": case.route}
+    if case.session_id:
+        ctx["sessionId"] = case.session_id
+    return render_context_header(ctx, None)
+
+
 async def run_turn(
     case: EvalCase, *, config_dir: str, model: str, query_fn: Callable[..., Any],
     max_turns: int = 8, evidence: TurnEvidence | None = None,
@@ -2018,19 +2105,19 @@ async def run_turn(
     from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server
 
     from viberpit import brand
-    from server.assistant.context import render_context_header
     from server.assistant.options import assistant_options
     from server.sessions.claude_bin import cli_path_kwargs
     from server.sessions.helper_call import run_helper_call
 
     evidence = evidence if evidence is not None else TurnEvidence()
     tools = _instrumented_tools([], operator=case.operator,
-                                fixture=EvalFixture(case.fixture_state), evidence=evidence)
+                                fixture=EvalFixture(case.fixture_state), evidence=evidence,
+                                scope=case.session_id)
     server = create_sdk_mcp_server(name=brand.MCP_SERVER_NAME, version="eval", tools=tools)
     overlay = assistant_options(server=server, max_turns=max_turns, model=model,
                                 operator=case.operator)
     allowed = {f"mcp__{brand.MCP_SERVER_NAME}__{tool.name}" for tool in tools}
-    header = render_context_header({"route": case.route}, None)
+    header = case_context_header(case)
     evidence.rendered_context = json.loads(_redacted_json(header))
     with _isolated_query_context(config_dir) as (env, cwd):
         options = ClaudeAgentOptions(

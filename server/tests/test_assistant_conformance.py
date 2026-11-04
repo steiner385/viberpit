@@ -22,7 +22,10 @@ UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 ARGS: dict[str, dict] = {
     "list_sessions": {}, "get_session": {"id": UUID}, "get_session_transcript": {"id": UUID},
     "get_tool_result": {"id": UUID, "tool_id": "c1"}, "export_session": {"id": UUID},
-    "search_sessions": {"query": "x"}, "list_archived_sessions": {}, "list_accounts": {},
+    "search_sessions": {"query": "x"},
+    "get_session_diff": {"session_id": UUID},
+    "search_session_transcript": {"session_id": UUID, "q": "x"},
+    "list_archived_sessions": {}, "list_accounts": {},
     "list_hosts": {}, "list_prs": {}, "get_pr": {"repo": "o/n", "number": 1},
     "get_pr_files": {"repo": "o/n", "number": 1},
     "get_pipeline_health": {"repo": "o/n"},

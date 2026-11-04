@@ -92,6 +92,9 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", _S),
         ("GET", _S + r"/transcript"),
         ("GET", _S + r"/export\.md"),
+        # The side chat's reads (D-12): the worktree diff (D-4) and in-session search (D-11).
+        ("GET", _S + r"/diff"),
+        ("GET", _S + r"/search"),
         ("GET", r"/api/accounts"),
         ("GET", r"/api/fleet/hosts"),
         ("GET", r"/api/prs"),

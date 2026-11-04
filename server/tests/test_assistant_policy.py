@@ -70,6 +70,14 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/sessions/search", True),
     ("GET", "/api/sessions/archived", True),
     ("GET", f"/api/sessions/{_UUID}/export.md", True),
+    # D-12 side-chat reads: the worktree diff and in-session search, GET only; neither
+    # stretches to the list search or to a non-uuid segment.
+    ("GET", f"/api/sessions/{_UUID}/diff", True),
+    ("GET", f"/api/sessions/{_UUID}/search", True),
+    ("POST", f"/api/sessions/{_UUID}/diff", False),
+    ("POST", f"/api/sessions/{_UUID}/search", False),
+    ("GET", "/api/sessions/batch/diff", False),
+    ("GET", "/api/sessions/search/search", False),
     ("GET", "/api/github/repos", True),
     ("GET", "/api/github/branches", True),
     ("GET", "/api/pipeline/repos", True),

@@ -469,6 +469,11 @@ class ClaudeAgentDriver:
         # that is queued and then abandoned by a Stop never announced its route, so
         # it must not suppress the header for the next prompt on that route.
         self._last_context_header: str | None = None
+        # The sessionId of the latest context SENT (D-12 side-chat scope; see
+        # `context_scope`). Tracked apart from the header dedupe above because that is
+        # reset whenever the model may have forgotten the header (compaction, /clear,
+        # reconnect) — the user has not moved, so the scope must survive those resets.
+        self._context_scope: str | None = None
         # Broadcast fan-out: each events() subscriber gets its own queue. A single
         # asyncio.Queue is a WORK queue (each item to one getter) — fatal when
         # "attach" happens more than once per session (reconnect, 2nd viewer).
@@ -581,6 +586,15 @@ class ClaudeAgentDriver:
         the session is assistant-kind — so this is a computed property rather
         than a second, parallel ``kind`` field that could drift from it."""
         return ASSISTANT_KIND if self._assistant_api is not None else None
+
+    @property
+    def context_scope(self) -> str | None:
+        """The session the drawer's latest sent context names, or None (D-12). The
+        assistant's tool layer refuses writes to it (``server.assistant.tools``
+        ``build_tools(current_scope=…)``). Advanced only in ``_begin_turn`` as a turn
+        starts — a queued prompt has not moved the conversation yet — and a prompt with
+        no context leaves it as it was."""
+        return self._context_scope
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -1300,6 +1314,7 @@ class ClaudeAgentDriver:
             if header != self._last_context_header:
                 sdk_text = f"{header}\n{text}" if text else header
             self._last_context_header = header
+            self._context_scope = context.get("sessionId")
         if origin is not None:
             # Deliberately NOT deduped the way the context header is. Origin is a
             # property of THIS prompt, not of the conversation's current state: two

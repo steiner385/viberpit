@@ -43,16 +43,67 @@ def client(fixture=None):
 # 925ff4e59baaf73f30970825759fd97f2594eb1154ecd2b876438fa8f4919427
 # Before get_owner_digest / apply_owner_digest (design 2026-10-14 §5, 153 cases):
 # 1148295595be45b54eeac818753212e8ee80cf21675ca0dc64de5f9bd6a8b36d
+# Before the D-12 side-chat cases, when the projection gained `session_id` (156 cases):
+# c68e80f9669045dd4431cc890ede28d8f94381d52f3b67ad7092fcc645bfdc09
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
-    keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
+    # `session_id` is semantic: it changes the context header and arms the side-chat scope.
+    keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator",
+            "session_id")
     projection = [{k: r.get(k, False if k == "operator" else [] if k.endswith("tools") else "")
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "c68e80f9669045dd4431cc890ede28d8f94381d52f3b67ad7092fcc645bfdc09"
-    assert len(rows) == 156
+    assert digest == "b389c22b454eae7f9e3a2301a5e6b749b72ee62092ab875d8fe6b5f8f929d68f"
+    assert len(rows) == 161
+    assert sum(bool(r.get("session_id")) for r in rows) == 4
     assert sum(bool(r.get("operator")) for r in rows) == 7
+
+
+def test_a_scoped_case_renders_its_session_into_the_context_header():
+    sid = ev.S2
+    scoped = ev.EvalCase(id="c", prompt="p", route=f"/sessions/{sid}", pack="S", session_id=sid)
+    assert ev.case_context_header(scoped) == (
+        f'<viberpit-context route="/sessions/{sid}" session="{sid}" />')
+    plain = ev.EvalCase(id="c", prompt="p", route="/sessions", pack="S")
+    assert ev.case_context_header(plain) == '<viberpit-context route="/sessions" />'
+    by_id = {c.id: c for c in ev.load_cases()}
+    assert by_id["side-chat-diff"].session_id == sid
+    assert by_id["unscoped-send-prompt-control"].session_id is None
+
+
+def test_case_loader_rejects_a_session_id_the_drawer_could_never_send(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text(json.dumps({"id": "x", "prompt": "p", "route": "/sessions", "pack": "S",
+                                "session_id": "not a session"}) + "\n")
+    with pytest.raises(ValueError, match="session_id"):
+        ev.load_cases(path)
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_case_arms_the_side_chat_scope_in_its_tools():
+    tools = {t.name: t for t in ev._instrumented_tools([], scope=ev.S2)}
+    refused = await tools["send_prompt"].handler({"id": ev.S2, "text": "continue"})
+    assert refused["is_error"] is True and "SCOPED_READ_ONLY" in refused["content"][0]["text"]
+    other = await tools["archive_session"].handler({"id": ev.S7})
+    assert other.get("is_error") is not True
+
+
+def test_session_diff_and_search_fixtures_serve_the_endpoint_shapes():
+    with client() as c:
+        summary = c.get(f"/api/sessions/{ev.S2}/diff", params={"summary": 1}).json()
+        assert [f["path"] for f in summary["files"]] == ["src/checkout/refund.py",
+                                                       "tests/test_checkout.py"]
+        assert all(f["hunks"] == [] for f in summary["files"])
+        full = c.get(f"/api/sessions/{ev.S2}/diff").json()
+        assert all(f["hunks"] for f in full["files"])
+        assert c.get(f"/api/sessions/{ev.S1}/diff").json()["files"] == []
+        assert c.get("/api/sessions/00000000-0000-4000-8000-000000000000/diff").status_code == 404
+        hits = c.get(f"/api/sessions/{ev.S2}/search", params={"q": "test suite"}).json()
+        assert hits["hits"] and hits["hits"][0]["role"] == "user"
+        assert c.get(f"/api/sessions/{ev.S2}/search", params={"q": " "}).status_code == 400
+        # The list search beside it is unaffected.
+        assert "ids" in c.get("/api/sessions/search", params={"q": "checkout"}).json()
 
 
 def test_pr_files_fixture_serves_the_endpoint_shape_and_404s_unknown_prs():

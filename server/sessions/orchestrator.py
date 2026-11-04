@@ -2146,7 +2146,13 @@ class SessionOrchestrator:
         # The Claude MCP server is built ONLY for the engine that mounts one: it
         # spawns nothing, but building it for a Codex assistant would be a second,
         # unused copy of the tool table whose drift nothing would catch.
-        server = (build_server(api, operator=operator)
+        # D-12 side-chat scope: the session the drawer's last sent context names. Read
+        # late, at tool-call time, off whichever driver is registered for this session —
+        # the driver is built FROM this overlay, so it does not exist yet here.
+        def current_scope() -> str | None:
+            return getattr(self._drivers.get(session_id), "context_scope", None)
+
+        server = (build_server(api, operator=operator, current_scope=current_scope)
                   if selected is AgentEngine.CLAUDE_CODE else None)
         self.register_overlay(session_id, assistant_overlay_for(
             selected, api=api, server=server, max_turns=cfg.assistant_max_turns,
