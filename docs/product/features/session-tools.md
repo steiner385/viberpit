@@ -278,6 +278,9 @@ allows the card, `PermissionRegistry.resolve`, not the handler, records a grant 
 session and that `repo#number`; the handler only reports `granted: true|false`. The guard
 then lets ONE `gh pr ready <number>` on that PR through and spends the grant.
 
+The web UI's merge routes are not `gh` calls from a session, so they carry their own `hold:human` check; see
+"REST hold guard" in [CI/CD pipeline](cicd-pipeline-merge-queue.md).
+
 Why a card and not a hook `ask`: in `auto`/`full-auto` the same registry auto-approves Bash,
 so an `ask` would be answered by the mode, not the user. Why not the dispatch prompt: prompt
 and repo text are model-visible and often written by automations, so a model could "quote"

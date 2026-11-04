@@ -2,6 +2,7 @@ import { FileText, Image as ImageIcon, Link2 } from 'lucide-react'
 import { artifactFromBlock, type Artifact, type ToolBlock } from '@/session/artifacts'
 import { CopyablePath } from './CopyablePath'
 import { ResultImage } from './ResultImages'
+import { isSafeHttpUrl } from '@/lib/safeUrl'
 
 interface Props {
   block: ToolBlock
@@ -40,7 +41,6 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 // Only an http(s) value becomes an anchor. The server refuses anything else, but
 // the card renders from the call INPUT before that verdict lands — a `javascript:`
 // value must never be clickable even for the moment the result is pending.
-const SAFE_HREF = /^https?:\/\//i
 
 function Body({ a }: { a: Artifact }) {
   if (a.status === 'error') {
@@ -53,7 +53,7 @@ function Body({ a }: { a: Artifact }) {
   }
   switch (a.kind) {
     case 'url':
-      return SAFE_HREF.test(a.value)
+      return isSafeHttpUrl(a.value)
         ? <a href={a.value} target="_blank" rel="noopener noreferrer" className="break-all text-accent hover:underline">{a.value}</a>
         : <span className="break-all">{a.value}</span>
     case 'path':

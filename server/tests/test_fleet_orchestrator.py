@@ -657,7 +657,8 @@ def test_every_remote_method_is_classified():
     GLOBAL = {
         "list_sessions", "list_archived", "pr_for", "prs_for", "all_prs", "pr_detail",
         "all_repos_stage_models", "all_merge_trains", "latest_queue_entries",
-        "check_insights", "ready_merge", "deploy_config_list", "deploy_config_put",
+        "check_insights", "ready_merge", "merge_pr", "disable_auto_merge",
+        "deploy_config_list", "deploy_config_put",
         "deploy_status", "git_credential_alerts", "dismiss_git_credential_alert",
         "capacity_readout", "automation_actionable", "automation_trigger", "automation_inbox",
         "pr_doctor_job", "resume_recovery_status", "consolidation_candidates",
@@ -869,7 +870,8 @@ def test_api_orchestrator_reads_are_all_classified():
     # fan-out here would be wrong or redundant, so they are named explicitly.
     PRIMARY_LOCAL = {
         "list_archived", "all_prs", "pr_detail", "all_merge_trains", "all_repos_stage_models",
-        "latest_queue_entries", "check_insights", "ready_merge", "deploy_config_list",
+        "latest_queue_entries", "check_insights", "ready_merge", "merge_pr",
+        "disable_auto_merge", "deploy_config_list",
         "deploy_config_put", "deploy_status", "git_credential_alerts",
         "dismiss_git_credential_alert", "capacity_readout", "automation_actionable",
         "automation_trigger", "automation_inbox", "automation_consolidate", "consolidation_candidates",

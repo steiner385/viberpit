@@ -10,11 +10,11 @@ import { useSearchParamState } from '@/lib/useSearchParamState'
  * One owner for the list and the param, because two components drive it:
  * `SessionBody`'s tab strip and the header's `+N −M` chip, which opens Changes.
  * Which views are actually LISTED is `SessionBody`'s call (Changes needs a
- * non-empty diff, Files a session cwd, Browser the X display, Details a pane
+ * non-empty diff, PR (D-15) a PR in the session payload, Files a session cwd, Browser the X display, Details a pane
  * under 64rem — wider, its cards are in the rail); a view that is not listed
  * falls back to the conversation. Details is last (D-6).
  */
-export const SESSION_VIEWS = ['conversation', 'changes', 'files', 'browser', 'details'] as const
+export const SESSION_VIEWS = ['conversation', 'changes', 'pr', 'files', 'browser', 'details'] as const
 export type SessionView = (typeof SESSION_VIEWS)[number]
 
 export function useSessionView(): [SessionView, (v: SessionView) => void] {

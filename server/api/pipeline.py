@@ -15,15 +15,19 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+from server.audit import record_audit
 from server.auth.middleware import current_identity
+from server.db import db_session
 from server.deploy.client import DeployControllerUnavailable
 from server.github import ci_issues
 from server.github import pr_files as pr_files_mod
+from server.github.pr_status import PR_HUMAN_HOLD, PR_HUMAN_HOLD_UNKNOWN
 from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
 from server.pipeline.lane_health import controller_deploy_snapshot, lane_health_ctx
@@ -133,6 +137,85 @@ async def comment_on_pr(
     if url is None:
         raise HTTPException(status_code=502, detail="GitHub rejected the comment")
     return {"url": url}
+
+
+_HOLD_REFUSALS = frozenset({PR_HUMAN_HOLD, PR_HUMAN_HOLD_UNKNOWN})
+
+
+async def _audit_pr_mutation(request: Request, identity: str, audit_type: str,
+                             repo: str, number: int, result: dict, *, ok: bool) -> dict:
+    """Write the mutation's audit row (refusals included), then turn a ``hold:human``
+    refusal from the orchestrator into a 409 ``{code, error}``. The audit row is its
+    own transaction so the 409 cannot roll it back."""
+    code = result.get("code")
+    detail: dict = {"repo": repo, "number": number, "ok": ok}
+    if code:
+        detail["code"] = code
+    if result.get("error"):
+        detail["error"] = str(result["error"])[:500]
+    async with db_session() as db:
+        await record_audit(db=db, type=audit_type, identity=identity, detail=detail,
+                           via=getattr(request.state, "via", None))
+    if code in _HOLD_REFUSALS:
+        raise HTTPException(status_code=409,
+                            detail={"code": code, "error": result.get("error") or ""})
+    return result
+
+
+class PrMergeBody(BaseModel):
+    # Squash only: the one merge method every ViberPit path uses (D-15).
+    method: Literal["squash"] = "squash"
+
+
+@router.post("/{owner}/{name}/{number}/merge")
+async def merge_pr(
+    owner: str,
+    name: str,
+    number: int,
+    payload: PrMergeBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Squash-merge a PR now (session PR tab). ``{ok, error}`` with gh's stderr on
+    failure; 409 ``PR_HUMAN_HOLD`` / ``PR_HUMAN_HOLD_UNKNOWN`` for a held (or
+    unverifiable) PR. Not on the assistant allowlist."""
+    repo = f"{owner}/{name}"
+    if not ci_issues.valid_repo(repo):
+        raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    result = await request.app.state.sessions.merge_pr(repo, number)
+    return await _audit_pr_mutation(request, identity, "pr.merge", repo, number, result,
+                                    ok=bool(result.get("ok")))
+
+
+class PrAutoMergeBody(BaseModel):
+    enabled: bool
+
+
+@router.post("/{owner}/{name}/{number}/auto-merge")
+async def set_auto_merge(
+    owner: str,
+    name: str,
+    number: int,
+    payload: PrAutoMergeBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """``enabled: false`` disables auto-merge (always allowed — the safe direction);
+    ``enabled: true`` is ``ready_merge`` (ready + arm squash auto-merge, hold-guarded),
+    its result plus ``ok``. Not on the assistant allowlist."""
+    repo = f"{owner}/{name}"
+    if not ci_issues.valid_repo(repo):
+        raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    orch = request.app.state.sessions
+    if not payload.enabled:
+        result = await orch.disable_auto_merge(repo, number)
+        return await _audit_pr_mutation(request, identity, "pr.auto_merge_disabled",
+                                        repo, number, result, ok=bool(result.get("ok")))
+    result = await orch.ready_merge(repo, number)
+    ok = bool(result.get("autoMergeArmed"))
+    await _audit_pr_mutation(request, identity, "pr.ready_merge", repo, number, result,
+                             ok=ok)
+    return {**result, "ok": ok, "error": result.get("error") or ""}
 
 
 repos_router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
@@ -459,11 +542,16 @@ class ReadyMergeBody(BaseModel):
 async def ready_merge(
     body: ReadyMergeBody,
     request: Request,
-    _identity: str = Depends(current_identity),
+    identity: str = Depends(current_identity),
 ) -> dict:
-    """Plotroom PrRow parity: mark a draft PR ready + arm squash auto-merge."""
-    orch = request.app.state.sessions
-    return await orch.ready_merge(body.repo, body.number)
+    """Plotroom PrRow parity: mark a draft PR ready + arm squash auto-merge. 409
+    ``PR_HUMAN_HOLD`` / ``PR_HUMAN_HOLD_UNKNOWN`` for a held (or unverifiable) PR."""
+    if not ci_issues.valid_repo(body.repo):
+        raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    result = await request.app.state.sessions.ready_merge(body.repo, body.number)
+    return await _audit_pr_mutation(request, identity, "pr.ready_merge", body.repo,
+                                    body.number, result,
+                                    ok=bool(result.get("autoMergeArmed")))
 
 
 @repos_router.get("/insights/checks")

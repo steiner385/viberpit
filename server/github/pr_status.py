@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 # fix session and entered the merge queue unreviewed.
 HUMAN_HOLD_LABEL = "hold:human"
 
+# Refusal codes a REST merge / arm path returns (409) for a PR it must not touch
+# (D-15). UNKNOWN: the live label read failed, so the hold state is unproven and the
+# irreversible direction fails closed.
+PR_HUMAN_HOLD = "PR_HUMAN_HOLD"
+PR_HUMAN_HOLD_UNKNOWN = "PR_HUMAN_HOLD_UNKNOWN"
+
 
 def has_human_hold(labels) -> bool:
     """True when *labels* (label names) carry ``HUMAN_HOLD_LABEL``. GitHub label
@@ -844,6 +850,7 @@ def build_pr_detail_query(repo: str, number: int) -> str:
     {name}/{number}`` (SPEC v2 Pack G). The cached population poll already
     covers everything else a PR detail needs; it never fetches reviews, and
     its own check fetch (``build_eta_checks_query``) has no url per check.
+    Review threads (with comment bodies) feed the session PR tab (D-15).
     """
     owner, _, name = repo.partition("/")
     return (
@@ -852,6 +859,10 @@ def build_pr_detail_query(repo: str, number: int) -> str:
         f"    pullRequest(number: {int(number)}) {{\n"
         "      mergeable\n"
         "      reviews(last: 20) { nodes { author { login } state } }\n"
+        "      reviewThreads(first: 50) { nodes {\n"
+        "        id isResolved isOutdated path line originalLine\n"
+        "        comments(first: 20) { nodes { author { login } body createdAt url } }\n"
+        "      } }\n"
         "      commits(last: 1) { nodes { commit { statusCheckRollup {\n"
         "        contexts(first: 100) { nodes {\n"
         "          __typename\n"
@@ -868,12 +879,13 @@ def build_pr_detail_query(repo: str, number: int) -> str:
 def parse_pr_detail_response(response: dict) -> dict:
     """Parse ``build_pr_detail_query``'s response into
     ``{"checks": [{name, status, conclusion, url}], "reviews": [{author, state}],
-    "mergeable": str | None}``. Never raises — any missing/malformed shape
+    "mergeable": str | None, "threads": [...]}`` (threads: see
+    ``_parse_review_threads``). Never raises — any missing/malformed shape
     (PR not found, forbidden scope, network hiccup already turned into an empty
-    response by the caller) degrades to the empty triple, same fail-open
+    response by the caller) degrades to the empty shape, same fail-open
     discipline as the rest of this module.
     """
-    empty: dict = {"checks": [], "reviews": [], "mergeable": None}
+    empty: dict = {"checks": [], "reviews": [], "mergeable": None, "threads": []}
     pr = (((response or {}).get("data") or {}).get("repository") or {}).get("pullRequest")
     if not pr:
         return empty
@@ -900,4 +912,39 @@ def parse_pr_detail_response(response: dict) -> dict:
         {"author": ((r.get("author") or {}).get("login")), "state": r.get("state")}
         for r in ((pr.get("reviews") or {}).get("nodes")) or []
     ]
-    return {"checks": checks, "reviews": reviews, "mergeable": pr.get("mergeable")}
+    return {"checks": checks, "reviews": reviews, "mergeable": pr.get("mergeable"),
+            "threads": _parse_review_threads(pr.get("reviewThreads"))}
+
+
+def _parse_review_threads(block) -> list[dict]:
+    """``reviewThreads`` nodes as ``[{id, path, line, resolved, outdated,
+    comments: [{author, body, createdAt, url}]}]`` in API order. ``line`` falls back
+    to ``originalLine`` (GitHub nulls ``line`` once a thread is outdated). Fails open
+    per item: a thread without a string ``id``/``path`` is dropped, as is a non-dict
+    comment; the rest still return. Bodies are the reviewer's markdown, verbatim."""
+    nodes = block.get("nodes") if isinstance(block, dict) else None
+    out: list[dict] = []
+    for t in nodes or []:
+        if not isinstance(t, dict):
+            continue
+        tid, path = t.get("id"), t.get("path")
+        if not isinstance(tid, str) or not tid or not isinstance(path, str) or not path:
+            continue
+        line = t.get("line")
+        if not isinstance(line, int):
+            line = t.get("originalLine")
+        comments_block = t.get("comments")
+        raw_comments = (comments_block.get("nodes") if isinstance(comments_block, dict)
+                        else None) or []
+        comments = [
+            {"author": (c.get("author") or {}).get("login"),
+             "body": c.get("body") if isinstance(c.get("body"), str) else "",
+             "createdAt": c.get("createdAt"), "url": c.get("url")}
+            for c in raw_comments if isinstance(c, dict)
+        ]
+        out.append({"id": tid, "path": path,
+                     "line": line if isinstance(line, int) else None,
+                     "resolved": bool(t.get("isResolved")),
+                     "outdated": bool(t.get("isOutdated")),
+                     "comments": comments})
+    return out

@@ -17,6 +17,7 @@ links:
     - web/src/features/sessions/composer/PlusMenu.tsx
     - web/src/features/sessions/composer/FastToggle.tsx
     - web/src/features/settings/sections/SessionDefaultsSection.tsx
+    - web/src/features/sessions/pr/PrTab.tsx
     - web/src/features/palette/AppPalette.tsx
     - web/src/features/sessions/transcript/search/TranscriptSearchBar.tsx
     - web/src/features/sessions/transcript/TurnSummaryCard.tsx
@@ -409,6 +410,23 @@ ways into it from the composer and the transcript.
   session worktrees created under, moved here from General. Changing it doesn't move existing worktrees —
   they keep working, but cleanup skips them. **Reset** returns it to the server default. The branch prefix
   `viberpit/` is shown read-only: it guards automatic branch cleanup.
+
+**PR tab (D-15)** — a session that has a pull request gets a **PR** tab after Changes (`?view=pr`).
+- **Header:** title, `#N`, state (Open, Draft, Merged, Closed), and badges for auto-merge on, in the merge
+  queue (read-only) and **Held for a human**. A line explains the merge state in plain words, for example
+  that the branch is behind its base or that checks are blocking. With several PRs a picker appears,
+  defaulting to the lowest-numbered open or draft one.
+- **Checks** are grouped failing, pending and passing, with failing open. **Review threads** list
+  unresolved first, with resolved ones collapsed and outdated ones marked; a `path:line` links to the Files
+  tab when the file exists in the worktree. **Ask session to address** puts the thread in the composer and
+  switches to Conversation. It never sends, and asks before replacing text you have not sent.
+- **Actions:** Arm auto-merge, Disable, Merge now (squash, behind a confirmation, only when GitHub reports the
+  PR clean) and Fix. A `hold:human` PR hides all but Disable; the server enforces this too (see the REST
+  hold guard in [CI/CD pipeline](cicd-pipeline-merge-queue.md)).
+- **Untrusted text:** comment bodies are third-party content. They render through the sanitized Markdown
+  renderer with no remote image fetches, and a link shows only when it is an absolute http(s) URL.
+- If GitHub can't be reached the tab says "Live details unavailable" and shows what the session last
+  cached.
 
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a

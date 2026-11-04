@@ -37,7 +37,8 @@ def _make_app():
 
 
 @pytest.mark.asyncio
-async def test_ready_merge_route_calls_orchestrator():
+async def test_ready_merge_route_calls_orchestrator(isolated_db):
+    """``isolated_db``: the route writes a ``pr.ready_merge`` audit row (D-15)."""
     app = _make_app()
     calls = []
 
@@ -99,6 +100,12 @@ async def test_ready_merge_requires_identity():
     assert resp.status_code == 401
 
 
+def _unheld(args):
+    """The live ``hold:human`` label read ``ready_merge`` makes first (D-15)."""
+    import subprocess
+    return subprocess.CompletedProcess(args, 0, stdout='{"labels": []}', stderr="")
+
+
 def _orch() -> SessionOrchestrator:
     with patch.dict(os.environ, _ENV):
         return SessionOrchestrator(
@@ -116,7 +123,9 @@ async def test_ready_merge_orchestrator_happy_path():
     orch = _orch()
     calls: list[list[str]] = []
 
-    def fake_gh(args, token=None, *, input=None):
+    def fake_gh(args, token=None, *, input=None, timeout=None):
+        if args[:2] == ["pr", "view"]:
+            return _unheld(args)
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
@@ -140,7 +149,9 @@ async def test_ready_merge_orchestrator_tolerates_already_ready_and_armed():
 
     orch = _orch()
 
-    def fake_gh(args, token=None, *, input=None):
+    def fake_gh(args, token=None, *, input=None, timeout=None):
+        if args[:2] == ["pr", "view"]:
+            return _unheld(args)
         if args[:2] == ["pr", "ready"]:
             return subprocess.CompletedProcess(
                 args, 1, stdout="", stderr="PR #7 is not a draft"
@@ -164,7 +175,9 @@ async def test_ready_merge_orchestrator_merge_failure_reports_unarmed():
 
     orch = _orch()
 
-    def fake_gh(args, token=None, *, input=None):
+    def fake_gh(args, token=None, *, input=None, timeout=None):
+        if args[:2] == ["pr", "view"]:
+            return _unheld(args)
         code = 0 if args[:2] == ["pr", "ready"] else 1
         return subprocess.CompletedProcess(
             args, code, stdout="",

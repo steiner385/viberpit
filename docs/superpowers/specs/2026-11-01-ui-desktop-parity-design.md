@@ -49,6 +49,22 @@ The rail switches on the session pane's own width (64rem, a container query), no
   meaningful: Changes once the worktree differs from base, PR once a PR exists. The `Views ▾` menu lists the
   same entries, and the tab is part of the URL (`?view=changes&file=…&line=…`). This replaces the umbrella's
   `session.panes` (Browser / Tasks / PR).
+  **PR tab as built (D-15).** Listed when the session has any PR (`Session.prs`), after Changes, and lazy-loaded.
+  Its data is `Session.prs` plus `GET /api/prs/{o}/{n}/{num}`, polled every 30 s while the tab is visible; when the
+  live read fails the route falls back to the session's per-branch cache and the tab shows "Live details
+  unavailable". The tab has a picker (lowest-numbered open or draft PR by default; shown only with several PRs), a
+  header with state, auto-merge, merge-queue (read-only) and hold badges, checks grouped failing / pending / passing,
+  and review threads (unresolved first, resolved collapsed, outdated chipped). A thread's `path:line` links to the
+  Files tab only when the file exists in the worktree. **Ask session to address** prefills the composer with the
+  thread and switches to Conversation; it never sends, and asks before replacing unsent text. Actions are Arm
+  auto-merge (gated by the existing `readyMergeBlock`), Disable, Merge now (squash, behind a confirm; only when the
+  merge state is `CLEAN` and the PR is not a draft) and Fix. The merge-state line uses fixed copy per GitHub
+  `mergeStateStatus` (`DRAFT` and unknown values show as-is). **`hold:human` guard:** merge-now, arm and the Pipeline
+  page's ready-merge all answer 409 `PR_HUMAN_HOLD` for a held PR. The label is read live from GitHub, never from the
+  cache; if that read fails they fail closed with 409 `PR_HUMAN_HOLD_UNKNOWN`. Disable auto-merge is always allowed.
+  Mutations write `pr.merge`, `pr.auto_merge_disabled` and `pr.ready_merge` audit rows, and neither new route is on
+  the Assistant's allowlist. **Untrusted content:** comment and thread bodies render only through the sanitized
+  Markdown renderer, which fetches no remote images, and a link renders only when it is an absolute http(s) URL.
 - **Rail** `[A-D12]`: on desktop ≥1280px a collapsible right column; below that, and on phone, a **Details** tab.
   It has four cards:
   - **Changes**: `+N −M` and the file list, linking to the Changes tab.
@@ -383,6 +399,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | memory-file discovery (loaded `CLAUDE.md` set) — **shipped (D-13)**: `memoryFiles: [{path, type, tokens}]` on the `contextUsage` event, from `get_context_usage()`; persisted in `sessions.memory_files` (migration `0098`), re-emitted on attach | Context card |
 | `GET /sessions/{id}/memory-file?path=` — **shipped (D-13)**: `{path, type, text, truncated, editable}`, read on the owning host (per-session RPC, fleet). Allow rule: the path must equal an entry of the session's current set **exactly** (normalized, absolute, no NUL). It is realpath'd once, and the result must sit under an allowed root, each root realpath'd first: the work tree; per config dir (the session's and the shared base) `CLAUDE.md`, `rules/**` and `projects/<slug>/memory/**`; in each cwd ancestor only the walk names `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` and `.claude/rules/**`; and `/etc/claude-code`. It is then opened from `/` with `O_NOFOLLOW` on every component (`fs_beneath.open_beneath`) and must be a regular file. A *User* import outside every root is read only by its literal path, with no realpath and every component no-follow. Capped at 256 KiB (`truncated`). `editable` is true only for the shared user file, when it is a regular file. Every refusal is 404 `MEMORY_FILE_UNKNOWN`; 409 `daemon_outdated` | memory-file viewer |
 | `GET /settings/memory` → `{text, etag, exists}`; `PUT /settings/memory` `{text, etag}` → `{etag, propagation}` — **shipped (D-13)**, on the edge, normal identity auth. 409 `MEMORY_CONFLICT` `{code, text, etag}`, 409 `MEMORY_FILE_IS_LINK`, 413 `MEMORY_TOO_LARGE`, 422 `MEMORY_NOT_UTF8` (both verbs refuse the last three) | Settings › Memory |
+| PR tab data and mutations — **shipped (D-15)**: `GET /api/prs/{o}/{n}/{num}` adds `reviewThreads(first: 50)` as `threads`, plus `isDraft`, `autoMergeEnabled`, `mergeStateStatus`, `labels`, `humanHold`, and falls back to the session's per-branch cache (`prs_for`) before a 404 or 502; `POST /api/prs/{o}/{n}/{num}/merge` `{method: "squash"}` (422 for any other method) and `POST …/auto-merge` `{enabled}`. The mutations run `gh` on the owning host through the orchestrator facade, RPC, remote and fleet layers. Merge-now, enable and `/api/pipeline/pr/ready-merge` check `hold:human` from a live `gh pr view --json labels` read first: 409 `{code: PR_HUMAN_HOLD}`, or `PR_HUMAN_HOLD_UNKNOWN` when the read fails (fail closed). Disable skips the check. A `gh` failure returns 200 `{ok: false, error}`. | PR tab |
 | MCP per-tool toggles, output styles, plugin marketplace ops | Settings |
 | `POST /sessions/{id}/move` `{host}` | Move to host |
 | dev-server detection on the session's host | Preview |
@@ -411,7 +428,7 @@ audit. Ordered by points closed per unit of risk, with dependencies first.
 | D-12 | Context-aware Assistant (⌘;, `/btw`) | side chat |
 | D-13 | Memory files (Context card + Settings › Memory) | CLAUDE.md |
 | D-14 | Presets in dispatch; worktree/branch-prefix settings; sandbox; PR auto-fix toggle; fast mode | presets, worktree settings, sandbox, PR behaviour, fast |
-| D-15 | PR tab | PR viewer |
+| D-15 | PR tab — **done**: checks, review threads, merge / auto-merge (merge queue read-only), the `hold:human` REST guard, "Ask session to address" (§2, §10) | PR viewer |
 | D-16 | Plugins marketplace; MCP per-tool toggles; output styles; remaining app slash commands | plugins, MCP, output styles, slash commands |
 | D-17 | Move session to host | move session |
 | D-18 | Dev-server detection + preview | preview |

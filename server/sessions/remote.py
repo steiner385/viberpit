@@ -61,6 +61,12 @@ SPAWN_RPC_TIMEOUT = 90.0
 # can outlast the 30s client default. They are reads: timing out only costs a retry.
 WORKTREE_RPC_TIMEOUT = 90.0
 
+# PR mutations on the owning daemon (D-15): ``merge_pr`` = a 15s live label read + a 60s
+# ``gh pr merge``; ``ready_merge`` = that read + two 60s ``gh`` calls. Over the 30s client
+# default a slow GitHub made the edge raise ``DaemonTimeout`` before writing the audit
+# row while the PR merged anyway. Bound above the daemon's worst case (~135s).
+PR_MUTATION_RPC_TIMEOUT = 150.0
+
 # Fork from here (D-8): the daemon makes a fork worktree, then spawns. Sized above the
 # worst case of the bounded steps — create_fork_worktree's four tree-sized git calls
 # (stash create, ls-files, worktree add, stash apply) at FORK_GIT_TIMEOUT_S each, its
@@ -501,7 +507,18 @@ class RemoteOrchestrator:
 
     async def ready_merge(self, repo: str, number: int) -> dict:
         """Arm ready + auto-merge on a PR via the daemon (already JSON-safe)."""
-        return await self._client.call("ready_merge", repo=repo, number=number)
+        return await self._client.call(
+            "ready_merge", timeout=PR_MUTATION_RPC_TIMEOUT, repo=repo, number=number)
+
+    async def merge_pr(self, repo: str, number: int) -> dict:
+        """Squash-merge a PR now via the daemon (already JSON-safe; D-15)."""
+        return await self._client.call(
+            "merge_pr", timeout=PR_MUTATION_RPC_TIMEOUT, repo=repo, number=number)
+
+    async def disable_auto_merge(self, repo: str, number: int) -> dict:
+        """Disable a PR's auto-merge via the daemon (already JSON-safe; D-15)."""
+        return await self._client.call(
+            "disable_auto_merge", timeout=PR_MUTATION_RPC_TIMEOUT, repo=repo, number=number)
 
     async def deploy_config_list(self) -> dict:
         """List all deploy-env configs via the daemon."""

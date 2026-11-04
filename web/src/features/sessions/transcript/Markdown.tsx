@@ -34,13 +34,17 @@ interface Props {
   streaming?: boolean
   /** The transcript search's marks for this block (D-11); absent everywhere else. */
   highlight?: SearchHighlight
+  /** Third-party text (D-15 PR review comments): images are never fetched and
+   *  only absolute http(s) links stay clickable (see `MarkdownDoc`). */
+  untrusted?: boolean
 }
 
-export function Markdown({ children, streaming = false, highlight }: Props) {
+export function Markdown({ children, streaming = false, highlight, untrusted = false }: Props) {
   return (
     <Suspense fallback={<div className="whitespace-pre-wrap break-words">{highlight ? highlight.kit.renderText(children, highlight) : children}</div>}>
       <MarkdownDoc
         streaming={streaming}
+        untrusted={untrusted}
         // The search kit's pass (lazy, with the ⌘F bar) — the renderer chunk
         // imports none of the search code.
         searchPlugin={highlight && highlight.terms.length > 0 ? highlight.kit.rehypePlugin(highlight) : undefined}

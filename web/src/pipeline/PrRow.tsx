@@ -16,6 +16,7 @@ import { CheckGantt } from '@/features/pipeline/charts/CheckGantt';
 import { Waterfall, waterfallSegments } from '@/features/pipeline/charts/Waterfall';
 import { DEFS, defTitle, subLineTitle } from './definitions';
 import { prAnchorId } from './prAnchor';
+import { readyMergeBlock } from './readyMerge';
 
 /** The expanded panel's section caption ("merge group build", …). */
 const PANEL_LABEL = 'px-3.5 pt-2 text-2xs font-semibold uppercase tracking-wider text-ink-muted';
@@ -86,10 +87,6 @@ export function subLine(pr: PrView, queueCulprit: number | null): string | null 
   return stageLabel(s.stage, s.substate);
 }
 
-/** Check conclusions that count as "already failed" for the ready+auto-merge
- *  gate. NEUTRAL/SKIPPED/SUCCESS are not failures; null = still running. */
-const FAILING_CONCLUSIONS = new Set(['FAILURE', 'TIMED_OUT', 'STARTUP_FAILURE', 'ACTION_REQUIRED']);
-
 /**
  * Decide whether the "Ready + auto-merge" button shows for this PR, and whether
  * it's blocked. Per product decision (drafts, disabled-when-blocked):
@@ -102,15 +99,21 @@ const FAILING_CONCLUSIONS = new Set(['FAILURE', 'TIMED_OUT', 'STARTUP_FAILURE', 
 export function readyMergeGate(pr: PrView): { show: boolean; blocked: boolean; reason: string } {
   const isDraft = pr.stage.stage === 'parked' && pr.stage.substate === 'draft';
   if (!isDraft) return { show: false, blocked: false, reason: '' };
-  if (pr.mergeStateStatus === 'DIRTY') {
-    return { show: true, blocked: true, reason: 'conflicts with base — rebase before it can merge' };
+  const reason = readyMergeBlock(pr); // the block half lives in ./readyMerge (shared with the session PR tab)
+  return { show: true, blocked: reason !== null, reason: reason ?? '' };
+}
+
+/** The text of a failed ready-merge response: gh's `error`, a FastAPI `detail`
+ *  string, or the `detail.error` of a 409 hold refusal (`{code, error}`, D-15). */
+function readyMergeErrorText(data: Record<string, unknown>, status: number): string {
+  if (typeof data.error === 'string' && data.error) return data.error;
+  const detail = data.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (detail && typeof detail === 'object') {
+    const error = (detail as Record<string, unknown>).error;
+    if (typeof error === 'string' && error) return error;
   }
-  const failing = pr.checks.find(
-    (c) => c.isRequired && c.conclusion != null && FAILING_CONCLUSIONS.has(c.conclusion));
-  if (failing) {
-    return { show: true, blocked: true, reason: `required check failing (${failing.name}) — fix before arming` };
-  }
-  return { show: true, blocked: false, reason: '' };
+  return `HTTP ${status}`;
 }
 
 type PrRowProps = {
@@ -171,9 +174,9 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ repo: pr.repo, number: pr.number }),
       });
-      const data = await res.json().catch(() => ({} as Record<string, unknown>));
+      const data: Record<string, unknown> = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setActionResult({ ok: false, msg: String(data.error ?? `HTTP ${res.status}`) });
+        setActionResult({ ok: false, msg: readyMergeErrorText(data, res.status) });
         return;
       }
       const parts: string[] = [];

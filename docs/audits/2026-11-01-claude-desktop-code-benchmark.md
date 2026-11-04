@@ -66,11 +66,11 @@ Full inventories, with an evidence tag on every item:
 | 5 Settings | 5.5 / 8 | 69% |
 | 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 22.5 / 25 | 90% |
-| 8 Code review & dev | 7.5 / 12 | 62% |
+| 8 Code review & dev | 8.5 / 12 | 71% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **140.5 / 161** | **87%** |
-| **Target completion** (excl. rejected rows) | **138 / 151** | **91%** |
+| **Overall (weighted)** | **141.5 / 161** | **88%** |
+| **Target completion** (excl. rejected rows) | **139 / 151** | **92%** |
 
 ### 1 Shell & IA
 
@@ -185,7 +185,7 @@ Full inventories, with an evidence tag on every item:
 | Changes pane: aggregate diff, unified/split, line comments | 3 | ✅ |  |
 | Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted; MultiEdit edits[] not rendered |
 | Files pane (view / edit) | 1 | ◐ | read-only viewer; edit rejected (D1), content search not yet |
-| PR viewer: checks, threads, merge, auto-merge | 2 | ◐ | Pipeline page + PR pills + Fix |
+| PR viewer: checks, threads, merge, auto-merge | 2 | ✅ | PR tab (checks, review threads, merge / auto-merge; merge queue read-only) |
 | Preview browser with dev-server detection | 2 | ◐ | VNC Browser tab, no dev-server detect |
 | Integrated terminal | 2 | ❌ |  · *rejected for target* |
 
@@ -225,15 +225,14 @@ Full inventories, with an evidence tag on every item:
 | 11 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
 | 12 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
 | 13 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 14 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 15 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 16 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 17 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 18 | Worktree location / policy | 5 Settings | 0.5 |
-| 19 | Notification levels per event type | 5 Settings | 0.5 |
-| 20 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 21 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 22 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 14 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 15 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 16 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 17 | Worktree location / policy | 5 Settings | 0.5 |
+| 18 | Notification levels per event type | 5 Settings | 0.5 |
+| 19 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 20 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 21 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

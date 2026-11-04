@@ -98,7 +98,7 @@ D=[
  ("Changes pane: aggregate diff, unified/split, line comments",3,"Y",""),
  ("Inline tool diffs",2,"Y","shared DiffRenderer, highlighted; MultiEdit edits[] not rendered"),
  ("Files pane (view / edit)",1,"P","read-only viewer; edit rejected (D1), content search not yet"),
- ("PR viewer: checks, threads, merge, auto-merge",2,"P","Pipeline page + PR pills + Fix"),
+ ("PR viewer: checks, threads, merge, auto-merge",2,"Y","PR tab (checks, review threads, merge / auto-merge; merge queue read-only)"),
  ("Preview browser with dev-server detection",2,"P","VNC Browser tab, no dev-server detect"),
  ("Integrated terminal",2,"N",""),
 ]),

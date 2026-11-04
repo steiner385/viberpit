@@ -617,8 +617,9 @@ def test_parse_pr_detail_response_extracts_checks_reviews_mergeable():
 
 def test_parse_pr_detail_response_missing_pr_degrades_empty():
     assert parse_pr_detail_response({"data": {"repository": {"pullRequest": None}}}) == {
-        "checks": [], "reviews": [], "mergeable": None}
-    assert parse_pr_detail_response({}) == {"checks": [], "reviews": [], "mergeable": None}
+        "checks": [], "reviews": [], "mergeable": None, "threads": []}
+    assert parse_pr_detail_response({}) == {
+        "checks": [], "reviews": [], "mergeable": None, "threads": []}
 
 
 def test_build_population_open_query_isolates_deploy_fields():
