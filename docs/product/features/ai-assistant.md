@@ -175,8 +175,8 @@ assistant mutation does not make subsequent harness cleanup safe.
   predecessor's scope — recorded from the outgoing driver by the overlay rebuild or by the idle
   reap's teardown, and dropped when the session ends — so the pre-card checks see it on the first
   turn; the seed lapses when the new driver sends a context of its own. A new daemon process has no
-  such record, so a Claude assistant falls back to the journal: the newest context header in its
-  transcript (`replay.last_prompt_context`, the same header the drawer's "About:" line reads back);
+  such record, so a Claude assistant falls back to the journal: the newest context header on its
+  transcript's active chain, so a rewound-away prompt never counts (`replay.last_prompt_context`, the same header the drawer's "About:" line reads back);
   the in-memory record wins when there is one. The deploy-restore replay and
   `SessionOrchestrator.resume_interrupted` never auto-send an assistant turn. The Codex driver renders
   the same `context.render_context_header` line into its turn input (deduped like Claude's), and

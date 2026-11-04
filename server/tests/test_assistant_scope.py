@@ -996,3 +996,59 @@ async def test_the_in_memory_seed_beats_the_journal(tmp_path, monkeypatch):
                                               model="sonnet", engine=AgentEngine.CLAUDE_CODE)
     assert orch._assistant_scopes["s-asst"] == Y and read == []
     await api.aclose()
+
+
+def _rewound_transcript(tmp_path):
+    """X, then B, then a D-9 rewind that cuts the B prompt (leaf = the reply to X)."""
+    def row(**o):
+        return json.dumps(o) + "\n"
+    p = tmp_path / "rewound.jsonl"
+    p.write_text(
+        row(type="user", uuid="u1", parentUuid=None,
+            message={"role": "user", "content": f"{_header(X)}\nabout X"})
+        + row(type="assistant", uuid="a1", parentUuid="u1",
+              message={"role": "assistant", "content": [{"type": "text", "text": "ok"}]})
+        + row(type="user", uuid="u2", parentUuid="a1",
+              message={"role": "user", "content": f"{_header(B)}\nabout B"})
+        + row(type="assistant", uuid="a2", parentUuid="u2",
+              message={"role": "assistant", "content": [{"type": "text", "text": "ok"}]})
+        + row(type="last-prompt", leafUuid="a1", rewound=True))
+    return p
+
+
+B = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+
+
+def test_last_prompt_context_follows_the_active_chain_past_a_rewind(tmp_path):
+    """The web header reads the active chain (a rewind cut the B prompt), so the seed
+    must too: X, not B."""
+    from server.sessions.replay import last_prompt_context
+    ctx = last_prompt_context(str(_rewound_transcript(tmp_path)))
+    assert ctx is not None and ctx.get("sessionId") == X
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_process_after_a_rewind_seeds_the_active_chains_scope(tmp_path,
+                                                                           monkeypatch):
+    from claude_agent_sdk import PermissionResultDeny
+
+    from server.sessions.engine import AgentEngine
+    from server.sessions.permissions import PermissionRegistry
+
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    _db_stub(monkeypatch)
+    p = _rewound_transcript(tmp_path)
+    orch = _real_orch()
+    monkeypatch.setattr(orch, "transcript_path", lambda sid: str(p))
+    reg = PermissionRegistry()
+    orch._engine_registry = _claude_registry(reg)
+    api = await orch._setup_assistant_overlay("s-asst", identity="u@example.com",
+                                              model="sonnet", engine=AgentEngine.CLAUDE_CODE)
+    d = orch._create_driver(engine=AgentEngine.CLAUDE_CODE, session_id="s-asst", account="a",
+                            cwd="/tmp/r", config_dir="/tmp/cfg", mode="interactive",
+                            identity="me", resume="r", on_sync_back=lambda: None,
+                            assistant_api=api)
+    assert d.context_scope == X
+    out = await d._can_use_tool("mcp__viberpit__send_prompt", {"id": X, "text": "go"})
+    assert isinstance(out, PermissionResultDeny)
+    await api.aclose()

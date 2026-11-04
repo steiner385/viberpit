@@ -338,8 +338,14 @@ class _ActiveChain:
         self._cut_at = 0                    # len(_parents) when the newest one was
         self._leaf: str | None = None       # its leafUuid
 
+    @staticmethod
+    def is_rewind_row(o: dict) -> bool:
+        """A ``last-prompt`` row that cuts (a D-9 rewind), not a routine, lagging one."""
+        return (o.get("type") == "last-prompt"
+                and (o.get("rewound") is True or o.get("explicit") is True))
+
     def leaf_row(self, o: dict) -> None:
-        if not (o.get("rewound") is True or o.get("explicit") is True):
+        if not self.is_rewind_row(o):
             return                          # a routine, lagging leaf pointer
         leaf = o.get("leafUuid")
         self._cut = True
@@ -1027,16 +1033,25 @@ def _newest_context(entries: Iterator) -> PromptContext | None:
 
 
 def last_prompt_context(path: str | None) -> PromptContext | None:
-    """The context of the newest prompt in *path* that carried a context header, or None.
+    """The context of the newest prompt ON THE ACTIVE CHAIN of *path* that carried a
+    context header, or None.
 
     The D-12 side-chat scope's fallback seed when a new daemon process rebuilds an
-    assistant driver with nothing in memory: the same journalled header the drawer's
-    "About:" line reads back through replay (`strip_context_header`). Reads the tail
-    first and only re-reads the whole file when the tail holds no header. Synchronous
-    file I/O — call it through ``asyncio.to_thread``. Never raises."""
+    assistant driver with nothing in memory. It must agree with the drawer's "About:"
+    line, which reads the replayed (active-chain) turns, so a D-9 rewind is honoured
+    exactly as replay honours it: with a rewind row in the file the answer comes from
+    `_parse_transcript` itself — one chain rule, one context parse. With none, every
+    entry is on the chain, so the newest header in file order is the answer and the
+    tail is read first, the whole file only when the tail holds none. Synchronous file
+    I/O — call it through ``asyncio.to_thread``. Never raises."""
     if not path:
         return None
     try:
+        rewound = _has_rewind_row(path)
+        if rewound:
+            events, _meta, _facts = _parse_transcript(path)
+            return next((e.context for e in reversed(events)
+                         if isinstance(e, ev.UserMessage) and e.context), None)
         size = os.path.getsize(path)
         with open(path, "rb") as fh:
             if size > _CONTEXT_TAIL_BYTES:
@@ -1059,6 +1074,22 @@ def last_prompt_context(path: str | None) -> PromptContext | None:
     if found is None and size > _CONTEXT_TAIL_BYTES:
         found = _newest_context(_read_jsonl(path))
     return found
+
+
+def _has_rewind_row(path: str) -> bool:
+    """Whether *path* holds a rewind row (`_ActiveChain.is_rewind_row`). A raw pass:
+    only lines naming ``last-prompt`` are parsed."""
+    with open(path, errors="ignore") as fh:
+        for raw in fh:
+            if "last-prompt" not in raw:
+                continue
+            try:
+                o = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(o, dict) and _ActiveChain.is_rewind_row(o):
+                return True
+    return False
 
 
 def last_question_events(path: str) -> list["ev.Question"]:

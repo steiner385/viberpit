@@ -68,7 +68,8 @@ The rail switches on the session pane's own width (64rem, a container query), no
     time through the `current_scope` callable the overlay build hands to `build_tools`. Tool input never sets
     it. A rebuilt driver (rotation, recompose, crash recovery, idle reap) is seeded at build time with its
     predecessor's scope until it sends a context of its own. A new daemon process falls back to the journal: the
-    newest context header in the assistant's Claude transcript (`replay.last_prompt_context`), with an in-memory
+    newest context header on the active chain of the assistant's Claude transcript, so a D-9 rewind is honoured
+    as replay honours it (`replay.last_prompt_context`), with an in-memory
     record taking precedence. The deploy-restore replay and `resume_interrupted` never auto-send an assistant
     turn. The Codex driver carries the same context header in its turn input, and Codex replay strips it back
     into `context`.
