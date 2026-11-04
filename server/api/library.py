@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from viberpit import accounts, brand, creds, mcp_keys
+from viberpit import accounts, brand, creds
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
@@ -239,10 +239,7 @@ async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
         store = {}
     now_ms = int(time.time() * 1000)
     for server in out["servers"]:
-        # Only an http/sse server with an explicit type has a knowable CLI key; others get no lookup.
-        key = (mcp_keys.cli_oauth_key(mcp_keys.store_name(server["name"], server.get("pluginName")),
-                                      server["config"])
-               if mcp_grants.is_oauth_candidate(server) else None)
+        key = mcp_grants.key_for(server)  # None: no knowable CLI key, so no grant lookup
         for row in server["status"]:
             row["counted"] = mcp_overall.counted(row, enabled_accounts=enabled, live_session_ids=live, now_ms=now_ms)
         server["overall"] = mcp_overall.derive_overall(

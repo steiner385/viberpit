@@ -195,14 +195,17 @@ def capture_cfg_mcp(dir_mcp: dict, *, drop: frozenset[str] = frozenset()) -> int
     provider that issues no refresh token. A bundle without a refresh token is offered only
     for a key the store lacks: for any other key it is the store's own public copy, and
     offering it back would resurrect an access token the refresher has since cleared as dead.
-    A key in *drop* (one the grant reconcile just deleted or moved) is never offered: the
-    dir's leftover copy would otherwise land back in the store as "a key the store lacks".
-    Returns the number of bundles offered (0 on a worker, which never writes the store)."""
+    A refresh-less key in *drop* (one the grant reconcile just deleted or moved) is never
+    offered: the dir's leftover copy would otherwise land back in the store as "a key the
+    store lacks". A bundle holding a refresh token is offered even when its key is in *drop*:
+    a refresh token is never deleted. Returns the number of bundles offered (0 on a worker,
+    which never writes the store)."""
     if fleet_role.is_worker():
         return merge_shared_mcp({})
     store = read_shared_mcp()
     held = {k: v for k, v in dir_mcp.items()
-            if k not in drop and isinstance(v, dict) and (_holds_refresh_token(v) or k not in store)}
+            if isinstance(v, dict)
+            and (_holds_refresh_token(v) or (k not in drop and k not in store))}
     if held:
         merge_shared_mcp(held)
         log.debug("mcp capture: offered %d bundle(s) keys=%s", len(held), sorted(held))
@@ -215,8 +218,9 @@ def publish_mcp(dir_mcp: dict, store: dict, *, server: str | None = None,
 
     For each store key the public view replaces the dir copy when that copy is missing,
     holds a refresh token, or loses under the bundle policy (explicit for *server*'s keys
-    after a login). Keys only the dir has are kept, except those in *drop*, which are
-    removed from the result."""
+    after a login). Keys only the dir has are kept, except refresh-less ones in *drop*,
+    which are removed from the result. A key whose dir copy or store bundle holds a refresh
+    token is never removed: a refresh token is never deleted."""
     merged = dict(dir_mcp)
     for key, blob in store.items():
         if not isinstance(blob, dict):
@@ -228,7 +232,8 @@ def publish_mcp(dir_mcp: dict, store: dict, *, server: str | None = None,
                 or _mcp_bundle_replaces(old, blob, explicit=explicit)):
             merged[key] = public_view(blob)
     for key in drop:
-        merged.pop(key, None)
+        if not (_holds_refresh_token(dir_mcp.get(key)) or _holds_refresh_token(store.get(key))):
+            merged.pop(key, None)
     return merged
 
 
@@ -289,7 +294,8 @@ def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None,
     1. Capture: the dir's refresh-token-bearing bundles merge into the shared store.
     2. Publish: the store's public view lands in the dir per :func:`publish_mcp`.
 
-    Keys in *drop* are neither captured nor kept: they leave the dir.
+    Refresh-less keys in *drop* are neither captured nor kept: they leave the dir. A bundle
+    holding a refresh token is captured and kept whatever *drop* says.
 
     Touches only the ``mcpOAuth`` key: a live CLI may have just rotated ``claudeAiOauth``
     in this same file, and a full compose would clobber it (cf. #2695). If the file is

@@ -293,9 +293,34 @@ def test_capture_and_publish_skip_drop_keys(monkeypatch):
     with temp_env():
         _seed_store({})
         offered = creds.capture_cfg_mcp(
-            {"old|1": {"serverName": "old", "accessToken": "a", "refreshToken": "r", "expiresAt": 9}},
+            {"old|1": {"serverName": "old", "accessToken": "a", "expiresAt": 9}},
             drop=frozenset({"old|1"}))
         assert offered == 0 and creds.read_shared_mcp() == {}
         published = creds.publish_mcp({"old|1": {"accessToken": "a"}, "keep|2": {"accessToken": "k"}},
                                       {"old|1": {"accessToken": "s"}}, drop=frozenset({"old|1"}))
         assert published == {"keep|2": {"accessToken": "k"}}
+
+
+def test_refresh_bearing_dir_bundle_in_drop_is_captured_and_kept(monkeypatch):
+    """A refresh token is never deleted: a dir bundle holding one is captured into the store
+    and stays in the dir (as the public view) even when its key is in *drop*."""
+    from viberpit import creds, fleet_role, paths
+    from viberpit.configdir import CREDENTIALS_NAME
+    monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    with temp_env():
+        _seed_store({})
+        cfg = paths.account_cfg_dir("d")
+        cfg.mkdir(parents=True, exist_ok=True)
+        bundle = {"serverName": "srv", "accessToken": "a", "refreshToken": "r", "expiresAt": 9}
+        (cfg / CREDENTIALS_NAME).write_text(json.dumps({"mcpOAuth": {"K|1": bundle}}))
+        creds.sync_cfg_mcp_oauth(cfg, drop=frozenset({"K|1"}))
+        assert creds.read_shared_mcp()["K|1"]["refreshToken"] == "r"
+        data = json.loads((cfg / CREDENTIALS_NAME).read_text())
+        assert "K|1" in data["mcpOAuth"]
+        assert "refreshToken" not in data["mcpOAuth"]["K|1"]
+
+
+def test_publish_never_removes_a_refresh_bearing_dir_bundle():
+    from viberpit import creds
+    held = {"accessToken": "a", "refreshToken": "r", "expiresAt": 9}
+    assert creds.publish_mcp({"K|1": held}, {}, drop=frozenset({"K|1"})) == {"K|1": held}

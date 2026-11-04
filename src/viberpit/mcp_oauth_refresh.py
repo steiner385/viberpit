@@ -236,6 +236,11 @@ def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> 
 # --- grant identity (RFC 9728) --------------------------------------------------------------
 
 _identity_cache: dict[str, tuple[str, str]] = {}
+# A failed lookup is not retried for IDENTITY_FAILURE_TTL_S (monotonic clock), so an offline
+# or 404ing PRM endpoint costs one fetch per window, not one per tick.
+IDENTITY_FAILURE_TTL_S = 300.0
+_identity_failed_until: dict[str, float] = {}
+_monotonic = time.monotonic
 
 
 def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tuple[str, str] | None:
@@ -243,10 +248,24 @@ def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tupl
     *prm_url*, both serialized by :func:`url_href`; None when the fetch fails or either field
     is missing, or when ``resource`` is not on *prm_url*'s origin (RFC 9728 §3.3: a server
     must not claim another's grant). Two grants with an equal identity are interchangeable,
-    so the re-key plan may move one to the other's key. Cached per *prm_url*; a None is never
-    cached."""
+    so the re-key plan may move one to the other's key. A success is cached per *prm_url*; a
+    failure is remembered separately for :data:`IDENTITY_FAILURE_TTL_S` (returning None
+    without a fetch) and never shadows a success."""
     if prm_url in _identity_cache:
         return _identity_cache[prm_url]
+    now = _monotonic()
+    if _identity_failed_until.get(prm_url, 0.0) > now:
+        return None
+    identity = _fetch_identity(prm_url, fetch_json)
+    if identity is None:
+        _identity_failed_until[prm_url] = now + IDENTITY_FAILURE_TTL_S
+        return None
+    _identity_failed_until.pop(prm_url, None)
+    _identity_cache[prm_url] = identity
+    return identity
+
+
+def _fetch_identity(prm_url: str, fetch_json: FetchJson | None) -> tuple[str, str] | None:
     try:
         doc = (fetch_json or _default_fetch_json)(prm_url)
     except Exception:
@@ -265,7 +284,6 @@ def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tupl
         # RFC 9728 §3.3: a document naming another origin's resource is forged or misrouted.
         log.debug("mcp oauth grant identity resource origin mismatch url=%s", prm_url)
         return None
-    _identity_cache[prm_url] = identity
     return identity
 
 

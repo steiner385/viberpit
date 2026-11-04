@@ -77,6 +77,12 @@ def enabled_plugin_paths() -> list[tuple[str, Path]]:
     return out
 
 
+def enabled_plugin_names() -> frozenset[str]:
+    """The names the CLI keys enabled plugins' MCP servers by (``plugin:<name>:<server>``)."""
+    return frozenset(_plugin_manifest_name(install, pid.partition("@")[0])
+                     for pid, install in enabled_plugin_paths())
+
+
 def list_plugins() -> dict[str, Any]:
     enabled = _enabled_map()
     registry = installed_registry()

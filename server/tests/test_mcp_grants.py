@@ -24,6 +24,17 @@ SECRETS = ("AT-live-secret", "RT-live-secret")
 @pytest.fixture(autouse=True)
 def _primary(monkeypatch):
     monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    grants._tombstones.clear()
+    yield
+    grants._tombstones.clear()
+
+
+LIVE = {"serverName": "aws-oauth", "serverUrl": OLD_URL, "accessToken": "AT-live-secret",
+        "refreshToken": "RT-live-secret", "expiresAt": 9_999_999_999_999,
+        "discoveryState": {"resourceMetadataUrl":
+                           "https://aws-mcp.us-east-1.api.aws/.well-known/oauth-protected-resource/mcp"}}
+DISCOVERY = {"serverName": "aws-oauth", "serverUrl": NEW_URL, "accessToken": "", "expiresAt": 0}
+AWS_ID = ("https://auth.example.com", "https://aws-mcp.us-east-1.api.aws/mcp")
 
 
 def _write_servers(servers: dict) -> None:
@@ -50,23 +61,24 @@ def test_wanted_servers_http_sse_with_explicit_type_only(shared: Path):  # noqa:
 def test_reconcile_grants_moves_and_reports(shared: Path, monkeypatch, caplog):  # noqa: F811
     caplog.set_level(logging.DEBUG)
     _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL}})
-    live = {"serverName": "aws-oauth", "serverUrl": OLD_URL, "accessToken": "AT-live-secret",
-            "refreshToken": "RT-live-secret", "expiresAt": 9_999_999_999_999,
-            "discoveryState": {"resourceMetadataUrl":
-                               "https://aws-mcp.us-east-1.api.aws/.well-known/oauth-protected-resource/mcp"}}
-    orphan = {"serverName": "linear", "serverUrl": "https://mcp.linear.app/mcp"}
-    creds.write_json_secure(paths.shared_mcp_path(), {OLD_KEY: live, "linear|0": orphan})
+    # An empty bundle of a plugin that is not enabled is dropped; a plain unconfigured
+    # name (a project .mcp.json server) is kept.
+    orphan = {"serverName": "plugin:linear:linear", "serverUrl": "https://mcp.linear.app/mcp"}
+    projsrv = {"serverName": "projsrv", "serverUrl": "https://proj.example/mcp"}
+    creds.write_json_secure(paths.shared_mcp_path(), {OLD_KEY: LIVE, NEW_KEY: DISCOVERY,
+                                                      "plugin:linear:linear|0": orphan,
+                                                      "projsrv|0": projsrv})
     seen: list[str] = []
 
     def identity(prm_url, *, fetch_json=None):
         seen.append(prm_url)
-        return ("https://auth.example.com", "https://aws-mcp.us-east-1.api.aws/mcp")
+        return AWS_ID
 
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
     drop = grants.reconcile_grants()
-    assert drop == frozenset({OLD_KEY, "linear|0"})
+    assert drop == frozenset({OLD_KEY, "plugin:linear:linear|0"})
     store = creds.read_shared_mcp()
-    assert set(store) == {NEW_KEY}
+    assert set(store) == {NEW_KEY, "projsrv|0"}
     assert store[NEW_KEY]["refreshToken"] == "RT-live-secret"
     assert store[NEW_KEY]["serverUrl"] == NEW_URL
     assert seen  # the identity check really ran
@@ -107,3 +119,118 @@ async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(monkeypatc
                         lambda **kw: calls.append(("run_once", kw)))
     await app_mod._mcp_oauth_tick()
     assert calls == ["reconcile", ("run_once", {"drop_keys": frozenset({"old|k"})})]
+
+
+def test_key_for_skips_placeholders_and_non_candidates():
+    base = {"name": "aws-oauth", "transport": "http"}
+    assert grants.key_for({**base, "config": {"type": "http", "url": NEW_URL}}) == NEW_KEY
+    assert grants.key_for({**base, "config": {"type": "http", "url": "https://${HOST}/mcp"}}) is None
+    assert grants.key_for({**base, "config": {"type": "http", "url": NEW_URL,
+                                              "headers": {"Authorization": "Bearer ${TOKEN}"}}}) is None
+    assert grants.key_for({**base, "config": {"type": "http"}}) is None
+    assert grants.key_for({**base, "config": {"url": NEW_URL}}) is None  # no explicit type
+    assert grants.key_for({"name": "x", "transport": "stdio", "config": {"type": "stdio"}}) is None
+
+
+def test_wanted_servers_exclude_placeholder_configs(shared: Path):  # noqa: F811
+    _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL},
+                    "env-url": {"type": "http", "url": "https://${HOST}/mcp"},
+                    "env-hdr": {"type": "http", "url": "https://h.example/mcp",
+                                "headers": {"X-Key": "${KEY}"}}})
+    assert [w.key for w in grants.wanted_servers()] == [NEW_KEY]
+
+
+def test_identity_fetched_outside_the_store_lock(shared: Path, monkeypatch):  # noqa: F811
+    """Identities are prefetched from a snapshot before the lock; the locked plan only looks
+    them up. A donor that appears only under the lock is unknown, so nothing moves."""
+    _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL}})
+    creds.write_json_secure(paths.shared_mcp_path(), {NEW_KEY: DISCOVERY})
+    in_lock = [False]
+    fetched: list[tuple[str, bool]] = []
+
+    def identity(prm_url, *, fetch_json=None):
+        # Recorded, not asserted: reconcile swallows exceptions, so an assert here would hide.
+        fetched.append((prm_url, in_lock[0]))
+        return AWS_ID
+
+    real_update = creds.update_shared_mcp
+
+    def update(fn):
+        in_lock[0] = True
+        try:
+            creds.write_json_secure(paths.shared_mcp_path(), {NEW_KEY: DISCOVERY, OLD_KEY: LIVE})
+            return real_update(fn)
+        finally:
+            in_lock[0] = False
+
+    monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
+    monkeypatch.setattr(creds, "update_shared_mcp", update)
+    assert grants.reconcile_grants() == frozenset()
+    assert fetched == []
+    assert set(creds.read_shared_mcp()) == {NEW_KEY, OLD_KEY}  # nothing moved
+
+
+def test_identity_prefetch_feeds_the_locked_plan(shared: Path, monkeypatch):  # noqa: F811
+    _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL}})
+    creds.write_json_secure(paths.shared_mcp_path(), {NEW_KEY: DISCOVERY, OLD_KEY: LIVE})
+    in_lock = [False]
+    fetched: list[tuple[str, bool]] = []
+
+    def identity(prm_url, *, fetch_json=None):
+        # Recorded, not asserted: reconcile swallows exceptions, so an assert here would hide.
+        fetched.append((prm_url, in_lock[0]))
+        return AWS_ID
+
+    real_update = creds.update_shared_mcp
+
+    def update(fn):
+        in_lock[0] = True
+        try:
+            return real_update(fn)
+        finally:
+            in_lock[0] = False
+
+    monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
+    monkeypatch.setattr(creds, "update_shared_mcp", update)
+    assert grants.reconcile_grants() == frozenset({OLD_KEY})
+    assert fetched and not any(locked for _, locked in fetched)  # prefetched before the lock
+    assert creds.read_shared_mcp()[NEW_KEY]["refreshToken"] == "RT-live-secret"
+
+
+def test_purged_keys_tombstoned_for_thirty_minutes(shared: Path, monkeypatch):  # noqa: F811
+    _write_servers({})
+    dead = {"serverName": "plugin:linear:linear", "serverUrl": "https://mcp.linear.app/mcp"}
+    creds.write_json_secure(paths.shared_mcp_path(), {"plugin:linear:linear|0": dead})
+    t0 = 5000.0
+    assert grants.reconcile_grants(clock=lambda: t0) == frozenset({"plugin:linear:linear|0"})
+    assert creds.read_shared_mcp() == {}
+    assert grants.reconcile_grants(clock=lambda: t0 + 10 * 60) == frozenset({"plugin:linear:linear|0"})
+    assert grants.reconcile_grants(clock=lambda: t0 + 31 * 60) == frozenset()
+
+
+def test_tombstone_not_returned_once_the_key_is_back_in_the_store(shared: Path):  # noqa: F811
+    _write_servers({})
+    grants._tombstones["back|1"] = 10_000.0
+    creds.write_json_secure(paths.shared_mcp_path(), {"back|1": {
+        "serverName": "back", "accessToken": "a", "refreshToken": "r"}})
+    assert grants.reconcile_grants(clock=lambda: 100.0) == frozenset()
+
+
+def test_unreadable_user_config_skips_the_tick(shared: Path, monkeypatch, caplog):  # noqa: F811
+    paths.shared_claude_json_path().parent.mkdir(parents=True, exist_ok=True)
+    paths.shared_claude_json_path().write_text("{not json")
+    store = {OLD_KEY: {"serverName": "aws-oauth", "accessToken": "", "expiresAt": 0}}
+    creds.write_json_secure(paths.shared_mcp_path(), store)
+    grants._tombstones["gone|1"] = 10_000.0
+    monkeypatch.setattr(creds, "update_shared_mcp", lambda fn: pytest.fail("must not write"))
+    with caplog.at_level(logging.WARNING):
+        assert grants.reconcile_grants(clock=lambda: 100.0) == frozenset({"gone|1"})
+    assert creds.read_shared_mcp() == store
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+def test_absent_user_config_is_no_user_servers(shared: Path):  # noqa: F811
+    assert not paths.shared_claude_json_path().exists()
+    dead = {"serverName": "plugin:linear:linear", "serverUrl": "https://mcp.linear.app/mcp"}
+    creds.write_json_secure(paths.shared_mcp_path(), {"plugin:linear:linear|0": dead})
+    assert grants.reconcile_grants() == frozenset({"plugin:linear:linear|0"})

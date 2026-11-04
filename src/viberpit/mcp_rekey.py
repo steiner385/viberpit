@@ -3,11 +3,16 @@
 The CLI files a grant under ``<serverName>|<hash(type, url, headers)>`` (``mcp_keys``), so
 editing a server's URL or renaming it orphans the live grant under a key the CLI never looks
 up again. :func:`plan_rekey` moves such a grant to the wanted key, but only when its grant
-identity (``mcp_oauth_refresh.grant_identity``) equals the wanted server's and both URLs
-share an origin; an unknown identity never moves. It then drops the only two kinds of
-bundle ever deleted: one superseded by a configured server of the same name under another
-key (if it holds a token, only once that is provably safe), and an unwanted one holding no
-token at all.
+identity (``mcp_oauth_refresh.grant_identity``) equals the wanted server's, both URLs share
+an origin, and the wanted key already exists in the store (the CLI writes a discovery
+bundle there when it first connects, which proves it reads that key). An unknown identity
+never moves.
+
+A bundle holding a ``refreshToken`` is never deleted, only moved: a refresh token cannot be
+re-minted without a human sign-in. Otherwise only two kinds of bundle are dropped: one
+superseded by a configured server of the same name under another key (if it holds an
+access token, only once that is provably safe), and a token-less one that is provably dead
+(named for a configured server, or for a plugin that is not enabled).
 
 Pure: no IO beyond the injected ``identity_of``, which is called only when a wanted server
 lacks a usable grant, so a steady-state tick never touches the network. Token values are
@@ -16,10 +21,13 @@ never logged or returned anywhere but the plan's store.
 from __future__ import annotations
 
 import copy
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from .mcp_keys import prm_url_for, url_origin
+
+log = logging.getLogger(__name__)
 
 IdentityOf = Callable[[str], "tuple[str, str] | None"]
 
@@ -60,16 +68,33 @@ def _same_origin(a: object, b: str) -> bool:
     return origin is not None and origin == url_origin(b)
 
 
-def plan_rekey(store: dict, wanted: list[WantedServer], identity_of: IdentityOf) -> RekeyPlan:
+def _plugin_of(server_name: object) -> str | None:
+    """``<plugin>`` of a ``plugin:<plugin>:<name>`` store name, else None."""
+    if not isinstance(server_name, str) or not server_name.startswith("plugin:"):
+        return None
+    plugin, sep, _name = server_name[len("plugin:"):].partition(":")
+    return plugin if sep and plugin else None
+
+
+def plan_rekey(store: dict, wanted: list[WantedServer], identity_of: IdentityOf,
+               enabled_plugins: frozenset[str] = frozenset()) -> RekeyPlan:
     """Plan moving grants onto their servers' current keys, then dropping dead bundles.
 
-    A wanted server without a usable grant (no ``refreshToken``, empty ``accessToken``) takes
-    a donor: an unwanted bundle with a ``refreshToken`` and a ``resourceMetadataUrl``, whose
-    ``serverUrl`` shares the wanted URL's origin and whose identity equals the wanted
-    server's. Among several, one already named for the server wins, then the latest
-    ``expiresAt``. Drop rules run on the post-move store: an empty bundle always goes; a
-    superseded one holding a token goes only when its server's key now holds a usable grant
-    or both identities are known and differ. *store* is not mutated."""
+    A wanted server without a usable grant (no ``refreshToken``, empty ``accessToken``) whose
+    key already exists in the store takes a donor: an unwanted bundle with a
+    ``refreshToken`` and a ``resourceMetadataUrl``, whose ``serverUrl`` shares the wanted
+    URL's origin and whose identity equals the wanted server's. Among several, one already
+    named for the server wins, then the latest ``expiresAt``.
+
+    Drop rules run on the post-move store, over unwanted keys only:
+    - a bundle holding a ``refreshToken`` is never dropped;
+    - a token-less one is dropped when its ``serverName`` is a wanted server's, or is
+      ``plugin:<plugin>:<name>`` with ``<plugin>`` not in *enabled_plugins* (any other
+      name may be a repo ``.mcp.json`` server, out of scope, so it is kept);
+    - an access-token-only one superseded by a wanted server of the same name goes only
+      when that server's key now holds a usable grant or both identities are known and
+      differ.
+    *store* is not mutated."""
     out = copy.deepcopy(store)
     wanted_keys = {w.key for w in wanted}
     moved: dict[str, str] = {}
@@ -91,6 +116,11 @@ def plan_rekey(store: dict, wanted: list[WantedServer], identity_of: IdentityOf)
                   and _same_origin(bundle.get("serverUrl"), w.url)]
         if not donors:
             continue
+        if w.key not in out:
+            # Key-drift guard: the CLI has not written this key yet, so our formula's key is
+            # unproven; a grant moved there could be orphaned again. Wait for discovery.
+            log.debug("mcp rekey: wanted key %s not yet in store; no move", w.key)
+            continue
         target = identity(prm_url_for(w.url))
         if target is None:
             continue
@@ -110,20 +140,22 @@ def plan_rekey(store: dict, wanted: list[WantedServer], identity_of: IdentityOf)
     for key, bundle in list(out.items()):
         if key in wanted_keys:
             continue
-        # A non-dict value under an unwanted key holds no token, so it counts as empty.
-        if not _usable(bundle):  # (b) empty, or (a) superseded with no token
-            drop = True
+        if isinstance(bundle, dict) and bundle.get("refreshToken"):
+            continue  # a refresh token is never deleted, only moved
+        name = bundle.get("serverName") if isinstance(bundle, dict) else None
+        owner = by_name.get(name) if isinstance(name, str) else None
+        if not _usable(bundle):  # token-less (a non-dict value counts as token-less)
+            plugin = _plugin_of(name)
+            drop = owner is not None or (plugin is not None and plugin not in enabled_plugins)
+        elif owner is None:
+            drop = False  # unconfigured, token-holding: maybe a repo .mcp.json server
+        elif _usable(out.get(owner.key)):
+            drop = True  # (a) access-token-only, superseded by a live grant
         else:
-            owner = by_name.get(bundle.get("serverName"))
-            if owner is None:
-                drop = False  # unconfigured, token-holding: maybe a repo .mcp.json server
-            elif _usable(out.get(owner.key)):
-                drop = True  # (a) superseded by a live grant
-            else:
-                own = _prm_url(bundle)
-                theirs = identity(prm_url_for(owner.url)) if own else None
-                mine = identity(own) if theirs is not None else None
-                drop = theirs is not None and mine is not None and theirs != mine
+            own = _prm_url(bundle)
+            theirs = identity(prm_url_for(owner.url)) if own else None
+            mine = identity(own) if theirs is not None else None
+            drop = theirs is not None and mine is not None and theirs != mine
         if drop:
             del out[key]
             dropped.add(key)
