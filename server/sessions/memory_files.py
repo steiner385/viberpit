@@ -28,10 +28,9 @@ import os
 import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from viberpit import paths
+from viberpit import paths, user_memory
 from viberpit.fs_beneath import SymlinkInPath, open_beneath
 from viberpit.worktree_diff import GitTimeout, worktree_top
 
@@ -62,11 +61,6 @@ class MemoryFileError(Exception):
         super().__init__(code)
         self.code = code
         self.error_data = {"code": code}
-
-
-def shared_user_memory_path() -> Path:
-    """The one shared user memory file every account links to (D-13 Task 1)."""
-    return paths.shared_base() / USER_MEMORY_FILENAME
 
 
 def normalize_memory_files(raw: object) -> list[dict[str, Any]] | None:
@@ -195,8 +189,9 @@ def read_memory_file(path: str, *, loaded: list[dict[str, Any]] | None, cwd: str
     is read only through its literal path with no symlink at any component and no
     realpath, so the bytes come from exactly the file the CLI named.
 
-    ``editable`` only for the shared user file, and only while that is a regular file —
-    the editor refuses a symlinked one (``MEMORY_FILE_IS_LINK``)."""
+    ``editable`` only for the editor's file (``user_memory.edit_path()``), and only while
+    that is a regular file — the editor refuses any other symlinked one
+    (``MEMORY_FILE_IS_LINK``)."""
     if not isinstance(path, str) or not _is_clean_abs(path):
         raise _refuse("not_in_set")
     entries = [e for e in loaded or () if isinstance(e, dict) and e.get("path") == path]
@@ -205,12 +200,14 @@ def read_memory_file(path: str, *, loaded: list[dict[str, Any]] | None, cwd: str
     # Every allowed root is resolved BEFORE the requested path, so a swap racing the
     # resolution can only make the O_NOFOLLOW open below refuse.
     roots = _roots(cwd, config_dirs)
-    shared_path = str(shared_user_memory_path())
+    # The editor's file (``~/.claude/CLAUDE.md``, or the account-store file it links to
+    # once moved — #3246): editable only while it is a regular file, as the editor needs.
+    edit_path = str(user_memory.edit_path())
     try:
-        shared_regular = stat.S_ISREG(os.lstat(shared_path).st_mode)
+        shared_regular = stat.S_ISREG(os.lstat(edit_path).st_mode)
     except OSError:
         shared_regular = False
-    shared = os.path.realpath(shared_path)
+    shared = os.path.realpath(edit_path)
     resolved = os.path.realpath(path)
     if _within(roots, resolved):
         target = resolved
@@ -238,5 +235,4 @@ __all__ = [
     "MANAGED_DIR", "MAX_MEMORY_BYTES", "MAX_MEMORY_ENTRIES", "MEMORY_FILE_UNKNOWN",
     "USER_MEMORY_FILENAME", "USER_TYPE",
     "MemoryFileError", "normalize_memory_files", "read_memory_file",
-    "shared_user_memory_path",
 ]

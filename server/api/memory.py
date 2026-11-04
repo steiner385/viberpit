@@ -1,9 +1,10 @@
 """Settings › Claude config › Memory (D-13): read and edit the user-level CLAUDE.md.
 
-The one file is ``shared_base()/CLAUDE.md`` (``~/.claude/CLAUDE.md``) on the edge host,
-which owns ``~/.claude``; every account's ``$CLAUDE_CONFIG_DIR/CLAUDE.md`` links to it
-(Task 1) and a worker host sees it over sshfs. So a save is one write, and no account
-or host can drift.
+The one file is ``viberpit.user_memory.edit_path()`` on the edge host: ``~/.claude/CLAUDE.md``,
+or — once the operator has run ``viberpit memory move`` (#3246) — the account-store file
+that name links to. Every account's ``$CLAUDE_CONFIG_DIR/CLAUDE.md`` links to
+``~/.claude/CLAUDE.md`` (Task 1) and a worker host sees it over sshfs. So a save is one
+write, and no account or host can drift.
 
 - ``GET`` returns ``{text, etag, exists}``; ``PUT`` takes ``{text, etag}`` and returns
   ``{etag, propagation}``. The etag is the sha256 of the bytes on disk, ``""`` when there is no file,
@@ -11,14 +12,17 @@ or host can drift.
   current text, and nothing is lost.
 - The write is atomic and durable on this host: a temp file in the same directory,
   fsynced, renamed over the target, keeping its mode (0644 on create; ``viberpit.fs_beneath.replace_file_beneath``).
-  A reader here sees the old file or the new one, never half. That guarantee does NOT
-  extend across hosts: a worker reads ``~/.claude`` over sshfs with a 600 s attribute
-  cache, so until it expires a session starting there can see the old file, or a read
-  clipped to the old size (the #1005 pattern). Interactive editors rewrite this file the
-  same way, so the exposure is not new; ``PUT`` says so in ``propagation``.
+  A reader here sees the old file or the new one, never half. Before the move that
+  guarantee does NOT extend across hosts: a worker reads ``~/.claude`` over sshfs with a
+  600 s attribute cache, so until it expires a session starting there can see the old
+  file, or a read clipped to the old size (the #1005 pattern); ``PUT`` says so in
+  ``propagation``. After the move the bytes sit on the coherently-mounted account store,
+  every host sees the save at once, and ``propagation`` is null.
 - A file that is not valid UTF-8 is 422 ``MEMORY_NOT_UTF8``: a lossy decode would let a
   save silently rewrite bytes the user never saw.
 - A symlinked target is not ours to write through or replace: 409 ``MEMORY_FILE_IS_LINK``.
+  The one link followed is the moved layout's own ``~/.claude/CLAUDE.md`` → store file,
+  and only by writing the store file itself (``edit_path``), never through a link.
 - Over ``MAX_MEMORY_BYTES`` is 413 ``MEMORY_TOO_LARGE``.
 - Auth is the normal identity, as for every settings and library write, and each save
   writes an audit row. The config auto-snapshot (which covers CLAUDE.md) runs first.
@@ -32,6 +36,7 @@ import logging
 import os
 import stat
 import threading
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -41,7 +46,8 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.library.snapshots import snapshot_before_mutation
-from server.sessions.memory_files import MAX_MEMORY_BYTES, shared_user_memory_path
+from server.sessions.memory_files import MAX_MEMORY_BYTES
+from viberpit import user_memory
 from viberpit.fs_beneath import SymlinkInPath, open_beneath, replace_file_beneath
 
 log = logging.getLogger(__name__)
@@ -52,7 +58,8 @@ MEMORY_CONFLICT = "MEMORY_CONFLICT"
 MEMORY_FILE_IS_LINK = "MEMORY_FILE_IS_LINK"
 MEMORY_TOO_LARGE = "MEMORY_TOO_LARGE"
 MEMORY_NOT_UTF8 = "MEMORY_NOT_UTF8"
-#: Shown after a save (Task 3): the honest cross-host story, see the module docstring.
+#: Shown after a save (Task 3) while the file still lives in the attribute-cached
+#: ``~/.claude``: the honest cross-host story, see the module docstring. Null once moved.
 PROPAGATION = "Sessions on other hosts can take up to 10 minutes to see this change"
 FILE_MODE = 0o644
 
@@ -78,8 +85,7 @@ def etag_of(data: bytes | None) -> str:
     return "" if data is None else hashlib.sha256(data).hexdigest()
 
 
-def _base_fd() -> int:
-    base = shared_user_memory_path().parent
+def _base_fd(base: Path) -> int:
     base.mkdir(parents=True, exist_ok=True)
     return os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
 
@@ -122,10 +128,10 @@ def _mode_for(dfd: int, name: str) -> int:
 
 def read_user_memory() -> dict[str, Any]:
     """``{text, etag, exists}`` of the shared user memory file."""
-    name = shared_user_memory_path().name
-    dfd = _base_fd()
+    target = user_memory.edit_path()
+    dfd = _base_fd(target.parent)
     try:
-        data = _read_current(dfd, name)
+        data = _read_current(dfd, target.name)
     finally:
         os.close(dfd)
     return {"text": _decode(data),
@@ -134,13 +140,15 @@ def read_user_memory() -> dict[str, Any]:
 
 def write_user_memory(text: str, etag: str) -> dict[str, Any]:
     """Replace the shared user memory file with ``text`` if its current etag is
-    ``etag``; returns ``{etag, created, bytes}``. Raises :class:`MemoryEditError`."""
+    ``etag``; returns ``{etag, created, bytes, coherent}``. Raises :class:`MemoryEditError`."""
     data = text.encode("utf-8")
     if len(data) > MAX_MEMORY_BYTES:
         raise MemoryEditError(MEMORY_TOO_LARGE)
-    name = shared_user_memory_path().name
     with _write_lock:
-        dfd = _base_fd()
+        target = user_memory.edit_path()
+        coherent = target != user_memory.home_path()
+        name = target.name
+        dfd = _base_fd(target.parent)
         try:
             current = _read_current(dfd, name)
             current_text = _decode(current)
@@ -152,7 +160,8 @@ def write_user_memory(text: str, etag: str) -> dict[str, Any]:
             replace_file_beneath(dfd, name, data, _mode_for(dfd, name), fsync=True)
         finally:
             os.close(dfd)
-    return {"etag": etag_of(data), "created": current is None, "bytes": len(data)}
+    return {"etag": etag_of(data), "created": current is None, "bytes": len(data),
+            "coherent": coherent}
 
 
 def _http(err: MemoryEditError) -> HTTPException:
@@ -193,4 +202,4 @@ async def put_user_memory(body: MemoryBody, identity: str = Depends(current_iden
     await record_audit(db=db, type="settings.memory_saved", identity=identity,
                        detail={"bytes": out["bytes"], "created": out["created"]})
     log.info("settings.memory saved bytes=%d created=%s", out["bytes"], out["created"])
-    return {"etag": out["etag"], "propagation": PROPAGATION}
+    return {"etag": out["etag"], "propagation": None if out["coherent"] else PROPAGATION}

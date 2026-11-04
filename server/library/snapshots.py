@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from viberpit import paths
+from viberpit import paths, user_memory
 
 # The config a snapshot captures: these exact files (relative POSIX paths) ...
 _CAPTURED_FILES = frozenset({
@@ -101,6 +101,21 @@ def _iter_files(base: Path) -> Iterator[tuple[Path, str]]:
         yield abs_path, rel
 
 
+def _member_source(abs_path: Path, rel: str) -> Path:
+    """The file whose BYTES a member holds. The user memory file is the one captured
+    entry that is a symlink by design once moved into the account store (#3246): capture
+    and restore go to the file it links to, so a snapshot keeps its text and a restore
+    never replaces the link with a regular file (two diverging copies)."""
+    if (rel == user_memory.FILENAME and abs_path == user_memory.home_path()
+            and user_memory.is_moved()):
+        return user_memory.store_path()
+    return abs_path
+
+
+def _add_member(tar: tarfile.TarFile, abs_path: Path, rel: str) -> None:
+    tar.add(_member_source(abs_path, rel), arcname=rel)
+
+
 def _write_tar_gz(dest: Path, base: Path) -> tuple[int, int]:
     """Tar.gz the non-excluded files of base into dest. Return (fileCount, sizeBytes)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -108,7 +123,7 @@ def _write_tar_gz(dest: Path, base: Path) -> tuple[int, int]:
     fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
         for abs_path, rel in _iter_files(base):
-            tar.add(abs_path, arcname=rel)
+            _add_member(tar, abs_path, rel)
             file_count += 1
     return file_count, dest.stat().st_size
 
@@ -117,7 +132,7 @@ def _tar_gz_bytes(base: Path) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for abs_path, rel in _iter_files(base):
-            tar.add(abs_path, arcname=rel)
+            _add_member(tar, abs_path, rel)
     return buf.getvalue()
 
 
@@ -254,7 +269,9 @@ def _safe_dest(base: Path, rel: str) -> Path | None:
 def _write_member(base: Path, rel: str, content: bytes) -> bool:
     if is_excluded(rel):
         return False
-    dest = _safe_dest(base, rel)
+    moved = _member_source(base / rel, rel)
+    # The moved user memory file is the one destination outside base, by design.
+    dest = moved if moved != base / rel else _safe_dest(base, rel)
     if dest is None:
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)

@@ -47,6 +47,7 @@ from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 from server.tests.ipc_harness import serve_daemon_uds
 from server.tests.test_ws import _IDENTITY_HEADERS, _drain_events, ws_env  # noqa: F401
+from viberpit import user_memory
 
 SID = "33333333-3333-4333-8333-333333333333"
 _H = {"Tailscale-User-Login": "testuser@example.com"}
@@ -481,6 +482,15 @@ def test_editable_follows_the_shared_file_being_a_regular_file(cli_world, tmp_pa
     assert out["text"] == "dot\n" and out["editable"] is False
 
 
+def test_the_user_file_moved_into_the_store_stays_viewable_and_editable(cli_world) -> None:
+    """#3246: after ``viberpit memory move`` the account link resolves through the
+    ``~/.claude/CLAUDE.md`` link to the coherent store file — still the editor's file."""
+    assert user_memory.move_to_store() == user_memory.MOVED
+    assert (cli_world.shared / "CLAUDE.md").is_symlink()
+    out = _read(cli_world, "user")
+    assert out["text"] == "u\n" and out["editable"] is True
+
+
 # ---- the route
 
 
@@ -733,6 +743,49 @@ def test_a_symlinked_user_file_is_refused_and_left_alone(
     assert p.status_code == 409 and p.json()["detail"]["code"] == "MEMORY_FILE_IS_LINK"
     assert editor.file.is_symlink() and target.read_text() == "linked\n"
     assert _no_warnings(caplog) == []
+
+
+def test_after_the_move_a_save_writes_the_store_file_and_keeps_the_link(
+        editor, tmp_path: Path) -> None:
+    """#3246: the moved layout's link is followed by writing its target (on the
+    coherently-mounted store), never replaced — and the save is immediate everywhere."""
+    editor.file.write_bytes(b"v0\n")
+    assert user_memory.move_to_store() == user_memory.MOVED
+    store = user_memory.store_path()
+    g = editor.c.get("/api/settings/memory", headers=_H)
+    assert g.status_code == 200 and g.json()["text"] == "v0\n"
+    r = editor.c.put("/api/settings/memory",
+                     json={"text": "v1, longer\n", "etag": _etag(b"v0\n")}, headers=_H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"etag": _etag(b"v1, longer\n"), "propagation": None}
+    assert editor.file.is_symlink() and os.readlink(editor.file) == str(store)
+    assert store.read_bytes() == b"v1, longer\n" and not store.is_symlink()
+    assert sorted(p.name for p in store.parent.iterdir()) == ["CLAUDE.md"]
+
+
+def test_after_the_move_a_dangling_link_saves_by_creating_the_store_file(editor) -> None:
+    assert user_memory.move_to_store() == user_memory.LINKED
+    assert editor.c.get("/api/settings/memory", headers=_H).json() == {
+        "text": "", "etag": "", "exists": False}
+    r = editor.c.put("/api/settings/memory", json={"text": "new\n", "etag": ""}, headers=_H)
+    assert r.status_code == 200, r.text
+    assert user_memory.store_path().read_text() == "new\n"
+    assert editor.file.read_text() == "new\n"  # through the link, as the CLI reads it
+
+
+def test_a_snapshot_keeps_and_restores_the_moved_file_through_its_link(shared_base) -> None:
+    """#3246: capture stores the store file's bytes (not a bare link), and restore
+    writes them back to the store — never a regular file over the link, which would
+    split one file into two diverging copies."""
+    from server.library import snapshots
+    shared_base.file.write_text("v0\n")
+    user_memory.move_to_store()
+    snap = snapshots.create_snapshot(label="t")
+    user_memory.store_path().write_text("v1\n")
+    assert snapshots.diff_snapshot(snap["id"])["modified"] == ["CLAUDE.md"]
+    snapshots.restore_snapshot(snap["id"])
+    assert shared_base.file.is_symlink() and user_memory.is_moved()
+    assert user_memory.store_path().read_text() == "v0\n"
 
 
 def test_over_256_kb_is_413(editor) -> None:
