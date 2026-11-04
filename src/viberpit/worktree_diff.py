@@ -8,8 +8,8 @@ local refs only, never the network). Without a recorded ``origin/HEAD`` the base
 
 The diff runs from the base to the **working tree**: committed and uncommitted
 tracked changes, plus untracked non-ignored files reported as ``added`` with hunks
-synthesised from their content. Strictly read-only: ``--no-optional-locks``, no
-``git add -N``, nothing that writes the index.
+synthesised from their content. Strictly read-only: ``--no-optional-locks``,
+``diff.autoRefreshIndex=false``, no ``git add -N``, nothing that writes the index.
 
 Synchronous and side-effect free by design — callers run it via ``asyncio.to_thread``.
 
@@ -73,6 +73,11 @@ GIT_GLOBAL = (
     "--no-optional-locks", "--literal-pathspecs",
     "-c", "core.quotePath=false", "-c", "core.fsmonitor=false",
     "-c", "core.hooksPath=/dev/null", "-c", "diff.suppressBlankEmpty=false",
+    # Porcelain ``git diff`` quietly rewrites the index to refresh a stat-dirty,
+    # content-clean file, and ``--no-optional-locks`` does not stop it. Off, such a
+    # file still drops out of ``--numstat`` and ``-p`` (which drive the file list);
+    # only ``--name-status`` lists it, and that is just a status lookup.
+    "-c", "diff.autoRefreshIndex=false",
 )
 # Explicit prefixes override diff.noprefix / mnemonicPrefix / srcPrefix / dstPrefix.
 # ``--ignore-submodules=dirty`` stops git spawning ``git status`` inside each

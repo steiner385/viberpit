@@ -273,7 +273,12 @@ def test_read_only_index_untouched(repo: Path) -> None:
     index = repo / ".git" / "index"
     (repo / "keep.txt").write_text("changed\n")
     (repo / "new.txt").write_text("n\n")
-    os.utime(repo / "ws.txt")  # stat-dirty: a refreshing git would rewrite the index
+    # Stat-dirty, content-clean: porcelain ``git diff`` rewrites the index for such a
+    # file even under --no-optional-locks. A plain ``os.utime()`` can land on the
+    # recorded mtime (coarse fs timestamps), so the guard only fired sometimes; an
+    # explicit future mtime makes it stat-dirty on every run.
+    future = (repo / "ws.txt").stat().st_mtime_ns + 5_000_000_000
+    os.utime(repo / "ws.txt", ns=(future, future))
     before = index.stat().st_mtime_ns
     session_diff(str(repo))
     session_diff(str(repo), summary=True, ignore_whitespace=True)
