@@ -14,6 +14,9 @@ links:
     - web/src/api/repoCheck.ts
     - web/src/features/sessions/SessionBody.tsx
     - web/src/features/sessions/composer/Composer.tsx
+    - web/src/features/sessions/composer/PlusMenu.tsx
+    - web/src/features/sessions/composer/FastToggle.tsx
+    - web/src/features/settings/sections/SessionDefaultsSection.tsx
     - web/src/features/palette/AppPalette.tsx
     - web/src/features/sessions/transcript/search/TranscriptSearchBar.tsx
     - web/src/features/sessions/transcript/TurnSummaryCard.tsx
@@ -377,6 +380,31 @@ ways into it from the composer and the transcript.
   (rocky's sshfs cache, #3246).
 - **Server:** `GET`/`PUT /api/settings/memory` (`server/api/memory.py`, etag = sha256, atomic write, audit row
   `settings.memory_saved`); the viewer is `server/sessions/memory_files.py`.
+
+**Session settings (D-14)** — the controls Desktop keeps beside the prompt, plus where worktrees go.
+- **⚡ Fast mode:** a toggle in the prompt row, shown only when the session's current model is
+  fast-capable (`fastModeAvailable`, from the CLI's own model list; never on Copilot accounts). Its tooltip,
+  and an inline note the first time it is turned on in a browser, say: "Fast mode — faster output on the same
+  model. Bills usage credits at a higher rate, outside your plan." It is off by default and disabled while
+  the toggle's request is in flight. `/fast [on|off]` does the same. The session record is the truth: a
+  switch to a model without fast mode turns it off. The toggle shows the stored choice, not the CLI's
+  reported cooldown state (#3254).
+- **Effort ▾ on Claude:** changing effort now applies to the running Claude session at once, through the
+  existing model/effort route; `/effort <level|default>` does the same. The picker offers the CLI's levels
+  (low, medium, high, xhigh, max), and the server refuses one the model lacks. Showing only each model's own
+  levels is #3260.
+- **`+` menu:** the dispatch bar's `+` holds **Attach image**, **Presets ›** and **Templates ›**. The
+  composer's `+` holds **Attach file** and **Slash commands**, which seeds `/` only into an empty box.
+- **Presets:** choosing one shows a removable chip, fills the repo and the prompt when none is typed, and
+  sets the account and model only when the bar offers them. Otherwise the chip says "preset account/model
+  unavailable". The next create sends `presetId`. A template is inserted at the caret, rendered by the
+  server with its default variables. ⌘K lists **New session from preset: <name>**; there is no preset chord.
+- **PR auto-fix:** a switch in the session's Environment card while it has a PR; off pauses PR Doctor's
+  automatic fixes for that session (see [CI/CD pipeline](cicd-pipeline-merge-queue.md)).
+- **Worktree location:** Settings › Sessions › Worktrees edits the root that repos are cloned into and
+  session worktrees created under, moved here from General. Changing it doesn't move existing worktrees —
+  they keep working, but cleanup skips them. **Reset** returns it to the server default. The branch prefix
+  `viberpit/` is shown read-only: it guards automatic branch cleanup.
 
 **Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
 `DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a

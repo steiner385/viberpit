@@ -87,6 +87,15 @@ flaky-test / advisory-check findings but does not autonomously rewrite workflows
 - Authenticated status reads use a GitHub App (JWT + cached installation token, `app_auth.py`).
   Recent work is heavy on CI-cost/perf (folding rollups in SQL off the event loop: #791, #828,
   #835, #848) — a signal that ingest volume is a live operational concern.
+- **Per-session auto-fix pause (D-14).** The session's Environment card has a **PR auto-fix**
+  switch, shown while the session has a PR ("PR Doctor fixes failing checks and conflicts on this
+  session's PRs"), backed by `POST /api/sessions/{id}/pr-autofix {enabled}`. It is stored in its own
+  nullable column, `sessions.pr_autofix_paused`, separate from `autopilot_paused`. PR Doctor reads
+  it from the DB row at its one decision point (`_pr_doctor_step`), so a sweep with no live driver
+  honours it. A paused session's PR is skipped with an INFO log and one deduped `skipped` event,
+  and no attempt is consumed. Alerts and "PR broke" pushes still fire, and a manual **Fix PR**
+  still runs. The pause ends when the session is archived, and it holds the backlog runner's
+  hand-off rather than letting another worker fix the PR.
 - Known open gaps: #838 (cicd ingest drops whole batches on `ci_job` PK collisions — needs a
   dialect-agnostic upsert); #821/#822/#823 (serialize + cap + speed up the self-hosted server
   test suite that feeds this pipeline).
