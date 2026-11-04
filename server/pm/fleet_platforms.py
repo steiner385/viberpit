@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.db.models import Host, Session
 from server.pm.desired_state import ACTIVE_SESSION_STATUSES
 from server.pm.queue import FLEET_PLATFORMS
-from server.sessions.host_platforms import parse_platforms_info
+from server.sessions.host_platforms import parse_platforms_info, platform_routing_enabled
 
 
 async def fleet_platform_state(db: AsyncSession) -> tuple[frozenset[str], frozenset[str]]:
@@ -22,7 +22,14 @@ async def fleet_platform_state(db: AsyncSession) -> tuple[frozenset[str], frozen
     healthy host advertises. A non-Linux platform is *busy* when every such advertiser
     already hosts a session pinned to it whose turn is running or queued
     (``ACTIVE_SESSION_STATUSES``): a handed-back or waiting session does not hold the
-    VM, so the next issue may start."""
+    VM, so the next issue may start.
+
+    With automation host routing off, no non-Linux platform is reachable — the spawn
+    would refuse every gated dispatch (``require_platform_routing``) — so the answer
+    is Linux only and gated issues stay ``environment``-skipped instead of being
+    claimed, refused and released every tick."""
+    if not platform_routing_enabled():
+        return FLEET_PLATFORMS, frozenset()
     hosts = (await db.execute(
         select(Host).where(Host.enabled.is_(True), Host.healthy.is_(True)))).scalars().all()
     by_platform: dict[str, set[str]] = {}

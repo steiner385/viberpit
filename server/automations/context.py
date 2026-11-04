@@ -837,13 +837,10 @@ class AutomationContext:
         Codex engine). The single refusal path for a platform-gated launch, shared by a
         caller that resolves the engine early and by ``spawn_or_join_session``, the way
         ``launch_plan_or_refuse`` is for the engine policy."""
-        from server.config import get_settings
         from server.sessions.host_platforms import (
             PlatformDispatchRefused, platform_launch_engine)
         try:
-            return platform_launch_engine(
-                platform, engine,
-                routing_enabled=get_settings().automation_host_routing_enabled)
+            return platform_launch_engine(platform, engine)
         except PlatformDispatchRefused as exc:
             await self._record_platform_refusal(origin_ref, platform, exc)
             return None

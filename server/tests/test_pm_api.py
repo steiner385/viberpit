@@ -3561,11 +3561,14 @@ def test_approve_escalation_refuses_an_issue_the_products_policy_skips():
         orch.backlog_runner_dispatch.assert_awaited_once_with(["o/r#1"], model="fable")
 
 
-def test_approve_escalation_refuses_an_env_windows_issue_while_the_vm_is_busy():
+def test_approve_escalation_refuses_an_env_windows_issue_while_the_vm_is_busy(monkeypatch):
     """The tap dispatches without re-ranking, so it must hold the queue's
     ``platform_busy`` line itself: a second live session on the one Windows VM is
     what design call 1 forbids. Free VM: the same tap goes through."""
     from unittest.mock import AsyncMock
+    # A platform is only reachable through automation host routing (conftest turns
+    # it off for every test).
+    monkeypatch.setenv("VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED", "true")
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")

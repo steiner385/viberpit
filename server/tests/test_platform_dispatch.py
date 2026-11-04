@@ -203,7 +203,7 @@ async def test_gated_dispatch_refuses_when_host_routing_disabled(tmp_path):
                 me, name="x", platform="windows")
         me.create_session.assert_not_awaited()
         with pytest.raises(PlatformDispatchRefused):
-            platform_launch_engine("windows", AgentEngine.CLAUDE_CODE, routing_enabled=False)
+            platform_launch_engine("windows", AgentEngine.CLAUDE_CODE)
     # An unreachable edge is not a reason to spawn a gated session here either. It
     # propagates as itself: a transport error can follow a launch the edge started,
     # and the runner's ownership-phase check is what decides whether to release.
@@ -256,8 +256,9 @@ async def test_gated_dispatch_refuses_codex_pinned_product(tmp_path, monkeypatch
     assert captured == {}
     assert [kw["kind"] for _l, _s, kw in events] == ["platform_dispatch_refused"]
     assert "codex" in events[0][1].lower()
-    with pytest.raises(PlatformDispatchRefused):
-        platform_launch_engine("windows", AgentEngine.CODEX, routing_enabled=True)
+    monkeypatch.setenv("VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED", "true")
+    with pytest.raises(PlatformDispatchRefused, match="codex"):
+        platform_launch_engine("windows", AgentEngine.CODEX)
 
 
 @pytest.mark.asyncio
@@ -274,8 +275,9 @@ async def test_gated_dispatch_forces_claude_engine(tmp_path, monkeypatch):
     assert rec is not None
     assert captured["engine"] is AgentEngine.CLAUDE_CODE
     assert captured["platform"] == "windows"
+    monkeypatch.setenv("VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED", "true")
     assert platform_launch_engine(
-        "windows", AgentEngine.CLAUDE_CODE, routing_enabled=True) is AgentEngine.CLAUDE_CODE
+        "windows", AgentEngine.CLAUDE_CODE) is AgentEngine.CLAUDE_CODE
     # An ungated dispatch carries no platform at all.
     captured.clear()
     await orch._backlog_spawn(Batch(primary="o/r#8", issues=["o/r#8"], repo="o/r"), "acct",

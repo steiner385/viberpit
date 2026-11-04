@@ -99,7 +99,7 @@ from server.sessions import dispatch
 from server.sessions import events as ev
 from server.sessions import host_heartbeat
 from server.sessions.host_platforms import (
-    KNOWN_PLATFORMS, PlatformDispatchRefused, parse_platforms_info, platform_dispatchable)
+    KNOWN_PLATFORMS, parse_platforms_info, platform_dispatchable, require_platform_routing)
 from server.sessions.liveness import heartbeat_interval_s
 from server.sessions import primary_lease
 from server.sessions import session_lease
@@ -4266,8 +4266,7 @@ class SessionOrchestrator:
         platform = kwargs.get("platform")
         if not get_settings().automation_host_routing_enabled:
             if platform is not None:
-                raise PlatformDispatchRefused(
-                    f"{platform} work needs automation host routing, which is off")
+                require_platform_routing(platform)
             return await self.create_session(**kwargs)
         from server.sessions.internal_dispatch import EdgeUnreachable, create_via_edge
         try:

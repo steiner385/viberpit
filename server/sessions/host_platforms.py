@@ -30,6 +30,8 @@ __all__ = [
     "parse_platforms_info",
     "platform_dispatchable",
     "platform_launch_engine",
+    "platform_routing_enabled",
+    "require_platform_routing",
     "ssh_vm_check",
 ]
 
@@ -89,19 +91,34 @@ class PlatformDispatchRefused(RuntimeError):
         super().__init__(reason)
 
 
-def platform_launch_engine(platform: str, engine: AgentEngine, *,
-                           routing_enabled: bool) -> AgentEngine:
-    """The engine a launch gated to *platform* runs on, or ``PlatformDispatchRefused``.
+def platform_routing_enabled() -> bool:
+    """Can gated work be placed on a platform host at all? Only the routed automation
+    path (``VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED``) reaches the edge's router, so
+    with it off no non-Linux platform is reachable. THE one read of that answer for
+    the queue (``fleet_platform_state``) and the spawn (``require_platform_routing``),
+    so a gated issue the spawn would refuse is never offered by the queue."""
+    from server.config import get_settings
+    return bool(get_settings().automation_host_routing_enabled)
 
-    Only the routed path can place a session on a platform host, so with automation
-    host routing off there is nowhere safe to spawn. And platform work is Claude-only
-    (design call 5): Codex's workspace-write sandbox has no egress to reach the VM,
-    so a Codex-pinned origin is refused rather than given a sandbox exception."""
-    if not routing_enabled:
+
+def require_platform_routing(platform: str) -> None:
+    """``PlatformDispatchRefused`` when a launch gated to *platform* has no routed path."""
+    if not platform_routing_enabled():
         raise PlatformDispatchRefused(
             f"{platform} work needs automation host routing "
             "(VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED), which is off; "
             "it is never spawned on this host instead")
+
+
+def platform_launch_engine(platform: str, engine: AgentEngine) -> AgentEngine:
+    """The engine a launch gated to *platform* runs on, or ``PlatformDispatchRefused``.
+
+    Only the routed path can place a session on a platform host, so with automation
+    host routing off there is nowhere safe to spawn (``require_platform_routing``).
+    And platform work is Claude-only (design call 5): Codex's workspace-write sandbox
+    has no egress to reach the VM, so a Codex-pinned origin is refused rather than
+    given a sandbox exception."""
+    require_platform_routing(platform)
     if engine is AgentEngine.CODEX:
         raise PlatformDispatchRefused(
             f"{platform} work runs on Claude only, and this origin's engine is codex")
