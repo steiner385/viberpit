@@ -244,6 +244,8 @@ class InProcessOrchestratorAdapter:
     async def all_merge_trains(self, *a, **k): return await _maybe_await(self._orch.all_merge_trains(*a, **k))
     async def check_insights(self, *a, **k): return await _maybe_await(self._orch.check_insights(*a, **k))
     async def ready_merge(self, *a, **k): return await _maybe_await(self._orch.ready_merge(*a, **k))
+    async def merge_pr(self, *a, **k): return await _maybe_await(self._orch.merge_pr(*a, **k))
+    async def disable_auto_merge(self, *a, **k): return await _maybe_await(self._orch.disable_auto_merge(*a, **k))
     async def deploy_config_list(self, *a, **k): return await _maybe_await(self._orch.deploy_config_list(*a, **k))
     async def deploy_config_put(self, *a, **k): return await _maybe_await(self._orch.deploy_config_put(*a, **k))
     async def deploy_status(self, *a, **k): return await _maybe_await(self._orch.deploy_status(*a, **k))

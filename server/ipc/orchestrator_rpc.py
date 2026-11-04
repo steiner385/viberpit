@@ -258,6 +258,18 @@ def register_orchestrator_rpc(app, orch) -> None:
             result = await result
         return result
 
+    async def merge_pr(params: dict) -> dict:
+        result = orch.merge_pr(params["repo"], params["number"])
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    async def disable_auto_merge(params: dict) -> dict:
+        result = orch.disable_auto_merge(params["repo"], params["number"])
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
     async def deploy_config_list(params: dict) -> dict:
         result = orch.deploy_config_list()
         if inspect.isawaitable(result):
@@ -297,6 +309,8 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "latest_queue_entries", latest_queue_entries)
     register_rpc(app, "check_insights", check_insights)
     register_rpc(app, "ready_merge", ready_merge)
+    register_rpc(app, "merge_pr", merge_pr)
+    register_rpc(app, "disable_auto_merge", disable_auto_merge)
     register_rpc(app, "deploy_config_list", deploy_config_list)
     register_rpc(app, "deploy_config_put", deploy_config_put)
     register_rpc(app, "deploy_status", deploy_status)

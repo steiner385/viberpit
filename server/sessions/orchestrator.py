@@ -20605,10 +20605,65 @@ class SessionOrchestrator:
                 out[repo] = list(obs[-1].entries)
         return out
 
+    def _live_human_hold(self, repo: str, number: int) -> "tuple[bool | None, str]":
+        """LIVE read of whether PR *number* carries ``hold:human`` — never the poller
+        cache, so a hold added a second ago still counts (D-15). Blocking (call off the
+        loop). Returns ``(held, "")``, or ``(None, reason)`` when the read failed (gh
+        error, timeout, unreadable output): the caller fails closed on that."""
+        import json as _json
+
+        from server.github.pr_status import has_human_hold
+
+        try:
+            proc = self._gh_run(
+                ["pr", "view", str(number), "-R", repo, "--json", "labels"],
+                gitrepos.app_token_for_owner(repo.partition("/")[0]), timeout=15,
+            )
+        except Exception as e:  # noqa: BLE001 — timeout/OSError: hold state unknown
+            return None, f"{type(e).__name__}: {e}"
+        if proc.returncode != 0:
+            return None, (proc.stderr or "").strip() or f"gh exited {proc.returncode}"
+        try:
+            labels = _json.loads(proc.stdout or "")["labels"]
+            names = [lbl["name"] for lbl in labels]
+        except (ValueError, TypeError, KeyError):
+            return None, "gh returned an unreadable label list"
+        return has_human_hold(names), ""
+
+    def _human_hold_refusal(self, repo: str, number: int, action: str) -> "dict | None":
+        """``None`` when *action* may proceed on the PR, else ``{"code", "error"}``:
+        ``PR_HUMAN_HOLD`` for a held PR, ``PR_HUMAN_HOLD_UNKNOWN`` (gh's text) when the
+        live read failed — merging/arming on an unproven hold state is the irreversible
+        direction, so it fails closed. Blocking."""
+        from server.github.pr_status import (
+            HUMAN_HOLD_LABEL, PR_HUMAN_HOLD, PR_HUMAN_HOLD_UNKNOWN)
+
+        held, reason = self._live_human_hold(repo, number)
+        if held is False:
+            return None
+        if held:
+            log.info("pr.%s refused: %s#%s carries %s", action, repo, number,
+                     HUMAN_HOLD_LABEL)
+            return {"code": PR_HUMAN_HOLD,
+                    "error": f"{repo}#{number} carries `{HUMAN_HOLD_LABEL}`: a human "
+                             "owns its merge. Merge it on GitHub."}
+        log.info("pr.%s refused: %s#%s hold state unknown: %s", action, repo, number,
+                 reason)
+        return {"code": PR_HUMAN_HOLD_UNKNOWN, "error": reason}
+
     async def ready_merge(self, repo: str, number: int) -> dict:
         """Plotroom PrRow 'Ready + auto-merge' action: mark a draft PR ready,
-        then arm squash auto-merge. Tolerates already-ready / already-armed."""
+        then arm squash auto-merge. Tolerates already-ready / already-armed.
+
+        Refuses a ``hold:human`` PR (live label read) before touching it: the result
+        then carries ``code`` (``PR_HUMAN_HOLD`` / ``PR_HUMAN_HOLD_UNKNOWN``) and both
+        flags False. Every caller — the Pipeline route, the PR tab's arm, the SDLC
+        synthesizer — goes through here, so none can arm a held PR."""
         def _do() -> dict:
+            refusal = self._human_hold_refusal(repo, number, "ready_merge")
+            if refusal is not None:
+                return {"markedReady": False, "autoMergeArmed": False,
+                        "alreadyArmed": False, "cleanReadyToMerge": False, **refusal}
             ready = self._gh_run(["pr", "ready", str(number), "-R", repo])
             # gh exits non-zero when the PR is already ready — that's not an error.
             marked = ready.returncode == 0
@@ -20626,11 +20681,44 @@ class SessionOrchestrator:
             error = "" if armed else (merge.stderr or "").strip()
             # cleanReadyToMerge requires a mergeability probe (Phase 3); honest False
             # until that probe exists — never fabricate.
+            log.info("pr.ready_merge %s#%s marked=%s armed=%s", repo, number, marked, armed)
             return {"markedReady": marked, "autoMergeArmed": armed,
                     "alreadyArmed": already, "cleanReadyToMerge": False,
                     "error": error}
 
         return await asyncio.to_thread(_do)
+
+    def _gh_pr_merge(self, repo: str, number: int, flag: str, action: str) -> dict:
+        """``gh pr merge N -R repo <flag>`` as ``{ok, error}`` — gh's stderr verbatim
+        on failure, logged at INFO (a refused merge is a user-facing answer, not a
+        server fault). Blocking."""
+        try:
+            proc = self._gh_run(["pr", "merge", str(number), "-R", repo, flag], timeout=60)
+        except Exception as e:  # noqa: BLE001 — timeout/OSError is the caller's answer
+            ok, error = False, f"{type(e).__name__}: {e}"
+        else:
+            ok = proc.returncode == 0
+            error = "" if ok else (proc.stderr or "").strip()
+        log.info("pr.%s %s#%s ok=%s%s", action, repo, number, ok,
+                 "" if ok else f" error={error}")
+        return {"ok": ok, "error": error}
+
+    async def merge_pr(self, repo: str, number: int) -> dict:
+        """PR tab 'Merge now' (D-15): squash-merge immediately. Refused for a
+        ``hold:human`` PR (live read; fails closed) with ``{ok: False, code, error}``."""
+        def _do() -> dict:
+            refusal = self._human_hold_refusal(repo, number, "merge")
+            if refusal is not None:
+                return {"ok": False, **refusal}
+            return self._gh_pr_merge(repo, number, "--squash", "merge")
+
+        return await asyncio.to_thread(_do)
+
+    async def disable_auto_merge(self, repo: str, number: int) -> dict:
+        """PR tab 'Disable auto-merge' (D-15). Always allowed — even on a held PR —
+        because it is the safe direction."""
+        return await asyncio.to_thread(
+            self._gh_pr_merge, repo, number, "--disable-auto", "auto_merge_disabled")
 
     async def pr_detail(self, repo: str, number: int) -> "dict | None":
         """PR detail (SPEC v2 Pack G): the cached population entry for
@@ -20651,19 +20739,40 @@ class SessionOrchestrator:
                 match = p
                 break
         if match is None:
+            match = self._session_pr_entry(repo, number)
+        if match is None:
             sync_error = self._pr_population.last_error(repo)
             if sync_error is not None:
                 return {"pr_not_synced": True, "syncError": sync_error}
             return None
         out = match.to_dict()
         out["sessionId"] = match.session_id
+        pr = match.pr
+        out.update({"isDraft": pr.is_draft, "autoMergeEnabled": pr.auto_merge_enabled,
+                    "mergeStateStatus": pr.merge_state_status, "labels": list(pr.labels),
+                    "humanHold": pr.human_hold})
         out.update(await self._fetch_pr_detail(repo, number))
         return out
 
+    def _session_pr_entry(self, repo: str, number: int) -> "PipelinePr | None":
+        """``pr_detail``'s fallback when the population cache misses: the session
+        per-branch cache entry (``prs_for``) for ``(repo, number)``, so a session's PR
+        on a repo outside the Pipeline population still opens in its PR tab (D-15).
+        Reads the same cache ``Session.prs`` does — no second poller."""
+        from server.github.pr_status import PipelinePr
+        for rec in list(self._records.values()):
+            if getattr(rec, "repo", None) != repo:
+                continue
+            for info in self.prs_for(rec.id):
+                if info.number == number:
+                    return PipelinePr(pr=dataclass_replace(info, repo=info.repo or repo),
+                                      session_id=rec.id, session_name=rec.name)
+        return None
+
     async def _fetch_pr_detail(self, repo: str, number: int) -> dict:
         """The live half of `pr_detail`: one `gh api graphql` call for the fields
-        the cached population never carries (reviews) or carries without a url
-        (checks). Fails open to the empty triple — a live-fetch hiccup must not
+        the cached population never carries (reviews, review threads) or carries
+        without a url (checks). Fails open to the empty shape — a live-fetch hiccup must not
         blank the whole detail view, only its freshest fields."""
         import json as _json
 
@@ -20672,19 +20781,20 @@ class SessionOrchestrator:
         def _do() -> dict:
             query = build_pr_detail_query(repo, number)
             owner = repo.partition("/")[0]
+            empty = parse_pr_detail_response({})
             try:
                 proc = self._gh_run(
                     ["api", "graphql", "-f", f"query={query}"],
                     gitrepos.app_token_for_owner(owner), timeout=15,
                 )
             except Exception:
-                return {"checks": [], "reviews": [], "mergeable": None}
+                return empty
             if proc.returncode != 0:
-                return {"checks": [], "reviews": [], "mergeable": None}
+                return empty
             try:
                 data = _json.loads(proc.stdout or "{}")
             except (ValueError, TypeError):
-                return {"checks": [], "reviews": [], "mergeable": None}
+                return empty
             return parse_pr_detail_response(data)
 
         return await asyncio.to_thread(_do)

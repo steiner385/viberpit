@@ -503,6 +503,14 @@ class RemoteOrchestrator:
         """Arm ready + auto-merge on a PR via the daemon (already JSON-safe)."""
         return await self._client.call("ready_merge", repo=repo, number=number)
 
+    async def merge_pr(self, repo: str, number: int) -> dict:
+        """Squash-merge a PR now via the daemon (already JSON-safe; D-15)."""
+        return await self._client.call("merge_pr", repo=repo, number=number)
+
+    async def disable_auto_merge(self, repo: str, number: int) -> dict:
+        """Disable a PR's auto-merge via the daemon (already JSON-safe; D-15)."""
+        return await self._client.call("disable_auto_merge", repo=repo, number=number)
+
     async def deploy_config_list(self) -> dict:
         """List all deploy-env configs via the daemon."""
         r = await self._client.call("deploy_config_list")
