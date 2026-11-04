@@ -34,10 +34,27 @@ def _bundle_state(bundle: dict, now_ms: int) -> Grant:
     return "expiring" if exp <= now_ms + LEAD_S * 1000 else "live"
 
 
-def grant_state(store: dict, *, key: str, now_ms: int) -> Grant:
-    """The grant filed at *key*, the CLI's own ``mcp-oauth`` key (``viberpit.mcp_keys``)."""
+def grant_state(store: dict, *, key: str, now_ms: int, health: dict | None = None) -> Grant:
+    """The grant filed at *key*, the CLI's own ``mcp-oauth`` key (``viberpit.mcp_keys``).
+
+    *health* is the key's ``mcp_grant_health`` wire row. It only adds ``dead`` to a cleared
+    bundle: a live or expiring bundle (a fresh sign-in) always wins over a stale row."""
     bundle = store.get(key)
-    return _bundle_state(bundle, now_ms) if isinstance(bundle, dict) else "none"
+    if not isinstance(bundle, dict):
+        return "none"
+    state = _bundle_state(bundle, now_ms)
+    if state == "never" and health and health.get("state") == "dead":
+        return "dead"
+    return state
+
+
+def refresh_error_for(grant: Grant, health: dict | None) -> str | None:
+    """Why background refresh is failing, for an expired or dead grant only."""
+    if grant not in ("expired", "dead") or not health:
+        return None
+    if health.get("lastOutcome") not in ("transient", "dead"):
+        return None
+    return health.get("lastError") or None
 
 
 def best_expiry(store: dict, *, key: str) -> int | None:
@@ -72,10 +89,13 @@ def counted(row: dict, *, enabled_accounts: set[str], live_session_ids: set[str]
     return row.get("source") != "session" or row.get("sessionId") in live_session_ids
 
 
-def _expired_copy(expires_at_ms: int | None) -> str:
-    if expires_at_ms is None:
-        return "Sign-in expired — background refresh is failing; sign in again."
-    return f"Sign-in expired {format_utc_ms(expires_at_ms)} UTC — background refresh is failing; sign in again."
+DEAD_COPY = "Sign-in revoked or expired — one sign-in restores it for every account and runner."
+
+
+def _expired_copy(expires_at_ms: int | None, refresh_error: str | None) -> str:
+    when = "" if expires_at_ms is None else f" {format_utc_ms(expires_at_ms)} UTC"
+    why = f": {refresh_error}" if refresh_error else ""
+    return f"Sign-in expired{when} — background refresh is failing{why}; sign in again."
 
 
 def _marker(error: str) -> str:
@@ -85,7 +105,7 @@ def _marker(error: str) -> str:
 
 
 def derive_overall(*, grant: Grant, rows: list[dict], now_ms: int,
-                   expires_at_ms: int | None) -> dict:
+                   expires_at_ms: int | None, refresh_error: str | None = None) -> dict:
     """``{"status", "error", "grant"}`` for one server; *rows* are already counted rows.
     ``status`` is None when nothing has checked the server yet."""
     def out(status: str | None, error: str | None = None) -> dict:
@@ -96,10 +116,12 @@ def derive_overall(*, grant: Grant, rows: list[dict], now_ms: int,
         if r.get("status") == "failed":
             return out("failed", r.get("error"))
     # 2. No usable grant.
-    if grant in ("never", "dead"):
+    if grant == "never":
         return out("needs-auth", NOT_SIGNED_IN)
+    if grant == "dead":
+        return out("needs-auth", DEAD_COPY)
     if grant == "expired":
-        return out("needs-auth", _expired_copy(expires_at_ms))
+        return out("needs-auth", _expired_copy(expires_at_ms, refresh_error))
     # 3. A live session the server rejected despite a good-looking grant.
     if grant in ("live", "expiring"):
         for r in rows:
