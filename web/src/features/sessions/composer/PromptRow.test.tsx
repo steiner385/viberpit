@@ -129,6 +129,14 @@ describe('PromptRow', () => {
       expect(screen.getByRole('button', { name: 'Fast mode' })).toBeInTheDocument()
     })
 
+    it('stays visible while the stored choice is on, even if fast mode is no longer available — so it can be turned off', async () => {
+      const onToggleFast = vi.fn()
+      render(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: false, fastMode: true }}
+        caps={CLAUDE_CAPS} onToggleFast={onToggleFast} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Fast mode' }))
+      expect(onToggleFast).toHaveBeenCalledWith(false)
+    })
+
     it('carries the cost sentence as its tooltip, and its state as aria-pressed', () => {
       render(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: true, fastMode: true }}
         caps={CLAUDE_CAPS} onToggleFast={vi.fn()} />)

@@ -70,7 +70,9 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onTo
   const effort = session?.reasoningEffort ?? chosenModel?.defaultReasoningEffort ?? null
   const busy = statusTier(rt.state.status.state) === 'busy'
   const fastOn = session?.fastMode === true
-  const showFast = session?.fastModeAvailable === true && onToggleFast !== undefined
+  // Also while the stored choice is ON, so a model switch that dropped availability
+  // never strands fast mode with no visible way to turn it off.
+  const showFast = (session?.fastModeAvailable === true || fastOn) && onToggleFast !== undefined
 
   useImperativeHandle(menuRef, () => ({
     openMode: () => setOpenMenu('mode'),

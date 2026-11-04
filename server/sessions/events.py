@@ -478,6 +478,15 @@ class Notice:
                                "ts": self.ts}
 
 @dataclass
+class CommandsChanged:
+    """The session's command catalog may have changed (D-14): a model switch or a
+    fresh CLI model list moves `/fast`'s gate. Not a client event — the ws bridge
+    consumes it and re-sends the catalog through the same top-level `commands` push
+    attach uses (``_emit_command_catalog``), so there is one push, not two."""
+    def to_wire(self): return {"type": "commandsChanged"}
+
+
+@dataclass
 class ContextUsage:
     """Exact context-window occupancy, pulled from the SDK once a turn settles —
     the same data the `/context` command shows (totalTokens / maxTokens). Drives

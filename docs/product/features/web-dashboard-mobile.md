@@ -397,10 +397,12 @@ ways into it from the composer and the transcript.
   levels is #3260.
 - **`+` menu:** the dispatch bar's `+` holds **Attach image**, **Presets ›** and **Templates ›**. The
   composer's `+` holds **Attach file** and **Slash commands**, which seeds `/` only into an empty box.
-- **Presets:** choosing one shows a removable chip, fills the repo and the prompt when none is typed, and
-  sets the account and model only when the bar offers them. Otherwise the chip says "preset account/model
-  unavailable". The next create sends `presetId`. A template is inserted at the caret, rendered by the
-  server with its default variables. ⌘K lists **New session from preset: <name>**; there is no preset chord.
+- **Presets:** choosing one shows a removable chip, fills the repo and the prompt when none is typed, and sets
+  the account and model only when the bar offers them. Otherwise the chip says "preset account/model
+  unavailable". The next create sends exactly what the bar shows, plus the preset's permission mode and
+  profile; it never sends the preset id, so nothing the bar declined comes back from the server. A template is
+  inserted at the caret, rendered by the server with its default variables. ⌘K lists **New session from
+  preset: <name>**; there is no preset chord.
 - **PR auto-fix:** a switch in the session's Environment card while it has a PR; off pauses PR Doctor's
   automatic fixes for that session (see [CI/CD pipeline](cicd-pipeline-merge-queue.md)).
 - **Worktree location:** Settings › Sessions › Worktrees edits the root that repos are cloned into and

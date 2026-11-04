@@ -223,7 +223,7 @@ function NewSessionBar({
 
   function handleDispatch({
     initialPrompt, repo, account, model, host, attachmentIds, engine, reasoningEffort,
-    autopilot, autoArchive, presetId,
+    autopilot, autoArchive, permissionMode, permissionProfileId,
   }: {
     initialPrompt: string
     repo: string | null
@@ -235,7 +235,8 @@ function NewSessionBar({
     reasoningEffort: string | null
     autopilot: boolean
     autoArchive: boolean
-    presetId: string | null
+    permissionMode: string | null
+    permissionProfileId: string | null
   }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     return new Promise((resolve, reject) => {
@@ -256,8 +257,10 @@ function NewSessionBar({
           // Per-session opt-outs (server: `autopilot_paused` / `auto_archive_opt_out_reason`).
           autopilot,
           autoArchive,
-          // Omitted, not null, without a preset: the server reads `presetId` as given.
-          ...(presetId ? { presetId } : {}),
+          // A chosen preset's fields the bar has no control for (D-14); omitted
+          // otherwise, so the server default applies.
+          ...(permissionMode ? { permissionMode } : {}),
+          ...(permissionProfileId ? { permissionProfileId } : {}),
         },
         {
           onSuccess: (session) => {

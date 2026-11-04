@@ -452,7 +452,6 @@ export interface CreateSessionInput {
   host?: string | null
   /** Force where the GUI renders; omitted/'auto' → decided from client locality. */
   display?: 'auto' | 'native' | 'virtual'
-  presetId?: string
   permissionProfileId?: string
   /** Per-session opt-outs. Omitted/true ⇒ governed by the global autopilot mode /
    *  auto-archive setting; false ⇒ this session is pinned to manual / never

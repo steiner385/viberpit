@@ -1204,3 +1204,103 @@ async def test_payload_serves_the_current_models_supported_effort_levels(env) ->
     assert _payload(env.rec)["supportedEffortLevels"] == []
     env.rec.model_options = None
     assert _payload(env.rec)["supportedEffortLevels"] is None
+
+
+# ── D-14 final review: catalog refresh, gated APP_ONLY names, /effort parking ──
+
+def _emitted(driver) -> list:
+    """Capture what the orchestrator emits out-of-band on *driver*."""
+    seen: list = []
+    real = driver.emit
+
+    def spy(e) -> None:
+        seen.append(e)
+        real(e)
+
+    driver.emit = spy
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_model_switch_tells_attached_clients_to_refresh_the_catalog(env) -> None:
+    from server.sessions.events import CommandsChanged
+    seen = _emitted(env.orch._drivers[env.rec.id])
+    await env.orch.set_model_for_session(env.rec.id, "sonnet")
+    assert any(isinstance(e, CommandsChanged) for e in seen)
+    assert CommandsChanged().to_wire() == {"type": "commandsChanged"}
+
+
+@pytest.mark.asyncio
+async def test_new_model_options_tell_attached_clients_to_refresh_the_catalog(env) -> None:
+    from server.sessions.events import CommandsChanged
+    seen = _emitted(env.orch._drivers[env.rec.id])
+    await env.orch._record_model_options(env.rec.id, INFO["models"])
+    assert any(isinstance(e, CommandsChanged) for e in seen)
+
+
+@pytest.mark.asyncio
+async def test_effort_gated_off_by_the_kill_switch_is_a_notice_not_the_clis(env, monkeypatch) -> None:
+    monkeypatch.setenv("VIBERPIT_FLAG_SETTINGS_ENABLED", "false")
+    out = await env.orch.run_command(env.rec.id, "effort", "high")
+    assert out is not None and out["render"] == "notice"
+    assert "isn't available" in out["data"]["text"]
+    assert env.control.patches == []
+
+
+@pytest.mark.asyncio
+async def test_fast_on_a_model_without_it_is_a_notice_not_the_clis(env) -> None:
+    await env.orch.set_model_for_session(env.rec.id, "sonnet")
+    assert env.orch.fast_mode_available(env.rec.id) is False
+    out = await env.orch.run_command(env.rec.id, "fast", "on")
+    assert out is not None and out["render"] == "notice"
+    assert "isn't available" in out["data"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_slash_effort_on_a_gated_default_model_persists_without_parking(env) -> None:
+    """An effort-only pick changes no model, so a require_approval verdict on the
+    inherited default must not park it (the effort would be lost behind a hold that
+    asks to approve the model the session already runs). Block still refuses."""
+    env.rec.model = None
+    async def _require(*a, **k):
+        return "require_approval"
+    with patch("server.sessions.model_policy.resolve_model_policy", _require):
+        out = await env.orch.run_command(env.rec.id, "effort", "high")
+    assert out is not None and out["data"]["text"] == "Effort → high"
+    assert env.rec.pending_model is None
+    assert (await _row(env.rec.id)).reasoning_effort == "high"
+
+    async def _block(*a, **k):
+        return "block"
+    with patch("server.sessions.model_policy.resolve_model_policy", _block):
+        refused = await env.orch.run_command(env.rec.id, "effort", "low")
+    assert refused is not None and "Effort unchanged" in refused["data"]["text"]
+    assert (await _row(env.rec.id)).reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_effort_on_a_gated_inherited_default_never_sends_a_model_switch(env) -> None:
+    """``client.set_model(None)`` resets the CLI to its default model — the gated one.
+    An exempted effort-only pick must write only the effort: one apply_flag_settings,
+    zero set_model calls, no park."""
+    env.rec.model = None
+    client = env.spawns.clients[-1]
+    calls: list = []
+    real = client.set_model
+
+    async def spy(model=None):
+        calls.append(model)
+        await real(model)
+
+    client.set_model = spy
+    before = len(env.control.patches)
+
+    async def _require(*a, **k):
+        return "require_approval"
+    with patch("server.sessions.model_policy.resolve_model_policy", _require):
+        out = await env.orch.run_command(env.rec.id, "effort", "high")
+    assert out is not None and out["data"]["text"] == "Effort → high"
+    assert calls == []
+    assert env.control.patches[before:] == [{"effortLevel": "high"}]
+    assert env.rec.pending_model is None
+    assert (await _row(env.rec.id)).reasoning_effort == "high"
