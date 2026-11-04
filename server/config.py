@@ -203,6 +203,10 @@ try:
         # launch flag, and absence or incompatibility must disable Codex ONLY. The
         # external-token API is the experimental app-server surface runners use to
         # authenticate without holding a credential, so it is gated separately.
+        # Host platforms this runner can run work for, beyond linux ("windows" = a VM
+        # reachable at `windows_vm_ssh_host`). Advertised on the daemon's /info.
+        host_platforms: str = Field(default="", alias="VIBERPIT_HOST_PLATFORMS")
+        windows_vm_ssh_host: str = Field(default="win11", alias="VIBERPIT_WINDOWS_VM_SSH_HOST")
         codex_enabled: bool = Field(default=False, alias="VIBERPIT_CODEX_ENABLED")
         codex_external_auth_enabled: bool = Field(
             default=False, alias="VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED")
@@ -588,6 +592,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         copilot_idle_grace_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("VIBERPIT_COPILOT_IDLE_GRACE_S", "300.0"))
+        )
+        host_platforms: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_HOST_PLATFORMS", "")
+        )
+        windows_vm_ssh_host: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_WINDOWS_VM_SSH_HOST", "win11")
         )
         codex_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_CODEX_ENABLED", "false").lower() in ("1","true","yes","on")

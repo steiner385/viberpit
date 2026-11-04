@@ -42,6 +42,11 @@ def create_daemon_app() -> FastAPI:
 
     app = FastAPI(title=f"{brand.SLUG}-sessiond")
     app.state.rpc = {}
+    # One probe per daemon process so its reachability cache persists across /info polls.
+    from server.config import get_settings
+    from server.sessions.host_platforms import PlatformProbe, ssh_vm_check
+    _platform_probe = PlatformProbe(
+        check=lambda _platform: ssh_vm_check(get_settings().windows_vm_ssh_host))
     # Published for RPC handlers that must report the daemon's CURRENT epoch in-band, not
     # just via /info: the wave-3 cursor-catchup coverage probe (ring_covers) returns it so
     # the edge's epoch gate compares against the epoch the daemon reports RIGHT NOW —
@@ -455,6 +460,8 @@ def create_daemon_app() -> FastAPI:
     @app.get("/info")
     async def info() -> dict:
         from server.sessions.host_engines import ENGINES_INFO_KEY, build_engines_info
+        from server.sessions.host_platforms import (
+            PLATFORMS_INFO_KEY, build_platforms_info, configured_platforms)
         from server.version import checkout_git_sha, running_git_sha
         orch = getattr(app.state, "orchestrator", None)
         active = await _owned_active_count(orch)
@@ -464,9 +471,12 @@ def create_daemon_app() -> FastAPI:
         # older than this change — the edge reads that as legacy Claude-only.
         engines = build_engines_info(
             getattr(getattr(orch, "_codex", None), "availability", None))
+        # Absent on a daemon older than this change — the edge reads that as Linux only.
+        platforms = build_platforms_info(await _platform_probe.advertised(
+            configured_platforms(get_settings().host_platforms)))
         return {"sha": running_git_sha(), "checkoutSha": checkout_git_sha(),
                 "protocol": proto.PROTOCOL_VERSION, ENGINES_INFO_KEY: engines,
-                "epoch": _app_epoch, **_capacity_snapshot(active)}
+                PLATFORMS_INFO_KEY: platforms, "epoch": _app_epoch, **_capacity_snapshot(active)}
 
     @app.get("/healthz")
     async def healthz() -> dict:
