@@ -474,6 +474,53 @@ async def test_never_signed_in_cleared_bundle_never_alerts(isolated_db, tick):
 
 
 @pytest.mark.asyncio
+async def test_sign_in_during_tick_is_not_promoted_dead(isolated_db, tick, monkeypatch):
+    """A sign-in landing between the tick's first store read and its promote step must not
+    be promoted ``dead`` from that stale read: no false "revoked" push for a fresh grant."""
+    from server.mcp_health import grant_health
+
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))                    # died and alerted once
+    assert len(tick["pushes"]) == 1
+    real_record = grant_health.record
+
+    async def sign_in_mid_tick(outcomes, *, expired_keys):
+        out = await real_record(outcomes, expired_keys=expired_keys)
+        await grant_health.mark_signed_in([K1], server="railway")   # the user signs in now
+        tick["store"] = {K1: dict(LIVE_BUNDLE)}
+        return out
+    monkeypatch.setattr(grant_health, "record", sign_in_mid_tick)
+    await tick["run"](_out("refreshed", key=K2, label="notion"))   # store read while cleared
+    assert (await grant_health.load([K1]))[K1]["state"] == "live"
+    assert len(tick["pushes"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_store_reread_alone_protects_a_mid_tick_sign_in(isolated_db, tick, monkeypatch):
+    """With the 60 s sign-in guard made inert, the tick's fresh store read before promotion
+    is by itself what keeps a sign-in landing mid-tick from being promoted dead."""
+    from datetime import timedelta
+
+    from server.mcp_health import grant_health
+
+    monkeypatch.setattr(grant_health, "SIGN_IN_GRACE", timedelta(hours=-1))   # guard off
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))
+    assert len(tick["pushes"]) == 1
+    real_record = grant_health.record
+
+    async def sign_in_mid_tick(outcomes, *, expired_keys):
+        out = await real_record(outcomes, expired_keys=expired_keys)
+        await grant_health.mark_signed_in([K1], server="railway")
+        tick["store"] = {K1: dict(LIVE_BUNDLE)}
+        return out
+    monkeypatch.setattr(grant_health, "record", sign_in_mid_tick)
+    await tick["run"](_out("refreshed", key=K2, label="notion"))
+    assert (await grant_health.load([K1]))[K1]["state"] == "live"
+    assert len(tick["pushes"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_cleared_bundle_of_a_dropped_key_is_not_promoted(isolated_db, tick):
     tick["store"] = {K1: dict(LIVE_BUNDLE)}
     await tick["run"](_out("refreshed"))
@@ -600,3 +647,30 @@ def test_keys_for_server_maps_short_name_to_cli_keys(shared: Path):  # noqa: F81
     assert grants.keys_for_server("aws-oauth") == [NEW_KEY]
     assert grants.keys_for_server("local") == []
     assert grants.keys_for_server("nope") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("origin", "expected"), [
+    ("https://pit.example", "/api/mcp/oauth/start?server=my%20srv%2Fx"),
+    (None, "/settings/mcp"),
+])
+async def test_alert_push_deep_link_depends_on_public_origin(
+        isolated_db, monkeypatch, origin, expected):
+    from types import SimpleNamespace
+
+    from server.mcp_health import alerts, grant_health
+    from server.sessions import push as push_mod
+
+    sent: list[dict] = []
+
+    async def fake_notify_event(event_class, title, body, **kw):
+        sent.append(kw)
+
+    async def fake_mark(key, state):
+        return None
+    monkeypatch.setattr(push_mod, "notify_event", fake_notify_event)
+    monkeypatch.setattr(grant_health, "mark_alerted", fake_mark)
+    monkeypatch.setattr(alerts, "get_settings", lambda: SimpleNamespace(public_origin=origin))
+    t = grant_health.Transition(K1, "my srv/x", "alert_dead", None, "g1")
+    await alerts.send_alerts([t], orch=None)
+    assert [kw["url"] for kw in sent] == [expected]

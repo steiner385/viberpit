@@ -121,11 +121,37 @@ def _retry_delay(http_headers, attempt: int, rng=random.random) -> float:
     return base * (0.5 + 0.5 * rng())  # equal jitter: [base/2, base)
 
 
+# Every outbound body is read through this cap: a metadata URL an MCP server names could
+# otherwise stream without end (defence in depth; the largest real body is a few KiB).
+MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+def _read_capped(resp) -> bytes:
+    body = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise TransientError(f"response body over {MAX_RESPONSE_BYTES} bytes")
+    return body
+
+
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a 3xx: urllib then raises it as an HTTPError, i.e. a non-2xx answer."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def no_redirect_opener() -> urllib.request.OpenerDirector:
+    """An opener that reports a 3xx instead of following it. A URL validated before the
+    fetch (origin, https) must not be able to bounce the request, and any credential header
+    it carries, to another host such as a metadata service or a loopback port."""
+    return urllib.request.build_opener(_RefuseRedirect)
+
+
 def http_request(method: str, url: str, headers: dict | None = None,
                  data: bytes | None = None, timeout: int = 15, *,
                  max_retries: int = _DEFAULT_MAX_RETRIES,
                  max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC,
-                 idempotent: bool = True,
+                 idempotent: bool = True, follow_redirects: bool = True,
                  sleep=time.sleep, rng=random.random, clock=time.monotonic) -> tuple[int, bytes]:
     """Issue an HTTP request, retrying transient failures with backoff.
 
@@ -140,6 +166,9 @@ def http_request(method: str, url: str, headers: dict | None = None,
     Terminal statuses (4xx other than 403/429 — notably 400/401) and 2xx return
     immediately in both modes; a persistent transient failure raises TransientError so
     callers leave the account status unchanged.
+
+    ``follow_redirects=False`` returns a 3xx as its status instead of following it; the MCP
+    OAuth discovery and token paths use it (their URLs are validated before the fetch).
 
     ``max_total_sec`` bounds total wall-clock across all attempts so a stalling
     endpoint can't turn max_retries x socket-timeout into minutes of blocking.
@@ -161,15 +190,16 @@ def http_request(method: str, url: str, headers: dict | None = None,
         sleep(min(_retry_delay(headers, attempt, rng), remaining))
         return True
 
+    opener = urllib.request.urlopen if follow_redirects else no_redirect_opener().open
     for attempt in range(max_retries + 1):
         req = urllib.request.Request(url, method=method, headers=hdrs, data=data)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with opener(req, timeout=timeout) as r:
                 _note_network(True)
-                return r.status, r.read()
+                return r.status, _read_capped(r)
         except urllib.error.HTTPError as e:
             _note_network(True)  # the server answered: the network is fine
-            status, body = e.code, e.read()
+            status, body = e.code, _read_capped(e)
             # Non-idempotent (single-use token POST): only retry edge rejects that
             # never reached the origin (403 Cloudflare 1010 / 429). A 5xx may mean
             # the origin already processed + rotated the token, so resending would

@@ -344,6 +344,50 @@ def test_transient_failure_backs_off_before_the_next_attempt():
     assert len(http.posts) == 2
 
 
+def _cache_client(client_id):
+    creds.write_json_secure(paths.shared_mcp_clients_path(),
+                            {mor.url_href(AS_URL): {"client_id": client_id,
+                                                    "redirect_uri": "https://e/cb"}})
+
+
+@pytest.mark.parametrize("code", ["invalid_client", "INVALID_CLIENT"])
+def test_invalid_client_forgets_the_stale_cached_registration(code):
+    _seed({"aws|1": _bundle()}, {})
+    _cache_client("cid")  # the bundle's clientId
+    http = FakeHttp(metadata=_meta(), responses=[(401, {"error": code})])
+    out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json,
+                       now_ms=NOW)
+    assert out["transient"] == ["aws-oauth"] and out["outcomes"][0]["outcome"] == "transient"
+    assert creds.read_mcp_clients() == {}
+    assert creds.read_json(paths.shared_mcp_path())["aws|1"] == _bundle()
+
+
+def test_invalid_client_keeps_a_different_cached_registration():
+    _seed({"aws|1": _bundle()}, {})
+    _cache_client("cid-newer")
+    http = FakeHttp(metadata=_meta(), responses=[(401, {"error": "invalid_client"})])
+    out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json,
+                       now_ms=NOW)
+    assert out["transient"] == ["aws-oauth"]
+    assert creds.read_mcp_clients()[mor.url_href(AS_URL)]["client_id"] == "cid-newer"
+
+
+def test_other_transient_codes_keep_the_cached_registration():
+    _seed({"aws|1": _bundle()}, {})
+    _cache_client("cid")
+    http = FakeHttp(metadata=_meta(), responses=[(400, {"error": "invalid_target"})])
+    mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    assert creds.read_mcp_clients()[mor.url_href(AS_URL)]["client_id"] == "cid"
+
+
+def test_transient_carries_the_oauth_code():
+    http = FakeHttp(metadata=_meta(), responses=[(401, {"error": "INVALID_CLIENT"})])
+    with pytest.raises(mor.McpRefreshTransient) as exc:
+        mor.refresh_bundle(_bundle(), post_form=http.post_form, fetch_json=http.fetch_json,
+                           now_ms=NOW)
+    assert exc.value.code == "INVALID_CLIENT"
+
+
 # --- resource indicator (RFC 8707) ----------------------------------------------------------
 
 PRM_URL = "https://mcp.example.com/.well-known/oauth-protected-resource"
@@ -471,3 +515,18 @@ def test_oauth_error_code_equal_to_a_credential_is_not_echoed(field):
     out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
     [o] = out["outcomes"]
     assert o["error"] == "token endpoint returned 400"
+
+
+@pytest.mark.parametrize("bad", ["file:///etc/passwd", "http://auth.example.com/token",
+                                 "gopher://auth.example.com/token"])
+def test_non_https_token_endpoint_is_never_posted_to(bad):
+    http = FakeHttp(metadata=_meta(token_endpoint=bad), responses=[_ok()])
+    assert mor.token_endpoint(_bundle(), fetch_json=http.fetch_json) == ""
+    with pytest.raises(mor.McpRefreshTransient):
+        mor.refresh_bundle(_bundle(), post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    assert http.posts == []
+
+
+def test_non_https_auth_server_has_no_fallback_endpoint():
+    b = _bundle(discoveryState={"authorizationServerUrl": "http://auth.example.com/"})
+    assert mor.token_endpoint(b, fetch_json=FakeHttp().fetch_json) == ""

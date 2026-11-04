@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { useLibraryMcp, useTestMcp } from '@/api/hooks'
+import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import { useConfig, useLibraryMcp, useTestMcp } from '@/api/hooks'
 import { apiErrorCode } from '@/api/client'
 import type { LibraryMcpServer } from '@/api/types'
 import { McpServerDialog } from './McpServerDialog'
@@ -11,6 +12,19 @@ import { relativeAge } from './mcpStatus'
 
 // Grants for which signing in again is the fix.
 const SIGN_IN_GRANTS = ['never', 'dead', 'expired']
+
+// Fixed copy per closed sign-in error code; the raw query text is never rendered.
+const SIGN_IN_ERRORS: Record<string, string> = {
+  state_invalid: 'That sign-in link expired or was already used. Try again.',
+  denied: 'Sign-in was cancelled at the provider.',
+  exchange_failed: "The provider didn't accept the sign-in. Try again.",
+  registration_failed: "This provider doesn't allow ViberPit to register. Use the manual sign-in.",
+  not_configured: "That server can't be signed in here.",
+}
+
+function signInErrorMessage(code: string): string {
+  return Object.hasOwn(SIGN_IN_ERRORS, code) ? SIGN_IN_ERRORS[code] : 'Sign-in failed.'
+}
 
 function testErrorMessage(err: unknown): string {
   switch (apiErrorCode(err)) {
@@ -51,9 +65,24 @@ function TestOutcomeNote({ outcome, target }: { outcome: TestOutcome | null; tar
 export function McpSection() {
   const { data, isLoading } = useLibraryMcp()
   const test = useTestMcp()
+  const { data: config } = useConfig()
+  const oneTap = config?.oneTapEnabled === true
+  // The one-tap redirect lands here with ?pasteBack / ?signedIn / ?signInError.
+  const [pasteBack] = useState(() => new URLSearchParams(window.location.search).get('pasteBack'))
   const [dialogServer, setDialogServer] = useState<LibraryMcpServer | null | undefined>(undefined)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [outcome, setOutcome] = useState<TestOutcome | null>(null)
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const signedIn = params.get('signedIn')
+    const signInError = params.get('signInError')
+    if (signedIn) toast.success(`Signed in to ${signedIn} — every account and runner can use it now.`)
+    if (signInError !== null) toast.error(signInErrorMessage(signInError))
+    if (['pasteBack', 'signedIn', 'signInError'].some((k) => params.has(k))) {
+      window.history.replaceState(window.history.state, '', window.location.pathname)
+    }
+  }, [])
 
   if (isLoading) return <div className="text-sm opacity-70 p-4">Loading…</div>
 
@@ -174,8 +203,25 @@ export function McpSection() {
               </ul>
             )}
             {/* Inline auth flow — sibling below the card button to avoid nesting interactive elements */}
-            {signInNeeded && (s.transport === 'http' || s.transport === 'sse') && (
-              <McpAuthFlow server={s.name} accounts={[]} />
+            {((signInNeeded && !oneTap) || pasteBack === s.name) && (s.transport === 'http' || s.transport === 'sse') && (
+              <>
+                {pasteBack === s.name && (
+                  <p className="mt-1 px-3 text-xs text-ink-muted">
+                    One-tap sign-in isn't available for this server; sign in manually below.
+                  </p>
+                )}
+                <McpAuthFlow server={s.name} accounts={[]} />
+              </>
+            )}
+            {signInNeeded && oneTap && pasteBack !== s.name && (s.transport === 'http' || s.transport === 'sse') && (
+              <div className="mt-1 px-3 pb-2">
+                <a
+                  href={`/api/mcp/oauth/start?server=${encodeURIComponent(s.name)}`}
+                  className="inline-block rounded border border-edge-strong px-2 py-1 text-xs hover:bg-surface-raised"
+                >
+                  Sign in
+                </a>
+              </div>
             )}
             {s.overall.status === 'needs-auth' && s.transport === 'stdio' && (
               <p className="mt-1 px-3 pb-2 text-sm text-ink-muted">

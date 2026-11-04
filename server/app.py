@@ -54,6 +54,7 @@ from server.api.pipeline import router as pipeline_router, repos_router as pipel
 from server.api.automations import router as automations_router
 from server.api.capacity import router as capacity_router
 from server.api.library import router as library_router
+from server.api.mcp_oauth import router as mcp_oauth_router
 from server.api.memory import router as memory_router
 from server.api.presets import router as presets_router
 from server.api.templates import router as templates_router
@@ -181,8 +182,10 @@ async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> "list[grant_health.
         healed = await grant_health.record(outcomes, expired_keys=expired)
         if healed:
             await mcp_after_login.heal_servers(orch_getter(), [t.server for t in healed])
+    # Re-read right before promoting: a sign-in since the read above must not die from it.
+    fresh = await asyncio.to_thread(vp_creds.read_shared_mcp)
     await grant_health.promote_cleared(
-        mcp_oauth_refresh.cleared_keys(store) - result.skip - result.drop)
+        mcp_oauth_refresh.cleared_keys(fresh) - result.skip - result.drop)
     pending = await grant_health.pending_alerts()
     if pending:
         await mcp_alerts.send_alerts(pending, orch=orch_getter())
@@ -228,6 +231,10 @@ async def _lifespan(app: FastAPI):
     # Structured JSON logging (stdout→journald + rotating file) with correlation
     # ids and credential redaction. Idempotent; installs the redacting filter too.
     configure_logging()
+    # The one-tap MCP callback's query carries an authorization code: keep it out of the
+    # uvicorn access log.
+    from server.api.mcp_oauth import install_callback_access_filter
+    install_callback_access_filter()
 
     # In single-process mode the edge owns the drivers too, so it sees the same
     # unowned async-generator finalizations the daemon does (#1869, #1870). Must run
@@ -690,6 +697,9 @@ async def _lifespan(app: FastAPI):
     if _mcp_auth is not None:
         await bounded_wait(_mcp_auth.shutdown(),
                            timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:mcp_auth")
+    from server.mcp_health import one_tap as _one_tap
+    await bounded_wait(_one_tap.shutdown(),
+                       timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:mcp_one_tap")
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
         await bounded_wait(app.state.sessions.aclose(),
@@ -1113,6 +1123,7 @@ def create_app(
     app.include_router(automations_router)
     app.include_router(capacity_router)
     app.include_router(library_router)
+    app.include_router(mcp_oauth_router)
     app.include_router(memory_router)
     app.include_router(presets_router)
     app.include_router(templates_router)

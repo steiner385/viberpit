@@ -57,6 +57,58 @@ def opt_csv_items(raw: str | None) -> list[str] | None:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def parse_public_origin(raw: str | None) -> str | None:
+    """THE single validator for ``VIBERPIT_PUBLIC_ORIGIN`` (MCP auth overhaul phase 4), shared
+    by both Settings classes. Unset or blank is ``None`` (one-tap sign-in off). Otherwise the
+    value must be ``https://host[:port]``: a bare trailing ``/`` is dropped, and a path,
+    query, fragment, userinfo, bad port or any non-https scheme raises ``ValueError``; the
+    settings layer (:func:`public_origin_or_none`) degrades that to unset with one ERROR.
+    The host is lower-cased."""
+    import urllib.parse
+
+    value = (raw or "").strip()
+    if not value:
+        return None
+    err = ValueError("VIBERPIT_PUBLIC_ORIGIN must be https://host[:port] with no path")
+    if any(c.isspace() for c in value):
+        raise err
+    parts = urllib.parse.urlsplit(value)
+    try:
+        port = parts.port
+    except ValueError:
+        raise err from None
+    if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+            or parts.password is not None or parts.path not in ("", "/") or parts.query
+            or parts.fragment or "?" in value or "#" in value or port == 0):
+        raise err
+    host = parts.hostname.lower()
+    if ":" in host:          # IPv6 literal
+        host = f"[{host}]"
+    return f"https://{host}" + (f":{port}" if port is not None else "")
+
+
+_public_origin_errors_logged: set[str] = set()
+
+
+def public_origin_or_none(raw: str | None) -> str | None:
+    """The settings layer's fail-soft read of ``VIBERPIT_PUBLIC_ORIGIN``. The session
+    daemon shares the edge's env file and builds Settings too, so a typo must never crash
+    it: an invalid value is treated as unset (one-tap off, paste-back everywhere) and logs
+    one ERROR per process per value, not one per ``get_settings()`` call."""
+    try:
+        return parse_public_origin(raw)
+    except ValueError as exc:
+        value = (raw or "").strip()
+        if value not in _public_origin_errors_logged:
+            _public_origin_errors_logged.add(value)
+            import logging
+
+            logging.getLogger("server.config").error(
+                "%s; got %r. One-tap MCP sign-in is disabled (paste-back only)",
+                exc, value)
+        return None
+
+
 def _rules_trust_local_host_from_process_env() -> bool:
     """THE single reader of ``VIBERPIT_RULES_TRUST_LOCAL_HOST`` (spec 2026-10-14).
 
@@ -97,7 +149,7 @@ def _reauth_chrome_profile_default() -> Path:
 
 try:
     from pydantic_settings import BaseSettings
-    from pydantic import Field
+    from pydantic import Field, field_validator
 
     class Settings(BaseSettings):
         """Application settings loaded from environment variables."""
@@ -345,6 +397,15 @@ try:
         # and a token expires until the next login. Runs only on the refresh authority.
         mcp_oauth_refresh_enabled: bool = Field(
             default=True, alias="VIBERPIT_MCP_OAUTH_REFRESH_ENABLED")
+        # The edge's own https origin for MCP OAuth callbacks (phase 4 one-tap sign-in).
+        # Unset = one-tap off, every server signs in by paste-back. Never derived from
+        # request headers. Invalid = unset + one ERROR (public_origin_or_none).
+        public_origin: str | None = Field(default=None, alias="VIBERPIT_PUBLIC_ORIGIN")
+
+        @field_validator("public_origin", mode="before")
+        @classmethod
+        def _validate_public_origin(cls, v: Any) -> str | None:
+            return public_origin_or_none(v)
         # How many report_feedback rows one session may file (spec §4). Further reports
         # are recorded as "capped": visible, never filed.
         session_feedback_cap: int = Field(
@@ -717,6 +778,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         mcp_oauth_refresh_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_MCP_OAUTH_REFRESH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        public_origin: str | None = dataclasses.field(
+            default_factory=lambda: public_origin_or_none(os.environ.get("VIBERPIT_PUBLIC_ORIGIN"))
         )
         session_feedback_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3

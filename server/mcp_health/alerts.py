@@ -9,9 +9,11 @@ re-derives pending alerts from the table) retries it.
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from collections.abc import Iterable
 from typing import Any
 
+from server.config import get_settings
 from server.mcp_health import grant_health
 from server.sessions import push as push_mod
 
@@ -32,6 +34,14 @@ def alert_copy(t: grant_health.Transition) -> tuple[str, str]:
                    f"{reason}. Sign in again.")
 
 
+def _alert_url(server: str) -> str:
+    """One-tap sign-in link when the public origin is set (the start route falls back to
+    the paste-back page itself), else the Settings page."""
+    if get_settings().public_origin:
+        return f"/api/mcp/oauth/start?server={urllib.parse.quote(server, safe='')}"
+    return "/settings/mcp"
+
+
 async def send_alerts(transitions: Iterable[grant_health.Transition], *, orch: Any) -> None:
     """Push each alert transition once, then mark it alerted. Never raises (except
     cancellation)."""
@@ -45,7 +55,7 @@ async def send_alerts(transitions: Iterable[grant_health.Transition], *, orch: A
             log.warning("mcp sign-in alert failed server=%s; retrying next tick", t.server,
                         exc_info=True)
             continue
-        await push_mod.notify_event("mcp_auth_needed", title, body, url="/settings/mcp",
+        await push_mod.notify_event("mcp_auth_needed", title, body, url=_alert_url(t.server),
                                     fanout_when_unconfigured=True, orch=orch)
         try:
             await grant_health.mark_alerted(t.key, f"{state}:{t.generation}")

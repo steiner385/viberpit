@@ -98,6 +98,8 @@ async def test_after_login_probe_false_skips_probe(monkeypatch, cleared):
 async def test_after_login_signed_in_starts_a_new_generation(monkeypatch, cleared):
     monkeypatch.setattr(after_login, "_refresh", lambda acct, server=None: True)
     monkeypatch.setattr(after_login.grants, "keys_for_server", lambda server: [f"{server}|k1"])
+    monkeypatch.setattr(after_login.creds, "read_shared_mcp",
+                        lambda: {"notion|k1": {"accessToken": "AT", "refreshToken": "RT"}})
     marked: list = []
 
     async def mark(keys, *, server=None):
@@ -105,6 +107,27 @@ async def test_after_login_signed_in_starts_a_new_generation(monkeypatch, cleare
     monkeypatch.setattr(after_login.grant_health, "mark_signed_in", mark)
     await after_login.after_login(_Orch(), "notion", ["alice"], signed_in=True)
     assert marked == [(["notion|k1"], "notion")]
+
+
+@pytest.mark.asyncio
+async def test_mark_signed_in_skips_tokenless_stub(monkeypatch, cleared):
+    """Two configured servers share a short name; the sign-in wrote only one key. The
+    other's tokenless discovery stub must not be stamped signed in (it would later be
+    promoted dead and push a false "revoked")."""
+    monkeypatch.setattr(after_login, "_refresh", lambda acct, server=None: True)
+    monkeypatch.setattr(after_login.grants, "keys_for_server",
+                        lambda server: ["notion|live", "notion|stub", "notion|access", "notion|gone"])
+    monkeypatch.setattr(after_login.creds, "read_shared_mcp", lambda: {
+        "notion|live": {"accessToken": "", "refreshToken": "RT"},
+        "notion|stub": {"serverName": "notion", "accessToken": "", "expiresAt": 0},
+        "notion|access": {"accessToken": "AT"}})
+    marked: list = []
+
+    async def mark(keys, *, server=None):
+        marked.append((list(keys), server))
+    monkeypatch.setattr(after_login.grant_health, "mark_signed_in", mark)
+    await after_login.after_login(_Orch(), "notion", ["alice"], signed_in=True)
+    assert marked == [(["notion|live", "notion|access"], "notion")]
 
 
 @pytest.mark.asyncio

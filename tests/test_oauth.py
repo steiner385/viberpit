@@ -26,8 +26,8 @@ class _FakeResp:
     def __exit__(self, *a):
         return False
 
-    def read(self):
-        return self._body
+    def read(self, n=-1):
+        return self._body if n < 0 else self._body[:n]
 
 
 def _http_error(code, retry_after=None, body=b"{}"):
@@ -463,7 +463,7 @@ class TestNonIdempotentRetry(unittest.TestCase):
                 raise oauth.urllib.error.HTTPError("https://x", st, "err", {}, __import__("io").BytesIO(bd))
             class R:
                 status = 200
-                def read(self): return b"{}"
+                def read(self, n=-1): return b"{}"
                 def __enter__(self): return self
                 def __exit__(self, *a): return False
             return R()
@@ -576,3 +576,22 @@ class TestHasUsageScope(unittest.TestCase):
         with mock.patch.object(oauth, "http_request", return_value=(429, b"{}")):
             with self.assertRaises(oauth.TransientError):
                 oauth.has_usage_scope("tok")
+
+
+class TestHttpRequestBodyCap(unittest.TestCase):
+    def test_body_at_the_cap_is_returned(self):
+        body = b"x" * oauth.MAX_RESPONSE_BYTES
+        with mock.patch.object(oauth.urllib.request, "urlopen", return_value=_FakeResp(200, body)):
+            self.assertEqual(oauth.http_request("GET", "https://x")[1], body)
+
+    def test_oversized_body_fails(self):
+        body = b"x" * (oauth.MAX_RESPONSE_BYTES + 1)
+        with mock.patch.object(oauth.urllib.request, "urlopen", return_value=_FakeResp(200, body)):
+            with self.assertRaises(oauth.TransientError):
+                oauth.http_request("GET", "https://x", max_retries=0)
+
+    def test_oversized_error_body_fails(self):
+        err = _http_error(400, body=b"x" * (oauth.MAX_RESPONSE_BYTES + 1))
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=[err]):
+            with self.assertRaises(oauth.TransientError):
+                oauth.http_request("POST", "https://x", max_retries=0, idempotent=False)

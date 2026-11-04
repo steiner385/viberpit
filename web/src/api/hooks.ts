@@ -277,6 +277,11 @@ export interface ConfigInfo {
    */
   webVitalsEnabled?: boolean
   /**
+   * One-tap MCP sign-in is available (`VIBERPIT_PUBLIC_ORIGIN` is set on the edge).
+   * Absent on an older edge — treat as OFF (paste-back sign-in).
+   */
+  oneTapEnabled?: boolean
+  /**
    * Per-engine offerability + capabilities. Absent on an edge that predates the
    * engine registry — treat that as "Claude Code only", which is what
    * `useEngineOffers()` degrades to.

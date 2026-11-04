@@ -18,11 +18,11 @@ import math
 import re
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
 from . import creds, paths
-from .mcp_keys import DEFAULT_PORTS, url_origin
+from .mcp_keys import DEFAULT_PORTS, is_https_url, url_origin
 from .mcp_names import short_name
 
 log = logging.getLogger(__name__)
@@ -55,39 +55,61 @@ class McpGrantDead(Exception):
 
 
 class McpRefreshTransient(Exception):
-    """The refresh failed for a reason that does not prove the grant dead. Retry later."""
+    """The refresh failed for a reason that does not prove the grant dead. Retry later.
+    ``code`` is the sanitised OAuth ``error`` code of the response, when there was one."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # --- HTTP defaults (viberpit.oauth.http_request is the one outbound choke point) -----------
 
-def _default_fetch_json(url: str) -> dict | None:
+def default_fetch_json(url: str) -> dict | None:
+    # Redirects are never followed here or in default_post_form: callers validate the URL
+    # (origin, https) before the request, and a 3xx would bypass that.
     from . import oauth
     try:
         status, body = oauth.http_request("GET", url, headers={"Accept": "application/json"},
-                                          timeout=_HTTP_TIMEOUT_S, max_retries=1, max_total_sec=15.0)
+                                          timeout=_HTTP_TIMEOUT_S, max_retries=1, max_total_sec=15.0,
+                                          follow_redirects=False)
     except oauth.TransientError:
         return None
     if status != 200:
         return None
-    doc = _json_or_none(body)
+    doc = json_or_none(body)
     return doc if isinstance(doc, dict) else None
 
 
-def _default_post_form(url: str, form: dict, headers: dict) -> tuple[int, bytes]:
+def default_post_form(url: str, form: dict, headers: dict) -> tuple[int, bytes]:
     from . import oauth
     hdrs = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", **headers}
     # Non-idempotent: a refresh token may be single-use, so a 5xx or a network error is
     # never resent (the origin may already have rotated it).
     return oauth.http_request("POST", url, headers=hdrs, data=urllib.parse.urlencode(form).encode(),
                               timeout=_HTTP_TIMEOUT_S, max_retries=2, max_total_sec=20.0,
-                              idempotent=False)
+                              idempotent=False, follow_redirects=False)
 
 
-def _json_or_none(body: bytes) -> object:
+def json_or_none(body: bytes) -> object:
     try:
         return json.loads(body)
     except (ValueError, TypeError):
         return None
+
+
+def oauth_error_code(payload: object, secrets: Iterable[object] = ()) -> str | None:
+    """The OAuth ``error`` code of an error response, safe to log and store, or None.
+
+    Only a well-formed code (RFC 6749 §5.2 token charset) survives: a body field is never
+    echoed verbatim. A hostile or buggy endpoint could echo a credential as the "code", so
+    a code containing any of *secrets* is dropped too."""
+    raw = payload.get("error") if isinstance(payload, dict) else None
+    if not (isinstance(raw, str) and _OAUTH_CODE_RE.fullmatch(raw)):
+        return None
+    if any(isinstance(v, str) and v and v in raw for v in secrets):
+        return None
+    return raw
 
 
 # --- selection --------------------------------------------------------------------------
@@ -163,7 +185,7 @@ def _auth_server_url(bundle: dict) -> str:
     return _origin(str(bundle.get("serverUrl") or ""))
 
 
-def _metadata_urls(auth_url: str) -> list[str]:
+def metadata_urls(auth_url: str) -> list[str]:
     """RFC 8414 path insertion, then OIDC path insertion, then OIDC path append."""
     origin = _origin(auth_url)
     if not origin:
@@ -178,14 +200,14 @@ def _metadata_urls(auth_url: str) -> list[str]:
 def _auth_metadata(bundle: dict, fetch_json: FetchJson | None) -> dict:
     """The authorization server's metadata, memoized per auth server in-process; ``{}`` when
     no document with a ``token_endpoint`` was found (not memoized: discovery retries)."""
-    fetch = fetch_json or _default_fetch_json
+    fetch = fetch_json or default_fetch_json
     explicit = _discovery_state(bundle).get("authServerMetadataUrl")
     explicit = explicit if isinstance(explicit, str) and explicit else None
     auth_url = _auth_server_url(bundle)
     cache_key = explicit or auth_url
     if cache_key in _metadata_cache:
         return _metadata_cache[cache_key]
-    urls = ([explicit] if explicit else []) + _metadata_urls(auth_url)
+    urls = ([explicit] if explicit else []) + metadata_urls(auth_url)
     for url in dict.fromkeys(urls):
         try:
             doc = fetch(url)
@@ -199,10 +221,14 @@ def _auth_metadata(bundle: dict, fetch_json: FetchJson | None) -> dict:
 
 
 def _endpoint_from(bundle: dict, metadata: dict) -> str:
+    """The token endpoint, or "" when there is none or it is not https: a refresh token is
+    never sent to a ``file:``/``http:`` URL a metadata document named."""
     if metadata.get("token_endpoint"):
-        return str(metadata["token_endpoint"])
-    origin = _origin(_auth_server_url(bundle))
-    return f"{origin}/token" if origin else ""
+        url = str(metadata["token_endpoint"])
+    else:
+        origin = _origin(_auth_server_url(bundle))
+        url = f"{origin}/token" if origin else ""
+    return url if is_https_url(url) else ""
 
 
 def token_endpoint(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
@@ -247,7 +273,7 @@ def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> 
     if prm_url in _resource_cache:
         return _resource_cache[prm_url]
     try:
-        doc = (fetch_json or _default_fetch_json)(prm_url)
+        doc = (fetch_json or default_fetch_json)(prm_url)
     except Exception:
         log.debug("mcp oauth resource metadata fetch failed url=%s", prm_url, exc_info=True)
         doc = None
@@ -293,10 +319,17 @@ def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tupl
 
 def _fetch_identity(prm_url: str, fetch_json: FetchJson | None) -> tuple[str, str] | None:
     try:
-        doc = (fetch_json or _default_fetch_json)(prm_url)
+        doc = (fetch_json or default_fetch_json)(prm_url)
     except Exception:
         log.debug("mcp oauth grant identity fetch failed url=%s", prm_url, exc_info=True)
         return None
+    return prm_identity(prm_url, doc)
+
+
+def prm_identity(prm_url: str, doc: object) -> tuple[str, str] | None:
+    """``(authorization_server, resource)`` of the protected-resource metadata *doc* served
+    at *prm_url*, both :func:`url_href`-serialized; None when either field is missing or
+    ``resource`` is not on *prm_url*'s origin. The pure half of :func:`grant_identity`."""
     if not isinstance(doc, dict):
         return None
     servers = doc.get("authorization_servers")
@@ -311,6 +344,31 @@ def _fetch_identity(prm_url: str, fetch_json: FetchJson | None) -> tuple[str, st
         log.debug("mcp oauth grant identity resource origin mismatch url=%s", prm_url)
         return None
     return identity
+
+
+_SECRET_METHODS = ("client_secret_basic", "client_secret_post")
+
+
+def client_auth(client_id: str, secret: str | None, metadata: dict,
+                method: str | None = None) -> tuple[dict, dict]:
+    """``(extra form fields, headers)`` authenticating a confidential client at the token
+    endpoint. *method* is the registration's ``token_endpoint_auth_method`` when known;
+    otherwise ``client_secret_basic`` unless the metadata lists only ``client_secret_post``.
+    A public client (no secret) sends nothing extra."""
+    if not secret:
+        return {}, {}
+    if method not in _SECRET_METHODS:
+        methods = metadata.get("token_endpoint_auth_methods_supported")
+        if not isinstance(methods, list) or "client_secret_basic" in methods:
+            method = "client_secret_basic"
+        elif "client_secret_post" in methods:
+            method = "client_secret_post"
+        else:
+            return {}, {}
+    if method == "client_secret_post":
+        return {"client_secret": secret}, {}
+    pair = f"{urllib.parse.quote(client_id, safe='')}:{urllib.parse.quote(secret, safe='')}"
+    return {}, {"Authorization": "Basic " + base64.b64encode(pair.encode()).decode()}
 
 
 # --- the grant ----------------------------------------------------------------------------
@@ -335,21 +393,15 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
     resource = resource_indicator(bundle, fetch_json=fetch_json)
     if resource:
         form["resource"] = resource
-    headers: dict = {}
     secret = bundle.get("clientSecret")
-    if isinstance(secret, str) and secret:
-        methods = metadata.get("token_endpoint_auth_methods_supported")
-        if not isinstance(methods, list) or "client_secret_basic" in methods:
-            pair = (f"{urllib.parse.quote(str(client_id or ''), safe='')}:"
-                    f"{urllib.parse.quote(secret, safe='')}")
-            headers["Authorization"] = "Basic " + base64.b64encode(pair.encode()).decode()
-        elif "client_secret_post" in methods:
-            form["client_secret"] = secret
+    extra, headers = client_auth(str(client_id or ""), secret if isinstance(secret, str) else None,
+                                 metadata)
+    form.update(extra)
     try:
-        status, body = (post_form or _default_post_form)(url, form, headers)
+        status, body = (post_form or default_post_form)(url, form, headers)
     except Exception as exc:
         raise McpRefreshTransient(f"token request failed: {type(exc).__name__}") from exc
-    payload = _json_or_none(body)
+    payload = json_or_none(body)
     payload = payload if isinstance(payload, dict) else {}
     access_token = payload.get("access_token")
     if status == 200 and isinstance(access_token, str) and access_token:
@@ -366,18 +418,12 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
         if isinstance(payload.get("scope"), str) and payload["scope"]:
             new["scope"] = payload["scope"]
         return new
-    raw_code = payload.get("error")
-    # Only a well-formed OAuth error code (RFC 6749 §5.2 token charset) survives into the
-    # exception text, which is logged and stored: a body field is never echoed verbatim.
-    code = raw_code if isinstance(raw_code, str) and _OAUTH_CODE_RE.fullmatch(raw_code) else None
-    # A hostile or buggy endpoint could echo a credential as the "code"; never repeat one.
-    if code is not None and any(isinstance(v, str) and v and v in code
-                                for v in (refresh_token, bundle.get("clientSecret"))):
-        code = None
+    code = oauth_error_code(payload, (refresh_token, bundle.get("clientSecret")))
     # Case-insensitive: AWS sign-in answers in upper case (INVALID_GRANT, INVALID_TARGET).
     if status in (400, 401) and code is not None and code.lower() in DEAD_GRANT_ERRORS:
         raise McpGrantDead(f"token endpoint returned {status} {code}")
-    raise McpRefreshTransient(f"token endpoint returned {status}" + (f" {code}" if code else ""))
+    raise McpRefreshTransient(f"token endpoint returned {status}" + (f" {code}" if code else ""),
+                              code=code)
 
 
 # --- the tick -----------------------------------------------------------------------------
@@ -421,6 +467,24 @@ def _publish_all(names: list[str], *, drop: frozenset[str] = frozenset()) -> int
     return written
 
 
+def _forget_stale_client(bundle: dict, label: str, key: str) -> None:
+    """``invalid_client``: the provider no longer knows the bundle's DCR client. Drop the
+    cached registration when it is that very client, so the next one-tap sign-in registers
+    afresh instead of reusing it. The outcome stays transient (the grant is not proven dead)."""
+    client_id = bundle.get("clientId")
+    issuer = _auth_server_url(bundle)
+    if not (isinstance(client_id, str) and client_id and issuer):
+        return
+    from .mcp_oauth_client import forget_client  # imports this module
+    try:
+        if forget_client(issuer, client_id=client_id):
+            log.info("mcp oauth client rejected, cached registration forgotten server=%s key=%s",
+                     label, key)
+    except Exception:
+        log.debug("mcp oauth client cache write failed server=%s key=%s", label, key,
+                  exc_info=True)
+
+
 def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJson | None,
                  now_ms: int | None, skip_keys: frozenset[str] = frozenset()) -> bool:
     store = creds.read_shared_mcp()
@@ -441,6 +505,8 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
             log.debug("mcp oauth grant dead server=%s key=%s: %s", label, key, exc)
         except Exception as exc:
             _backoff_until_ms[key] = now + TRANSIENT_BACKOFF_S * 1000
+            if isinstance(exc, McpRefreshTransient) and (exc.code or "").lower() == "invalid_client":
+                _forget_stale_client(old, label, key)
             summary["transient"].append(label)
             summary["outcomes"].append({"key": key, "label": label, "outcome": "transient",
                                         "error": str(exc)[:MAX_ERROR_CHARS]})

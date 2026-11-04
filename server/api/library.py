@@ -445,20 +445,21 @@ async def mcp_auth_start(
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
     _require_known_account(body.account if body else None)
-    servers = [s for s in scan.list_mcp_servers(status_rows=await _status_rows())["servers"]
-               if s["name"] == name]
-    if not servers:
-        raise HTTPException(status_code=404, detail={"error": "mcp_server_not_found"})
-    if len(servers) != 1:
-        raise HTTPException(status_code=409, detail={
-            "error": "mcp_server_ambiguous",
-            "message": "Multiple servers have this name. Give the user-configured server a unique name before signing in.",
-        })
-    if servers[0]["transport"] not in ("http", "sse"):
+    try:
+        scan.sign_in_server(
+            scan.list_mcp_servers(status_rows=await _status_rows())["servers"], name)
+    except scan.SignInServerError as exc:
+        if exc.reason == "not_found":
+            raise HTTPException(status_code=404, detail={"error": "mcp_server_not_found"}) from None
+        if exc.reason == "ambiguous":
+            raise HTTPException(status_code=409, detail={
+                "error": "mcp_server_ambiguous",
+                "message": "Multiple servers have this name. Give the user-configured server a unique name before signing in.",
+            }) from None
         raise HTTPException(status_code=400, detail={
             "error": "mcp_oauth_unsupported",
             "message": "Browser OAuth requires an HTTP or SSE server. Configure this server's credentials on the session host.",
-        })
+        }) from None
     try:
         preferred = ([body.account] if body and body.account is not None else []) + \
             (await mcp_store.needs_auth_by_server(

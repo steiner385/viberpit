@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import func, or_, select, update
@@ -27,6 +27,8 @@ from server.db.models import McpGrantHealth
 
 TransitionKind = Literal["healed", "alert_dead", "alert_expired"]
 _UNHEALTHY_STATES = frozenset({"dead", "expired"})
+# A sign-in this recent is never promoted dead: the cleared read may predate it.
+SIGN_IN_GRACE = timedelta(seconds=60)
 
 
 @dataclass(frozen=True)
@@ -123,7 +125,8 @@ async def promote_cleared(keys: Iterable[str]) -> None:
     """Mark ``dead`` each of *keys* (store keys whose bundle is cleared) that was signed in —
     has a ``last_ok_at`` — and is not already dead. Catches a death whose ``dead`` outcome was
     never recorded (it is reported once) and one the CLI cleared itself. A key with no row or
-    no ``last_ok_at`` (never signed in here) is left alone, so it never alerts."""
+    no ``last_ok_at`` (never signed in here) is left alone, so it never alerts. A key signed
+    in within :data:`SIGN_IN_GRACE` is skipped too: the caller's cleared read may predate it."""
     wanted = list(dict.fromkeys(keys))
     if not wanted:
         return
@@ -132,7 +135,11 @@ async def promote_cleared(keys: Iterable[str]) -> None:
         await db.execute(
             update(McpGrantHealth)
             .where(McpGrantHealth.key.in_(wanted), McpGrantHealth.last_ok_at.is_not(None),
-                   or_(McpGrantHealth.state.is_(None), McpGrantHealth.state != "dead"))
+                   or_(McpGrantHealth.state.is_(None), McpGrantHealth.state != "dead"),
+                   or_(McpGrantHealth.last_outcome.is_(None),
+                       McpGrantHealth.last_outcome != "signed_in",
+                       McpGrantHealth.updated_at.is_(None),
+                       McpGrantHealth.updated_at < now - SIGN_IN_GRACE))
             .values(state="dead", updated_at=now))
 
 

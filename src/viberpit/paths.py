@@ -116,6 +116,11 @@ def shared_mcp_path() -> Path:
     return store_dir() / "mcp.shared.json"
 
 
+def shared_mcp_clients_path() -> Path:
+    """ViberPit's own MCP OAuth client registrations, keyed by authorization server."""
+    return store_dir() / "mcp.clients.json"
+
+
 def global_claude_json() -> Path:
     """$HOME/.claude.json — the real claude binary's global config file."""
     return Path.home() / ".claude.json"
