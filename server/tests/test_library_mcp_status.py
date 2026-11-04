@@ -123,10 +123,18 @@ def test_get_returns_status_and_kill_switch_empties_it(shared, monkeypatch):  # 
     async def fake_rows():
         return [ROWS[0]]
 
+    async def enabled():
+        return {"a"}
+
+    async def live():
+        return set()
+
     monkeypatch.setattr(library.mcp_store, "rows", fake_rows)
+    monkeypatch.setattr(library, "_enabled_accounts", enabled)
+    monkeypatch.setattr(library, "_live_session_ids", live)
     c = _client(None, monkeypatch)
     [s] = c.get("/api/library/mcp").json()["servers"]
-    assert s["status"] == [ROWS[0]] and not any(k.lower() == "needsauth" for k in s)
+    assert s["status"] == [{**ROWS[0], "counted": True}] and not any(k.lower() == "needsauth" for k in s)
     c = _client(None, monkeypatch, enabled=False)
     [s] = c.get("/api/library/mcp").json()["servers"]
     assert s["status"] == []
@@ -237,3 +245,57 @@ def test_picker_with_only_bad_preferred_and_no_accounts_raises(monkeypatch):
                         lambda n: (_ for _ in ()).throw(AssertionError("compose reached")))
     with pytest.raises(mcp_auth.McpAuthError):
         mcp_auth.default_account_picker("notion", ["../x"])
+
+
+def _write_store(bundle: dict) -> None:
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
+    write_json_secure(paths.shared_mcp_path(), {"aws|k": bundle})
+
+
+def _overall_client(monkeypatch, rows, enabled=("a",), live=()):
+    async def _rows():
+        return rows
+
+    async def _enabled():
+        return set(enabled)
+
+    async def _live():
+        return set(live)
+
+    monkeypatch.setattr(library, "_status_rows", _rows)
+    monkeypatch.setattr(library, "_enabled_accounts", _enabled)
+    monkeypatch.setattr(library, "_live_session_ids", _live)
+    app = FastAPI()
+    app.include_router(library.router)
+    app.dependency_overrides[current_identity] = lambda: "tester"
+    return TestClient(app)
+
+
+def _write_aws() -> None:
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
+    write_json_secure(paths.shared_claude_json_path(),
+                      {"mcpServers": {"aws": {"type": "http", "url": "https://u?x=1"}}})
+
+
+def test_get_mcp_overall_ignores_disabled_account_row(shared: Path, monkeypatch):  # noqa: F811
+    _write_aws()
+    _write_store({"serverName": "aws", "serverUrl": "https://u?x=1", "accessToken": "t"})
+    rows = [{"server": "aws", "account": "gone", "host": "dobby", "status": "needs-auth",
+             "source": "probe"}]
+    body = _overall_client(monkeypatch, rows).get("/api/library/mcp").json()
+    [s] = body["servers"]
+    assert s["overall"] == {"status": None, "error": None, "grant": "live"}
+    assert s["status"][0]["counted"] is False
+
+
+def test_get_mcp_overall_never_signed_in(shared: Path, monkeypatch):  # noqa: F811
+    _write_aws()
+    _write_store({"serverName": "aws", "serverUrl": "https://u?x=1", "accessToken": ""})
+    rows = [{"server": "aws", "account": "a", "host": "dobby", "status": "connected",
+             "source": "probe"}]
+    [s] = _overall_client(monkeypatch, rows).get("/api/library/mcp").json()["servers"]
+    assert s["overall"]["status"] == "needs-auth"
+    assert s["overall"]["grant"] == "never"
+    assert s["status"][0]["counted"] is True

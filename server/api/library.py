@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from typing import Any
 
 import httpx
@@ -14,11 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from viberpit import brand
+from viberpit import accounts, brand, creds
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
-from server.db import get_db
+from server.db import db_session, get_db
+from server.db.models import Session as SessionRow
+from sqlalchemy import select
 from server.library import mutate, scan
 from server.library.mutate import ConfigUnreadableError
 from server.library.names import (
@@ -33,6 +36,7 @@ from server.api.repos import known_repo_slugs
 from server.mcp_auth import McpAuthBusy
 from server.mcp_scope import store as scope_store
 from server.mcp_scope.servers import configured_server_keys
+from server.mcp_health import overall as mcp_overall
 from server.mcp_health import store as mcp_store
 from server.sessions.facade import call_with_deadline
 from server.sessions.claude_driver import ClaudeAgentDriver
@@ -204,9 +208,35 @@ async def delete_command(path: str,
                        detail={"command": path})
 
 
+async def _enabled_accounts() -> set[str]:
+    # list_accounts takes the ledger lock; keep it off the event loop.
+    return {a["name"] for a in await asyncio.to_thread(accounts.list_accounts) if a["enabled"]}
+
+
+async def _live_session_ids() -> set[str]:
+    """Ids of sessions that have not ended, read from the DB (remote orchestrators lack seams)."""
+    async with db_session() as db:
+        return set((await db.execute(
+            select(SessionRow.id).where(SessionRow.status != "ended"))).scalars())
+
+
 @router.get("/mcp")
 async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
-    return scan.list_mcp_servers(status_rows=await _status_rows())
+    out = scan.list_mcp_servers(status_rows=await _status_rows())
+    enabled = await _enabled_accounts()
+    live = await _live_session_ids()
+    store = await asyncio.to_thread(creds.read_shared_mcp)
+    now_ms = int(time.time() * 1000)
+    for server in out["servers"]:
+        key_name = mcp_overall.store_key_name(server["name"], server.get("pluginName"))
+        url = (server.get("config") or {}).get("url")
+        for row in server["status"]:
+            row["counted"] = mcp_overall.counted(row, enabled_accounts=enabled, live_session_ids=live)
+        server["overall"] = mcp_overall.derive_overall(
+            grant=mcp_overall.grant_state(store, key_name=key_name, url=url, now_ms=now_ms),
+            rows=[r for r in server["status"] if r["counted"]], now_ms=now_ms,
+            expires_at_ms=mcp_overall.best_expiry(store, key_name=key_name, url=url))
+    return out
 
 
 class McpTestBody(BaseModel):
@@ -411,7 +441,8 @@ async def mcp_auth_start(
         })
     try:
         preferred = ([body.account] if body and body.account is not None else []) + \
-            (await mcp_store.needs_auth_by_server()).get(name, [])
+            (await mcp_store.needs_auth_by_server(
+                enabled_accounts=await _enabled_accounts())).get(name, [])
         state = await _mcp_auth(request).start(
             name, preferred=preferred, login_key=await mcp_store.login_key_for(name))
     except McpAuthBusy as exc:

@@ -43,12 +43,16 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     async def _no_rows():
         return []
 
-    async def _needs():
+    async def _needs(*, enabled_accounts=None):
         return {"notion": ["alice"]}
 
     async def _key(name):
         return f"plugin:x:{name}"
 
+    async def _enabled():
+        return {"alice", "bob"}
+
+    monkeypatch.setattr(library, "_enabled_accounts", _enabled)
     monkeypatch.setattr(library, "_status_rows", _no_rows)
     monkeypatch.setattr(library.mcp_store, "needs_auth_by_server", _needs)
     monkeypatch.setattr(library.mcp_store, "login_key_for", _key)
@@ -141,3 +145,20 @@ def test_start_passes_preferred_account_and_login_key(client: TestClient, monkey
     r = client.post("/api/library/mcp/notion/auth", json={"account": "bob"})
     assert r.status_code == 202
     assert getattr(client.app, "state").mcp_auth.calls[-1] == ("start", "notion", ["bob", "alice"], "plugin:x:notion")
+
+
+def test_auth_start_prefers_only_enabled_accounts(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict = {}
+
+    async def _needs(*, enabled_accounts=None):
+        seen["enabled"] = enabled_accounts
+        return {"notion": sorted(enabled_accounts or [])}
+
+    async def _enabled():
+        return {"a"}
+
+    monkeypatch.setattr(library.mcp_store, "needs_auth_by_server", _needs)
+    monkeypatch.setattr(library, "_enabled_accounts", _enabled)
+    assert client.post("/api/library/mcp/notion/auth").status_code == 202
+    assert seen["enabled"] == {"a"}
+    assert getattr(client.app, "state").mcp_auth.calls[-1][2] == ["a"]
