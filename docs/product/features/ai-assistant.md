@@ -175,7 +175,16 @@ assistant mutation does not make subsequent harness cleanup safe.
   predecessor's scope — recorded from the outgoing driver by the overlay rebuild or by the idle
   reap's teardown, and dropped when the session ends — so the pre-card checks see it on the first
   turn; the seed lapses when the new driver sends a context of its own.
-  - **One predicate, two places.** `scope_refusal` (`server/assistant/tools.py`) runs before the
+  - **Opening and header.** ⌘; opens the drawer; `/btw` (coding sessions only) opens it, and `/btw <q>` opens it
+    and sends `<q>` once, tied to the session it was typed in. The header's `About: <session>` is the scope
+    the server holds — the newest started turn's context — not client intent. With the Assistant off in
+    Settings `/btw` toasts and sends nothing; with `VIBERPIT_ASSISTANT_ENABLED` off the CLI's own `/btw`
+    passes through. User-facing details: `docs/product/features/web-dashboard-mobile.md` § Side chat.
+  - **Diff view.** `get_session_diff(summary=false)` reads `GET /api/sessions/{id}/diff?format=patch`
+    (`server/sessions/diff_patch.py`): hunks rendered as unified text under one byte budget shared with
+    `get_pr_files` (`PatchBudget`; `max_files` ≤ 300, `max_patch_bytes` ≤ 60 kB, the tool asks for
+    10 / 24 kB), every cut reported under `cut`, credential-shaped strings redacted (see #3242).
+  - **One predicate, three places.** `scope_refusal` (`server/assistant/tools.py`) runs before the
     permission card — in the Claude driver's `_can_use_tool` and the Codex driver's dynamic-tool
     gate — so no card is raised for a write that would be refused, and again in `build_tools.guarded`
     as the backstop, before the handler, so no endpoint is called. The tool error is

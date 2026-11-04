@@ -62,7 +62,36 @@ The rail switches on the session pane's own width (64rem, a container query), no
   prompt row, and the strip is deleted in the same PR.
 - **Assistant drawer as side chat** `[A-D18]`: ⌘; and `/btw` open the drawer. Inside a session it is scoped to that
   session: it reads the transcript and diff through the assistant tools and never writes to the session.
-  Outside a session it stays app-level.
+  Outside a session it stays app-level. As built (D-12):
+  - **Scope comes from the server.** It is the `sessionId` of the latest context the session's driver actually
+    sent (`context_scope`, on both the Claude and Codex drivers, in the `AgentDriver` contract), read at tool-call
+    time through the `current_scope` callable the overlay build hands to `build_tools`. Tool input never sets
+    it. A rebuilt driver (rotation, recompose, crash recovery, idle reap) is seeded at build time with its
+    predecessor's scope until it sends a context of its own.
+  - **Enforcement is one predicate in three places.** `scope_refusal` (`server/assistant/tools.py`) runs before
+    the permission card in the Claude driver's `_can_use_tool` and in the Codex driver's dynamic-tool gate, so
+    no card is raised, and again in `build_tools.guarded` before the handler, so no endpoint is called. The
+    error is `SCOPED_READ_ONLY: This chat is about session X and can't change it — ask in the session itself,
+    or close the side chat`, logged at INFO and audited and metered as `refused`.
+  - **Targets are canonical.** `session_id_arg` admits only a bare session UUID (the route allowlist's own
+    pattern) and lowercases it, and the handler is sent the id that was checked. A malformed target refuses
+    the whole call while scoped. `AssistantApi.check_path` refuses any request path with a dot segment, `?`,
+    `#`, `%`, a backslash or whitespace, so no other path argument can be normalised onto a session route.
+  - **Every write tool is in one of three tables.** `SESSION_TARGET_KEYS` holds the tools that name sessions and
+    are refused when they name the scoped one. `BLOCKED_WHILE_SCOPED` holds `trigger_automation_action` and
+    `consolidate_prs`, which reach sessions their input does not name, so they are refused while any session is
+    scoped. `NO_SESSION_TARGET` holds the rest, each with a reason; these are PR-, issue- and product-keyed
+    writes and new-session starters, and they stay outside the guard. A test fails until a new write tool is
+    classified.
+  - **Read tools.** `get_session_diff` gives a per-file summary by default. With `summary=false` it reads
+    `GET /api/sessions/{id}/diff?format=patch`, which renders hunks as unified text under one byte budget
+    (`max_files` ≤ 300, `max_patch_bytes` ≤ 60 kB; the tool asks for 10 / 24 kB), reports every cut under
+    `cut`, and redacts credential-shaped strings with `redact_text`. That redactor has known gaps (#3242).
+    `search_session_transcript` searches inside one session (D-11's endpoint, ≤ 50 hits).
+  - **The header shows the server's scope.** "About: <session>" comes from the newest started user turn that
+    carries a context (`selectPromptScope`), not from client intent. While a turn runs or prompts are queued
+    and the open session differs, it adds "Next message will be about <open session>".
+  - **`/btw`** is described in §8.
 
 ## 3. Prompt row (`app.dock`, `SessionComposer`)
 
@@ -307,7 +336,7 @@ Rewind and edit are disabled during a running turn and on engines without the ca
 | Plugins | Settings › Plugins gains marketplaces (add/remove), browse, install and update. | `[A-D15]` |
 | MCP | Per-tool enable/disable per server (Settings) and per session (Context card). | `[A-D15]` |
 | Output styles | Settings list and default; per-session picker in the `+` menu. | `[A-D15]` |
-| App slash commands | `/fork /rewind /btw /plan /effort /fast /model` are added to `server/sessions/commands/catalog.py` and dispatch to the same actions as the UI. | `[A-D15]` |
+| App slash commands | `/fork /rewind /btw /plan /effort /fast /model` are added to `server/sessions/commands/catalog.py` and dispatch to the same actions as the UI. **`/btw` (D-12)** is coding-session only; `build_catalog(kind=…)` keeps it out of the Assistant's own composer. `/btw` alone opens the drawer. `/btw <q>` opens it and sends `<q>` once through the normal send path, queueing behind a running turn and waiting for a drawer session that is still being created. The parked question stays tied to the session it was typed in: if a different session is open when it would be sent, it is dropped with a toast, and closing the drawer drops it. With the Assistant off in Settings, `/btw` toasts "The Assistant is off — turn it on in Settings" and sends nothing. With `VIBERPIT_ASSISTANT_ENABLED` off, the catalog omits it and the CLI's own `/btw` passes through. A `/btw` that reaches the server as a first prompt gets a notice. | `[A-D15]` |
 | Presets | The dispatch bar's `+` menu selects existing presets and templates, which today have no consumer. ⌘⌥1–9 shipped as the session jump (D-10, §7), so a preset chord is still to be chosen. | `[A-D16]` |
 | Worktrees | Settings › Sessions gains worktree location and branch prefix (today server-only). | `[A-D16]` |
 | Sandbox | A session default plus a per-session toggle (Environment card). | `[A-D16]` |
