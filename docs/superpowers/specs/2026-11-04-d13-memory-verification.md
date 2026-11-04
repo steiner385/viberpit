@@ -368,6 +368,6 @@ ViberPit's sessions still see `~/.claude/CLAUDE.md`:
   - "Imports (`@path`) are followed up to 4 levels."
   - (Live-session pickup is a gap; do not promise it.)
 - No migration is needed if the memory rows ride the persisted context reading as JSON on an existing column. A new
-  nullable column is picked up by reconcile, but add a revision `0097_…` chained off `0096_session_views`.
+  nullable column is picked up by reconcile, but add a revision `0097_…` chained off `0096_session_views`. *(Shipped as `0098_session_memory_files`, chained off `0097_host_platforms` after #3245.)*
 - **An assistant tool is optional.** If one is added, it is a read of `/api/library/memory`, and both counts
   (114/107) move.

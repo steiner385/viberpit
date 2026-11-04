@@ -10,7 +10,7 @@ or host can drift.
   so a save over a file another tab changed is 409 ``MEMORY_CONFLICT`` carrying the
   current text, and nothing is lost.
 - The write is atomic and durable on this host: a temp file in the same directory,
-  fsynced, renamed over the target, mode 0644 (``viberpit.fs_beneath.replace_file_beneath``).
+  fsynced, renamed over the target, keeping its mode (0644 on create; ``viberpit.fs_beneath.replace_file_beneath``).
   A reader here sees the old file or the new one, never half. That guarantee does NOT
   extend across hosts: a worker reads ``~/.claude`` over sshfs with a 600 s attribute
   cache, so until it expires a session starting there can see the old file, or a read
@@ -107,6 +107,15 @@ def _read_current(dfd: int, name: str) -> bytes | None:
     return data
 
 
+def _mode_for(dfd: int, name: str) -> int:
+    """Keep the existing file's permission bits across a save (a user who tightened
+    it to 0600 must not find it world-readable afterwards); ``FILE_MODE`` on create."""
+    try:
+        return stat.S_IMODE(os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        return FILE_MODE
+
+
 def read_user_memory() -> dict[str, Any]:
     """``{text, etag, exists}`` of the shared user memory file."""
     name = shared_user_memory_path().name
@@ -136,7 +145,7 @@ def write_user_memory(text: str, etag: str) -> dict[str, Any]:
                     current_text,
                     etag_of(current)))
             snapshot_before_mutation()  # best-effort; swallows its own errors
-            replace_file_beneath(dfd, name, data, FILE_MODE, fsync=True)
+            replace_file_beneath(dfd, name, data, _mode_for(dfd, name), fsync=True)
         finally:
             os.close(dfd)
     return {"etag": etag_of(data), "created": current is None, "bytes": len(data)}

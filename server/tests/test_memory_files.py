@@ -677,6 +677,18 @@ def test_save_creates_the_file_0644_and_returns_its_etag(editor) -> None:
     assert sorted(p.name for p in editor.shared.iterdir()) == ["CLAUDE.md"]
 
 
+def test_a_save_keeps_the_existing_file_mode(editor) -> None:
+    """A user who tightened their CLAUDE.md to 0600 must not find it world-readable
+    after one save from Settings."""
+    editor.file.write_bytes(b"v0\n")
+    editor.file.chmod(0o600)
+    r = editor.c.put("/api/settings/memory",
+                     json={"text": "v1\n", "etag": _etag(b"v0\n")}, headers=_H)
+    assert r.status_code == 200, r.text
+    assert editor.file.read_bytes() == b"v1\n"
+    assert stat.S_IMODE(editor.file.stat().st_mode) == 0o600
+
+
 def test_two_tabs_second_save_conflicts_and_nothing_is_lost(
         editor, caplog: pytest.LogCaptureFixture) -> None:
     """Review Focus 3."""
