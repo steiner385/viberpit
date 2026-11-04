@@ -236,7 +236,8 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     big.write_bytes(b"a" * (MAX_MEMORY_BYTES + 100))
     loaded = [
         {"path": str(cfg / "CLAUDE.md"), "type": "User", "tokens": 3},
-        {"path": str(outside), "type": "User", "tokens": 1},
+        # a PROJECT import outside every root (a User one gets the literal walk)
+        {"path": str(outside), "type": "Project", "tokens": 1},
         {"path": str(work / "CLAUDE.md"), "type": "Project", "tokens": 2},
         {"path": str(work / "sub" / ".." / ".." / "shadow"), "type": "Project", "tokens": 1},
         {"path": str(work / "evil.md"), "type": "Project", "tokens": 1},
@@ -352,6 +353,132 @@ async def test_a_session_with_no_loaded_set_has_nothing_to_view(world) -> None:
     world.orch._records[SID].memory_files = None
     with pytest.raises(MemoryFileError):
         await world.orch.memory_file(SID, path=str(world.work / "CLAUDE.md"))
+
+
+# ---- every file the CLI loads (review fix 1)
+
+
+@pytest.fixture
+def cli_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The layout the CLI really loads from: the account cfg dir links ``CLAUDE.md``,
+    ``rules`` and ``projects`` to the shared base; the worktree sits below an ancestor
+    with its own walk files; a user import lives outside every root."""
+    home = tmp_path / "home"
+    shared = home / ".claude"
+    (shared / "projects" / "slug" / "memory").mkdir(parents=True)
+    (shared / "rules").mkdir()
+    (shared / "CLAUDE.md").write_text("u\n")
+    (shared / "projects" / "slug" / "memory" / "MEMORY.md").write_text("m\n")
+    (shared / "projects" / "slug" / "transcript.jsonl").write_text("secret\n")
+    (shared / "rules" / "r.md").write_text("r\n")
+    cfg = tmp_path / "store" / "cfg" / "acct"
+    cfg.mkdir(parents=True)
+    for n in ("CLAUDE.md", "projects", "rules"):
+        (cfg / n).symlink_to(shared / n)
+    anc = home / "GitHub"
+    (anc / ".claude" / "rules" / "deep").mkdir(parents=True)
+    (anc / "CLAUDE.md").write_text("anc\n")
+    (anc / "CLAUDE.local.md").write_text("anc-local\n")
+    (anc / ".claude" / "CLAUDE.md").write_text("anc-dot\n")
+    (anc / ".claude" / "rules" / "deep" / "a.md").write_text("anc-rule\n")
+    (anc / "other.md").write_text("not a walk name\n")
+    work = anc / "repo"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    (work / "CLAUDE.md").write_text("p\n")
+    imp = home / "notes" / "homeimport.md"
+    imp.parent.mkdir()
+    imp.write_text("imported\n")
+    projext = home / "notes" / "projext.md"
+    projext.write_text("project import\n")
+    ssh = home / ".ssh"
+    ssh.mkdir()
+    (ssh / "id_ed25519").write_text("PRIVATE KEY\n")
+    managed = tmp_path / "etc-claude-code"
+    (managed / ".claude" / "rules").mkdir(parents=True)
+    (managed / "CLAUDE.md").write_text("managed\n")
+    monkeypatch.setattr(memory_files, "MANAGED_DIR", str(managed))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(shared))
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "store"))
+    rows = {
+        "user": (cfg / "CLAUDE.md", "User"),
+        "user_rule": (cfg / "rules" / "r.md", "User"),
+        "automem": (cfg / "projects" / "slug" / "memory" / "MEMORY.md", "AutoMem"),
+        "ancestor": (anc / "CLAUDE.md", "Project"),
+        "ancestor_dot": (anc / ".claude" / "CLAUDE.md", "Project"),
+        "ancestor_rule": (anc / ".claude" / "rules" / "deep" / "a.md", "Project"),
+        "ancestor_local": (anc / "CLAUDE.local.md", "Local"),
+        "project": (work / "CLAUDE.md", "Project"),
+        "managed": (managed / "CLAUDE.md", "Managed"),
+        "user_import": (imp, "User"),
+        # refused shapes, all in the set:
+        "ancestor_other": (anc / "other.md", "Project"),
+        "transcript": (cfg / "projects" / "slug" / "transcript.jsonl", "AutoMem"),
+        # a Project-type import outside every root: only User imports get the literal walk
+        "project_import_outside": (projext, "Project"),
+    }
+    loaded = [{"path": str(p), "type": k, "tokens": 1} for p, k in rows.values()]
+    return SimpleNamespace(rows=rows, loaded=loaded, cfg=cfg, work=work, imp=imp, ssh=ssh,
+                           shared=shared, home=home)
+
+
+def _read(w: SimpleNamespace, key: str) -> dict:
+    path, _ = w.rows[key]
+    return memory_files.read_memory_file(str(path), loaded=w.loaded, cwd=str(w.work),
+                                         config_dirs=[str(w.cfg)])
+
+
+@pytest.mark.parametrize(("key", "text"), [
+    ("user", "u\n"), ("user_rule", "r\n"), ("automem", "m\n"), ("ancestor", "anc\n"),
+    ("ancestor_dot", "anc-dot\n"), ("ancestor_rule", "anc-rule\n"),
+    ("ancestor_local", "anc-local\n"), ("project", "p\n"), ("managed", "managed\n"),
+    ("user_import", "imported\n"),
+])
+def test_viewer_reads_every_row_type_the_cli_loads(cli_world, key: str, text: str) -> None:
+    out = _read(cli_world, key)
+    assert out["text"] == text and out["type"] == cli_world.rows[key][1]
+    assert out["editable"] is (key == "user")
+
+
+@pytest.mark.parametrize("key", ["ancestor_other", "transcript", "project_import_outside"])
+def test_viewer_still_refuses_set_entries_outside_the_cli_roots(cli_world, key: str) -> None:
+    with pytest.raises(MemoryFileError) as ei:
+        _read(cli_world, key)
+    assert ei.value.code == MEMORY_FILE_UNKNOWN
+
+
+def test_a_user_import_swapped_for_a_link_to_ssh_is_refused(cli_world) -> None:
+    cli_world.imp.unlink()
+    cli_world.imp.symlink_to(cli_world.ssh / "id_ed25519")
+    with pytest.raises(MemoryFileError):
+        _read(cli_world, "user_import")
+
+
+def test_a_user_import_under_a_symlinked_directory_is_refused(cli_world) -> None:
+    notes = cli_world.imp.parent
+    os.rename(notes, cli_world.home / "notes-real")
+    notes.symlink_to(cli_world.home / "notes-real")
+    with pytest.raises(MemoryFileError):
+        _read(cli_world, "user_import")
+
+
+def test_an_ancestor_walk_name_linked_outside_is_refused(cli_world) -> None:
+    anc_md = cli_world.rows["ancestor"][0]
+    anc_md.unlink()
+    anc_md.symlink_to(cli_world.ssh / "id_ed25519")
+    with pytest.raises(MemoryFileError):
+        _read(cli_world, "ancestor")
+
+
+def test_editable_follows_the_shared_file_being_a_regular_file(cli_world, tmp_path) -> None:
+    """Review fix 4: the editor refuses a symlinked shared file, so the viewer does not
+    offer Edit for it either."""
+    real = tmp_path / "dotfiles-CLAUDE.md"
+    real.write_text("dot\n")
+    (cli_world.shared / "CLAUDE.md").unlink()
+    (cli_world.shared / "CLAUDE.md").symlink_to(real)
+    out = _read(cli_world, "user")
+    assert out["text"] == "dot\n" and out["editable"] is False
 
 
 # ---- the route
@@ -524,6 +651,9 @@ def editor(shared_base, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                               snaps=shared_base.snaps)
 
 
+PROPAGATION = "Sessions on other hosts can take up to 10 minutes to see this change"
+
+
 def _etag(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
@@ -537,7 +667,7 @@ def test_missing_file_reads_as_not_existing_with_empty_etag(editor) -> None:
 def test_save_creates_the_file_0644_and_returns_its_etag(editor) -> None:
     r = editor.c.put("/api/settings/memory", json={"text": "hello\n", "etag": ""}, headers=_H)
     assert r.status_code == 200, r.text
-    assert r.json() == {"etag": _etag(b"hello\n")}
+    assert r.json() == {"etag": _etag(b"hello\n"), "propagation": PROPAGATION}
     assert editor.file.read_bytes() == b"hello\n"
     assert stat.S_IMODE(editor.file.stat().st_mode) == 0o644
     assert editor.snaps == [1]
@@ -647,3 +777,14 @@ def test_the_write_is_fsynced_before_the_rename(shared_base) -> None:
             patch("viberpit.fs_beneath.os.replace", side_effect=replace):
         memory_api.write_user_memory("x", "")
     assert order == ["fsync", "replace", "fsync"], order
+
+
+def test_a_non_utf8_file_is_refused_for_editing_not_mangled(editor) -> None:
+    """Review fix 3: a lossy decode would let a save silently rewrite the bytes."""
+    editor.file.write_bytes(b"caf\xe9\n")
+    g = editor.c.get("/api/settings/memory", headers=_H)
+    assert g.status_code == 422 and g.json()["detail"] == {"code": "MEMORY_NOT_UTF8"}
+    p = editor.c.put("/api/settings/memory",
+                     json={"text": "x", "etag": _etag(b"caf\xe9\n")}, headers=_H)
+    assert p.status_code == 422
+    assert editor.file.read_bytes() == b"caf\xe9\n"

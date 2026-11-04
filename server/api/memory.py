@@ -6,12 +6,18 @@ which owns ``~/.claude``; every account's ``$CLAUDE_CONFIG_DIR/CLAUDE.md`` links
 or host can drift.
 
 - ``GET`` returns ``{text, etag, exists}``; ``PUT`` takes ``{text, etag}`` and returns
-  ``{etag}``. The etag is the sha256 of the bytes on disk, ``""`` when there is no file,
+  ``{etag, propagation}``. The etag is the sha256 of the bytes on disk, ``""`` when there is no file,
   so a save over a file another tab changed is 409 ``MEMORY_CONFLICT`` carrying the
   current text, and nothing is lost.
-- The write is atomic and durable: a temp file in the same directory, fsynced, renamed
-  over the target, mode 0644 (``viberpit.fs_beneath.replace_file_beneath``). A reader —
-  a session starting on any host — sees the old file or the new one, never half.
+- The write is atomic and durable on this host: a temp file in the same directory,
+  fsynced, renamed over the target, mode 0644 (``viberpit.fs_beneath.replace_file_beneath``).
+  A reader here sees the old file or the new one, never half. That guarantee does NOT
+  extend across hosts: a worker reads ``~/.claude`` over sshfs with a 600 s attribute
+  cache, so until it expires a session starting there can see the old file, or a read
+  clipped to the old size (the #1005 pattern). Interactive editors rewrite this file the
+  same way, so the exposure is not new; ``PUT`` says so in ``propagation``.
+- A file that is not valid UTF-8 is 422 ``MEMORY_NOT_UTF8``: a lossy decode would let a
+  save silently rewrite bytes the user never saw.
 - A symlinked target is not ours to write through or replace: 409 ``MEMORY_FILE_IS_LINK``.
 - Over ``MAX_MEMORY_BYTES`` is 413 ``MEMORY_TOO_LARGE``.
 - Auth is the normal identity, as for every settings and library write, and each save
@@ -45,6 +51,9 @@ router = APIRouter(prefix="/api/settings/memory", tags=["settings"])
 MEMORY_CONFLICT = "MEMORY_CONFLICT"
 MEMORY_FILE_IS_LINK = "MEMORY_FILE_IS_LINK"
 MEMORY_TOO_LARGE = "MEMORY_TOO_LARGE"
+MEMORY_NOT_UTF8 = "MEMORY_NOT_UTF8"
+#: Shown after a save (Task 3): the honest cross-host story, see the module docstring.
+PROPAGATION = "Sessions on other hosts can take up to 10 minutes to see this change"
 FILE_MODE = 0o644
 
 # Serializes check-then-write within the edge process (the only writer).
@@ -56,6 +65,13 @@ class MemoryEditError(Exception):
         super().__init__(code)
         self.code = code
         self.current = current  # (text, etag) for a conflict
+
+
+def _decode(data: bytes | None) -> str:
+    try:
+        return "" if data is None else data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MemoryEditError(MEMORY_NOT_UTF8) from exc
 
 
 def etag_of(data: bytes | None) -> str:
@@ -99,7 +115,7 @@ def read_user_memory() -> dict[str, Any]:
         data = _read_current(dfd, name)
     finally:
         os.close(dfd)
-    return {"text": "" if data is None else data.decode("utf-8", "replace"),
+    return {"text": _decode(data),
             "etag": etag_of(data), "exists": data is not None}
 
 
@@ -114,9 +130,10 @@ def write_user_memory(text: str, etag: str) -> dict[str, Any]:
         dfd = _base_fd()
         try:
             current = _read_current(dfd, name)
+            current_text = _decode(current)
             if etag_of(current) != etag:
                 raise MemoryEditError(MEMORY_CONFLICT, (
-                    "" if current is None else current.decode("utf-8", "replace"),
+                    current_text,
                     etag_of(current)))
             snapshot_before_mutation()  # best-effort; swallows its own errors
             replace_file_beneath(dfd, name, data, FILE_MODE, fsync=True)
@@ -128,6 +145,9 @@ def write_user_memory(text: str, etag: str) -> dict[str, Any]:
 def _http(err: MemoryEditError) -> HTTPException:
     if err.code == MEMORY_TOO_LARGE:
         return HTTPException(status_code=413, detail={"code": MEMORY_TOO_LARGE})
+    if err.code == MEMORY_NOT_UTF8:
+        log.info("settings.memory refused code=%s", err.code)
+        return HTTPException(status_code=422, detail={"code": MEMORY_NOT_UTF8})
     detail: dict[str, Any] = {"code": err.code}
     if err.current is not None:
         detail["text"], detail["etag"] = err.current
@@ -160,4 +180,4 @@ async def put_user_memory(body: MemoryBody, identity: str = Depends(current_iden
     await record_audit(db=db, type="settings.memory_saved", identity=identity,
                        detail={"bytes": out["bytes"], "created": out["created"]})
     log.info("settings.memory saved bytes=%d created=%s", out["bytes"], out["created"])
-    return {"etag": out["etag"]}
+    return {"etag": out["etag"], "propagation": PROPAGATION}
