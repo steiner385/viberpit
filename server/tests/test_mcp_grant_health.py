@@ -13,6 +13,23 @@ def _o(outcome: str, *, key: str = K, label: str = "railway", error: str | None 
     return {"key": key, "label": label, "outcome": outcome, "error": error}
 
 
+async def _age(key: str, seconds: int) -> None:
+    """Move *key*'s ``updated_at`` *seconds* into the past."""
+    from datetime import timedelta
+
+    from sqlalchemy import select, update
+
+    from server.db import db_session
+    from server.db.models import McpGrantHealth
+
+    async with db_session() as db:
+        at = (await db.execute(select(McpGrantHealth.updated_at).where(
+            McpGrantHealth.key == key))).scalar_one()
+        assert at is not None
+        await db.execute(update(McpGrantHealth).where(McpGrantHealth.key == key)
+                         .values(updated_at=at - timedelta(seconds=seconds)))
+
+
 @pytest.mark.asyncio
 async def test_refreshed_sets_live_ok_and_resets_failures(isolated_db):
     assert await gh.record([_o("refreshed")], expired_keys=frozenset()) == []
@@ -194,6 +211,7 @@ async def test_promote_cleared_keeps_an_alerted_dead_row_quiet(isolated_db):
 async def test_signed_in_then_cleared_alerts_under_the_server_name(isolated_db):
     """A key first seen at sign-in (no refresh yet) still alerts by name when it dies."""
     await gh.mark_signed_in([K], server="railway")
+    await _age(K, 61)
     await gh.promote_cleared([K])
     [t] = await _pending()
     assert (t.kind, t.server) == ("alert_dead", "railway")
@@ -202,9 +220,24 @@ async def test_signed_in_then_cleared_alerts_under_the_server_name(isolated_db):
 @pytest.mark.asyncio
 async def test_row_without_server_alerts_under_its_key(isolated_db):
     await gh.mark_signed_in([K])
+    await _age(K, 61)
     await gh.promote_cleared([K])
     [t] = await _pending()
     assert t.server == K
+
+
+@pytest.mark.asyncio
+async def test_promote_cleared_skips_a_sign_in_within_60s(isolated_db):
+    """A cleared read taken just before a sign-in must not kill the fresh grant; a refresh
+    outcome (not a sign-in) inside the window is still promoted."""
+    await gh.mark_signed_in([K], server="railway")
+    await _age(K, 59)
+    await gh.promote_cleared([K])
+    assert (await gh.load())[K]["state"] == "live"
+    assert await _pending() == []
+    await gh.record([_o("refreshed", key="r|1")], expired_keys=frozenset())
+    await gh.promote_cleared(["r|1"])
+    assert (await gh.load())["r|1"]["state"] == "dead"
 
 
 @pytest.mark.asyncio

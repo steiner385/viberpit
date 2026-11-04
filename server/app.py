@@ -181,8 +181,10 @@ async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> "list[grant_health.
         healed = await grant_health.record(outcomes, expired_keys=expired)
         if healed:
             await mcp_after_login.heal_servers(orch_getter(), [t.server for t in healed])
+    # Re-read right before promoting: a sign-in since the read above must not die from it.
+    fresh = await asyncio.to_thread(vp_creds.read_shared_mcp)
     await grant_health.promote_cleared(
-        mcp_oauth_refresh.cleared_keys(store) - result.skip - result.drop)
+        mcp_oauth_refresh.cleared_keys(fresh) - result.skip - result.drop)
     pending = await grant_health.pending_alerts()
     if pending:
         await mcp_alerts.send_alerts(pending, orch=orch_getter())

@@ -12,7 +12,7 @@ import logging
 from collections.abc import Iterable
 
 from viberpit import accounts as vp_accounts
-from viberpit import creds, paths
+from viberpit import creds, mcp_oauth_refresh, paths
 
 from server.mcp_auth import clear_needs_auth_cache
 from server.mcp_health import grant_health, grants
@@ -24,9 +24,18 @@ def _refresh(account: str, server: str | None = None) -> bool:
     return creds.sync_cfg_mcp_oauth(paths.account_cfg_dir(account), server=server)
 
 
+def _signed_in_keys(server: str) -> list[str]:
+    """*server*'s store keys whose current bundle holds a token. A same-short-name sibling
+    the sign-in did not write is a tokenless stub; stamping it would later promote it dead."""
+    keys = grants.keys_for_server(server)
+    store = creds.read_shared_mcp()
+    dead = mcp_oauth_refresh.cleared_keys(store)
+    return [k for k in keys if isinstance(store.get(k), dict) and k not in dead]
+
+
 async def _mark_signed_in(server: str) -> None:
     try:
-        keys = await asyncio.to_thread(grants.keys_for_server, server)
+        keys = await asyncio.to_thread(_signed_in_keys, server)
         await grant_health.mark_signed_in(keys, server=server)
     except Exception:
         # A missed mark only delays the new alert generation to the grant's first refresh.

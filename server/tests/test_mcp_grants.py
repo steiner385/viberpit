@@ -474,6 +474,28 @@ async def test_never_signed_in_cleared_bundle_never_alerts(isolated_db, tick):
 
 
 @pytest.mark.asyncio
+async def test_sign_in_during_tick_is_not_promoted_dead(isolated_db, tick, monkeypatch):
+    """A sign-in landing between the tick's first store read and its promote step must not
+    be promoted ``dead`` from that stale read: no false "revoked" push for a fresh grant."""
+    from server.mcp_health import grant_health
+
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))                    # died and alerted once
+    assert len(tick["pushes"]) == 1
+    real_record = grant_health.record
+
+    async def sign_in_mid_tick(outcomes, *, expired_keys):
+        out = await real_record(outcomes, expired_keys=expired_keys)
+        await grant_health.mark_signed_in([K1], server="railway")   # the user signs in now
+        tick["store"] = {K1: dict(LIVE_BUNDLE)}
+        return out
+    monkeypatch.setattr(grant_health, "record", sign_in_mid_tick)
+    await tick["run"](_out("refreshed", key=K2, label="notion"))   # store read while cleared
+    assert (await grant_health.load([K1]))[K1]["state"] == "live"
+    assert len(tick["pushes"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_cleared_bundle_of_a_dropped_key_is_not_promoted(isolated_db, tick):
     tick["store"] = {K1: dict(LIVE_BUNDLE)}
     await tick["run"](_out("refreshed"))
