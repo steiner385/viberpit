@@ -189,3 +189,22 @@ async def test_ready_merge_orchestrator_merge_failure_reports_unarmed():
     assert result == {"markedReady": True, "autoMergeArmed": False,
                       "alreadyArmed": False, "cleanReadyToMerge": False,
                       "error": "auto-merge is not allowed for this repository"}
+
+
+@pytest.mark.asyncio
+async def test_ready_merge_orchestrator_gh_timeout_is_an_answer_not_a_raise():
+    """A gh timeout returns ``error: gh timed out`` (like ``_gh_pr_merge``), unarmed."""
+    import subprocess
+
+    orch = _orch()
+
+    def fake_gh(args, token=None, *, input=None, timeout=None):
+        if args[:2] == ["pr", "view"]:
+            return _unheld(args)
+        raise subprocess.TimeoutExpired(args, 60)
+
+    orch._gh_run = fake_gh
+    result = await orch.ready_merge("o/r", 7)
+    assert result == {"markedReady": False, "autoMergeArmed": False,
+                      "alreadyArmed": False, "cleanReadyToMerge": False,
+                      "error": "gh timed out"}

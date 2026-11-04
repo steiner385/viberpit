@@ -17,6 +17,8 @@ import { Waterfall, waterfallSegments } from '@/features/pipeline/charts/Waterfa
 import { DEFS, defTitle, subLineTitle } from './definitions';
 import { prAnchorId } from './prAnchor';
 import { readyMergeBlock } from './readyMerge';
+import { ApiRequestError } from '@/api/client';
+import { extractMutationErrorMessage } from '@/api/queryClient';
 
 /** The expanded panel's section caption ("merge group build", …). */
 const PANEL_LABEL = 'px-3.5 pt-2 text-2xs font-semibold uppercase tracking-wider text-ink-muted';
@@ -103,19 +105,6 @@ export function readyMergeGate(pr: PrView): { show: boolean; blocked: boolean; r
   return { show: true, blocked: reason !== null, reason: reason ?? '' };
 }
 
-/** The text of a failed ready-merge response: gh's `error`, a FastAPI `detail`
- *  string, or the `detail.error` of a 409 hold refusal (`{code, error}`, D-15). */
-function readyMergeErrorText(data: Record<string, unknown>, status: number): string {
-  if (typeof data.error === 'string' && data.error) return data.error;
-  const detail = data.detail;
-  if (typeof detail === 'string' && detail) return detail;
-  if (detail && typeof detail === 'object') {
-    const error = (detail as Record<string, unknown>).error;
-    if (typeof error === 'string' && error) return error;
-  }
-  return `HTTP ${status}`;
-}
-
 type PrRowProps = {
   pr: PrView; hasDeploy: boolean;
   /** Repo-level RepoQueueView.unmergeableCulprit (queue-blocked sub line). */
@@ -176,7 +165,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
       });
       const data: Record<string, unknown> = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setActionResult({ ok: false, msg: readyMergeErrorText(data, res.status) });
+        setActionResult({ ok: false, msg: extractMutationErrorMessage(new ApiRequestError(res.status, data), `HTTP ${res.status}`) });
         return;
       }
       const parts: string[] = [];

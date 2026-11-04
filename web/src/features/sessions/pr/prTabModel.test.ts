@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { PullRequestInfo, PrReviewThread } from '@/api/types'
 import {
-  addressPrompt, defaultPr, groupChecks, hasHumanHold, mergeStateText, orderThreads, payloadChecks, prKey, prRepo,
+  addressPrompt, defaultPr, groupChecks, mergeStateText, orderThreads, payloadChecks, prKey, prRepo,
 } from './prTabModel'
 
 const pr = (over: Partial<PullRequestInfo>): PullRequestInfo => ({
@@ -86,11 +86,5 @@ describe('prTabModel', () => {
       { author: 'b', body: 'agreed', createdAt: null, url: null },
     ] }))).toBe('Address this review comment on src/a.ts:3:\n\n> Rename this.\n> And test it.')
     expect(addressPrompt(thread({ line: null }))).toBe('Address this review comment on src/a.ts:\n\n> fix')
-  })
-
-  it('a hold is the hold:human label, any case', () => {
-    expect(hasHumanHold(['bug', 'Hold:Human'])).toBe(true)
-    expect(hasHumanHold(['bug'])).toBe(false)
-    expect(hasHumanHold(undefined)).toBe(false)
   })
 })

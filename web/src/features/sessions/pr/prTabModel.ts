@@ -5,14 +5,6 @@
 import type { PrDetailCheck, PrReviewThread, PullRequestInfo } from '@/api/types'
 import { isActionablePrState } from '@/session/prStatus'
 
-/** The label that means a human owns this PR's merge — `HUMAN_HOLD_LABEL` in
- *  `server/github/pr_status.py`, matched case-insensitively like `has_human_hold`. */
-const HUMAN_HOLD_LABEL = 'hold:human'
-
-export function hasHumanHold(labels: readonly string[] | null | undefined): boolean {
-  return !!labels?.some((l) => l.toLowerCase() === HUMAN_HOLD_LABEL)
-}
-
 const PR_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/
 
 /** `owner/name` of a session PR: the payload's `repo`, else read off its GitHub url. */

@@ -28,9 +28,17 @@ export function extractMutationErrorMessage(
       const msg = (detail as Record<string, unknown>).message
       if (typeof msg === 'string' && msg.trim() !== '') return msg
     }
+    // `{detail: {code, error}}` — a 409 hold refusal (D-15).
+    if (detail && typeof detail === 'object' && 'error' in detail) {
+      const err = (detail as Record<string, unknown>).error
+      if (typeof err === 'string' && err.trim() !== '') return err
+    }
     if (typeof detail === 'string' && detail.trim() !== '') return detail
     const top = error.body?.message
     if (typeof top === 'string' && top.trim() !== '') return top
+    // gh's verbatim refusal text, as `{error}` (ready-merge).
+    const flat = error.body?.error
+    if (typeof flat === 'string' && flat.trim() !== '') return flat
   }
   return fallback
 }

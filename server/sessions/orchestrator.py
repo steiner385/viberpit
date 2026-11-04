@@ -20664,13 +20664,21 @@ class SessionOrchestrator:
             if refusal is not None:
                 return {"markedReady": False, "autoMergeArmed": False,
                         "alreadyArmed": False, "cleanReadyToMerge": False, **refusal}
-            ready = self._gh_run(["pr", "ready", str(number), "-R", repo], timeout=60)
-            # gh exits non-zero when the PR is already ready — that's not an error.
-            marked = ready.returncode == 0
-            merge = self._gh_run(
-                ["pr", "merge", str(number), "-R", repo, "--squash", "--auto"],
-                timeout=60,
-            )
+            try:
+                ready = self._gh_run(["pr", "ready", str(number), "-R", repo], timeout=60)
+                # gh exits non-zero when the PR is already ready — that's not an error.
+                marked = ready.returncode == 0
+                merge = self._gh_run(
+                    ["pr", "merge", str(number), "-R", repo, "--squash", "--auto"],
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                # A refused/slow gh is the caller's answer, not a server fault
+                # (same stance as `_gh_pr_merge`).
+                log.info("pr.ready_merge %s#%s gh timed out", repo, number)
+                return {"markedReady": False, "autoMergeArmed": False,
+                        "alreadyArmed": False, "cleanReadyToMerge": False,
+                        "error": "gh timed out"}
             # gh (2.x) fails with "...auto-merge is already enabled for this pull
             # request" when re-arming; that state is the caller's goal, not an error.
             already = merge.returncode != 0 and "already enabled" in (merge.stderr or "")
