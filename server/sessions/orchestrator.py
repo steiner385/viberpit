@@ -2993,6 +2993,7 @@ class SessionOrchestrator:
             on_context_usage=self._persist_context_usage,
             on_memory_files=self._persist_memory_files,
             on_model_options=self._record_model_options,
+            on_fast_mode_state=self._record_fast_mode_state,
             on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
@@ -8053,6 +8054,15 @@ class SessionOrchestrator:
                      session_id, rec.model)
             return True
         return False
+
+    async def _record_fast_mode_state(self, session_id: str, state: str,
+                                      reason: str | None) -> None:
+        """Driver ``on_fast_mode_state`` callback: keep the CLI's latest live fast-mode
+        state on the record (in memory only — it is re-reported every CLI start/turn)."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.fast_mode_state = state
+            rec.fast_mode_disabled_reason = reason
 
     def _spawn_flag_settings(self, session_id: str) -> dict:
         """The flag-layer settings a spawn of this session starts with (D-14): fast mode

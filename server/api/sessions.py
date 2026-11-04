@@ -334,6 +334,10 @@ def _record_to_dict(
         # CLI listed the current model as fast-capable (only a flag-settings engine,
         # Claude, ever reports that list). The ⚡ toggle and `/fast` show only then.
         "fastMode": bool(getattr(record, "fast_mode", False)),
+        # The CLI's live state (on|off|cooldown) and why it is disabled; null until the
+        # CLI has reported. ⚡ shows a cooldown / the reason beside the stored choice.
+        "fastModeState": getattr(record, "fast_mode_state", None),
+        "fastModeDisabledReason": getattr(record, "fast_mode_disabled_reason", None),
         "fastModeAvailable": flag_settings.fast_mode_available(
             getattr(record, "fast_mode_models", None), getattr(record, "model", None)),
         "latestSuggestions": list(suggestions or []),

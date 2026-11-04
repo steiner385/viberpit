@@ -7,10 +7,13 @@
 import { useEffect, useState } from 'react'
 import { X, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { FAST_MODE_COPY, hasSeenFastNote, markFastNoteSeen } from './fastMode'
+import { FAST_MODE_COPY, fastModeLiveNote, hasSeenFastNote, markFastNoteSeen } from './fastMode'
 
-export default function FastToggle({ on, onToggle, pending = false }: {
+export default function FastToggle({ on, onToggle, pending = false, liveState, disabledReason }: {
   on: boolean
+  /** The CLI's live state (`cooldown`, `off`…) and why it is disabled (#3254). */
+  liveState?: string | null
+  disabledReason?: string | null
   onToggle: (enabled: boolean) => void
   /** The POST is in flight: no second toggle until it answers. */
   pending?: boolean
@@ -25,19 +28,24 @@ export default function FastToggle({ on, onToggle, pending = false }: {
   }
   useEffect(() => { if (noteShown) markFastNoteSeen() }, [noteShown])
 
+  const liveNote = fastModeLiveNote(on, liveState, disabledReason)
+  const degraded = liveNote !== null
+
   return (
     <>
       <button
         type="button"
         aria-label="Fast mode"
         aria-pressed={on}
-        title={FAST_MODE_COPY}
+        title={liveNote ? `${liveNote}\n${FAST_MODE_COPY}` : FAST_MODE_COPY}
+        data-live-state={degraded ? liveState ?? undefined : undefined}
         disabled={pending}
         aria-busy={pending || undefined}
         onClick={() => onToggle(!on)}
         className={cn(
           'inline-flex items-center rounded-md px-2 py-0.5 min-h-7 text-xs',
-          on ? 'text-warning' : 'text-ink-muted',
+          on && !degraded ? 'text-warning' : 'text-ink-muted',
+          degraded && 'opacity-60',
           'hover:bg-edge active:bg-edge-strong',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
           'disabled:opacity-50',

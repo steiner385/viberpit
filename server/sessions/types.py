@@ -222,6 +222,12 @@ class SessionRecord:
     # the edge can serve ``fastModeAvailable`` (``flag_settings.supports_fast_mode``).
     fast_mode: bool = False
     fast_mode_models: list[str] | None = None
+    # The CLI's LIVE fast-mode state (``flag_settings.live_fast_mode``): ``on`` | ``off`` |
+    # ``cooldown`` (a fast-mode 429 dropped it to standard speed for ~10 min) and why it
+    # is disabled (``out_of_credits`` …). In memory only — each CLI start/turn re-reports
+    # it; None until one has. ``fast_mode`` stays the stored choice.
+    fast_mode_state: str | None = None
+    fast_mode_disabled_reason: str | None = None
     # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
     # detached session can still check an effort against its model's levels. Daemon-
     # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
@@ -361,6 +367,8 @@ class SessionRecord:
             "memoryFiles": self.memory_files,
             "fastMode": self.fast_mode,
             "fastModeModels": self.fast_mode_models,
+            "fastModeState": self.fast_mode_state,
+            "fastModeDisabledReason": self.fast_mode_disabled_reason,
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
             "kind": self.kind,
@@ -433,6 +441,8 @@ class SessionRecord:
             memory_files=d.get("memoryFiles"),
             fast_mode=bool(d.get("fastMode", False)),
             fast_mode_models=d.get("fastModeModels"),
+            fast_mode_state=d.get("fastModeState"),
+            fast_mode_disabled_reason=d.get("fastModeDisabledReason"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),
             sub_agents=d.get("subAgents"),
