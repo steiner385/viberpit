@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 from viberpit import brand
-from server.assistant.context import strip_context_header
+from server.assistant.context import PromptContext, strip_context_header
 from server.sessions.prompt_origin import strip_origin_header
 from server.config import env_float
 from . import events as ev
@@ -338,8 +338,14 @@ class _ActiveChain:
         self._cut_at = 0                    # len(_parents) when the newest one was
         self._leaf: str | None = None       # its leafUuid
 
+    @staticmethod
+    def is_rewind_row(o: dict) -> bool:
+        """A ``last-prompt`` row that cuts (a D-9 rewind), not a routine, lagging one."""
+        return (o.get("type") == "last-prompt"
+                and (o.get("rewound") is True or o.get("explicit") is True))
+
     def leaf_row(self, o: dict) -> None:
-        if not (o.get("rewound") is True or o.get("explicit") is True):
+        if not self.is_rewind_row(o):
             return                          # a routine, lagging leaf pointer
         leaf = o.get("leafUuid")
         self._cut = True
@@ -998,6 +1004,92 @@ async def replay_window(jsonl_path: str, *, before: int | None = None, limit: in
 async def replay_events(jsonl_path: str, *, max_turns: int | None = 20,
                         until_uuid: str | None = None) -> list:
     return await asyncio.to_thread(_parse_and_trim, jsonl_path, max_turns, until_uuid)
+
+
+# How much of a transcript's END `last_prompt_context` reads first. An assistant's
+# context header rides its latest page-changing prompt, which is near the end; a header
+# older than this costs one further full pass, never a wrong answer.
+_CONTEXT_TAIL_BYTES = 256 * 1024
+
+
+def _prompt_context_of(o: dict) -> PromptContext | None:
+    """The journalled context of one human prompt entry, read the way
+    `_parse_transcript` reads it when it rebuilds a UserMessage: harness entries skipped
+    (`is_harness_user_entry`), the origin marker split first, then the context header."""
+    if o.get("type") != "user" or o.get("isSidechain"):
+        return None
+    content = _content_blocks(o.get("message") or {})
+    text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+    if not text or is_harness_user_entry(o, text):
+        return None
+    return strip_context_header(strip_origin_header(text)[0])[1]
+
+
+def _newest_context(entries: Iterator) -> PromptContext | None:
+    found: PromptContext | None = None
+    for o in entries:
+        found = _prompt_context_of(o) or found
+    return found
+
+
+def last_prompt_context(path: str | None) -> PromptContext | None:
+    """The context of the newest prompt ON THE ACTIVE CHAIN of *path* that carried a
+    context header, or None.
+
+    The D-12 side-chat scope's fallback seed when a new daemon process rebuilds an
+    assistant driver with nothing in memory. It must agree with the drawer's "About:"
+    line, which reads the replayed (active-chain) turns, so a D-9 rewind is honoured
+    exactly as replay honours it: with a rewind row in the file the answer comes from
+    `_parse_transcript` itself — one chain rule, one context parse. With none, every
+    entry is on the chain, so the newest header in file order is the answer and the
+    tail is read first, the whole file only when the tail holds none. Synchronous file
+    I/O — call it through ``asyncio.to_thread``. Never raises."""
+    if not path:
+        return None
+    try:
+        rewound = _has_rewind_row(path)
+        if rewound:
+            events, _meta, _facts = _parse_transcript(path)
+            return next((e.context for e in reversed(events)
+                         if isinstance(e, ev.UserMessage) and e.context), None)
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > _CONTEXT_TAIL_BYTES:
+                fh.seek(size - _CONTEXT_TAIL_BYTES)
+                fh.readline()  # drop the partial first line
+            tail = fh.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return None
+
+    def parsed(raw_lines):
+        for raw in raw_lines:
+            try:
+                o = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(o, dict):
+                yield o
+
+    found = _newest_context(parsed(ln for ln in tail.splitlines() if ln.strip()))
+    if found is None and size > _CONTEXT_TAIL_BYTES:
+        found = _newest_context(_read_jsonl(path))
+    return found
+
+
+def _has_rewind_row(path: str) -> bool:
+    """Whether *path* holds a rewind row (`_ActiveChain.is_rewind_row`). A raw pass:
+    only lines naming ``last-prompt`` are parsed."""
+    with open(path, errors="ignore") as fh:
+        for raw in fh:
+            if "last-prompt" not in raw:
+                continue
+            try:
+                o = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(o, dict) and _ActiveChain.is_rewind_row(o):
+                return True
+    return False
 
 
 def last_question_events(path: str) -> list["ev.Question"]:

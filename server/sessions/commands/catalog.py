@@ -31,6 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from server.sessions.engine import AgentCapabilities, fork_supported, rewind_supported
+from server.sessions.types import is_assistant_kind
 
 # Split a raw prompt into (command-name, args) IFF it is a single-line
 # slash command. Mirrors the Composer's runCommandFromText regex exactly
@@ -53,7 +54,11 @@ def parse_command_line(raw: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 # Commands handled by a dedicated client-side render (no model turn).
-CLIENT = {"help", "context", "mcp", "fork", "rewind"}
+CLIENT = {"help", "context", "mcp", "fork", "rewind", "btw"}
+# Commands a coding session offers but the Assistant drawer's own session never does —
+# whoever publishes them. `/btw` (D-12) opens a side chat about the session it is typed
+# in; the drawer has no side chat about itself.
+CODING_ONLY = frozenset({"btw"})
 # Commands executed via a dedicated SDK method (not raw passthrough).
 CONTROL = {"model", "clear"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
@@ -108,6 +113,13 @@ def _always(_caps: AgentCapabilities) -> bool:
     return True
 
 
+def _assistant_enabled(_caps: AgentCapabilities) -> bool:
+    """The ``VIBERPIT_ASSISTANT_ENABLED`` kill switch. Engine-independent: `/btw`
+    opens the Assistant drawer, which is ViberPit's, not the session's engine's."""
+    from server.config import get_settings
+    return bool(get_settings().assistant_enabled)
+
+
 #: ViberPit-invented commands, present on no engine's own list.
 #:
 #: `/help` and `/context` render client-side from data every driver publishes
@@ -156,6 +168,14 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
         Command(name="rewind", description="Rewind this session to one of your messages",
                 argument_hint=None, kind="client", source=APP),
         gate=rewind_supported,
+    ),
+    # `/btw` (D-12) runs in the browser: it opens the Assistant drawer as a side chat
+    # about this session, sending the question when there is one. Coding sessions only
+    # (`CODING_ONLY`), and behind the Assistant's own kill switch.
+    AppCommand(
+        Command(name="btw", description="Ask the Assistant about this session in the side chat",
+                argument_hint="<question>", kind="client", source=APP),
+        gate=_assistant_enabled,
     ),
 )
 
@@ -209,9 +229,13 @@ def _coerce(entry, capabilities: AgentCapabilities) -> Command | None:
 
 
 def build_catalog(
-    server_info: dict | None, capabilities: AgentCapabilities
+    server_info: dict | None, capabilities: AgentCapabilities, *, kind: str | None
 ) -> list[Command]:
     """The commands *this* session accepts: the engine's, then ViberPit's own.
+
+    *kind* is the session's record kind (``None`` for a coding session), and has no
+    default: every caller states it. The Assistant drawer's session gets no
+    `CODING_ONLY` command, from either half.
 
     Vendor entries come first and win a name collision, because when an engine
     publishes a command of its own that name means whatever the engine says it
@@ -222,7 +246,7 @@ def build_catalog(
     """
     entries = (server_info or {}).get("commands") or []
     out: list[Command] = []
-    seen: set[str] = set()
+    seen: set[str] = set(CODING_ONLY) if is_assistant_kind(kind) else set()
     if capabilities.vendor_commands:
         for e in entries:
             cmd = _coerce(e, capabilities)

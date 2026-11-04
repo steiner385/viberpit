@@ -25,7 +25,7 @@ from server.assistant import options_codex as oc
 from server.codex import schema
 from server.codex.thread_surface import ThreadSurfaceStore, surface_fingerprint
 from server.sessions import events as ev
-from server.tests.test_codex_driver import SESSION, THREAD, Harness
+from server.tests.test_codex_driver import SESSION, THREAD, Harness, turn_payload
 
 TOOL_CALL = schema.METHOD_ITEM_TOOL_CALL
 
@@ -347,3 +347,90 @@ async def test_a_dynamic_tool_card_carries_the_registrys_rule_suggestions(harnes
     assert card.rule_suggestions == offered
     driver.resolve_permission(card.perm_id, "deny", "user@example.com")
     await _await_reply(harness, request_id)
+
+
+# ---------------------------------------------------------------------------
+# D-12 side-chat scope on the Codex engine
+# ---------------------------------------------------------------------------
+
+_SCOPED = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+
+@pytest.mark.asyncio
+async def test_the_codex_driver_tracks_the_last_sent_context_scope(harness, overlay):
+    driver = await harness.boot(assistant_overlay=overlay)
+    assert driver.context_scope is None
+    await driver.send_prompt("what changed?", context={"route": f"/sessions/{_SCOPED}",
+                                                       "sessionId": _SCOPED})
+    await harness.settle()
+    assert driver.context_scope == _SCOPED
+    driver.seed_context_scope(None)  # a seed never overrides a sent context
+    assert driver.context_scope == _SCOPED
+
+
+@pytest.mark.asyncio
+async def test_a_codex_assistant_refuses_a_scoped_write_without_a_card(harness, tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    holder: dict[str, Any] = {}
+    overlay = oc.assistant_codex_options(
+        api=_api(), model="gpt-5.6-sol",
+        current_scope=lambda: holder["driver"].context_scope)
+    driver = await harness.boot(assistant_overlay=overlay)
+    holder["driver"] = driver
+    driver.seed_context_scope(_SCOPED)
+    request_id = harness.server.request(
+        TOOL_CALL, _call("send_prompt", {"id": _SCOPED, "text": "continue"}))
+    reply = await _await_reply(harness, request_id)
+    assert reply["result"]["success"] is False
+    assert reply["result"]["contentItems"][0]["text"].startswith("SCOPED_READ_ONLY: ")
+    await harness.settle()
+    assert harness.of(ev.PermissionRequest) == []
+
+
+@pytest.mark.asyncio
+async def test_the_codex_overlay_handlers_carry_the_scope_guard(tmp_path, monkeypatch):
+    """The backstop: the overlay's own handlers refuse even past an approved card."""
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "cchome"))
+    overlay = oc.assistant_codex_options(api=_api(), model="gpt-5.6-sol",
+                                         current_scope=lambda: _SCOPED)
+    out = await overlay.handlers["archive_session"]({"id": _SCOPED})
+    assert out["is_error"] is True
+    assert out["content"][0]["text"].startswith("SCOPED_READ_ONLY: ")
+
+
+def _texts(harness, method=schema.METHOD_TURN_START) -> list[str]:
+    return [f["params"]["input"][0]["text"] for f in harness.frames(method)]
+
+
+@pytest.mark.asyncio
+async def test_the_codex_turn_input_carries_the_context_header_once_per_change(
+        harness, overlay, monkeypatch):
+    """D-12: the model must be told which session the drawer is open on — the same
+    `render_context_header` line Claude gets, deduped the same way: omitted while it
+    is unchanged, re-sent on a change."""
+    from server.assistant.context import render_context_header
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    ctx_x = {"route": f"/sessions/{_SCOPED}", "sessionId": _SCOPED}
+    driver = await harness.boot(assistant_overlay=overlay)
+    await driver.send_prompt("what changed?", context=ctx_x)
+    harness.notify_turn_started("turn-1")
+    harness.notify_turn_completed("turn-1")
+    await harness.settle()
+    harness.server.rule(schema.METHOD_TURN_START, result={"turn": turn_payload("turn-2")})
+    await driver.send_prompt("and the tests?", context=ctx_x)
+    harness.notify_turn_started("turn-2")
+    harness.notify_turn_completed("turn-2")
+    await harness.settle()
+    harness.server.rule(schema.METHOD_TURN_START, result={"turn": turn_payload("turn-3")})
+    await driver.send_prompt("now?", context={"route": "/pipeline"})
+    await harness.settle()
+    header_x = render_context_header(ctx_x, host="dobby")  # type: ignore[arg-type]
+    assert _texts(harness) == [
+        f"{header_x}\nwhat changed?",
+        "and the tests?",
+        f"{render_context_header({'route': '/pipeline'}, host='dobby')}\nnow?",
+    ]
+    # The live echo never carries the header: it is model input, not the user's words.
+    assert [e.text for e in harness.of(ev.UserMessage)] == [
+        "what changed?", "and the tests?", "now?"]

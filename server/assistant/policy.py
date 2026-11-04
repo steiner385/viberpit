@@ -82,8 +82,12 @@ async def assistant_model(db) -> str:
 # wrongly admit routes spec §4.2 excludes, e.g. `POST /api/sessions/batch/unarchive`
 # matching `_S + r"/unarchive"`, or `GET /api/sessions/adoptable` matching the bare
 # `GET _S` row. A UUID4-anchored pattern can never match those static segments.
-_ID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-_S = r"/api/sessions/" + _ID
+#
+# `SESSION_ID` is also the assistant tool layer's session-id argument check
+# (`server.assistant.tools.session_id_arg`): one pattern for what a route admits and
+# what a tool may send, so the D-12 side-chat guard compares the id the route will see.
+SESSION_ID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_S = r"/api/sessions/" + SESSION_ID
 ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (m, re.compile(p + r"$")) for m, p in [
         ("GET", r"/api/sessions"),
@@ -92,6 +96,9 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", _S),
         ("GET", _S + r"/transcript"),
         ("GET", _S + r"/export\.md"),
+        # The side chat's reads (D-12): the worktree diff (D-4) and in-session search (D-11).
+        ("GET", _S + r"/diff"),
+        ("GET", _S + r"/search"),
         ("GET", r"/api/accounts"),
         ("GET", r"/api/fleet/hosts"),
         ("GET", r"/api/prs"),

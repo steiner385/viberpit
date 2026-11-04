@@ -16,7 +16,7 @@
  * here so it can call `useSessionRuntimeContext()` — the provider's own descendant,
  * not the component that renders the provider.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
@@ -36,7 +36,11 @@ import { Button } from '@/ui/Button'
 import { AssistantHeader } from './AssistantHeader'
 import { FollowUpChips, StarterChips } from './StarterChips'
 import { startersFor } from './starters'
-import { useAssistantGestures } from './assistantGestures'
+import { toast } from 'sonner'
+import { useAssistantGestures, usePendingAssistantSend } from '@/shell/assistantGestures'
+import { selectPromptScope } from '@/session/selectors'
+import type { PromptContext } from '@/session/events'
+import { AssistantScope } from './AssistantScope'
 
 export function AssistantSheet() {
   const status = useAssistantStatus()
@@ -54,6 +58,14 @@ export function AssistantSheet() {
     // actually change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status.data?.enabled, status.data?.sessionId])
+
+  // A `/btw` question parked while the assistant is off is dropped, not kept for later:
+  // sending it after a re-enable, out of the blue, is never what was asked.
+  const { pendingSend, take } = usePendingAssistantSend()
+  const disabled = status.data?.enabled === false
+  useEffect(() => {
+    if (disabled && pendingSend) take()
+  }, [disabled, pendingSend, take])
 
   if (status.isLoading) return <AssistantSkeleton />
   if (!status.data?.enabled) return <AssistantDisabled />
@@ -81,20 +93,54 @@ function AssistantSheetBody() {
   // twice, so Composer's prefill effect re-fires (see Composer.tsx's externalDraft).
   const [draftSeed, setDraftSeed] = useState<{ text: string } | null>(null)
 
+  // What every prompt from this drawer carries — composer, Send now, chips and a parked
+  // `/btw` alike: the route, and the session the side chat is about (D-12). Read at
+  // send time, never captured.
+  const scopedContext = useCallback((sessionId: string | null): PromptContext => (
+    { route: pathname, ...(sessionId ? { sessionId } : {}) }
+  ), [pathname])
+  const contextProvider = useCallback(() => scopedContext(openSessionId), [scopedContext, openSessionId])
+
+  // `/btw <question>` (D-12): send the question `requestAssistant` parked, once the
+  // replay has settled — about the session it was asked in, and only while that session
+  // is still the open one; otherwise it is dropped with a toast rather than sent about
+  // another. `onPlainPrompt` is the composer's send/queue path (a running turn queues
+  // it) without chat-arming, so an armed question never swallows it as its answer.
+  // `take()` clears the slot as it reads it, so a remount, a re-render or a second
+  // effect run never sends it twice; a question parked before this session existed is
+  // sent as soon as it does, because this body only mounts then.
+  const { pendingSend, take } = usePendingAssistantSend()
+  const settled = !rt.state.replaying
+  const { onPlainPrompt } = rt
+  useEffect(() => {
+    if (!settled || !pendingSend) return
+    const parked = take()
+    if (parked === null) return
+    if (parked.sessionId !== openSessionId) {
+      toast('That question was about another session — ask again here')
+      return
+    }
+    onPlainPrompt(parked.text, [], scopedContext(parked.sessionId))
+  }, [settled, pendingSend, take, onPlainPrompt, scopedContext, openSessionId])
+
   // `@` session mentions (spec v2 §10.2): only the assistant drawer's composer gets
   // this — a coding session's Composer never receives mentionSource at all.
   const mentionSource = useMentionSessions()
 
   // Publish this turn's liveness to `DrawerHost` so Escape can interrupt it before
   // closing the drawer, instead of abandoning an in-flight assistant turn silently.
-  useAssistantGestures({
-    turnLive: statusTier(rt.state.status.state) === 'busy',
-    interrupt: rt.onInterrupt,
-  })
+  const turnLive = statusTier(rt.state.status.state) === 'busy'
+  useAssistantGestures({ turnLive, interrupt: rt.onInterrupt })
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <AssistantHeader />
+      <AssistantHeader scope={
+        <AssistantScope
+          current={openSessionId}
+          scope={selectPromptScope(rt.state.turns)}
+          inFlight={turnLive || rt.state.queued.length > 0}
+        />
+      } />
       {/* Session-level errors (a failed wake, an unknown thread) used to reach this
           runtime's reducer and render nowhere — SessionBody was the only surface. */}
       <SessionErrorBanner rt={rt} />
@@ -105,7 +151,7 @@ function AssistantSheetBody() {
           auto-follow and no button. The chips sit outside the transcript's scroller:
           starters only render on an empty thread, follow-ups under the last answer. */}
       <div className="flex min-h-0 flex-1 flex-col" aria-live="polite">
-        <StarterChips starters={startersFor(pathname, openSessionId)} />
+        <StarterChips starters={startersFor(pathname, openSessionId)} contextProvider={contextProvider} />
         <TranscriptView
           variant="assistant"
           turns={rt.state.turns}
@@ -125,7 +171,7 @@ function AssistantSheetBody() {
           onAsk={(text) => setDraftSeed({ text })}
           followSignal={rt.state.pendingSentSeq}
         />
-        <FollowUpChips />
+        <FollowUpChips contextProvider={contextProvider} />
       </div>
       {/* Pinned permission / question panels, exactly as SessionBody mounts them. Turn
           filters open permissions and live questions OUT of the transcript on the
@@ -148,7 +194,7 @@ function AssistantSheetBody() {
       <SessionComposer
         rt={rt}
         hideSessionControls
-        contextProvider={() => ({ route: pathname, ...(openSessionId ? { sessionId: openSessionId } : {}) })}
+        contextProvider={contextProvider}
         externalDraft={draftSeed}
         mentionSource={mentionSource}
       />

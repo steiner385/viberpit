@@ -1,6 +1,7 @@
 /**
  * Derived views over transcript state for the session status strip.
  */
+import { isPendingTurn } from './reducer'
 import type { Block, Turn, SubThread, SubThreadTaskStatus, TranscriptState, BackgroundTaskState, BackgroundTaskStatus } from './reducer'
 import type { BackgroundWork } from '@/api/types'
 
@@ -223,4 +224,24 @@ export function subAgentTreeFromSummaries(list: SubAgentSummary[]): SubAgentNode
     else roots.push(n)
   }
   return roots
+}
+
+/**
+ * The session the Assistant side chat is about, as the SERVER holds it (D-12): the
+ * `sessionId` of the newest started user turn that carries a context. The server
+ * emits a user turn's raw context exactly when the turn starts, and replay rebuilds it
+ * from the journalled header, so this survives queueing, the answer path (a prompt
+ * taken as an answer starts no turn), reload, reconnect and other tabs. Optimistic
+ * bubbles are skipped: a send is not a start.
+ *
+ * `undefined`: no turn has carried a context yet. `null`: the newest one names no session.
+ */
+export function selectPromptScope(turns: readonly Turn[]): string | null | undefined {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i]
+    if (t.role === 'user' && t.context && !isPendingTurn(t) && t.pending === undefined) {
+      return t.context.sessionId ?? null
+    }
+  }
+  return undefined
 }

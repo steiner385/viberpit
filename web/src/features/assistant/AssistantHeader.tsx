@@ -7,7 +7,7 @@
  * prompt row): that one is wired to the full session composer and carries
  * effort, queueing and approval affordances the drawer has no room for.
  */
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { History } from 'lucide-react'
 import { useAssistantStatus, useResetAssistant, useSetAssistantModel } from '@/api/assistant'
 import { useModels } from '@/api/hooks'
@@ -23,7 +23,8 @@ import { IconButton } from '@/ui/IconButton'
 import { Select } from '@/ui/Select'
 import { AssistantHistoryList } from './AssistantHistoryList'
 
-export function AssistantHeader() {
+/** `scope`: the side-chat line under the title (`AssistantScope`), when a session is open. */
+export function AssistantHeader({ scope }: { scope?: ReactNode } = {}) {
   const status = useAssistantStatus()
   const { data: models } = useModels()
   const reset = useResetAssistant()
@@ -43,6 +44,7 @@ export function AssistantHeader() {
     <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
       <div className="min-w-0">
         <p className="truncate text-sm font-medium text-ink">Assistant</p>
+        {scope}
         {sessionId ? (
           <Select
             id="assistant-model"

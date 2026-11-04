@@ -7,6 +7,7 @@ import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { useForkCommand } from '@/features/sessions/fork/useForkFrom'
 import { useRewindCommand } from '@/features/sessions/rewind/useRewindCommand'
+import { useBtwCommand } from '@/features/assistant/useBtwCommand'
 import { useCreateSession, useEngineOffers, useGithubRepos, useModels } from '@/api/hooks'
 import { useEnabledFleetHosts } from '@/api/fleet'
 import { DEFAULT_AGENT_ENGINE, type Account, type AgentEngine } from '@/api/types'
@@ -133,8 +134,10 @@ function LiveComposer() {
   // `/fork` (D-8) is app-owned and runs here, in the browser: it needs the
   // transcript's latest reply and opens the child. Every other command goes on to
   // the session as before. `/rewind` (D-9) likewise: it opens a picker of the prompts.
+  // `/btw` (D-12) opens the Assistant drawer as a side chat about this session.
   const forkOnCommand = useForkCommand(rt)
-  const { onCommand, element: rewindUi } = useRewindCommand({ ...rt, onCommand: forkOnCommand })
+  const btwOnCommand = useBtwCommand({ ...rt, onCommand: forkOnCommand })
+  const { onCommand, element: rewindUi } = useRewindCommand({ ...rt, onCommand: btwOnCommand })
   return (
     <>
       <SessionComposer rt={{ ...rt, onCommand }} promptRowMenus={promptRowMenus} attachRef={attachRef} />

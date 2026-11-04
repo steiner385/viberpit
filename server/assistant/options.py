@@ -19,6 +19,7 @@ Two things this must NOT contain, both verified on SDK 0.2.105 + CLI 2.1.259
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from viberpit import brand
@@ -74,7 +75,8 @@ def assistant_options(*, server: Any, max_turns: int, model: str,
 
 
 def assistant_overlay_for(engine: Any, *, api: Any, server: Any, max_turns: int,
-                          model: str, operator: bool = False) -> Any:
+                          model: str, operator: bool = False,
+                          current_scope: Callable[[], str | None] | None = None) -> Any:
     """THE entry point: the overlay for one assistant session on *engine*.
 
     One function so "which overlay does an assistant get?" has a single answer,
@@ -89,7 +91,8 @@ def assistant_overlay_for(engine: Any, *, api: Any, server: Any, max_turns: int,
     (``server.assistant.tools.build_tools``), which is what keeps the tool surface
     one thing across engines. *server* is the pre-built in-process MCP server the
     Claude path needs; the Codex path builds its specs from *api* directly and
-    ignores it.
+    ignores it. *current_scope* is the D-12 side-chat scope source: the Claude path
+    already closed over it in *server*; the Codex path hands it to ``build_tools``.
     """
     from viberpit.engines import AgentEngine, parse_agent_engine
 
@@ -97,6 +100,7 @@ def assistant_overlay_for(engine: Any, *, api: Any, server: Any, max_turns: int,
     if selected is AgentEngine.CODEX:
         from .options_codex import assistant_codex_options
 
-        return assistant_codex_options(api=api, model=model, operator=operator)
+        return assistant_codex_options(api=api, model=model, operator=operator,
+                                       current_scope=current_scope)
     return assistant_options(
         server=server, max_turns=max_turns, model=model, operator=operator)

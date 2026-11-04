@@ -100,6 +100,65 @@ def test_summary_has_no_hunks(repo: Path) -> None:
     assert body["additions"] == 2 and body["deletions"] == 1
 
 
+# --- format=patch (D-12: the assistant's get_session_diff) ---------------------
+
+def test_patch_format_renders_unified_text_and_reports_the_cut(repo: Path) -> None:
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c:
+        r = c.get(f"/api/sessions/{SID}/diff?format=patch", headers=_H)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    files = {f["path"]: f for f in body["files"]}
+    assert "hunks" not in files["a.txt"]
+    assert files["a.txt"]["patch"] == "@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"
+    assert files["new.txt"]["patch"].endswith("+fresh\n")
+    assert body["additions"] == 2 and body["deletions"] == 1
+    assert body["cut"] == {"filesOmitted": 0, "patchesTruncated": 0, "patchesOmitted": 0,
+                           "patchBytesOmitted": 0, "maxFiles": 300, "maxPatchBytes": 60000}
+
+
+def test_patch_format_keeps_a_huge_file_inside_the_budget(repo: Path) -> None:
+    (repo / "big.txt").write_text("".join(f"line {i}\n" for i in range(20_000)))
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c:
+        r = c.get(f"/api/sessions/{SID}/diff?format=patch&max_patch_bytes=24000", headers=_H)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    total = sum(len((f["patch"] or "").encode()) for f in body["files"])
+    assert total <= 24_000
+    cut = body["cut"]
+    assert cut["maxPatchBytes"] == 24_000
+    assert cut["patchesTruncated"] + cut["patchesOmitted"] >= 1
+    assert cut["patchBytesOmitted"] > 0
+    big = next(f for f in body["files"] if f["path"] == "big.txt")
+    assert big.get("patchTruncated") or big.get("patchOmitted")
+
+
+def test_patch_format_caps_the_file_list(repo: Path) -> None:
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c:
+        body = c.get(f"/api/sessions/{SID}/diff?format=patch&max_files=1", headers=_H).json()
+    assert len(body["files"]) == 1 and body["cut"]["filesOmitted"] == 1
+
+
+def test_patch_format_redacts_secrets(repo: Path) -> None:
+    secret = "sk-ant-api03-" + "A" * 40
+    (repo / "a.txt").write_text(f"one\nkey = {secret}\nthree\n")
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c:
+        body = c.get(f"/api/sessions/{SID}/diff?format=patch", headers=_H).json()
+        hunks = c.get(f"/api/sessions/{SID}/diff", headers=_H).json()
+    a = next(f for f in body["files"] if f["path"] == "a.txt")
+    assert secret not in a["patch"] and "[REDACTED]" in a["patch"]
+    # The Changes pane's own (hunks) view is untouched by the patch view.
+    assert any(secret in ln["text"] for f in hunks["files"] for h in f["hunks"]
+               for ln in h["lines"])
+
+
+@pytest.mark.parametrize("query", ["format=nope", "format=patch&max_patch_bytes=10",
+                                   "format=patch&max_patch_bytes=999999",
+                                   "format=patch&max_files=0"])
+def test_patch_format_rejects_bad_bounds(repo: Path, query: str) -> None:
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c:
+        assert c.get(f"/api/sessions/{SID}/diff?{query}", headers=_H).status_code == 422
+
+
 def test_ignore_whitespace_flag_reaches_git(repo: Path) -> None:
     (repo / "a.txt").write_text("one\ntwo  \nthree\n")  # whitespace-only edit
     with patch.dict(os.environ, _ENV), _client(str(repo)) as c:

@@ -17,6 +17,9 @@ links:
     - web/src/features/palette/AppPalette.tsx
     - web/src/features/sessions/transcript/search/TranscriptSearchBar.tsx
     - web/src/features/sessions/transcript/TurnSummaryCard.tsx
+    - web/src/features/assistant/useBtwCommand.ts
+    - web/src/features/assistant/AssistantScope.tsx
+    - web/src/shell/assistantGestures.tsx
     - server/sessions/search.py
     - web/src/session/ordering.ts
     - web/src/shell/shortcuts.ts
@@ -283,6 +286,25 @@ message.
   of these and turns off checkpointing for new spawns, and the server refuses with `REWIND_UNAVAILABLE`. The server
   side is `POST /api/sessions/{id}/rewind` and `POST /api/sessions/{id}/rewind/undo`, run on the host that owns
   the session.
+
+**Side chat (Assistant drawer)** — inside a session, the Assistant drawer is a side chat about that session.
+- **Opening:** ⌘; (Ctrl+;) opens it, as before. `/btw` in a session's composer opens it, and `/btw <question>`
+  opens it and sends the question once. If the drawer's own session is still being created, the question waits
+  for it; if a turn is running, it queues. `/btw` is not offered in the drawer's own composer.
+- **Tied to its session:** a parked `/btw` question belongs to the session it was typed in. If another session is
+  open by the time it would be sent, it is dropped with the toast "That question was about another session — ask
+  again here". Closing the drawer drops it too.
+- **Header:** `About: <session>` with the session's status dot. It shows the scope the server holds, taken from
+  the newest started turn that named a session. While a turn runs or prompts are queued and you have moved to
+  another session, it adds "Next message will be about <that session>". Outside a session, nothing changes.
+- **Read-only to that session:** the Assistant can read its transcript, diff and search results, but any change
+  to it (a prompt, archive, rotate…) is refused with "This chat is about session X and can't change it — ask in
+  the session itself, or close the side chat", before any confirmation card appears. Other sessions can still be
+  acted on. Automation actions and PR consolidation, which can reach a session indirectly, are refused while any
+  session is scoped. See `docs/product/features/ai-assistant.md` § Side chat.
+- **Kill switches:** with the Assistant off in Settings, `/btw` toasts "The Assistant is off — turn it on in
+  Settings" and sends nothing. With `VIBERPIT_ASSISTANT_ENABLED` off, the app's `/btw` is not listed and the CLI's
+  own `/btw` passes through.
 
 **Changes tab and inline diffs** — each session has a Changes tab next to Conversation, listed when
 the session's worktree differs from its base.

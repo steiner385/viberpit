@@ -51,7 +51,7 @@ D=[
 ]),
 ("4 Commands & config",[
  ("Engine slash-command passthrough",3,"Y",""),
- ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp /fork /rewind"),
+ ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12); no /plan /effort /fast /add-dir"),
  ("Plugins + marketplace browse/install",2,"P","enable/disable + detail; no marketplace"),
  ("Skills management",1,"Y",""),
  ("MCP servers + per-tool toggles",2,"P","servers, OAuth, scope; no per-tool toggles"),
@@ -87,7 +87,7 @@ D=[
  ("Fork session (from here)",3,"Y","Claude; files start from current worktree"),
  ("Rewind to message (with file restore, undo)",3,"Y","Claude; Edit/Write only — shell changes not restored"),
  ("Edit & resend a previous message",2,"Y",""),
- ("Side chat scoped to session (/btw, ⌘;)",2,"P","app-level assistant drawer"),
+ ("Side chat scoped to session (/btw, ⌘;)",2,"Y","Assistant drawer about the open session (D-12): ⌘; opens, /btw <q> opens and sends; reads its transcript/diff/search and is refused any write to it; a separate assistant thread reading through tools, not a fork of the session's own context"),
  ("Spin off parallel / child sessions",1,"Y",""),
  ("Archive / unarchive / auto-archive",2,"Y",""),
  ("Rename + AI titles",1,"Y",""),

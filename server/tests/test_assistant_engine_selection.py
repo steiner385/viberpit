@@ -63,6 +63,8 @@ def _orch():
     orch._x11 = None
     orch._records = {}
     orch._overlays = {}
+    orch._drivers = {}
+    orch._assistant_scopes = {}
     orch._clock = time.time
     return orch
 

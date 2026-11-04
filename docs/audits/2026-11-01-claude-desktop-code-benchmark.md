@@ -65,12 +65,12 @@ Full inventories, with an evidence tag on every item:
 | 4 Commands & config | 9 / 15 | 60% |
 | 5 Settings | 3.5 / 8 | 44% |
 | 6 User feedback | 18 / 19 | 95% |
-| 7 Lifecycle & branching | 21.5 / 25 | 86% |
+| 7 Lifecycle & branching | 22.5 / 25 | 90% |
 | 8 Code review & dev | 7.5 / 12 | 62% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **134.5 / 161** | **84%** |
-| **Target completion** (excl. rejected rows) | **132 / 151** | **87%** |
+| **Overall (weighted)** | **135.5 / 161** | **84%** |
+| **Target completion** (excl. rejected rows) | **133 / 151** | **88%** |
 
 ### 1 Shell & IA
 
@@ -126,7 +126,7 @@ Full inventories, with an evidence tag on every item:
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | Engine slash-command passthrough | 3 | ✅ |  |
-| App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 2 | ◐ | /help /context /clear /model /account /mcp /fork /rewind |
+| App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 2 | ◐ | /help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12); no /plan /effort /fast /add-dir |
 | Plugins + marketplace browse/install | 2 | ◐ | enable/disable + detail; no marketplace |
 | Skills management | 1 | ✅ |  |
 | MCP servers + per-tool toggles | 2 | ◐ | servers, OAuth, scope; no per-tool toggles |
@@ -171,7 +171,7 @@ Full inventories, with an evidence tag on every item:
 | Fork session (from here) | 3 | ✅ | Claude; files start from current worktree |
 | Rewind to message (with file restore, undo) | 3 | ✅ | Claude; Edit/Write only — shell changes not restored |
 | Edit & resend a previous message | 2 | ✅ |  |
-| Side chat scoped to session (/btw, ⌘;) | 2 | ◐ | app-level assistant drawer |
+| Side chat scoped to session (/btw, ⌘;) | 2 | ✅ | Assistant drawer about the open session (D-12): ⌘; opens, /btw <q> opens and sends; reads its transcript/diff/search and is refused any write to it; a separate assistant thread reading through tools, not a fork of the session's own context |
 | Spin off parallel / child sessions | 1 | ✅ |  |
 | Archive / unarchive / auto-archive | 2 | ✅ |  |
 | Rename + AI titles | 1 | ✅ |  |
@@ -228,17 +228,16 @@ Full inventories, with an evidence tag on every item:
 | 14 | Sandbox settings | 5 Settings | 1 |
 | 15 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
 | 16 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 17 | Side chat scoped to session (/btw, ⌘;) | 7 Lifecycle & branching | 1 |
-| 18 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 19 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 20 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 21 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 22 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 23 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
-| 24 | Notification levels per event type | 5 Settings | 0.5 |
-| 25 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 26 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 27 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 17 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
+| 18 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
+| 19 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 20 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 21 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 22 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
+| 23 | Notification levels per event type | 5 Settings | 0.5 |
+| 24 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 25 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 26 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

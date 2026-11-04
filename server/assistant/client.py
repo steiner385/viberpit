@@ -10,6 +10,7 @@ from viberpit import brand
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.auth.middleware import ASSISTANT_SESSION_HEADER, VIA_HEADER
 from server.http_keepalive import CLIENT_KEEPALIVE_EXPIRY_S
+from server.mcp_spec import ToolArgError
 from server.sessions.types import SYSTEM_IDENTITY
 
 # This hop is loopback client -> the edge's own uvicorn (deploy/viberpit.service),
@@ -45,6 +46,26 @@ def _error_text(body: Any, status: int) -> str:
     if isinstance(detail, str):
         return f"{status}: {detail[:200]}"
     return f"{status}:"
+
+
+# Characters a tool argument interpolated into a path could use to leave its segment:
+# a query or fragment, a percent-escape the router decodes, a backslash, whitespace.
+_PATH_UNSAFE = frozenset("?#%\\") | {chr(c) for c in range(0x21)} | {"\x7f"}
+
+
+def check_path(path: str) -> None:
+    """Refuse a request path a tool argument could have redirected (D-12, C1).
+
+    Tools build paths by interpolating their arguments, and httpx normalises dot
+    segments before sending — so `/api/assistant/watches/../../sessions/X` would leave
+    as `DELETE /api/sessions/X`, a route no check on the watch id ever compared. A
+    path is accepted only if every segment is literal; ToolArgError tells the model
+    what to fix, and nothing is sent."""
+    if (any(seg in (".", "..") for seg in path.split("/"))
+            or any(c in _PATH_UNSAFE for c in path)):
+        raise ToolArgError("an id or name argument may not contain a '.' or '..' path "
+                           "segment, '?', '#', '%', '\\' or whitespace — pass it exactly "
+                           "as a list tool returned it")
 
 
 class AssistantApiError(Exception):
@@ -83,6 +104,7 @@ class AssistantApi:
     async def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
         """Rate-limit, send, and raise on any error status. Returns the raw response so
         both the JSON path (`_call`) and the text path (`get_text`) share one policy."""
+        check_path(path)
         # Checked BEFORE the request so a rate-limited call costs nothing downstream.
         # Surfaced as a normal AssistantApiError, so `guarded()` in tools.py turns it
         # into an is_error tool result the model can read and back off from.

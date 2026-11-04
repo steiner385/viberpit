@@ -33,7 +33,8 @@ import { BulkActionBar } from '@/ui/list/BulkActionBar'
 import { NoMatchState } from '@/ui/list/NoMatchState'
 import { SelectableRow, SELECT_CHECKBOX_CLS } from '@/ui/list/SelectableRow'
 import { useBulkSelection } from '@/ui/list/useBulkSelection'
-import { ArchivedSessionCard, displayNameOf } from './ArchivedSessionCard'
+import { ArchivedSessionCard } from './ArchivedSessionCard'
+import { displayNameOf } from '@/session/displayName'
 
 function summarize(verb: string, res: BatchResult): string {
   const ok = res.succeeded.length

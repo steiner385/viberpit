@@ -353,3 +353,29 @@ async def test_a_run_that_raised_is_not_cached(tmp_path):
         await o.restore_deploy(path=p)
     res = await o.restore_deploy(path=p)
     assert res["restored"] == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_restore_never_auto_replays_an_assistant_turn(tmp_path, caplog):
+    """D-12: a fresh daemon has no side-chat scope for an assistant, so replaying its
+    last prompt would run an unscoped turn while the drawer still reads "About: X". As
+    `_rearm_session` and `auto_resume_interrupted` already do, the assistant is
+    restored (its driver and record stay) but its turn is not re-sent."""
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([
+        {"id": "a1", "status": "in_progress", "lastPrompt": "archive it"},
+        {"id": "s1", "status": "in_progress", "lastPrompt": "finish the refactor"},
+    ], path=p)
+    asst = FakeRec("in_progress", id="a1")
+    asst.kind = "assistant"
+    o = MiniOrch(drivers={}, records={"a1": asst}, resumable={"a1", "s1"})
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        res = await o.restore_deploy(path=p)
+    assert res["restored"] == ["a1", "s1"]
+    assert res["replayed"] == ["s1"]
+    assert o.built["a1"].prompts == []
+    assert "a1" in o._records
+    skips = [r for r in caplog.records
+             if getattr(r, "event", None) == "deploy.restore.replay_skipped"]
+    assert [(r.fields["session_id"], r.fields["reason"]) for r in skips] == [
+        ("a1", "assistant")]

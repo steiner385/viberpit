@@ -63,6 +63,34 @@ def _cut_patch(patch: str, budget: int) -> str:
     return prefix[:nl + 1] if nl != -1 else ""
 
 
+class PatchBudget:
+    """One shared byte budget across a diff's patches, in order: a patch that fits is
+    kept whole, the first that does not is cut at a line boundary (if enough budget is
+    left to be worth reading), and every later one is omitted. Counts what it cut, so
+    the caller's ``cut`` reports it. Shared by this module and the session diff's
+    ``format=patch`` view (``server/sessions/diff_patch.py``)."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.left = max_bytes
+        self.truncated = self.omitted = self.bytes_omitted = 0
+
+    def take(self, patch: str) -> tuple[str | None, str | None]:
+        """``(text kept or None, the flag to set on the row or None)``; the flag is
+        ``"patchTruncated"`` or ``"patchOmitted"``."""
+        size = len(patch.encode())
+        if size <= self.left:
+            self.left -= size
+            return patch, None
+        if self.left >= _MIN_PARTIAL_PATCH and (part := _cut_patch(patch, self.left)):
+            self.truncated += 1
+            self.bytes_omitted += size - len(part.encode())
+            self.left = 0
+            return part, "patchTruncated"
+        self.omitted += 1
+        self.bytes_omitted += size
+        return None, "patchOmitted"
+
+
 def fetch_pr_files(
     repo: str, number: int, *,
     max_files: int = FILES_MAX, max_patch_bytes: int = PATCH_BYTES_MAX,
@@ -100,8 +128,7 @@ def fetch_pr_files(
     raw = raw[:max_files]
     total = max(total, len(raw))
 
-    budget = max_patch_bytes
-    truncated = omitted = bytes_omitted = 0
+    budget = PatchBudget(max_patch_bytes)
     files: list[dict[str, Any]] = []
     for r in raw:
         row: dict[str, Any] = {
@@ -115,27 +142,16 @@ def fetch_pr_files(
         if not isinstance(patch, str):
             row["patchUnavailable"] = True
         else:
-            size = len(patch.encode())
-            if size <= budget:
-                row["patch"] = patch
-                budget -= size
-            elif budget >= _MIN_PARTIAL_PATCH and (part := _cut_patch(patch, budget)):
-                row["patch"] = part
-                row["patchTruncated"] = True
-                truncated += 1
-                bytes_omitted += size - len(part.encode())
-                budget = 0
-            else:
-                row["patchOmitted"] = True
-                omitted += 1
-                bytes_omitted += size
+            row["patch"], flag = budget.take(patch)
+            if flag:
+                row[flag] = True
         files.append(row)
 
     return {
         "repo": repo, "number": number, "totalFiles": total,
         "additions": pr.get("additions"), "deletions": pr.get("deletions"),
         "files": files,
-        "cut": {"filesOmitted": total - len(files), "patchesTruncated": truncated,
-                "patchesOmitted": omitted, "patchBytesOmitted": bytes_omitted,
+        "cut": {"filesOmitted": total - len(files), "patchesTruncated": budget.truncated,
+                "patchesOmitted": budget.omitted, "patchBytesOmitted": budget.bytes_omitted,
                 "maxFiles": max_files, "maxPatchBytes": max_patch_bytes},
     }

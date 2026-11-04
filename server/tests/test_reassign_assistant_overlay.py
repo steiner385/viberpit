@@ -81,6 +81,7 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
     orch._records = {"s1": rec}
     orch._drivers = {"s1": _OldDriver()}
     orch._overlays = {"s1": old_overlay}
+    orch._assistant_scopes = {}
     orch._last_prompt = {}
     orch._turn_restart_at = {}
     orch._swapping = {}

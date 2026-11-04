@@ -147,3 +147,14 @@ async def test_auto_resume_resumes_eligible_when_enabled(monkeypatch):
     orch._records["s2"] = parked
     assert await orch.auto_resume_interrupted() == 1
     assert [sid for sid, _ in calls["prompt"]] == ["s1"]   # s2 skipped
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_never_sends_to_an_assistant():
+    """D-12: an assistant's driver would come up with no side-chat scope; the nudge is
+    never auto-sent to it (as `auto_resume_interrupted` already skips it)."""
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress",
+               kind="assistant")
+    orch, calls = _orch_with(rec)
+    assert await orch.resume_interrupted("s1") == "skipped:assistant"
+    assert calls["ensure"] == [] and calls["prompt"] == []

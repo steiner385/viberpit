@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
+from server.sessions import diff_patch
 from server.auth.identity import human_gate_via
 from server.auth.middleware import current_client_node, current_identity
 from server.library.names import valid_mcp_name
@@ -2080,6 +2081,11 @@ async def session_diff(
     request: Request,
     summary: bool = False,
     ignore_whitespace: bool = Query(False, alias="ignoreWhitespace"),
+    view: Literal["hunks", "patch"] = Query("hunks", alias="format"),
+    max_files: int = Query(diff_patch.PATCH_FILES_MAX, ge=1, le=diff_patch.PATCH_FILES_MAX),
+    max_patch_bytes: int = Query(diff_patch.PATCH_VIEW_BYTES_MAX,
+                                 ge=diff_patch.PATCH_VIEW_BYTES_MIN,
+                                 le=diff_patch.PATCH_VIEW_BYTES_MAX),
     _identity: str = Depends(current_identity),
 ) -> dict:
     """The session worktree's diff from its base to the working tree (D-4 Changes pane).
@@ -2089,8 +2095,18 @@ async def session_diff(
     cwd that is not a git work tree, is 200 with ``files: []``; unknown session 404. A
     daemon that predates the RPC is 409 ``daemon_outdated`` (as for start-now, #2857):
     a 4xx, so the UI neither retries nor draws the chip until the next rollout.
+
+    ``format=patch`` (D-12, the assistant's ``get_session_diff``) answers each file's
+    hunks as unified-diff text instead, at most ``max_files`` files and
+    ``max_patch_bytes`` of patch, redacted, with the cut reported under ``cut``
+    (``server/sessions/diff_patch.py``). It ignores ``summary``: a patch needs hunks.
     """
     try:
+        if view == "patch":
+            full = await _get_orchestrator(request).session_diff(
+                session_id, summary=False, ignore_whitespace=ignore_whitespace)
+            return diff_patch.patch_view(full, max_files=max_files,
+                                         max_patch_bytes=max_patch_bytes)
         return await _get_orchestrator(request).session_diff(
             session_id, summary=summary, ignore_whitespace=ignore_whitespace)
     except KeyError:

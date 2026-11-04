@@ -61,7 +61,8 @@ from typing import TYPE_CHECKING, Any, Final
 from viberpit import brand
 from viberpit import paths
 from server.aio import cancel_and_reap
-from server.assistant.context import PromptContext
+from server.assistant.context import PromptContext, render_context_header
+from server.hostname import self_host_name
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.assistant.options_codex import (ASSISTANT_RESUME_REFUSED, ASSISTANT_SURFACE_CHANGED,
                                             CodexAssistantOverlay,
@@ -364,6 +365,16 @@ class CodexAgentDriver:
         #: (``_open_assistant_thread``, #2714), its permission mode is
         #: pinned, and every built-in approval is declined without a card.
         self._assistant = assistant_overlay
+        # D-12 side-chat scope: the sessionId of the latest context sent (see
+        # `context_scope`), and whether one has been sent (a rebuild's seed stops
+        # applying once it has).
+        self._context_scope: str | None = None
+        self._context_sent = False
+        # The last `<viberpit-context …/>` header actually sent to the app-server, so
+        # it is re-sent only when it changes — the Claude driver's dedupe rule (see
+        # ClaudeAgentDriver._last_context_header), advanced only once a prompt has
+        # gone out. A new thread has never seen one.
+        self._last_context_header: str | None = None
         #: Set for a CODING session when the session-tools flag is on
         #: (server/sessions/tools/codex.py). Unlike ``_assistant`` it changes exactly
         #: ONE thing about this driver: a fresh `thread/start` declares the ViberPit
@@ -537,6 +548,19 @@ class CodexAgentDriver:
     @property
     def last_progress_at(self) -> float:
         return self._last_progress_at
+
+    @property
+    def context_scope(self) -> str | None:
+        """The session the latest SENT prompt context names, or None (D-12). Advanced
+        in `_emit_user_message`, when a prompt actually goes to the app-server (start
+        or steer) — a queued prompt has not moved the conversation yet."""
+        return self._context_scope
+
+    def seed_context_scope(self, scope: str | None) -> None:
+        """Carry a predecessor's scope across a rebuild; a no-op once a context of
+        this driver's own has been sent."""
+        if not self._context_sent:
+            self._context_scope = scope
 
     @property
     def last_hand_back_reason(self) -> str | None:
@@ -994,16 +1018,46 @@ class CodexAgentDriver:
             self._emit(ev.QueueUpdate(self.queue_wire()))
             await self._emit_status()
 
+    def _with_context_header(
+        self, entry: _QueuedPrompt, inputs: tuple[schema.UserInput, ...]
+    ) -> tuple[tuple[schema.UserInput, ...], str | None]:
+        """``(inputs for the app-server, the header to commit once they are sent)``.
+
+        The drawer's context rides the model input as the same single line Claude gets
+        (`render_context_header`), omitted while unchanged. It goes after any origin
+        marker — the order both replays strip them in — and never into ``entry.text``,
+        which is what the live echo shows."""
+        if entry.context is None:
+            return inputs, None
+        header = render_context_header(entry.context, host=self_host_name())
+        if header == self._last_context_header:
+            return inputs, header
+        out = list(inputs)
+        i = next((k for k, x in enumerate(out) if isinstance(x, schema.TextUserInput)), None)
+        if i is None:
+            out.insert(0, schema.TextUserInput(text=header))
+            return tuple(out), header
+        text = out[i].text  # type: ignore[union-attr]
+        marker = (f"{render_origin_header(entry.origin)}\n" if entry.origin is not None
+                  else "")
+        if marker and text.startswith(marker):
+            text = f"{marker}{header}\n{text[len(marker):]}"
+        else:
+            text = f"{header}\n{text}" if text else header
+        out[i] = schema.TextUserInput(text=text)
+        return tuple(out), header
+
     async def _steer(self, entry: _QueuedPrompt, inputs: tuple[schema.UserInput, ...]) -> None:
         """Add a prompt to the live turn, or queue it if that turn just ended."""
         turn_id = self._turn_id
         assert turn_id is not None
+        sent, header = self._with_context_header(entry, inputs)
         try:
             await self._client().steer_turn(
                 schema.TurnSteerParams(
                     thread_id=self._require_thread(),
                     expected_turn_id=turn_id,
-                    input=inputs,
+                    input=sent,
                 )
             )
         except Exception as exc:  # noqa: BLE001 -- any steer failure means "queue it"
@@ -1025,6 +1079,8 @@ class CodexAgentDriver:
             if not self._turn_active:
                 await self._drain_queue()
             return
+        if header is not None:
+            self._last_context_header = header
         self._emit_user_message(entry)
 
     async def _start_turn(
@@ -1069,11 +1125,12 @@ class CodexAgentDriver:
         # `userMessage` item cannot express — see `_consume`.
         self._emit_user_message(entry)
         await self._emit_status()
+        sent, header = self._with_context_header(entry, inputs)
         try:
             response = await self._client().start_turn(
                 schema.TurnStartParams(
                     thread_id=thread_id,
-                    input=inputs,
+                    input=sent,
                     model=self._model,
                     effort=self._effort,
                     cwd=self.cwd,
@@ -1094,6 +1151,8 @@ class CodexAgentDriver:
             )
             await self.emit_error(_TURN_START_FAILED_CODE, _TURN_START_FAILED_MESSAGE)
             return
+        if header is not None:
+            self._last_context_header = header
         # The `turn/started` notification may already have set this; both name
         # the same turn, so the assignment is idempotent either way.
         self._turn_id = response.turn.id
@@ -1172,6 +1231,9 @@ class CodexAgentDriver:
         return self._manager.finish_turn(token)
 
     def _emit_user_message(self, entry: _QueuedPrompt) -> None:
+        if entry.context is not None:
+            self._context_scope = entry.context.get("sessionId")
+            self._context_sent = True
         wire_images = [
             {"url": im.get("url", ""), "mime": im.get("mime", ""),
              "name": im.get("name", "")}
@@ -1614,6 +1676,17 @@ class CodexAgentDriver:
         arguments = (
             dict(params.arguments) if isinstance(params.arguments, Mapping) else {}
         )
+        if self._assistant is not None:
+            # The D-12 side-chat guard, before the card (the Claude driver's
+            # `_can_use_tool` runs the same predicate); the tool's `guarded` backstop
+            # runs it again.
+            from server.assistant.tools import SCOPED_READ_ONLY, scope_refusal
+
+            refusal = scope_refusal(tool, arguments, self._context_scope)
+            if refusal is not None:
+                log_event(logger, logging.INFO, "codex.driver.dynamic_tool_refused",
+                          session=self.session_id, reason="scoped_side_chat")
+                return tool_error(f"{SCOPED_READ_ONLY}: {refusal}")
         perm_id, future, always_allowed = await self._reg.request(
             self.session_id,
             params.turn_id,
@@ -2523,6 +2596,10 @@ class CodexAgentDriver:
         self._translator = CodexEventTranslator(
             thread_id=response.thread.id, model=response.model,
         )
+        # A replaced thread (fresh, or a fork of the old one) re-announces the
+        # context: a fresh one has never been told, and the cost of being wrong for a
+        # fork is one repeated header — the Claude driver's reconnect rule.
+        self._last_context_header = None
         self._pending_engine_session_id = response.thread.id
         await self._persist_policy_thread()
         return response

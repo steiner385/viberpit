@@ -110,13 +110,13 @@ export interface SessionRuntime {
    *  (busy = queued server-side, closed socket = held here), never a question's answer.
    *  For text the user did not type into the composer (the Changes tab's review).
    *  Returns the send stage: `'sent'` or `'buffered'`. */
-  onPlainPrompt: (text: string, attachmentIds: AttachmentIds) => PromptSendResult
+  onPlainPrompt: (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => PromptSendResult
   /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
   onActivity: () => void
   onInterrupt: () => void
   /** Stop the live turn and run this prompt next ("interrupt and post"). Returns
    *  whether the frame was written — false means keep the draft (socket closed). */
-  onInterruptAndPrompt: (text: string, attachmentIds: AttachmentIds, replySource?: 'suggested') => boolean
+  onInterruptAndPrompt: (text: string, attachmentIds: AttachmentIds, replySource?: 'suggested', context?: PromptContext) => boolean
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
   commands: Command[]
@@ -452,7 +452,7 @@ export function useSessionRuntime(
     [sendPrompt, onAnswer, armedQuestionId],
   )
   const onPlainPrompt = useCallback(
-    (text: string, attachmentIds: AttachmentIds) => sendPrompt(text, attachmentIds),
+    (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => sendPrompt(text, attachmentIds, context),
     [sendPrompt],
   )
   const onInterrupt = useCallback(
@@ -467,9 +467,12 @@ export function useSessionRuntime(
   // chat reply) — disarm locally to match. Returns whether the frame left the browser
   // so the composer can keep the draft on a closed socket (#505 rule for controls).
   const onInterruptAndPrompt = useCallback(
-    (text: string, attachmentIds: AttachmentIds, replySource?: 'suggested'): boolean => {
+    (text: string, attachmentIds: AttachmentIds, replySource?: 'suggested', context?: PromptContext): boolean => {
       setArmedQuestionId(null)
-      const sent = replySource ? interruptAndPrompt(sessionId, text, attachmentIds, replySource) : interruptAndPrompt(sessionId, text, attachmentIds)
+      // Trailing args only when set, as `sendPrompt` does (callers assert exact arity).
+      const sent = context ? interruptAndPrompt(sessionId, text, attachmentIds, replySource, context)
+        : replySource ? interruptAndPrompt(sessionId, text, attachmentIds, replySource)
+        : interruptAndPrompt(sessionId, text, attachmentIds)
       if (sent) dispatch({ type: '_trackSentPrompt', text })
       return sent
     },
