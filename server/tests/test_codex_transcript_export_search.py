@@ -368,6 +368,19 @@ class TestCodexExportEndpoints:
         assert any(e.get("type") == "textDelta" and "hi human" in (e.get("text") or "")
                    for e in lines[1:])
 
+    def test_export_jsonl_redacts_codex_normalized_events(self, tmp_path, _db_env):
+        """#3239: the normalized events are a derived view, so they go through
+        redact_event exactly like /export.md — a secret typed into a Codex session
+        must not survive into the download."""
+        secret = "sk-ant-api03-" + "A" * 40
+        app, _, _ = _codex_app(tmp_path, [_text_turn("t1", f"my key is {secret}", "noted")])
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/api/sessions/codex-1/export.jsonl", headers=_IDENT)
+        assert r.status_code == 200, r.text
+        assert secret not in r.text
+        assert "my key is" in r.text                  # the conversation itself survives
+        assert all(json.loads(x) for x in r.text.strip().split("\n"))
+
     def test_export_jsonl_404s_with_no_history(self, tmp_path, _db_env):
         app, _, _ = _codex_app(tmp_path, [])
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -412,6 +425,23 @@ class TestClaudeExportUnchanged:
         assert r.text == raw                          # byte-for-byte, no header record
         assert NORMALIZED_EXPORT_META_TYPE not in r.text
         assert r.headers["content-disposition"].endswith('claude-1.jsonl"')
+
+    def test_export_jsonl_native_file_is_deliberately_unredacted(self, tmp_path, _db_env):
+        """#3239 decision: the native transcript is the one raw export. It stays
+        byte-faithful — secrets included — so it can be re-imported or diffed; the web
+        UI confirms "may contain secrets" before downloading it. If this test fails
+        because the export started redacting, that is a policy change: update the
+        route docstring and ExportMenu's warning with it."""
+        secret = "sk-ant-api03-" + "B" * 40
+        raw = '{"type":"user","message":{"content":"key ' + secret + '"}}\n'
+        p = tmp_path / "t.jsonl"
+        p.write_text(raw)
+        app = self._claude_app(tmp_path, str(p))
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/api/sessions/claude-1/export.jsonl", headers=_IDENT)
+        assert r.status_code == 200
+        assert r.text == raw
+        assert secret in r.text
 
     def test_export_jsonl_now_serves_an_archived_claude_session(self, tmp_path, _db_env):
         """Previously an accepted limitation: transcript_path relies on in-memory
