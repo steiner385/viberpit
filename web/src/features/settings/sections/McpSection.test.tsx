@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -14,6 +14,9 @@ vi.mock('@/api/client', async (importOriginal) => ({
     del: vi.fn().mockResolvedValue({}),
   },
 }))
+
+const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }))
+vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), toastMock) }))
 
 import { McpSection } from './McpSection'
 import { api, ApiRequestError } from '@/api/client'
@@ -416,6 +419,70 @@ describe('McpSection', () => {
           config: expect.objectContaining({ customKey: 'preserve-me' }),
         }),
       )
+    })
+  })
+
+  describe('one-tap sign-in', () => {
+    const needsAuth = () => srv('notion', 'http', [row({ status: 'needs-auth' })],
+      { status: 'needs-auth', error: null, grant: 'expired' })
+
+    function mockConfig(oneTapEnabled: boolean) {
+      vi.mocked(api.get).mockImplementation((path: string) => {
+        if (path === '/library/mcp') return Promise.resolve({ servers: [needsAuth()] })
+        if (path === '/config') return Promise.resolve({ oneTapEnabled })
+        return otherGet(path)
+      })
+    }
+
+    afterEach(() => window.history.replaceState(null, '', '/'))
+
+    it('links Fix auth to the one-tap start route when enabled', async () => {
+      mockConfig(true)
+      renderSection()
+      const link = await screen.findByRole('link', { name: 'Sign in' })
+      expect(link.getAttribute('href')).toBe('/api/mcp/oauth/start?server=notion')
+    })
+
+    it('keeps the McpAuthFlow when one-tap is off', async () => {
+      mockConfig(false)
+      renderSection()
+      await screen.findByText('Needs auth')
+      expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull()
+      expect(await screen.findByRole('button', { name: 'Fix auth' })).toBeTruthy()
+    })
+
+    it('opens the paste-back flow for ?pasteBack even with one-tap on, and cleans the URL', async () => {
+      mockConfig(true)
+      window.history.replaceState(null, '', '/settings/mcp?pasteBack=notion')
+      renderSection()
+      await screen.findByText('Needs auth')
+      expect(await screen.findByRole('button', { name: 'Fix auth' })).toBeTruthy()
+      expect(window.location.pathname).toBe('/settings/mcp')
+      expect(window.location.search).toBe('')
+    })
+
+    it('toasts success for ?signedIn and cleans the URL', async () => {
+      mockConfig(true)
+      window.history.replaceState(null, '', '/settings/mcp?signedIn=notion')
+      renderSection()
+      await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith(
+        'Signed in to notion — every account and runner can use it now.'))
+      expect(window.location.search).toBe('')
+    })
+
+    it.each([
+      ['state_invalid', 'That sign-in link expired or was already used. Try again.'],
+      ['denied', 'Sign-in was cancelled at the provider.'],
+      ['exchange_failed', "The provider didn't accept the sign-in. Try again."],
+      ['registration_failed', "This provider doesn't allow ViberPit to register. Use the manual sign-in."],
+      ['not_configured', "That server can't be signed in here."],
+      ['<b>x</b>', 'Sign-in failed.'],
+    ])('maps signInError=%s to a fixed message', async (code, message) => {
+      mockConfig(true)
+      window.history.replaceState(null, '', `/settings/mcp?signInError=${encodeURIComponent(code)}`)
+      renderSection()
+      await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(message))
+      expect(window.location.search).toBe('')
     })
   })
 })

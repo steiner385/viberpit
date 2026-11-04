@@ -647,3 +647,30 @@ def test_keys_for_server_maps_short_name_to_cli_keys(shared: Path):  # noqa: F81
     assert grants.keys_for_server("aws-oauth") == [NEW_KEY]
     assert grants.keys_for_server("local") == []
     assert grants.keys_for_server("nope") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("origin", "expected"), [
+    ("https://pit.example", "/api/mcp/oauth/start?server=my%20srv%2Fx"),
+    (None, "/settings/mcp"),
+])
+async def test_alert_push_deep_link_depends_on_public_origin(
+        isolated_db, monkeypatch, origin, expected):
+    from types import SimpleNamespace
+
+    from server.mcp_health import alerts, grant_health
+    from server.sessions import push as push_mod
+
+    sent: list[dict] = []
+
+    async def fake_notify_event(event_class, title, body, **kw):
+        sent.append(kw)
+
+    async def fake_mark(key, state):
+        return None
+    monkeypatch.setattr(push_mod, "notify_event", fake_notify_event)
+    monkeypatch.setattr(grant_health, "mark_alerted", fake_mark)
+    monkeypatch.setattr(alerts, "get_settings", lambda: SimpleNamespace(public_origin=origin))
+    t = grant_health.Transition(K1, "my srv/x", "alert_dead", None, "g1")
+    await alerts.send_alerts([t], orch=None)
+    assert [kw["url"] for kw in sent] == [expected]
