@@ -84,6 +84,27 @@ describe('transcriptReducer — exact context usage', () => {
     expect(s2.contextUsage).toEqual({ usedTokens: 50_000, maxTokens: 200_000 })
   })
 
+  it('keeps memoryFiles from a contextUsage event, in CLI order, across a replayReset (D-13)', () => {
+    expect(initialTranscript.memoryFiles).toBeNull()
+    const files = [
+      { path: '/cfg/CLAUDE.md', type: 'User', tokens: 36 },
+      { path: '/w/CLAUDE.md', type: 'Project', tokens: 24 },
+    ]
+    const s1 = transcriptReducer(initialTranscript, {
+      type: 'contextUsage', usedTokens: 1, maxTokens: 200_000, percentage: 0, memoryFiles: files,
+    })
+    expect(s1.memoryFiles).toEqual(files)
+    expect(transcriptReducer(s1, { type: 'replayReset' }).memoryFiles).toEqual(files)
+    // A frame without the field (an engine that reports none) leaves the last set alone.
+    const s2 = transcriptReducer(s1, { type: 'contextUsage', usedTokens: 2, maxTokens: 200_000, percentage: 0 })
+    expect(s2.memoryFiles).toEqual(files)
+    // An empty set replaces it.
+    const s3 = transcriptReducer(s2, {
+      type: 'contextUsage', usedTokens: 2, maxTokens: 200_000, percentage: 0, memoryFiles: [],
+    })
+    expect(s3.memoryFiles).toEqual([])
+  })
+
   it('records mcpStatus servers and preserves them across a replayReset', () => {
     expect(initialTranscript.mcpServers).toBeNull()
     const s1 = transcriptReducer(initialTranscript, {

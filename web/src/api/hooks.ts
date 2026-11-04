@@ -20,7 +20,7 @@ import type {
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
   DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
-  LibraryMcpServer, McpServerConfig, LibraryContent,
+  LibraryMcpServer, McpServerConfig, LibraryContent, MemoryFileContent, UserMemory, UserMemorySaved,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse, RuleWire,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
@@ -159,6 +159,11 @@ export const QK = {
   sessionFiles: (id: string, q?: string) =>
     q !== undefined ? ['session-files', id, q] as const : ['session-files', id] as const,
   sessionFile: (id: string, path: string) => ['session-file', id, path] as const,
+  /** One loaded memory file of a session (D-13). */
+  memoryFile: (id: string, path: string) => ['memory-file', id, path] as const,
+  /** The shared user memory file. Its own root, not under `settings`: invalidating the
+   *  settings payload must not refetch (and re-base) an open memory draft. */
+  userMemory: ['user-memory'] as const,
 }
 
 /**
@@ -1443,6 +1448,22 @@ export function useSessionFile(id: string, path: string | null) {
   })
 }
 
+/**
+ * One of a session's loaded memory files (D-13 Context card): `{path, type, text,
+ * truncated, editable}`, read on the owning host. Off until there is a `path`, which
+ * must be one of the session's `memoryFiles`; any refusal is a 404
+ * `MEMORY_FILE_UNKNOWN` and fails fast. No refetch on window focus.
+ */
+export function useMemoryFile(id: string, path: string | null) {
+  return useQuery<MemoryFileContent>({
+    queryKey: QK.memoryFile(id, path ?? ''),
+    queryFn: () => api.get<MemoryFileContent>(
+      `/sessions/${encodeURIComponent(id)}/memory-file?path=${encodeURIComponent(path ?? '')}`),
+    enabled: !!id && !!path,
+    refetchOnWindowFocus: false,
+  })
+}
+
 const NO_DIFF: SessionDiff = { base: null, head: null, files: [], additions: 0, deletions: 0, truncated: false }
 
 /** A body without a `files` array (an older server, a catch-all mock) reads as "no changes" rather
@@ -1835,6 +1856,37 @@ export function useLibraryMcp() {
     queryKey: QK.libraryMcp,
     queryFn: () => api.get('/library/mcp'),
     staleTime: 30_000,
+  })
+}
+
+// --- User memory (D-13): the shared ~/.claude/CLAUDE.md ---
+
+/**
+ * The shared user memory file: `{text, etag, exists}`. A link, an oversize file and
+ * non-UTF-8 bytes are 409 `MEMORY_FILE_IS_LINK`, 413 `MEMORY_TOO_LARGE` and 422
+ * `MEMORY_NOT_UTF8`. No refetch on window focus: the editor bases its draft on the
+ * etag it loaded, and a silent refetch would move that base under it.
+ */
+export function useUserMemory() {
+  return useQuery<UserMemory>({
+    queryKey: QK.userMemory,
+    queryFn: () => api.get<UserMemory>('/settings/memory'),
+    refetchOnWindowFocus: false,
+  })
+}
+
+/**
+ * Save the user memory file against the etag the draft was based on (`""` creates
+ * it). A stale etag is a 409 `MEMORY_CONFLICT` whose detail carries the current
+ * `{text, etag}`. On success the cache holds what was written, under the new etag.
+ */
+export function useSaveUserMemory() {
+  const qc = useQueryClient()
+  return useMutation<UserMemorySaved, ApiRequestError, { text: string; etag: string }>({
+    mutationFn: (body) => api.put<UserMemorySaved>('/settings/memory', body),
+    onSuccess: (data, { text }) => {
+      qc.setQueryData<UserMemory>(QK.userMemory, { text, etag: data.etag, exists: true })
+    },
   })
 }
 

@@ -38,6 +38,7 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: toastError }) 
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: vi.fn(() => ({ data: undefined })),
   usePermissionRules: vi.fn(() => ({ data: [] })),
+  useMemoryFile: vi.fn(() => ({ data: undefined })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useAccounts: vi.fn(() => ({ data: [] })),

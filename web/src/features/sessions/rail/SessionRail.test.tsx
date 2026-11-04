@@ -9,6 +9,7 @@ vi.mock('@/api/hooks', () => ({
   useSessionMcp: () => ({ data: undefined }),
   useReconnectSessionMcp: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   usePermissionRules: () => ({ data: [] }),
+  useMemoryFile: () => ({ data: undefined }),
   useRevokePermissionRule: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useStopSubAgent: () => ({ mutate: vi.fn(), isPending: false }),
 }))
@@ -22,7 +23,7 @@ function Wrapper({ children }: { children: ReactNode }) {
 const props = {
   changes: { sessionId: 's1', busy: false, onOpenChanges: () => {} },
   context: {
-    sessionId: 's1', account: 'work', contextPct: 60, quota: null, commands: [], mcpLive: null, onCompact: () => {},
+    sessionId: 's1', account: 'work', contextPct: 60, quota: null, commands: [], mcpLive: null, memoryFiles: null, cwd: null, onCompact: () => {},
   },
   environment: {
     account: 'work', accounts: [{ name: 'work' }], accountPinned: false, onSelectAccount: () => {},

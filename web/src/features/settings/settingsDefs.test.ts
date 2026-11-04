@@ -6,8 +6,8 @@ import {
 import { readLastSection, writeLastSection, LAST_SECTION_KEY } from './lastSection'
 
 describe('settingsDefs', () => {
-  it('has 21 sections in 5 groups, ids unique and URL-safe, every def described', () => {
-    expect(SETTINGS_DEFS).toHaveLength(21)
+  it('has 22 sections in 5 groups, ids unique and URL-safe, every def described', () => {
+    expect(SETTINGS_DEFS).toHaveLength(22)
     expect(SETTINGS_GROUPS.map((g) => g.id)).toEqual(['workspace', 'sessions', 'capacity', 'claude', 'about'])
     const ids = SETTINGS_DEFS.map((d) => d.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -47,6 +47,8 @@ describe('settingsDefs', () => {
     expect(sectionsInGroup('sessions').map((d) => d.id)).toEqual(['sessions', 'presets', 'templates', 'profiles', 'always-allow'])
     expect(sectionsInGroup('capacity').map((d) => d.id)).toEqual(['capacity', 'fleet', 'accounts'])
     expect(sectionsInGroup('about').map((d) => d.id)).toEqual(['deploy', 'about'])
+    // D-13: the user memory file sits first in Claude config — the one edited most.
+    expect(sectionsInGroup('claude').map((d) => d.id)).toEqual(['memory', 'plugins', 'skills', 'commands', 'mcp', 'hooks', 'snapshots'])
     expect(SETTINGS_BY_ID.accounts.badge).toBe('accountsAttention')
     expect(SETTINGS_BY_ID.appearance.scope).toBe('browser')
     expect(SETTINGS_BY_ID.about.scope).toBe('none')

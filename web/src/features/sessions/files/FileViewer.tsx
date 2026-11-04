@@ -60,7 +60,12 @@ export default function FileViewer({ sessionId, path, line }: {
   )
 }
 
-function FileLines({ path, text, line }: { path: string; text: string; line: number | null }) {
+/**
+ * The viewer's frame for text already in hand: numbered, highlighted by `path`'s
+ * extension, windowed. The Files tab feeds it a worktree read; the Context card's
+ * memory viewer (D-13) feeds it a memory-file read.
+ */
+export function FileLines({ path, text, line }: { path: string; text: string; line: number | null }) {
   const lines = useMemo(() => splitLines(text), [text])
   const target = line == null ? null : Math.min(line, lines.length)
   const numWidth = `${String(lines.length).length}ch`

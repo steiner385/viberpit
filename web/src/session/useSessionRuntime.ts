@@ -18,7 +18,7 @@ import type {
 import { PROMPT_ACK_TIMEOUT_MS } from '@/session/promptStage'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
-import type { SessionEvent, Command, PromptContext } from '@/session/events'
+import type { SessionEvent, Command, PromptContext, MemoryFile } from '@/session/events'
 import { selectBackgroundWork, type BackgroundWorkView, selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { QK, useSessions, useAccounts, useSettings } from '@/api/hooks'
@@ -80,6 +80,9 @@ export interface SessionRuntime {
    *  snapshot has no windows, so it reads as null here). */
   quota: UsageWindow[] | null
   contextPct: number | null
+  /** The memory files the CLI loaded, in its order (D-13), from the same `contextUsage`
+   *  frame as `contextPct`; null when the engine has reported none (Codex). */
+  memoryFiles: MemoryFile[] | null
   /** The next-prompt suggestions every reply affordance renders from — the ghost
    *  placeholder, the quick-reply menu, the pinned Your-turn/Handed-back chips.
    *  Live `suggestions` events win; a detached session never received one, so
@@ -701,6 +704,7 @@ export function useSessionRuntime(
     liveModel,
     quota,
     contextPct,
+    memoryFiles: state.memoryFiles,
     suggestions,
     subAgents,
     backgroundWork,
