@@ -17737,8 +17737,10 @@ class SessionOrchestrator:
         stamp = await self._transcript_stamp(session_id)
         if stamp is None or rec.prompt_uuids_rebuilt_at == stamp:
             return None
-        rebuilt = {e.turn_id: e.turn_id for e in await replay_events(stamp[0], max_turns=None)
-                   if isinstance(e, ev.UserMessage) and not e.owner_prefix}
+        facts = await self._anchor_facts(session_id, stamp)  # the shared parse
+        if facts is None:
+            return None
+        rebuilt = {t: t for t in facts.prompts}  # insertion order = transcript order
         live_only = {t: u for t, u in rec.prompt_uuids.items() if t not in rebuilt}
         for tid, prompt in rebuilt.items():
             rec.record_prompt_uuid(tid, prompt)

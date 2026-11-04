@@ -51,6 +51,11 @@ export function failedPrompts(turns: readonly Turn[]): Map<string, Turn> {
     }
     if (t.fabricated || prompt === null) continue
     const k = t.engineTurnId ?? t.id
+    // A targeted prompt (an engine gave a steering prompt a uuid) whose first reply
+    // continues an earlier engine turn: a retry there would cut that earlier reply.
+    // Untargeted steering prompts stay mapped; retryablePrompt refuses them anyway.
+    if (key === null && t.engineTurnId != null && t.engineTurnId !== t.id
+        && rewindTargetFor(prompt) !== null) { prompt = null; continue }
     if (key === null) key = k
     else if (k !== key) { prompt = null; continue }
     if (t.blocks.some((b) => b.kind === 'error')) out.set(t.id, prompt)

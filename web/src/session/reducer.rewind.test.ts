@@ -58,10 +58,10 @@ describe('rewound', () => {
     expect(s.rewind?.rewindId).toBe('r1')
   })
 
-  it('for a target this view does not hold: no cut, no divider, asks for a replay', () => {
+  it('for a target this view does not hold: no cut, asks for a replay, still records the divider marker', () => {
     const s = transcriptReducer(live, { ...REWOUND, toTurnId: 'elsewhere', promptUuid: 'nowhere' })
     expect(s.turns).toBe(live.turns)
-    expect(s.rewind).toBeNull()
+    expect(s.rewind).toEqual({ rewindId: 'r1', filesRestored: ['a.ts', 'b.ts'] })
     expect(s.replayFor).toBe('rewound:r1')
   })
 
