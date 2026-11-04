@@ -103,14 +103,13 @@ def _mcp_bundle_replaces(old: object, new: dict, *, explicit: bool) -> bool:
 
 
 @contextlib.contextmanager
-def _shared_mcp_locked() -> Iterator[Path]:
-    """Hold the shared MCP store's thread lock + flock; yields the store path.
+def _store_file_locked(path: Path, thread_lock: threading.Lock) -> Iterator[Path]:
+    """Hold *thread_lock* + an flock on ``<path>.lock``; yields *path*.
 
     The lock serializes local threads/processes; flock is not a distributed lock
     on SSHFS. Callers on separate hosts still rely on credential-authority policy.
     """
-    with _mcp_write_lock:
-        path = paths.shared_mcp_path()
+    with thread_lock:
         paths.ensure_root()
         path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(path.parent, 0o700)
@@ -121,6 +120,41 @@ def _shared_mcp_locked() -> Iterator[Path]:
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+
+def _shared_mcp_locked() -> contextlib.AbstractContextManager[Path]:
+    """Hold the shared MCP store's thread lock + flock; yields the store path."""
+    return _store_file_locked(paths.shared_mcp_path(), _mcp_write_lock)
+
+
+_mcp_clients_lock = threading.Lock()
+
+
+def _clients_locked(path: Path | None = None) -> contextlib.AbstractContextManager[Path]:
+    """Hold the MCP client-registration cache's own lock + flock; yields its path."""
+    return _store_file_locked(path or paths.shared_mcp_clients_path(), _mcp_clients_lock)
+
+
+def read_mcp_clients(path: Path | None = None) -> dict:
+    """The MCP client-registration cache (``store/mcp.clients.json``), or ``{}``."""
+    path = path or paths.shared_mcp_clients_path()
+    try:
+        data = read_json(path) if path.exists() else {}
+    except (OSError, ValueError):
+        log.info("mcp client cache unreadable; registering afresh path=%s", path)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def update_mcp_clients(update: Callable[[dict], dict], path: Path | None = None) -> dict:
+    """Read-modify-write the MCP client-registration cache under its lock (0600).
+    Written only on the edge, which runs the sign-in routes."""
+    with _clients_locked(path) as locked:
+        existing = read_mcp_clients(locked)
+        updated = update(copy.deepcopy(existing))
+        if updated != existing:
+            write_json_secure(locked, updated)
+        return updated
 
 
 def read_shared_mcp() -> dict:

@@ -18,7 +18,7 @@ import math
 import re
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
 from . import creds, paths
@@ -60,7 +60,7 @@ class McpRefreshTransient(Exception):
 
 # --- HTTP defaults (viberpit.oauth.http_request is the one outbound choke point) -----------
 
-def _default_fetch_json(url: str) -> dict | None:
+def default_fetch_json(url: str) -> dict | None:
     from . import oauth
     try:
         status, body = oauth.http_request("GET", url, headers={"Accept": "application/json"},
@@ -69,11 +69,11 @@ def _default_fetch_json(url: str) -> dict | None:
         return None
     if status != 200:
         return None
-    doc = _json_or_none(body)
+    doc = json_or_none(body)
     return doc if isinstance(doc, dict) else None
 
 
-def _default_post_form(url: str, form: dict, headers: dict) -> tuple[int, bytes]:
+def default_post_form(url: str, form: dict, headers: dict) -> tuple[int, bytes]:
     from . import oauth
     hdrs = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", **headers}
     # Non-idempotent: a refresh token may be single-use, so a 5xx or a network error is
@@ -83,11 +83,25 @@ def _default_post_form(url: str, form: dict, headers: dict) -> tuple[int, bytes]
                               idempotent=False)
 
 
-def _json_or_none(body: bytes) -> object:
+def json_or_none(body: bytes) -> object:
     try:
         return json.loads(body)
     except (ValueError, TypeError):
         return None
+
+
+def oauth_error_code(payload: object, secrets: Iterable[object] = ()) -> str | None:
+    """The OAuth ``error`` code of an error response, safe to log and store, or None.
+
+    Only a well-formed code (RFC 6749 §5.2 token charset) survives: a body field is never
+    echoed verbatim. A hostile or buggy endpoint could echo a credential as the "code", so
+    a code containing any of *secrets* is dropped too."""
+    raw = payload.get("error") if isinstance(payload, dict) else None
+    if not (isinstance(raw, str) and _OAUTH_CODE_RE.fullmatch(raw)):
+        return None
+    if any(isinstance(v, str) and v and v in raw for v in secrets):
+        return None
+    return raw
 
 
 # --- selection --------------------------------------------------------------------------
@@ -163,7 +177,7 @@ def _auth_server_url(bundle: dict) -> str:
     return _origin(str(bundle.get("serverUrl") or ""))
 
 
-def _metadata_urls(auth_url: str) -> list[str]:
+def metadata_urls(auth_url: str) -> list[str]:
     """RFC 8414 path insertion, then OIDC path insertion, then OIDC path append."""
     origin = _origin(auth_url)
     if not origin:
@@ -178,14 +192,14 @@ def _metadata_urls(auth_url: str) -> list[str]:
 def _auth_metadata(bundle: dict, fetch_json: FetchJson | None) -> dict:
     """The authorization server's metadata, memoized per auth server in-process; ``{}`` when
     no document with a ``token_endpoint`` was found (not memoized: discovery retries)."""
-    fetch = fetch_json or _default_fetch_json
+    fetch = fetch_json or default_fetch_json
     explicit = _discovery_state(bundle).get("authServerMetadataUrl")
     explicit = explicit if isinstance(explicit, str) and explicit else None
     auth_url = _auth_server_url(bundle)
     cache_key = explicit or auth_url
     if cache_key in _metadata_cache:
         return _metadata_cache[cache_key]
-    urls = ([explicit] if explicit else []) + _metadata_urls(auth_url)
+    urls = ([explicit] if explicit else []) + metadata_urls(auth_url)
     for url in dict.fromkeys(urls):
         try:
             doc = fetch(url)
@@ -247,7 +261,7 @@ def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> 
     if prm_url in _resource_cache:
         return _resource_cache[prm_url]
     try:
-        doc = (fetch_json or _default_fetch_json)(prm_url)
+        doc = (fetch_json or default_fetch_json)(prm_url)
     except Exception:
         log.debug("mcp oauth resource metadata fetch failed url=%s", prm_url, exc_info=True)
         doc = None
@@ -293,10 +307,17 @@ def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tupl
 
 def _fetch_identity(prm_url: str, fetch_json: FetchJson | None) -> tuple[str, str] | None:
     try:
-        doc = (fetch_json or _default_fetch_json)(prm_url)
+        doc = (fetch_json or default_fetch_json)(prm_url)
     except Exception:
         log.debug("mcp oauth grant identity fetch failed url=%s", prm_url, exc_info=True)
         return None
+    return prm_identity(prm_url, doc)
+
+
+def prm_identity(prm_url: str, doc: object) -> tuple[str, str] | None:
+    """``(authorization_server, resource)`` of the protected-resource metadata *doc* served
+    at *prm_url*, both :func:`url_href`-serialized; None when either field is missing or
+    ``resource`` is not on *prm_url*'s origin. The pure half of :func:`grant_identity`."""
     if not isinstance(doc, dict):
         return None
     servers = doc.get("authorization_servers")
@@ -346,10 +367,10 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
         elif "client_secret_post" in methods:
             form["client_secret"] = secret
     try:
-        status, body = (post_form or _default_post_form)(url, form, headers)
+        status, body = (post_form or default_post_form)(url, form, headers)
     except Exception as exc:
         raise McpRefreshTransient(f"token request failed: {type(exc).__name__}") from exc
-    payload = _json_or_none(body)
+    payload = json_or_none(body)
     payload = payload if isinstance(payload, dict) else {}
     access_token = payload.get("access_token")
     if status == 200 and isinstance(access_token, str) and access_token:
@@ -366,14 +387,7 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
         if isinstance(payload.get("scope"), str) and payload["scope"]:
             new["scope"] = payload["scope"]
         return new
-    raw_code = payload.get("error")
-    # Only a well-formed OAuth error code (RFC 6749 §5.2 token charset) survives into the
-    # exception text, which is logged and stored: a body field is never echoed verbatim.
-    code = raw_code if isinstance(raw_code, str) and _OAUTH_CODE_RE.fullmatch(raw_code) else None
-    # A hostile or buggy endpoint could echo a credential as the "code"; never repeat one.
-    if code is not None and any(isinstance(v, str) and v and v in code
-                                for v in (refresh_token, bundle.get("clientSecret"))):
-        code = None
+    code = oauth_error_code(payload, (refresh_token, bundle.get("clientSecret")))
     # Case-insensitive: AWS sign-in answers in upper case (INVALID_GRANT, INVALID_TARGET).
     if status in (400, 401) and code is not None and code.lower() in DEAD_GRANT_ERRORS:
         raise McpGrantDead(f"token endpoint returned {status} {code}")
