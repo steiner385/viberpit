@@ -1583,6 +1583,29 @@ class McpServerHealth(Base):
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class McpGrantHealth(Base):
+    """Durable refresh health per shared-store grant key (MCP overhaul phase 3).
+
+    Written by the edge's refresh tick (``server/mcp_health/grant_health.py``). ``alerted_for``
+    is ``f"{outcome}:{generation}"`` (generation = ``last_ok_at`` ISO+Z, or ``never``) so a
+    dead or expired grant pushes at most once per generation. Every non-PK column is nullable
+    so reconcile can add any of them on both dialects."""
+
+    __tablename__ = "mcp_grant_health"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    server: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_outcome: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    consecutive_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alerted_for: Mapped[str | None] = mapped_column(String, nullable=True)
+    alerted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class McpServerScope(Base):
     """Global default for one MCP server key (spec 2026-10-09): enabled or not for new sessions."""
 
