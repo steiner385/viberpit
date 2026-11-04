@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { storageKey } from '@/lib/storageKey'
 import {
   isOverlayName, useClearOverlayParam, useOverlayParam, useSetOverlayParam, withOverlayParam,
@@ -89,10 +89,16 @@ export function useDrawerName(): DrawerName | null {
   const fromUrl = useOverlayParam(DRAWER_PARAM, DRAWER_NAMES)
   const sticky = useStickyDrawer()
   // A shared `?drawer=assistant` link pins the drawer just as the button does,
-  // so the first navigation away from the link does not close it.
+  // so the first navigation away from the link does not close it. Pin only when
+  // the URL value CHANGES: closing unpins synchronously and re-renders before
+  // `setSearchParams` commits, so `fromUrl` still reads 'assistant' while
+  // `sticky` is already null — comparing against `sticky` would re-pin it.
+  const pinnedFromUrl = useRef<DrawerName | null>(null)
   useEffect(() => {
-    if (isStickyDrawer(fromUrl) && sticky !== fromUrl) writeStickyDrawer(fromUrl)
-  }, [fromUrl, sticky])
+    if (pinnedFromUrl.current === fromUrl) return
+    pinnedFromUrl.current = fromUrl
+    if (isStickyDrawer(fromUrl)) writeStickyDrawer(fromUrl)
+  }, [fromUrl])
   return fromUrl ?? sticky
 }
 
