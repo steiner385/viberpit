@@ -213,17 +213,16 @@ sudo virsh snapshot-list win11
 From a checkout of this repo on the runner:
 
 ```bash
-install -d ~/.local/bin
-install -m 0755 scripts/winvm/winrun.py  ~/.local/bin/winrun
-install -m 0755 scripts/winvm/winsync.py ~/.local/bin/winsync
-install -m 0644 scripts/winvm/_winvm.py  ~/.local/bin/_winvm.py   # shared module both import
+sudo install -m 0755 scripts/winvm/winrun.py  /usr/local/bin/winrun
+sudo install -m 0755 scripts/winvm/winsync.py /usr/local/bin/winsync
+sudo install -m 0644 scripts/winvm/_winvm.py  /usr/local/bin/_winvm.py   # shared module both import
 sudo install -D -m 0644 docs/runbooks/windows-vm-session-guide.md /etc/viberpit/windows-guide.md
 ```
 
 Re-run these after any change to `scripts/winvm/` or the guide; deploys do not install them. Sessions
-find the helpers through the daemon's `PATH`, so the env file the daemon loads (check with
-`systemctl cat viberpit-daemon.service`; see `deploy/README.md` § "Runtime env") must put
-`~/.local/bin` (as an absolute path, `/home/tony/.local/bin`) on `PATH`.
+find the helpers through the daemon's `PATH`, which already includes `/usr/local/bin`
+(`/home/tony/GitHub/ccswitch/.venv/bin:/usr/local/sbin:/usr/local/bin:...`), so no `PATH` change is
+needed. Check with `which winrun winsync` as the daemon user.
 
 In that same daemon env file:
 
@@ -267,9 +266,13 @@ bash scripts/winvm/smoke.sh     # full live smoke: sync, desktop, exit code, tim
   clock resumes from snapshot time; if it lags, `ssh win11 'w32tm /resync /force'`.
 - **Refresh `clean`** after installing tooling: `sudo virsh snapshot-delete win11 clean`, then
   re-create it as in §9.
-- **Who holds the desktop:** `cat ~/.cache/viberpit/winvm.lock` (the pid of the live `winrun`).
+- **Who holds the desktop:** `flock -n ~/.cache/viberpit/winvm.lock true && echo free || cat
+  ~/.cache/viberpit/winvm.lock`. The file keeps the last holder's pid after release, so `cat` alone
+  does not tell you whether the lock is held.
 - **Leftover tasks:** each `winrun` unregisters its task under `\viberpit\` and removes
-  `C:\winrun\<id>`, even on timeout or Ctrl-C; the next `winrun` sweeps anything a crashed run left.
+  `C:\winrun\<id>`, even on timeout or Ctrl-C; the next `winrun` sweeps anything a crashed run left, killing
+  the orphaned command by its recorded pid first. Each task also carries an execution time limit of
+  `--timeout` plus 300 s as a VM-side backstop.
 - **Console rescue (gotcha 3).** There is no guest-agent channel (osinfo added no virtio-serial
   device), so when ssh is down, type into the console with `docs/runbooks/windows-vm/vmtype.py`,
   which drives `virsh send-key` with a US layout:

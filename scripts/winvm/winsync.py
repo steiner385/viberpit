@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import ntpath
 import os
 import re
 import subprocess
@@ -34,6 +35,7 @@ TOOL = "winsync"
 MANIFEST = ".winsync-manifest.json"
 SSH_CALL_TIMEOUT_S = 600  # a large worktree over the NAT link
 _WIN_ABS = re.compile(r"^[A-Za-z]:\\")
+_WIN_DRIVE_ROOT = re.compile(r"^[A-Za-z]:\\?$")
 
 # `# winsync:extract` is the marker the tests' ssh shim keys on. Only base64 is formatted in.
 _EXTRACT_PS1 = r"""# winsync:extract
@@ -111,6 +113,9 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     args = p.parse_args(argv)
     if args.dest is not None and not _WIN_ABS.match(args.dest):
         p.error(rf"--dest must be an absolute Windows path like C:\work\repo, got {args.dest!r}")
+    if args.dest is not None and _WIN_DRIVE_ROOT.match(ntpath.normpath(args.dest)):
+        # The mirror deletes stale files under the destination: a drive root would sweep the drive.
+        p.error(rf"--dest must be a directory below a drive root, got {args.dest!r}")
     return args
 
 

@@ -241,6 +241,48 @@ def test_winrun_task_that_never_reports_fails_instead_of_hanging(shim):
     assert b"without an exit code" in r.stderr
 
 
+def test_winrun_setup_sweep_kills_orphaned_commands_and_bounds_the_task():
+    """A run that died without cleanup (SIGKILL, lost link) must not keep driving the desktop."""
+    winrun = _import(WINRUN)
+    script = winrun.setup_script("abc123", winrun.build_spec(["app.exe"], ps=False, cwd=None), 600)
+    sweep = script[:script.index("New-Item")]
+    assert "taskkill.exe /PID" in sweep and "\\pid" in sweep and "/T /F" in sweep
+    assert sweep.index("taskkill.exe") < sweep.index("Remove-Item")
+    assert "[TimeSpan]::FromSeconds(900)" in script  # --timeout + 300 s margin as a VM-side backstop
+    unbounded = winrun.setup_script("abc123", winrun.build_spec(["app.exe"], ps=False, cwd=None), None)
+    assert "[TimeSpan]::Zero" in unbounded
+
+
+def test_winrun_poll_with_null_sizes_does_not_crash(shim):
+    shim.respond("winrun:poll", {"stdout": json.dumps({"state": "Running", "rc": None, "out": "",
+                                                       "out_size": None, "err": "", "err_size": None}) + "\n"},
+                 _poll(rc=0, state="Ready"))
+    r = shim.run(WINRUN, "--", "app.exe")
+    assert r.returncode == 0, r.stderr
+
+
+def test_winrun_timeout_bounds_a_hung_poll(shim):
+    shim.respond("winrun:poll", dict(_poll(), sleep=30))
+    t0 = time.monotonic()
+    r = shim.run(WINRUN, "--timeout", "1", "--", "app.exe")
+    assert r.returncode == 124
+    assert time.monotonic() - t0 < 15
+
+
+def test_winrun_sighup_still_unregisters_the_task(shim):
+    shim.respond("winrun:poll", _poll())
+    proc = subprocess.Popen([sys.executable, str(WINRUN), "--", "python", "-V"], env=shim.env(),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + 20
+    while not any(c["phase"] == "winrun:poll" for c in shim.calls()):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    proc.send_signal(signal.SIGHUP)
+    proc.communicate(timeout=30)
+    assert proc.returncode == 128 + signal.SIGHUP
+    assert any(c["phase"] == "winrun:cleanup" for c in shim.calls())
+
+
 @pytest.mark.parametrize("remote_rc", [256, -1073741819])  # 256 would truncate to 0; an NTSTATUS crash
 def test_winrun_exit_codes_outside_a_byte_never_read_as_success(shim, remote_rc):
     shim.respond("winrun:poll", _poll(rc=remote_rc, state="Ready"))
@@ -268,7 +310,7 @@ def test_winrun_command_survives_arbitrary_arguments():
     spec = winrun.build_spec(argv, ps=False, cwd=r"C:\work\my repo")
     assert spec == {"file": "python", "args": subprocess.list2cmdline(argv[1:]),
                     "cwd": r"C:\work\my repo"}
-    script = winrun.setup_script("abc123", spec)
+    script = winrun.setup_script("abc123", spec, None)
     for a in argv[2:]:
         if a:
             assert a not in script  # user text only ever travels base64-encoded
@@ -343,6 +385,8 @@ def test_winsync_dest_override_and_unreachable_vm(shim, tmp_path):
     assert r.returncode == 0, r.stderr
     assert r.stdout.decode().strip() == r"D:\elsewhere"
     assert shim.run(WINSYNC, "--dest", "relative\\path", str(repo)).returncode == 2
+    for root in ("C:\\", "C:\\\\", "D:\\."):  # a drive root would mirror-delete across the drive
+        assert shim.run(WINSYNC, "--dest", root, str(repo)).returncode == 2
 
     shim.respond("scp", {"rc": 255, "stderr": "ssh: connect to host win11 port 22: No route to host\n"})
     r = shim.run(WINSYNC, str(repo))

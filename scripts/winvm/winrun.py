@@ -17,7 +17,7 @@ Only one winrun drives the desktop at a time: an flock on ~/.cache/viberpit/winv
 for at most --lock-wait seconds.
 
 Exit status: the remote command's, or 75 desktop busy, 124 timed out, 130 interrupted,
-255 VM unreachable or the desktop task failed. 2 for a usage error.
+143 / 129 on SIGTERM / SIGHUP, 255 VM unreachable or the desktop task failed. 2 for a usage error.
 Environment: VIBERPIT_WINDOWS_VM_SSH_HOST (ssh host alias, default win11);
 WINRUN_NO_RESULT_GRACE_S (seconds a task may sit not running without an exit code, default 20).
 """
@@ -27,6 +27,7 @@ import argparse
 import base64
 import fcntl
 import json
+import math
 import os
 import signal
 import subprocess
@@ -45,13 +46,18 @@ LOCK_PATH = Path("~/.cache/viberpit/winvm.lock")
 TASK_PATH = "\\viberpit\\"
 REMOTE_ROOT = "C:\\winrun"
 POLL_INTERVAL_S = 0.5
+TASK_LIMIT_MARGIN_S = 300      # the VM-side task time limit is --timeout plus this backstop margin
 CHUNK_BYTES = 1 << 20          # max bytes of each stream relayed per poll
 SSH_CALL_TIMEOUT_S = 120       # a single ssh round-trip that hangs past this counts as failed
 MAX_POLL_FAILURES = 5          # consecutive failed polls before giving up on the VM
 
 
 class _Terminated(BaseException):
-    """SIGTERM, turned into an exception so the cleanup in `finally` still runs."""
+    """SIGTERM or SIGHUP, turned into an exception so the cleanup in `finally` still runs."""
+
+    def __init__(self, signum: int = signal.SIGTERM):
+        super().__init__(signum)
+        self.signum = signum
 
 
 # ------------------------------------------------------------------------- PowerShell sources
@@ -83,21 +89,32 @@ Move-Item -LiteralPath "$d\rc.tmp" -Destination "$d\rc" -Force
 """
 
 _SETUP_PS1 = r"""# winrun:setup
-$ErrorActionPreference = 'Stop'
 # The host lock means no other winrun is live: anything left under \viberpit\ is a leftover
-# from a run whose cleanup never reached the VM.
-Get-ScheduledTask -TaskPath '{task_path}' -ErrorAction SilentlyContinue | ForEach-Object {{
-  Stop-ScheduledTask -InputObject $_ -ErrorAction SilentlyContinue
-  Unregister-ScheduledTask -InputObject $_ -Confirm:$false -ErrorAction SilentlyContinue
+# from a run whose cleanup never reached the VM (SIGKILL, lost link). Stopping its task only
+# kills the wrapper powershell.exe, so the command it started is killed by its recorded pid.
+$ErrorActionPreference = 'SilentlyContinue'
+Get-ScheduledTask -TaskPath '{task_path}' | ForEach-Object {{
+  Stop-ScheduledTask -InputObject $_
+  Unregister-ScheduledTask -InputObject $_ -Confirm:$false
 }}
-Remove-Item -Path '{root}\*' -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path '{root}\*\pid' | ForEach-Object {{
+  $opid = (Get-Content -LiteralPath $_.FullName -Raw).Trim()
+  $op = if ($opid) {{ Get-Process -Id $opid }} else {{ $null }}
+  # Only a process older than the pid file is the orphan; a newer one reuses a recycled pid.
+  if ($op -and $op.StartTime -le $_.LastWriteTime) {{ taskkill.exe /PID $opid /T /F 2>&1 | Out-Null }}
+}}
+for ($i = 0; $i -lt 10 -and (Test-Path -Path '{root}\*'); $i++) {{
+  Remove-Item -Path '{root}\*' -Recurse -Force
+  if (Test-Path -Path '{root}\*') {{ Start-Sleep -Milliseconds 200 }}  # the killed tree may still hold out/err
+}}
+$ErrorActionPreference = 'Stop'
 $d = '{root}\{rid}'
 New-Item -ItemType Directory -Force -Path $d | Out-Null
 [IO.File]::WriteAllText("$d\run.ps1", [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{run}')))
 $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $d\run.ps1"
 # The ssh user is the auto-logged-on desktop user (viber), so the task lands in that desktop.
 $pr = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
-$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ({time_limit}) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskPath '{task_path}' -TaskName 'winrun-{rid}' -Action $a -Principal $pr -Settings $s -Force | Out-Null
 Start-ScheduledTask -TaskPath '{task_path}' -TaskName 'winrun-{rid}'
 """
@@ -141,7 +158,10 @@ if ($stop) {{
   }}
 }}
 Unregister-ScheduledTask -TaskPath '{task_path}' -TaskName 'winrun-{rid}' -Confirm:$false
-Remove-Item -LiteralPath $d -Recurse -Force
+for ($i = 0; $i -lt 10 -and (Test-Path -LiteralPath $d); $i++) {{
+  Remove-Item -LiteralPath $d -Recurse -Force
+  if (Test-Path -LiteralPath $d) {{ Start-Sleep -Milliseconds 200 }}  # the killed tree may still hold out/err
+}}
 """
 
 
@@ -170,8 +190,11 @@ def run_script(rid: str, spec: dict) -> str:
     return _fmt(_RUN_PS1, rid, spec=_winvm.b64_utf8(json.dumps(spec)))
 
 
-def setup_script(rid: str, spec: dict) -> str:
-    return _fmt(_SETUP_PS1, rid, run=_winvm.b64_utf8(run_script(rid, spec)))
+def setup_script(rid: str, spec: dict, timeout_s: float | None) -> str:
+    """``timeout_s`` None means no limit; otherwise the task is bounded VM-side as a backstop."""
+    time_limit = ("[TimeSpan]::Zero" if timeout_s is None
+                  else f"[TimeSpan]::FromSeconds({math.ceil(timeout_s) + TASK_LIMIT_MARGIN_S})")
+    return _fmt(_SETUP_PS1, rid, run=_winvm.b64_utf8(run_script(rid, spec)), time_limit=time_limit)
 
 
 # ------------------------------------------------------------------------------------- lock
@@ -220,10 +243,10 @@ def _write(stream, b64: str) -> int:
     return len(data)
 
 
-def _poll(rid: str, out_off: int, err_off: int) -> dict | None:
+def _poll(rid: str, out_off: int, err_off: int, timeout_s: float) -> dict | None:
     try:
         proc = _winvm.run_ps(_fmt(_POLL_PS1, rid, out_off=out_off, err_off=err_off, chunk=CHUNK_BYTES),
-                             timeout=SSH_CALL_TIMEOUT_S)
+                             timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return None
     if proc.returncode != 0:
@@ -244,9 +267,13 @@ def _drive(rid: str, timeout_s: float | None) -> int:
     out_off = err_off = failures = 0
     not_running_since: float | None = None
     while True:
-        if timeout_s is not None and time.monotonic() - started >= timeout_s:
-            raise TimeoutError
-        status = _poll(rid, out_off, err_off)
+        call_timeout: float = SSH_CALL_TIMEOUT_S
+        if timeout_s is not None:
+            remaining = timeout_s - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError
+            call_timeout = min(call_timeout, remaining)  # a hung poll must not outlive --timeout
+        status = _poll(rid, out_off, err_off, call_timeout)
         if status is None:
             failures += 1
             if failures >= MAX_POLL_FAILURES:
@@ -257,7 +284,8 @@ def _drive(rid: str, timeout_s: float | None) -> int:
         failures = 0
         out_off += _write(sys.stdout, status.get("out", ""))
         err_off += _write(sys.stderr, status.get("err", ""))
-        drained = out_off >= status.get("out_size", 0) and err_off >= status.get("err_size", 0)
+        # A failed Read-Chunk reports a null size: treat it as nothing more to fetch this poll.
+        drained = out_off >= (status.get("out_size") or 0) and err_off >= (status.get("err_size") or 0)
         if status.get("rc") is not None:
             if drained:
                 return int(status["rc"])
@@ -291,7 +319,7 @@ def _run(args: argparse.Namespace) -> int:
     cleanup, stop = True, True
     try:
         try:
-            setup = _winvm.run_ps(setup_script(rid, spec), timeout=SSH_CALL_TIMEOUT_S)
+            setup = _winvm.run_ps(setup_script(rid, spec, args.timeout or None), timeout=SSH_CALL_TIMEOUT_S)
         except _winvm.ScriptTooLong as exc:
             cleanup = False  # refused before connecting
             return _winvm.die(TOOL, f"command too long to send ({exc}); put it in a script, winsync it, "
@@ -318,8 +346,8 @@ def _run(args: argparse.Namespace) -> int:
         return rc
     except KeyboardInterrupt:
         return _winvm.die(TOOL, "interrupted; stopped the command", EXIT_INTERRUPTED)
-    except _Terminated:
-        return _winvm.die(TOOL, "terminated; stopped the command", 128 + signal.SIGTERM)
+    except _Terminated as exc:
+        return _winvm.die(TOOL, f"terminated ({signal.Signals(exc.signum).name}); stopped the command", 128 + exc.signum)
     finally:
         if cleanup:
             _cleanup(rid, stop=stop)
@@ -349,9 +377,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse(argv)
 
     def _on_term(signum, frame):
-        raise _Terminated
+        raise _Terminated(signum)
 
     signal.signal(signal.SIGTERM, _on_term)
+    signal.signal(signal.SIGHUP, _on_term)  # a closed terminal or session must still clean up
     try:
         fd = _acquire_lock(args.lock_wait)
     except (KeyboardInterrupt, _Terminated):
