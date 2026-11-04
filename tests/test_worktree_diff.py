@@ -280,9 +280,13 @@ def test_read_only_index_untouched(repo: Path) -> None:
     future = (repo / "ws.txt").stat().st_mtime_ns + 5_000_000_000
     os.utime(repo / "ws.txt", ns=(future, future))
     before = index.stat().st_mtime_ns
-    session_diff(str(repo))
-    session_diff(str(repo), summary=True, ignore_whitespace=True)
-    assert index.stat().st_mtime_ns == before
+    # A loop, not one pass: a refreshing git call only rewrites the index when the
+    # racy-timestamp window lines up, so one pass can be green by luck (#3275).
+    for _ in range(50):
+        session_diff(str(repo))
+        session_diff(str(repo), summary=True, ignore_whitespace=True)
+        assert index.stat().st_mtime_ns == before
+    assert not (repo / ".git" / "index.lock").exists()
     assert _git(repo, "status", "--porcelain").count("??") == 1  # new.txt never staged
 
 
