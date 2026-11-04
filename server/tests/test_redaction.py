@@ -214,3 +214,52 @@ def test_redact_large_base64_run_is_linear_not_redos():
     )
     # Correctness preserved: a real padded base64 secret is still scrubbed.
     assert _redact("k=" + "B" * 80 + "== end") == "k=[REDACTED] end"
+
+
+# ---------------------------------------------------------------------------
+# Shared-redactor secret shapes (#3242)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+        "gho_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+        "ghs_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+        "github_pat_" + "11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123456789",
+        "AKIAIOSFODNN7EXAMPLE",
+        "ASIAIOSFODNN7EXAMPLE",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabc/def+ghi\n-----END RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg",  # truncated: no END line
+    ],
+)
+def test_redact_scrubs_credential_shapes(secret):
+    result = _redact(f"+ token = {secret}\n+ done")
+    assert "[REDACTED]" in result
+    assert secret.split("\n")[-1] not in result or "END" in secret.split("\n")[-1]
+    assert "MIIEow" not in result and "b3BlbnNz" not in result and "IOSFODNN7" not in result
+    assert "a1B2c3D4" not in result and "11ABCDEFG0" not in result and "MIIEvQ" not in result
+
+
+def test_redact_event_scrubs_new_shapes():
+    from server.audit import redact_event
+
+    out = redact_event({"type": "x", "text": "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4"})
+    assert "a1B2c3D4" not in out["text"]
+
+
+@pytest.mark.parametrize(
+    "benign",
+    [
+        "def ghp_helper(): pass",
+        "AKIA_PREFIX = 'AKIA'",
+        "ASIAN_MARKETS = 1",
+        "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+        "github_pattern = re.compile('x')",
+        "see https://github.com/org/repo/pull/3242",
+    ],
+)
+def test_redact_leaves_ordinary_code_alone(benign):
+    assert _redact(benign) == benign
