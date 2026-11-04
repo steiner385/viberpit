@@ -198,12 +198,12 @@ class McpAuthManager:
         try:
             await session.complete(redirect_url, self._complete_timeout)
             n_merged = merge_mcp_oauth_from_cfg(session.cfg_dir, server=server)
-            cleared = clear_needs_auth_cache(server)
+            # The needs-auth cache is cleared once, by the on_success follow-through
+            # (server/mcp_health/after_login.py), before it reconnects.
             flipped = False
             async with self._lock:
                 if self._state.server == server and self._state.state == "exchanging":
                     self._state.state = "success"
-                    self._state.accounts = cleared or self._state.accounts
                     self._state.message = None
                     flipped = True
             if flipped and self._on_success is not None:
@@ -211,8 +211,7 @@ class McpAuthManager:
                 task = asyncio.create_task(self._fire_success(server))
                 self._success_tasks.add(task)
                 task.add_done_callback(self._success_tasks.discard)
-            log.info("mcp auth: %s ok (shared_keys=%d, cleared=%d accounts)",
-                     server, n_merged, len(cleared))
+            log.info("mcp auth: %s ok (shared_keys=%d)", server, n_merged)
         except McpAuthError as exc:
             await self._fail(server, str(exc))
         except Exception as exc:

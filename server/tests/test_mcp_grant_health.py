@@ -174,3 +174,26 @@ async def test_stored_error_never_contains_a_token(isolated_db, status, payload)
     stored = (await gh.load())[K]["lastError"]
     assert stored and stored.startswith("token endpoint returned")
     assert "SECRET" not in stored
+
+
+@pytest.mark.asyncio
+async def test_sign_in_starts_a_new_alert_generation(isolated_db):
+    [t1] = await gh.record([_o("dead")], expired_keys=frozenset())
+    await gh.mark_alerted(K, f"dead:{t1.generation}")
+    assert await gh.record([_o("dead")], expired_keys=frozenset()) == []  # same generation: deduped
+    await gh.mark_signed_in([K])
+    row = (await gh.load())[K]
+    assert (row["state"], row["consecutiveFailures"], row["lastOutcome"]) == ("live", 0, "signed_in")
+    assert row["lastOkAt"] is not None
+    [t2] = await gh.record([_o("dead")], expired_keys=frozenset())
+    assert t2.kind == "alert_dead" and t2.generation != t1.generation
+
+
+@pytest.mark.asyncio
+async def test_mark_signed_in_creates_rows_and_ignores_empty(isolated_db):
+    await gh.mark_signed_in([])
+    assert await gh.load() == {}
+    await gh.mark_signed_in(["a|1", "a|1", "b|2"])
+    rows = await gh.load()
+    assert set(rows) == {"a|1", "b|2"}
+    assert all(r["state"] == "live" and r["lastOutcome"] == "signed_in" for r in rows.values())

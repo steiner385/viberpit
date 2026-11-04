@@ -120,6 +120,23 @@ async def record(outcomes: list[dict], *, expired_keys: frozenset[str]) -> list[
     return out
 
 
+async def mark_signed_in(keys: Iterable[str]) -> None:
+    """Record a successful interactive sign-in for *keys*: state ``live``, ``last_ok_at`` now,
+    failures reset. The new ``last_ok_at`` starts a new alert generation, so a grant that
+    dies again after the sign-in alerts again even if it never refreshed in between."""
+    wanted = list(dict.fromkeys(keys))
+    if not wanted:
+        return
+    async with db_session() as db:
+        now = (await db.execute(select(db_utc_now()))).scalar_one()
+        values = {"state": "live", "last_ok_at": now, "consecutive_failures": 0,
+                  "last_outcome": "signed_in", "last_error": None, "updated_at": now}
+        for key in wanted:
+            stmt = dialect_insert(McpGrantHealth).values(key=key, **values)
+            await db.execute(stmt.on_conflict_do_update(
+                index_elements=["key"], set_={c: getattr(stmt.excluded, c) for c in values}))
+
+
 async def mark_alerted(key: str, alerted_for: str) -> None:
     """Record that the push for *alerted_for* (``f"{outcome}:{generation}"``) was delivered.
     Call only after delivery succeeds, so a failed push is retried next tick."""

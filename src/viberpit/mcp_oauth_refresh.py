@@ -111,6 +111,19 @@ def due_keys(store: dict, now_ms: int, lead_s: float = LEAD_S) -> list[str]:
     return out
 
 
+def expired_keys(store: dict, now_ms: int) -> frozenset[str]:
+    """Store keys whose bundle has a positive ``expiresAt`` already in the past. A cleared
+    (dead) bundle's ``expiresAt`` is 0, so it is never counted as expired."""
+    out = set()
+    for key, blob in store.items():
+        if not isinstance(blob, dict):
+            continue
+        expiry = _expiry_ms(blob)
+        if expiry is not None and 0 < expiry < now_ms:
+            out.add(key)
+    return frozenset(out)
+
+
 def cleared(bundle: dict) -> dict:
     """The CLI's own cleared shape for a dead grant: no access or refresh token."""
     out = {k: v for k, v in bundle.items() if k != "refreshToken"}

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from viberpit import creds, mcp_oauth_refresh, paths
 from viberpit.mcp_keys import cli_oauth_key, store_name
+from viberpit.mcp_names import short_name
 from viberpit.mcp_rekey import RekeyPlan, WantedServer, plan_rekey
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,20 @@ def wanted_servers() -> list[WantedServer]:
             wanted.append(WantedServer(key=key, store_name=store_name(s["name"], s.get("pluginName")),
                                        url=s["config"]["url"]))
     return wanted
+
+
+def keys_for_server(server: str) -> list[str]:
+    """The CLI OAuth keys (:func:`key_for`) of every configured server whose short name is
+    *server* — the store keys a sign-in to *server* writes."""
+    from server.library import scan
+
+    out: list[str] = []
+    for s in scan.list_mcp_servers()["servers"]:
+        if short_name(s["name"]) == server:
+            key = key_for(s)
+            if key is not None and key not in out:
+                out.append(key)
+    return out
 
 
 @dataclass(frozen=True)

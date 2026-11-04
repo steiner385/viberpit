@@ -4,7 +4,10 @@ import logging
 import math
 import os
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
@@ -147,15 +150,34 @@ _SHUTDOWN_DB_TIMEOUT_S = 10.0
 _security_warned = False
 
 
-async def _mcp_oauth_tick() -> None:
+async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> list:
     """One refresher tick: reconcile grants onto their CLI keys, then refresh and republish,
-    purging the keys the reconcile dropped or moved and never refreshing superseded ones."""
+    purging the keys the reconcile dropped or moved and never refreshing superseded ones.
+    Then record each grant's outcome (``mcp_grant_health``) and heal the sessions stuck on
+    every server whose failing grant refreshed again.
+
+    *orch_getter* is read at heal time: the lifespan swaps ``app.state.sessions`` for the
+    FleetOrchestrator. Returns this tick's grant-health transitions; the alert ones are for
+    the caller to deliver."""
+    from server.mcp_health import after_login as mcp_after_login
+    from server.mcp_health import grant_health
     from server.mcp_health import grants as mcp_grants
+    from viberpit import creds as vp_creds
     from viberpit import mcp_oauth_refresh
 
     result = await asyncio.to_thread(mcp_grants.reconcile_grants)
-    await asyncio.to_thread(
+    summary = await asyncio.to_thread(
         lambda: mcp_oauth_refresh.run_once(drop_keys=result.drop, skip_keys=result.skip))
+    outcomes = summary.get("outcomes") or []
+    if not outcomes:
+        return []
+    store = await asyncio.to_thread(vp_creds.read_shared_mcp)
+    expired = mcp_oauth_refresh.expired_keys(store, int(time.time() * 1000))
+    transitions = await grant_health.record(outcomes, expired_keys=expired)
+    healed = [t.server for t in transitions if t.kind == "healed"]
+    if healed:
+        await mcp_after_login.heal_servers(orch_getter(), healed)
+    return transitions
 
 
 async def seed_host_ssh_from_env() -> None:
@@ -588,7 +610,8 @@ async def _lifespan(app: FastAPI):
             _log = _logging.getLogger("server.mcp_oauth")
             while True:
                 try:
-                    await _mcp_oauth_tick()
+                    # Alert transitions are delivered by the caller (phase 3 task 4).
+                    await _mcp_oauth_tick(lambda: app.state.sessions)
                 except Exception:
                     # Neither call raises by contract; this guards the loop itself.
                     _log.warning("mcp oauth refresh tick failed", exc_info=True)
@@ -899,7 +922,8 @@ def create_app(
     from server.mcp_health.after_login import after_login as _mcp_after_login
     # app.state.sessions is resolved at call time: the lifespan swaps in FleetOrchestrator.
     app.state.mcp_auth = _build_mcp_auth(
-        on_success=lambda server, accts: _mcp_after_login(app.state.sessions, server, accts))
+        on_success=lambda server, accts: _mcp_after_login(app.state.sessions, server, accts,
+                                                          signed_in=True))
 
     # Middleware stack (Starlette runs last-added outermost): TransportPeerMiddleware
     # wraps RequestContextMiddleware wraps IdentityMiddleware wraps the routes, so

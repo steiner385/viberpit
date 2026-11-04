@@ -117,8 +117,9 @@ async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(monkeypatc
     monkeypatch.setattr(grants, "reconcile_grants", lambda: calls.append("reconcile") or grants.ReconcileResult(
                             drop=frozenset({"old|k"}), skip=frozenset({"sup|1"})))
     monkeypatch.setattr(mcp_oauth_refresh, "run_once",
-                        lambda **kw: calls.append(("run_once", kw)))
-    await app_mod._mcp_oauth_tick()
+                        lambda **kw: calls.append(("run_once", kw)) or {"outcomes": []})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: {})
+    await app_mod._mcp_oauth_tick(lambda: None)
     assert calls == ["reconcile", ("run_once", {"drop_keys": frozenset({"old|k"}),
                                           "skip_keys": frozenset({"sup|1"})})]
 
@@ -274,3 +275,132 @@ def test_reconcile_skips_old_key_of_configured_server_not_unconfigured(shared: P
 def test_reconcile_error_paths_skip_nothing(shared: Path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(scan, "list_mcp_servers", lambda: (_ for _ in ()).throw(RuntimeError("x")))
     assert grants.reconcile_grants() == grants.ReconcileResult(drop=frozenset(), skip=frozenset())
+
+
+# --- heal on refresh (phase 3, task 3) ---------------------------------------------------
+
+K1 = "plugin:railway:railway|b12ecd269c942ba3"
+K2 = "notion|0123456789abcdef"
+
+
+class _HealOrch:
+    def __init__(self):
+        self.probes = 0
+
+    async def probe_mcp(self, account=None):
+        assert account is None
+        self.probes += 1
+        return {"rows": [], "skipped": []}
+
+
+@pytest.fixture
+def tick(monkeypatch):
+    """Drive app._mcp_oauth_tick with scripted per-tick outcomes; record after_login calls."""
+    from server import app as app_mod
+    from server.mcp_health import after_login as al_mod
+    from viberpit import accounts
+
+    state: dict = {"outcomes": [], "store": {}, "heals": []}
+    monkeypatch.setattr(grants, "reconcile_grants",
+                        lambda: grants.ReconcileResult(drop=frozenset(), skip=frozenset()))
+    monkeypatch.setattr(mcp_oauth_refresh, "run_once",
+                        lambda **kw: {"outcomes": state["outcomes"].pop(0)})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: state["store"])
+    monkeypatch.setattr(accounts, "_anthropic_account_names", lambda: ["alice", "bob"])
+
+    async def fake_after_login(orch, server, accts, *, probe=True, signed_in=False):
+        state["heals"].append((server, list(accts), probe, signed_in))
+        return {"refreshed": 0, "reconnected": 0}
+    monkeypatch.setattr(al_mod, "after_login", fake_after_login)
+    orch = _HealOrch()
+    state["orch"] = orch
+
+    async def run(*outcomes: dict):
+        state["outcomes"].append(list(outcomes))
+        return await app_mod._mcp_oauth_tick(lambda: orch)
+    state["run"] = run
+    return state
+
+
+def _out(outcome: str, key: str = K1, label: str = "railway", error: str | None = None) -> dict:
+    return {"key": key, "label": label, "outcome": outcome, "error": error}
+
+
+@pytest.mark.asyncio
+async def test_transient_then_refreshed_heals_without_alert(isolated_db, tick):
+    t1 = await tick["run"](_out("transient", error="HTTP 503"))
+    assert t1 == [] and tick["heals"] == [] and tick["orch"].probes == 0
+    t2 = await tick["run"](_out("refreshed"))
+    assert [t.kind for t in t2] == ["healed"]  # a heal, never an alert
+    assert tick["heals"] == [("railway", ["alice", "bob"], False, False)]
+    assert tick["orch"].probes == 1
+
+
+@pytest.mark.asyncio
+async def test_routine_refresh_does_not_heal(isolated_db, tick):
+    assert await tick["run"](_out("refreshed")) == []
+    assert await tick["run"](_out("refreshed")) == []
+    assert tick["heals"] == [] and tick["orch"].probes == 0
+
+
+@pytest.mark.asyncio
+async def test_heal_probes_once_per_tick(isolated_db, tick):
+    await tick["run"](_out("transient"), _out("dead", key=K2, label="notion"))
+    healed = await tick["run"](_out("refreshed"), _out("refreshed", key=K2, label="notion"))
+    assert sorted(t.server for t in healed) == ["notion", "railway"]
+    assert sorted(h[0] for h in tick["heals"]) == ["notion", "railway"]
+    assert all(h[2] is False for h in tick["heals"])  # per-server probe suppressed
+    assert tick["orch"].probes == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_returns_alert_transitions_without_healing(isolated_db, tick):
+    out = await tick["run"](_out("dead", error="invalid_grant"))
+    assert [(t.kind, t.key) for t in out] == [("alert_dead", K1)]
+    assert tick["heals"] == [] and tick["orch"].probes == 0
+
+
+@pytest.mark.asyncio
+async def test_tick_marks_past_expiry_keys_expired(isolated_db, tick, monkeypatch):
+    import time as _time
+    now_ms = int(_time.time() * 1000)
+    tick["store"] = {K1: {"expiresAt": now_ms - 60_000, "refreshToken": "RT"},
+                     K2: {"expiresAt": now_ms + 3_600_000},
+                     "cleared|0": {"expiresAt": 0}, "odd|1": {"expiresAt": "soon"}, "bare|2": "x"}
+    seen: list = []
+    from server.mcp_health import grant_health
+    real_record = grant_health.record
+
+    async def spy(outcomes, *, expired_keys):
+        seen.append(expired_keys)
+        return await real_record(outcomes, expired_keys=expired_keys)
+    monkeypatch.setattr(grant_health, "record", spy)
+    out = await tick["run"](_out("transient", error="HTTP 503"))
+    assert seen == [frozenset({K1})]
+    assert [t.kind for t in out] == ["alert_expired"]
+
+
+@pytest.mark.asyncio
+async def test_heal_failure_is_logged_and_never_breaks_the_tick(isolated_db, tick, monkeypatch, caplog):
+    from server.mcp_health import after_login as al_mod
+
+    async def boom(orch, server, accts, *, probe=True, signed_in=False):
+        raise RuntimeError("fleet down")
+    monkeypatch.setattr(al_mod, "after_login", boom)
+    await tick["run"](_out("transient"), _out("transient", key=K2, label="notion"))
+    out = await tick["run"](_out("refreshed"), _out("refreshed", key=K2, label="notion"))
+    assert len(out) == 2
+    assert tick["orch"].probes == 1  # the other server's heal and the probe still ran
+    assert any(r.levelno == logging.WARNING and "heal" in r.getMessage() for r in caplog.records)
+
+
+def test_keys_for_server_maps_short_name_to_cli_keys(shared: Path):  # noqa: F811
+    _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL},
+                    "local": {"type": "stdio", "command": "x"}})
+    install = _seed_plugin(shared, "railway")
+    (install / ".mcp.json").write_text(json.dumps(
+        {"mcpServers": {"railway": {"type": "http", "url": "https://mcp.railway.com"}}}))
+    assert grants.keys_for_server("railway") == [K1]
+    assert grants.keys_for_server("aws-oauth") == [NEW_KEY]
+    assert grants.keys_for_server("local") == []
+    assert grants.keys_for_server("nope") == []
