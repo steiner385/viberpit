@@ -27,6 +27,7 @@ from viberpit.mcp_oauth_client import (Client, Discovery, DiscoveryFailed, Excha
                                        authorize_url, choose_scope, discover, ensure_client,
                                        exchange_code, forget_client, new_state, pkce_pair)
 
+from server.aio import cancel_and_reap
 from server.config import get_settings
 from server.library import scan
 from server.library.names import valid_mcp_name
@@ -53,10 +54,13 @@ class PasteBack(Exception):
 
 
 class SignInFailed(Exception):
-    """The sign-in failed with *code*, one of :data:`SIGN_IN_ERRORS`."""
+    """The sign-in failed with *code*, one of :data:`SIGN_IN_ERRORS` (anything else raises
+    ``ValueError``). ``registration_failed`` is reserved: by ruling a refused registration
+    falls back to paste-back (:class:`PasteBack`) instead."""
 
     def __init__(self, code: str) -> None:
-        assert code in SIGN_IN_ERRORS, code
+        if code not in SIGN_IN_ERRORS:
+            raise ValueError("sign-in error code outside the closed set")
         super().__init__(code)
         self.code = code
 
@@ -110,10 +114,11 @@ async def start(identity: str, server_name: str) -> str:
     """The provider authorize URL for *server_name*. Raises :class:`PasteBack` when one-tap
     is off or the provider cannot take ViberPit as a client, and
     ``SignInFailed("not_configured")`` for a name that is no single http/sse server."""
+    # Validate the name first, so an arbitrary string is never echoed into a redirect.
+    server = await asyncio.to_thread(_server, server_name)
     origin = get_settings().public_origin
     if not origin:
         raise PasteBack(server_name)
-    server = await asyncio.to_thread(_server, server_name)
     key = grants.key_for(server)
     if key is None:  # no knowable CLI key (no type/url, or a ${…} placeholder)
         raise PasteBack(server_name)
@@ -121,7 +126,10 @@ async def start(identity: str, server_name: str) -> str:
         discovery = await asyncio.to_thread(discover, server["config"]["url"])
         client = await asyncio.to_thread(ensure_client, discovery, f"{origin}{CALLBACK_PATH}")
     except (DiscoveryFailed, RegistrationUnsupported, RegistrationFailed) as exc:
-        log.warning("mcp one-tap: falling back to paste-back server=%s reason=%s",
+        # No DCR is an expected provider shape (e.g. KinDash), not a fault: INFO, so a
+        # Fix-auth tap does not auto-file an issue. A refused or broken one is WARNING.
+        level = logging.INFO if isinstance(exc, RegistrationUnsupported) else logging.WARNING
+        log.log(level, "mcp one-tap: falling back to paste-back server=%s reason=%s",
                     server_name, type(exc).__name__)
         raise PasteBack(server_name) from None
     verifier, challenge = pkce_pair()
@@ -162,7 +170,10 @@ async def complete(identity: str, *, state: str | None, code: str | None, error:
             verifier=pending.verifier, server_name=pending.store_name,
             now_ms=int(time.time() * 1000))
     except ExchangeFailed as exc:
-        log.warning("mcp one-tap: code exchange failed server=%s reason=%s code=%s",
+        # invalid_grant is usually a code that outlived its lifetime (the user lingered on
+        # the provider page): expected, so INFO. Anything else is WARNING.
+        level = logging.INFO if exc.code == "invalid_grant" else logging.WARNING
+        log.log(level, "mcp one-tap: code exchange failed server=%s reason=%s code=%s",
                     pending.server, type(exc).__name__, exc.code)
         if exc.code == "invalid_client":
             await asyncio.to_thread(forget_client, pending.discovery.authorization_server)
@@ -180,6 +191,13 @@ async def complete(identity: str, *, state: str | None, code: str | None, error:
     _background.add(task)
     task.add_done_callback(_follow_through_done)
     return pending.server
+
+
+async def shutdown() -> None:
+    """Cancel and reap the in-flight post-login follow-throughs (edge lifespan shutdown)."""
+    for task in list(_background):
+        await cancel_and_reap(task, phase="shutdown:mcp_one_tap")
+    _background.clear()
 
 
 def _follow_through_done(task: asyncio.Task[Any]) -> None:

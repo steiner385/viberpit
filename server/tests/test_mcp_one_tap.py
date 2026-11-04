@@ -305,3 +305,77 @@ def test_pending_table_is_bounded(client: TestClient, fakes: Fakes) -> None:
     for _ in range(one_tap.MAX_PENDING + 5):
         _start(client)
     assert one_tap.pending_count() == one_tap.MAX_PENDING
+
+
+def test_no_dcr_fallback_logs_no_warning(client: TestClient, fakes: Fakes,
+                                         caplog: pytest.LogCaptureFixture) -> None:
+    fakes.ensure_exc = RegistrationUnsupported("no dcr")
+    with caplog.at_level("INFO", logger=one_tap.log.name):
+        resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
+    assert [r for r in caplog.records if r.levelno >= 30] == []
+    assert any("RegistrationUnsupported" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("exc", [DiscoveryFailed("x"), RegistrationFailed("x")])
+def test_real_start_failures_still_warn(client: TestClient, fakes: Fakes, exc: Exception,
+                                        caplog: pytest.LogCaptureFixture) -> None:
+    if isinstance(exc, DiscoveryFailed):
+        fakes.discover_exc = exc
+    else:
+        fakes.ensure_exc = exc
+    with caplog.at_level("INFO", logger=one_tap.log.name):
+        client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    assert [r.levelno for r in caplog.records] == [30]
+
+
+@pytest.mark.parametrize("code,level", [("invalid_grant", 20), ("server_error", 30)])
+def test_exchange_failure_log_level(client: TestClient, fakes: Fakes, code: str, level: int,
+                                    caplog: pytest.LogCaptureFixture) -> None:
+    fakes.exchange_exc = ExchangeFailed(f"token endpoint returned 400 {code}", code=code)
+    state = _start(client)
+    with caplog.at_level("INFO", logger=one_tap.log.name):
+        assert _callback(client, code="c", state=state) == \
+            "/settings/mcp?signInError=exchange_failed"
+    assert [r.levelno for r in caplog.records] == [level]
+
+
+def test_invalid_name_is_not_configured_even_without_public_origin(
+        client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(one_tap, "get_settings", lambda: types.SimpleNamespace(public_origin=None))
+    for name in ("<script>", "nope"):
+        resp = client.get("/api/mcp/oauth/start", params={"server": name})
+        assert resp.headers["location"] == "/settings/mcp?signInError=not_configured"
+
+
+def test_sign_in_failed_rejects_codes_outside_the_closed_set() -> None:
+    with pytest.raises(ValueError):
+        one_tap.SignInFailed("access_denied: <script>")
+
+
+@pytest.mark.parametrize("path", ["/api/mcp/oauth/start?server=railway",
+                                  "/api/mcp/oauth/callback?code=c&state=s"])
+def test_assistant_tokens_cannot_reach_one_tap_routes(path: str) -> None:
+    from server.assistant.policy import route_allowed
+    for method in ("GET", "POST"):
+        assert route_allowed(method, path) is False
+        assert route_allowed(method, path, operator=True) is False
+
+
+def test_shutdown_reaps_follow_through_tasks() -> None:
+    import asyncio
+
+    async def run() -> bool:
+        started = asyncio.Event()
+
+        async def hang() -> None:
+            started.set()
+            await asyncio.sleep(3600)
+
+        task = asyncio.create_task(hang())
+        one_tap._background.add(task)
+        await started.wait()
+        await one_tap.shutdown()
+        return task.cancelled() and not one_tap._background
+
+    assert asyncio.run(run())

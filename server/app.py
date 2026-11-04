@@ -693,6 +693,9 @@ async def _lifespan(app: FastAPI):
     if _mcp_auth is not None:
         await bounded_wait(_mcp_auth.shutdown(),
                            timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:mcp_auth")
+    from server.mcp_health import one_tap as _one_tap
+    await bounded_wait(_one_tap.shutdown(),
+                       timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:mcp_one_tap")
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
         await bounded_wait(app.state.sessions.aclose(),
