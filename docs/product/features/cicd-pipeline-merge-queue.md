@@ -96,6 +96,14 @@ flaky-test / advisory-check findings but does not autonomously rewrite workflows
   and no attempt is consumed. Alerts and "PR broke" pushes still fire, and a manual **Fix PR**
   still runs. The pause ends when the session is archived, and it holds the backlog runner's
   hand-off rather than letting another worker fix the PR.
+- **REST hold guard (D-15).** `merge_hold_guard` and `draft_hold_guard` only cover `gh` run inside a
+  session, so the UI's own merge routes carry the same `hold:human` rule. Merge now and Arm auto-merge
+  (`POST /api/prs/{o}/{n}/{num}/merge` and `/auto-merge`) and the Pipeline page's
+  `POST /api/pipeline/pr/ready-merge` answer 409 `PR_HUMAN_HOLD` for a held PR. The label is read live
+  with `gh pr view --json labels`, never from the cached rollup; if the read fails (gh error, timeout,
+  unparseable output) they fail closed with 409 `PR_HUMAN_HOLD_UNKNOWN`. Disable auto-merge is always
+  allowed. Each attempt, refused or not, writes a `pr.merge`, `pr.auto_merge_disabled` or
+  `pr.ready_merge` audit row, and neither new route is on the Assistant's allowlist.
 - Known open gaps: #838 (cicd ingest drops whole batches on `ci_job` PK collisions — needs a
   dialect-agnostic upsert); #821/#822/#823 (serialize + cap + speed up the self-hosted server
   test suite that feeds this pipeline).
