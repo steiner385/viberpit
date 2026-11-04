@@ -18,7 +18,7 @@ import math
 import re
 import time
 import urllib.parse
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 
 from . import creds, paths
@@ -33,6 +33,11 @@ _HTTP_TIMEOUT_S = 10
 # that keeps answering e.g. 400 invalid_client is not POSTed every tick forever.
 TRANSIENT_BACKOFF_S = 300.0
 _backoff_until_ms: dict[str, float] = {}
+# Token lifetime (s) of each key's last refresh, from the response's ``expires_in``. A token
+# that lives less than 2 * LEAD_S would otherwise always be due and refreshed (and its
+# refresh token rotated) every tick. In-process only: after an edge restart a key's
+# lifetime is unknown, so its first refresh uses the full LEAD_S once.
+_lifetime_s: dict[str, float] = {}
 
 # The CLI's own dead-grant codes, plus the standard one. Anything else is transient: an
 # unrecognized 400 (invalid_target, invalid_request) is a protocol mismatch, and a DCR
@@ -121,14 +126,18 @@ def _expiry_ms(blob: dict) -> float | None:
     return float(value)
 
 
-def due_keys(store: dict, now_ms: int, lead_s: float = LEAD_S) -> list[str]:
-    """Store keys whose bundle has a refresh token and expires within *lead_s* seconds."""
+def due_keys(store: dict, now_ms: int, lead_s: float = LEAD_S, *,
+             lifetimes: Mapping[str, float] | None = None) -> list[str]:
+    """Store keys whose bundle has a refresh token and expires within *lead_s* seconds, or
+    within half the key's known token lifetime (*lifetimes*) when that is shorter."""
     out = []
     for key, blob in store.items():
         if not (isinstance(blob, dict) and blob.get("refreshToken")):
             continue
         expiry = _expiry_ms(blob)
-        if expiry is not None and expiry - now_ms < lead_s * 1000:
+        lifetime = (lifetimes or {}).get(key)
+        lead = lead_s if lifetime is None else min(lead_s, 0.5 * lifetime)
+        if expiry is not None and expiry - now_ms < lead * 1000:
             out.append(key)
     return out
 
@@ -490,7 +499,7 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
     store = creds.read_shared_mcp()
     now = int(time.time() * 1000) if now_ms is None else now_ms
     changed = False
-    for key in due_keys(store, now):
+    for key in due_keys(store, now, lifetimes=_lifetime_s):
         if key in skip_keys or _backoff_until_ms.get(key, 0) > now:
             continue
         old = store[key]
@@ -502,6 +511,7 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
             _backoff_until_ms.pop(key, None)
         except McpGrantDead as exc:
             replacement, outcome = cleared(old), "dead"
+            _lifetime_s.pop(key, None)
             log.debug("mcp oauth grant dead server=%s key=%s: %s", label, key, exc)
         except Exception as exc:
             _backoff_until_ms[key] = now + TRANSIENT_BACKOFF_S * 1000
@@ -526,6 +536,9 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
         summary[outcome].append(label)
         summary["outcomes"].append({"key": key, "label": label, "outcome": outcome, "error": None})
         if outcome == "refreshed":
+            expiry = _expiry_ms(replacement)
+            if expiry is not None and expiry > now:
+                _lifetime_s[key] = (expiry - now) / 1000
             log.info("mcp oauth refreshed server=%s key=%s expires=%s", label, key, _expiry_label(replacement))
         else:
             log.info("mcp oauth grant dead, cleared server=%s key=%s (sign in again)", label, key)

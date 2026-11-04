@@ -21,10 +21,12 @@ def _isolated(tmp_path, monkeypatch):
     mor._metadata_cache.clear()
     mor._backoff_until_ms.clear()
     mor._resource_cache.clear()
+    mor._lifetime_s.clear()
     yield
     mor._metadata_cache.clear()
     mor._backoff_until_ms.clear()
     mor._resource_cache.clear()
+    mor._lifetime_s.clear()
 
 
 def _bundle(**over):
@@ -530,3 +532,53 @@ def test_non_https_token_endpoint_is_never_posted_to(bad):
 def test_non_https_auth_server_has_no_fallback_endpoint():
     b = _bundle(discoveryState={"authorizationServerUrl": "http://auth.example.com/"})
     assert mor.token_endpoint(b, fetch_json=FakeHttp().fetch_json) == ""
+
+
+# --- lead scales with a short token lifetime ------------------------------------------------
+
+def test_short_lived_key_is_due_only_in_its_last_half():
+    lifetimes = {"k": 300.0}
+    four_min = {"k": _bundle(expiresAt=NOW + 240_000)}
+    two_min = {"k": _bundle(expiresAt=NOW + 120_000)}
+    assert mor.due_keys(four_min, NOW, lifetimes=lifetimes) == []
+    assert mor.due_keys(two_min, NOW, lifetimes=lifetimes) == ["k"]
+
+
+def test_unknown_lifetime_keeps_the_full_lead():
+    store = {"k": _bundle(expiresAt=NOW + 240_000)}
+    assert mor.due_keys(store, NOW) == ["k"]
+    assert mor.due_keys(store, NOW, lifetimes={"other": 300.0}) == ["k"]
+
+
+def test_long_lifetime_never_exceeds_the_lead():
+    store = {"k": _bundle(expiresAt=NOW + 700_000)}
+    assert mor.due_keys(store, NOW, lifetimes={"k": 3600.0}) == []
+
+
+def test_refresh_records_lifetime_and_is_not_repeated_next_tick():
+    _seed({"aws|1": _bundle(expiresAt=NOW + 60_000)}, {"alice": {}})
+    http = FakeHttp(metadata=_meta(), responses=[_ok(expires_in=300), _ok(expires_in=300)])
+    kw = dict(accounts_list=["alice"], post_form=http.post_form, fetch_json=http.fetch_json)
+    assert mor.run_once(now_ms=NOW, **kw)["refreshed"] == ["aws-oauth"]
+    assert mor._lifetime_s == {"aws|1": 300.0}
+    again = mor.run_once(now_ms=NOW + 60_000, **kw)
+    assert again["refreshed"] == [] and len(http.posts) == 1
+    assert mor.run_once(now_ms=NOW + 160_000, **kw)["refreshed"] == ["aws-oauth"]
+
+
+def test_dead_clear_drops_the_lifetime():
+    mor._lifetime_s["aws|1"] = 300.0
+    _seed({"aws|1": _bundle(expiresAt=NOW - 5)}, {"alice": {}})
+    http = FakeHttp(metadata=_meta(), responses=[(400, {"error": "invalid_grant"})])
+    out = mor.run_once(accounts_list=["alice"], post_form=http.post_form,
+                       fetch_json=http.fetch_json, now_ms=NOW)
+    assert out["dead"] == ["aws-oauth"] and "aws|1" not in mor._lifetime_s
+
+
+@pytest.mark.parametrize("expires_in", [0, -5, float("inf"), float("nan"), True, "300", None])
+def test_unusable_expires_in_records_no_lifetime(expires_in):
+    _seed({"aws|1": _bundle(expiresAt=NOW + 60_000)}, {"alice": {}})
+    http = FakeHttp(metadata=_meta(), responses=[_ok(expires_in=expires_in)])
+    mor.run_once(accounts_list=["alice"], post_form=http.post_form,
+                 fetch_json=http.fetch_json, now_ms=NOW)
+    assert mor._lifetime_s == {}
