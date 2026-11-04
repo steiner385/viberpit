@@ -403,6 +403,10 @@ export interface Session {
   fastModeState?: 'on' | 'off' | 'cooldown' | null
   /** Why the CLI disabled fast mode (`out_of_credits`, `org_level_disabled` …), or null. */
   fastModeDisabledReason?: string | null
+  /** The effort levels the session's current model accepts (the CLI's
+   *  `supportedEffortLevels`). `[]` = the model has none (picker hidden); null/absent =
+   *  not reported yet. */
+  supportedEffortLevels?: string[] | null
   /** ISO instant until which autopilot is deferring because the user is steering this
    *  session; null/absent = not deferring. The card counts down locally from this. */
   autopilotCooldownUntil?: string | null

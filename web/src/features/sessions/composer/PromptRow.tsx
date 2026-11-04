@@ -45,16 +45,7 @@ export interface PromptRowProps {
 }
 
 const NO_MODELS: readonly ModelOption[] = []
-
-/**
- * The Claude CLI's effort levels (its `supportedEffortLevels` enum, 2.1.318). The
- * server does not yet send the per-model list to the browser, so a Claude session
- * with live flag settings is offered all of them; the server checks the pick against
- * the model's own row and refuses one it lacks (`SETTINGS_INVALID`), which surfaces
- * as the session's error banner like any other refused effort.
- * Follow-up #3260: offer only the current model's `supportedEffortLevels`.
- */
-const CLAUDE_EFFORT_LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const NO_EFFORTS: readonly string[] = []
 
 // `caps` gates nothing for the mode picker: no engine restricts permission modes
 // (AgentCapabilities has no mode field and Codex maps all seven).
@@ -67,13 +58,14 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onTo
   const chosenModel = models.find((m) => m.id === rt.model)
     ?? (rt.model == null ? models.find((m) => m.default) : undefined)
   // The catalog row's own efforts (Codex) win. Otherwise a Claude session whose
-  // engine REPORTS live flag settings gets the CLI's levels — reported, not assumed:
-  // `canUseEngine` treats an unknown capability as present, which is right for a
-  // control the catalog vouches for and wrong for this fallback list.
+  // engine REPORTS live flag settings gets the levels the CLI listed for its current
+  // model (`supportedEffortLevels` on the payload) — reported, not assumed: `canUseEngine`
+  // treats an unknown capability as present, which is right for a control the catalog
+  // vouches for and wrong for this one. No list yet (or an empty one) = no picker.
   const catalogEfforts = canUseEngine(caps, 'reasoningEffort') ? chosenModel?.reasoningEfforts ?? [] : []
   const efforts = catalogEfforts.length > 0
     ? catalogEfforts
-    : caps?.flagSettings === true ? CLAUDE_EFFORT_LEVELS : []
+    : caps?.flagSettings === true ? session?.supportedEffortLevels ?? NO_EFFORTS : NO_EFFORTS
   const showEffort = efforts.length > 0
   const effort = session?.reasoningEffort ?? chosenModel?.defaultReasoningEffort ?? null
   const busy = statusTier(rt.state.status.state) === 'busy'
