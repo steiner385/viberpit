@@ -1524,6 +1524,7 @@ class SessionOrchestrator:
             session_recheck_at=self._backlog_session_recheck_at,
             session_work_stopped=self._automation_session_work_stopped,
             handoff=self._backlog_handoff,
+            pr_autofix_paused=self._backlog_pr_autofix_paused,
             closeout_completed=self._backlog_closeout_completed,
             close_out=self._backlog_close_out,
             refresh_groups=self._backlog_refresh_groups,
@@ -8502,6 +8503,18 @@ class SessionOrchestrator:
             log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
             return False
 
+    async def _backlog_pr_autofix_paused(self, target: str, state: dict,
+                                         info: PullRequestInfo) -> bool:
+        """Whether the runner target's PR belongs to a session with PR auto-fix paused
+        (D-14). The PR's head branch, else the claim's recorded branch; neither known
+        means not paused. The runner reads it as "no safety net" in ``should_free_slot``
+        and ``_backlog_handoff`` refuses the transfer on it."""
+        branch = info.head_ref or state.get("branch")
+        if not branch:
+            return False
+        repo = target.split("#", 1)[0]
+        return await self._pr_autofix_paused_session(repo, branch) is not None
+
     async def _backlog_handoff(self, target: str, state: dict, info: PullRequestInfo) -> bool:
         from server.automations import pr_doctor_engine as engine
         from server.automations.ownership import OwnershipConflict, StaleOwnership, ReleaseProof
@@ -8513,6 +8526,13 @@ class SessionOrchestrator:
         reason = "PR recovery prerequisites are not satisfied"
         if not await self._backlog_pr_doctor_active(repo):
             await self._backlog_ctx.emit("info", reason, kind="handoff_wait", target=target)
+            return False
+        # A paused PR (D-14) has no safety net: PR Doctor would skip it, so the runner
+        # keeps the slot and ownership instead of handing it to nobody.
+        if await self._backlog_pr_autofix_paused(target, state, info):
+            await self._backlog_ctx.emit(
+                "info", f"PR auto-fix is paused on the session that owns {pr_target}",
+                kind="handoff_wait", target=target)
             return False
         pr_state = await self._pr_doctor_ctx.get_target_state(pr_target)
         config = await self._pr_doctor_config()
@@ -17182,22 +17202,23 @@ class SessionOrchestrator:
         failure_mode = engine.classify(info)
         if failure_mode == "stuck_checks":
             await self._pr_doctor_alert_stuck_checks(repo, info, rec)
+        action = engine.plan_recovery(failure_mode, mode, config, rearmed)
         # Per-session opt-out (D-14), at the one point both the sweep and _on_pr_change
-        # reach. Alerts and the caller's "PR broke" push still fire; no recovery is
-        # planned, so no attempt is consumed and a later un-pause gets a fresh try.
-        if failure_mode is not None:
+        # reach, and only when a fix would actually run (off/propose report nothing).
+        # Alerts and the caller's "PR broke" push still fire; no attempt is recorded,
+        # so a later un-pause gets a fresh try.
+        if isinstance(action, (engine.Mechanical, engine.SessionFix)):
             paused_sid = await self._pr_autofix_paused_session(repo, branch)
             if paused_sid is not None:
                 reason = "pr_autofix_paused"
                 seen = self.__dict__.get("_pr_doctor_skip_seen", ())
-                if (target, failure_mode, info.head_sha, reason) not in seen:
+                if (target, action.kind, info.head_sha, reason) not in seen:
                     log.info("pr_doctor.autofix_paused target=%s session=%s failure=%s",
-                             target, paused_sid, failure_mode)
+                             target, paused_sid, action.kind)
                 await self._pr_doctor_report_skip(
-                    target, failure_mode, info.head_sha, reason,
-                    f"skipped {failure_mode} fix for {target}: auto-fix is paused on its session")
+                    target, action.kind, info.head_sha, reason,
+                    f"skipped {action.kind} fix for {target}: auto-fix is paused on its session")
                 return False
-        action = engine.plan_recovery(failure_mode, mode, config, rearmed)
         if engine.acted_at_head(rearmed, action, info.head_sha):
             if isinstance(action, (engine.Mechanical, engine.SessionFix)):
                 await self._pr_doctor_report_skip(
@@ -25805,12 +25826,15 @@ class SessionOrchestrator:
         """The id of a session that owns PR branch *branch* in *repo* (its ``branch`` or
         one of its ``authored_branches`` — the set ``_pr_doctor_owning_rec`` matches) and
         has PR auto-fix paused, else None. Reads the DB rows, not ``_records``: the sweep
-        runs on the primary and meets PRs whose session lives on a worker or is archived."""
+        runs on the primary and meets PRs whose session lives on a worker. An archived
+        row is ignored, so the pause ends with the session rather than holding its PRs
+        forever."""
         from sqlalchemy import select as sa_select
         async with db_session() as db:
             rows = (await db.execute(
                 sa_select(DbSession.id, DbSession.branch, DbSession.authored_branches)
-                .where(DbSession.repo == repo, DbSession.pr_autofix_paused.is_(True))
+                .where(DbSession.repo == repo, DbSession.pr_autofix_paused.is_(True),
+                       DbSession.status != "archived")
             )).all()
         for sid, row_branch, authored in rows:
             if branch == row_branch or branch in (authored or ()):

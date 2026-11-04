@@ -10,6 +10,7 @@ rehydrate, the route, and the remote / RPC / fleet / facade plumbing.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import types
@@ -407,3 +408,130 @@ async def test_fleet_routes_to_the_owning_host_and_facade_forwards():
     assert rocky.calls == [(SID, True)] and dobby.calls == []
     await InProcessOrchestratorAdapter(dobby).set_pr_autofix_paused(SID, False)  # type: ignore[arg-type]
     assert dobby.calls == [(SID, False)]
+
+
+# ---- review round 1 ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_archiving_the_session_ends_the_pause(monkeypatch, tmp_path):
+    """An archived session no longer holds its PR: the pause ends with the session."""
+    from sqlalchemy import update as sa_update
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+    await _add_row(paused=True)
+    pr = _pr(merge_state_status="BEHIND", checks="passing")
+    orch = _build_orch(pr, has_driver=False)
+    orch._records = {}
+    gh = _gh_recorder(orch, monkeypatch)
+
+    await _sweep(orch, monkeypatch)
+    assert gh == []
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == SID).values(status="archived"))
+    await _sweep(orch, monkeypatch)
+
+    assert len(gh) == 1 and "update-branch" in " ".join(gh[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "propose"])
+async def test_no_skip_reported_when_the_mode_would_not_act(monkeypatch, tmp_path, caplog, mode):
+    """off/propose never fix, so a pause skips nothing: no INFO line, no event."""
+    caplog.set_level(logging.INFO)
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, mode)
+    await _add_row(paused=True)
+    pr = _pr(merge_state_status="BEHIND", checks="passing")
+    orch = _build_orch(pr, has_driver=False)
+    orch._records = {}
+    gh = _gh_recorder(orch, monkeypatch)
+
+    assert await orch._pr_doctor_step("o/r", "feat/x", pr) is False
+
+    assert gh == []
+    events = await orch._pr_doctor_ctx.list_events(target=TARGET)
+    assert not any(e["kind"] == "skipped" for e in events)
+    assert not any("pr_doctor.autofix_paused" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_runner_handoff_refuses_a_paused_pr(monkeypatch, tmp_path):
+    """``_backlog_handoff`` never transfers a paused session's PR to PR Doctor: the
+    runner keeps its row and ownership token, and the feed says why (handoff_wait)."""
+    from server.automations.context import AutomationContext
+    await _init_pr_doctor_db(tmp_path)
+    await _add_row(paused=True)
+    orch = _build_orch(_pr(), has_driver=False)
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    orch._backlog_ctx.emit = AsyncMock()  # type: ignore[method-assign]
+    orch._backlog_pr_doctor_active = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    state = {"ownership_token": "tok", "session_id": SID, "branch": "feat/x"}
+    info = dataclasses.replace(_pr(checks="failing"), head_ref="feat/x")
+
+    assert await orch._backlog_handoff("o/r#1", state, info) is False
+
+    calls = orch._backlog_ctx.emit.await_args_list
+    assert [c.kwargs.get("kind") for c in calls] == ["handoff_wait"]
+    assert "auto-fix is paused" in calls[0].args[1]
+    assert await orch._backlog_ctx.get_target_state("o/r#1") == {}
+    assert await orch._pr_doctor_ctx.get_target_state("o/r#7") == {}
+
+
+@pytest.mark.asyncio
+async def test_runner_pr_autofix_paused_seam(monkeypatch, tmp_path):
+    """The runner's seam: paused by the PR's head branch, else by the claim's branch."""
+    await _init_pr_doctor_db(tmp_path)
+    await _add_row(paused=True)
+    orch = _build_orch(_pr(), has_driver=False)
+    info = dataclasses.replace(_pr(), head_ref="feat/x")
+    assert await orch._backlog_pr_autofix_paused("o/r#1", {}, info) is True
+    info = dataclasses.replace(info, head_ref="")
+    assert await orch._backlog_pr_autofix_paused("o/r#1", {"branch": "feat/x"}, info) is True
+    assert await orch._backlog_pr_autofix_paused("o/r#1", {}, info) is False
+    info = dataclasses.replace(info, head_ref="feat/other")
+    assert await orch._backlog_pr_autofix_paused("o/r#1", {}, info) is False
+
+
+def test_stopped_runner_session_with_a_paused_pr_keeps_its_slot(tmp_path):
+    """A paused PR is no safety net: ``should_free_slot`` sees pr_doctor_active=False,
+    so a stopped runner session's claim and ownership hold until the PR merges. (The
+    harness counts slots by live session, so the claim row is what is asserted.)"""
+    import asyncio as _asyncio
+
+    from server.db import init_db
+    from server.tests.test_backlog_runner_e2e import FakeClock, Harness, _seed_rows, make_config
+
+    async def go():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ho.db'}")
+        await _seed_rows()
+        open_auto = dataclasses.replace(_pr(number=1, checks="pending"), auto_merge_enabled=True)
+        h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
+                    candidate_refs=[("o/r", 1, "one"), ("o/r", 2, "two")],
+                    pr_status={"o/r#1": open_auto}, pr_doctor_active=True)
+        paused_calls: list[str] = []
+
+        async def paused(target, st, info):
+            paused_calls.append(target)
+            return True
+
+        h.loop._pr_autofix_paused = paused
+        await h.loop.tick()
+        assert len(h.created) == 1
+        await h.end_session("o/r#1")
+        await h.loop.tick()
+        # Not handed off: the runner still owns the claim (its slot, in production's
+        # target-state ledger) and waits for the merge, as with no PR Doctor at all.
+        st = await h.ctx.get_target_state("o/r#1")
+        assert st.get("ownership_token") and not st.get("handed_off")
+        assert "o/r#1" in paused_calls
+
+        # Control: the same PR un-paused is handed off on the next tick.
+        async def not_paused(target, st, info):
+            return False
+
+        h.loop._pr_autofix_paused = not_paused
+        await h.loop.tick()
+        assert (await h.ctx.get_target_state("o/r#1")).get("handed_off") is True
+
+    _asyncio.run(go())
