@@ -546,6 +546,8 @@ async def ready_merge(
 ) -> dict:
     """Plotroom PrRow parity: mark a draft PR ready + arm squash auto-merge. 409
     ``PR_HUMAN_HOLD`` / ``PR_HUMAN_HOLD_UNKNOWN`` for a held (or unverifiable) PR."""
+    if not ci_issues.valid_repo(body.repo):
+        raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
     result = await request.app.state.sessions.ready_merge(body.repo, body.number)
     return await _audit_pr_mutation(request, identity, "pr.ready_merge", body.repo,
                                     body.number, result,

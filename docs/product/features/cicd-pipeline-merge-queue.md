@@ -102,7 +102,7 @@ flaky-test / advisory-check findings but does not autonomously rewrite workflows
   `POST /api/pipeline/pr/ready-merge` answer 409 `PR_HUMAN_HOLD` for a held PR. The label is read live
   with `gh pr view --json labels`, never from the cached rollup; if the read fails (gh error, timeout,
   unparseable output) they fail closed with 409 `PR_HUMAN_HOLD_UNKNOWN`. Disable auto-merge is always
-  allowed. Each attempt, refused or not, writes a `pr.merge`, `pr.auto_merge_disabled` or
+  allowed. The SDLC synthesizer's auto-merge arm also goes through `ready_merge`, so it is refused on a held PR or one whose hold state is unknown: it records `outcome: "refused"` and retries after `ARM_REFUSED_RETRY_S`, and each arm costs one extra label read. Each attempt, refused or not, writes a `pr.merge`, `pr.auto_merge_disabled` or
   `pr.ready_merge` audit row, and neither new route is on the Assistant's allowlist.
 - Known open gaps: #838 (cicd ingest drops whole batches on `ci_job` PK collisions — needs a
   dialect-agnostic upsert); #821/#822/#823 (serialize + cap + speed up the self-hosted server

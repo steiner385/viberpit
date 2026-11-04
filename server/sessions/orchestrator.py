@@ -20664,11 +20664,12 @@ class SessionOrchestrator:
             if refusal is not None:
                 return {"markedReady": False, "autoMergeArmed": False,
                         "alreadyArmed": False, "cleanReadyToMerge": False, **refusal}
-            ready = self._gh_run(["pr", "ready", str(number), "-R", repo])
+            ready = self._gh_run(["pr", "ready", str(number), "-R", repo], timeout=60)
             # gh exits non-zero when the PR is already ready — that's not an error.
             marked = ready.returncode == 0
             merge = self._gh_run(
-                ["pr", "merge", str(number), "-R", repo, "--squash", "--auto"]
+                ["pr", "merge", str(number), "-R", repo, "--squash", "--auto"],
+                timeout=60,
             )
             # gh (2.x) fails with "...auto-merge is already enabled for this pull
             # request" when re-arming; that state is the caller's goal, not an error.

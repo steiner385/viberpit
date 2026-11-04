@@ -523,6 +523,33 @@ async def test_remote_orchestrator_forwards_mutations(method):
     assert client.last_call == (method, {"repo": "o/r", "number": 7})
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["merge_pr", "disable_auto_merge", "ready_merge"])
+async def test_remote_pr_mutations_pass_the_long_rpc_timeout(method):
+    from server.sessions.remote import PR_MUTATION_RPC_TIMEOUT, RemoteOrchestrator
+
+    seen = {}
+
+    class _C:
+        async def call(self, name, *, timeout=None, **kw):
+            seen["timeout"] = timeout
+            return {}
+
+    await getattr(RemoteOrchestrator(_C()), method)("o/r", 7)
+    assert seen["timeout"] == PR_MUTATION_RPC_TIMEOUT >= 90.0
+
+
+def test_pipeline_ready_merge_malformed_repo_is_422_without_audit_or_gh(
+        tmp_path, monkeypatch):
+    client, fake = _client(tmp_path, monkeypatch)
+    with client:
+        r = client.post("/api/pipeline/pr/ready-merge",
+                        json={"repo": "not a repo", "number": 7}, headers=_H)
+        rows = _audit_rows(client, "pr.ready_merge")
+    assert r.status_code == 422
+    assert rows == [] and fake.calls == []
+
+
 @pytest.mark.parametrize("method", ["merge_pr", "disable_auto_merge"])
 def test_daemon_rpc_registers_mutations(method):
     from server.ipc.daemon import create_daemon_app

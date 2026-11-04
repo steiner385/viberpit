@@ -461,7 +461,7 @@ async def test_ready_merge_fixture_matches_actual_outcome_flags(ready_code, merg
     from server.sessions.orchestrator import SessionOrchestrator
 
     responses = iter([subprocess.CompletedProcess([], ready_code), subprocess.CompletedProcess([], merge_code, stderr=stderr)])
-    unheld = SimpleNamespace(_gh_run=lambda _: next(responses),
+    unheld = SimpleNamespace(_gh_run=lambda _, **__: next(responses),
                              _human_hold_refusal=lambda *_: None)
     actual = await SessionOrchestrator.ready_merge(unheld, 'acme/billing', 42)
     fixture = ev.EvalFixture()

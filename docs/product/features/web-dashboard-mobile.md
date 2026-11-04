@@ -415,7 +415,7 @@ ways into it from the composer and the transcript.
 - **Header:** title, `#N`, state (Open, Draft, Merged, Closed), and badges for auto-merge on, in the merge
   queue (read-only) and **Held for a human**. A line explains the merge state in plain words, for example
   that the branch is behind its base or that checks are blocking. With several PRs a picker appears,
-  defaulting to the lowest-numbered open one.
+  defaulting to the lowest-numbered open or draft one.
 - **Checks** are grouped failing, pending and passing, with failing open. **Review threads** list
   unresolved first, with resolved ones collapsed and outdated ones marked; a `path:line` links to the Files
   tab when the file exists in the worktree. **Ask session to address** puts the thread in the composer and
