@@ -1,9 +1,15 @@
 """Durable per-grant MCP refresh health (MCP auth overhaul phase 3).
 
 One ``mcp_grant_health`` row per shared-store grant key, written from each refresh tick's
-``summary["outcomes"]``. :func:`record` upserts the rows and returns the transitions the
-tick acts on — heal a recovered grant, or push once per (key, generation) for a dead or
-expired one. Transitions are decided from each row as it was *before* this tick's upsert.
+``summary["outcomes"]``. :func:`record` upserts the rows and returns the grants that healed
+(decided from each row as it was *before* this tick's upsert).
+
+Alerts are decided from durable state only, never from one tick's outcomes: the refresher
+reports a ``dead`` outcome exactly once (it clears the bundle, so the key leaves the due
+set), and a failure between that swap and :func:`mark_alerted` must not lose the alert.
+Each tick :func:`promote_cleared` marks a signed-in grant whose bundle is cleared ``dead``,
+then :func:`pending_alerts` returns every dead or expired row not yet alerted for its
+current (state, generation).
 """
 from __future__ import annotations
 
@@ -12,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from viberpit.mcp_oauth_refresh import MAX_ERROR_CHARS
 
 from server.db import db_session, dialect_insert
@@ -61,25 +67,18 @@ async def load(keys: Iterable[str] | None = None) -> dict[str, dict]:
         return {r.key: _wire(r) for r in (await db.execute(q)).scalars()}
 
 
-def _transition(o: dict, prior: McpGrantHealth | None, expired_keys: frozenset[str],
-                error: str | None) -> Transition | None:
-    key, server, outcome = o["key"], o.get("label") or o["key"], o["outcome"]
-    gen = generation(prior.last_ok_at if prior else None)
-    alerted_for = prior.alerted_for if prior else None
-    if outcome == "refreshed":
-        if prior and ((prior.consecutive_failures or 0) > 0 or prior.state in _UNHEALTHY_STATES):
-            return Transition(key, server, "healed", None, gen)
-    elif outcome == "dead":
-        if alerted_for != f"dead:{gen}":
-            return Transition(key, server, "alert_dead", None, gen)
-    elif outcome == "transient" and key in expired_keys:
-        if alerted_for != f"expired:{gen}":
-            return Transition(key, server, "alert_expired", error, gen)
+def _healed(o: dict, prior: McpGrantHealth | None) -> Transition | None:
+    """A ``refreshed`` grant that was failing or unhealthy before this tick has healed."""
+    if o["outcome"] != "refreshed" or prior is None:
+        return None
+    if (prior.consecutive_failures or 0) > 0 or prior.state in _UNHEALTHY_STATES:
+        return Transition(o["key"], o.get("label") or o["key"], "healed", None,
+                          generation(prior.last_ok_at))
     return None
 
 
 async def record(outcomes: list[dict], *, expired_keys: frozenset[str]) -> list[Transition]:
-    """Upsert one row per outcome and return this tick's transitions (see module doc).
+    """Upsert one row per outcome and return this tick's ``healed`` transitions.
 
     ``refreshed``: state ``live``, ``last_ok_at`` now, failures reset. ``dead``: state ``dead``.
     ``transient``: failures + 1; state ``expired`` if the key is in *expired_keys*, else kept.
@@ -97,7 +96,7 @@ async def record(outcomes: list[dict], *, expired_keys: frozenset[str]) -> list[
             outcome = o["outcome"]
             error = o.get("error")
             error = error[:MAX_ERROR_CHARS] if isinstance(error, str) else None
-            t = _transition(o, prior_rows.get(key), expired_keys, error)
+            t = _healed(o, prior_rows.get(key))
             if t is not None:
                 out.append(t)
             values: dict = {"server": o.get("label") or key, "last_attempt_at": now,
@@ -120,17 +119,56 @@ async def record(outcomes: list[dict], *, expired_keys: frozenset[str]) -> list[
     return out
 
 
-async def mark_signed_in(keys: Iterable[str]) -> None:
+async def promote_cleared(keys: Iterable[str]) -> None:
+    """Mark ``dead`` each of *keys* (store keys whose bundle is cleared) that was signed in —
+    has a ``last_ok_at`` — and is not already dead. Catches a death whose ``dead`` outcome was
+    never recorded (it is reported once) and one the CLI cleared itself. A key with no row or
+    no ``last_ok_at`` (never signed in here) is left alone, so it never alerts."""
+    wanted = list(dict.fromkeys(keys))
+    if not wanted:
+        return
+    async with db_session() as db:
+        now = (await db.execute(select(db_utc_now()))).scalar_one()
+        await db.execute(
+            update(McpGrantHealth)
+            .where(McpGrantHealth.key.in_(wanted), McpGrantHealth.last_ok_at.is_not(None),
+                   or_(McpGrantHealth.state.is_(None), McpGrantHealth.state != "dead"))
+            .values(state="dead", updated_at=now))
+
+
+def _alert(r: McpGrantHealth) -> Transition | None:
+    gen = generation(r.last_ok_at)
+    if r.state not in _UNHEALTHY_STATES or r.alerted_for == f"{r.state}:{gen}":
+        return None
+    server = r.server or r.key
+    if r.state == "dead":
+        return Transition(r.key, server, "alert_dead", None, gen)
+    return Transition(r.key, server, "alert_expired", r.last_error, gen)
+
+
+async def pending_alerts() -> list[Transition]:
+    """Every dead or expired grant not yet alerted for its current ``f"{state}:{generation}"``
+    — the single source of alert decisions. Re-derived from the table each tick, so an alert
+    whose push or :func:`mark_alerted` failed is returned again next tick."""
+    async with db_session() as db:
+        rows = (await db.execute(select(McpGrantHealth).where(
+            McpGrantHealth.state.in_(sorted(_UNHEALTHY_STATES))).order_by(McpGrantHealth.key))).scalars()
+        return [t for r in rows if (t := _alert(r)) is not None]
+
+
+async def mark_signed_in(keys: Iterable[str], *, server: str | None = None) -> None:
     """Record a successful interactive sign-in for *keys*: state ``live``, ``last_ok_at`` now,
-    failures reset. The new ``last_ok_at`` starts a new alert generation, so a grant that
-    dies again after the sign-in alerts again even if it never refreshed in between."""
+    failures reset, and *server* (the display name) when given. The new ``last_ok_at``
+    starts a new alert generation, so a grant that dies again after the sign-in alerts
+    again even if it never refreshed in between."""
     wanted = list(dict.fromkeys(keys))
     if not wanted:
         return
     async with db_session() as db:
         now = (await db.execute(select(db_utc_now()))).scalar_one()
         values = {"state": "live", "last_ok_at": now, "consecutive_failures": 0,
-                  "last_outcome": "signed_in", "last_error": None, "updated_at": now}
+                  "last_outcome": "signed_in", "last_error": None, "updated_at": now,
+                  **({"server": server} if server else {})}
         for key in wanted:
             stmt = dialect_insert(McpGrantHealth).values(key=key, **values)
             await db.execute(stmt.on_conflict_do_update(
@@ -138,7 +176,7 @@ async def mark_signed_in(keys: Iterable[str]) -> None:
 
 
 async def mark_alerted(key: str, alerted_for: str) -> None:
-    """Record that the push for *alerted_for* (``f"{outcome}:{generation}"``) was delivered.
+    """Record that the push for *alerted_for* (``f"{state}:{generation}"``) was delivered.
     Call only after delivery succeeds, so a failed push is retried next tick."""
     async with db_session() as db:
         now = (await db.execute(select(db_utc_now()))).scalar_one()

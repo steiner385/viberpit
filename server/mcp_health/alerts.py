@@ -1,9 +1,10 @@
 """One push when a shared MCP sign-in dies (MCP auth overhaul phase 3).
 
-:func:`send_alerts` delivers the refresher tick's alert transitions as ``mcp_auth_needed``
-events, then records each one as alerted for its (key, generation), so a grant seen dead
-on many ticks pushes once. A push that fails to build or send is logged and left
-unmarked: the next tick, which sees the same transition again, retries it.
+:func:`send_alerts` delivers :func:`grant_health.pending_alerts` as ``mcp_auth_needed``
+events, then records each one as alerted for its (state, generation), so a grant seen dead
+on many ticks pushes once. ``notify_event`` never raises; if building the copy or recording
+the delivery fails, the alert is logged and stays pending, so the next tick (which
+re-derives pending alerts from the table) retries it.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from server.sessions import push as push_mod
 log = logging.getLogger(__name__)
 
 REASON_MAX_CHARS = 160
-_OUTCOME = {"alert_dead": "dead", "alert_expired": "expired"}
+_STATE = {"alert_dead": "dead", "alert_expired": "expired"}
 
 
 def alert_copy(t: grant_health.Transition) -> tuple[str, str]:
@@ -35,19 +36,19 @@ async def send_alerts(transitions: Iterable[grant_health.Transition], *, orch: A
     """Push each alert transition once, then mark it alerted. Never raises (except
     cancellation)."""
     for t in transitions:
-        outcome = _OUTCOME.get(t.kind)
-        if outcome is None:
+        state = _STATE.get(t.kind)
+        if state is None:
             continue
         try:
             title, body = alert_copy(t)
-            await push_mod.notify_event("mcp_auth_needed", title, body, url="/settings/mcp",
-                                        fanout_when_unconfigured=True, orch=orch)
         except Exception:
             log.warning("mcp sign-in alert failed server=%s; retrying next tick", t.server,
                         exc_info=True)
             continue
+        await push_mod.notify_event("mcp_auth_needed", title, body, url="/settings/mcp",
+                                    fanout_when_unconfigured=True, orch=orch)
         try:
-            await grant_health.mark_alerted(t.key, f"{outcome}:{t.generation}")
+            await grant_health.mark_alerted(t.key, f"{state}:{t.generation}")
         except Exception:
             # The push went out; an unrecorded mark means one repeat push next tick.
             log.warning("mcp sign-in alert: recording delivery failed server=%s", t.server,

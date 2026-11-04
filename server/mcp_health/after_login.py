@@ -27,7 +27,7 @@ def _refresh(account: str, server: str | None = None) -> bool:
 async def _mark_signed_in(server: str) -> None:
     try:
         keys = await asyncio.to_thread(grants.keys_for_server, server)
-        await grant_health.mark_signed_in(keys)
+        await grant_health.mark_signed_in(keys, server=server)
     except Exception:
         # A missed mark only delays the new alert generation to the grant's first refresh.
         log.warning("mcp after_login: recording the sign-in failed server=%s", server, exc_info=True)

@@ -132,6 +132,15 @@ def cleared(bundle: dict) -> dict:
     return out
 
 
+def cleared_keys(store: dict) -> frozenset[str]:
+    """Store keys whose bundle is in the :func:`cleared` shape: no refresh token and an empty
+    access token. A never-signed-in discovery stub has the same shape, so callers must not
+    read this alone as "died"."""
+    return frozenset(k for k, blob in store.items()
+                     if isinstance(blob, dict) and not blob.get("refreshToken")
+                     and not blob.get("accessToken"))
+
+
 # --- token endpoint discovery -----------------------------------------------------------
 
 _metadata_cache: dict[str, dict] = {}

@@ -501,8 +501,9 @@ async def _pg_module_engine(pg_url):
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_mcp_grant_health_writer_round_trip_on_postgres(pg_engine, pg_url):
-    """grant_health.record/mark_alerted on Postgres: the ON CONFLICT upsert, the atomic
-    COALESCE(consecutive_failures, 0) + 1 increment, and the naive-UTC ISO+Z generation."""
+    """grant_health on Postgres: the ON CONFLICT upsert, the atomic
+    COALESCE(consecutive_failures, 0) + 1 increment, the naive-UTC ISO+Z generation, and the
+    promote_cleared / pending_alerts durable-state alert path."""
     from sqlalchemy import delete
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from server.db.models import McpGrantHealth
@@ -510,21 +511,32 @@ async def test_mcp_grant_health_writer_round_trip_on_postgres(pg_engine, pg_url)
 
     key = "pg-grant|https://mcp.example.invalid"
     o = lambda outcome, err=None: {"key": key, "label": "pg", "outcome": outcome, "error": err}  # noqa: E731
+
+    async def pending():
+        return [t for t in await gh.pending_alerts() if t.key == key]
+
     async with _pg_module_engine(pg_url):
         try:
             assert await gh.record([o("refreshed")], expired_keys=frozenset()) == []
             ok_at = (await gh.load([key]))[key]["lastOkAt"]
             assert ok_at.endswith("Z") and "+" not in ok_at
             await gh.record([o("transient", "HTTP 503")], expired_keys=frozenset())
-            [t] = await gh.record([o("transient", "HTTP 503")], expired_keys=frozenset({key}))
+            assert await pending() == []
+            assert await gh.record([o("transient", "HTTP 503")], expired_keys=frozenset({key})) == []
+            [t] = await pending()
             assert (t.kind, t.generation, t.reason) == ("alert_expired", ok_at, "HTTP 503")
             row = (await gh.load([key]))[key]
             assert (row["state"], row["consecutiveFailures"]) == ("expired", 2)
             await gh.mark_alerted(key, f"expired:{t.generation}")
-            assert await gh.record([o("transient", "HTTP 503")], expired_keys=frozenset({key})) == []
+            assert await pending() == []
+            await gh.promote_cleared([key])
+            [d] = await pending()
+            assert (d.kind, d.generation) == ("alert_dead", ok_at)
+            assert (await gh.load([key]))[key]["state"] == "dead"
             [h] = await gh.record([o("refreshed")], expired_keys=frozenset())
             assert h.kind == "healed"
             assert (await gh.load([key]))[key]["consecutiveFailures"] == 0
+            assert await pending() == []
         finally:
             Session = async_sessionmaker(pg_engine, expire_on_commit=False)
             async with Session() as s:

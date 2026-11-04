@@ -100,18 +100,18 @@ async def test_after_login_signed_in_starts_a_new_generation(monkeypatch, cleare
     monkeypatch.setattr(after_login.grants, "keys_for_server", lambda server: [f"{server}|k1"])
     marked: list = []
 
-    async def mark(keys):
-        marked.append(list(keys))
+    async def mark(keys, *, server=None):
+        marked.append((list(keys), server))
     monkeypatch.setattr(after_login.grant_health, "mark_signed_in", mark)
     await after_login.after_login(_Orch(), "notion", ["alice"], signed_in=True)
-    assert marked == [["notion|k1"]]
+    assert marked == [(["notion|k1"], "notion")]
 
 
 @pytest.mark.asyncio
 async def test_after_login_default_is_not_a_sign_in(monkeypatch, cleared):
     monkeypatch.setattr(after_login, "_refresh", lambda acct, server=None: True)
 
-    async def mark(keys):
+    async def mark(keys, *, server=None):
         pytest.fail("a heal is not a sign-in")
     monkeypatch.setattr(after_login.grant_health, "mark_signed_in", mark)
     await after_login.after_login(_Orch(), "notion", ["alice"])

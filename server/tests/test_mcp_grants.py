@@ -110,7 +110,7 @@ def test_reconcile_grants_swallows_errors(shared: Path, monkeypatch, caplog):  #
 
 
 @pytest.mark.asyncio
-async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(monkeypatch):
+async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(isolated_db, monkeypatch):
     from server import app as app_mod
 
     calls: list = []
@@ -300,9 +300,9 @@ def tick(monkeypatch):
     from server.mcp_health import after_login as al_mod
     from viberpit import accounts
 
-    state: dict = {"outcomes": [], "store": {}, "heals": []}
-    monkeypatch.setattr(grants, "reconcile_grants",
-                        lambda: grants.ReconcileResult(drop=frozenset(), skip=frozenset()))
+    state: dict = {"outcomes": [], "store": {}, "heals": [],
+                   "reconcile": grants.ReconcileResult(drop=frozenset(), skip=frozenset())}
+    monkeypatch.setattr(grants, "reconcile_grants", lambda: state["reconcile"])
     monkeypatch.setattr(mcp_oauth_refresh, "run_once",
                         lambda **kw: {"outcomes": state["outcomes"].pop(0)})
     monkeypatch.setattr(creds, "read_shared_mcp", lambda: state["store"])
@@ -406,10 +406,22 @@ async def _alerted_for(key: str = K1) -> str | None:
     return (await grant_health.load([key])).get(key, {}).get("alertedFor")
 
 
+LIVE_BUNDLE = {"serverName": "plugin:railway:railway", "accessToken": "AT", "refreshToken": "RT",
+               "expiresAt": 9_999_999_999_999}
+
+
+def _cleared_bundle() -> dict:
+    return mcp_oauth_refresh.cleared(LIVE_BUNDLE)
+
+
 @pytest.mark.asyncio
 async def test_dead_grant_alerts_once_across_ticks(isolated_db, tick):
-    for _ in range(3):
-        await tick["run"](_out("dead", error="invalid_grant"))
+    """Production sequence: the refresher reports ``dead`` once and clears the bundle; later
+    ticks have no outcome for the key at all."""
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead", error="invalid_grant"))
+    await tick["run"]()
+    await tick["run"]()
     assert len(tick["pushes"]) == 1
     [p] = tick["pushes"]
     assert p["event_class"] == "mcp_auth_needed"
@@ -423,15 +435,91 @@ async def test_dead_grant_alerts_once_across_ticks(isolated_db, tick):
 
 
 @pytest.mark.asyncio
-async def test_new_generation_alerts_again(isolated_db, tick):
-    await tick["run"](_out("dead"))
-    await tick["run"](_out("dead"))
+async def test_record_failure_on_the_dead_tick_still_alerts_once(isolated_db, tick, monkeypatch):
+    """The ``dead`` outcome is reported once. If recording it fails, the death is found from
+    the cleared bundle next tick and pushed exactly once."""
+    from server.mcp_health import grant_health
+
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"](_out("refreshed"))               # signed in and refreshing: last_ok_at set
+    real_record = grant_health.record
+
+    async def boom(outcomes, *, expired_keys):
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(grant_health, "record", boom)
+    tick["store"] = {K1: _cleared_bundle()}             # the refresher swapped in the cleared shape
+    with pytest.raises(RuntimeError):
+        await tick["run"](_out("dead"))
+    assert tick["pushes"] == []
+    monkeypatch.setattr(grant_health, "record", real_record)
+
+    out = await tick["run"]()                          # no outcome: the key left the due set
+    assert [(t.kind, t.key) for t in out] == [("alert_dead", K1)]
     assert len(tick["pushes"]) == 1
-    await tick["run"](_out("refreshed"))  # recovered (e.g. re-signed-in): a new generation
+    assert (await grant_health.load([K1]))[K1]["state"] == "dead"
+    await tick["run"]()
+    assert len(tick["pushes"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_never_signed_in_cleared_bundle_never_alerts(isolated_db, tick):
+    from server.mcp_health import grant_health
+
+    tick["store"] = {"plugin:kindash:kindash|0": {"serverName": "plugin:kindash:kindash",
+                                                  "accessToken": "", "expiresAt": 0}}
+    for _ in range(3):
+        assert await tick["run"]() == []
+    assert tick["pushes"] == []
+    assert await grant_health.load() == {}
+
+
+@pytest.mark.asyncio
+async def test_cleared_bundle_of_a_dropped_key_is_not_promoted(isolated_db, tick):
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"](_out("refreshed"))
+    tick["store"] = {K1: _cleared_bundle()}
+    tick["reconcile"] = grants.ReconcileResult(drop=frozenset({K1}), skip=frozenset())
+    await tick["run"]()
+    assert tick["pushes"] == []
+
+
+@pytest.mark.asyncio
+async def test_new_generation_alerts_again(isolated_db, tick):
+    from server.mcp_health import grant_health
+
+    # Start at generation "never": SQLite's clock is second-resolution, so a refresh and a
+    # sign-in inside one test second would share a generation.
+    tick["store"] = {K1: _cleared_bundle()}
     await tick["run"](_out("dead"))
+    await tick["run"]()
+    assert len(tick["pushes"]) == 1
+    first = await _alerted_for()
+    assert first == "dead:never"
+    await grant_health.mark_signed_in([K1], server="railway")   # the user signed in again
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"]()
+    assert len(tick["pushes"]) == 1
+    tick["store"] = {K1: _cleared_bundle()}
     await tick["run"](_out("dead"))
+    await tick["run"]()
     assert len(tick["pushes"]) == 2
-    assert (await _alerted_for()).startswith("dead:") and await _alerted_for() != "dead:never"
+    assert (await _alerted_for()).startswith("dead:") and await _alerted_for() != first
+
+
+@pytest.mark.asyncio
+async def test_expired_then_dead_pushes_twice(isolated_db, tick):
+    import time as _time
+    tick["store"] = {K1: dict(LIVE_BUNDLE)}
+    await tick["run"](_out("refreshed"))
+    tick["store"] = {K1: {**LIVE_BUNDLE, "expiresAt": int(_time.time() * 1000) - 60_000}}
+    await tick["run"](_out("transient", error="HTTP 503"))
+    await tick["run"](_out("transient", error="HTTP 503"))
+    assert len(tick["pushes"]) == 1
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))
+    await tick["run"]()
+    assert len(tick["pushes"]) == 2
+    assert (await _alerted_for()).startswith("dead:")
 
 
 @pytest.mark.asyncio
@@ -451,6 +539,8 @@ async def test_expired_while_failing_alerts_once(isolated_db, tick):
 
 @pytest.mark.asyncio
 async def test_alert_failure_retries_next_tick(isolated_db, tick, monkeypatch, caplog):
+    """Recorded fine, but building the push failed: the next tick (no outcomes, bundles
+    cleared) pushes each grant exactly once."""
     from server.mcp_health import alerts
     from server.mcp_health import grant_health
 
@@ -463,9 +553,10 @@ async def test_alert_failure_retries_next_tick(isolated_db, tick, monkeypatch, c
     monkeypatch.setattr(grant_health, "mark_alerted", spy_mark)
 
     def boom(t):
-        raise RuntimeError("push backend down")
+        raise RuntimeError("copy exploded")
     real_copy = alerts.alert_copy
     monkeypatch.setattr(alerts, "alert_copy", boom)
+    tick["store"] = {K1: _cleared_bundle(), K2: _cleared_bundle()}
     out = await tick["run"](_out("dead"), _out("dead", key=K2, label="notion"))
     assert len(out) == 2  # the tick still completed
     assert marks == [] and tick["pushes"] == []
@@ -473,10 +564,30 @@ async def test_alert_failure_retries_next_tick(isolated_db, tick, monkeypatch, c
     assert any(r.levelno == logging.WARNING and "alert" in r.getMessage() for r in caplog.records)
 
     monkeypatch.setattr(alerts, "alert_copy", real_copy)
-    await tick["run"](_out("dead"), _out("dead", key=K2, label="notion"))
+    await tick["run"]()
+    await tick["run"]()
     assert sorted(p["title"] for p in tick["pushes"]) == [
         "MCP sign-in needed: notion", "MCP sign-in needed: railway"]
     assert sorted(marks) == sorted([(K1, "dead:never"), (K2, "dead:never")])
+
+
+@pytest.mark.asyncio
+async def test_mark_alerted_failure_repeats_the_push_once(isolated_db, tick, monkeypatch, caplog):
+    from server.mcp_health import grant_health
+
+    real_mark = grant_health.mark_alerted
+
+    async def boom(key, alerted_for):
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(grant_health, "mark_alerted", boom)
+    tick["store"] = {K1: _cleared_bundle()}
+    await tick["run"](_out("dead"))
+    assert len(tick["pushes"]) == 1
+    assert any(r.levelno == logging.WARNING and "recording" in r.getMessage() for r in caplog.records)
+    monkeypatch.setattr(grant_health, "mark_alerted", real_mark)
+    await tick["run"]()
+    await tick["run"]()
+    assert len(tick["pushes"]) == 2
 
 
 def test_keys_for_server_maps_short_name_to_cli_keys(shared: Path):  # noqa: F811

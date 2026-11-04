@@ -85,6 +85,14 @@ def test_cleared_matches_the_cli_shape():
     assert out["clientId"] == "cid" and out["serverUrl"] == SERVER_URL
 
 
+def test_cleared_keys_are_the_cleared_shape():
+    store = {"dead": mor.cleared(_bundle()), "live": _bundle(),
+             "at_only": {**mor.cleared(_bundle()), "accessToken": "AT"},
+             "rt_only": {**mor.cleared(_bundle()), "refreshToken": "RT"},
+             "stub": {"serverName": "x"}, "junk": None}
+    assert mor.cleared_keys(store) == frozenset({"dead", "stub"})
+
+
 # --- token endpoint discovery ---------------------------------------------------------------
 
 def test_explicit_metadata_url_wins():

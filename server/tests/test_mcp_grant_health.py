@@ -50,9 +50,14 @@ async def test_transient_on_a_fresh_key_has_null_state(isolated_db):
     assert row["lastOkAt"] is None
 
 
+async def _pending() -> list[Transition]:
+    return await gh.pending_alerts()
+
+
 @pytest.mark.asyncio
 async def test_dead_sets_state_and_alerts_once_after_mark_alerted(isolated_db):
-    [t] = await gh.record([_o("dead", error="invalid_grant")], expired_keys=frozenset())
+    assert await gh.record([_o("dead", error="invalid_grant")], expired_keys=frozenset()) == []
+    [t] = await _pending()
     assert t == Transition(key=K, server="railway", kind="alert_dead", reason=None, generation="never")
     row = (await gh.load())[K]
     assert row["state"] == "dead"
@@ -60,32 +65,36 @@ async def test_dead_sets_state_and_alerts_once_after_mark_alerted(isolated_db):
     await gh.mark_alerted(K, f"dead:{t.generation}")
     assert (await gh.load())[K]["alertedFor"] == "dead:never"
     assert (await gh.load())[K]["alertedAt"].endswith("Z")
-    assert await gh.record([_o("dead", error="invalid_grant")], expired_keys=frozenset()) == []
+    assert await _pending() == []
 
 
 @pytest.mark.asyncio
-async def test_dead_without_mark_alerted_alerts_again(isolated_db):
-    """Delivery failed (no mark_alerted): the next tick must retry the alert."""
+async def test_pending_alert_stays_until_mark_alerted(isolated_db):
+    """Delivery failed (no mark_alerted): the alert is still pending next tick."""
     await gh.record([_o("dead")], expired_keys=frozenset())
-    [t] = await gh.record([_o("dead")], expired_keys=frozenset())
-    assert t.kind == "alert_dead"
+    assert [t.kind for t in await _pending()] == ["alert_dead"]
+    assert [t.kind for t in await _pending()] == ["alert_dead"]
 
 
 @pytest.mark.asyncio
 async def test_dead_generation_is_last_ok_at(isolated_db):
     await gh.record([_o("refreshed")], expired_keys=frozenset())
     ok_at = (await gh.load())[K]["lastOkAt"]
-    [t] = await gh.record([_o("dead")], expired_keys=frozenset())
+    await gh.record([_o("dead")], expired_keys=frozenset())
+    [t] = await _pending()
     assert t.generation == ok_at
 
 
 @pytest.mark.asyncio
 async def test_new_generation_alerts_again(isolated_db):
-    [t1] = await gh.record([_o("dead")], expired_keys=frozenset())
+    await gh.record([_o("dead")], expired_keys=frozenset())
+    [t1] = await _pending()
     await gh.mark_alerted(K, f"dead:{t1.generation}")
     [healed] = await gh.record([_o("refreshed")], expired_keys=frozenset())
     assert healed.kind == "healed"
-    [t2] = await gh.record([_o("dead")], expired_keys=frozenset())
+    assert await _pending() == []
+    await gh.record([_o("dead")], expired_keys=frozenset())
+    [t2] = await _pending()
     assert t2.kind == "alert_dead" and t2.generation != t1.generation
 
 
@@ -102,32 +111,100 @@ async def test_refreshed_after_transient_heals(isolated_db):
 async def test_routine_refresh_of_healthy_grant_never_heals(isolated_db):
     assert await gh.record([_o("refreshed")], expired_keys=frozenset()) == []
     assert await gh.record([_o("refreshed")], expired_keys=frozenset()) == []
+    assert await _pending() == []
 
 
 @pytest.mark.asyncio
 async def test_transient_with_expired_key_alerts_expired_once(isolated_db):
     await gh.record([_o("refreshed")], expired_keys=frozenset())
     ok_at = (await gh.load())[K]["lastOkAt"]
-    [t] = await gh.record([_o("transient", error="HTTP 503")], expired_keys=frozenset({K}))
+    assert await gh.record([_o("transient", error="HTTP 503")], expired_keys=frozenset({K})) == []
+    [t] = await _pending()
     assert t == Transition(key=K, server="railway", kind="alert_expired", reason="HTTP 503", generation=ok_at)
     assert (await gh.load())[K]["state"] == "expired"
     await gh.mark_alerted(K, f"expired:{t.generation}")
-    assert await gh.record([_o("transient", error="HTTP 503")], expired_keys=frozenset({K})) == []
+    await gh.record([_o("transient", error="HTTP 503")], expired_keys=frozenset({K}))
+    assert await _pending() == []
     [healed] = await gh.record([_o("refreshed")], expired_keys=frozenset())
     assert healed.kind == "healed"
 
 
 @pytest.mark.asyncio
 async def test_transient_not_expired_never_alerts(isolated_db):
-    assert await gh.record([_o("transient", error="x")], expired_keys=frozenset({"other"})) == []
+    await gh.record([_o("transient", error="x")], expired_keys=frozenset({"other"}))
+    assert await _pending() == []
 
 
 @pytest.mark.asyncio
 async def test_expired_alert_does_not_suppress_dead_alert(isolated_db):
-    [t] = await gh.record([_o("transient", error="x")], expired_keys=frozenset({K}))
+    await gh.record([_o("transient", error="x")], expired_keys=frozenset({K}))
+    [t] = await _pending()
     await gh.mark_alerted(K, f"expired:{t.generation}")
-    [d] = await gh.record([_o("dead")], expired_keys=frozenset())
+    await gh.record([_o("dead")], expired_keys=frozenset())
+    [d] = await _pending()
     assert d.kind == "alert_dead"
+
+
+@pytest.mark.asyncio
+async def test_promote_cleared_marks_a_signed_in_grant_dead(isolated_db):
+    await gh.record([_o("refreshed")], expired_keys=frozenset())
+    ok_at = (await gh.load())[K]["lastOkAt"]
+    await gh.promote_cleared([K])
+    assert (await gh.load())[K]["state"] == "dead"
+    [t] = await _pending()
+    assert (t.kind, t.server, t.generation) == ("alert_dead", "railway", ok_at)
+
+
+@pytest.mark.asyncio
+async def test_promote_cleared_escalates_expired_to_dead(isolated_db):
+    await gh.record([_o("refreshed")], expired_keys=frozenset())
+    await gh.record([_o("transient", error="x")], expired_keys=frozenset({K}))
+    [t] = await _pending()
+    await gh.mark_alerted(K, f"expired:{t.generation}")
+    await gh.promote_cleared([K])
+    [d] = await _pending()
+    assert d.kind == "alert_dead" and d.generation == t.generation
+
+
+@pytest.mark.asyncio
+async def test_promote_cleared_never_touches_a_never_signed_in_key(isolated_db):
+    await gh.promote_cleared(["kindash|0"])          # no row at all
+    await gh.record([_o("transient", key="nolok|1")], expired_keys=frozenset())  # row, no last_ok_at
+    await gh.promote_cleared(["kindash|0", "nolok|1"])
+    await gh.promote_cleared([])
+    rows = await gh.load()
+    assert "kindash|0" not in rows
+    assert rows["nolok|1"]["state"] is None
+    assert await _pending() == []
+
+
+@pytest.mark.asyncio
+async def test_promote_cleared_keeps_an_alerted_dead_row_quiet(isolated_db):
+    await gh.record([_o("refreshed")], expired_keys=frozenset())
+    await gh.record([_o("dead")], expired_keys=frozenset())
+    [t] = await _pending()
+    await gh.mark_alerted(K, f"dead:{t.generation}")
+    before = (await gh.load())[K]["updatedAt"]
+    await gh.promote_cleared([K])
+    assert (await gh.load())[K]["updatedAt"] == before  # already dead: untouched
+    assert await _pending() == []
+
+
+@pytest.mark.asyncio
+async def test_signed_in_then_cleared_alerts_under_the_server_name(isolated_db):
+    """A key first seen at sign-in (no refresh yet) still alerts by name when it dies."""
+    await gh.mark_signed_in([K], server="railway")
+    await gh.promote_cleared([K])
+    [t] = await _pending()
+    assert (t.kind, t.server) == ("alert_dead", "railway")
+
+
+@pytest.mark.asyncio
+async def test_row_without_server_alerts_under_its_key(isolated_db):
+    await gh.mark_signed_in([K])
+    await gh.promote_cleared([K])
+    [t] = await _pending()
+    assert t.server == K
 
 
 @pytest.mark.asyncio
@@ -178,14 +255,17 @@ async def test_stored_error_never_contains_a_token(isolated_db, status, payload)
 
 @pytest.mark.asyncio
 async def test_sign_in_starts_a_new_alert_generation(isolated_db):
-    [t1] = await gh.record([_o("dead")], expired_keys=frozenset())
+    await gh.record([_o("dead")], expired_keys=frozenset())
+    [t1] = await _pending()
     await gh.mark_alerted(K, f"dead:{t1.generation}")
-    assert await gh.record([_o("dead")], expired_keys=frozenset()) == []  # same generation: deduped
+    assert await _pending() == []  # same generation: deduped
     await gh.mark_signed_in([K])
     row = (await gh.load())[K]
     assert (row["state"], row["consecutiveFailures"], row["lastOutcome"]) == ("live", 0, "signed_in")
     assert row["lastOkAt"] is not None
-    [t2] = await gh.record([_o("dead")], expired_keys=frozenset())
+    assert await _pending() == []
+    await gh.record([_o("dead")], expired_keys=frozenset())
+    [t2] = await _pending()
     assert t2.kind == "alert_dead" and t2.generation != t1.generation
 
 

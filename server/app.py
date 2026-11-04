@@ -157,11 +157,12 @@ async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> "list[grant_health.
     """One refresher tick: reconcile grants onto their CLI keys, then refresh and republish,
     purging the keys the reconcile dropped or moved and never refreshing superseded ones.
     Then record each grant's outcome (``mcp_grant_health``) and heal the sessions stuck on
-    every server whose failing grant refreshed again. Last, push once per dead or
-    expired grant generation (``mcp_auth_needed``).
+    every server whose failing grant refreshed again. Last, from durable state (not this
+    tick's outcomes): mark a signed-in grant whose bundle is cleared dead, and push once per
+    dead or expired grant generation not yet alerted (``mcp_auth_needed``).
 
     *orch_getter* is read at heal/alert time: the lifespan swaps ``app.state.sessions`` for
-    the FleetOrchestrator. Returns this tick's grant-health transitions."""
+    the FleetOrchestrator. Returns this tick's healed transitions, then its pending alerts."""
     from server.mcp_health import after_login as mcp_after_login
     from server.mcp_health import alerts as mcp_alerts
     from server.mcp_health import grant_health
@@ -173,17 +174,19 @@ async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> "list[grant_health.
     summary = await asyncio.to_thread(
         lambda: mcp_oauth_refresh.run_once(drop_keys=result.drop, skip_keys=result.skip))
     outcomes = summary.get("outcomes") or []
-    if not outcomes:
-        return []
     store = await asyncio.to_thread(vp_creds.read_shared_mcp)
-    expired = mcp_oauth_refresh.expired_keys(store, int(time.time() * 1000))
-    transitions = await grant_health.record(outcomes, expired_keys=expired)
-    healed = [t.server for t in transitions if t.kind == "healed"]
-    if healed:
-        await mcp_after_login.heal_servers(orch_getter(), healed)
-    if any(t.kind != "healed" for t in transitions):
-        await mcp_alerts.send_alerts(transitions, orch=orch_getter())
-    return transitions
+    healed: list[grant_health.Transition] = []
+    if outcomes:
+        expired = mcp_oauth_refresh.expired_keys(store, int(time.time() * 1000))
+        healed = await grant_health.record(outcomes, expired_keys=expired)
+        if healed:
+            await mcp_after_login.heal_servers(orch_getter(), [t.server for t in healed])
+    await grant_health.promote_cleared(
+        mcp_oauth_refresh.cleared_keys(store) - result.skip - result.drop)
+    pending = await grant_health.pending_alerts()
+    if pending:
+        await mcp_alerts.send_alerts(pending, orch=orch_getter())
+    return healed + pending
 
 
 async def seed_host_ssh_from_env() -> None:
