@@ -814,6 +814,7 @@ class BacklogRunnerLoop:
         session_recheck_at: SessionRecheckAt | None = None,
         session_work_stopped: SessionEnded | None = None,
         handoff: Callable[[str, dict, PullRequestInfo], Awaitable[bool]] | None = None,
+        pr_autofix_paused: Callable[[str, dict, PullRequestInfo], Awaitable[bool]] | None = None,
         closeout_completed: Callable[[str, dict], Awaitable[bool]] | None = None,
         pr_doctor_attempts_for: PrDoctorAttemptsFor | None = None,
         count_candidates: CountCandidates | None = None,
@@ -889,6 +890,9 @@ class BacklogRunnerLoop:
         self._mark_dead_claims = mark_dead_claims
         self._closeout_completed = closeout_completed
         self._handoff = handoff
+        # (target, st, info) -> bool: the PR's session paused PR auto-fix (D-14), so
+        # PR Doctor is no safety net for it. None = never paused.
+        self._pr_autofix_paused = pr_autofix_paused
         self._session_work_stopped = session_work_stopped
         self._session_ran = session_ran             # (session_id) -> bool | None
         self._session_hand_back = session_hand_back  # (session_id) -> reason | None
@@ -2875,6 +2879,9 @@ class BacklogRunnerLoop:
             return
         if info is not None:
             active = await self._pr_doctor_active(target.split("#", 1)[0])
+            if (active and self._pr_autofix_paused is not None
+                    and await self._pr_autofix_paused(target, st, info)):
+                active = False  # a paused PR: hold the slot until it merges
             if (self._handoff is not None and should_free_slot(info, active)
                     and not st.get("handed_off")):
                 if await self._handoff(target, st, info):

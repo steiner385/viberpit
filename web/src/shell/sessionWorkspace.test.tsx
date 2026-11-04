@@ -38,6 +38,7 @@ vi.mock('@/api/hooks', () => ({
   // "Next best account" (MainPaneSession → SessionHeader → SessionActions).
   useRotateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetPrAutofix: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // The shell mounts the Roadmap list column app-wide (`useRoadmapWorkspace`),
   // so this whole-module mock has to answer for it too.
   useRoadmapMap: () => ({ data: undefined, isLoading: false, isError: false }),
@@ -50,6 +51,7 @@ vi.mock('@/api/hooks', () => ({
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
+  useSetFastMode: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   // Per-engine capabilities: read by SessionBody (capability-gated surfaces) and
   // by the prompt dock's engine picker.
@@ -62,6 +64,9 @@ vi.mock('@/api/hooks', () => ({
   useAccounts: vi.fn(),
   useSessions: vi.fn(),
   useCreateSession: vi.fn(),
+  usePresets: vi.fn(() => ({ data: [] })),
+  useTemplates: vi.fn(() => ({ data: [] })),
+  useRenderTemplate: vi.fn(() => ({ mutateAsync: vi.fn() })),
   useRenameSession: vi.fn(),
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),

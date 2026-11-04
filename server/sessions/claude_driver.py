@@ -36,10 +36,14 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
                      REWIND_UNAVAILABLE, RewindError, conversation_request, files_request,
                      map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
+from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
+                            SETTINGS_INVALID, SETTINGS_REFUSED, SETTINGS_UNAVAILABLE,
+                            SettingsError, effort_levels, model_options)
 from .memory_files import normalize_memory_files
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
-                     AgentDriverFactory, AgentEngine, _EffortUnchanged)
+                     AgentDriverFactory, AgentEngine, _EffortUnchanged,
+                     flag_settings_enabled)
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .orphaned_asks import (AUTOPILOT_ANSWER_PREFIX, CLOSE_REASON_RESTART,
@@ -356,6 +360,9 @@ class ClaudeAgentDriver:
         # `rewind_conversation` control requests, verified on CLI 2.1.317. Internal
         # surfaces, so also gated by VIBERPIT_REWIND_ENABLED (engine.rewind_supported).
         rewind=True,
+        # Live flag settings (D-14): `apply_flag_settings` on the control channel —
+        # fast mode and a live effort change — verified on CLI 2.1.318.
+        flag_settings=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -363,7 +370,7 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, on_memory_files=None,
-                 on_mcp_status=None, clock=None, suggester=None,
+                 on_model_options=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  on_prompt_uuid: Callable[[str, str, str], None] | None = None,
@@ -425,6 +432,13 @@ class ClaudeAgentDriver:
         # memory set from the same reading, persisted so attach re-emits it and the
         # owning-host viewer can allow exactly those paths.
         self._on_memory_files = on_memory_files
+        # async callback ``on_model_options(session_id, rows)`` (D-14): the CLI's
+        # ``initialize`` model list, reported once per CLI start. True back = the stored
+        # fast mode was dropped, so this CLI (started with it) is told to turn it off.
+        self._on_model_options = on_model_options
+        # Serializes ``apply_flag_settings``: each reply is awaited before the next write
+        # goes out, since back-to-back writes read stale values (D-14 spike §1.3).
+        self._flag_settings_lock = asyncio.Lock()
         self._on_mcp_status = on_mcp_status
         self._mcp_last: list = []                     # last snapshot, auth latch applied
         self._mcp_base: list = []                     # last sanitized snapshot, before the latch
@@ -1169,6 +1183,7 @@ class ClaudeAgentDriver:
         self._closing = False
         self._start_listener()
         self._start_mcp_settle()
+        await self._report_model_options()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
                           interrupt: bool = False,
@@ -2286,11 +2301,41 @@ class ClaudeAgentDriver:
     async def set_model(
         self, model: str | None, *, effort: str | None | _EffortUnchanged = EFFORT_UNCHANGED,
     ) -> None:
-        # ``effort`` is part of the engine-neutral contract (`AgentDriver.set_model`),
-        # but Claude has no reasoning-effort dial (`AgentCapabilities.reasoning_effort`
-        # is False), so there is nothing to apply it to.
-        if self._client:
+        """Switch the CLI's model; with ``effort``, also change its effort LIVE (D-14).
+
+        The effort is a flag-layer write (``apply_flag_settings {effortLevel}``), not a
+        spawn option, so it lands on the running process at once: the CLI reads it for
+        its NEXT model request. Mid-turn that is the next step of the running turn; the
+        request already in flight is untouched, and nothing is interrupted. ``None``
+        clears it back to the model's default. A level the live model does not list is
+        refused (``SETTINGS_INVALID``) before anything is sent — the CLI itself accepts
+        any string.
+
+        Order: validate, then switch the model, then write the effort — so a bad level
+        never leaves the CLI on a model the caller's record does not have. A failed
+        effort write after the switch raises ``SettingsError``; the model DID switch.
+        A CLI whose stream has ended gets no write at all: the switch is the record's,
+        applied at the next spawn, and the effort raises ``SETTINGS_UNAVAILABLE``. With
+        the ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch off the effort is ignored,
+        as before D-14."""
+        live_effort = not isinstance(effort, _EffortUnchanged) and flag_settings_enabled()
+        if live_effort:
+            await self.check_effort(model, effort)  # type: ignore[arg-type]
+        if self._client and not self._stream_ended:
             await self._client.set_model(model)
+        if live_effort:
+            await self.apply_flag_settings({EFFORT_KEY: effort})
+
+    async def check_effort(self, model: str | None, effort: str | None) -> None:
+        """Refuse (``SETTINGS_INVALID``) an effort the live *model* does not list. ``None``
+        (the model default) and an unknown list pass: the CLI accepts any string, so this
+        is the only check there is. Sends nothing."""
+        if effort is None:
+            return
+        levels = effort_levels(await self.server_info(), model)
+        if levels is not None and effort not in levels:
+            raise self._settings_refused(SettingsError(
+                SETTINGS_INVALID, f"effort {effort!r} is not one of {levels}"))
 
     async def server_info(self) -> dict | None:
         if self._client is None or self._stream_ended:
@@ -2309,6 +2354,65 @@ class ClaudeAgentDriver:
             return await self._client.get_context_usage()
         except CLIConnectionError:
             return {}
+
+    async def apply_flag_settings(self, patch: dict) -> dict:
+        """Write *patch* into the running CLI's flag-layer settings (D-14) and return
+        its reply. Refusals raise ``SettingsError`` logged at INFO.
+
+        Sent raw on the SDK's control channel, the seam D-9's rewind uses: the SDK has
+        no ``apply_flag_settings`` method. Writes are serialized and each reply awaited
+        before the next goes out. A write whose reply never came (timeout, transport)
+        is ``SETTINGS_FAILED``: it may or may not have landed."""
+        async with self._flag_settings_lock:
+            if not flag_settings_enabled():
+                raise self._settings_refused(SettingsError(
+                    SETTINGS_UNAVAILABLE, "flag settings are off (VIBERPIT_FLAG_SETTINGS_ENABLED)"))
+            if self._client is None or self._stream_ended:
+                raise self._settings_refused(SettingsError(SETTINGS_UNAVAILABLE,
+                                                           "session not live"))
+            send = getattr(getattr(self._client, "_query", None), "_send_control_request",
+                           None)
+            if send is None:
+                raise self._settings_refused(SettingsError(
+                    SETTINGS_UNAVAILABLE, "SDK client has no control channel"))
+            try:
+                resp = await send({"subtype": "apply_flag_settings", "settings": dict(patch)},
+                                  timeout=SETTINGS_CONTROL_TIMEOUT_S)
+            except Exception as exc:
+                if _is_control_error_reply(exc):
+                    raise self._settings_refused(SettingsError(SETTINGS_REFUSED,
+                                                               str(exc))) from exc
+                code = (SETTINGS_UNAVAILABLE if isinstance(exc, CLIConnectionError)
+                        else SETTINGS_FAILED)
+                raise self._settings_refused(SettingsError(
+                    code, f"no reply to apply_flag_settings: {exc}")) from exc
+        log.info("driver.apply_flag_settings session=%s keys=%s", self.session_id,
+                 sorted(patch))
+        return resp if isinstance(resp, dict) else {}
+
+    def _settings_refused(self, err: SettingsError) -> SettingsError:
+        """Log an expected settings refusal (INFO: a WARNING would auto-file an issue)."""
+        log.info("driver.apply_flag_settings refused session=%s error_data=%s message=%s",
+                 self.session_id, err.error_data, err)
+        return err
+
+    async def _report_model_options(self) -> None:
+        """Report the CLI's model list (D-14) once per CLI start, from the ``initialize``
+        reply the SDK already holds. When the callback says the stored fast mode was
+        dropped, send ``{"fastMode": false}`` — best-effort: this CLI was spawned with
+        it on. Best-effort throughout, DEBUG on failure (a refusal is INFO already)."""
+        if self._on_model_options is None:
+            return
+        try:
+            info = await self.server_info()
+            if info is None:
+                return
+            dropped = await self._on_model_options(self.session_id, model_options(info))
+            if dropped:
+                with contextlib.suppress(SettingsError):
+                    await self.apply_flag_settings({FAST_MODE_KEY: False})
+        except Exception:
+            log.debug("on_model_options failed session=%s", self.session_id, exc_info=True)
 
     @contextlib.asynccontextmanager
     async def rewind_hold(self) -> AsyncIterator[None]:
@@ -2674,6 +2778,7 @@ class ClaudeAgentDriver:
         self._source = _MessageSource(client)
         self._closing = False
         self._start_listener()
+        await self._report_model_options()
         # Fresh CLI process: forget the old latch/snapshot and settle again.
         self._mcp_unsupported = False
         self._mcp_enforced = False
@@ -2853,6 +2958,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_status=config.on_status,
             on_context_usage=config.on_context_usage,
             on_memory_files=config.on_memory_files,
+            on_model_options=config.on_model_options,
             on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,

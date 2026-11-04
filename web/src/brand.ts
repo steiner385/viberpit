@@ -48,3 +48,10 @@ export function mcpToolStem(fullToolName: string): string | undefined {
  * go under the non-hidden `viberpit-sessions` (#2934). Mirrors `brand.REPO_NAMESPACES`.
  */
 export const REPO_NAMESPACES = ['.viberpit', '.ccswitch', 'viberpit-sessions'] as const
+
+/**
+ * The prefix of every session branch (`viberpit/<base>-<short>`). Mirrors
+ * `brand.BRANCH_PREFIX`. Fixed, not configurable: `brand.is_session_branch` gates
+ * the `git branch -D` in worktree cleanup on it (D-14 deferred making it a setting).
+ */
+export const BRANCH_PREFIX = 'viberpit/'

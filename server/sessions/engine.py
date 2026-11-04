@@ -109,6 +109,11 @@ class AgentCapabilities:
     #: checkpoints) and cut the conversation back to a user prompt, live on the idle
     #: client. Gated by the ``VIBERPIT_REWIND_ENABLED`` kill switch (rewind_supported).
     rewind: bool = False
+    #: Live flag settings (D-14): the driver writes the CLI's flag-layer settings on the
+    #: running session (``apply_flag_settings``) — fast mode and a live effort change —
+    #: and applies the session's stored ones at spawn. Whether fast mode is available
+    #: is still per MODEL (``SessionRecord.fast_mode_models``), not per engine.
+    flag_settings: bool = False
 
 
 def fork_enabled() -> bool:
@@ -139,6 +144,20 @@ def rewind_supported(caps: AgentCapabilities | None) -> bool:
     return caps is not None and caps.rewind and rewind_enabled()
 
 
+def flag_settings_enabled() -> bool:
+    """The ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch (D-14, default on)."""
+    from server.config import get_settings
+    return bool(get_settings().flag_settings_enabled)
+
+
+def flag_settings_supported(caps: AgentCapabilities | None) -> bool:
+    """Can a session on an engine with *caps* write live flag settings right now? THE
+    gate, shaped like ``rewind_supported``: the engine declares ``flag_settings`` and the
+    kill switch is on. Fast mode, ``/fast``, ``/effort``, a live Claude effort and the
+    spawn's session flags all read it."""
+    return caps is not None and caps.flag_settings and flag_settings_enabled()
+
+
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     """The browser shape of one capability set.
 
@@ -154,6 +173,7 @@ def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     }
     wire["fork"] = fork_supported(caps)
     wire["rewind"] = rewind_supported(caps)
+    wire["flagSettings"] = flag_settings_supported(caps)
     return wire
 
 
@@ -316,6 +336,11 @@ class AgentDriverConfig:
     #: set (D-13), in load order — each time the context reading reports one. Only
     #: Claude reports a set; other engines never call it.
     on_memory_files: Callable[[str, list], Awaitable[None]] | None = None
+    #: Fired with (session id, model rows) once per CLI start (D-14): the CLI's
+    #: ``initialize`` model list (``flag_settings.model_options``). Returns True when the
+    #: session's stored fast mode was dropped (the model lacks it), and the driver then
+    #: tells the CLI ``{"fastMode": false}``. Only ``flag_settings`` engines call it.
+    on_model_options: Callable[[str, list], Awaitable[bool | None]] | None = None
     #: Fired with the sanitized MCP status snapshot each time a Claude driver polls it.
     on_mcp_status: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired (synchronously, with the session id) when a Task sub-agent starts or ends,

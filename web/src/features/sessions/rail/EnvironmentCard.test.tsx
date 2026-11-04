@@ -102,4 +102,30 @@ describe('EnvironmentCard', () => {
     render(<EnvironmentCard {...base} prs={[pr(42)]} />)
     expect(screen.getByRole('link', { name: /#42/ })).toBeInTheDocument()
   })
+
+  describe('PR auto-fix (D-14)', () => {
+    const COPY = "PR Doctor fixes failing checks and conflicts on this session's PRs"
+
+    it('shows the switch, with its copy, only when the session has a PR', () => {
+      const prAutofix = { enabled: true, onChange: vi.fn() }
+      const { rerender } = render(<EnvironmentCard {...base} prAutofix={prAutofix} />)
+      expect(screen.queryByRole('switch', { name: 'PR auto-fix' })).toBeNull()
+      rerender(<EnvironmentCard {...base} prs={[pr(1)]} prAutofix={prAutofix} />)
+      const toggle = screen.getByRole('switch', { name: 'PR auto-fix' })
+      expect(toggle).toHaveAttribute('aria-checked', 'true')
+      expect(toggle).toHaveAccessibleDescription(COPY)
+    })
+
+    it('hands the flipped value to onChange', () => {
+      const onChange = vi.fn()
+      render(<EnvironmentCard {...base} prs={[pr(1)]} prAutofix={{ enabled: false, onChange }} />)
+      fireEvent.click(screen.getByRole('switch', { name: 'PR auto-fix' }))
+      expect(onChange).toHaveBeenCalledWith(true)
+    })
+
+    it('renders no switch when the caller wires none', () => {
+      render(<EnvironmentCard {...base} prs={[pr(1)]} />)
+      expect(screen.queryByRole('switch')).toBeNull()
+    })
+  })
 })

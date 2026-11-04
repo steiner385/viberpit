@@ -79,7 +79,7 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true, presetId: null })
     await waitFor(() => expect(box).toHaveValue(''))
   })
 
@@ -143,7 +143,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'fix the bug')
     expect(create).toBeEnabled()
     await user.click(create)
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true, presetId: null })
     await waitFor(() => expect(box).toHaveValue(''))
   })
 
@@ -168,7 +168,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'ship it')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true, presetId: null })
   })
 
   it('normalizes the "Default" model to null so the backend keeps the account default', async () => {
@@ -182,7 +182,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'go')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true, presetId: null })
   })
 
   it('offers Autopilot and Auto-archive toggles, on by default, and remembers an opt-out for the next dispatch', async () => {

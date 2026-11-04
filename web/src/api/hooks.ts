@@ -599,6 +599,34 @@ export function useSetAutopilotPaused() {
   })
 }
 
+/** Write one session-record flag into the cached list (the routes below answer
+ *  `{enabled}`, not the record), then refetch so the server's copy wins. */
+function patchSessionInCache(qc: QueryClient, id: string, patch: Partial<Session>) {
+  qc.setQueryData<Session[]>(QK.sessions, (prev) =>
+    prev?.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+  qc.invalidateQueries({ queryKey: QK.sessions })
+}
+
+/** POST /sessions/{id}/fast (D-14): the ⚡ toggle and `/fast`. A 409
+ *  `FAST_UNAVAILABLE` (model or engine lacks it) reaches the global toast. */
+export function useSetFastMode() {
+  const qc = useQueryClient()
+  return useMutation<{ enabled: boolean }, ApiRequestError, { id: string; enabled: boolean }>({
+    mutationFn: ({ id, enabled }) => api.post<{ enabled: boolean }>(`/sessions/${id}/fast`, { enabled }),
+    onSuccess: ({ enabled }, { id }) => patchSessionInCache(qc, id, { fastMode: enabled }),
+  })
+}
+
+/** POST /sessions/{id}/pr-autofix (D-14): `enabled` false pauses PR Doctor's
+ *  automatic fixes for this session's PRs. */
+export function useSetPrAutofix() {
+  const qc = useQueryClient()
+  return useMutation<{ enabled: boolean }, ApiRequestError, { id: string; enabled: boolean }>({
+    mutationFn: ({ id, enabled }) => api.post<{ enabled: boolean }>(`/sessions/${id}/pr-autofix`, { enabled }),
+    onSuccess: ({ enabled }, { id }) => patchSessionInCache(qc, id, { prAutofixPaused: !enabled }),
+  })
+}
+
 export function useSetAutoArchiveOptOut() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; optedOut: boolean }>({
@@ -1986,6 +2014,16 @@ export function useUpdateTemplate() {
     mutationFn: ({ id, ...body }: Partial<PromptTemplate> & { id: string }) =>
       api.patch(`/templates/${id}`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['templates'] }),
+  })
+}
+
+/** POST /templates/{id}/render: `{{var}}` substitution on the server, the one
+ *  renderer (the Assistant's `render_template` tool calls it too). */
+export function useRenderTemplate() {
+  return useMutation<{ rendered: string }, ApiRequestError, { id: string; variables: Record<string, string> }>({
+    mutationFn: ({ id, variables }) => api.post<{ rendered: string }>(`/templates/${id}/render`, { variables }),
+    // The dispatch bar says a failed render inline, beside the prompt.
+    meta: { suppressErrorToast: true },
   })
 }
 

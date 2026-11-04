@@ -52,6 +52,7 @@ vi.mock('@/api/hooks', () => ({
   useRewindSession: vi.fn(() => ({ preview: vi.fn(), rewind: vi.fn() })),
   useUndoRewind: vi.fn(() => ({ undo: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetPrAutofix: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useStopSubAgent: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 

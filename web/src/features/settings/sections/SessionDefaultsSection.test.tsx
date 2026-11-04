@@ -145,7 +145,42 @@ describe('SessionDefaultsSection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(mutateAsync).toHaveBeenCalledWith({
       defaultPermissionMode: 'interactive', modelApprovalAction: 'block', modelApprovalDenylist: 'fable, opus',
-      defaultToolDetail: 'all-open', thinkingCollapsed: true,
+      defaultToolDetail: 'all-open', thinkingCollapsed: true, repoRoot: null,
+    })
+  })
+
+  describe('Worktrees (D-14)', () => {
+    const COPY = "Where repos are cloned and session worktrees are created. Changing it doesn't move existing worktrees — they keep working but cleanup skips them."
+
+    it('edits the repo root here, with the copy, its server default and a Reset', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ repoRoot: null })))
+      const { container } = mount()
+      const root = screen.getByLabelText('Worktree location')
+      expect(root).toHaveAccessibleDescription(COPY)
+      expect(root).toHaveAttribute('placeholder', '/home/user/GitHub · server default')
+      await userEvent.type(root, ' /srv/repos ')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: '/srv/repos' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Reset worktree location to default' }))
+      expect(root).toHaveValue('')
+      expect(await axe(container)).toHaveNoViolations()
+    })
+
+    it('Reset on a stored root saves repoRoot: null — the server clears on null', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ repoRoot: '/srv/old' })))
+      mount()
+      expect(screen.getByLabelText('Worktree location')).toHaveValue('/srv/old')
+      await userEvent.click(screen.getByRole('button', { name: 'Reset worktree location to default' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: null }))
+    })
+
+    it('shows the branch prefix read-only, with why it is fixed', () => {
+      mount()
+      const prefix = screen.getByText('viberpit/')
+      expect(prefix.tagName).toBe('CODE')
+      expect(screen.getByText('Fixed — it guards automatic branch cleanup.')).toBeInTheDocument()
+      expect(screen.queryByRole('textbox', { name: /branch prefix/i })).toBeNull()
     })
   })
 })

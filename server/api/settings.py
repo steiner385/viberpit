@@ -198,8 +198,11 @@ async def put_settings_row(
         row.default_permission_mode = body.defaultPermissionMode
     if body.thinkingCollapsed is not None:
         row.thinking_collapsed = body.thinkingCollapsed
-    if body.repoRoot is not None:
-        row.repo_root = body.repoRoot
+    # model_fields_set, like the model-approval and assistant fields below: an
+    # explicit null (Settings' Reset) clears to the env/default root, an absent key
+    # leaves it alone. Blank clears too — an empty root is no root.
+    if "repoRoot" in body.model_fields_set:
+        row.repo_root = (body.repoRoot or "").strip() or None
     if body.defaultToolDetail is not None:
         if body.defaultToolDetail not in _VALID_TOOL_DETAIL:
             raise HTTPException(status_code=422, detail="invalid defaultToolDetail")

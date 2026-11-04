@@ -61,16 +61,16 @@ Full inventories, with an evidence tag on every item:
 |---|---:|---:|
 | 1 Shell & IA | 11.5 / 16 | 72% |
 | 2 Transcript | 21 / 21 | 100% |
-| 3 Composer | 26.5 / 29 | 91% |
+| 3 Composer | 27.5 / 29 | 95% |
 | 4 Commands & config | 11 / 15 | 73% |
-| 5 Settings | 3.5 / 8 | 44% |
+| 5 Settings | 5.5 / 8 | 69% |
 | 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 22.5 / 25 | 90% |
 | 8 Code review & dev | 7.5 / 12 | 62% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **137.5 / 161** | **85%** |
-| **Target completion** (excl. rejected rows) | **135 / 151** | **89%** |
+| **Overall (weighted)** | **140.5 / 161** | **87%** |
+| **Target completion** (excl. rejected rows) | **138 / 151** | **91%** |
 
 ### 1 Shell & IA
 
@@ -113,9 +113,9 @@ Full inventories, with an evidence tag on every item:
 | @-file mentions | 3 | ✅ |  |
 | Slash-command palette | 3 | ✅ | catalog pushed per session |
 | Model picker in prompt row | 2 | ✅ |  |
-| Effort picker in session | 2 | ◐ | Codex only; Claude effort pending CLI verification |
+| Effort picker in session | 2 | ◐ | Codex: the catalog's levels; Claude: live mid-session through apply_flag_settings (D-14), offering the CLI's full level list — per-model supportedEffortLevels is #3260 |
 | Permission-mode picker (5 modes) in session | 3 | ✅ |  |
-| Fast-mode toggle | 1 | ❌ |  |
+| Fast-mode toggle | 1 | ✅ | toggle + cost note; state shown is the stored choice (#3254) |
 | Prompt history (↑/↓ + Ctrl+R search) | 1 | ◐ | ↑/↓ only · *rejected for target* |
 | Suggested next prompt (Tab) | 1 | ✅ |  |
 | Dictation | 1 | ✅ | server STT + Web Speech |
@@ -126,7 +126,7 @@ Full inventories, with an evidence tag on every item:
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | Engine slash-command passthrough | 3 | ✅ |  |
-| App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 2 | ◐ | /help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12); no /plan /effort /fast /add-dir |
+| App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 2 | ◐ | /help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14); no /plan /add-dir |
 | Plugins + marketplace browse/install | 2 | ◐ | enable/disable + detail; no marketplace |
 | Skills management | 1 | ✅ |  |
 | MCP servers + per-tool toggles | 2 | ◐ | servers, OAuth, scope; no per-tool toggles |
@@ -139,13 +139,13 @@ Full inventories, with an evidence tag on every item:
 
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
-| PR behaviour: auto-fix, auto-archive on merge, branch prefix | 1 | ◐ | auto-archive + autopilot; no branch prefix |
-| Worktree location / policy | 1 | ❌ | server-only |
+| PR behaviour: auto-fix, auto-archive on merge, branch prefix | 1 | ✅ | per-session PR auto-fix switch in the Environment card (D-14) + auto-archive + autopilot; branch prefix shown read-only (fixed viberpit/) |
+| Worktree location / policy | 1 | ◐ | repo/worktree root editable in Settings › Sessions (D-14); branch prefix deferred — it is the guard on automatic branch deletion, so a configurable prefix needs a validated history first |
 | Default transcript view | 1 | ✅ |  |
 | Notification levels per event type | 1 | ◐ | quiet hours, channels, routing rules · *rejected for target* |
 | Appearance: theme, font + transcript size | 1 | ◐ | theme + widths · *rejected for target* |
-| Presets / environments selectable at new session | 2 | ◐ | editable in Settings, not selectable at dispatch |
-| Sandbox settings | 1 | ❌ |  |
+| Presets / environments selectable at new session | 2 | ✅ | dispatch bar + menu (removable chip) and ⌘K "New session from preset"; no chord — every digit family is taken (D-14) |
+| Sandbox settings | 1 | ❌ | deferred by the owner (2026-11-04): fails open on hosts without socat, auto-allows Bash past permission cards, and blocks the sockets gh/push need |
 
 ### 6 User feedback
 
@@ -217,26 +217,23 @@ Full inventories, with an evidence tag on every item:
 | 3 | Pin / star sessions | 1 Shell & IA | 1 |
 | 4 | ⌘K palette over sessions + branches | 1 Shell & IA | 1 |
 | 5 | Effort picker in session | 3 Composer | 1 |
-| 6 | Fast-mode toggle | 3 Composer | 1 |
-| 7 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
-| 8 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
-| 9 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
-| 10 | Output styles | 4 Commands & config | 1 |
-| 11 | Worktree location / policy | 5 Settings | 1 |
-| 12 | Presets / environments selectable at new session | 5 Settings | 1 |
-| 13 | Sandbox settings | 5 Settings | 1 |
-| 14 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
-| 15 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 16 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 17 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 18 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 19 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 20 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 21 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
-| 22 | Notification levels per event type | 5 Settings | 0.5 |
-| 23 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 24 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 25 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 6 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
+| 7 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
+| 8 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
+| 9 | Output styles | 4 Commands & config | 1 |
+| 10 | Sandbox settings | 5 Settings | 1 |
+| 11 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
+| 12 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
+| 13 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
+| 14 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
+| 15 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 16 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 17 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 18 | Worktree location / policy | 5 Settings | 0.5 |
+| 19 | Notification levels per event type | 5 Settings | 0.5 |
+| 20 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 21 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 22 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

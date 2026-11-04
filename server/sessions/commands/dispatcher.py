@@ -52,6 +52,12 @@ async def dispatch(driver, cmd: Command, args: str) -> dict | None:
             # e.g. as a new session's first prompt, which has no drawer to open.
             return {"name": "btw", "render": "notice",
                     "data": {"text": "/btw opens the Assistant side chat — send it from the session's message box"}}
+        if cmd.name == "fast":
+            # The browser runs /fast itself (D-14: it posts the toggle, then shows the
+            # cost note). Reaching here means it arrived another way — e.g. as a new
+            # session's first prompt, before the session's model list is known.
+            return {"name": "fast", "render": "notice",
+                    "data": {"text": "/fast toggles fast mode — send it from the session's message box"}}
         # /help (and any other client command) renders from the client's cached catalog.
         return {"name": cmd.name, "render": "help", "data": None}
 

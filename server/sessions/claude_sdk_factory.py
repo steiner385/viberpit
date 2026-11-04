@@ -46,7 +46,14 @@ def _build_append_string(platform_guide: str | None = None) -> str:
 # never fires.  ViberPit passes no `setting_sources`, so the binary loads EVERY filesystem
 # source — user, project and local settings and CLAUDE.md memory (D-13 verification spike §1);
 # this inline layer sits above the user, project and local layers, so none of them overrides it.
-_MCP_TRUST_SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
+_MCP_TRUST_SETTINGS = {"enableAllProjectMcpServers": True}
+
+
+def spawn_settings(flag_settings: dict | None = None) -> str:
+    """The ``--settings`` JSON for one spawn: the MCP trust above plus the session's own
+    flag-layer settings (D-14: ``fastMode``, ``effortLevel``). Spawn-time only — it is
+    never written to the shared account ``settings.json``. The trust key always wins."""
+    return json.dumps({**(flag_settings or {}), **_MCP_TRUST_SETTINGS})
 
 # Per-line cap on the SDK's stdout reader (``ClaudeAgentOptions.max_buffer_size``). The
 # SDK default is 1 MiB, and ONE line over it kills the reader for good while the CLI
@@ -110,7 +117,8 @@ def session_tmpdir_env() -> dict[str, str]:
 async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
                      ready_grants=None, fork_session=False, extra_args=None,
-                     enable_file_checkpointing=False, platform_guide=None):
+                     enable_file_checkpointing=False, platform_guide=None,
+                     flag_settings=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -127,6 +135,10 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     ``CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`` in the CLI's env, so turns run by this
     process get file checkpoints ``rewind_files`` can restore. Spawn-time only — the
     orchestrator passes it on every coding spawn while rewind is on.
+
+    *flag_settings* (D-14): the session's stored flag-layer settings (``fastMode``,
+    ``effortLevel``), merged into the ``--settings`` JSON so a resume or respawn starts
+    with them; live changes go through ``ClaudeAgentDriver.apply_flag_settings``.
 
     *platform_guide*: the session's per-platform guide text (``platform_guide.py``),
     appended to the system prompt; ``None`` for a Linux session.
@@ -158,7 +170,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         fork_session=bool(fork_session), extra_args=dict(extra_args or {}),
         enable_file_checkpointing=bool(enable_file_checkpointing),
         hooks=hooks,
-        settings=_MCP_TRUST_SETTINGS,
+        settings=spawn_settings(flag_settings),
         max_buffer_size=SDK_MAX_BUFFER_BYTES,
         system_prompt={
             "type": "preset",

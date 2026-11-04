@@ -18,7 +18,9 @@ from typing import Any
 from server.audit import record_audit
 from server.auth.identity import LOCAL_PROCESS_VIA, LOCAL_TRUSTED_VIA
 from server.config import get_settings
-from server.sessions.engine import EFFORT_UNCHANGED, AgentEngine, _EffortUnchanged
+from server.sessions.engine import (EFFORT_UNCHANGED, AgentEngine, _EffortUnchanged,
+                                    flag_settings_enabled)
+from server.sessions.flag_settings import SETTINGS_INVALID, SettingsError
 from server.sessions.types import SYSTEM_IDENTITY
 
 log = logging.getLogger(__name__)
@@ -449,8 +451,11 @@ async def set_model(
     ``set_model_for_session(reasoning_effort=…)``. It is forwarded ONLY when given,
     so every ordinary switch keeps the session's effort (``EFFORT_UNCHANGED``) and
     an orchestrator double — or an older remote daemon — without the kwarg keeps
-    working. A Claude session has no effort dial: refused with the code session
-    creation uses."""
+    working. On a Claude session the effort is applied LIVE through the CLI's flag
+    settings (D-14; see ``set_model_for_session``) — refused as before when the
+    ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch is off. A refused write is the
+    ``SettingsError`` code: 400 ``SETTINGS_INVALID`` for a level the model does not
+    accept, 409 for the rest."""
     from server.sessions.orchestrator import ModelBlockedError  # noqa: PLC0415
     from server.sessions.types import is_assistant  # noqa: PLC0415
 
@@ -477,7 +482,10 @@ async def set_model(
 
     rec = await _maybe_await(orch.get_session(session_id))
     effort_given = not isinstance(effort, _EffortUnchanged)
-    if effort_given and rec is not None and rec.engine is AgentEngine.CLAUDE_CODE:
+    # With the VIBERPIT_FLAG_SETTINGS_ENABLED kill switch off, Claude has no live effort
+    # channel: refused exactly as before D-14, with the code session creation uses.
+    if (effort_given and rec is not None and rec.engine is AgentEngine.CLAUDE_CODE
+            and not flag_settings_enabled()):
         raise ActionError(
             "unsupported_reasoning_effort",
             f"reasoning effort is not supported by agent engine: {rec.engine.value}",
@@ -498,6 +506,9 @@ async def set_model(
         raise ActionError(
             "MODEL_BLOCKED", f"{model} is blocked by policy", 409,
         )
+    except SettingsError as exc:
+        raise ActionError(exc.code, str(exc),
+                          400 if exc.code == SETTINGS_INVALID else 409) from exc
     detail: dict[str, Any] = {"sessionId": session_id, "model": model}
     if effort_given:
         detail["effort"] = effort

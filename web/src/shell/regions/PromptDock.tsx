@@ -8,7 +8,10 @@ import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProv
 import { useForkCommand } from '@/features/sessions/fork/useForkFrom'
 import { useRewindCommand } from '@/features/sessions/rewind/useRewindCommand'
 import { useBtwCommand } from '@/features/assistant/useBtwCommand'
-import { useCreateSession, useEngineOffers, useGithubRepos, useModels } from '@/api/hooks'
+import { useFastCommand } from '@/features/sessions/composer/useFastCommand'
+import {
+  useCreateSession, useEngineOffers, useGithubRepos, useModels, usePresets, useRenderTemplate, useTemplates,
+} from '@/api/hooks'
 import { useEnabledFleetHosts } from '@/api/fleet'
 import { DEFAULT_AGENT_ENGINE, type Account, type AgentEngine } from '@/api/types'
 import { setLastRepo } from '@/lib/lastRepo'
@@ -54,6 +57,10 @@ export interface PromptDockProps {
    * Default true (the shell passes it explicitly; see `AppShell.tsx`).
    */
   drivesList?: boolean
+  /** A preset the shell asks the bar to select (⌘K, D-14); a fresh object each time. */
+  presetRequest?: { id: string } | null
+  /** The bar took `presetRequest` — the shell clears it so a remount never re-applies it. */
+  onPresetRequestHandled?: () => void
 }
 
 /**
@@ -135,7 +142,9 @@ function LiveComposer() {
   // transcript's latest reply and opens the child. Every other command goes on to
   // the session as before. `/rewind` (D-9) likewise: it opens a picker of the prompts.
   // `/btw` (D-12) opens the Assistant drawer as a side chat about this session.
-  const forkOnCommand = useForkCommand(rt)
+  // `/fast` (D-14) posts the same toggle as the prompt row's ⚡.
+  const fastOnCommand = useFastCommand(rt)
+  const forkOnCommand = useForkCommand({ ...rt, onCommand: fastOnCommand })
   const btwOnCommand = useBtwCommand({ ...rt, onCommand: forkOnCommand })
   const { onCommand, element: rewindUi } = useRewindCommand({ ...rt, onCommand: btwOnCommand })
   return (
@@ -159,6 +168,8 @@ function NewSessionBar({
   onAllLimited,
   autoFocusKey,
   drivesList,
+  presetRequest,
+  onPresetRequestHandled,
 }: PromptDockProps) {
   const navigate = useNavigate()
   const reposQuery = useGithubRepos()
@@ -177,6 +188,14 @@ function NewSessionBar({
   // one DispatchBar, so desktop gains it rather than mobile losing it.
   const hosts = useEnabledFleetHosts()
   const createSession = useCreateSession()
+  // The + menu's Presets › and Templates › (D-14). The bar stays hook-free.
+  const { data: presets = [] } = usePresets()
+  const { data: templates = [] } = useTemplates()
+  const { mutateAsync: renderTemplateAsync } = useRenderTemplate()
+  const renderTemplate = useCallback(
+    async (id: string, variables: Record<string, string>) => (await renderTemplateAsync({ id, variables })).rendered,
+    [renderTemplateAsync],
+  )
   const { ordering, nav } = list
 
   // Stable identity: it is a dependency of the bar's report effect, so a fresh
@@ -204,7 +223,7 @@ function NewSessionBar({
 
   function handleDispatch({
     initialPrompt, repo, account, model, host, attachmentIds, engine, reasoningEffort,
-    autopilot, autoArchive,
+    autopilot, autoArchive, presetId,
   }: {
     initialPrompt: string
     repo: string | null
@@ -216,6 +235,7 @@ function NewSessionBar({
     reasoningEffort: string | null
     autopilot: boolean
     autoArchive: boolean
+    presetId: string | null
   }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     return new Promise((resolve, reject) => {
@@ -236,6 +256,8 @@ function NewSessionBar({
           // Per-session opt-outs (server: `autopilot_paused` / `auto_archive_opt_out_reason`).
           autopilot,
           autoArchive,
+          // Omitted, not null, without a preset: the server reads `presetId` as given.
+          ...(presetId ? { presetId } : {}),
         },
         {
           onSuccess: (session) => {
@@ -314,6 +336,11 @@ function NewSessionBar({
       autoFocusKey={autoFocusKey}
       isPending={createSession.isPending}
       drivesList={drivesList}
+      presets={presets}
+      templates={templates}
+      renderTemplate={renderTemplate}
+      presetRequest={presetRequest}
+      onPresetRequestHandled={onPresetRequestHandled}
     />
   )
 }

@@ -203,6 +203,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     "get_session", "send_prompt", "ensure_driver", "session_queue_move",
     "session_queue_cancel", "start_queued_now", "cancel_queued", "archive_session", "permanent_delete",
     "rename_session", "note_user_interaction", "set_autopilot_paused",
+    # D-14 PR auto-fix opt-out: the row is shared, but the live record mirror is the
+    # owning host's.
+    "set_pr_autofix_paused",
     "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
     "stop_subagent", "mcp_status_for", "mcp_reconnect", "mcp_toggle",
     # The diff reads the session's worktree, which lives on its owning host.
@@ -215,6 +218,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     "fork_session",
     # So is a rewind (D-9): the live client, transcript, worktree and undo backups.
     "rewind_session", "undo_rewind",
+    # So is fast mode (D-14): the live client it is written to, and the record's model list.
+    "set_fast_mode",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",

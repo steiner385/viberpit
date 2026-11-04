@@ -127,6 +127,7 @@ class SessionRecord:
     # without it on the record those reads were silently None (#2600).
     initial_prompt: str | None = None
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
+    pr_autofix_paused: bool = False   # per-session PR Doctor opt-out (D-14); the row is authoritative
     kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
     owner_identity: str | None = None # identity owning an assistant thread (idempotency key)
     # Monotonic time of the last prompt or `activity` WS frame. In-memory only — drives
@@ -214,6 +215,18 @@ class SessionRecord:
     # context usage, and the allowlist of the owning-host memory-file viewer
     # (``memory_files.read_memory_file``). None until a Claude turn reports it.
     memory_files: list | None = None
+    # Fast mode (D-14): the session's choice (persisted, re-applied at every spawn), and
+    # the models the CLI's last ``initialize`` marked ``supportsFastMode`` — alias and
+    # full id (``flag_settings.fast_mode_models``). The list is in-memory only (each CLI
+    # start re-reports it); None until a Claude driver has started. Both ride to_dict so
+    # the edge can serve ``fastModeAvailable`` (``flag_settings.supports_fast_mode``).
+    fast_mode: bool = False
+    fast_mode_models: list[str] | None = None
+    # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
+    # detached session can still check an effort against its model's levels. Daemon-
+    # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
+    # owning daemon. None until a Claude driver has started there.
+    model_options: list | None = None
     # Fork anchors (D-8): turn id -> the CLI transcript uuid that turn can be forked
     # from, fed live by the driver's TurnAnchor events and merged from the transcript
     # on a lookup miss (SessionOrchestrator.resolve_turn_anchor). Insertion-ordered and
@@ -324,6 +337,7 @@ class SessionRecord:
             "activeGoal": self.active_goal,
             "inferredGoal": self.inferred_goal,
             "autopilotPaused": self.autopilot_paused,
+            "prAutofixPaused": self.pr_autofix_paused,
             "autoArchiveOptOut": self.auto_archive_opt_out_reason,
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
@@ -345,6 +359,8 @@ class SessionRecord:
             "contextMaxTokens": self.context_max_tokens,
             "commandCatalog": self.command_catalog,
             "memoryFiles": self.memory_files,
+            "fastMode": self.fast_mode,
+            "fastModeModels": self.fast_mode_models,
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
             "kind": self.kind,
@@ -395,6 +411,7 @@ class SessionRecord:
             active_goal=d.get("activeGoal"),
             inferred_goal=d.get("inferredGoal"),
             autopilot_paused=bool(d.get("autopilotPaused", False)),
+            pr_autofix_paused=bool(d.get("prAutofixPaused", False)),
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),
@@ -414,6 +431,8 @@ class SessionRecord:
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
             memory_files=d.get("memoryFiles"),
+            fast_mode=bool(d.get("fastMode", False)),
+            fast_mode_models=d.get("fastModeModels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),
             sub_agents=d.get("subAgents"),

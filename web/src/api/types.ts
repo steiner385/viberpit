@@ -222,6 +222,10 @@ export interface AgentCapabilities {
   /** Rewind to here (D-9): `server/sessions/engine.py:rewind_supported` — the engine
    *  declares it AND `VIBERPIT_REWIND_ENABLED` is on. False hides every rewind control. */
   rewind: boolean
+  /** Live CLI flag settings (D-14): `server/sessions/engine.py:flag_settings_supported`
+   *  — the engine declares it AND `VIBERPIT_FLAG_SETTINGS_ENABLED` is on. It is what
+   *  lets fast mode and a live effort change reach a running Claude session. */
+  flagSettings: boolean
 }
 
 /**
@@ -386,6 +390,14 @@ export interface Session {
   goalSource?: string | null
   /** Per-session autopilot opt-out; true = pinned to manual, false/absent = governed. */
   autopilotPaused?: boolean
+  /** Per-session PR auto-fix opt-out (D-14): true = PR Doctor leaves this session's
+   *  PRs alone (manual fixes still run). `POST /sessions/{id}/pr-autofix {enabled}`. */
+  prAutofixPaused?: boolean
+  /** Fast mode (D-14): the session's stored choice. Off unless set. */
+  fastMode?: boolean
+  /** Whether fast mode can be on right now — the CLI listed the session's current
+   *  model as fast-capable. The ⚡ toggle and `/fast` show only when true. */
+  fastModeAvailable?: boolean
   /** ISO instant until which autopilot is deferring because the user is steering this
    *  session; null/absent = not deferring. The card counts down locally from this. */
   autopilotCooldownUntil?: string | null

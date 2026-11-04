@@ -13,7 +13,9 @@ import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
 import { setElementWidth, resetElementWidth } from '@/test/elementWidth'
 import { RAIL_COLLAPSED_KEY } from './rail/railPreference'
 
-const { diffHook, mcpHook } = vi.hoisted(() => ({ diffHook: vi.fn(), mcpHook: vi.fn() }))
+const { diffHook, mcpHook, sessionsHook, prAutofix } = vi.hoisted(() => ({
+  diffHook: vi.fn(), mcpHook: vi.fn(), sessionsHook: vi.fn(), prAutofix: vi.fn(),
+}))
 
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: mcpHook,
@@ -23,7 +25,7 @@ vi.mock('@/api/hooks', () => ({
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useAccounts: vi.fn(() => ({ data: [{ name: 'acct' }] })),
   // No cwd: a cwd lists the Files tab (D-7), and these tests count the strip's tabs.
-  useSessions: vi.fn(() => ({ data: [{ id: 's1', accountName: 'acct', status: 'idle', branch: 'feat/x' }] })),
+  useSessions: sessionsHook,
   useEngineCapabilities: vi.fn(() => undefined),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -31,7 +33,10 @@ vi.mock('@/api/hooks', () => ({
   useSessionDiff: diffHook,
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useStopSubAgent: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetPrAutofix: vi.fn(() => ({ mutate: prAutofix, isPending: false })),
 }))
+
+const BASE_SESSION = { id: 's1', accountName: 'acct', status: 'idle', branch: 'feat/x' }
 
 function makeRuntime(over: Partial<SessionRuntime> = {}): SessionRuntime {
   return {
@@ -74,8 +79,36 @@ describe('SessionBody — session rail', () => {
     window.localStorage.clear()
     diffHook.mockReset().mockReturnValue({ data: undefined, refetch: vi.fn() })
     mcpHook.mockReset().mockReturnValue({ data: undefined })
+    sessionsHook.mockReset().mockReturnValue({ data: [BASE_SESSION] })
+    prAutofix.mockReset()
   })
   afterEach(() => resetElementWidth())
+
+  describe('PR auto-fix switch (D-14)', () => {
+    beforeEach(() => { setElementWidth(1200) })
+    const pr = { number: 7, url: 'https://github.com/o/r/pull/7', state: 'open', checks: 'failing', title: 'PR 7', deployed: false }
+
+    it('is absent on a session with no PR', async () => {
+      renderBody()
+      await screen.findByRole('region', { name: 'Environment' })
+      expect(screen.queryByRole('switch', { name: 'PR auto-fix' })).toBeNull()
+    })
+
+    it("posts the flipped value for the open session's PRs", async () => {
+      sessionsHook.mockReturnValue({ data: [{ ...BASE_SESSION, prs: [pr], prAutofixPaused: false }] })
+      renderBody()
+      const toggle = await screen.findByRole('switch', { name: 'PR auto-fix' })
+      expect(toggle).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(toggle)
+      expect(prAutofix).toHaveBeenCalledWith({ id: 's1', enabled: false })
+    })
+
+    it('reads a paused session as off', async () => {
+      sessionsHook.mockReturnValue({ data: [{ ...BASE_SESSION, prs: [pr], prAutofixPaused: true }] })
+      renderBody()
+      expect(await screen.findByRole('switch', { name: 'PR auto-fix' })).toHaveAttribute('aria-checked', 'false')
+    })
+  })
 
   describe('on a wide pane (≥ 64rem)', () => {
     beforeEach(() => { setElementWidth(1200) })

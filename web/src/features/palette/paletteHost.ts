@@ -24,6 +24,8 @@ export interface PaletteHost {
   openArchived: (id: string) => void
   /** The list's New session button. */
   newSession: () => void
+  /** New session with this preset selected in the dispatch bar (D-14). */
+  newSessionFromPreset: (presetId: string) => void
   navigate: (path: string) => void
   /** Whether the Active list's Project filter offers `nameWithOwner` — only
    *  then can it show exactly that repo's sessions. */

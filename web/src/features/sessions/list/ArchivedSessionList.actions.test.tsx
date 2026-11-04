@@ -33,6 +33,7 @@ vi.mock('@/api/hooks', () => ({
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
+  useSetFastMode: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -40,6 +41,9 @@ vi.mock('@/api/hooks', () => ({
   useSessions: vi.fn(),
   useCapacity: vi.fn(() => ({ data: undefined })),
   useCreateSession: vi.fn(),
+  usePresets: vi.fn(() => ({ data: [] })),
+  useTemplates: vi.fn(() => ({ data: [] })),
+  useRenderTemplate: vi.fn(() => ({ mutateAsync: vi.fn() })),
   useRenameSession: vi.fn(),
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),

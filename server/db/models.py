@@ -177,6 +177,11 @@ class Session(Base):
     # Per-session autopilot opt-out. NULL/False = governed by autopilot; True = pinned to
     # manual. Nullable so init_db backfills on dev SQLite without a migration.
     autopilot_paused: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Per-session PR auto-fix opt-out (D-14). NULL/False = PR Doctor may fix this
+    # session's PRs; True = it skips them (notifications still fire). Independent of
+    # autopilot_paused. Read from the row by _pr_doctor_step, which can meet a PR whose
+    # session has no live record. Nullable so init_db backfills without a migration.
+    pr_autofix_paused: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # Sticky auto-archive opt-out. NULL = eligible for auto-archive; a reason string
     # ("manual-unarchive") = a human unarchived this session, so autopilot and the
     # backlog-runner must NEVER auto-archive it again (only archiving is blocked — other
@@ -322,6 +327,11 @@ class Session(Base):
     # memory-file viewer, so it must survive a daemon restart. NULL until a Claude turn
     # reports it. Nullable so init_db's reconcile adds it on both dialects.
     memory_files: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Fast mode (D-14): the session's choice, applied at spawn through the ``--settings``
+    # JSON and live through ``apply_flag_settings``. NULL/False = off (the default);
+    # cleared when the session moves to a model without fast mode. Nullable so
+    # init_db's reconcile adds it on both dialects.
+    fast_mode: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # Session kind. "assistant" = the AI-drawer meta-assistant (spec
     # docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.1): hidden from the
     # session list, capacity-exempt, tool-restricted. NULL = a normal coding session.

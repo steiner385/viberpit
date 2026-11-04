@@ -50,7 +50,9 @@ vi.mock('@/api/hooks', () => ({
   // "Next best account" (MainPaneSession → SessionHeader → SessionActions).
   useRotateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetPrAutofix: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
+  useSetFastMode: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessions: () => ({ data: [{ id: 's1', name: 'Fix OAuth login bug', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),

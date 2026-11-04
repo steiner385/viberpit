@@ -38,7 +38,7 @@ interface SettingsMetaShape {
  *  Settings map did is kept. Order is nav order. */
 const META = [
   { id: 'general',       group: 'workspace', label: 'General',
-    description: 'Where repos are cloned and archives are stored, and how many archived sessions are kept.' },
+    description: 'Where archives are stored, how many archived sessions are kept, and the AI assistant.' },
   { id: 'appearance',    group: 'workspace', label: 'Appearance',
     description: 'Theme, navigation and layout for this browser only.', keywords: ['theme', 'dark', 'light'] },
   // Notifications, Channels and Routing rules were one section until #2077: two
@@ -53,7 +53,7 @@ const META = [
   { id: 'sessions',      group: 'sessions',  label: 'Defaults',
     // Names the three groups AND keeps the section's own "these are defaults, not
     // locks" caveat, which the registry sentence had dropped.
-    description: 'What every new session starts with — tool approvals, model gating and transcript display — and a session can change any of them for itself once it is running.', keywords: ['permission', 'model', 'transcript'] },
+    description: 'What every new session starts with — tool approvals, model gating, transcript display and where its worktree goes — and a session can change any of them for itself once it is running.', keywords: ['permission', 'model', 'transcript', 'worktree', 'repo root', 'branch prefix'] },
   { id: 'presets',       group: 'sessions',  label: 'Presets',
     description: 'Saved launch configurations for the New session dialog.' },
   { id: 'templates',     group: 'sessions',  label: 'Templates',

@@ -106,6 +106,7 @@ from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions import worktree_files
 from server.sessions import memory_files
+from server.sessions import flag_settings
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.claude_driver import (
@@ -124,6 +125,7 @@ from server.sessions.engine import (
     InvalidAgentEngine,
     SuggestionProvider,
     _EffortUnchanged,
+    flag_settings_supported,
     parse_agent_engine,
     rewind_enabled,
 )
@@ -1523,6 +1525,7 @@ class SessionOrchestrator:
             session_recheck_at=self._backlog_session_recheck_at,
             session_work_stopped=self._automation_session_work_stopped,
             handoff=self._backlog_handoff,
+            pr_autofix_paused=self._backlog_pr_autofix_paused,
             closeout_completed=self._backlog_closeout_completed,
             close_out=self._backlog_close_out,
             refresh_groups=self._backlog_refresh_groups,
@@ -2481,6 +2484,11 @@ class SessionOrchestrator:
         env only — gets ``enable_file_checkpointing=True`` and the
         ``--replay-user-messages`` prompt echo (merged into any fork ``extra_args``).
         Same declared-only rule, so fakes keep their signatures.
+
+        Flag settings (D-14): the session's stored fast mode and effort are passed as
+        ``flag_settings`` (``_spawn_flag_settings``), read on EVERY spawn — new, resume,
+        respawn after a daemon restart, rotation, ``/clear`` — so the CLI starts with
+        them. Same declared-only rule.
         """
         import inspect
         base = self._sdk_factory
@@ -2499,6 +2507,9 @@ class SessionOrchestrator:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
                 kw["ready_grants"] = self._ready_grants(session_id)
+            spawn_flags = self._spawn_flag_settings(session_id)
+            if spawn_flags and "flag_settings" in declared:
+                kw["flag_settings"] = spawn_flags
             if self._rewind_spawn(session_id):
                 if "enable_file_checkpointing" in declared:
                     kw["enable_file_checkpointing"] = True
@@ -2981,6 +2992,7 @@ class SessionOrchestrator:
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
             on_memory_files=self._persist_memory_files,
+            on_model_options=self._record_model_options,
             on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
@@ -4815,6 +4827,7 @@ class SessionOrchestrator:
                     if driver is not None:
                         await driver.set_model(pending)
                     rec.model = pending
+                    await self._resync_fast_mode(session_id)
                 elif codex_effort is not None:
                     if driver is not None:
                         await driver.set_model(rec.model, effort=codex_effort)
@@ -6031,6 +6044,9 @@ class SessionOrchestrator:
                 id=session_id, name=name, account=account,
                 account_pinned=account_pinned,
                 autopilot_paused=autopilot_paused,
+                # Set only by its toggle, which writes the row: carry the prior record's
+                # mirror so a queued → live hand-off doesn't blank the payload field.
+                pr_autofix_paused=bool(getattr(_prior, "pr_autofix_paused", False)),
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                 engine=selected_engine,
                 engine_session_id=resume or "",
@@ -8011,6 +8027,171 @@ class SessionOrchestrator:
                     memory_files=files)
             )
 
+    async def _record_model_options(self, session_id: str, rows: list) -> bool:
+        """Driver ``on_model_options`` callback (D-14): cache the CLI's model rows
+        (``model_options``, daemon-local — a detached session's effort check reads them)
+        and which models are fast-capable (``fast_mode_models``, served on the payload).
+        In memory only — every CLI start re-reports them. A Copilot session caches no
+        fast models: fast mode bills Anthropic usage credits, and a proxied third-party
+        model is never offered it.
+
+        Returns True when a stored fast mode was dropped: once the CLI says what it has,
+        a flag its model lacks (a spawn with no list yet — after a restart — passed it
+        on trust) is cleared, so a later switch onto a fast model cannot resurrect it.
+        The list is now KNOWN to lack it, so the CLI's fast mode is inert and recording
+        off is truthful; the driver still tells the CLI ``{"fastMode": false}``."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return False
+        rec.model_options = list(rows)
+        rec.fast_mode_models = (
+            [] if _provider_of(rec.account) == _copilot_mod.PROVIDER
+            else flag_settings.fast_mode_models({"models": rows}))
+        if rec.fast_mode and not self.fast_mode_available(session_id):
+            await self._persist_fast_mode(session_id, False)
+            log.info("session.fast_mode cleared id=%s model=%s (not available at start)",
+                     session_id, rec.model)
+            return True
+        return False
+
+    def _spawn_flag_settings(self, session_id: str) -> dict:
+        """The flag-layer settings a spawn of this session starts with (D-14): fast mode
+        when it is on, and the effort a live change persisted. Empty for anything else,
+        so a session that never touched either spawns exactly as before — and empty
+        whenever the ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch is off.
+
+        Fast mode is passed only when the stored flag is on AND the account is not
+        Copilot AND either the model is known to have it or the list is unknown (a
+        respawn after a restart, before the CLI reported it; ``_record_fast_mode_models``
+        then drops it if the model lacks it)."""
+        rec = self._records.get(session_id)
+        if rec is None or not flag_settings_supported(self._capabilities_of(session_id)):
+            return {}
+        out: dict = {}
+        if (rec.fast_mode and _provider_of(rec.account) != _copilot_mod.PROVIDER
+                and (rec.fast_mode_models is None
+                     or self.fast_mode_available(session_id))):
+            out[flag_settings.FAST_MODE_KEY] = True
+        if rec.reasoning_effort and rec.engine is AgentEngine.CLAUDE_CODE:
+            out[flag_settings.EFFORT_KEY] = rec.reasoning_effort
+        return out
+
+    def fast_mode_available(self, session_id: str) -> bool:
+        """Can this session turn fast mode on right now? Its engine has the flag-settings
+        channel AND the CLI listed its current model as ``supportsFastMode``. THE gate:
+        ``set_fast_mode``, the ``/fast`` command and the payload's ``fastModeAvailable``
+        (``flag_settings.fast_mode_available`` over the same record, kill switch
+        included) all agree."""
+        rec = self._records.get(session_id)
+        if rec is None or not flag_settings_supported(self._capabilities_of(session_id)):
+            return False
+        return flag_settings.fast_mode_available(rec.fast_mode_models, rec.model)
+
+    def _flag_settings_driver(self, session_id: str) -> Any:
+        """This session's live driver when its engine writes flag settings (D-14), else
+        None. ``apply_flag_settings`` is not on the engine-neutral ``AgentDriver``
+        Protocol: Codex has no such channel, and the capability is the gate."""
+        driver = self._drivers.get(session_id)
+        if driver is None or not flag_settings_supported(self._capabilities_of(session_id)):
+            return None
+        return driver if hasattr(driver, "apply_flag_settings") else None
+
+    async def _persist_fast_mode(self, session_id: str, enabled: bool) -> None:
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.fast_mode = enabled
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(
+                    fast_mode=enabled))
+
+    async def set_fast_mode(self, session_id: str, enabled: bool, *,
+                            identity: str = SYSTEM_IDENTITY) -> dict:
+        """Turn the session's fast mode on or off (D-14): live on a running Claude
+        driver (``apply_flag_settings {fastMode}``, reply awaited), and persisted so every
+        later spawn starts with it. Returns ``{enabled}``.
+
+        Turning it on needs ``fast_mode_available`` — else ``SettingsError
+        FAST_UNAVAILABLE``. Turning it off is always allowed. A session with no live
+        client (detached, or its CLI gone) just persists: the next spawn applies it.
+
+        Invariant: the record never says off while the CLI may be on (fast mode bills
+        usage credits). Every failed write re-raises; the record is then:
+
+        * a REFUSED write (either way) — unchanged: the CLI kept its state.
+        * a lost disable (``SETTINGS_FAILED``) — unchanged: the CLI may still be on, so
+          ⚡ stays lit and the user can retry.
+        * a lost enable — it may have landed, so a best-effort ``{"fastMode": false}``
+          compensates: off if that lands, else ON (unknown is treated as billing).
+        * no live client (``SETTINGS_UNAVAILABLE``) — the requested value: nothing runs
+          now, and the next spawn applies the record."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            raise KeyError(session_id)
+        enabled = bool(enabled)
+        if enabled and not self.fast_mode_available(session_id):
+            err = flag_settings.SettingsError(
+                flag_settings.FAST_UNAVAILABLE,
+                "fast mode is not available for this session's engine or model")
+            log.info("session.fast_mode refused id=%s model=%s error_data=%s",
+                     session_id, rec.model, err.error_data)
+            raise err
+        driver = self._flag_settings_driver(session_id)
+        if driver is not None:
+            try:
+                await driver.apply_flag_settings({flag_settings.FAST_MODE_KEY: enabled})
+            except flag_settings.SettingsError as exc:
+                if exc.code != flag_settings.SETTINGS_UNAVAILABLE:
+                    if enabled and exc.code == flag_settings.SETTINGS_FAILED:
+                        compensated = await self._assert_fast_mode(driver, False)
+                        await self._persist_fast_mode(session_id, not compensated)
+                    raise
+                # No live client: the persisted value is applied at the next spawn.
+        await self._persist_fast_mode(session_id, enabled)
+        log.info("session.fast_mode id=%s enabled=%s by=%s live=%s", session_id, enabled,
+                 identity, driver is not None)
+        return {"enabled": enabled}
+
+    async def _assert_fast_mode(self, driver: Any, enabled: bool) -> bool:
+        """One best-effort ``{"fastMode": enabled}`` write. True when it landed. A refusal
+        is already logged at INFO by the driver and is never raised from here."""
+        try:
+            await driver.apply_flag_settings({flag_settings.FAST_MODE_KEY: enabled})
+        except flag_settings.SettingsError:
+            return False
+        return True
+
+    async def _resync_fast_mode(self, session_id: str) -> None:
+        """After a model switch (D-14): make the CLI follow the RECORD. Fast mode the new
+        model lacks — or that cannot be proven available, e.g. an unknown model list —
+        is cleared on the record first (fail closed); then a live flag-settings driver is
+        sent ``{"fastMode": <record>}``, every switch, so any drift (a refused clear, a
+        write whose reply was lost) is put right at the next opportunity. Never raises:
+        the switch already happened, and the next switch and the next spawn re-assert
+        the record again.
+
+        The clear keeps the record-never-off-while-billing invariant: with a live CLI it
+        is recorded off only when the ``{"fastMode": false}`` landed or the new model is
+        KNOWN to lack fast mode (inert there). A failed clear on an unknown list leaves
+        the record on — the model may have it — for the next switch or spawn to retry."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return
+        driver = self._flag_settings_driver(session_id)
+        if rec.fast_mode and not self.fast_mode_available(session_id):
+            landed = driver is None or await self._assert_fast_mode(driver, False)
+            if landed or rec.fast_mode_models is not None:
+                await self._persist_fast_mode(session_id, False)
+                log.info("session.fast_mode cleared id=%s model=%s (not available)",
+                         session_id, rec.model)
+            else:
+                log.info("session.fast_mode kept on id=%s model=%s: the clear failed and "
+                         "the model list is unknown", session_id, rec.model)
+            return
+        if driver is not None:
+            await self._assert_fast_mode(driver, bool(rec.fast_mode))
+
     async def _persist_mcp_status(self, session_id: str, states: list) -> None:
         """Driver ``on_mcp_status`` callback: record the latest per-server status for this
         session's account on THIS host (spec 2026-10-09). Best-effort like context usage."""
@@ -8377,6 +8558,18 @@ class SessionOrchestrator:
             log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
             return False
 
+    async def _backlog_pr_autofix_paused(self, target: str, state: dict,
+                                         info: PullRequestInfo) -> bool:
+        """Whether the runner target's PR belongs to a session with PR auto-fix paused
+        (D-14). The PR's head branch, else the claim's recorded branch; neither known
+        means not paused. The runner reads it as "no safety net" in ``should_free_slot``
+        and ``_backlog_handoff`` refuses the transfer on it."""
+        branch = info.head_ref or state.get("branch")
+        if not branch:
+            return False
+        repo = target.split("#", 1)[0]
+        return await self._pr_autofix_paused_session(repo, branch) is not None
+
     async def _backlog_handoff(self, target: str, state: dict, info: PullRequestInfo) -> bool:
         from server.automations import pr_doctor_engine as engine
         from server.automations.ownership import OwnershipConflict, StaleOwnership, ReleaseProof
@@ -8388,6 +8581,13 @@ class SessionOrchestrator:
         reason = "PR recovery prerequisites are not satisfied"
         if not await self._backlog_pr_doctor_active(repo):
             await self._backlog_ctx.emit("info", reason, kind="handoff_wait", target=target)
+            return False
+        # A paused PR (D-14) has no safety net: PR Doctor would skip it, so the runner
+        # keeps the slot and ownership instead of handing it to nobody.
+        if await self._backlog_pr_autofix_paused(target, state, info):
+            await self._backlog_ctx.emit(
+                "info", f"PR auto-fix is paused on the session that owns {pr_target}",
+                kind="handoff_wait", target=target)
             return False
         pr_state = await self._pr_doctor_ctx.get_target_state(pr_target)
         config = await self._pr_doctor_config()
@@ -17058,6 +17258,22 @@ class SessionOrchestrator:
         if failure_mode == "stuck_checks":
             await self._pr_doctor_alert_stuck_checks(repo, info, rec)
         action = engine.plan_recovery(failure_mode, mode, config, rearmed)
+        # Per-session opt-out (D-14), at the one point both the sweep and _on_pr_change
+        # reach, and only when a fix would actually run (off/propose report nothing).
+        # Alerts and the caller's "PR broke" push still fire; no attempt is recorded,
+        # so a later un-pause gets a fresh try.
+        if isinstance(action, (engine.Mechanical, engine.SessionFix)):
+            paused_sid = await self._pr_autofix_paused_session(repo, branch)
+            if paused_sid is not None:
+                reason = "pr_autofix_paused"
+                seen = self.__dict__.get("_pr_doctor_skip_seen", ())
+                if (target, action.kind, info.head_sha, reason) not in seen:
+                    log.info("pr_doctor.autofix_paused target=%s session=%s failure=%s",
+                             target, paused_sid, action.kind)
+                await self._pr_doctor_report_skip(
+                    target, action.kind, info.head_sha, reason,
+                    f"skipped {action.kind} fix for {target}: auto-fix is paused on its session")
+                return False
         if engine.acted_at_head(rearmed, action, info.head_sha):
             if isinstance(action, (engine.Mechanical, engine.SessionFix)):
                 await self._pr_doctor_report_skip(
@@ -19202,12 +19418,14 @@ class SessionOrchestrator:
             inferred_goal=getattr(row, "inferred_goal", None),
             initial_prompt=getattr(row, "initial_prompt", None),
             autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
+            pr_autofix_paused=bool(getattr(row, "pr_autofix_paused", False)),
             auto_archive_opt_out_reason=getattr(row, "auto_archive_opt_out_reason", None),
             authored_branches=list(getattr(row, "authored_branches", None) or []),
             context_used_tokens=getattr(row, "context_used_tokens", None),
             context_max_tokens=getattr(row, "context_max_tokens", None),
             command_catalog=getattr(row, "command_catalog", None),
             memory_files=getattr(row, "memory_files", None),
+            fast_mode=bool(getattr(row, "fast_mode", False)),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             pr_resolution_note=getattr(row, "pr_resolution_note", None),
@@ -23818,7 +24036,7 @@ class SessionOrchestrator:
         there to state a policy, so the pre-existing Claude behaviour is
         preserved rather than a policy invented.
         """
-        caps = getattr(self._drivers.get(session_id), "capabilities", None)
+        caps = getattr((getattr(self, "_drivers", None) or {}).get(session_id), "capabilities", None)
         if isinstance(caps, AgentCapabilities):
             return caps
         registry = getattr(self, "_engine_registry", None)
@@ -23863,7 +24081,8 @@ class SessionOrchestrator:
             c.to_wire()
             for c in cmd_catalog.build_catalog(
                 info, self._capabilities_of(session_id),
-                kind=getattr(self._records.get(session_id), "kind", None))
+                kind=getattr(self._records.get(session_id), "kind", None),
+                fast_mode_available=self.fast_mode_available(session_id))
         ]
         if catalog:
             rec = self._records.get(session_id)
@@ -23959,6 +24178,30 @@ class SessionOrchestrator:
             else:
                 text = f"Model → {label}"
             return {"name": "model", "render": "notice", "data": {"text": text}}
+        # /effort (D-14) changes the session's effort LIVE through the same session
+        # action as the prompt row's picker — same model, new effort — so the record and
+        # the CLI cannot diverge (its own `/effort` is APP_ONLY-dropped). Orchestrator-
+        # level like /model: a detached session saves it for the next spawn.
+        if app_cmd is not None and app_cmd.name == "effort":
+            level = (args or "").strip()
+            if not level:
+                return {"name": "effort", "render": "notice",
+                        "data": {"text": "Usage: /effort <level> (or /effort default)"}}
+            effort = None if level in ("default", "auto") else level
+            rec = self._records.get(session_id)
+            try:
+                async with db_session() as db:
+                    await session_actions.set_model(
+                        self, db, session_id=session_id,
+                        model=getattr(rec, "model", None), effort=effort,
+                        identity=identity)
+            except session_actions.ActionError as exc:
+                return {"name": "effort", "render": "notice",
+                        "data": {"text": f"Effort unchanged — {exc.message}"}}
+            label = effort or "default"
+            text = (f"Effort → {label}" if self._drivers.get(session_id) is not None
+                    else f"Effort → {label} — saved; applies when the session resumes")
+            return {"name": "effort", "render": "notice", "data": {"text": text}}
         d = self._drivers.get(session_id)
         if d is None:
             return {"name": str(name).lstrip("/"), "render": "notice",
@@ -23973,7 +24216,8 @@ class SessionOrchestrator:
             # fall through: forward /goal to the CLI regardless
         info = await d.server_info()
         by_name = {c.name: c for c in cmd_catalog.build_catalog(
-            info, capabilities, kind=getattr(self._records.get(session_id), "kind", None))}
+            info, capabilities, kind=getattr(self._records.get(session_id), "kind", None),
+            fast_mode_available=self.fast_mode_available(session_id))}
         cmd = by_name.get(str(name).lstrip("/"))
         if cmd is None:
             raise KeyError(name)
@@ -25225,6 +25469,20 @@ class SessionOrchestrator:
         refuses it, and None / ``"default"`` get no exemption at all: the inherited
         default may have moved onto a gated model since launch.
 
+        On Claude (D-14) the effort is a live flag-settings write: an effort-only pick
+        (the same model choice) is applied at once even mid-turn, with no interrupt and
+        no "after this turn" wait — the CLI reads it for its next model request, so the
+        running turn continues and its later steps use it. A driverless session only
+        persists it, as does a live driver whose CLI is gone; ``_spawn_flag_settings``
+        applies it at the next spawn. The effort is validated against the target model
+        before ANY write (an invalid one changes nothing, interrupts nothing); a write
+        refused after the model switched keeps the switch — record and CLI agree on the
+        model — replays any interrupted turn, keeps the old effort, then raises.
+
+        Every real switch (not an effort-only pick) re-syncs fast mode to the record
+        (``_resync_fast_mode``): cleared when the new model lacks it or its list is
+        unknown, and re-asserted to a live CLI either way.
+
         Record update + persistence run in every case, including driverless
         (detached), so the model applies when the session resumes."""
         # Model-approval gate (mid-session). Mirrors create_session's launch gate,
@@ -25257,6 +25515,26 @@ class SessionOrchestrator:
         # must not raise model_pending ("after this turn").
         _same_choice = record is not None and (
             (record.model or "default") == (model or "default"))
+        # A live effort (D-14) is checked against the target model BEFORE anything is
+        # written — park, interrupt, model switch or record — so a bad level changes
+        # nothing at all. The driver checks again (same function) right before writing.
+        _flag_driver = self._flag_settings_driver(session_id)
+        if _flag_driver is not None and not isinstance(reasoning_effort, _EffortUnchanged):
+            await _flag_driver.check_effort(model, reasoning_effort)
+        elif (not isinstance(reasoning_effort, _EffortUnchanged)
+              and reasoning_effort is not None and record is not None
+              and record.model_options is not None
+              and flag_settings_supported(self._capabilities_of(session_id))):
+            # Detached: the last levels the CLI reported for this model, when known —
+            # a typo gets the picker's refusal; an unknown list accepts, as before.
+            levels = flag_settings.effort_levels({"models": record.model_options}, model)
+            if levels is not None and reasoning_effort not in levels:
+                err = flag_settings.SettingsError(
+                    flag_settings.SETTINGS_INVALID,
+                    f"effort {reasoning_effort!r} is not one of {levels}")
+                log.info("session.effort refused id=%s error_data=%s", session_id,
+                         err.error_data)
+                raise err
         async with db_session() as _db:
             _policy = await resolve_model_policy(_db, model=gate_model, account=_account)
         if _policy == "block":
@@ -25276,19 +25554,39 @@ class SessionOrchestrator:
         restarted = False
         pending = False
 
+        # A live effort write (D-14) that failed AFTER the driver switched the model:
+        # the model stands (the record must follow the CLI), the effort does not, and
+        # the error is raised only once the switch — and any turn replay — is done.
+        effort_error: flag_settings.SettingsError | None = None
+
         async def _set_driver_model(d: AgentDriver) -> None:
+            nonlocal effort_error
             # ``effort=`` is passed ONLY when actually changing it: a test double (or
             # a future engine) implementing the Protocol's plain ``set_model(model)``
             # shape must keep working for every call that never touches effort —
             # which is every call except a Codex self-directed one (#1273).
             if isinstance(reasoning_effort, _EffortUnchanged):
                 await d.set_model(model)
-            else:
+                return
+            try:
                 await d.set_model(model, effort=reasoning_effort)
+            except flag_settings.SettingsError as exc:
+                if exc.code == flag_settings.SETTINGS_INVALID:
+                    raise  # refused before any write (raced the pre-check)
+                effort_error = exc
 
         driver = self._drivers.get(session_id)
+        # An effort-only pick on an engine that changes effort LIVE (Claude's flag
+        # settings, D-14) needs neither a stop nor a wait, whatever ``when`` says: the
+        # CLI applies it from its next model request, and the running turn carries on.
+        _live_effort = (
+            driver is not None and _same_choice
+            and not isinstance(reasoning_effort, _EffortUnchanged)
+            and flag_settings_supported(getattr(driver, "capabilities", None)))
         if driver is not None:
-            if driver.turn_active and when == "after_turn":
+            if _live_effort:
+                await _set_driver_model(driver)
+            elif driver.turn_active and when == "after_turn":
                 await _set_driver_model(driver)
                 pending = True
             elif driver.turn_active:
@@ -25312,15 +25610,24 @@ class SessionOrchestrator:
             # one an earlier real switch raised while that turn is still running.
             record.model_pending = (
                 (record.model_pending and pending) if _same_choice else pending)
-            if not isinstance(reasoning_effort, _EffortUnchanged):
-                record.reasoning_effort = reasoning_effort
+        # A dead CLI (``SETTINGS_UNAVAILABLE``) keeps the effort for the next spawn, as
+        # ``set_fast_mode`` does; any other failed write leaves the effort as it was.
+        effort_stands = (not isinstance(reasoning_effort, _EffortUnchanged)
+                         and (effort_error is None
+                              or effort_error.code == flag_settings.SETTINGS_UNAVAILABLE))
+        if record is not None and effort_stands:
+            record.reasoning_effort = reasoning_effort  # type: ignore[assignment]
         # Same "only pass what changed" discipline as `_set_driver_model` above, and
         # for the same reason: a test double's ``_persist_model(session_id, model)``
         # stub must keep working for every call that never touches effort.
-        if isinstance(reasoning_effort, _EffortUnchanged):
+        if not effort_stands:
             await self._persist_model(session_id, model)
         else:
             await self._persist_model(session_id, model, reasoning_effort=reasoning_effort)
+        if not _same_choice:
+            await self._resync_fast_mode(session_id)
+        if effort_error is not None and not effort_stands:
+            raise effort_error
         return restarted
 
     def _settle_model_pending(self, session_id: str, status: str) -> None:
@@ -25622,6 +25929,40 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id)
                 .values(autopilot_paused=paused)
             )
+
+    async def set_pr_autofix_paused(self, session_id: str, paused: bool) -> None:
+        """Pause (paused=True) or resume PR Doctor's auto-fix of this session's PRs (D-14).
+        Independent of autopilot_paused. The ROW is what ``_pr_doctor_step`` reads (the
+        primary's sweep often holds no record for the session); the record mirror only
+        feeds the session payload."""
+        record = self._records.get(session_id)
+        if record is not None:
+            record.pr_autofix_paused = paused
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(pr_autofix_paused=paused)
+            )
+
+    async def _pr_autofix_paused_session(self, repo: str, branch: str) -> str | None:
+        """The id of a session that owns PR branch *branch* in *repo* (its ``branch`` or
+        one of its ``authored_branches`` — the set ``_pr_doctor_owning_rec`` matches) and
+        has PR auto-fix paused, else None. Reads the DB rows, not ``_records``: the sweep
+        runs on the primary and meets PRs whose session lives on a worker. An archived
+        row is ignored, so the pause ends with the session rather than holding its PRs
+        forever."""
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession.id, DbSession.branch, DbSession.authored_branches)
+                .where(DbSession.repo == repo, DbSession.pr_autofix_paused.is_(True),
+                       DbSession.status != "archived")
+            )).all()
+        for sid, row_branch, authored in rows:
+            if branch == row_branch or branch in (authored or ()):
+                return sid
+        return None
 
     async def set_auto_archive_opt_out(self, session_id: str, opted_out: bool) -> None:
         """Opt a session out of auto-archive (opted_out=True) or restore its eligibility.

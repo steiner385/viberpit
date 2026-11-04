@@ -57,6 +57,7 @@ from server.sessions.orchestrator import (
 from server.sessions import session_actions
 from server.sessions import read_state
 from server.sessions import worktree_files
+from server.sessions import flag_settings
 from server.sessions import memory_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
@@ -137,6 +138,10 @@ class AutopilotPauseRequest(BaseModel):
 
 class AutoArchiveOptOutRequest(BaseModel):
     optedOut: bool
+
+
+class PrAutofixRequest(BaseModel):
+    enabled: bool
 
 
 class SuspectedCompleteRequest(BaseModel):
@@ -325,6 +330,12 @@ def _record_to_dict(
         # True while a "switch after this turn" model change waits for the in-flight
         # turn to end (transient, never persisted) — the picker shows it as pending.
         "modelPending": getattr(record, "model_pending", False),
+        # Fast mode (D-14): the stored choice, and whether it can be on right now — the
+        # CLI listed the current model as fast-capable (only a flag-settings engine,
+        # Claude, ever reports that list). The ⚡ toggle and `/fast` show only then.
+        "fastMode": bool(getattr(record, "fast_mode", False)),
+        "fastModeAvailable": flag_settings.fast_mode_available(
+            getattr(record, "fast_mode_models", None), getattr(record, "model", None)),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "inferredGoal": getattr(record, "inferred_goal", None),
@@ -333,6 +344,7 @@ def _record_to_dict(
         "effectiveGoal": goal_text,
         "goalSource": goal_source,
         "autopilotPaused": getattr(record, "autopilot_paused", False),
+        "prAutofixPaused": getattr(record, "pr_autofix_paused", False),
         "autopilotCooldownUntil": cooldown_until,
         "autoArchiveOptOut": getattr(record, "auto_archive_opt_out_reason", None),
         "prs": [p.to_dict() for p in (prs or [])],
@@ -1579,6 +1591,30 @@ async def set_auto_archive_opt_out(
     return _record_to_dict(final, repo=await _resolve_repo(final))
 
 
+@router.post("/{session_id}/pr-autofix")
+async def set_pr_autofix(
+    session_id: str,
+    body: PrAutofixRequest,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Let PR Doctor fix this session's PRs (enabled=true) or pause it for them (D-14).
+    Notifications still fire while paused; ``autopilot_paused`` is untouched. Returns
+    ``{enabled}``; 404 for an unknown session; 409 ``daemon_outdated`` from a daemon
+    that predates the RPC."""
+    orch = _get_orchestrator(request)
+    if await orch.get_session(session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    try:
+        await orch.set_pr_autofix_paused(session_id, not body.enabled)
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "pause PR auto-fix per session")
+    return {"enabled": body.enabled}
+
+
 @router.post("/{session_id}/suspected-complete")
 async def resolve_suspected_complete(
     session_id: str,
@@ -2469,8 +2505,9 @@ async def set_session_model(
     db=Depends(get_db),
 ):
     """Switch a session's model (→ `set_model_for_session`), optionally with a
-    reasoning ``effort``. 409 if the model is blocked by policy; 400
-    ``unsupported_reasoning_effort`` for an effort on a Claude session."""
+    reasoning ``effort``. 409 if the model is blocked by policy. On Claude the effort
+    applies live (D-14): 400 ``SETTINGS_INVALID`` for a level the model does not accept,
+    409 with another ``SETTINGS_CODES`` code when the CLI refused the write."""
     orch = _get_orchestrator(request)
     via = getattr(request.state, "via", None)
     effort = body.effort if body.effort is not None else EFFORT_UNCHANGED
@@ -2480,6 +2517,38 @@ async def set_session_model(
             identity=identity, via=via, effort=effort)
     except ActionError as exc:
         return _action_error_response(exc)
+
+
+class FastModeRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/{session_id}/fast")
+async def set_session_fast_mode(
+    session_id: str,
+    body: FastModeRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Turn the session's fast mode on or off (D-14), live on the daemon that owns it and
+    persisted for every later spawn. 200 ``{enabled}``. Unknown session 404; 409
+    ``FAST_UNAVAILABLE`` when the engine or current model has no fast mode, another
+    ``SETTINGS_CODES`` code when the CLI refused or never answered, or
+    ``daemon_outdated`` from an old daemon."""
+    try:
+        result = await _get_orchestrator(request).set_fast_mode(
+            session_id, body.enabled, identity=identity)
+    except flag_settings.SettingsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "toggle fast mode")
+    await record_audit(db=db, type="session.fast_mode", identity=identity,
+                       detail={"session_id": session_id, "enabled": body.enabled})
+    return result
 
 
 @router.post("/{session_id}/suggest")

@@ -332,7 +332,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         # session (its live client, transcript, worktree and undo backups). A refusal
         # raises RewindError, whose error_data carries the code (and CLI reason).
         "rewind_session", "undo_rewind",
-        "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
+        # D-14 fast mode: {enabled}, applied on the daemon that owns the live client. A
+        # refusal raises SettingsError, whose error_data carries the code.
+        "set_fast_mode",
+        "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_pr_autofix_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",
         "cancel_queued", "resolve_permission", "answer_question",

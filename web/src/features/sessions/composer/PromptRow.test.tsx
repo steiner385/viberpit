@@ -1,10 +1,11 @@
 import { createRef } from 'react'
-import { describe, it, expect, vi } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PromptRow, type PromptRowMenus } from './PromptRow'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { AgentCapabilities, ModelOption } from '@/api/types'
+import { FAST_MODE_COPY, FAST_NOTE_SEEN_KEY } from './fastMode'
 
 function fakeRuntime(over: Partial<SessionRuntime> = {}): SessionRuntime {
   return {
@@ -18,7 +19,7 @@ function fakeRuntime(over: Partial<SessionRuntime> = {}): SessionRuntime {
 const CODEX_CAPS: AgentCapabilities = {
   models: true, reasoningEffort: true, steer: true, interrupt: true, approvals: true, questions: true,
   fork: false, adopt: false, selfModelSwitch: false, subagents: false, attachments: true,
-  accountRotation: false, accountSwitchNewThread: true, rewind: false,
+  accountRotation: false, accountSwitchNewThread: true, rewind: false, flagSettings: false,
 }
 
 const CODEX_MODELS: ModelOption[] = [
@@ -108,6 +109,103 @@ describe('PromptRow', () => {
     it('is absent while no context reading exists', () => {
       render(<PromptRow rt={fakeRuntime({ contextPct: null })} />)
       expect(screen.queryByRole('img', { name: /^Context/ })).toBeNull()
+    })
+  })
+
+  describe('fast mode (D-14)', () => {
+    const CLAUDE_CAPS: AgentCapabilities = {
+      ...CODEX_CAPS, reasoningEffort: false, fork: true, rewind: true, flagSettings: true,
+    }
+    const claudeRt = () => fakeRuntime({ model: 'opus' })
+    beforeEach(() => localStorage.clear())
+
+    it('hides ⚡ unless the session reports fast mode available', () => {
+      const { rerender } = render(
+        <PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: false }} caps={CLAUDE_CAPS} onToggleFast={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: 'Fast mode' })).toBeNull()
+      rerender(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code' }} caps={CLAUDE_CAPS} onToggleFast={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: 'Fast mode' })).toBeNull()
+      rerender(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: true }} caps={CLAUDE_CAPS} onToggleFast={vi.fn()} />)
+      expect(screen.getByRole('button', { name: 'Fast mode' })).toBeInTheDocument()
+    })
+
+    it('carries the cost sentence as its tooltip, and its state as aria-pressed', () => {
+      render(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: true, fastMode: true }}
+        caps={CLAUDE_CAPS} onToggleFast={vi.fn()} />)
+      const bolt = screen.getByRole('button', { name: 'Fast mode' })
+      expect(bolt).toHaveAttribute('title', FAST_MODE_COPY)
+      expect(bolt).toHaveAttribute('aria-pressed', 'true')
+      expect(FAST_MODE_COPY).toBe(
+        'Fast mode — faster output on the same model. Bills usage credits at a higher rate, outside your plan.')
+    })
+
+    it('toggling it hands the flipped value to onToggleFast', async () => {
+      const onToggleFast = vi.fn()
+      const { rerender } = render(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: true }}
+        caps={CLAUDE_CAPS} onToggleFast={onToggleFast} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Fast mode' }))
+      expect(onToggleFast).toHaveBeenLastCalledWith(true)
+      rerender(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: true, fastMode: true }}
+        caps={CLAUDE_CAPS} onToggleFast={onToggleFast} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Fast mode' }))
+      expect(onToggleFast).toHaveBeenLastCalledWith(false)
+    })
+
+    it('disables ⚡ while its POST is in flight', () => {
+      render(<PromptRow rt={claudeRt()} session={{ engine: 'claude_code', fastModeAvailable: true }}
+        caps={CLAUDE_CAPS} onToggleFast={vi.fn()} fastPending />)
+      expect(screen.getByRole('button', { name: 'Fast mode' })).toBeDisabled()
+    })
+
+    it('shows the cost note inline the first time fast mode is on in this browser, and never again', async () => {
+      const props = { rt: claudeRt(), caps: CLAUDE_CAPS, onToggleFast: vi.fn() }
+      const { rerender, unmount } = render(
+        <PromptRow {...props} session={{ engine: 'claude_code', fastModeAvailable: true, fastMode: false }} />)
+      expect(screen.queryByRole('note')).toBeNull()
+      rerender(<PromptRow {...props} session={{ engine: 'claude_code', fastModeAvailable: true, fastMode: true }} />)
+      expect(screen.getByRole('note')).toHaveTextContent(FAST_MODE_COPY)
+      expect(localStorage.getItem(FAST_NOTE_SEEN_KEY)).toBe('1')
+      await userEvent.click(screen.getByRole('button', { name: 'Dismiss fast mode note' }))
+      expect(screen.queryByRole('note')).toBeNull()
+      unmount()
+      // A later session, the same browser: the note has been seen.
+      render(<PromptRow {...props} session={{ engine: 'claude_code', fastModeAvailable: true, fastMode: true }} />)
+      expect(screen.queryByRole('note')).toBeNull()
+    })
+  })
+
+  describe('live Claude effort (D-14)', () => {
+    const CLAUDE_CAPS: AgentCapabilities = { ...CODEX_CAPS, reasoningEffort: false, flagSettings: true }
+    const CLAUDE_MODELS: ModelOption[] = [{ id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }]
+
+    it('offers the CLI effort levels for a Claude session with live flag settings', async () => {
+      render(<PromptRow rt={fakeRuntime({ model: 'opus' })} session={{ engine: 'claude_code', reasoningEffort: 'high' }}
+        caps={CLAUDE_CAPS} models={CLAUDE_MODELS} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Effort: high' }))
+      const items = within(screen.getByRole('menu', { name: 'Reasoning effort' })).getAllByRole('menuitemradio')
+      expect(items.map((i) => i.textContent?.replace(/\d$/, ''))).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    })
+
+    it('posts the pick through rt.onSetModel on the current model, now when idle', async () => {
+      const rt = fakeRuntime({ model: 'opus' })
+      render(<PromptRow rt={rt} session={{ engine: 'claude_code' }} caps={CLAUDE_CAPS} models={CLAUDE_MODELS} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Effort: Default' }))
+      await userEvent.click(screen.getByRole('menuitemradio', { name: /^max/ }))
+      expect(rt.onSetModel).toHaveBeenCalledWith('opus', 'now', 'max')
+    })
+
+    it('stays hidden for Claude when live flag settings are off (or not reported)', () => {
+      const { rerender } = render(<PromptRow rt={fakeRuntime({ model: 'opus' })} session={{ engine: 'claude_code' }}
+        caps={{ ...CLAUDE_CAPS, flagSettings: false }} models={CLAUDE_MODELS} />)
+      expect(screen.queryByRole('button', { name: /^Effort:/ })).toBeNull()
+      rerender(<PromptRow rt={fakeRuntime({ model: 'opus' })} session={{ engine: 'claude_code' }} models={CLAUDE_MODELS} />)
+      expect(screen.queryByRole('button', { name: /^Effort:/ })).toBeNull()
+    })
+
+    it("keeps a Codex model's own efforts — the catalog row wins over the fallback list", async () => {
+      render(<PromptRow rt={fakeRuntime()} session={{ engine: 'codex' }} caps={{ ...CODEX_CAPS, flagSettings: false }} models={CODEX_MODELS} />)
+      await userEvent.click(screen.getByRole('button', { name: /^Effort:/ }))
+      expect(within(screen.getByRole('menu')).getAllByRole('menuitemradio')).toHaveLength(3)
     })
   })
 })

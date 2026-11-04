@@ -22,6 +22,7 @@ from server.sessions.engine import (
 )
 from server.sessions.orchestrator import DRIVER_SWAP_TIMEOUT_S, ModelBlockedError
 from server.sessions.rewind import REWIND_CODES, REWIND_CONTROL_TIMEOUT_S, RewindError
+from server.sessions.flag_settings import SETTINGS_CODES, SettingsError
 from server.sessions import worktree_files
 from server.sessions import memory_files
 
@@ -102,6 +103,18 @@ def _rewind_error(exc: DaemonError) -> Exception:
         reason, failed = data.get("reason"), data.get("failed")
         return RewindError(code, exc.message, reason=reason if isinstance(reason, str) else None,
                            failed=[str(p) for p in failed] if isinstance(failed, list) else None)
+    return exc
+
+
+def _settings_error(exc: DaemonError) -> Exception:
+    """The exception a flag-settings RPC's error envelope stands for (D-14): KeyError
+    for an unknown session, SettingsError for a known code, else the DaemonError itself
+    (an old daemon's UnknownMethod included — the route maps it to ``daemon_outdated``)."""
+    if exc.err_type == "KeyError":
+        return KeyError(exc.message)
+    code = (exc.data or {}).get("code")
+    if exc.err_type == "SettingsError" and code in SETTINGS_CODES:
+        return SettingsError(code, exc.message)
     return exc
 
 
@@ -853,6 +866,11 @@ class RemoteOrchestrator:
     async def set_autopilot_paused(self, session_id, paused):
         return await self._client.call("set_autopilot_paused", session_id=session_id, paused=paused)
 
+    async def set_pr_autofix_paused(self, session_id, paused):
+        # An old daemon answers UnknownMethod (DaemonError); the route maps it to 409
+        # daemon_outdated.
+        return await self._client.call("set_pr_autofix_paused", session_id=session_id, paused=paused)
+
     async def set_auto_archive_opt_out(self, session_id, opted_out):
         return await self._client.call(
             "set_auto_archive_opt_out", session_id=session_id, opted_out=opted_out)
@@ -1132,9 +1150,18 @@ class RemoteOrchestrator:
         except DaemonError as exc:
             if exc.err_type == "ModelBlockedError":
                 raise ModelBlockedError(exc.message) from exc
-            if exc.err_type == "KeyError":
-                raise KeyError(exc.message) from exc
-            raise
+            raise _settings_error(exc) from exc
+
+    async def set_fast_mode(self, session_id, enabled: bool, *,
+                            identity: str = SYSTEM_IDENTITY) -> dict:
+        """Proxy set_fast_mode (D-14) to the daemon that owns the session. An unknown
+        session is re-raised as KeyError and a refusal as SettingsError with the
+        envelope's code — only known codes; anything else stays a DaemonError."""
+        try:
+            return await self._client.call("set_fast_mode", session_id=session_id,
+                                           enabled=enabled, identity=identity)
+        except DaemonError as exc:
+            raise _settings_error(exc) from exc
 
     async def resolve_model_approval(self, session_id: str, decision: str, *,
                                      model: str | None = None,
