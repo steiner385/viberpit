@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import accounts, assistant_ask, assistant_mcp, brand, configdir
+from . import accounts, assistant_ask, assistant_mcp, brand, configdir, user_memory
 from .config import load_config
 from .env_compat import mirror_legacy_env
 from .selector import AllAccountsBusy
@@ -365,6 +365,29 @@ def _cmd_reauth(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_memory(args: argparse.Namespace) -> int:
+    home, store = user_memory.home_path(), user_memory.store_path()
+    if args.memory_cmd == "status":
+        if user_memory.is_moved():
+            print(f"{_P} memory: moved — {home} -> {store} (coherent on every host)")
+        else:
+            print(f"{_P} memory: not moved — {home} is the file; worker hosts can read it "
+                  f"stale or truncated for up to 10 min after an edit. "
+                  f"Run `{_P} memory move` to fix.")
+        return 0
+    try:
+        outcome = user_memory.move_to_store()
+    except user_memory.MoveRefused as exc:
+        print(f"{_P} memory move: refused — {exc}", file=sys.stderr)
+        return 1
+    print({
+        user_memory.ALREADY: f"{_P} memory move: already done — {home} -> {store}",
+        user_memory.MOVED: f"{_P} memory move: moved {home} to {store} and linked it back",
+        user_memory.LINKED: f"{_P} memory move: no file yet — linked {home} -> {store}",
+    }[outcome])
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     mirror_legacy_env()  # mirrors the legacy env prefix onto the current one, before any setting is read
     parser = argparse.ArgumentParser(prog=_P)
@@ -394,6 +417,13 @@ def main(argv: list[str] | None = None) -> int:
     accounts_sub.add_parser(
         "import", help="register credential slots found on disk into accounts.json (idempotent)")
     accounts_sub.add_parser("show", help="print the manifest entries")
+    p_memory = sub.add_parser(
+        "memory", help="where the shared user CLAUDE.md lives (#3246)")
+    memory_sub = p_memory.add_subparsers(dest="memory_cmd", required=True)
+    memory_sub.add_parser("status", help="print where the user CLAUDE.md lives")
+    memory_sub.add_parser(
+        "move", help="move ~/.claude/CLAUDE.md into the coherently-mounted account store "
+                     "and link it back (idempotent; run on the host that owns ~/.claude)")
     p_clones = sub.add_parser(
         "clones", help=f"inspect, repair, or safely remove {brand.NAME}-owned repo clones")
     clones_sub = p_clones.add_subparsers(dest="clones_cmd", required=True)
@@ -497,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_reauth(args)
     if args.cmd == "crypto":
         return _cmd_crypto(args)
+    if args.cmd == "memory":
+        return _cmd_memory(args)
     if args.cmd == "clones":
         return _cmd_clones(args)
     if args.cmd == "lint":

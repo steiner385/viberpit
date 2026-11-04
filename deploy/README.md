@@ -945,6 +945,32 @@ being non-zero over the last hour:
 - Both 0 for a few hours, and `.claude.json`'s size on dobby no longer oscillating
   (`watch -n5 stat -c '%s %i' ~/.claude-accounts/cfg/<account>/.claude.json`) — fixed.
 
+### The shared user `CLAUDE.md` lives in the coherent store (#3246)
+
+`~/.claude/CLAUDE.md` is every account's User memory (D-13: each
+`cfg/<account>/CLAUDE.md` links to it) and, for a cwd under HOME, a Project file in the CLI's
+walk too. Both read paths name `~/.claude/CLAUDE.md`, which rocky reads through the **cached**
+`~/.claude` mount. So the #1005 failure applies to it: dobby saves by temp file + rename (the
+Settings editor, and most interactive editors), rocky keeps the old size, and for up to 10
+minutes after a save that grows the file a rocky session starts with its instructions cut off.
+
+The fix is to keep the bytes on the coherent account store and make `~/.claude/CLAUDE.md` a
+link to them. The link never changes, so caching it is harmless, and its absolute target
+resolves on each host to that host's coherent `~/.claude-accounts` mount. **One-time, on
+dobby** (the host that owns `~/.claude`; idempotent, refuses rather than overwrites):
+
+    viberpit memory status     # "not moved" until this runs
+    viberpit memory move       # ~/.claude/CLAUDE.md -> ~/.claude-accounts/shared/CLAUDE.md
+
+`~/.claude` is a dotfiles git repo, so afterwards it shows `CLAUDE.md` as a typechange (file →
+symlink). Commit that, or keep a copy of the text in the repo yourself. The Settings editor,
+the session memory viewer and config snapshots all follow the link to the store file
+(`viberpit.user_memory.edit_path()`), and after a save the editor no longer shows the
+"up to 10 minutes" note. To edit by hand, prefer the store path: an editor that saves by
+renaming over `~/.claude/CLAUDE.md` replaces the link with a regular file and undoes the move
+(vim writes through a symlink; `viberpit memory status` says "not moved" if one did). To undo:
+`cp --remove-destination ~/.claude-accounts/shared/CLAUDE.md ~/.claude/CLAUDE.md`.
+
 ## Hardware watchdog load thresholds (`/etc/watchdog.conf`)
 
 Separate knob from the reachability test above, and a sharp one. `watchdog(8)` will

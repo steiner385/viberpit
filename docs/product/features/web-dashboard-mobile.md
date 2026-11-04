@@ -373,8 +373,10 @@ ways into it from the composer and the transcript.
   it. If it has, a **Changed elsewhere** panel shows the current text beside your draft, with **Reload** (take
   theirs) and **Keep my draft** (the next Save overwrites theirs). A missing file opens empty and Save creates
   it. A file that is a link, over 256 KiB or not UTF-8 is explained and not editable here. Leaving with unsaved
-  changes asks first. After a save a note says sessions on other hosts can take up to 10 minutes to see it
-  (rocky's sshfs cache, #3246).
+  changes asks first. Until the operator runs `viberpit memory move`, a note after a save says sessions on
+  other hosts can take up to 10 minutes to see it (rocky's sshfs cache, #3246). After the move the file lives
+  on the coherently-mounted account store (`~/.claude/CLAUDE.md` links to it), every host sees a save at
+  once, and the note is gone (`deploy/README.md` § "The shared user `CLAUDE.md` lives in the coherent store").
 - **Server:** `GET`/`PUT /api/settings/memory` (`server/api/memory.py`, etag = sha256, atomic write, audit row
   `settings.memory_saved`); the viewer is `server/sessions/memory_files.py`.
 
