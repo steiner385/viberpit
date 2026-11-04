@@ -303,3 +303,29 @@ def list_mcp_servers(status_rows: list[dict] | None = None) -> dict[str, Any]:
                 "status": by_short.get(name, []),
             })
     return {"servers": servers}
+
+
+SIGN_IN_TRANSPORTS = ("http", "sse")
+
+
+class SignInServerError(Exception):
+    """Why *name* cannot be signed in to: ``reason`` is ``not_found``, ``ambiguous`` or
+    ``not_oauth`` (not an http/sse server)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def sign_in_server(servers: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    """THE server-name match for a browser sign-in (paste-back and one-tap): the one
+    configured server named exactly *name*, which must be http/sse. Raises
+    :class:`SignInServerError` otherwise."""
+    matches = [s for s in servers if s.get("name") == name]
+    if not matches:
+        raise SignInServerError("not_found")
+    if len(matches) != 1:
+        raise SignInServerError("ambiguous")
+    if matches[0].get("transport") not in SIGN_IN_TRANSPORTS:
+        raise SignInServerError("not_oauth")
+    return matches[0]
