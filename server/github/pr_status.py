@@ -204,6 +204,7 @@ class PullRequestInfo:
             "touches_workflows": self.touches_workflows,
             "docs_only": self.docs_only,
             "labels": list(self.labels),
+            "human_hold": self.human_hold,
         }
 
     @classmethod

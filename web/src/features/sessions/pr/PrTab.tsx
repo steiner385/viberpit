@@ -31,7 +31,7 @@ import { prUrl } from '@/lib/githubUrl'
 import { useComposerDraft } from '@/shell/sessionGestures'
 import { Markdown } from '@/features/sessions/transcript/Markdown'
 import {
-  CHECK_GROUP_ORDER, addressPrompt, defaultPr, groupChecks, hasHumanHold, mergeStateText, orderThreads,
+  CHECK_GROUP_ORDER, addressPrompt, defaultPr, groupChecks, mergeStateText, orderThreads,
   payloadChecks, prKey, prRepo, threadLocation, type CheckGroupName,
 } from './prTabModel'
 
@@ -130,7 +130,7 @@ function PrPanel({ sessionId, pr, hasFiles, onOpenFile, onShowConversation }: Om
   const autoMergeOn = d?.autoMergeEnabled ?? pr.auto_merge_enabled ?? false
   const inQueue = d?.in_merge_queue ?? pr.in_merge_queue ?? false
   const mss = d?.mergeStateStatus ?? pr.merge_state_status ?? ''
-  const hold = d ? d.humanHold : hasHumanHold(pr.labels)
+  const hold = d ? d.humanHold : pr.human_hold ?? false
   const title = d?.title || pr.title
   const url = [d?.url, pr.url, repo ? prUrl(repo, pr.number) : null].find(isSafeHttpUrl) ?? null
   const unavailable = !repo

@@ -586,6 +586,8 @@ export interface PullRequestInfo {
   in_merge_queue?: boolean
   /** Label names (first 20). */
   labels?: string[]
+  /** Server-computed: the PR carries `hold:human` (`PullRequestInfo.human_hold`). */
+  human_hold?: boolean
 }
 
 /** One live check on a PR's head commit (`GET /api/prs/…` detail); `conclusion` lowercase, null while running. */
