@@ -89,3 +89,12 @@ def test_config_web_vitals_kill_switch():
     client = _client()
     with patch.dict(os.environ, {"VIBERPIT_WEB_VITALS_ENABLED": "false"}):
         assert client.get("/api/config", headers=H).json()["webVitalsEnabled"] is False
+
+
+def test_config_one_tap_follows_public_origin():
+    client = _client()
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("VIBERPIT_PUBLIC_ORIGIN", None)
+        assert client.get("/api/config", headers=H).json()["oneTapEnabled"] is False
+    with patch.dict(os.environ, {"VIBERPIT_PUBLIC_ORIGIN": "https://dobby.tail0dd570.ts.net"}):
+        assert client.get("/api/config", headers=H).json()["oneTapEnabled"] is True

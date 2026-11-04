@@ -115,6 +115,9 @@ async def get_config(_identity: str = Depends(current_identity)) -> dict:
         # it installs any PerformanceObserver, so turning the flag off stops the
         # measurement at the source as well as at the ingest.
         "webVitalsEnabled": bool(settings.web_vitals_enabled),
+        # One-tap MCP sign-in needs the edge's own https origin for the OAuth callback;
+        # without VIBERPIT_PUBLIC_ORIGIN every server signs in by paste-back.
+        "oneTapEnabled": settings.public_origin is not None,
         # Per-engine offerability + capabilities. The browser renders the Agent
         # selector and every engine-conditional control from THIS, so a runner that
         # cannot start Codex is never offered as a Codex choice.
