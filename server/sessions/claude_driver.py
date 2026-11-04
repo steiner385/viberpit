@@ -36,7 +36,8 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
                      REWIND_UNAVAILABLE, RewindError, conversation_request, files_request,
                      map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
-from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
+from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, OUTPUT_STYLE_KEY, SETTINGS_CONTROL_TIMEOUT_S,
+                            SETTINGS_FAILED,
                             SETTINGS_INVALID, SETTINGS_REFUSED, SETTINGS_UNAVAILABLE,
                             SettingsError, effort_levels, live_fast_mode,
                             live_output_style, model_options, output_styles)
@@ -2451,8 +2452,12 @@ class ClaudeAgentDriver:
             await self._report_fast_mode_state(info)
             styles = output_styles(info)
             if self._on_output_styles is not None and styles is not None:
-                await self._on_output_styles(self.session_id, styles,
-                                             live_output_style(info))
+                fix = await self._on_output_styles(self.session_id, styles,
+                                                   live_output_style(info))
+                if isinstance(fix, str) and fix:
+                    # The CLI started on a style it does not list: apply the fallback.
+                    with contextlib.suppress(SettingsError):
+                        await self.apply_flag_settings({OUTPUT_STYLE_KEY: fix})
             if self._on_model_options is None:
                 return
             dropped = await self._on_model_options(self.session_id, model_options(info))

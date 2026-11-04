@@ -487,6 +487,16 @@ class CommandsChanged:
 
 
 @dataclass
+class CommandResult:
+    """An app command that arrived as a PROMPT ran instead of reaching the CLI (D-16a:
+    ``SessionOrchestrator.send_prompt`` routes an ``APP_ONLY`` first line to
+    ``run_command``). Not a transcript event: the ws bridge consumes it and sends the
+    same top-level ``commandResult`` frame the `command` frame answers with."""
+    result: dict
+    def to_wire(self): return {"type": "commandResult", "ok": True, **self.result}
+
+
+@dataclass
 class ContextUsage:
     """Exact context-window occupancy, pulled from the SDK once a turn settles —
     the same data the `/context` command shows (totalTokens / maxTokens). Drives

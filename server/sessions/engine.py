@@ -346,8 +346,9 @@ class AgentDriverConfig:
     on_fast_mode_state: Callable[[str, str, str | None], Awaitable[None]] | None = None
     #: Fired ``(session_id, styles, current)`` once per CLI start (D-16a): the CLI's
     #: ``initialize.available_output_styles`` (``flag_settings.output_styles``) and the
-    #: style it started with. Only ``flag_settings`` engines call it.
-    on_output_styles: Callable[[str, list[str], str | None], Awaitable[None]] | None = None
+    #: style it started with. Returns a style name the driver must apply now (the CLI
+    #: started on one it does not list), else None. Only ``flag_settings`` engines call it.
+    on_output_styles: Callable[[str, list[str], str | None], Awaitable[str | None]] | None = None
     #: Fired with the sanitized MCP status snapshot each time a Claude driver polls it.
     on_mcp_status: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired (synchronously, with the session id) when a Task sub-agent starts or ends,

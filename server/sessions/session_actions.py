@@ -454,6 +454,19 @@ async def set_permission_mode(
     return {"ok": True}
 
 
+async def set_output_style(
+    orch, db, *, session_id: str, style: str | None, identity: str,
+    via: str | None = None,
+) -> dict:
+    """Set (or with None reset) the session's output style (D-16a) and audit it as
+    ``session.output_style``. The route and `/output-style` both come through here.
+    A refusal (``SettingsError``, ``KeyError``) propagates unaudited."""
+    result = await orch.set_output_style(session_id, style, identity=identity)
+    await _audit(db, "session.output_style", identity,
+                 {"sessionId": session_id, "style": style}, via)
+    return result
+
+
 async def set_model(
     orch, db, *, session_id: str, model: str | None, when: str = "now",
     identity: str, via: str | None = None,

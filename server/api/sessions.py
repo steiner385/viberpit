@@ -62,6 +62,7 @@ from server.sessions import memory_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
+from server.sessions.commands.catalog import APP_COMMAND
 from server.sessions.engine import (
     EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, parse_agent_engine)
 from server.sessions.model_policy import quota_model
@@ -343,8 +344,7 @@ def _record_to_dict(
         # Output style (D-16a): the style the session runs (the CLI's live reading, else
         # the stored choice; null = not known yet) and the styles its CLI listed — [] for
         # an engine or kind without styles, the kill switch off, or no list reported.
-        "outputStyle": (getattr(record, "output_style_live", None)
-                        or getattr(record, "output_style", None)),
+        "outputStyle": flag_settings.effective_output_style(record),
         "availableOutputStyles": flag_settings.available_output_styles(record),
         # The effort levels the current model accepts (CLI `supportedEffortLevels`): the
         # picker offers exactly these; [] hides it, null = not reported yet.
@@ -2030,7 +2030,9 @@ async def send_session_prompt(
     orch = _get_orchestrator(request)
     record, delivery = await resume_and_send_prompt(orch, session_id, body.text, identity,
                                                     interrupt=body.interrupt)
-    if delivery not in ("sent", "draining"):
+    # APP_COMMAND (D-16a): the text was an app command (`/output-style …`) and ran as
+    # one — the orchestrator's send_prompt never hands those to the CLI.
+    if delivery not in ("sent", "draining", APP_COMMAND):
         log.warning("quick-resume prompt not delivered session=%s result=%s",
                     session_id, delivery)
     if delivery == "sent":
@@ -2592,8 +2594,9 @@ async def set_session_output_style(
     engine or session without styles, another ``SETTINGS_CODES`` code when the CLI
     refused or never answered, or ``daemon_outdated`` from an old daemon."""
     try:
-        result = await _get_orchestrator(request).set_output_style(
-            session_id, body.style, identity=identity)
+        result = await session_actions.set_output_style(
+            _get_orchestrator(request), db, session_id=session_id, style=body.style,
+            identity=identity, via=getattr(request.state, "via", None))
     except flag_settings.SettingsError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail={"code": exc.code, "message": str(exc)}) from exc
@@ -2601,8 +2604,6 @@ async def set_session_output_style(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
         _raise_daemon_outdated_or_reraise(exc, "set the output style")
-    await record_audit(db=db, type="session.output_style", identity=identity,
-                       detail={"session_id": session_id, "style": body.style})
     return result
 
 

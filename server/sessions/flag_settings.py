@@ -169,6 +169,20 @@ def available_output_styles(record: Any) -> list[str]:
     return list(getattr(record, "output_styles", None) or [])
 
 
+def effective_output_style(record: Any) -> str | None:
+    """The style *record*'s session runs, as the payload's ``outputStyle`` serves it:
+    the CLI's live reading, else the stored choice — ``default`` when the CLI's list is
+    known and lacks it — else None (not known yet)."""
+    live = getattr(record, "output_style_live", None)
+    if live:
+        return live
+    stored = getattr(record, "output_style", None)
+    if not stored:
+        return None
+    known = getattr(record, "output_styles", None)
+    return stored if known is None or stored in known else DEFAULT_OUTPUT_STYLE
+
+
 def supports_fast_mode(fast_models: Iterable[str] | None, model: str | None) -> bool:
     """Does *model* have fast mode, per a cached ``fast_mode_models`` list? An unknown
     list (None) is never a yes: availability is only what ``initialize`` reported."""

@@ -334,8 +334,8 @@ async def test_spawn_flags_follow_the_session_then_the_app_default(env) -> None:
     assert env.orch._spawn_flag_settings(sid) == {"outputStyle": "Concise"}
     env.rec.output_style = "Learning"
     assert env.orch._spawn_flag_settings(sid) == {"outputStyle": "Learning"}
-    env.rec.output_style = "default"          # an explicit default beats the app's
-    assert env.orch._spawn_flag_settings(sid) == {}
+    env.rec.output_style = "default"          # the session's own pick is always sent
+    assert env.orch._spawn_flag_settings(sid) == {"outputStyle": "default"}
     env.rec.output_style = None
     await _set_app_default("default")
     await env.orch.refresh_default_output_style()
@@ -404,6 +404,8 @@ def test_output_style_and_plan_are_app_only_commands() -> None:
 
 
 class _Spy:
+    """Records every prompt the session's CLI driver is handed."""
+
     def __init__(self, driver) -> None:
         self.prompts: list = []
         real = driver.send_prompt
@@ -414,11 +416,18 @@ class _Spy:
         driver.send_prompt = spy
 
 
+async def _audits(type_: str) -> list:
+    from server.db.models import AuditEvent
+    async with db_session() as db:
+        return list((await db.execute(select(AuditEvent).where(
+            AuditEvent.type == type_))).scalars().all())
+
+
 # Review Focus 3
 @pytest.mark.asyncio
 async def test_slash_output_style_applies_through_the_same_action(env) -> None:
-    spy = _Spy(env.orch._drivers[env.rec.id])
-    out = await env.orch.run_command(env.rec.id, "output-style", "Explanatory")
+    out = await env.orch.run_command(env.rec.id, "output-style", "Explanatory",
+                                     identity="u@example.com")
     assert out is not None and out["render"] == "notice"
     assert out["data"]["text"] == "Output style → Explanatory"
     assert env.control.patches == [{"outputStyle": "Explanatory"}]
@@ -429,8 +438,148 @@ async def test_slash_output_style_applies_through_the_same_action(env) -> None:
     assert len(env.control.patches) == 1
     reset = await env.orch.run_command(env.rec.id, "output-style", "default")
     assert reset is not None and env.control.patches[-1] == {"outputStyle": "default"}
-    assert spy.prompts == []                                   # never forwarded
-    assert not (env.clone / ".claude" / "settings.local.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_slash_output_style_is_audited(env) -> None:
+    await env.orch.run_command(env.rec.id, "output-style", "Concise", identity="u@example.com")
+    await env.orch.run_command(env.rec.id, "output-style", "NoSuchStyle")   # refused
+    rows = await _audits("session.output_style")
+    assert [(r.identity, r.detail) for r in rows] == [
+        ("u@example.com", {"sessionId": env.rec.id, "style": "Concise"})]
+
+
+@pytest.mark.asyncio
+async def test_session_actions_set_output_style_audits_and_propagates_refusals(env) -> None:
+    from server.sessions import session_actions
+    async with db_session() as db:
+        out = await session_actions.set_output_style(
+            env.orch, db, session_id=env.rec.id, style="Learning", identity="u")
+        assert out == {"style": "Learning"}
+        with pytest.raises(fs.SettingsError):
+            await session_actions.set_output_style(
+                env.orch, db, session_id=env.rec.id, style="Nope", identity="u")
+    rows = await _audits("session.output_style")
+    assert [r.detail for r in rows] == [{"sessionId": env.rec.id, "style": "Learning"}]
+
+
+# Item 2 of fix round 1: every prompt path goes through orchestrator.send_prompt, which
+# routes an APP_ONLY first line to the app command. The CLI driver never sees it.
+APP_ONLY_PROMPTS = ["/output-style Concise", "/output-style", "/fast on", "/effort high",
+                    "/plan on", "  /output-style Learning\nand more text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", APP_ONLY_PROMPTS)
+async def test_an_app_only_prompt_never_reaches_the_cli(env, text) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND
+    from server.sessions.events import CommandResult
+    driver = env.orch._drivers[env.rec.id]
+    spy = _Spy(driver)
+    emitted: list = []
+    real_emit = driver.emit
+
+    def spy_emit(e) -> None:
+        emitted.append(e)
+        real_emit(e)
+    driver.emit = spy_emit                                      # type: ignore[method-assign]
+    assert await env.orch.send_prompt(env.rec.id, text) == APP_COMMAND
+    assert spy.prompts == []
+    results = [e for e in emitted if isinstance(e, CommandResult)]
+    assert len(results) == 1 and results[0].to_wire()["type"] == "commandResult"
+    assert results[0].to_wire()["render"] == "notice"
+
+
+@pytest.mark.asyncio
+async def test_an_app_only_prompt_with_attachments_never_reaches_the_cli(env) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND
+    spy = _Spy(env.orch._drivers[env.rec.id])
+    assert await env.orch.send_prompt(env.rec.id, "/output-style Concise",
+                                      ["att-1"]) == APP_COMMAND
+    assert spy.prompts == [] and env.control.patches == [{"outputStyle": "Concise"}]
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_prompt_still_reaches_the_cli(env) -> None:
+    spy = _Spy(env.orch._drivers[env.rec.id])
+    assert await env.orch.send_prompt(env.rec.id, "please use /output-style later") == "sent"
+    assert await env.orch.send_prompt(env.rec.id, "/compact") == "sent"
+    assert spy.prompts == ["please use /output-style later", "/compact"]
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_initial_prompt_with_attachments_never_reaches_the_cli(env) -> None:
+    """The spawn sends an initial prompt WITH attachments straight through send_prompt
+    (a bare one is parked for the bridge) — the choke point still catches it."""
+    from server.sessions import attachments as _att
+    sent: list = []
+
+    class _Recording(Spawns):
+        def __call__(self, *a, **k):
+            client = super().__call__(*a, **k)
+            real = client.query
+
+            async def query(prompt, *qa, **qk):
+                sent.append(prompt)
+                return await real(prompt, *qa, **qk)
+            client.query = query                                # type: ignore[method-assign]
+            return client
+
+    env.orch._sdk_factory = _Recording(env.control)
+    with patch.object(_att, "resolve_and_bind", side_effect=AssertionError("bound")):
+        rec = await env.orch.create_session("Spawned", cwd=str(env.clone), model="opus",
+                                            permission_mode="full-auto",
+                                            initial_prompt="/output-style Learning",
+                                            attachment_ids=["att-1"])
+    assert sent == []
+    assert (await _row(rec.id)).output_style == "Learning"
+
+
+class _FakeDriver:
+    """A live-looking driver that records what the CLI would be handed."""
+    capabilities = ClaudeAgentDriver.capabilities
+    identity = "testuser@example.com"
+    turn_active = False
+    stream_ended = False
+
+    def __init__(self) -> None:
+        self.prompts: list = []
+        self.emitted: list = []
+
+    async def send_prompt(self, text, *a, **k):
+        self.prompts.append(text)
+
+    def emit(self, e) -> None:
+        self.emitted.append(e)
+
+
+@pytest.mark.parametrize("path", ["rest", "automations"])
+def test_the_rest_and_automation_prompt_paths_route_app_commands(path) -> None:
+    """``POST /sessions/{id}/prompt`` and the automations attach both send through
+    ``resume_and_send_prompt`` → the orchestrator's send_prompt: an app command runs as
+    one, is not reported undelivered, and the CLI driver never sees it."""
+    from server.api.sessions import resume_and_send_prompt
+    from server.sessions.commands.catalog import APP_COMMAND
+    driver = _FakeDriver()
+
+    async def fake_ensure(self, session_id, identity=None):
+        return driver
+
+    with patch.dict(os.environ, _ENV), _client(STYLES) as c, \
+            patch.object(SessionOrchestrator, "ensure_driver", fake_ensure):
+        orch = c.app.state.sessions
+        orch_impl = getattr(orch, "_orch", orch)
+        orch_impl._drivers[SID] = driver
+        if path == "rest":
+            r = c.post(f"/api/sessions/{SID}/prompt", json={"text": "/fast on"},
+                       headers=_H)
+            assert r.status_code == 200, r.text
+        else:
+            _, delivery = c.portal.call(resume_and_send_prompt, orch, SID,
+                                        "/output-style\nmore", "u")
+            assert delivery == APP_COMMAND
+    assert driver.prompts == []
+    assert len(driver.emitted) == 1 and driver.emitted[0].to_wire()["type"] == "commandResult"
 
 
 @pytest.mark.asyncio
@@ -463,47 +612,73 @@ async def test_slash_output_style_on_a_detached_session_saves_for_the_next_spawn
     assert (await _row(env.rec.id)).output_style == "Learning"
 
 
-def _mode(env) -> str:
-    return env.orch._drivers[env.rec.id].mode
-
-
-# Review Focus 4
+# Item 4 of fix round 1: a stored or default name the CLI does not list falls back.
 @pytest.mark.asyncio
-async def test_plan_off_after_on_returns_to_accept_edits(env) -> None:
-    await env.orch.set_permission_mode(env.rec.id, "acceptEdits")
-    assert _mode(env) == "acceptEdits"
-    on = await env.orch.run_command(env.rec.id, "plan", "on")
-    assert on is not None and on["render"] == "notice" and on["data"]["text"] == "Plan mode on"
-    assert _mode(env) == "plan"
-    off = await env.orch.run_command(env.rec.id, "plan", "off")
-    assert off is not None and off["data"]["text"] == "Plan mode off"
-    assert _mode(env) == "acceptEdits"
+async def test_a_stored_style_the_cli_no_longer_lists_spawns_as_default(env, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    env.rec.output_style = "Gone"
+    assert env.orch._spawn_flag_settings(env.rec.id) == {"outputStyle": "default"}
+    assert any("output_style fallback" in r.getMessage() for r in caplog.records)
+    env.rec.output_styles = None                  # unknown list: passed on trust
+    assert env.orch._spawn_flag_settings(env.rec.id) == {"outputStyle": "Gone"}
 
 
 @pytest.mark.asyncio
-async def test_bare_plan_toggles(env) -> None:
-    await env.orch.run_command(env.rec.id, "plan", "")
-    assert _mode(env) == "plan"
-    await env.orch.run_command(env.rec.id, "plan", "")
-    assert _mode(env) == "full-auto"
-    bad = await env.orch.run_command(env.rec.id, "plan", "maybe")
-    assert bad is not None and "Usage: /plan" in bad["data"]["text"]
-    assert _mode(env) == "full-auto"
+async def test_an_app_default_the_cli_does_not_list_spawns_nothing(env) -> None:
+    await _set_app_default("Gone")
+    await env.orch.refresh_default_output_style()
+    assert env.orch._spawn_flag_settings(env.rec.id) == {}
 
 
 @pytest.mark.asyncio
-async def test_plan_on_a_detached_session_is_a_notice(env) -> None:
-    env.orch._drivers.pop(env.rec.id)
-    out = await env.orch.run_command(env.rec.id, "plan", "on")
-    assert out is not None and out["render"] == "notice"
-    assert "isn't live" in out["data"]["text"]
+async def test_a_reset_to_an_unlisted_app_default_applies_default(env) -> None:
+    await _set_app_default("Gone")
+    assert await env.orch.set_output_style(env.rec.id, None) == {"style": None}
+    assert env.control.patches[-1] == {"outputStyle": "default"}
+    assert _payload(env.rec)["outputStyle"] == "default"
 
 
 @pytest.mark.asyncio
-async def test_plan_is_never_forwarded_to_the_cli(env) -> None:
-    spy = _Spy(env.orch._drivers[env.rec.id])
-    await env.orch.run_command(env.rec.id, "plan", "on")
-    assert spy.prompts == []
+async def test_the_payload_never_serves_an_unlisted_stored_style(env) -> None:
+    env.rec.output_style, env.rec.output_style_live = "Gone", None
+    assert _payload(env.rec)["outputStyle"] == "default"
+    env.rec.output_styles = None
+    assert _payload(env.rec)["outputStyle"] == "Gone"
+
+
+@pytest.mark.asyncio
+async def test_a_restart_spawn_on_an_unlisted_style_is_corrected_live(env) -> None:
+    """After a restart the list is unknown, so the spawn passes the stored name on
+    trust; once the CLI lists its styles without it, the driver applies `default`."""
+    info = {**INFO, "output_style": "Gone"}
+    env.rec.output_style, env.rec.output_styles = "Gone", None
+    sid = env.rec.id
+    spawns = Spawns(FakeControl(), info)
+    await env.orch.stop()
+    orch2 = SessionOrchestrator(sdk_factory=spawns, poll_interval=9999.0,
+                                usage_fn=_fake_usage, repo_root=str(env.repo_root))
+    try:
+        async with db_session() as db:
+            from sqlalchemy import update
+            await db.execute(update(DbSession).where(DbSession.id == sid).values(
+                output_style="Gone"))
+        await orch2.rehydrate()
+        assert await orch2.ensure_driver(sid) is not None
+        assert spawns.calls[-1]["flag_settings"] == {"outputStyle": "Gone"}
+        assert spawns.control.patches == [{"outputStyle": "default"}]
+        assert orch2._records[sid].output_style_live == "default"
+    finally:
+        await orch2.stop()
+
+
+# Item 7 of fix round 1: `/clear` respawns with a fresh app default.
+@pytest.mark.asyncio
+async def test_clear_respawns_with_the_current_app_default(env) -> None:
+    assert env.orch._default_output_style is None
+    await _set_app_default("Concise")              # changed in Settings after the spawn
+    out = await env.orch.run_command(env.rec.id, "clear", "")
+    assert out is not None and out["render"] == "clear"
+    assert env.spawns.calls[-1]["flag_settings"] == {"outputStyle": "Concise"}
 
 
 # ---------------------------------------------------------------- RPC / fleet / facade

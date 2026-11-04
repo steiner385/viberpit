@@ -6242,7 +6242,7 @@ class SessionOrchestrator:
             if not defer_for_bridge and (initial_prompt or attachment_ids):
                 delivery = await self.send_prompt(
                     session_id, initial_prompt or "", attachment_ids)
-                if delivery not in ("sent", "draining"):
+                if delivery not in ("sent", "draining", cmd_catalog.APP_COMMAND):
                     log.warning("session.create: initial prompt not delivered "
                                 "session=%s result=%s", session_id, delivery)
             return record
@@ -8105,8 +8105,11 @@ class SessionOrchestrator:
             out[flag_settings.FAST_MODE_KEY] = True
         if rec.reasoning_effort and rec.engine is AgentEngine.CLAUDE_CODE:
             out[flag_settings.EFFORT_KEY] = rec.reasoning_effort
-        style = self._effective_output_style(session_id)
-        if style is not None and style != flag_settings.DEFAULT_OUTPUT_STYLE:
+        style, own = self._effective_output_style(session_id)
+        # The session's OWN pick is always sent — `default` included — so it beats a
+        # project `.claude/settings.local.json` across respawns. An app default of
+        # `default` (or none) sends nothing: the CLI's own default applies.
+        if style is not None and (own or style != flag_settings.DEFAULT_OUTPUT_STYLE):
             out[flag_settings.OUTPUT_STYLE_KEY] = style
         return out
 
@@ -8120,14 +8123,32 @@ class SessionOrchestrator:
         return (rec is not None and flag_settings.takes_output_style(rec)
                 and flag_settings_supported(self._capabilities_of(session_id)))
 
-    def _effective_output_style(self, session_id: str) -> str | None:
-        """The style a spawn of this session starts with: its own choice, else the app
-        default (``AppSettings.default_output_style``, as last read by
-        ``refresh_default_output_style``), else None (the CLI's ``default``)."""
+    def _effective_output_style(self, session_id: str) -> tuple[str | None, bool]:
+        """``(style, own)``: the style a spawn of this session starts with — its own
+        choice (``own``), else the app default (``AppSettings.default_output_style``, as
+        last read by ``refresh_default_output_style``), else None (the CLI's
+        ``default``). Checked against the session's style list once it is known
+        (``_checked_output_style``)."""
         if not self._takes_output_style(session_id):
-            return None
+            return None, False
         rec = self._records[session_id]
-        return rec.output_style or getattr(self, "_default_output_style", None)
+        if rec.output_style:
+            return self._checked_output_style(session_id, rec.output_style, "session"), True
+        default = getattr(self, "_default_output_style", None)
+        if not default:
+            return None, False
+        return self._checked_output_style(session_id, default, "app_default"), False
+
+    def _checked_output_style(self, session_id: str, style: str, source: str) -> str:
+        """*style* if the session's CLI lists it (or no list is known yet), else
+        ``default`` — logged at INFO. The CLI would take an unlisted name silently: a
+        user style deleted since it was picked, or one another host does not have."""
+        known = self._records[session_id].output_styles
+        if known is None or style in known:
+            return style
+        log.info("session.output_style fallback id=%s style=%r source=%s -> %s", session_id,
+                 style, source, flag_settings.DEFAULT_OUTPUT_STYLE)
+        return flag_settings.DEFAULT_OUTPUT_STYLE
 
     async def refresh_default_output_style(self) -> None:
         """Re-read the app-wide default style from the DB. Called before every spawn
@@ -8153,13 +8174,24 @@ class SessionOrchestrator:
         return flag_settings.available_output_styles(self._records[session_id])
 
     async def _record_output_styles(self, session_id: str, styles: list[str],
-                                    current: str | None) -> None:
+                                    current: str | None) -> str | None:
         """Driver ``on_output_styles`` callback: cache the CLI's style list and the
-        style it started with (in memory — each CLI start re-reports them)."""
+        style it started with (in memory — each CLI start re-reports them).
+
+        Returns the style the driver must apply now, or None. A spawn with no list yet
+        (a respawn after a restart) passed the stored style on trust; when the CLI is
+        running a name it does not list, the session falls back to ``default``."""
         rec = self._records.get(session_id)
-        if rec is not None:
-            rec.output_styles = list(styles)
-            rec.output_style_live = current
+        if rec is None:
+            return None
+        rec.output_styles = list(styles)
+        rec.output_style_live = current
+        if (current is not None and current not in rec.output_styles
+                and self._takes_output_style(session_id)):
+            fixed = self._checked_output_style(session_id, current, "cli")
+            rec.output_style_live = fixed
+            return fixed
+        return None
 
     async def set_output_style(self, session_id: str, style: str | None, *,
                                identity: str = SYSTEM_IDENTITY) -> dict:
@@ -8191,8 +8223,11 @@ class SessionOrchestrator:
             raise err
         if style is None:
             await self.refresh_default_output_style()
-        target = (style or getattr(self, "_default_output_style", None)
-                  or flag_settings.DEFAULT_OUTPUT_STYLE)
+            default = getattr(self, "_default_output_style", None)
+            target = (self._checked_output_style(session_id, default, "app_default")
+                      if default else flag_settings.DEFAULT_OUTPUT_STYLE)
+        else:
+            target = style
         driver = self._flag_settings_driver(session_id)
         live = False
         if driver is not None:
@@ -23371,7 +23406,15 @@ class SessionOrchestrator:
         flow re-issues it. Prompts that answer or nudge on the restart itself (an
         orphaned answer, the resume nudge) pass False. A non-replayable
         prompt that starts a turn also forgets the previous one, so a restart can
-        never replay a stale prompt in its place (#2922)."""
+        never replay a stale prompt in its place (#2922).
+
+        A prompt whose first line is an ``APP_ONLY`` command (D-16a) never reaches the
+        engine: it runs as that app command (``run_command``), its result is emitted to
+        attached clients (``ev.CommandResult``), and the answer is ``APP_COMMAND``. This
+        is THE choke point every prompt path shares, so none can forward one."""
+        app_only = cmd_catalog.app_only_command(text)
+        if app_only is not None:
+            return await self._run_app_only_prompt(session_id, *app_only)
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -23461,6 +23504,27 @@ class SessionOrchestrator:
             if not queued_notes:
                 self._pending_prompt_preambles.pop(session_id, None)
         return "sent"
+
+    async def _run_app_only_prompt(self, session_id: str, name: str, args: str) -> str:
+        """Run an ``APP_ONLY`` command that arrived as a prompt (see ``send_prompt``)
+        and emit its result to the session's attached clients. Attributed to the
+        driver's identity (the user it is threaded to), else the system."""
+        d = self._drivers.get(session_id)
+        who = getattr(d, "identity", None)
+        identity = who if isinstance(who, str) and who else SYSTEM_IDENTITY
+        log.info("send_prompt: app command routed, not sent session=%s name=%s",
+                 session_id, name)
+        try:
+            result = await self.run_command(session_id, name, args, identity=identity)
+        except KeyError:
+            result = None
+        if result is not None and d is not None:
+            try:
+                d.emit(ev.CommandResult(result=result))
+            except Exception:
+                log.info("app command result not emitted session=%s", session_id,
+                         exc_info=True)
+        return cmd_catalog.APP_COMMAND
 
     def _queue_prompt_preamble(self, session_id: str, text: str) -> None:
         """Prepend *text* to the session's next prompt (once). See send_prompt."""
@@ -24377,8 +24441,6 @@ class SessionOrchestrator:
                 fast_mode_available=self.fast_mode_available(session_id)) is None:
             why = ("this session's model doesn't offer fast mode" if bare == "fast"
                    else "live settings are off for this session")
-            if bare == "output-style" and flag_settings_supported(capabilities):
-                why = "this session's engine has no output styles"
             log.info("command.app_only_gated session=%s name=%s", session_id, bare)
             return {"name": bare, "render": "notice",
                     "data": {"text": f"/{bare} isn't available — {why}."}}
@@ -24511,6 +24573,11 @@ class SessionOrchestrator:
         cmd = by_name.get(str(name).lstrip("/"))
         if cmd is None:
             raise KeyError(name)
+        if cmd.name == "clear":
+            # `/clear` respawns inside the driver (reconnect), which reads the cached
+            # app-default output style (D-16a): refresh it so a Settings change since
+            # the last spawn applies.
+            await self.refresh_default_output_style()
         return await cmd_dispatcher.dispatch(d, cmd, args or "")
 
     async def _run_output_style_command(self, session_id: str, args: str | None,
@@ -24530,7 +24597,9 @@ class SessionOrchestrator:
                 text = f"Output styles: {listed}. Usage: /output-style <style>"
             return {"name": "output-style", "render": "notice", "data": {"text": text}}
         try:
-            await self.set_output_style(session_id, name, identity=identity)
+            async with db_session() as db:
+                await session_actions.set_output_style(
+                    self, db, session_id=session_id, style=name, identity=identity)
         except flag_settings.SettingsError as exc:
             reason = (f"{name!r} isn't one of this session's styles"
                       if exc.code == flag_settings.OUTPUT_STYLE_UNKNOWN else str(exc))
@@ -24553,7 +24622,15 @@ class SessionOrchestrator:
         if d is None:
             return {"name": "plan", "render": "notice",
                     "data": {"text": "This session isn't live — open it and try again."}}
-        on = (getattr(d, "mode", None) != "plan") if arg == "" else arg == "on"
+        in_plan = getattr(d, "mode", None) == "plan"
+        on = (not in_plan) if arg == "" else arg == "on"
+        if on == in_plan:
+            # Nothing to change. `off` outside plan must NOT send `default`: the drivers
+            # restore the pre-plan mode only from plan, so it would drop a full-auto or
+            # acceptEdits session to the prompting `default` mode.
+            return {"name": "plan", "render": "notice",
+                    "data": {"text": "Plan mode is already on" if on
+                             else "Plan mode is already off"}}
         async with db_session() as db:
             await session_actions.set_permission_mode(
                 self, db, session_id=session_id, mode="plan" if on else "default",

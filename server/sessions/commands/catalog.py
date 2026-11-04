@@ -70,6 +70,19 @@ CODING_ONLY = frozenset({"btw"})
 # `.claude/settings.local.json` INTO the session worktree; `/plan` is not in the SDK list
 # today, but a future headless `/plan` must not bypass the mode picker's overlay either.
 APP_ONLY = frozenset({"fast", "effort", "output-style", "plan"})
+#: ``SessionOrchestrator.send_prompt``'s answer when the prompt's first line was an
+#: ``APP_ONLY`` command: it ran as that app command and nothing reached the engine.
+#: Every prompt path (ws, ``POST /prompt``, automations, a spawn's initial prompt)
+#: sends through that one choke point, so none can forward an APP_ONLY name.
+APP_COMMAND = "app_command"
+
+
+def app_only_command(text: object) -> tuple[str, str] | None:
+    """``(name, args)`` when *text*'s first line is an ``APP_ONLY`` slash command."""
+    if not isinstance(text, str):
+        return None
+    parsed = parse_command_line(text.strip().split("\n", 1)[0].strip())
+    return parsed if parsed is not None and parsed[0] in APP_ONLY else None
 # Commands executed via a dedicated SDK method (not raw passthrough).
 CONTROL = {"model", "clear", "effort", "output-style", "plan"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
