@@ -299,3 +299,13 @@ def test_get_mcp_overall_never_signed_in(shared: Path, monkeypatch):  # noqa: F8
     assert s["overall"]["status"] == "needs-auth"
     assert s["overall"]["grant"] == "never"
     assert s["status"][0]["counted"] is True
+
+
+@pytest.mark.asyncio
+async def test_live_session_ids_excludes_ended_and_archived(isolated_db):
+    from server.db import db_session
+    from server.db.models import Session
+    async with db_session() as db:
+        for sid, status in (("e", "ended"), ("a", "archived"), ("i", "idle")):
+            db.add(Session(id=sid, name=sid, account_name="x", cwd="/tmp", status=status))
+    assert await library._live_session_ids() == {"i"}

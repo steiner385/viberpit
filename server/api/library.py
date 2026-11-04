@@ -14,14 +14,14 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from viberpit import accounts, brand, creds
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
 from server.db import db_session, get_db
-from server.db.models import Session as SessionRow
-from sqlalchemy import select
+from server.db.models import INACTIVE_SESSION_STATUSES, Session as SessionRow
 from server.library import mutate, scan
 from server.library.mutate import ConfigUnreadableError
 from server.library.names import (
@@ -214,10 +214,10 @@ async def _enabled_accounts() -> set[str]:
 
 
 async def _live_session_ids() -> set[str]:
-    """Ids of sessions that have not ended, read from the DB (remote orchestrators lack seams)."""
+    """Ids of sessions that are neither ended nor archived, read from the DB (remote orchestrators lack seams)."""
     async with db_session() as db:
         return set((await db.execute(
-            select(SessionRow.id).where(SessionRow.status != "ended"))).scalars())
+            select(SessionRow.id).where(SessionRow.status.not_in(INACTIVE_SESSION_STATUSES)))).scalars())
 
 
 @router.get("/mcp")
