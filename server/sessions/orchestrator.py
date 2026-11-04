@@ -23744,7 +23744,8 @@ class SessionOrchestrator:
                 log.warning("goal capture/persist failed session=%s", session_id, exc_info=True)
             # fall through: forward /goal to the CLI regardless
         info = await d.server_info()
-        by_name = {c.name: c for c in cmd_catalog.build_catalog(info, capabilities)}
+        by_name = {c.name: c for c in cmd_catalog.build_catalog(
+            info, capabilities, kind=getattr(self._records.get(session_id), "kind", None))}
         cmd = by_name.get(str(name).lstrip("/"))
         if cmd is None:
             raise KeyError(name)

@@ -13,9 +13,9 @@ from server.sessions.types import SessionRecord
 def test_account_command_is_in_catalog(caps):
     """Offered on every engine that can actually move a session's account —
     losslessly (Claude) or as a fresh thread (Codex)."""
-    names = {c.name for c in build_catalog({"commands": []}, caps)}
+    names = {c.name for c in build_catalog({"commands": []}, caps, kind=None)}
     assert "account" in names
-    acct = next(c for c in build_catalog({"commands": []}, caps) if c.name == "account")
+    acct = next(c for c in build_catalog({"commands": []}, caps, kind=None) if c.name == "account")
     assert acct.kind == "control"
     assert acct.source == "app"
 
@@ -25,7 +25,7 @@ def test_account_command_is_withheld_from_an_engine_that_cannot_switch():
     the command can only park the session on its original account there, and the
     palette offering it is how a user learns that the hard way."""
     stuck = AgentCapabilities(account_rotation=False, account_switch_new_thread=False)
-    assert "account" not in {c.name for c in build_catalog({"commands": []}, stuck)}
+    assert "account" not in {c.name for c in build_catalog({"commands": []}, stuck, kind=None)}
 
 
 @pytest.mark.asyncio

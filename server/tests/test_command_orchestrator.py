@@ -230,3 +230,29 @@ async def test_command_catalog_offers_btw_to_coding_sessions_only(kind, offered)
     orch._drivers["s1"] = d
     catalog = await orch.command_catalog("s1")
     assert any(c["name"] == "btw" for c in catalog) is offered
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind,dispatchable", [(None, True), ("assistant", False)])
+async def test_run_command_dispatches_btw_for_coding_sessions_only(kind, dispatchable):
+    """`run_command` builds the catalog with the record's kind too, so the Assistant's
+    own session cannot dispatch `/btw` — dispatchable and visible stay one set."""
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.permissions import PermissionRegistry
+    from server.sessions.types import SessionRecord
+    orch, client = _orch_with_driver(server_info={"commands": []})
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="Live", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
+        cols=80, rows=24, cwd="/tmp", kind=kind,
+    )
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+                      sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
+                      identity="t")
+    await d.start()
+    orch._drivers["s1"] = d
+    if dispatchable:
+        res = await orch.run_command("s1", "btw", "why")
+        assert res is not None and res["render"] == "notice"
+    else:
+        with pytest.raises(KeyError):
+            await orch.run_command("s1", "btw", "why")

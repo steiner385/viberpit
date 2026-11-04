@@ -32,7 +32,7 @@ def test_build_catalog_normalizes_and_filters():
         "barecmd",                                             # string form tolerated
         {"description": "no name"},                            # dropped (no name)
     ]}
-    cat = build_catalog(info, CLAUDE)
+    cat = build_catalog(info, CLAUDE, kind=None)
     by = {c.name: c for c in cat}
     assert "login" not in by                                  # filtered
     assert by["model"].kind == "control"
@@ -49,9 +49,9 @@ def test_build_catalog_normalizes_and_filters():
 def test_build_catalog_handles_none():
     # build_catalog always includes the app-owned commands this engine supports,
     # so even empty/None vendor input returns a usable palette.
-    names = {c.name for c in build_catalog(None, CLAUDE)}
+    names = {c.name for c in build_catalog(None, CLAUDE, kind=None)}
     assert "account" in names
-    names_empty = {c.name for c in build_catalog({}, CLAUDE)}
+    names_empty = {c.name for c in build_catalog({}, CLAUDE, kind=None)}
     assert "account" in names_empty
 
 
@@ -60,10 +60,10 @@ def test_vendor_entry_wins_a_name_collision_with_an_app_command():
     engine says it means — the app-owned fallback must not overwrite its
     description or re-classify it."""
     info = {"commands": [{"name": "model", "description": "the CLI's own /model"}]}
-    by = {c.name: c for c in build_catalog(info, CLAUDE)}
+    by = {c.name: c for c in build_catalog(info, CLAUDE, kind=None)}
     assert by["model"].description == "the CLI's own /model"
     assert by["model"].source == VENDOR
-    assert sum(1 for c in build_catalog(info, CLAUDE) if c.name == "model") == 1
+    assert sum(1 for c in build_catalog(info, CLAUDE, kind=None) if c.name == "model") == 1
 
 
 # --- #1286: a truthful catalog for an engine with no Claude slash syntax -----
@@ -73,10 +73,10 @@ def test_codex_catalog_offers_the_app_commands_it_actually_supports():
     """The regression this issue names: a Codex session's palette held ONE entry
     (`/account`) while `/model` was silently dispatchable, because the app-owned
     half was a single hardcoded synthetic command."""
-    names = {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+    names = {c.name for c in build_catalog(None, CODEX_CAPABILITIES, kind=None)}
     assert {"help", "context", "clear", "model", "account"} <= names
     assert all(
-        c.source == APP for c in build_catalog(None, CODEX_CAPABILITIES)
+        c.source == APP for c in build_catalog(None, CODEX_CAPABILITIES, kind=None)
     ), "with no vendor answer, every entry is ViberPit's own"
 
 
@@ -85,11 +85,11 @@ def test_codex_vendor_entries_are_skills_not_slash_passthrough():
     `/name` into the prompt for the ENGINE to parse, and the app-server does not
     parse slash syntax — it would reach the model as literal text."""
     info = {"commands": [{"name": "pr-review", "description": "Review a PR"}]}
-    by = {c.name: c for c in build_catalog(info, CODEX_CAPABILITIES)}
+    by = {c.name: c for c in build_catalog(info, CODEX_CAPABILITIES, kind=None)}
     assert by["pr-review"].kind == "skill"
     assert by["pr-review"].source == VENDOR
     assert not any(
-        c.kind == "passthrough" for c in build_catalog(info, CODEX_CAPABILITIES)
+        c.kind == "passthrough" for c in build_catalog(info, CODEX_CAPABILITIES, kind=None)
     )
 
 
@@ -98,14 +98,14 @@ def test_an_engine_without_a_vendor_catalog_ignores_vendor_entries():
     payload carrying one is a stale cache, not a fact about the engine."""
     caps = AgentCapabilities(models=True)
     info = {"commands": [{"name": "ghost", "description": "from a stale cache"}]}
-    names = {c.name for c in build_catalog(info, caps)}
+    names = {c.name for c in build_catalog(info, caps, kind=None)}
     assert "ghost" not in names
     assert "model" in names
 
 
 def test_model_is_withheld_from_an_engine_that_cannot_switch_models():
     caps = AgentCapabilities(models=False, account_rotation=True)
-    names = {c.name for c in build_catalog(None, caps)}
+    names = {c.name for c in build_catalog(None, caps, kind=None)}
     assert "model" not in names
     assert "account" in names
 
@@ -115,7 +115,7 @@ def test_every_app_command_offered_is_also_dispatchable(caps):
     """`app_command` is the gate `run_command` consults; the palette and the
     dispatcher must agree, or a command is visible-but-refused (or worse,
     dispatchable-but-invisible, which is what #1286 found)."""
-    offered = {c.name for c in build_catalog(None, caps)}
+    offered = {c.name for c in build_catalog(None, caps, kind=None)}
     declared = {entry.command.name for entry in APP_COMMANDS}
     for name in declared:
         assert (app_command(name, caps) is not None) == (name in offered)
@@ -131,24 +131,24 @@ def test_app_command_tolerates_a_leading_slash():
 
 
 def test_mcp_is_an_app_client_command_only_where_status_is_reportable():
-    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    by = {c.name: c for c in build_catalog(None, CLAUDE, kind=None)}
     assert by["mcp"].kind == "client" and by["mcp"].source == APP
-    assert "mcp" not in {c.name for c in build_catalog(None, AgentCapabilities(models=True))}
-    assert "mcp" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+    assert "mcp" not in {c.name for c in build_catalog(None, AgentCapabilities(models=True), kind=None)}
+    assert "mcp" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES, kind=None)}
 
 
 def test_a_vendor_mcp_entry_renders_our_panel_where_status_is_reportable():
     """The CLI publishes its own /mcp, which in a ViberPit session only prints
     "use /mcp in the terminal". With mcp_status the entry is client (our panel)."""
     info = {"commands": [{"name": "mcp", "description": "Manage MCP servers"}]}
-    [mcp] = [c for c in build_catalog(info, CLAUDE) if c.name == "mcp"]
+    [mcp] = [c for c in build_catalog(info, CLAUDE, kind=None) if c.name == "mcp"]
     assert mcp.kind == "client" and mcp.source == VENDOR
 
 
 def test_a_vendor_mcp_entry_stays_passthrough_without_mcp_status():
     caps = AgentCapabilities(vendor_commands=True)
     info = {"commands": [{"name": "mcp", "description": "Manage MCP servers"}]}
-    [mcp] = [c for c in build_catalog(info, caps) if c.name == "mcp"]
+    [mcp] = [c for c in build_catalog(info, caps, kind=None) if c.name == "mcp"]
     assert mcp.kind == "passthrough"
     assert classify("mcp", caps) == "passthrough"
     assert classify("mcp", CLAUDE) == "client"
@@ -158,11 +158,11 @@ def test_a_vendor_mcp_entry_stays_passthrough_without_mcp_status():
 
 
 def test_fork_is_an_app_client_command_only_where_the_engine_can_fork():
-    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    by = {c.name: c for c in build_catalog(None, CLAUDE, kind=None)}
     assert by["fork"].kind == "client" and by["fork"].source == APP
     assert by["fork"].argument_hint is None
     assert app_command("fork", CLAUDE) is not None
-    assert "fork" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+    assert "fork" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES, kind=None)}
     assert app_command("fork", CODEX_CAPABILITIES) is None
 
 
@@ -173,7 +173,7 @@ def test_fork_follows_the_kill_switch():
     from unittest.mock import patch
 
     with patch.dict(os.environ, {"VIBERPIT_FORK_ENABLED": "false"}):
-        assert "fork" not in {c.name for c in build_catalog(None, CLAUDE)}
+        assert "fork" not in {c.name for c in build_catalog(None, CLAUDE, kind=None)}
         assert app_command("fork", CLAUDE) is None
         assert classify("fork", CLAUDE) == "passthrough"
     assert classify("fork", CLAUDE) == "client"
@@ -183,11 +183,11 @@ def test_fork_follows_the_kill_switch():
 
 
 def test_rewind_is_an_app_client_command_only_where_the_engine_can_rewind():
-    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    by = {c.name: c for c in build_catalog(None, CLAUDE, kind=None)}
     assert by["rewind"].kind == "client" and by["rewind"].source == APP
     assert by["rewind"].argument_hint is None
     assert app_command("rewind", CLAUDE) is not None
-    assert "rewind" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+    assert "rewind" not in {c.name for c in build_catalog(None, CODEX_CAPABILITIES, kind=None)}
     assert app_command("rewind", CODEX_CAPABILITIES) is None
 
 
@@ -198,7 +198,7 @@ def test_rewind_follows_the_kill_switch():
     from unittest.mock import patch
 
     with patch.dict(os.environ, {"VIBERPIT_REWIND_ENABLED": "false"}):
-        assert "rewind" not in {c.name for c in build_catalog(None, CLAUDE)}
+        assert "rewind" not in {c.name for c in build_catalog(None, CLAUDE, kind=None)}
         assert app_command("rewind", CLAUDE) is None
         assert classify("rewind", CLAUDE) == "passthrough"
     assert classify("rewind", CLAUDE) == "client"
@@ -208,7 +208,7 @@ def test_the_clis_own_rewind_takes_our_render_where_the_gate_holds():
     """A vendor `/rewind` entry (the CLI's interactive one) keeps its own description
     but is client-run where the engine can rewind, so the browser's picker handles it."""
     info = {"commands": [{"name": "rewind", "description": "Restore the code and/or conversation"}]}
-    [rewind] = [c for c in build_catalog(info, CLAUDE) if c.name == "rewind"]
+    [rewind] = [c for c in build_catalog(info, CLAUDE, kind=None) if c.name == "rewind"]
     assert rewind.kind == "client"
 
 
@@ -216,12 +216,12 @@ def test_the_clis_own_rewind_takes_our_render_where_the_gate_holds():
 
 
 def test_btw_is_an_app_client_command_with_a_question_hint():
-    by = {c.name: c for c in build_catalog(None, CLAUDE)}
+    by = {c.name: c for c in build_catalog(None, CLAUDE, kind=None)}
     assert by["btw"].kind == "client" and by["btw"].source == APP
     assert by["btw"].argument_hint == "<question>"
     assert app_command("btw", CLAUDE) is not None
     # Any engine: the side chat is the drawer's, not the engine's.
-    assert "btw" in {c.name for c in build_catalog(None, CODEX_CAPABILITIES)}
+    assert "btw" in {c.name for c in build_catalog(None, CODEX_CAPABILITIES, kind=None)}
 
 
 def test_btw_is_left_out_of_the_assistants_own_catalog():
@@ -232,13 +232,13 @@ def test_btw_is_left_out_of_the_assistants_own_catalog():
         assert "btw" not in {c.name for c in build_catalog(server_info, CLAUDE, kind="assistant")}
         assert "btw" in {c.name for c in build_catalog(server_info, CLAUDE, kind=None)}
     # Nothing else changes for the assistant.
-    coding = {c.name for c in build_catalog(None, CLAUDE)} - {"btw"}
+    coding = {c.name for c in build_catalog(None, CLAUDE, kind=None)} - {"btw"}
     assert {c.name for c in build_catalog(None, CLAUDE, kind="assistant")} == coding
 
 
 def test_the_clis_own_btw_takes_our_render_in_a_coding_session():
     info = {"commands": [{"name": "btw", "description": "Ask a quick side question"}]}
-    [btw] = [c for c in build_catalog(info, CLAUDE) if c.name == "btw"]
+    [btw] = [c for c in build_catalog(info, CLAUDE, kind=None) if c.name == "btw"]
     assert btw.kind == "client"
 
 
@@ -247,7 +247,16 @@ def test_btw_follows_the_assistant_kill_switch():
     from unittest.mock import patch
 
     with patch.dict(os.environ, {"VIBERPIT_ASSISTANT_ENABLED": "false"}):
-        assert "btw" not in {c.name for c in build_catalog(None, CLAUDE)}
+        assert "btw" not in {c.name for c in build_catalog(None, CLAUDE, kind=None)}
         assert app_command("btw", CLAUDE) is None
         assert classify("btw", CLAUDE) == "passthrough"
     assert classify("btw", CLAUDE) == "client"
+
+
+def test_build_catalog_requires_the_session_kind():
+    """`kind` has no default: a call site that forgets it would quietly treat the
+    Assistant's own session as a coding session and offer it `/btw`."""
+    with pytest.raises(TypeError):
+        build_catalog(None, CLAUDE)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        build_catalog(None, CLAUDE, "assistant")  # type: ignore[misc]

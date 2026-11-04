@@ -143,7 +143,7 @@ async def test_the_catalog_offers_skills_alongside_the_app_owned_commands(harnes
         result=skills_result(skill("pr-review", "/work/skills/pr-review")),
     )
 
-    catalog = build_catalog(await driver.server_info(), driver.capabilities)
+    catalog = build_catalog(await driver.server_info(), driver.capabilities, kind=None)
     by = {c.name: c for c in catalog}
 
     assert by["pr-review"].kind == "skill" and by["pr-review"].source == "vendor"
@@ -168,7 +168,7 @@ async def test_dispatching_a_skill_sends_a_native_skill_input(harness):
     )
     cmd = next(
         c
-        for c in build_catalog(await driver.server_info(), driver.capabilities)
+        for c in build_catalog(await driver.server_info(), driver.capabilities, kind=None)
         if c.name == "pr-review"
     )
 

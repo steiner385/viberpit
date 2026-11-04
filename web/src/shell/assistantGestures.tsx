@@ -20,7 +20,7 @@
  * assistant drawer specifically is the one open.
  */
 import * as React from 'react'
-import { useOpenDrawer } from './drawerParam'
+import { subscribeDrawerClosed, useOpenDrawer } from './drawerParam'
 
 export interface AssistantGestures {
   /** The assistant's own turn is in flight (mirrors `statusTier(...) === 'busy'`). */
@@ -78,14 +78,21 @@ export function useAssistantGestures(gestures: AssistantGestures): void {
 // --- Open-and-send (D-12) --------------------------------------------------------------
 
 /**
- * A message waiting for the Assistant sheet to send it. A fresh object per request, so
- * the same text asked twice is two sends, not one deduplicated by value.
+ * A message waiting for the Assistant sheet to send it, tied to the session it was
+ * asked about: the sheet sends it only while that session is still the open one, with
+ * that session as its context. A fresh object per request, so the same text asked
+ * twice is two sends, not one deduplicated by value.
  */
 export interface PendingAssistantSend {
   readonly text: string
+  /** The session `/btw` was typed in — the side chat's scope for this message. */
+  readonly sessionId: string | null
 }
 
 /**
+ * The drawer's side-chat state that outlives one mount of the sheet: the parked send,
+ * and the session the drawer's last sent context named (`undefined`: nothing sent yet).
+ *
  * Why a store in context rather than a ref (the Escape bridge's shape): the writer
  * (`/btw` in the dock composer) and the reader (`AssistantSheet`) are both mounted
  * below the shell, and the reader has to RE-RENDER when a send is parked — the sheet
@@ -93,67 +100,100 @@ export interface PendingAssistantSend {
  * `?param=` would replay on reload, Back, or any shared link, and could be planted by
  * one. Nothing here reads the URL; `requestAssistant` is the only writer.
  *
- * Exactly-once is `take()`: it clears the slot as it returns the text, so the sheet
+ * Exactly-once is `take()`: it clears the slot as it returns the send, so the sheet
  * remounting, re-rendering or running its effect twice (StrictMode) finds nothing left.
+ * Closing the Assistant (`useCloseDrawer`) clears it too: a question parked behind a
+ * drawer the user dismissed is never sent later. Help opened over it is not a close.
  */
+interface AssistantRequestState {
+  pending: PendingAssistantSend | null
+  sentScope: string | null | undefined
+}
+
 interface AssistantRequestStore {
-  get: () => PendingAssistantSend | null
-  set: (send: PendingAssistantSend | null) => void
+  get: () => AssistantRequestState
+  update: (patch: Partial<AssistantRequestState>) => void
   subscribe: (cb: () => void) => () => void
 }
 
 function createAssistantRequestStore(): AssistantRequestStore {
-  let pending: PendingAssistantSend | null = null
+  let state: AssistantRequestState = { pending: null, sentScope: undefined }
   const listeners = new Set<() => void>()
   return {
-    get: () => pending,
-    set: (send) => { pending = send; listeners.forEach((l) => l()) },
+    get: () => state,
+    update: (patch) => { state = { ...state, ...patch }; listeners.forEach((l) => l()) },
     subscribe: (cb) => { listeners.add(cb); return () => { listeners.delete(cb) } },
   }
 }
 
 const AssistantRequestContext = React.createContext<AssistantRequestStore | null>(null)
 
-/** Owns the pending-send slot. Mounted by `AppShell` around the whole shell, because
+/** Owns the side-chat state. Mounted by `AppShell` around the whole shell, because
  *  the writer (the dock composer) and the reader (the drawer) are siblings there. */
 export function AssistantRequestProvider({ children }: { children: React.ReactNode }) {
   const [store] = React.useState(createAssistantRequestStore)
+  React.useEffect(() => subscribeDrawerClosed((name) => {
+    if (name === 'assistant' && store.get().pending) store.update({ pending: null })
+  }), [store])
   return <AssistantRequestContext.Provider value={store}>{children}</AssistantRequestContext.Provider>
 }
 
 /**
  * Open the Assistant drawer (`openDrawer('assistant')` — the same open ⌘; does) and,
- * with a non-blank `send`, park that text for the sheet to send as its next prompt.
- * Outside the provider it still opens the drawer; there is no sheet to send from.
+ * with a non-blank `send`, park that text, tied to `sessionId`, for the sheet to send
+ * as its next prompt. Outside the provider it still opens the drawer; there is no
+ * sheet to send from.
  */
-export function useRequestAssistant(): (request?: { send?: string }) => void {
+export function useRequestAssistant(): (request?: { send?: string; sessionId?: string | null }) => void {
   const store = React.useContext(AssistantRequestContext)
   const openDrawer = useOpenDrawer()
-  return React.useCallback((request?: { send?: string }) => {
+  return React.useCallback((request?: { send?: string; sessionId?: string | null }) => {
     const text = request?.send?.trim() ?? ''
-    if (store && text) store.set({ text })
+    if (store && text) store.update({ pending: { text, sessionId: request?.sessionId ?? null } })
     openDrawer('assistant')
   }, [store, openDrawer])
 }
 
-const NO_SEND = { get: () => null, set: () => {}, subscribe: () => () => {} } satisfies AssistantRequestStore
+const NO_STATE: AssistantRequestState = { pending: null, sentScope: undefined }
+const INERT_STORE = {
+  get: () => NO_STATE, update: () => {}, subscribe: () => () => {},
+} satisfies AssistantRequestStore
+
+function useRequestState(): [AssistantRequestState, AssistantRequestStore] {
+  const store = React.useContext(AssistantRequestContext) ?? INERT_STORE
+  return [React.useSyncExternalStore(store.subscribe, store.get, store.get), store]
+}
 
 /**
  * The sheet's side: the parked send (re-renders when one arrives) and `take`, which
- * returns its text and clears it — `null` when there is nothing, or it was taken.
+ * returns it and clears it — `null` when there is nothing, or it was taken.
  * Inert outside the provider.
  */
 export function usePendingAssistantSend(): {
   pendingSend: PendingAssistantSend | null
-  take: () => string | null
+  take: () => PendingAssistantSend | null
 } {
-  const store = React.useContext(AssistantRequestContext) ?? NO_SEND
-  const pendingSend = React.useSyncExternalStore(store.subscribe, store.get, store.get)
+  const [{ pending }, store] = useRequestState()
   const take = React.useCallback(() => {
-    const pending = store.get()
-    if (pending === null) return null
-    store.set(null)
-    return pending.text
+    const parked = store.get().pending
+    if (parked !== null) store.update({ pending: null })
+    return parked
   }, [store])
-  return { pendingSend, take }
+  return { pendingSend: pending, take }
+}
+
+/**
+ * The session the drawer's last sent context named — the scope the server holds for
+ * the turn it is running (D-12) — and the recorder every drawer send goes through.
+ * `undefined` until the drawer has sent anything; `null` for a context naming none.
+ */
+export function useAssistantSentScope(): {
+  sentScope: string | null | undefined
+  recordSentScope: (sessionId: string | null) => void
+} {
+  const [{ sentScope }, store] = useRequestState()
+  const recordSentScope = React.useCallback((sessionId: string | null) => {
+    if (store.get().sentScope !== sessionId) store.update({ sentScope: sessionId })
+  }, [store])
+  return { sentScope, recordSentScope }
 }

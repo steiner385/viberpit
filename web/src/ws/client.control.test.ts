@@ -126,6 +126,16 @@ describe('SessionSocket.interruptAndPrompt frame', () => {
     expect(frame).toEqual({ type: 'prompt', sessionId: 'sess', text: 'do this instead',
       attachmentIds: ['att1'], interrupt: true })
   })
+
+  it('carries the prompt context when given (the Assistant drawer, D-12)', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+    expect(sock.interruptAndPrompt('sess', 'now', [], undefined, { route: '/sessions/s1', sessionId: 's1' })).toBe(true)
+    const frame = JSON.parse(lastSock().sent[0]) as Record<string, unknown>
+    expect(frame).toEqual({ type: 'prompt', sessionId: 'sess', text: 'now',
+      context: { route: '/sessions/s1', sessionId: 's1' }, interrupt: true })
+  })
 })
 
 describe('SessionSocket.activity throttling', () => {

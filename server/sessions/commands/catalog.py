@@ -229,12 +229,13 @@ def _coerce(entry, capabilities: AgentCapabilities) -> Command | None:
 
 
 def build_catalog(
-    server_info: dict | None, capabilities: AgentCapabilities, *, kind: str | None = None
+    server_info: dict | None, capabilities: AgentCapabilities, *, kind: str | None
 ) -> list[Command]:
     """The commands *this* session accepts: the engine's, then ViberPit's own.
 
-    *kind* is the session's record kind (``None`` for a coding session). The
-    Assistant drawer's session gets no `CODING_ONLY` command, from either half.
+    *kind* is the session's record kind (``None`` for a coding session), and has no
+    default: every caller states it. The Assistant drawer's session gets no
+    `CODING_ONLY` command, from either half.
 
     Vendor entries come first and win a name collision, because when an engine
     publishes a command of its own that name means whatever the engine says it

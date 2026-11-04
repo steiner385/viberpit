@@ -18,9 +18,10 @@ import type { PromptContext } from '@/session/events'
 
 interface Props {
   rt: SessionRuntime
-  /** When set, every prompt sent through this composer carries the returned
-   *  context (the AI assistant drawer's "sent from" chip). Computed lazily at
-   *  send time (not once) so it always reflects the current route/open session. */
+  /** When set, every prompt sent through this composer — queued or Send now —
+   *  carries the returned context (the AI assistant drawer's "sent from" chip and
+   *  side-chat scope). Computed lazily at send time (not once) so it always
+   *  reflects the current route/open session. */
   contextProvider?: () => PromptContext
   /** Hide the prompt row (mode / model / effort pickers) — the AI assistant
    *  drawer has no session controls, so its lookups are skipped too. */
@@ -54,6 +55,14 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
     },
     [rt, contextProvider],
   )
+  // Send now carries the same context as a queued send: in the Assistant drawer the
+  // context is the side chat's scope, so dropping it here would unscope the turn (D-12).
+  const scopedInterruptAndPrompt = useCallback(
+    (text: string, attachmentIds: string[], replySource?: 'suggested') =>
+      rt.onInterruptAndPrompt(text, attachmentIds, replySource, contextProvider?.()),
+    [rt, contextProvider],
+  )
+  const onInterruptAndPrompt = contextProvider ? scopedInterruptAndPrompt : rt.onInterruptAndPrompt
   return (
     <>
       <Composer
@@ -61,7 +70,7 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
         onPrompt={onPrompt}
         onActivity={rt.onActivity}
         onInterrupt={rt.onInterrupt}
-        onInterruptAndPrompt={rt.onInterruptAndPrompt}
+        onInterruptAndPrompt={onInterruptAndPrompt}
         queued={rt.state.queued}
         onCancelQueued={rt.onCancelQueued}
         chatArmed={rt.chatArmed}

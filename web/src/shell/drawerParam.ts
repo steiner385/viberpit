@@ -168,7 +168,21 @@ export function useCloseDrawer(): () => void {
   const clearParam = useClearOverlayParam(DRAWER_PARAM)
   const fromUrl = useOverlayParam(DRAWER_PARAM, DRAWER_NAMES)
   return useCallback(() => {
+    const closing = fromUrl ?? readStickyDrawer()
     if (fromUrl === null || isStickyDrawer(fromUrl)) writeStickyDrawer(null)
     clearParam()
+    if (closing) closedListeners.forEach((l) => l(closing))
   }, [clearParam, fromUrl])
+}
+
+const closedListeners = new Set<(name: DrawerName) => void>()
+
+/**
+ * Called with the drawer the user just closed on screen — never for one merely
+ * covered by another (Help over the Assistant closes Help). The Assistant's side-chat
+ * slot (`shell/assistantGestures`) listens, so closing the drawer drops a parked send.
+ */
+export function subscribeDrawerClosed(cb: (name: DrawerName) => void): () => void {
+  closedListeners.add(cb)
+  return () => { closedListeners.delete(cb) }
 }

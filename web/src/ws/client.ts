@@ -406,9 +406,10 @@ export class SessionSocket {
   /** "Interrupt and post": stop the in-flight turn and run this prompt next, instead
    *  of queueing it behind the turn. A CONTROL frame (not a buffered prompt): replayed
    *  late it would cut short whatever turn is running by then — the interrupt rule. */
-  interruptAndPrompt(sessionId: string, text: string, attachmentIds?: string[], replySource?: 'suggested'): boolean {
+  interruptAndPrompt(sessionId: string, text: string, attachmentIds?: string[], replySource?: 'suggested', context?: PromptContext): boolean {
     return this._sendControl({ type: 'prompt', sessionId, text,
-      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}), ...(replySource ? { replySource } : {}), interrupt: true })
+      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}), ...(context ? { context } : {}),
+      ...(replySource ? { replySource } : {}), interrupt: true })
   }
 
   /** `message` rides only with `deny` (the server 400s it on a grant): the operator's
@@ -1063,7 +1064,7 @@ export function useSessionSocket(channel: SocketChannel = 'route') {
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
   const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext, replySource?: 'suggested') => socket.prompt(sessionId, text, attachmentIds, context, replySource), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
-  const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[], replySource?: 'suggested') => socket.interruptAndPrompt(sessionId, text, attachmentIds, replySource), [socket])
+  const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[], replySource?: 'suggested', context?: PromptContext) => socket.interruptAndPrompt(sessionId, text, attachmentIds, replySource, context), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always', message?: string) => socket.permissionResponse(sessionId, permId, decision, message), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])

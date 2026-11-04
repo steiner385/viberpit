@@ -458,6 +458,13 @@ describe('useSessionRuntime.onInterruptAndPrompt', () => {
     expect(sent).toBe(true)
   })
 
+  it('carries a context when one is given — the Assistant drawer\'s Send now (D-12)', () => {
+    const { result } = renderHook(() => useSessionRuntime('sess-ias3'), { wrapper })
+    const context = { route: '/sessions/s1', sessionId: 's1' }
+    act(() => { result.current.onInterruptAndPrompt('now', [], undefined, context) })
+    expect(mockInterruptAndPrompt).toHaveBeenCalledWith('sess-ias3', 'now', [], undefined, context)
+  })
+
   it('returns false (draft kept by the composer) when the socket rejects the frame', () => {
     mockInterruptAndPrompt.mockReturnValue(false)
     const { result } = renderHook(() => useSessionRuntime('sess-ias2'), { wrapper })
@@ -641,6 +648,13 @@ describe('useSessionRuntime.onPlainPrompt', () => {
     expect(mockAnswerQuestion).not.toHaveBeenCalled()
     // The question stays armed for the user's own next message.
     expect(result.current.armedQuestionId).toBe('q9')
+  })
+
+  it('carries a context when one is given — a parked /btw (D-12)', () => {
+    const { result } = renderHook(() => useSessionRuntime('sess-plain3'), { wrapper })
+    const context = { route: '/sessions/s1', sessionId: 's1' }
+    act(() => { result.current.onPlainPrompt('why', [], context) })
+    expect(mockPrompt).toHaveBeenCalledWith('sess-plain3', 'why', [], context)
   })
 
   it('reports a buffered (held) send as such', () => {

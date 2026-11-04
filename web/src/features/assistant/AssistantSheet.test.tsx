@@ -20,15 +20,31 @@ vi.mock('@/api/assistant', () => ({
   useAssistantFeedback: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
 }))
 
+// `toast` is spied (a dropped /btw says why, D-12); the rest of sonner stays real.
+vi.mock('sonner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('sonner')>()
+  return { ...actual, toast: Object.assign(vi.fn(), actual.toast) }
+})
+
 // The real SessionRuntimeProvider owns a live WebSocket attach/detach cycle
 // (useSessionRuntime) — well outside what this test needs to prove (states +
 // wiring). Mocked as a dumb wrapper, alongside the context hook its descendants
 // read, so `AssistantSheetBody` gets a fully-formed (fake) SessionRuntime without
 // a real socket.
-vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
-  SessionRuntimeProvider: ({ children }: { children: ReactNode }) => <div data-testid="runtime">{children}</div>,
-  useSessionRuntimeContext: vi.fn(),
-}))
+// The mocked provider still publishes WHICH session it is for (`useMockRuntimeSessionId`),
+// so a test can hand the page's dock and the drawer the same fake runtime under their
+// own session ids, as the real providers would (`runtimeFor`).
+vi.mock('@/features/sessions/SessionRuntimeProvider', async () => {
+  const { createContext, useContext } = await import('react')
+  const Sid = createContext('')
+  return {
+    SessionRuntimeProvider: ({ children, sessionId }: { children: ReactNode; sessionId: string }) => (
+      <Sid.Provider value={sessionId}><div data-testid="runtime">{children}</div></Sid.Provider>
+    ),
+    useSessionRuntimeContext: vi.fn(),
+    useMockRuntimeSessionId: () => useContext(Sid),
+  }
+})
 
 // The session page itself (transcript, rail, header) is not under test here — only the
 // dock composer beside it and the drawer. A stub keeps the fake runtime minimal.
@@ -38,7 +54,9 @@ vi.mock('@/features/sessions/MainPaneSession', () => ({
 
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
 import { ApiRequestError } from '@/api/client'
+import * as runtimeModule from '@/features/sessions/SessionRuntimeProvider'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
+import { toast } from 'sonner'
 // `renderApp` (web/src/test/renderApp.tsx) mounts the real shell at a path in a
 // layout mode; opening `?drawer=assistant` on desktop renders the sheet through
 // DrawerHost — the same route the user takes, so the test also proves the
@@ -77,6 +95,7 @@ function fakeRuntime() {
     onAnswer: vi.fn(),
     onChat: vi.fn(),
     onPrompt: vi.fn(),
+    onPlainPrompt: vi.fn(() => 'sent'),
     onActivity: vi.fn(),
     onInterrupt: vi.fn(),
     onInterruptAndPrompt: vi.fn(() => true),
@@ -188,7 +207,8 @@ describe('AssistantSheet', () => {
     // Starters are gone once the thread has content; the follow-ups take their place.
     expect(within(dlg).queryByText('What needs my attention?')).toBeNull()
     fireEvent.click(within(dlg).getByRole('button', { name: 'Which one is oldest?' }))
-    expect(rt.onPrompt).toHaveBeenCalledWith('Which one is oldest?', [], undefined, 'suggested')
+    // Every drawer send carries the drawer's context — here, just the route (D-12).
+    expect(rt.onPrompt).toHaveBeenCalledWith('Which one is oldest?', [], { route: '/sessions' }, 'suggested')
   })
 
   it.each(['desktop', 'phone'] as const)(
@@ -273,15 +293,27 @@ describe('AssistantSheet', () => {
     status: 'in_progress', createdAt: '2026-06-21T00:00:00Z', updatedAt: '2026-06-21T00:00:00Z',
     prs: [],
   }
+  const OTHER: Session = { ...OPEN, id: 's2', name: 'Ship the release notes', status: 'idle' }
+  const CTX1 = { route: '/sessions/s1', sessionId: 's1' }
   function seeded() {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    qc.setQueryData(QK.sessions, [OPEN])
+    qc.setQueryData(QK.sessions, [OPEN, OTHER])
     return qc
   }
+  // One fake runtime, seen under each provider's own session id (the dock's `s1`, the
+  // drawer's `a1`): reads go through to `rt`, so reassigning `rt.state` reaches both.
   function withBtw() {
     const rt = fakeRuntime()
     rt.commands = [BTW] as never
-    vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+    const useSid = (runtimeModule as unknown as { useMockRuntimeSessionId: () => string }).useMockRuntimeSessionId
+    const views = new Map<string, typeof rt>()
+    const runtimeFor = (sid: string) => {
+      if (!views.has(sid)) {
+        views.set(sid, new Proxy(rt, { get: (t, k) => (k === 'sessionId' ? sid : t[k as keyof typeof t]) }))
+      }
+      return views.get(sid)!
+    }
+    vi.mocked(useSessionRuntimeContext).mockImplementation(() => runtimeFor(useSid()) as never)
     return rt
   }
   const enabled = (sessionId: string | null) => vi.mocked(useAssistantStatus).mockReturnValue(
@@ -294,10 +326,10 @@ describe('AssistantSheet', () => {
   // Assistant comes back as a fresh mount. That is also how the sheet re-reads the
   // (mocked) assistant status: its drawer element is static, so a navigation alone
   // never re-renders it.
-  const remount = async (router: { navigate: (to: string) => Promise<void> }) => {
-    await act(() => router.navigate('/sessions/s1?drawer=help'))
+  const remount = async (router: { navigate: (to: string) => Promise<void> }, path = '/sessions/s1') => {
+    await act(() => router.navigate(`${path}?drawer=help`))
     expect(drawer()).toBeNull()
-    await act(() => router.navigate('/sessions/s1'))
+    await act(() => router.navigate(path))
     expect(drawer()).not.toBeNull()
   }
 
@@ -330,6 +362,7 @@ describe('AssistantSheet', () => {
     await user.type(dock(), '{Enter}')
     expect(drawer()).not.toBeNull()
     expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(rt.onPlainPrompt).not.toHaveBeenCalled()
     expect(rt.onCommand).not.toHaveBeenCalled()
     expect(dock()).toHaveValue('')
   })
@@ -341,16 +374,16 @@ describe('AssistantSheet', () => {
     const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
     await user.type(dock(), '/btw why is it failing{Enter}')
     expect(drawer()).not.toBeNull()
-    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
-    expect(rt.onPrompt).toHaveBeenCalledWith(
-      'why is it failing', [], { route: '/sessions/s1', sessionId: 's1' })
+    expect(rt.onPlainPrompt).toHaveBeenCalledTimes(1)
+    expect(rt.onPlainPrompt).toHaveBeenCalledWith('why is it failing', [], CTX1)
+    expect(rt.onPrompt).not.toHaveBeenCalled()
     expect(rt.onCommand).not.toHaveBeenCalled()
     // The composer the user typed in is cleared, as for any client command.
     expect(dock()).toHaveValue('')
     // Re-rendering (a navigation) and remounting the sheet never resend.
     await act(() => app.router.navigate('/sessions/s1?drawer=assistant'))
     await remount(app.router)
-    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+    expect(rt.onPlainPrompt).toHaveBeenCalledTimes(1)
   })
 
   it('/btw <question> while the assistant session is still being created sends it once it exists (Review Focus 3)', async () => {
@@ -360,15 +393,14 @@ describe('AssistantSheet', () => {
     const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
     await user.type(dock(), '/btw why is it failing{Enter}')
     expect(drawer()).not.toBeNull()
-    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(rt.onPlainPrompt).not.toHaveBeenCalled()
     // The create lands: the sheet now has a session (re-read on the remount).
     enabled('a1')
     await remount(app.router)
-    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
-    expect(rt.onPrompt).toHaveBeenCalledWith(
-      'why is it failing', [], { route: '/sessions/s1', sessionId: 's1' })
+    expect(rt.onPlainPrompt).toHaveBeenCalledTimes(1)
+    expect(rt.onPlainPrompt).toHaveBeenCalledWith('why is it failing', [], CTX1)
     await remount(app.router)
-    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+    expect(rt.onPlainPrompt).toHaveBeenCalledTimes(1)
   })
 
   it('waits for the replay to settle before sending', async () => {
@@ -378,25 +410,40 @@ describe('AssistantSheet', () => {
     const user = userEvent.setup()
     const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
     await user.type(dock(), '/btw why{Enter}')
-    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(rt.onPlainPrompt).not.toHaveBeenCalled()
     rt.state = { ...rt.state, replaying: false }
     await act(() => app.router.navigate('/sessions/s1?drawer=assistant'))
-    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+    expect(rt.onPlainPrompt).toHaveBeenCalledTimes(1)
   })
 
-  it('with the assistant disabled a parked question is dropped, never sent later', async () => {
+  it('with the assistant switched off, /btw is not ours: the drawer stays shut', async () => {
     vi.mocked(useAssistantStatus).mockReturnValue(
       { data: { enabled: false, sessionId: null, model: 'sonnet' }, isLoading: false } as never,
     )
+    withBtw()
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    await user.type(dock(), '/btw why')
+    expect(screen.queryByRole('option', { name: /btw/i })).toBeNull()
+    await user.type(dock(), '{Enter}')
+    expect(drawer()).toBeNull()
+  })
+
+  it('a question parked when the assistant is then switched off is dropped, never sent later', async () => {
+    enabled(null)
     const rt = withBtw()
     const user = userEvent.setup()
     const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
     await user.type(dock(), '/btw why{Enter}')
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: false, sessionId: null, model: 'sonnet' }, isLoading: false } as never,
+    )
+    await remount(app.router)
     expect(within(drawer()!).getByText(/enable it in settings/i)).toBeInTheDocument()
     enabled('a1')
     await remount(app.router)
     expect(within(drawer()!).getByTestId('runtime')).toBeInTheDocument()
-    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(rt.onPlainPrompt).not.toHaveBeenCalled()
   })
 
   it('⌘; still just opens the drawer — no send', () => {
@@ -406,6 +453,93 @@ describe('AssistantSheet', () => {
     fireEvent.keyDown(window, { key: ';', ctrlKey: true })
     expect(drawer()).not.toBeNull()
     expect(rt.onPrompt).not.toHaveBeenCalled()
+  })
+
+
+  // --- D-12 fix round 1: the header never claims a scope the server isn't enforcing ---
+
+  it('while the scope line shows, every drawer send names the session', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s1?drawer=assistant', mode: 'desktop', queryClient: seeded() })
+    const dlg = () => within(drawer()!)
+    expect(dlg().getByTestId('assistant-scope')).toBeInTheDocument()
+
+    // Starter chip.
+    fireEvent.click(dlg().getByRole('button', { name: 'Why is this session stuck?' }))
+    expect(rt.onPrompt).toHaveBeenLastCalledWith('Why is this session stuck?', [], CTX1, 'suggested')
+    // The composer.
+    await user.type(dlg().getByRole('textbox', { name: /message/i }), 'hello{Enter}')
+    expect(rt.onPrompt).toHaveBeenLastCalledWith('hello', [], CTX1)
+    // A follow-up chip.
+    rt.state = { ...rt.state,
+      turns: [{ id: 't1', role: 'assistant', blocks: [{ kind: 'text', id: 'b1', text: 'Done.' }] }] as never,
+      latestSuggestions: ['What next?'] as never }
+    await act(() => app.router.navigate('/sessions/s1?drawer=assistant&r=1'))
+    fireEvent.click(dlg().getByRole('button', { name: 'What next?' }))
+    expect(rt.onPrompt).toHaveBeenLastCalledWith('What next?', [], CTX1, 'suggested')
+    // Send now, mid-turn.
+    rt.state = { ...rt.state, status: { state: 'in_progress', count: 0 } }
+    await act(() => app.router.navigate('/sessions/s1?drawer=assistant&r=2'))
+    await user.type(dlg().getByRole('textbox', { name: /message/i }), 'stop that')
+    await user.click(dlg().getByRole('button', { name: /send now/i }))
+    expect(rt.onInterruptAndPrompt).toHaveBeenLastCalledWith('stop that', [], undefined, CTX1)
+    // A parked /btw.
+    await user.type(dock(), '/btw and this?{Enter}')
+    expect(rt.onPlainPrompt).toHaveBeenLastCalledWith('and this?', [], CTX1)
+  })
+
+  it('switching sessions mid-turn: the header keeps the scope the server has, and says what the next message is about', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s1?drawer=assistant', mode: 'desktop', queryClient: seeded() })
+    await user.type(within(drawer()!).getByRole('textbox', { name: /message/i }), 'what broke?{Enter}')
+    rt.state = { ...rt.state, status: { state: 'in_progress', count: 0 } }
+    await act(() => app.router.navigate('/sessions/s2'))
+    const scope = within(drawer()!).getByTestId('assistant-scope')
+    expect(scope).toHaveTextContent('About: Fix the flaky login test')
+    expect(scope).toHaveTextContent('Next message will be about Ship the release notes')
+    // Queued prompts hold it too, after the turn ends.
+    rt.state = { ...rt.state, status: { state: 'idle', count: 0 }, queued: [{ text: 'later', images: [] }] as never }
+    await act(() => app.router.navigate('/sessions/s2?r=1'))
+    expect(within(drawer()!).getByTestId('assistant-scope')).toHaveTextContent('About: Fix the flaky login test')
+    // Nothing in flight: the next message decides, so the header names the current session.
+    rt.state = { ...rt.state, queued: [] }
+    await act(() => app.router.navigate('/sessions/s2?r=2'))
+    const settled = within(drawer()!).getByTestId('assistant-scope')
+    expect(settled).toHaveTextContent('About: Ship the release notes')
+    expect(settled).not.toHaveTextContent(/Next message/)
+  })
+
+  it('a parked /btw whose session is no longer open is dropped, with a toast, never sent about another one', async () => {
+    enabled(null)
+    const rt = withBtw()
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    await user.type(dock(), '/btw why is it failing{Enter}')
+    await act(() => app.router.navigate('/sessions/s2'))
+    enabled('a1')
+    await remount(app.router, '/sessions/s2')
+    expect(rt.onPlainPrompt).not.toHaveBeenCalled()
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(toast).toHaveBeenCalledWith('That question was about another session — ask again here')
+    await remount(app.router, '/sessions/s1')
+    expect(rt.onPlainPrompt).not.toHaveBeenCalled()
+  })
+
+  it('a parked /btw with a question armed goes out as a new prompt with context, not as the answer', async () => {
+    enabled('a1')
+    const rt = withBtw()
+    rt.armedQuestionId = 'q1' as never
+    rt.chatArmed = true
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions/s1', mode: 'desktop', queryClient: seeded() })
+    await user.type(dock(), '/btw why{Enter}')
+    expect(rt.onPlainPrompt).toHaveBeenCalledWith('why', [], CTX1)
+    expect(rt.onPrompt).not.toHaveBeenCalled()
+    expect(rt.onAnswer).not.toHaveBeenCalled()
   })
 
   it('a failed create names the reason instead of "API error <status>"', () => {

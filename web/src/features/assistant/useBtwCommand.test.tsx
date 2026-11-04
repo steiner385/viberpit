@@ -3,7 +3,7 @@
  * question also sends it there. Only the catalog's `client` entry is ours (the server
  * lists it in coding sessions, with the Assistant on); anything else goes to the session.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useEffect, type ReactNode } from 'react'
 import { act, renderHook } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom'
@@ -11,6 +11,9 @@ import type { Command } from '@/session/events'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { AssistantRequestProvider, usePendingAssistantSend } from '@/shell/assistantGestures'
 import { useBtwCommand } from './useBtwCommand'
+
+const status = { data: { enabled: true } as { enabled: boolean } | undefined }
+vi.mock('@/api/assistant', () => ({ useAssistantStatus: () => status }))
 
 const BTW: Command = { name: 'btw', description: '', argumentHint: '<question>', kind: 'client', source: 'app' }
 
@@ -30,16 +33,20 @@ function setup(commands: Command[] = [BTW]) {
     )} />
   )
   const { result } = renderHook(
-    () => ({ run: useBtwCommand(rt), pending: usePendingAssistantSend() }), { wrapper })
+    () => ({ btw: useBtwCommand(rt), pending: usePendingAssistantSend() }), { wrapper })
   return {
     onCommand,
-    run: (name: string, args = '') => act(() => result.current.run(name, args)),
+    run: (name: string, args = '') => act(() => result.current.btw.onCommand(name, args)),
+    commands: () => result.current.btw.commands.map((c) => c.name),
+    pendingSession: () => result.current.pending.pendingSend?.sessionId ?? null,
     drawer: () => new URLSearchParams(search).get('drawer'),
     pending: () => result.current.pending.pendingSend?.text ?? null,
   }
 }
 
 describe('useBtwCommand', () => {
+  beforeEach(() => { status.data = { enabled: true } })
+
   it('/btw alone opens the drawer and sends nothing', () => {
     const t = setup()
     t.run('btw', '')
@@ -53,6 +60,8 @@ describe('useBtwCommand', () => {
     t.run('btw', '  why is it failing ')
     expect(t.drawer()).toBe('assistant')
     expect(t.pending()).toBe('why is it failing')
+    // Tied to the session it was asked in, so it never goes out about another one.
+    expect(t.pendingSession()).toBe('s1')
     expect(t.onCommand).not.toHaveBeenCalled()
   })
 
@@ -76,5 +85,21 @@ describe('useBtwCommand', () => {
     t.run('btw', 'hi')
     expect(t.onCommand).toHaveBeenCalledWith('btw', 'hi')
     expect(t.drawer()).toBeNull()
+  })
+
+  it('offers /btw in the menu while the Assistant is on, or its status is not known yet', () => {
+    expect(setup().commands()).toEqual(['btw'])
+    status.data = undefined
+    expect(setup().commands()).toEqual(['btw'])
+  })
+
+  it('with the Assistant switched off in Settings, /btw is absent: not in the menu, and not ours', () => {
+    status.data = { enabled: false }
+    const t = setup()
+    expect(t.commands()).toEqual([])
+    t.run('btw', 'hi')
+    expect(t.onCommand).toHaveBeenCalledWith('btw', 'hi')
+    expect(t.drawer()).toBeNull()
+    expect(t.pending()).toBeNull()
   })
 })
