@@ -81,6 +81,20 @@ def test_put_settings_round_trips():
         assert get_resp.json()["defaultPermissionMode"] == "auto"
 
 
+def test_put_repo_root_null_clears_it_and_absent_leaves_it():
+    """D-14: Reset sends ``repoRoot: null`` and must clear a stored root (it was
+    ignored, so Reset never reset). A PUT that omits the key leaves it alone, and
+    blank/whitespace clears like null."""
+    with _client() as client:
+        put = lambda body: client.put("/api/settings", json=body, headers=IDENTITY_HEADERS)  # noqa: E731
+        assert put({"repoRoot": "/srv/repos"}).json()["repoRoot"] == "/srv/repos"
+        assert put({"thinkingCollapsed": False}).json()["repoRoot"] == "/srv/repos"
+        assert put({"repoRoot": None}).json()["repoRoot"] is None
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["repoRoot"] is None
+        assert put({"repoRoot": "/srv/repos"}).json()["repoRoot"] == "/srv/repos"
+        assert put({"repoRoot": "   "}).json()["repoRoot"] is None
+
+
 # ---------------------------------------------------------------------------
 # PUT /api/settings rejects invalid mode
 # ---------------------------------------------------------------------------

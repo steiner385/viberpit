@@ -166,6 +166,15 @@ describe('SessionDefaultsSection', () => {
       expect(await axe(container)).toHaveNoViolations()
     })
 
+    it('Reset on a stored root saves repoRoot: null — the server clears on null', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ repoRoot: '/srv/old' })))
+      mount()
+      expect(screen.getByLabelText('Worktree location')).toHaveValue('/srv/old')
+      await userEvent.click(screen.getByRole('button', { name: 'Reset worktree location to default' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: null }))
+    })
+
     it('shows the branch prefix read-only, with why it is fixed', () => {
       mount()
       const prefix = screen.getByText('viberpit/')
