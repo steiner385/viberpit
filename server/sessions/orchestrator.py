@@ -24036,7 +24036,7 @@ class SessionOrchestrator:
         there to state a policy, so the pre-existing Claude behaviour is
         preserved rather than a policy invented.
         """
-        caps = getattr(self._drivers.get(session_id), "capabilities", None)
+        caps = getattr((getattr(self, "_drivers", None) or {}).get(session_id), "capabilities", None)
         if isinstance(caps, AgentCapabilities):
             return caps
         registry = getattr(self, "_engine_registry", None)
