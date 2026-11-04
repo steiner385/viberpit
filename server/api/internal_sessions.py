@@ -24,9 +24,10 @@ import logging
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from server.auth.internal_token import ALLOWED_PATH, CERTIFY_PATH
+from server.sessions.host_platforms import KNOWN_PLATFORMS
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +88,16 @@ class InternalCreateSessionRequest(BaseModel):
     auto_archive_opt_out_reason: str | None = None
     ownership_token: str | None = None
     parent_session_id: str | None = None
+    # The non-Linux platform an env-gated issue needs (host-platforms spec §3): a
+    # hard routing filter for ``FleetOrchestrator.create_session``, stamped on the row.
+    platform: str | None = None
+
+    @field_validator("platform")
+    @classmethod
+    def _known_platform(cls, v: str | None) -> str | None:
+        if v is not None and v not in KNOWN_PLATFORMS:
+            raise ValueError(f"unknown platform {v!r}; known: {sorted(KNOWN_PLATFORMS)}")
+        return v
 
 
 @router.post(ALLOWED_PATH, status_code=status.HTTP_201_CREATED)

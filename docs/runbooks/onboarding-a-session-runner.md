@@ -371,6 +371,12 @@ python -m server.codex.doctor                     # exits 0 when nothing failed
 > `$HOME/.local/state`, which on a runner with sshfs-mounted state is refused
 > (correctly) as not provably local.
 
+### Step 9b — Windows VM (optional)
+
+Skip this unless the host should take `env: windows` issues. The VM build, the `winrun` / `winsync`
+helpers, the session guide and `VIBERPIT_HOST_PLATFORMS=linux,windows` are all in
+`docs/runbooks/windows-vm-on-a-session-runner.md`.
+
 ---
 
 ### Step 10 — Prove the runner can finish repository work

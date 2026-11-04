@@ -24,6 +24,7 @@ from server.sessions.host_engines import (
     LEGACY_ENGINES,
     engine_dispatchable,
 )
+from server.sessions.host_platforms import LINUX_ONLY, platform_dispatchable
 
 # Free memory at or above this is "plenty" — more does not score higher.
 _MEM_SATURATION_MB = 4096
@@ -33,7 +34,8 @@ _W_HEADROOM, _W_MEM, _W_LOAD = 0.5, 0.3, 0.2
 # unmeasured host should neither win outright nor be effectively excluded.
 _UNKNOWN_METRIC = 0.5
 
-__all__ = ["HostCandidate", "rank_hosts", "score_host", "engine_rejection"]
+__all__ = ["HostCandidate", "rank_hosts", "score_host", "engine_rejection",
+           "platform_rejection"]
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,8 @@ class HostCandidate:
     #: runner — keeps its current meaning without restating it.
     engines: Mapping[AgentEngine, EngineAvailability] = field(
         default_factory=lambda: dict(LEGACY_ENGINES))
+    #: Host platforms this runner advertises; Linux-only until it says otherwise.
+    platforms: frozenset[str] = LINUX_ONLY
 
 
 def engine_rejection(
@@ -70,6 +74,13 @@ def engine_rejection(
     ok, reason = engine_dispatchable(
         c.engines, engine, expected_contract_sha256=expected_contract_sha256)
     return None if ok else (reason or "unavailable")
+
+
+def platform_rejection(c: HostCandidate, platform: str | None) -> str | None:
+    """Why *c* cannot serve work needing *platform*, or None when it can."""
+    if platform_dispatchable(c.platforms, platform):
+        return None
+    return f"platform {platform} not advertised"
 
 
 def _dispatchable(c: HostCandidate, *, ignore_capacity: bool = False) -> bool:
@@ -109,6 +120,7 @@ def rank_hosts(
     candidates: list[HostCandidate],
     *,
     engine: AgentEngine | None = None,
+    platform: str | None = None,
     expected_contract_sha256: str | None = None,
     ignore_capacity: bool = False,
 ) -> list[str]:
@@ -119,6 +131,9 @@ def rank_hosts(
     ``engine`` filters BEFORE scoring, not after: a host that cannot run the
     requested engine is not a lower-ranked candidate, it is not a candidate. The
     default (None) preserves the pre-engine behavior for every existing caller.
+
+    ``platform`` filters the same way: a host that does not advertise it (e.g.
+    ``windows``) is not a candidate for work that needs it.
 
     ``ignore_capacity`` admits a host that is merely FULL, for a session that
     consumes no capacity slot. Today that is exactly the assistant, which the
@@ -141,5 +156,7 @@ def rank_hosts(
             if engine_rejection(
                 c, engine, expected_contract_sha256=expected_contract_sha256) is None
         ]
+    if platform is not None:
+        usable = [c for c in usable if platform_rejection(c, platform) is None]
     usable.sort(key=lambda c: (-score_host(c), c.name))
     return [c.name for c in usable]

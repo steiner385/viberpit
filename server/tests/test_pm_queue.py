@@ -190,7 +190,7 @@ def test_to_candidate_is_the_runner_shape_plus_provenance():
     entries, _ = rank([_row()], now=NOW)
     assert to_candidate(entries[0]) == {"ref": "o/r#1", "number": 1, "repo": "o/r", "title": "t",
                                         "body": "", "url": "u", "score": 10.0, "product": "viberpit",
-                                        "urgent": False, "hold_kind": None}
+                                        "urgent": False, "hold_kind": None, "platform": None}
 
 
 def test_to_candidate_carries_urgency_to_the_grouper():
@@ -253,6 +253,11 @@ def test_every_skip_reason_is_in_the_vocabulary():
         got = skip_reason(row, **kw)
         assert got == expected
         seen.add(got)
+    # ``platform_busy`` needs a live fleet: a Windows host whose only slot is taken.
+    got = skip_reason(_row(labels=("env: windows",)), platforms=frozenset({"linux", "windows"}),
+                      busy_platforms=frozenset({"windows"}), **kw)
+    assert got == "platform_busy"
+    seen.add(got)
     assert seen == set(SKIP_REASONS)
 
 
@@ -663,3 +668,101 @@ def test_ghostdriver_28_windows_real_target_is_not_dispatched():
     assert skip_reason(row, **ENV_KW) == "environment"
     # Not a policy choice: a product that works its trackers still cannot run it.
     assert skip_reason(row, skip_trackers=False, **ENV_KW) == "environment"
+
+
+# ── live platforms and platform_busy (host-platforms §2) ───────────────────────
+WIN = frozenset({"linux", "windows"})
+
+
+def test_env_windows_runs_when_fleet_advertises_windows():
+    row = _row(labels=("env: windows",))
+    assert skip_reason(row, platforms=WIN, **ENV_KW) is None
+    entries, skipped = rank([row], platforms=WIN, **ENV_KW)
+    assert len(entries) == 1 and skipped == {}
+
+
+def test_env_windows_still_environment_skip_without_windows_host():
+    """The #2983 regression: no advertiser, the issue is still not dispatched."""
+    assert skip_reason(_row(labels=("env: windows",)), **ENV_KW) == "environment"
+    assert skip_reason(_row(labels=("env: windows",)), platforms=frozenset({"linux"}),
+                       busy_platforms=frozenset({"windows"}), **ENV_KW) == "environment"
+
+
+def test_real_target_still_skipped_with_windows_host():
+    row = _row(labels=("real-target", "env: windows"))
+    assert skip_reason(row, platforms=WIN, **ENV_KW) == "environment"
+
+
+@pytest.mark.parametrize("labels,expected", [
+    (("env: windows",), "windows"), (("env: macos",), "macos"), (("env: mac",), "macos"),
+    (("env: windows", "env: macos"), "macos"),
+    (("env: both",), None), (("env: any",), None), ((), None), (("real-target",), None),
+    (("env: linux",), None), (("env: staging",), None),
+])
+def test_gated_platform(labels, expected):
+    from server.pm.queue import FLEET_PLATFORMS, gated_platform
+    assert gated_platform(labels, FLEET_PLATFORMS) == expected
+
+
+def test_gated_platform_both_is_none():
+    from server.pm.queue import gated_platform
+    assert gated_platform(("env: both",), WIN) is None
+
+
+def test_gated_platform_union_with_linux_is_ungated():
+    from server.pm.queue import gated_platform
+    assert gated_platform(("env: windows", "env: linux"), WIN) is None
+
+
+def test_multi_os_union_routes_to_the_advertised_platform():
+    """``env: windows`` + ``env: macos`` with only windows advertised: the environment
+    check calls it runnable, so routing, the busy check and the stamp must all target
+    windows — not ``min`` of the named set, macos, which no host advertises (final
+    review, Important #3). Both verdicts read one ``env:`` parser."""
+    from server.pm.queue import gated_platform, needs_unavailable_environment
+    labels = ("env: windows", "env: macos")
+    assert not needs_unavailable_environment(labels, WIN)
+    assert gated_platform(labels, WIN) == "windows"
+    row = _row(labels=labels)
+    entries, skipped = rank([row], platforms=WIN, **ENV_KW)
+    assert [e.platform for e in entries] == ["windows"] and skipped == {}
+    # ...and it is the windows host it waits on.
+    assert skip_reason(row, platforms=WIN, busy_platforms=frozenset({"windows"}),
+                       **ENV_KW) == "platform_busy"
+    assert skip_reason(row, platforms=WIN, busy_platforms=frozenset({"macos"}),
+                       **ENV_KW) is None
+    # Both advertised: the first in sorted order. Neither: environment-skipped.
+    assert gated_platform(labels, WIN | {"macos"}) == "macos"
+    assert skip_reason(row, **ENV_KW) == "environment"
+
+
+def test_env_platforms_cover_every_known_host_platform():
+    """``_ENV_PLATFORMS`` is derived from ``KNOWN_PLATFORMS``: every host OS name is an
+    ``env:`` value pinning itself, and no ``env:`` value names an unknown OS."""
+    from server.pm.queue import _ENV_PLATFORMS
+    from server.sessions.host_platforms import KNOWN_PLATFORMS
+    for name in KNOWN_PLATFORMS:
+        assert _ENV_PLATFORMS[name] == frozenset({name})
+    for allowed in _ENV_PLATFORMS.values():
+        assert allowed is None or allowed <= KNOWN_PLATFORMS
+
+
+def test_platform_busy_after_environment():
+    busy = frozenset({"windows"})
+    row = _row(labels=("env: windows",))
+    # No advertiser: environment wins over platform_busy.
+    assert skip_reason(row, busy_platforms=busy, **ENV_KW) == "environment"
+    assert skip_reason(row, platforms=WIN, busy_platforms=busy, **ENV_KW) == "platform_busy"
+    entries, skipped = rank([row], platforms=WIN, busy_platforms=busy, **ENV_KW)
+    assert entries == [] and skipped == {"platform_busy": 1}
+
+
+def test_platform_busy_spares_ungated_work():
+    busy = frozenset({"windows"})
+    for labels in ((), ("env: both",), ("env: windows", "env: linux")):
+        assert skip_reason(_row(labels=labels), platforms=WIN, busy_platforms=busy,
+                           **ENV_KW) is None
+
+
+def test_platform_busy_is_a_skip_reason():
+    assert "platform_busy" in SKIP_REASONS

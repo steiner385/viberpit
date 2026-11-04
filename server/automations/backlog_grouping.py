@@ -275,7 +275,9 @@ def order_by_pool_rank(groups: list[dict], candidates: list[dict]) -> list[dict]
 
 def family_groups(candidates: list[dict], *,
                   max_k: int) -> "tuple[list[dict], list[dict]]":
-    """Pure: split *candidates* into ``(evidence groups, everything else)``.
+    """Pure: split *candidates* into ``(groups planned without the model, everything
+    else)`` — the first half is each env-gated candidate alone, then the evidence
+    groups.
 
     Two rules of spec 2026-09-18 §5, and they are the same rule seen from two
     sides. An ``evidence``-held item dispatches as an INVESTIGATION, not as an
@@ -297,8 +299,13 @@ def family_groups(candidates: list[dict], *,
     into one plan, so a second shape here would be a second plan format.
     """
     max_k = max(1, int(max_k))
-    evidence = [c for c in candidates if c.get("hold_kind") == "evidence"]
-    rest = [c for c in candidates if c.get("hold_kind") != "evidence"]
+    # An env-gated candidate is the third member of the same rule: it is dispatched
+    # alone, on a platform host (host-platforms spec §3), so it is planned as a
+    # group of one here and never offered to the model to bundle.
+    gated = [c for c in candidates if c.get("platform") is not None]
+    ungated = [c for c in candidates if c.get("platform") is None]
+    evidence = [c for c in ungated if c.get("hold_kind") == "evidence"]
+    rest = [c for c in ungated if c.get("hold_kind") != "evidence"]
 
     buckets: dict[Any, tuple[str | None, list[str]]] = {}
     for i, c in enumerate(evidence):
@@ -308,7 +315,10 @@ def family_groups(candidates: list[dict], *,
         key: Any = ("family", family) if family else ("solo", i)
         buckets.setdefault(key, (family, []))[1].append(c["ref"])
 
-    groups: list[dict] = []
+    groups: list[dict] = [
+        {"refs": [c["ref"]],
+         "rationale": f"env-gated ({c['platform']}): dispatched alone on a platform host"}
+        for c in gated]
     for family, refs in buckets.values():
         for start in range(0, len(refs), max_k):
             groups.append({
@@ -554,6 +564,14 @@ def plan_to_batch(
     primary_is_evidence = primary_hold_kind == "evidence"
     refs = [r for r in refs if r == primary
             or (by_ref[r].get("hold_kind") == "evidence") == primary_is_evidence]
+    # An env-gated issue (``env: windows``) runs only on a host advertising its
+    # platform and is dispatched ALONE (host-platforms spec §3): a gated primary
+    # takes no siblings, and an ungated one never carries a gated sibling onto a
+    # Linux host. Read fresh at pop time for the same reason as the hold above;
+    # a dropped ref stays in the pool for the next refresh.
+    platform = by_ref[primary].get("platform")
+    refs = ([primary] if platform is not None
+            else [r for r in refs if by_ref[r].get("platform") is None])
     return Batch(
         primary=primary,
         issues=refs,
@@ -569,6 +587,7 @@ def plan_to_batch(
         # receives across this hand-off. A secondary's hold does not travel — the
         # session is for the primary, and it is the primary's prompt that is seeded.
         primary_hold_kind=primary_hold_kind,
+        platform=platform,
     ), group.get("id")
 
 

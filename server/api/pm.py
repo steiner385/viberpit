@@ -57,6 +57,7 @@ from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
     PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
+from server.pm.fleet_platforms import fleet_platform_state
 from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, age_days, rank, rank_key,
                              skip_detail)
 from server.pm.queue_store import queue_inputs
@@ -1036,6 +1037,7 @@ async def queue(
     now = datetime.now(timezone.utc)
 
     rows, policies = await _queue_inputs(db, now)
+    platforms, busy = await fleet_platform_state(db)
     by_product: dict[str, list] = {}
     for r in rows:
         if product is None or r.product == product:
@@ -1056,7 +1058,8 @@ async def queue(
             by_product[slug], now=now,
             **rank_kwargs(policy, min_status=min_status,
                           respect_dependencies=respect_dependencies),
-            skipped_out=skipped_rows if reasons is not None else None)
+            skipped_out=skipped_rows if reasons is not None else None,
+            platforms=platforms, busy_platforms=busy)
         entries.extend(entries_p)
         skipped_by_product[slug] = dict(skipped_p)
         dispatchable_by_product[slug] = len(entries_p)
@@ -1163,6 +1166,7 @@ async def holds(
     limit = max(1, min(limit, _HOLDS_LIMIT_MAX))
     now = datetime.now(timezone.utc)
     rows, policies = await _queue_inputs(db, now)
+    platforms, busy = await fleet_platform_state(db)
     proposals_by_ref = {
         f"{w.repo}#{w.number}": p for p, w in await decisions.pending_list(db)
         if w is not None and w.repo and w.number}
@@ -1176,7 +1180,8 @@ async def holds(
         policy = policies.get(slug) or effective_policy(None)
         esc = product_escalation(slug, by_product[slug], proposals_by_ref, policy, now=now,
                                  min_status=min_status,
-                                 respect_dependencies=respect_dependencies)
+                                 respect_dependencies=respect_dependencies,
+                                 platforms=platforms, busy_platforms=busy)
         products_out.append({"slug": slug, "dispatchable": esc.dispatchable,
                              "skipped": esc.skipped, "heldCount": len(esc.held),
                              "starving": esc.starving,
@@ -2854,6 +2859,7 @@ async def list_decisions(
     if impact:
         now = datetime.now(timezone.utc)
         qrows, qpolicies = await _queue_inputs(db, now)
+        platforms, busy = await fleet_platform_state(db)
         proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in rows
                             if w is not None and w.repo and w.number}
         by_product: dict[str, list] = {}
@@ -2862,7 +2868,8 @@ async def list_decisions(
                 by_product.setdefault(r.product, []).append(r)
         for pslug, prows in by_product.items():
             qpolicy = qpolicies.get(pslug) or effective_policy(None)
-            for item in product_escalation(pslug, prows, proposals_by_ref, qpolicy, now=now).held:
+            for item in product_escalation(pslug, prows, proposals_by_ref, qpolicy, now=now,
+                                       platforms=platforms, busy_platforms=busy).held:
                 impact_by_ref[item.ref] = (item.downstream, item.downstream_dispatchable)
     out = []
     for prop, wi in rows:

@@ -11,6 +11,9 @@ with no mirrored issue, or an issue with no author is untrusted.
 The operator's ``viberpit-ignore`` label is the other verdict those paths must
 re-apply themselves (#3111): the ranked pool honours it for every product, but a
 ref handed straight to a dispatch path never meets that skip (``ignored_refs``).
+So is the ``env:`` platform gate (host-platforms spec §3, ``gated_platforms``): a
+ref the pool no longer offers (claimed, or skipped ``platform_busy``) still has to be
+routed to a platform host.
 
 The same rule gates every other automation that puts a mirrored issue's or PR's text
 in front of an agent (PM Triage classification, epic adoption's spec seed, PR Doctor):
@@ -25,7 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.automations.product_policy import load_policies, policy_for_repo, trusted_authors
 from server.db.models import WorkItem
-from server.pm.queue import IGNORE_LABEL, is_trusted_author
+from server.pm.fleet_platforms import fleet_platform_state
+from server.pm.queue import IGNORE_LABEL, gated_platform, is_trusted_author
 from server.pm.refs import split_ref
 
 
@@ -68,6 +72,34 @@ async def ignored_refs(db: AsyncSession, refs: Iterable[str]) -> list[str]:
         if any(str(label).strip().lower() == IGNORE_LABEL for label in labels or ()):
             out.append(ref)
     return out
+
+
+async def gated_platforms(db: AsyncSession, refs: Iterable[str]) -> dict[str, str | None]:
+    """ref -> its mirrored issue's ``gated_platform`` against the fleet's live
+    advertised set (``fleet_platform_state``, as the queue ranks with), so a multi-OS
+    issue routes where the queue would (``None``: ungated, or not mirrored —
+    ``untrusted_refs`` already refuses an unmirrored ref)."""
+    platforms, _busy = await fleet_platform_state(db)
+    out: dict[str, str | None] = {}
+    for ref in refs:
+        parts = split_ref(ref)
+        labels = None
+        if parts is not None:
+            repo, number = parts
+            labels = (await db.execute(select(WorkItem.labels).where(
+                WorkItem.repo == repo, WorkItem.number == number,
+                WorkItem.kind == "issue"))).scalar_one_or_none()
+        out[ref] = gated_platform(labels or (), platforms)
+    return out
+
+
+def bundled_gated_refs(platforms: Mapping[str, str | None]) -> list[str]:
+    """The gated refs of a several-issue batch (``gated_platforms``' map, in order):
+    a gated issue is always dispatched alone, never bundled (``plan_to_batch``'s
+    rule), so any such ref refuses the batch. Empty for a single-issue batch."""
+    if len(platforms) < 2:
+        return []
+    return [ref for ref, platform in platforms.items() if platform is not None]
 
 
 async def trusted_authors_by_repo(db: AsyncSession,

@@ -41,6 +41,8 @@ _DIRECT: dict[str, str] = {
     "bot": "bot",
     "untrusted": "untrusted",
     "environment": "environment",
+    # Waiting for the one VM to free up: the same bucket as an environment nobody has.
+    "platform_busy": "environment",
 }
 # Skip reasons whose bucket depends on the row's facts.
 _ROW_FACTS = frozenset({"blocked", "assigned", "status"})

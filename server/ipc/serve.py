@@ -330,6 +330,9 @@ async def daemon_lifespan(app, orchestrator):
     finally:
         uninstall_drain_on_sigterm()
         await cancel_and_reap(app.state.boot_resume_task, phase="daemon.boot-resume")
+        platform_probe = getattr(app.state, "platform_probe", None)
+        if platform_probe is not None:
+            await platform_probe.aclose()
         # Drain the Codex app-servers first. By the time this runs, install_drain_on_sigterm
         # has already let in-flight turns settle, so no thread is mid-turn — which is the
         # ordering the plan requires ("after driver turns settle and before daemon shutdown

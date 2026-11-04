@@ -13,6 +13,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
+from server.sessions.host_platforms import KNOWN_PLATFORMS, LINUX_ONLY
+
 from .desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
                             STATUS_OPTIONS, STATUS_READY)
 from .outcomes import bounced_out
@@ -129,15 +131,18 @@ URGENT_LABELS = frozenset({"deploy-monitor"})
 # the banner and put it back. Every session host runs the systemd
 # ``viberpit-daemon.service``, so the fleet is Linux; a host on another OS would
 # widen ``FLEET_PLATFORMS`` alongside a daemon that runs there.
-FLEET_PLATFORMS = frozenset({"linux"})
+# ``FLEET_PLATFORMS`` is only the DEFAULT, a Linux-only fleet. A runner that hosts a
+# Windows VM advertises ``windows`` (``Host.platforms``); the async callers read the live
+# set via ``server.pm.fleet_platforms.fleet_platform_state`` and pass it as ``platforms=``.
+FLEET_PLATFORMS = LINUX_ONLY
 # ``env: <value>`` labels (any case, optional space after the colon). Only OS
 # names carry a verdict: an unrecognised value (``env: staging`` — a deploy
 # target, say) is not an environment gate and never skips. ``any`` runs anywhere.
+# Every host OS name (``host_platforms.KNOWN_PLATFORMS``, the one list) pins itself;
+# the rest are aliases and unions over those names.
 ENV_LABEL_PREFIX = "env:"
 _ENV_PLATFORMS: dict[str, frozenset[str] | None] = {
-    "linux": frozenset({"linux"}),
-    "windows": frozenset({"windows"}),
-    "macos": frozenset({"macos"}),
+    **{name: frozenset({name}) for name in KNOWN_PLATFORMS},
     "mac": frozenset({"macos"}),
     "both": frozenset({"linux", "windows"}),
     "any": None,
@@ -148,7 +153,7 @@ REAL_TARGET_LABELS = frozenset({"real-target"})
 
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
                  "tracker", "untrusted", "environment", "held", "parked", "not_needed",
-                 "needs_spec")
+                 "needs_spec", "platform_busy")
 
 # Logins that file issues which ARE work (deploy-monitor, forced-deploy-audit) — always
 # trusted. Mirrors alert_series.AUTOMATION_LOGINS; pinned by a test rather than imported
@@ -255,6 +260,10 @@ class QueueEntry:
     # Carried off the row so a caller downstream of ranking (item 4's spawn) can
     # still pick the hold's prompt/rung without re-reading the row.
     hold_kind: str | None = None
+    # The row's ``gated_platform`` verdict, carried for the same reason as
+    # ``urgent``: an entry has no labels, and the runner must route a gated issue
+    # to a platform host and dispatch it alone (host-platforms spec §3).
+    platform: str | None = None
 
 
 def is_bot_login(author: str | None) -> bool:
@@ -301,6 +310,22 @@ def is_parked(labels: Iterable[str]) -> bool:
     return bool({str(lbl).strip().lower() for lbl in labels} & PARKED_LABELS)
 
 
+def _env_label_sets(labels: Iterable[str]) -> list[frozenset[str] | None]:
+    """THE ``env:`` label parse: the platform set each OS-naming ``env:`` label allows
+    (``None`` for ``env: any``), in no particular order. A label with an unrecognised
+    value is not an environment gate and is left out. Both verdicts below read this,
+    so they cannot disagree on what an issue's labels say."""
+    out: list[frozenset[str] | None] = []
+    for lbl in labels:
+        name = str(lbl).strip().lower()
+        if not name.startswith(ENV_LABEL_PREFIX):
+            continue
+        value = name[len(ENV_LABEL_PREFIX):].strip()
+        if value in _ENV_PLATFORMS:
+            out.append(_ENV_PLATFORMS[value])
+    return out
+
+
 def needs_unavailable_environment(labels: Iterable[str],
                                   platforms: frozenset[str] = FLEET_PLATFORMS) -> bool:
     """THE ``environment`` verdict: the issue is labelled ``real-target``, or its
@@ -308,21 +333,34 @@ def needs_unavailable_environment(labels: Iterable[str],
     labels are a union — runnable if any one fits. Shared by the queue's skip and
     the approve-escalation tap (``server/pm/policy_skip.py``), which dispatches
     without re-ranking."""
-    names = {str(lbl).strip().lower() for lbl in labels}
-    if names & REAL_TARGET_LABELS:
+    labels = list(labels)
+    if {str(lbl).strip().lower() for lbl in labels} & REAL_TARGET_LABELS:
         return True
-    gated = False
-    for name in names:
-        if not name.startswith(ENV_LABEL_PREFIX):
-            continue
-        value = name[len(ENV_LABEL_PREFIX):].strip()
-        if value not in _ENV_PLATFORMS:
-            continue
-        allowed = _ENV_PLATFORMS[value]
-        if allowed is None or allowed & platforms:
-            return False
-        gated = True
-    return gated
+    sets = _env_label_sets(labels)
+    return bool(sets) and not any(allowed is None or allowed & platforms
+                                  for allowed in sets)
+
+
+def gated_platform(labels: Iterable[str], platforms: frozenset[str]) -> str | None:
+    """The one non-Linux platform an issue is routed to, or ``None``. Pinned means every
+    OS-naming ``env:`` label excludes Linux (``env: windows``, ``env: macos``); ``both``,
+    ``any``, ``linux``, a union with Linux, ``real-target`` and an unlabelled issue run on
+    Linux and give ``None``.
+
+    Several non-Linux platforms (``env: windows`` + ``env: macos``) are a union, as in
+    ``needs_unavailable_environment``: the first in sorted order that *platforms* (the
+    fleet's advertised set) has, so a runnable issue is never routed to a platform no
+    host advertises. When none is advertised the issue is ``environment``-skipped
+    anyway, and the answer is still non-``None`` (the first named) so every caller
+    keeps treating it as gated."""
+    wanted: set[str] = set()
+    for allowed in _env_label_sets(labels):
+        if allowed is None or LINUX_ONLY <= allowed:
+            return None
+        wanted |= allowed
+    if not wanted:
+        return None
+    return min(wanted & platforms or wanted)
 
 
 def is_trusted_author(author: str, trusted: frozenset[str], *, author_id: int | None) -> bool:
@@ -383,8 +421,14 @@ def skip_reason(
     extra_skip_labels: frozenset[str] = frozenset(),
     trusted_authors: frozenset[str] = frozenset(),
     skip_trackers: bool = True,
+    platforms: frozenset[str] = FLEET_PLATFORMS,
+    busy_platforms: frozenset[str] = frozenset(),
 ) -> str | None:
-    """Decision C-2: a row whose board Status is ``None`` (never stamped by the
+    """*platforms* is what the fleet advertises right now and *busy_platforms* the
+    non-Linux ones whose every advertiser already has a working session
+    (``fleet_platforms.fleet_platform_state``); both default to a Linux-only idle fleet.
+
+    Decision C-2: a row whose board Status is ``None`` (never stamped by the
     reconciler) or outside the spec vocabulary (e.g. GitHub's default "Todo" column)
     is treated as Backlog-equivalent, not excluded — an unreconciled board would
     otherwise yield an empty queue. It is then gated by ``min_status`` exactly like a
@@ -429,8 +473,10 @@ def skip_reason(
         return "tracker"
     if not is_trusted_author(row.author, trusted_authors, author_id=row.author_id):
         return "untrusted"
-    if needs_unavailable_environment(row.labels):
+    if needs_unavailable_environment(row.labels, platforms):
         return "environment"
+    if (gated := gated_platform(row.labels, platforms)) is not None and gated in busy_platforms:
+        return "platform_busy"
     return None
 
 
@@ -505,6 +551,8 @@ def rank(
     trusted_authors: frozenset[str] = frozenset(),
     skip_trackers: bool = True,
     skipped_out: list[tuple[QueueRow, str]] | None = None,
+    platforms: frozenset[str] = FLEET_PLATFORMS,
+    busy_platforms: frozenset[str] = frozenset(),
 ) -> tuple[list[QueueEntry], dict[str, int]]:
     """``skipped_out``, when given, receives every skipped row with its reason —
     the items behind each count (#2979), from the same ``skip_reason`` call that
@@ -521,6 +569,8 @@ def rank(
             extra_skip_labels=extra_skip_labels,
             trusted_authors=trusted_authors,
             skip_trackers=skip_trackers,
+            platforms=platforms,
+            busy_platforms=busy_platforms,
         )
         if why:
             skipped[why] = skipped.get(why, 0) + 1
@@ -531,7 +581,8 @@ def rank(
     kept.sort(key=rank_key)
     return [
         QueueEntry(r.ref, r.repo, r.number, r.product, r.title, r.body, r.url, r.score,
-                   r.gh_created_at, is_urgent(r), hold_kind=r.hold_kind)
+                   r.gh_created_at, is_urgent(r), hold_kind=r.hold_kind,
+                   platform=gated_platform(r.labels, platforms))
         for r in kept
     ], skipped
 
@@ -554,4 +605,7 @@ def to_candidate(e: QueueEntry) -> dict:
         # Carried so the runner's spawn (item 4) can pick the hold's prompt/rung
         # without re-reading the row — same reason ``urgent`` rides along.
         "hold_kind": e.hold_kind,
+        # Carried so selection can plan a gated issue alone and the spawn can route
+        # it to a platform host (``Batch.platform``).
+        "platform": e.platform,
     }

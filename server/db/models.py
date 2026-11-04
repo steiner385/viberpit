@@ -325,6 +325,9 @@ class Session(Base):
     # Identity that owns an assistant thread (the idempotency key for
     # POST /api/assistant/session). NULL for coding sessions. Nullable for backfill.
     owner_identity: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Host platform this session must run on ("windows" for `env: windows` work). NULL =
+    # no requirement (Linux). Nullable so init_db backfills on both dialects.
+    platform: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
 
 
 class AppSession(Base):
@@ -1471,6 +1474,10 @@ class Host(Base):
     # rather than re-probed at dispatch time so ranking can FILTER candidates without an
     # RPC per host; the chosen host is still re-checked live before a non-Claude launch.
     engines: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
+    # Last-seen `/info.platforms` (see server/sessions/host_platforms.py). NULL = never
+    # probed, or a daemon predating the advertisement; the one parser reads it as Linux only.
+    platforms: Mapped[list | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None)
 
 

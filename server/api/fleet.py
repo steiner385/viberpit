@@ -24,6 +24,7 @@ from server.sessions.host_engines import (
     expected_contract_sha256,
     parse_engines_info,
 )
+from server.sessions.host_platforms import parse_platforms_info
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
@@ -118,6 +119,8 @@ def host_to_wire(h: Host) -> dict:
         # is happily running Codex against a contract this edge is not pinned to —
         # the operator needs to see both halves to know which side to upgrade.
         "engines": _engines_wire(h),
+        # Platforms the runner advertises (always includes linux); drives `env:` routing.
+        "platforms": sorted(parse_platforms_info(h.platforms)),
         # Live in-process upgrade progress, so the UI can poll it off the same
         # list it already refreshes ({"state": "idle", ...} when never run).
         "upgrade": host_upgrade.upgrade_wire(h.name),

@@ -830,6 +830,28 @@ class AutomationContext:
                             detail={"policy": exc.policy.value})
             return None
 
+    async def platform_launch_or_refuse(self, origin_ref: str, platform: str,
+                                        engine: Any) -> Any:
+        """The engine a launch gated to *platform* runs on, or ``None`` after recording
+        why it is refused (``host_platforms.platform_launch_engine``: routing off, or a
+        Codex engine). The single refusal path for a platform-gated launch, shared by a
+        caller that resolves the engine early and by ``spawn_or_join_session``, the way
+        ``launch_plan_or_refuse`` is for the engine policy."""
+        from server.sessions.host_platforms import (
+            PlatformDispatchRefused, platform_launch_engine)
+        try:
+            return platform_launch_engine(platform, engine)
+        except PlatformDispatchRefused as exc:
+            await self._record_platform_refusal(origin_ref, platform, exc)
+            return None
+
+    async def _record_platform_refusal(self, origin_ref: str, platform: str,
+                                       exc: Exception) -> None:
+        reason = getattr(exc, "reason", str(exc))
+        await self.emit("error", f"refused spawn for {origin_ref}: {reason}",
+                        kind="platform_dispatch_refused", target=origin_ref,
+                        detail={"platform": platform})
+
     async def spawn_session(self, **kwargs: Any) -> Any:
         """``spawn_or_join_session(**kwargs)``, discarding the ``created`` flag.
 
@@ -845,6 +867,7 @@ class AutomationContext:
     async def spawn_or_join_session(self, *, origin_ref: str, dedupe_key: str | None = None,
                             detail: dict | None = None, engine: Any = None,
                             ownership_token: str | None = None,
+                            platform: str | None = None,
                             **create_kwargs) -> tuple[Any, bool]:
         """Find-or-create a session for this automation, reporting which one
         happened as ``(rec, created)``. If a NON-terminal session with the same
@@ -872,6 +895,11 @@ class AutomationContext:
         own schedule retries next tick). Every caller must treat a ``None`` rec as
         "no session exists" and release only a proven unstarted claim.
 
+        *platform* gates the launch to a host advertising it (an ``env: windows``
+        issue; host-platforms spec §3): the engine is forced to Claude, and a launch
+        with no routed path or a Codex engine is refused (``PlatformDispatchRefused``,
+        recorded as ``platform_dispatch_refused``) rather than spawned elsewhere.
+
         With ``ownership_token``, the create boundary joins only the operation's
         reserved session. Exceptions can mean a launch is still running: retain
         the claim for reconciliation, never release it based on a missing row.
@@ -898,6 +926,11 @@ class AutomationContext:
             return None, False
         resolved, config = plan
         engine = resolved if engine is None else engine
+        if platform is not None:
+            engine = await self.platform_launch_or_refuse(origin_ref, platform, engine)
+            if engine is None:
+                return None, False
+            create_kwargs["platform"] = platform
         _kwargs, dropped = sanitize_launch_for_engine(engine, create_kwargs, config=config)
         if dropped:
             # Visible, not silent: the plan forbids quietly routing a Claude-picked
@@ -942,9 +975,14 @@ class AutomationContext:
         if ownership_token is not None:
             create_kwargs["ownership_token"] = ownership_token
         from server.sessions.fleet_router import NoHostAvailable
+        from server.sessions.host_platforms import PlatformDispatchRefused
         try:
             rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
                                              **create_kwargs)
+        except PlatformDispatchRefused as exc:
+            # Raised before any spawn (``_automation_create_session``: no routed path).
+            await self._record_platform_refusal(origin_ref, platform or "", exc)
+            return None, False
         except NoHostAvailable as exc:
             # The fleet is momentarily saturated — routine and self-healing (the
             # automation's own schedule retries next tick regardless), not a code

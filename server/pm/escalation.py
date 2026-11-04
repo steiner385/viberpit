@@ -26,7 +26,7 @@ from server.pm.desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
                                      STATUS_HELD, STATUS_READY)
 from server.pm.drift import DepEdgeView, reverse_blockers
 from server.pm.outcomes import Escalation, escalation_for
-from server.pm.queue import QueueRow, rank, skip_reason
+from server.pm.queue import FLEET_PLATFORMS, QueueRow, rank, skip_reason
 
 #: How a parked item comes back (spec 2026-09-18 §6/§7), as the one line a card or a
 #: digest shows. ``decision`` ends only by accepting its proposal; ``owner_action``
@@ -180,7 +180,9 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
                give_up_after_bounces: int = 0,
                extra_skip_labels: frozenset[str] = frozenset(),
                trusted_authors: frozenset[str] = frozenset(),
-               skip_trackers: bool = True) -> list[HeldItem]:
+               skip_trackers: bool = True,
+               platforms: frozenset[str] = FLEET_PLATFORMS,
+               busy_platforms: frozenset[str] = frozenset()) -> list[HeldItem]:
     """One ``HeldItem`` per parked row (``HELD_KINDS``), unranked.
 
     ``downstream_dispatchable`` re-runs ``skip_reason`` on each dependent with the
@@ -200,7 +202,8 @@ def held_items(rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any], *,
         return skip_reason(r, min_status=min_status, respect_dependencies=respect_dependencies,
                            now=now, give_up_after_bounces=give_up_after_bounces,
                            extra_skip_labels=extra_skip_labels,
-                           trusted_authors=trusted_authors, skip_trackers=skip_trackers)
+                           trusted_authors=trusted_authors, skip_trackers=skip_trackers,
+                           platforms=platforms, busy_platforms=busy_platforms)
 
     out: list[HeldItem] = []
     for row in rows:
@@ -251,7 +254,9 @@ def rank_held(items: Iterable[HeldItem]) -> list[HeldItem]:
 def product_escalation(slug: str, rows: Iterable[QueueRow], proposals_by_ref: Mapping[str, Any],
                        policy: dict, *, now: datetime, starving_max: int = DEFAULT_STARVING_MAX,
                        min_status: str | None = None,
-                       respect_dependencies: bool | None = None) -> ProductEscalation:
+                       respect_dependencies: bool | None = None,
+                       platforms: frozenset[str] = FLEET_PLATFORMS,
+                       busy_platforms: frozenset[str] = frozenset()) -> ProductEscalation:
     """The per-product summary. Reach (``min_status`` / ``respect_dependencies``)
     defaults to the product's own policy, as the runner reads it; a caller with a
     view of its own (``GET /api/pm/holds``'s query params) overrides both.
@@ -259,8 +264,10 @@ def product_escalation(slug: str, rows: Iterable[QueueRow], proposals_by_ref: Ma
     on anyone."""
     rows = list(rows)
     kw = rank_kwargs(policy, min_status=min_status, respect_dependencies=respect_dependencies)
-    entries, skipped = rank(rows, now=now, **kw)
-    held = tuple(rank_held(held_items(rows, proposals_by_ref, now=now, **kw)))
+    entries, skipped = rank(rows, now=now, **kw, platforms=platforms,
+                            busy_platforms=busy_platforms)
+    held = tuple(rank_held(held_items(rows, proposals_by_ref, now=now, **kw,
+                                    platforms=platforms, busy_platforms=busy_platforms)))
     ages = [i.age_hours for i in held if i.age_hours is not None]
     return ProductEscalation(
         slug=slug, dispatchable=len(entries), skipped=skipped, held=held,

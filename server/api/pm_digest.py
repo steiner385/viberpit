@@ -30,6 +30,7 @@ from server.db.models import (DecisionProposal, Feature, Initiative, InitiativeA
 from server.pm import digest as dg
 from server.pm.closeout_assess import cut_text
 from server.pm.desired_state import HUMAN_WAIT_SESSION_STATUSES
+from server.pm.fleet_platforms import fleet_platform_state
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ async def _held_items(db, now: datetime) -> tuple[list[dg.DigestItem], list, lis
     from server.pm.escalation import product_escalation
     from server.pm.policy_skip import stale_system_holds
     rows, policies = await _queue_inputs(db, now)
+    platforms, busy = await fleet_platform_state(db)
     pending_decisions = await decisions.pending_list(db)
     proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in pending_decisions
                         if w is not None and w.repo and w.number}
@@ -73,7 +75,8 @@ async def _held_items(db, now: datetime) -> tuple[list[dg.DigestItem], list, lis
         # An owner_evidence ask whose precondition is unmet (a not-before time, a
         # PR still to merge) is not the owner's to act on yet (#3113).
         items.extend(dg.from_held(i, releasable=i.ref in releasable) for i in product_escalation(
-            slug, by_product[slug], proposals_by_ref, policy, now=now).held
+            slug, by_product[slug], proposals_by_ref, policy, now=now,
+            platforms=platforms, busy_platforms=busy).held
             if not i.evidence_waiting)
     return items, rows, pending_decisions
 

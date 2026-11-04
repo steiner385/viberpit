@@ -111,7 +111,7 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
                        protocol=daemon_proto, load_avg=info.get("loadAvg"),
                        mem_available_mb=info.get("memAvailableMb"),
                        active_sessions=info.get("activeSessions"),
-                       engines=engines)
+                       engines=engines, platforms=_platforms_snapshot(info))
         # Gate 1 — protocol: a daemon speaking another RPC protocol is never dispatchable.
         if daemon_proto is not None and daemon_proto != PROTOCOL_VERSION:
             values.update(healthy=False, last_error=(
@@ -211,6 +211,18 @@ def _engines_snapshot(info: dict) -> dict | None:
 
     raw = info.get(ENGINES_INFO_KEY)
     return raw if isinstance(raw, dict) else None
+
+
+def _platforms_snapshot(info: dict) -> list | None:
+    """The `/info.platforms` list to persist, or None for a legacy daemon.
+
+    None stays None for the same reason as ``_engines_snapshot``: the reader
+    (``host_platforms.parse_platforms_info``) owns the Linux-only default.
+    """
+    from server.sessions.host_platforms import PLATFORMS_INFO_KEY
+
+    raw = info.get(PLATFORMS_INFO_KEY)
+    return raw if isinstance(raw, list) else None
 
 
 async def probe_all(*, fetch: Fetch | None = None,

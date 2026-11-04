@@ -16,8 +16,9 @@ from sqlalchemy import func, select as sa_select
 from viberpit.engines import AgentEngine
 from server.db import db_session
 from server.db.models import Host
-from server.sessions.fleet import HostCandidate, engine_rejection, rank_hosts
+from server.sessions.fleet import HostCandidate, engine_rejection, platform_rejection, rank_hosts
 from server.sessions.host_engines import parse_engines_info
+from server.sessions.host_platforms import parse_platforms_info
 
 log = logging.getLogger(__name__)
 
@@ -147,6 +148,7 @@ class FleetRouter:
                 load_avg=r.load_avg,
                 mem_available_mb=r.mem_available_mb,
                 engines=parse_engines_info(r.engines),
+                platforms=parse_platforms_info(r.platforms),
             )
             for r in rows
             if r.name in self._orchs
@@ -157,6 +159,7 @@ class FleetRouter:
         *,
         prefer: str | None = None,
         engine: AgentEngine | None = None,
+        platform: str | None = None,
         expected_contract_sha256: str | None = None,
         ignore_capacity: bool = False,
     ) -> list[str]:
@@ -166,7 +169,7 @@ class FleetRouter:
         the others: a manual choice should still fail over rather than fail. It is
         a preference, never permission — a preferred host that cannot run *engine*
         is filtered out with the rest rather than promoted into a dispatch that
-        would fail at the daemon.
+        would fail at the daemon. The same holds for *platform*.
 
         *ignore_capacity* is for a session that occupies no slot (the assistant);
         see ``rank_hosts``. Every other refusal leg still applies, and still
@@ -177,13 +180,13 @@ class FleetRouter:
                 f"no orchestrator for host {prefer!r}; known hosts: {self.names()}")
         candidates = await self.candidates()
         order = rank_hosts(
-            candidates, engine=engine, expected_contract_sha256=expected_contract_sha256,
-            ignore_capacity=ignore_capacity)
+            candidates, engine=engine, platform=platform,
+            expected_contract_sha256=expected_contract_sha256, ignore_capacity=ignore_capacity)
         if prefer and prefer in order:
             order = [prefer] + [h for h in order if h != prefer]
         elif prefer:
-            log.info("fleet: preferred host %r is not a candidate for engine %s",
-                     prefer, engine.value if engine else "any")
+            log.info("fleet: preferred host %r is not a candidate for engine %s, platform %s",
+                     prefer, engine.value if engine else "any", platform or "any")
         if not order:
             if engine is not None:
                 # Distinguish "your fleet is down" from "your fleet cannot run this
@@ -202,6 +205,16 @@ class FleetRouter:
                 }
                 if incompatible:
                     raise NoEngineHostAvailable(engine, incompatible)
+            if platform is not None:
+                healthy = set(rank_hosts(candidates, ignore_capacity=ignore_capacity))
+                lacking = {c.name: why for c in candidates if c.name in healthy
+                           and (why := platform_rejection(c, platform)) is not None}
+                if lacking:
+                    detail = ", ".join(f"{h}: {w}" for h, w in sorted(lacking.items()))
+                    raise NoHostAvailable(
+                        f"no healthy host advertises platform {platform} ({detail})")
+                raise NoHostAvailable(
+                    f"no enabled, healthy host with capacity for platform {platform}")
             raise NoHostAvailable(
                 "no enabled, healthy host with capacity; refusing to run in-process "
                 "to avoid a split-brain over the shared database")
