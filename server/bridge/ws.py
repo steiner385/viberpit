@@ -1002,12 +1002,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             mx = getattr(rec, "context_max_tokens", None) if rec is not None else None
             if not isinstance(used, int) or not isinstance(mx, int) or mx <= 0:
                 return
+            # The loaded memory set (D-13) rides the same frame, as it does live.
+            files = getattr(rec, "memory_files", None)
             try:
                 from server.sessions import events as ev
                 out_q.put_nowait({**ev.ContextUsage(
                     used_tokens=used, max_tokens=mx,
                     percentage=round(used / mx * 100, 1),
                     model=getattr(rec, "model", None),
+                    memory_files=files if isinstance(files, list) else None,
                 ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: context usage re-emit failed", exc_info=True)

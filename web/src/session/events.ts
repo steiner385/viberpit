@@ -84,7 +84,11 @@ export interface EvSuggestions   { type: 'suggestions';   sessionId: string; tur
 export interface EvCondensing    { type: 'condensing';    active: boolean; expectedMs?: number | null }
 // Exact context-window occupancy pulled from the SDK after a turn settles (same data
 // as the `/context` command). Drives the persistent ctx% readout — see contextWindow.ts.
-export interface EvContextUsage  { type: 'contextUsage';  usedTokens: number; maxTokens: number; percentage: number; model?: string | null }
+// One memory file the CLI loaded (D-13), from `get_context_usage().memoryFiles`: an absolute
+// path, the CLI's own `type` (User / Project / Local / Managed / AutoMem …) and its tokens.
+export interface MemoryFile      { path: string; type: string; tokens: number }
+// `memoryFiles` is in CLI load order; absent for an engine that reports none (Codex).
+export interface EvContextUsage  { type: 'contextUsage';  usedTokens: number; maxTokens: number; percentage: number; model?: string | null; memoryFiles?: MemoryFile[] }
 // Live MCP connection status for the session (SDK get_mcp_status); not part of the transcript.
 export interface EvMcpStatus     { type: 'mcpStatus';     servers: McpServerState[] }
 export interface EvRecovering    { type: 'recovering';    turnId: string; message: string; ts?: number }

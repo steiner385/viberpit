@@ -23,6 +23,7 @@ from server.sessions.engine import (
 from server.sessions.orchestrator import DRIVER_SWAP_TIMEOUT_S, ModelBlockedError
 from server.sessions.rewind import REWIND_CODES, REWIND_CONTROL_TIMEOUT_S, RewindError
 from server.sessions import worktree_files
+from server.sessions import memory_files
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -940,6 +941,22 @@ class RemoteOrchestrator:
             if exc.err_type == "FileAccessError" and code in (
                     worktree_files.PATH_OUTSIDE_WORKTREE, worktree_files.FILE_NOT_FOUND):
                 raise worktree_files.FileAccessError(code) from exc
+            raise
+
+    async def memory_file(self, session_id, *, path: str) -> dict:
+        """Proxy memory_file (D-13 viewer) to the daemon that owns the session — its
+        loaded set, worktree and config dir are that host's. An unknown session is
+        re-raised as KeyError and a refusal as MemoryFileError; an old daemon's
+        UnknownMethod (and any other code) stays a DaemonError, which the route maps."""
+        try:
+            return await self._client.call("memory_file", timeout=WORKTREE_RPC_TIMEOUT,
+                                           session_id=session_id, path=path)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            if (exc.err_type == "MemoryFileError"
+                    and (exc.data or {}).get("code") == memory_files.MEMORY_FILE_UNKNOWN):
+                raise memory_files.MemoryFileError(memory_files.MEMORY_FILE_UNKNOWN) from exc
             raise
 
     async def fork_session(self, session_id, *, at_turn_id: str | None, mode: str,

@@ -48,6 +48,7 @@ from server.api.pipeline import router as pipeline_router, repos_router as pipel
 from server.api.automations import router as automations_router
 from server.api.capacity import router as capacity_router
 from server.api.library import router as library_router
+from server.api.memory import router as memory_router
 from server.api.presets import router as presets_router
 from server.api.templates import router as templates_router
 from server.api.permission_profiles import router as permission_profiles_router
@@ -1069,6 +1070,7 @@ def create_app(
     app.include_router(automations_router)
     app.include_router(capacity_router)
     app.include_router(library_router)
+    app.include_router(memory_router)
     app.include_router(presets_router)
     app.include_router(templates_router)
     app.include_router(permission_profiles_router)

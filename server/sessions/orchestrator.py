@@ -105,6 +105,7 @@ from server.sessions import primary_lease
 from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions import worktree_files
+from server.sessions import memory_files
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.claude_driver import (
@@ -2979,6 +2980,7 @@ class SessionOrchestrator:
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
+            on_memory_files=self._persist_memory_files,
             on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
@@ -7992,6 +7994,21 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(
                     context_used_tokens=used_tokens, context_max_tokens=max_tokens)
+            )
+
+    async def _persist_memory_files(self, session_id: str, files: list) -> None:
+        """Driver ``on_memory_files`` callback (D-13): keep the CLI's loaded memory set on
+        the record and its row. The WS bridge re-emits it on attach with the context
+        usage, and ``memory_file`` allows exactly these paths — so it survives a restart.
+        Best-effort like context usage."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.memory_files = files
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(
+                    memory_files=files)
             )
 
     async def _persist_mcp_status(self, session_id: str, states: list) -> None:
@@ -19188,6 +19205,7 @@ class SessionOrchestrator:
             context_used_tokens=getattr(row, "context_used_tokens", None),
             context_max_tokens=getattr(row, "context_max_tokens", None),
             command_catalog=getattr(row, "command_catalog", None),
+            memory_files=getattr(row, "memory_files", None),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             pr_resolution_note=getattr(row, "pr_resolution_note", None),
@@ -21232,6 +21250,23 @@ class SessionOrchestrator:
         refused read. Runs off the event loop."""
         rec = self._worktree_record(session_id)
         return await asyncio.to_thread(worktree_files.read_file, rec.cwd or "", path)
+
+    async def memory_file(self, session_id: str, *, path: str) -> dict:
+        """``{path, type, text, truncated, editable}`` of one of the session's loaded
+        memory files (D-13 viewer), read on this — the owning — host. ``KeyError`` for an
+        unknown session; ``MemoryFileError(MEMORY_FILE_UNKNOWN)`` for any path that is
+        not exactly in the record's current set or resolves outside the work tree and
+        the user files. The session's ``CLAUDE_CONFIG_DIR`` is its account's cfg dir —
+        or, for a live driver, the dir it actually runs against (the assistant's
+        isolated mirror). Runs off the event loop."""
+        rec = self._worktree_record(session_id)
+        config_dirs = [str(account_cfg_dir(rec.account))]
+        live = getattr(self._drivers.get(session_id), "config_dir", None)
+        if isinstance(live, str) and live:
+            config_dirs.append(live)
+        return await asyncio.to_thread(memory_files.read_memory_file, path,
+                                       loaded=rec.memory_files, cwd=rec.cwd or "",
+                                       config_dirs=config_dirs)
 
     async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
         """Reconnect one MCP server in a live session. ``LookupError`` when not live,

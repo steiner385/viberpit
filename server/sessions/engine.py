@@ -312,6 +312,10 @@ class AgentDriverConfig:
     get_condense_estimate: Callable[[], Awaitable[float]] | None = None
     on_recoverable_failure: Callable[[str, str, float | None], Awaitable[None]] | None = None
     on_context_usage: Callable[[str, int, int], Awaitable[None]] | None = None
+    #: Fired with (session id, ``[{path, type, tokens}]``) — the CLI's loaded memory
+    #: set (D-13), in load order — each time the context reading reports one. Only
+    #: Claude reports a set; other engines never call it.
+    on_memory_files: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired with the sanitized MCP status snapshot each time a Claude driver polls it.
     on_mcp_status: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired (synchronously, with the session id) when a Task sub-agent starts or ends,
