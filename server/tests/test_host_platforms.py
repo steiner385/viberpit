@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from fastapi.testclient import TestClient
-
 
 from server.ipc.daemon import create_daemon_app
 from server.sessions.host_platforms import (
@@ -53,70 +53,129 @@ class _Clock:
         return self.now
 
 
-def _probe(result: bool, clock=None):
-    calls: list[str] = []
+class _Check:
+    """A check the test releases by hand, so refresh timing is observable."""
 
-    async def check(platform: str) -> bool:
-        calls.append(platform)
-        return result
+    def __init__(self, result: bool = True) -> None:
+        self.result = result
+        self.calls = 0
+        self.gate = asyncio.Event()
 
-    return PlatformProbe(check=check, clock=clock or _Clock()), calls
+    async def __call__(self, platform: str) -> bool:
+        assert platform == "windows"
+        self.calls += 1
+        await self.gate.wait()
+        return self.result
+
+
+async def _settle(probe: PlatformProbe) -> None:
+    if probe._refresh is not None:
+        await probe._refresh
+
+
+WIN = frozenset({"linux", "windows"})
 
 
 @pytest.mark.asyncio
-async def test_probe_drops_windows_when_check_fails():
-    probe, _ = _probe(False)
-    assert await probe.advertised(frozenset({"linux", "windows"})) == {"linux"}
+async def test_advertised_never_waits_on_the_check():
+    check = _Check()
+    probe = PlatformProbe(check=check, clock=_Clock())
+    # The check is blocked forever; advertised() must still answer at once.
+    got = await asyncio.wait_for(probe.advertised(WIN), timeout=1)
+    assert got == {"linux"}  # no verdict yet: windows is not advertised
+    await asyncio.sleep(0)
+    assert check.calls == 1
+    check.gate.set()
+    await probe.aclose()
 
 
 @pytest.mark.asyncio
-async def test_probe_keeps_windows_when_check_passes():
-    probe, calls = _probe(True)
-    assert await probe.advertised(frozenset({"linux", "windows"})) == {"linux", "windows"}
-    assert calls == ["windows"]
+async def test_verdict_flips_after_the_refresh_completes():
+    check = _Check(True)
+    probe = PlatformProbe(check=check, clock=_Clock())
+    assert await probe.advertised(WIN) == {"linux"}
+    check.gate.set()
+    await _settle(probe)
+    assert await probe.advertised(WIN) == WIN
 
 
 @pytest.mark.asyncio
-async def test_probe_caches_for_ttl():
+async def test_failed_check_keeps_windows_out():
+    check = _Check(False)
+    check.gate.set()
+    probe = PlatformProbe(check=check, clock=_Clock())
+    await probe.advertised(WIN)
+    await _settle(probe)
+    assert await probe.advertised(WIN) == {"linux"}
+
+
+@pytest.mark.asyncio
+async def test_a_raising_check_counts_as_down():
+    async def boom(platform: str) -> bool:
+        raise RuntimeError("ssh exploded")
+
+    probe = PlatformProbe(check=boom, clock=_Clock())
+    await probe.advertised(WIN)
+    await _settle(probe)
+    assert await probe.advertised(WIN) == {"linux"}
+
+
+@pytest.mark.asyncio
+async def test_at_most_one_refresh_in_flight():
+    check = _Check()
+    probe = PlatformProbe(check=check, clock=_Clock())
+    for _ in range(5):
+        await probe.advertised(WIN)
+        await asyncio.sleep(0)
+    assert check.calls == 1
+    check.gate.set()
+    await probe.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cache_holds_for_ttl_then_refreshes_in_background():
     clock = _Clock()
-    probe, calls = _probe(True, clock)
-    cfg = frozenset({"linux", "windows"})
-    await probe.advertised(cfg)
-    await probe.advertised(cfg)
-    assert calls == ["windows"]
+    check = _Check(True)
+    check.gate.set()
+    probe = PlatformProbe(check=check, clock=clock)
+    await probe.advertised(WIN)
+    await _settle(probe)
+    await probe.advertised(WIN)
+    assert check.calls == 1  # fresh: no new check
     clock.now += 61
-    await probe.advertised(cfg)
-    assert calls == ["windows", "windows"]
+    # Stale: the old verdict is still served immediately while a refresh starts.
+    assert await probe.advertised(WIN) == WIN
+    await _settle(probe)
+    assert check.calls == 2
 
 
 @pytest.mark.asyncio
 async def test_probe_never_checks_linux_only():
-    probe, calls = _probe(True)
+    check = _Check()
+    probe = PlatformProbe(check=check, clock=_Clock())
     assert await probe.advertised(frozenset({"linux"})) == {"linux"}
-    assert calls == []
+    await asyncio.sleep(0)
+    assert check.calls == 0
 
 
 @pytest.mark.asyncio
 async def test_probe_passes_macos_through_unchecked():
-    probe, calls = _probe(False)
+    check = _Check(False)
+    probe = PlatformProbe(check=check, clock=_Clock())
     assert await probe.advertised(frozenset({"linux", "macos"})) == {"linux", "macos"}
-    assert calls == []
+    await asyncio.sleep(0)
+    assert check.calls == 0
 
 
 @pytest.mark.asyncio
-async def test_probe_serialises_concurrent_stale_callers():
-    calls = 0
-
-    async def check(platform: str) -> bool:
-        nonlocal calls
-        calls += 1
-        await asyncio.sleep(0.01)
-        return True
-
+async def test_aclose_reaps_an_in_flight_refresh():
+    check = _Check()
     probe = PlatformProbe(check=check, clock=_Clock())
-    cfg = frozenset({"linux", "windows"})
-    await asyncio.gather(*(probe.advertised(cfg) for _ in range(5)))
-    assert calls == 1
+    await probe.advertised(WIN)
+    await asyncio.sleep(0)
+    task = probe._refresh
+    await probe.aclose()
+    assert task is not None and task.done()
 
 
 def _info(monkeypatch: pytest.MonkeyPatch, platforms: str) -> dict:
@@ -138,7 +197,16 @@ def test_info_advertises_windows_only_while_the_vm_answers(monkeypatch, vm_up, e
         return vm_up
 
     monkeypatch.setattr("server.sessions.host_platforms.ssh_vm_check", fake_check)
-    assert _info(monkeypatch, "windows")[PLATFORMS_INFO_KEY] == expected
+    monkeypatch.setenv("VIBERPIT_HOST_PLATFORMS", "windows")
+    with TestClient(create_daemon_app()) as client:
+        # First poll answers at once without windows; the background check then lands.
+        assert client.get("/info").json()[PLATFORMS_INFO_KEY] == ["linux"]
+        deadline = time.monotonic() + 5
+        body = client.get("/info").json()
+        while body[PLATFORMS_INFO_KEY] != expected and time.monotonic() < deadline:
+            time.sleep(0.02)
+            body = client.get("/info").json()
+        assert body[PLATFORMS_INFO_KEY] == expected
 
 
 @pytest.mark.asyncio

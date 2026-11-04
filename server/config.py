@@ -199,14 +199,14 @@ try:
         copilot_port_base: int = Field(default=4142, alias="VIBERPIT_COPILOT_PORT_BASE")
         copilot_port_count: int = Field(default=8, alias="VIBERPIT_COPILOT_PORT_COUNT")
         copilot_idle_grace_s: float = Field(default=300.0, alias="VIBERPIT_COPILOT_IDLE_GRACE_S")
-        # Native OpenAI Codex (server/codex). Both flags default FALSE — this is a
-        # launch flag, and absence or incompatibility must disable Codex ONLY. The
-        # external-token API is the experimental app-server surface runners use to
-        # authenticate without holding a credential, so it is gated separately.
         # Host platforms this runner can run work for, beyond linux ("windows" = a VM
         # reachable at `windows_vm_ssh_host`). Advertised on the daemon's /info.
         host_platforms: str = Field(default="", alias="VIBERPIT_HOST_PLATFORMS")
         windows_vm_ssh_host: str = Field(default="win11", alias="VIBERPIT_WINDOWS_VM_SSH_HOST")
+        # Native OpenAI Codex (server/codex). Both flags default FALSE — this is a
+        # launch flag, and absence or incompatibility must disable Codex ONLY. The
+        # external-token API is the experimental app-server surface runners use to
+        # authenticate without holding a credential, so it is gated separately.
         codex_enabled: bool = Field(default=False, alias="VIBERPIT_CODEX_ENABLED")
         codex_external_auth_enabled: bool = Field(
             default=False, alias="VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED")

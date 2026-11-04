@@ -47,6 +47,7 @@ def create_daemon_app() -> FastAPI:
     from server.sessions.host_platforms import PlatformProbe, ssh_vm_check
     _platform_probe = PlatformProbe(
         check=lambda _platform: ssh_vm_check(get_settings().windows_vm_ssh_host))
+    app.state.platform_probe = _platform_probe
     # Published for RPC handlers that must report the daemon's CURRENT epoch in-band, not
     # just via /info: the wave-3 cursor-catchup coverage probe (ring_covers) returns it so
     # the edge's epoch gate compares against the epoch the daemon reports RIGHT NOW —

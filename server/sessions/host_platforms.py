@@ -16,6 +16,8 @@ import logging
 import time
 from typing import Awaitable, Callable, Final
 
+from server.aio import cancel_and_reap
+
 __all__ = [
     "PLATFORMS_INFO_KEY",
     "KNOWN_PLATFORMS",
@@ -80,25 +82,31 @@ async def ssh_vm_check(host: str) -> bool:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        log.debug("windows vm check: cannot start ssh: %s", exc)
         return False
     try:
         return await asyncio.wait_for(proc.wait(), _CHECK_TIMEOUT_S) == 0
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        log.debug("windows vm check: ssh to %s timed out", host)
         return False
-    except Exception:
-        return False
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
 
 
 class PlatformProbe:
     """Filters configured platforms down to those that are actually reachable.
 
     Only ``windows`` has a reachability check (the VM); ``linux`` is the runner
-    itself and ``macos`` passes through unchecked. Verdicts are cached for
-    *ttl_s*; a lock lets one caller refresh a stale verdict while others wait for
-    it, so ``/info`` never fans out into concurrent ssh processes.
+    itself and ``macos`` passes through unchecked.
+
+    :meth:`advertised` NEVER awaits the check: it answers from the cached verdict
+    at once and, when that verdict is stale or absent, starts one background
+    refresh. Until a first verdict lands ``windows`` is not advertised, so work is
+    never routed to a VM nobody has confirmed. The ``/info`` poll therefore cannot
+    be stalled by a down or hung VM.
     """
 
     def __init__(
@@ -111,24 +119,32 @@ class PlatformProbe:
         self._check = check
         self._ttl_s = ttl_s
         self._clock = clock
-        self._lock = asyncio.Lock()
+        self._refresh: asyncio.Task[None] | None = None
         self._verdict: bool | None = None
         self._checked_at = 0.0
 
     def _fresh(self) -> bool:
         return self._verdict is not None and self._clock() - self._checked_at < self._ttl_s
 
+    async def _run_check(self) -> None:
+        try:
+            verdict = bool(await self._check("windows"))
+        except Exception:
+            log.debug("windows vm check raised", exc_info=True)
+            verdict = False
+        self._verdict = verdict
+        self._checked_at = self._clock()
+
     async def advertised(self, configured: frozenset[str]) -> frozenset[str]:
         out = set(configured) | _LINUX
         if "windows" in out:
-            if not self._fresh():
-                async with self._lock:
-                    if not self._fresh():
-                        try:
-                            self._verdict = bool(await self._check("windows"))
-                        except Exception:
-                            self._verdict = False
-                        self._checked_at = self._clock()
+            if not self._fresh() and (self._refresh is None or self._refresh.done()):
+                self._refresh = asyncio.create_task(
+                    self._run_check(), name="host-platforms-vm-check")
             if not self._verdict:
                 out.discard("windows")
         return frozenset(out)
+
+    async def aclose(self) -> None:
+        """Stop an in-flight refresh (daemon shutdown)."""
+        await cancel_and_reap(self._refresh, phase="host-platforms.vm-check")
