@@ -122,7 +122,13 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onTo
       )}
       {rt.contextPct != null && <ContextRing remainingPct={rt.contextPct} />}
       {showFast && (
-        <FastToggle on={fastOn} onToggle={onToggleFast} pending={fastPending} />
+        <FastToggle
+          on={fastOn}
+          onToggle={onToggleFast}
+          pending={fastPending}
+          liveState={session?.fastModeState}
+          disabledReason={session?.fastModeDisabledReason}
+        />
       )}
     </div>
   )

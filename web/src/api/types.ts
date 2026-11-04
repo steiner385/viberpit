@@ -398,6 +398,11 @@ export interface Session {
   /** Whether fast mode can be on right now — the CLI listed the session's current
    *  model as fast-capable. The ⚡ toggle and `/fast` show only when true. */
   fastModeAvailable?: boolean
+  /** The CLI's LIVE fast-mode state: `cooldown` = a fast-mode 429 dropped it to standard
+   *  speed for ~10 min. Null/absent until the CLI has reported. `fastMode` is the choice. */
+  fastModeState?: 'on' | 'off' | 'cooldown' | null
+  /** Why the CLI disabled fast mode (`out_of_credits`, `org_level_disabled` …), or null. */
+  fastModeDisabledReason?: string | null
   /** ISO instant until which autopilot is deferring because the user is steering this
    *  session; null/absent = not deferring. The card counts down locally from this. */
   autopilotCooldownUntil?: string | null

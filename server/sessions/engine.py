@@ -341,6 +341,9 @@ class AgentDriverConfig:
     #: session's stored fast mode was dropped (the model lacks it), and the driver then
     #: tells the CLI ``{"fastMode": false}``. Only ``flag_settings`` engines call it.
     on_model_options: Callable[[str, list], Awaitable[bool | None]] | None = None
+    #: Fired ``(session_id, state, disabled_reason)`` with the CLI's live fast-mode state
+    #: (``flag_settings.live_fast_mode``) from ``initialize`` and every ``system/init``.
+    on_fast_mode_state: Callable[[str, str, str | None], Awaitable[None]] | None = None
     #: Fired with the sanitized MCP status snapshot each time a Claude driver polls it.
     on_mcp_status: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired (synchronously, with the session id) when a Task sub-agent starts or ends,

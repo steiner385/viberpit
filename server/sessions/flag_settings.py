@@ -97,6 +97,24 @@ def fast_mode_models(server_info: Mapping[str, Any] | None) -> list[str]:
     return sorted(ids)
 
 
+FAST_MODE_STATES = ("on", "off", "cooldown")
+
+
+def live_fast_mode(source: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
+    """The CLI's LIVE fast-mode state — ``(state, disabled_reason)`` — from any frame
+    that carries it (the ``initialize`` reply, ``system/init``). ``state`` is one of
+    ``FAST_MODE_STATES`` or None (absent/unrecognised: leave the last reading alone);
+    the reason (``out_of_credits``, ``org_level_disabled`` …) is a short string or None.
+    The stored choice is ``SessionRecord.fast_mode``; this is what the CLI is doing."""
+    if not isinstance(source, Mapping):
+        return None, None
+    state = source.get("fast_mode_state")
+    if state not in FAST_MODE_STATES:
+        return None, None
+    reason = source.get("fast_mode_disabled_reason")
+    return state, (reason if isinstance(reason, str) and reason else None)
+
+
 def supports_fast_mode(fast_models: Iterable[str] | None, model: str | None) -> bool:
     """Does *model* have fast mode, per a cached ``fast_mode_models`` list? An unknown
     list (None) is never a yes: availability is only what ``initialize`` reported."""

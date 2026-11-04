@@ -184,7 +184,7 @@ def test_flag_settings_is_a_claude_capability_only() -> None:
 
 
 def _driver(control: FakeControl | None, *, info: dict | None = INFO,
-            on_model_options=None) -> ClaudeAgentDriver:
+            on_model_options=None, on_fast_mode_state=None) -> ClaudeAgentDriver:
     def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
              on_pre_compact=None):
         client = FakeSDKClient([], on_can_use_tool=can_use_tool, startup_frames=[],
@@ -194,7 +194,8 @@ def _driver(control: FakeControl | None, *, info: dict | None = INFO,
         return client
     return ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                              sdk_factory=make, registry=PermissionRegistry(),
-                             identity="u", on_model_options=on_model_options)
+                             identity="u", on_model_options=on_model_options,
+                             on_fast_mode_state=on_fast_mode_state)
 
 
 @pytest.mark.asyncio
@@ -466,6 +467,47 @@ async def _row(sid: str) -> DbSession:
 def _payload(rec: SessionRecord) -> dict:
     from server.api.sessions import _record_to_dict
     return _record_to_dict(SessionRecord.from_dict(rec.to_dict()))
+
+
+def test_live_fast_mode_reads_state_and_reason_from_any_frame() -> None:
+    assert fs.live_fast_mode(INFO) == ("off", "sdk_opt_in_required")
+    assert fs.live_fast_mode({"fast_mode_state": "cooldown"}) == ("cooldown", None)
+    assert fs.live_fast_mode({"fast_mode_state": "on", "fast_mode_disabled_reason": ""}) == ("on", None)
+    # Unknown state / absent / non-mapping: nothing to record (the last reading stands).
+    assert fs.live_fast_mode({"fast_mode_state": "weird"}) == (None, None)
+    assert fs.live_fast_mode({}) == (None, None)
+    assert fs.live_fast_mode(None) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_driver_reports_the_live_fast_mode_state_at_start_and_on_each_init() -> None:
+    from claude_agent_sdk import SystemMessage
+    seen: list = []
+
+    async def on_state(sid, state, reason):
+        seen.append((sid, state, reason))
+
+    d = _driver(FakeControl(), on_fast_mode_state=on_state)
+    await d.start()
+    try:
+        assert seen == [("s1", "off", "sdk_opt_in_required")]
+        await d._handle_msg(SystemMessage(subtype="init", data={
+            "session_id": "s1", "fast_mode_state": "cooldown"}))
+        await d._handle_msg(SystemMessage(subtype="init", data={"session_id": "s1"}))
+        assert seen[1:] == [("s1", "cooldown", None)]     # no state on a frame → no report
+    finally:
+        await d.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_record_keeps_the_latest_live_state_and_serves_it(env) -> None:
+    # The CLI's start-up reading (INFO) is already on the record and the payload.
+    p = _payload(env.rec)
+    assert (p["fastModeState"], p["fastModeDisabledReason"]) == ("off", "sdk_opt_in_required")
+    await env.orch._record_fast_mode_state(env.rec.id, "cooldown", None)
+    p = _payload(env.rec)
+    assert (p["fastModeState"], p["fastModeDisabledReason"]) == ("cooldown", None)
+    assert p["fastMode"] is False                # the stored choice is untouched
 
 
 @pytest.mark.asyncio

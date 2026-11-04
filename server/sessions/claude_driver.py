@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import AsyncIterator, Callable
 from claude_agent_sdk import (AssistantMessage, PermissionResultAllow, PermissionResultDeny,
-                              ResultMessage, TaskStartedMessage, TaskUpdatedMessage,
+                              ResultMessage, SystemMessage, TaskStartedMessage, TaskUpdatedMessage,
                               TaskNotificationMessage, TERMINAL_TASK_STATUSES)
 from claude_agent_sdk._errors import CLIConnectionError
 from viberpit import brand
@@ -38,7 +38,7 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
 from .driver_stream import _STREAM_DONE, DriverStream
 from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
                             SETTINGS_INVALID, SETTINGS_REFUSED, SETTINGS_UNAVAILABLE,
-                            SettingsError, effort_levels, model_options)
+                            SettingsError, effort_levels, live_fast_mode, model_options)
 from .memory_files import normalize_memory_files
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
@@ -370,7 +370,7 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, on_memory_files=None,
-                 on_model_options=None, on_mcp_status=None, clock=None, suggester=None,
+                 on_model_options=None, on_fast_mode_state=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  on_prompt_uuid: Callable[[str, str, str], None] | None = None,
@@ -436,6 +436,10 @@ class ClaudeAgentDriver:
         # ``initialize`` model list, reported once per CLI start. True back = the stored
         # fast mode was dropped, so this CLI (started with it) is told to turn it off.
         self._on_model_options = on_model_options
+        # async callback ``on_fast_mode_state(session_id, state, reason)``: the CLI's live
+        # fast-mode state, from ``initialize`` and each ``system/init`` (the SDK's typed
+        # ``ResultMessage`` drops the copy the CLI also puts on ``result`` frames).
+        self._on_fast_mode_state = on_fast_mode_state
         # Serializes ``apply_flag_settings``: each reply is awaited before the next write
         # goes out, since back-to-back writes read stale values (D-14 spike §1.3).
         self._flag_settings_lock = asyncio.Lock()
@@ -1605,6 +1609,8 @@ class ClaudeAgentDriver:
                 tool_id = tool_id or getattr(msg, "tool_use_id", None)
                 if tool_id:
                     self._automation_background_tools.discard(tool_id)
+        if isinstance(msg, SystemMessage) and msg.subtype == "init":
+            await self._report_fast_mode_state(msg.data)
         if isinstance(msg, ResultMessage):
             self._automation_terminal_observed = True
         if isinstance(msg, AssistantMessage) and msg.parent_tool_use_id is None:
@@ -2396,16 +2402,32 @@ class ClaudeAgentDriver:
                  self.session_id, err.error_data, err)
         return err
 
+    async def _report_fast_mode_state(self, source) -> None:
+        """Hand the CLI's live fast-mode state in *source* (an ``initialize`` reply or a
+        ``system/init`` payload) to the callback. Best-effort, DEBUG on failure."""
+        if self._on_fast_mode_state is None:
+            return
+        state, reason = live_fast_mode(source)
+        if state is None:
+            return
+        try:
+            await self._on_fast_mode_state(self.session_id, state, reason)
+        except Exception:
+            log.debug("on_fast_mode_state failed session=%s", self.session_id, exc_info=True)
+
     async def _report_model_options(self) -> None:
         """Report the CLI's model list (D-14) once per CLI start, from the ``initialize``
         reply the SDK already holds. When the callback says the stored fast mode was
         dropped, send ``{"fastMode": false}`` — best-effort: this CLI was spawned with
         it on. Best-effort throughout, DEBUG on failure (a refusal is INFO already)."""
-        if self._on_model_options is None:
+        if self._on_model_options is None and self._on_fast_mode_state is None:
             return
         try:
             info = await self.server_info()
             if info is None:
+                return
+            await self._report_fast_mode_state(info)
+            if self._on_model_options is None:
                 return
             dropped = await self._on_model_options(self.session_id, model_options(info))
             if dropped:
@@ -2959,6 +2981,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_context_usage=config.on_context_usage,
             on_memory_files=config.on_memory_files,
             on_model_options=config.on_model_options,
+            on_fast_mode_state=config.on_fast_mode_state,
             on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,
