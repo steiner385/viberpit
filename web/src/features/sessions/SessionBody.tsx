@@ -155,6 +155,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           quota: rt.quota,
           commands: rt.commands,
           mcpLive: rt.state.mcpServers,
+          memoryFiles: rt.memoryFiles,
+          cwd: sessionRecord?.cwd ?? null,
           onCompact: () => rt.onPlainPrompt('/compact', []),
         }}
         environment={{

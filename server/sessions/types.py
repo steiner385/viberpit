@@ -209,6 +209,11 @@ class SessionRecord:
     # can still populate the composer's command palette instead of showing an
     # empty autocomplete. None until the session has been live once.
     command_catalog: list | None = None
+    # The CLI's loaded memory files (D-13) from the last context reading:
+    # ``[{path, type, tokens}]`` in load order. Persisted + re-emitted on attach with the
+    # context usage, and the allowlist of the owning-host memory-file viewer
+    # (``memory_files.read_memory_file``). None until a Claude turn reports it.
+    memory_files: list | None = None
     # Fork anchors (D-8): turn id -> the CLI transcript uuid that turn can be forked
     # from, fed live by the driver's TurnAnchor events and merged from the transcript
     # on a lookup miss (SessionOrchestrator.resolve_turn_anchor). Insertion-ordered and
@@ -339,6 +344,7 @@ class SessionRecord:
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
             "commandCatalog": self.command_catalog,
+            "memoryFiles": self.memory_files,
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
             "kind": self.kind,
@@ -407,6 +413,7 @@ class SessionRecord:
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
+            memory_files=d.get("memoryFiles"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),
             sub_agents=d.get("subAgents"),

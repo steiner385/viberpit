@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import type { McpServerState, UsageWindow } from '@/api/types'
-import type { Command } from '@/session/events'
+import type { Command, MemoryFile } from '@/session/events'
 import { PromptRow } from '../composer/PromptRow'
 
-const { sessionMcp, rules } = vi.hoisted(() => ({ sessionMcp: vi.fn(), rules: vi.fn() }))
+const { sessionMcp, rules, memoryFile } = vi.hoisted(() => ({ sessionMcp: vi.fn(), rules: vi.fn(), memoryFile: vi.fn() }))
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: sessionMcp,
   useReconnectSessionMcp: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
@@ -16,6 +16,7 @@ vi.mock('@/api/hooks', () => ({
   useMcpAuthStatus: () => ({ data: undefined }),
   usePermissionRules: rules,
   useRevokePermissionRule: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useMemoryFile: memoryFile,
 }))
 vi.mock('@/api/mcpScopeHooks', () => ({
   useToggleSessionMcp: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null, variables: undefined }),
@@ -42,13 +43,27 @@ const base = {
   quota: null as UsageWindow[] | null,
   commands: [cmd('compact')],
   mcpLive: null as McpServerState[] | null,
+  memoryFiles: null as MemoryFile[] | null,
+  cwd: '/home/u/wt' as string | null,
   onCompact: () => {},
 }
+
+// CLI order, as the engine reports it: the user file first, then the walk, then the worktree.
+const FILES: MemoryFile[] = [
+  { path: '/home/u/.claude-accounts/cfg/work/CLAUDE.md', type: 'User', tokens: 1234 },
+  { path: '/home/u/wt/CLAUDE.md', type: 'Project', tokens: 958 },
+  { path: '/home/u/wt/CLAUDE.local.md', type: 'Local', tokens: 4 },
+  { path: '/home/u/.claude-accounts/cfg/work/projects/p/memory/MEMORY.md', type: 'AutoMem', tokens: 80 },
+  { path: '/etc/claude-code/CLAUDE.md', type: 'Plugin', tokens: 7 },
+]
 
 describe('ContextCard', () => {
   beforeEach(() => {
     sessionMcp.mockReset().mockReturnValue({ data: undefined })
     rules.mockReset().mockReturnValue({ data: [] })
+    memoryFile.mockReset().mockReturnValue({ data: undefined, isError: false, error: null, refetch: vi.fn() })
+    // jsdom has no Element.scrollTo; the viewer's virtualizer goes through it.
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() })
   })
 
   it('is a labelled "Context" section', () => {
@@ -171,5 +186,108 @@ describe('ContextCard', () => {
     expect(q).toHaveTextContent('prem 20%')
     rerender(<ContextCard {...base} quota={null} />)
     expect(screen.queryByRole('list', { name: 'Account quota' })).toBeNull()
+  })
+
+  describe('Memory (D-13)', () => {
+    it('lists the loaded files in CLI order with label, display path and tokens', () => {
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      const list = screen.getByRole('list', { name: 'Memory files' })
+      const rows = within(list).getAllByRole('listitem')
+      expect(rows.map((r) => r.textContent)).toEqual([
+        'User/home/u/.claude-accounts/cfg/work/CLAUDE.md1,234 tokens',
+        'ProjectCLAUDE.md958 tokens',
+        'LocalCLAUDE.local.md4 tokens',
+        'Auto memory/home/u/.claude-accounts/cfg/work/projects/p/memory/MEMORY.md80 tokens',
+        // An unknown type is shown as the CLI sent it.
+        'Plugin/etc/claude-code/CLAUDE.md7 tokens',
+      ])
+      // The full path is the row's title, so a truncated one can still be read.
+      expect(within(rows[1]).getByText('CLAUDE.md').parentElement).toHaveAttribute('title', '/home/u/wt/CLAUDE.md')
+      // A long path is cut from the START, so the file name stays: an RTL box around an LTR span.
+      const shown = within(rows[0]).getByText('/home/u/.claude-accounts/cfg/work/CLAUDE.md')
+      expect(shown).toHaveAttribute('dir', 'ltr')
+      expect(shown.parentElement).toHaveAttribute('dir', 'rtl')
+      expect(shown.parentElement).toHaveAttribute('title', '/home/u/.claude-accounts/cfg/work/CLAUDE.md')
+    })
+
+    it('shows absolute paths when the worktree is unknown', () => {
+      render(<ContextCard {...base} memoryFiles={FILES.slice(1, 2)} cwd={null} />, { wrapper: Wrapper })
+      expect(screen.getByRole('button', { name: /Project \/home\/u\/wt\/CLAUDE\.md/ })).toBeInTheDocument()
+    })
+
+    it('hides the list when no files are loaded, or the engine reports none', () => {
+      const { rerender } = render(<ContextCard {...base} memoryFiles={[]} />, { wrapper: Wrapper })
+      expect(screen.queryByRole('list', { name: 'Memory files' })).toBeNull()
+      expect(screen.queryByText('Memory')).toBeNull()
+      rerender(<ContextCard {...base} memoryFiles={null} />)
+      expect(screen.queryByRole('list', { name: 'Memory files' })).toBeNull()
+    })
+
+    it('opens a read-only viewer for a file; a project file has no Edit link', async () => {
+      memoryFile.mockReturnValue({
+        data: { path: FILES[1].path, type: 'Project', text: '# Project rules\nbe kind\n', truncated: false, editable: false },
+        isError: false, error: null, refetch: vi.fn(),
+      })
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /^Project CLAUDE\.md/ }))
+      const dialog = await screen.findByRole('dialog', { name: 'CLAUDE.md' })
+      expect(memoryFile).toHaveBeenCalledWith('s1', '/home/u/wt/CLAUDE.md')
+      expect(await within(dialog).findByText('be kind')).toBeInTheDocument()
+      expect(within(dialog).getByText('Project memory · /home/u/wt/CLAUDE.md')).toBeInTheDocument()
+      // Read-only: nothing to type into, and no way to Settings for a project file.
+      expect(within(dialog).queryByRole('textbox')).toBeNull()
+      expect(within(dialog).queryByRole('link', { name: 'Edit in Settings' })).toBeNull()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+      expect(screen.queryByRole('dialog')).toBeNull()
+    })
+
+    it('the user file links to Settings › Memory', async () => {
+      memoryFile.mockReturnValue({
+        data: { path: FILES[0].path, type: 'User', text: 'always test\n', truncated: true, editable: true },
+        isError: false, error: null, refetch: vi.fn(),
+      })
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /^User / }))
+      const dialog = await screen.findByRole('dialog')
+      expect(await within(dialog).findByText('always test')).toBeInTheDocument()
+      expect(within(dialog).getByRole('link', { name: 'Edit in Settings' })).toHaveAttribute('href', '/settings/memory')
+      expect(within(dialog).getByText('Large file — showing the first 256 KiB.')).toBeInTheDocument()
+    })
+
+    it('says so when the file can no longer be read', async () => {
+      memoryFile.mockReturnValue({
+        data: undefined, isError: true,
+        error: new (await import('@/api/client')).ApiRequestError(404, { detail: { code: 'MEMORY_FILE_UNKNOWN' } }),
+        refetch: vi.fn(),
+      })
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /^Local / }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(/no longer loaded or no longer readable/i)).toBeInTheDocument()
+    })
+
+    it('a daemon too old to read memory files says so (the shared 409 branch)', async () => {
+      const { ApiRequestError } = await import('@/api/client')
+      memoryFile.mockReturnValue({
+        data: undefined, isError: true,
+        error: new ApiRequestError(409, { detail: { code: 'daemon_outdated', message: 'The session daemon is too old for this.' } }),
+        refetch: vi.fn(),
+      })
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /^Local / }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText('The session daemon is too old for this.')).toBeInTheDocument()
+    })
+
+    it('any other failure offers Retry', async () => {
+      const { ApiRequestError } = await import('@/api/client')
+      const refetch = vi.fn()
+      memoryFile.mockReturnValue({ data: undefined, isError: true, error: new ApiRequestError(500, {}), refetch })
+      render(<ContextCard {...base} memoryFiles={FILES} />, { wrapper: Wrapper })
+      fireEvent.click(screen.getByRole('button', { name: /^Local / }))
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }))
+      expect(refetch).toHaveBeenCalled()
+    })
   })
 })

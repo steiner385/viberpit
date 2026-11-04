@@ -37,9 +37,11 @@ def test_prompt_directs_the_model_to_report_capability_gaps():
 
 
 def test_prompt_overrides_inherited_coding_instructions():
-    """The persistent client cannot take setting_sources=[] (it hangs), and user memory
-    is anchored to HOME, so ~/.claude/CLAUDE.md still loads. The prompt must say plainly
-    that the assistant's role wins over it."""
+    """The persistent client cannot take setting_sources=[] (it hangs), so the operator's
+    ~/.claude/CLAUDE.md still loads: as user memory through the scratch dir's CLAUDE.md
+    link (the CLI reads the user file from CLAUDE_CONFIG_DIR), and through the project
+    walk from a cwd under HOME. The prompt must say plainly that the assistant's role
+    wins over it."""
     assert "CLAUDE.md" in ASSISTANT_SYSTEM_PROMPT
     assert "override" in ASSISTANT_SYSTEM_PROMPT
     assert "NOT a coding agent" in ASSISTANT_SYSTEM_PROMPT

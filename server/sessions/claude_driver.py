@@ -36,6 +36,7 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
                      REWIND_UNAVAILABLE, RewindError, conversation_request, files_request,
                      map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
+from .memory_files import normalize_memory_files
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
                      AgentDriverFactory, AgentEngine, _EffortUnchanged)
@@ -361,7 +362,8 @@ class ClaudeAgentDriver:
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
-                 on_recoverable_failure=None, on_context_usage=None, on_mcp_status=None, clock=None, suggester=None,
+                 on_recoverable_failure=None, on_context_usage=None, on_memory_files=None,
+                 on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  on_prompt_uuid: Callable[[str, str, str], None] | None = None,
@@ -419,6 +421,10 @@ class ClaudeAgentDriver:
         # SessionRecord so the WS bridge can replay it on attach (the live ContextUsage event
         # is otherwise never re-emitted, leaving reloaded sessions on the 0%-pinning fallback).
         self._on_context_usage = on_context_usage
+        # async callback ``on_memory_files(session_id, files)`` (D-13): the CLI's loaded
+        # memory set from the same reading, persisted so attach re-emits it and the
+        # owning-host viewer can allow exactly those paths.
+        self._on_memory_files = on_memory_files
         self._on_mcp_status = on_mcp_status
         self._mcp_last: list = []                     # last snapshot, auth latch applied
         self._mcp_base: list = []                     # last sanitized snapshot, before the latch
@@ -2591,16 +2597,22 @@ class ClaudeAgentDriver:
         if not isinstance(used, int) or not isinstance(mx, int) or mx <= 0:
             return
         pct, model = cu.get("percentage"), cu.get("model")
+        files = normalize_memory_files(cu.get("memoryFiles"))
         self._emit(ev.ContextUsage(
             used_tokens=used, max_tokens=mx,
             percentage=float(pct) if isinstance(pct, (int, float)) else round(used / mx * 100, 1),
-            model=model if isinstance(model, str) else None))
+            model=model if isinstance(model, str) else None, memory_files=files))
         # Persist the exact reading so a fresh attach can replay it (live-only otherwise).
         if self._on_context_usage is not None:
             try:
                 await self._on_context_usage(self.session_id, used, mx)
             except Exception:
                 log.debug("on_context_usage persist failed session=%s", self.session_id, exc_info=True)
+        if files is not None and self._on_memory_files is not None:
+            try:
+                await self._on_memory_files(self.session_id, files)
+            except Exception:
+                log.debug("on_memory_files persist failed session=%s", self.session_id, exc_info=True)
 
     async def reconnect(self) -> None:
         """Tear down the SDK client and start a FRESH session (resume=None).
@@ -2840,6 +2852,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_sync_back=config.on_sync_back,
             on_status=config.on_status,
             on_context_usage=config.on_context_usage,
+            on_memory_files=config.on_memory_files,
             on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,

@@ -1,6 +1,7 @@
 import * as React from 'react'
-import { useBlocker } from 'react-router-dom'
+import type { useBlocker } from 'react-router-dom'
 import { ApiRequestError } from '@/api/client'
+import { useUnsavedChangesGuard } from './useUnsavedChangesGuard'
 
 export interface SettingsForm<T extends object> {
   /** undefined until `initial` arrives. */
@@ -126,14 +127,7 @@ export function useSettingsForm<T extends object>({ initial, save, beforeSave }:
 
   const dirty = draft !== undefined && baseline !== undefined && isDirty(baseline, draft)
 
-  const blocker = useBlocker(dirty)
-
-  React.useEffect(() => {
-    if (!dirty) return
-    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault() }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [dirty])
+  const blocker = useUnsavedChangesGuard(dirty)
 
   const set = React.useCallback(<K extends keyof T>(key: K, value: T[K]) => {
     setDraft((d) => (d === undefined ? d : { ...d, [key]: value }))

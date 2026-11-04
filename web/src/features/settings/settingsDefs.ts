@@ -1,8 +1,8 @@
-import type * as React from 'react'
+import { lazy, type ComponentType } from 'react'
 import {
   SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck, ListChecks,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
-  Rocket, Gauge, Send, Route,
+  Rocket, Gauge, Send, Route, Brain,
   type LucideIcon,
 } from 'lucide-react'
 import type { SettingsScope } from './scope'
@@ -29,6 +29,10 @@ import { SkillsSection } from './sections/SkillsSection'
 import { CommandsSection } from './sections/CommandsSection'
 import { McpSection } from './sections/McpSection'
 
+// Lazy (D-13): the memory editor is its own chunk. `HostedSection` holds the
+// Suspense boundary, so the chassis heading draws while it loads.
+const MemorySection = lazy(() => import('./sections/MemorySection'))
+
 export type SettingsBadgeKey = 'accountsAttention' | 'deployPending'
 
 /** What the Settings PAGE needs beyond the metadata (`settingsMeta.ts`). */
@@ -53,7 +57,7 @@ interface SettingsPageFields {
    * flag both go.
    */
   ownsChassis?: true
-  component: React.ComponentType
+  component: ComponentType
 }
 
 /**
@@ -75,6 +79,7 @@ const PAGE: Record<SettingsSectionId, SettingsPageFields> = {
   capacity:      { icon: Gauge, scope: 'server',  component: LimitsSection, ownsChassis: true },
   fleet:         { icon: Server, scope: 'server',  component: FleetSection, layout: 'wide', readout: 'hosts' },
   accounts:      { icon: Users, scope: 'server',  component: AccountsManager, layout: 'wide', badge: 'accountsAttention', readout: 'accounts' },
+  memory:        { icon: Brain, scope: 'server',  component: MemorySection },
   plugins:       { icon: Puzzle, scope: 'server',  component: PluginsSection, layout: 'wide' },
   skills:        { icon: Sparkles, scope: 'server',  component: SkillsSection, layout: 'wide' },
   commands:      { icon: SquareTerminal, scope: 'server',  component: CommandsSection, layout: 'wide' },

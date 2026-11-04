@@ -1,6 +1,6 @@
 import type {
   SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
-  PromptContext, PromptOrigin, RuleSuggestion,
+  PromptContext, PromptOrigin, RuleSuggestion, MemoryFile,
 } from './events'
 import type { McpServerState } from '@/api/types'
 import type { ContextUsageExact } from '@/lib/contextWindow'
@@ -159,6 +159,7 @@ export interface TranscriptState {
   usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   contextUsage: ContextUsageExact | null  // exact ctx-window occupancy (SDK /context data); preferred over `usage` for the ctx% readout
   mcpServers: McpServerState[] | null  // live MCP connection status (mcpStatus event); null until first report; survives replayReset
+  memoryFiles: MemoryFile[] | null  // the memory files the CLI loaded, in its order (contextUsage, D-13); null until an engine reports a set; survives replayReset
   replaying: boolean            // true until replayComplete
   earliestTurn: number          // lowest turn ordinal currently loaded (0 = at session start)
   totalTurns: number            // total turns in the on-disk transcript
@@ -193,6 +194,7 @@ export const initialTranscript: TranscriptState = {
   usage: null,
   contextUsage: null,
   mcpServers: null,
+  memoryFiles: null,
   replaying: true,
   earliestTurn: 0,
   totalTurns: 0,
@@ -1298,9 +1300,14 @@ export function transcriptReducer(
       // approximation for the ctx% readout — see useSessionRuntime. The transcript replay
       // itself never carries it, so it is intentionally preserved across replayReset (like
       // rotations/queue) rather than cleared.
+      //
+      // The same frame carries the loaded memory files (D-13). A frame without them
+      // (an engine that reports none) leaves the last set alone; an empty list is a
+      // real "nothing loaded" and replaces it.
+      const memoryFiles = Array.isArray(ev.memoryFiles) ? ev.memoryFiles : state.memoryFiles
       const maxTokens = num(ev.maxTokens)
-      if (!(maxTokens > 0)) return state
-      return { ...state, contextUsage: { usedTokens: num(ev.usedTokens), maxTokens } }
+      if (!(maxTokens > 0)) return memoryFiles === state.memoryFiles ? state : { ...state, memoryFiles }
+      return { ...state, memoryFiles, contextUsage: { usedTokens: num(ev.usedTokens), maxTokens } }
     }
 
     // ── mcpStatus ─────────────────────────────────────────────────────────────

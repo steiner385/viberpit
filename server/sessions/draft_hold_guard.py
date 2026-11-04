@@ -26,7 +26,8 @@ offers "Always allow". Only ``PermissionRegistry.resolve``, on a human's
 identity-checked Allow, records the grant (:class:`DraftReadyGrants`), keyed by session
 and ``repo#number``; the tool handler only reports whether one exists. So nothing the
 model writes grants it: not prose quoting an approval, not the dispatch prompt, not a
-settings file (the SDK loads no filesystem settings), and not a mode that skips cards
+settings file (grants live only in daemon memory, never in a settings source the CLI
+loads), and not a mode that skips cards
 (``bypassPermissions`` never reaches the card, so no grant is recorded). A grant covers
 one PR — a grant for A never passes ``gh pr ready B`` — and is spent by the first
 ``gh pr ready`` it lets through, so a draft the owner later converts back is a new hold

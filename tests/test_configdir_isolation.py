@@ -2,7 +2,8 @@
 
 Verifies:
   - Allowlisted entries from shared_base (plugins, commands, settings.json,
-    settings.local.json, projects) are symlinked into the cfg dir.
+    settings.local.json, projects, file-history, CLAUDE.md) are symlinked into the cfg dir;
+    a private CLAUDE.md or file-history is never deleted.
   - .credentials.json and .claude.json are NEVER symlinked (must be real files).
   - Non-allowlisted entries (e.g. sessions/, agents/, tasks/) are NOT symlinked.
   - Behavior is idempotent (calling twice raises no error, symlinks stable).
@@ -361,6 +362,126 @@ class TestReconcileLinks(unittest.TestCase):
                 configdir.compose("alpha")
             self.assertFalse((cfg_dir / "file-history").is_symlink())
             self.assertEqual((cfg_dir / "file-history" / "sid" / "abc@v1").read_text(), "sid\n")
+
+    # -------------------------------------------------------------------------
+    # CLAUDE.md (D-13): the user memory file is shared, a private one is kept
+    # -------------------------------------------------------------------------
+    def test_user_claude_md_is_shared_and_credentials_still_are_not(self):
+        """The CLI reads user memory from $CLAUDE_CONFIG_DIR/CLAUDE.md, so every account
+        links the one shared file (D-13 spike §1/§4)."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "CLAUDE.md").write_text("# user\n")
+            (base / ".credentials.json").write_text("{}")
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            self.assertIn("CLAUDE.md", configdir.SHARE_ALLOWLIST)
+            self.assertTrue((cfg_dir / "CLAUDE.md").is_symlink())
+            self.assertEqual(Path(os.readlink(cfg_dir / "CLAUDE.md")), base / "CLAUDE.md")
+            self.assertEqual((cfg_dir / "CLAUDE.md").read_text(), "# user\n")
+            for name in (".credentials.json", ".claude.json"):
+                self.assertFalse((cfg_dir / name).is_symlink(), f"{name} must stay real")
+
+    def test_user_claude_md_links_even_before_the_shared_file_exists(self):
+        """A dangling link loads nothing (pinned by server/tests/test_memory_cli_contract.py),
+        so the link is made up front: a shared file created later reaches every account with
+        no recompose. The shared file itself is never invented."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            self.assertFalse((base / "CLAUDE.md").exists())
+            self.assertFalse((base / "CLAUDE.md").is_symlink())
+            self.assertTrue((cfg_dir / "CLAUDE.md").is_symlink())
+            self.assertEqual(Path(os.readlink(cfg_dir / "CLAUDE.md")), base / "CLAUDE.md")
+            (base / "CLAUDE.md").write_text("later\n")
+            self.assertEqual((cfg_dir / "CLAUDE.md").read_text(), "later\n")
+            configdir.reconcile_links("alpha")  # idempotent once the target appears
+            self.assertEqual(Path(os.readlink(cfg_dir / "CLAUDE.md")), base / "CLAUDE.md")
+
+    def test_a_private_claude_md_is_kept_not_deleted_and_logged(self):
+        """A real CLAUDE.md in an account dir (an interactive run's /memory) is user
+        content: never deleted, never merged, never replaced by the link."""
+        for shared_exists in (True, False):
+            with self.subTest(shared_exists=shared_exists), temp_env():
+                from viberpit import configdir, paths
+                base = paths.shared_base()
+                if shared_exists:
+                    (base / "CLAUDE.md").write_text("shared\n")
+                self._seed_slot("alpha")
+                cfg_dir = paths.account_cfg_dir("alpha")
+                cfg_dir.mkdir(parents=True, exist_ok=True)
+                (cfg_dir / "CLAUDE.md").write_text("private\n")
+                with self.assertLogs("viberpit.configdir", level="INFO") as logs:
+                    configdir.compose("alpha")
+                self.assertFalse((cfg_dir / "CLAUDE.md").is_symlink())
+                self.assertEqual((cfg_dir / "CLAUDE.md").read_text(), "private\n")
+                if shared_exists:
+                    self.assertEqual((base / "CLAUDE.md").read_text(), "shared\n")
+                else:
+                    self.assertFalse((base / "CLAUDE.md").exists())
+                self.assertEqual(len(logs.records), 1)
+                rec = logs.records[0]
+                self.assertEqual(rec.levelname, "INFO")
+                self.assertIn("alpha", rec.getMessage())
+                self.assertIn("CLAUDE.md", rec.getMessage())
+
+    def test_a_private_claude_md_written_before_the_link_never_fails_the_compose(self):
+        from unittest import mock
+        with temp_env():
+            from viberpit import configdir, paths
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            real = Path.symlink_to
+
+            def racing(self_path, target, *a, **kw):
+                if self_path.name == "CLAUDE.md":
+                    self_path.write_text("private\n")  # the CLI wins the race
+                return real(self_path, target, *a, **kw)
+            with mock.patch.object(Path, "symlink_to", racing):
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "CLAUDE.md").is_symlink())
+            self.assertEqual((cfg_dir / "CLAUDE.md").read_text(), "private\n")
+
+    def test_a_wrong_claude_md_link_is_repointed_at_the_shared_file(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "CLAUDE.md").symlink_to("/dev/null")
+            with self.assertLogs("viberpit.configdir", level="INFO") as logs:
+                configdir.reconcile_links("alpha")
+            self.assertEqual(Path(os.readlink(cfg_dir / "CLAUDE.md")), base / "CLAUDE.md")
+            # A re-point is logged, so a shared-base mismatch between hosts is visible.
+            msgs = [r.getMessage() for r in logs.records if r.levelname == "INFO"]
+            self.assertTrue(any("relinked" in m and "alpha" in m and "CLAUDE.md" in m
+                                and "/dev/null" in m for m in msgs), msgs)
+
+    def test_a_wrong_link_vanishing_before_the_repoint_never_fails_the_compose(self):
+        """Another composer (dobby and rocky share the store over sshfs) may remove the
+        wrong link between the readlink and the unlink."""
+        from unittest import mock
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "CLAUDE.md").symlink_to("/dev/null")
+            real = os.readlink
+
+            def racing(p, *a, **kw):
+                out = real(p, *a, **kw)
+                if Path(p) == cfg_dir / "CLAUDE.md":
+                    os.unlink(p)  # the other composer got there first
+                return out
+            with mock.patch.object(configdir.os, "readlink", racing):
+                configdir.reconcile_links("alpha")
+            self.assertEqual(Path(os.readlink(cfg_dir / "CLAUDE.md")), base / "CLAUDE.md")
 
     # -------------------------------------------------------------------------
     # non-allowlist entries are NOT symlinked

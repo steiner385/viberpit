@@ -901,6 +901,33 @@ export interface LibraryContent {
   readonly: boolean
 }
 
+/** One loaded memory file of a session, read through `GET /sessions/{id}/memory-file?path=` (D-13).
+ *  `path` is one of the session's `memoryFiles`; any refusal is a 404 `MEMORY_FILE_UNKNOWN`. */
+export interface MemoryFileContent {
+  path: string
+  /** The CLI's type (`User`, `Project`, `Local`, `Managed`, `AutoMem`, …). */
+  type: string
+  text: string
+  /** `text` is the first 256 kB of a larger file. */
+  truncated: boolean
+  /** True only for the shared user file, which Settings › Memory edits. */
+  editable: boolean
+}
+
+/** The shared user memory file (`~/.claude/CLAUDE.md`), `GET /settings/memory` (D-13).
+ *  `etag` is sha256 of the content, `""` while the file does not exist. */
+export interface UserMemory {
+  text: string
+  etag: string
+  exists: boolean
+}
+
+/** `PUT /settings/memory`: the new etag, and a note on how long other hosts take to see it. */
+export interface UserMemorySaved {
+  etag: string
+  propagation?: string | null
+}
+
 // Per-account spawn defaults (#599)
 export interface AccountDefaults {
   defaultModel: string | null

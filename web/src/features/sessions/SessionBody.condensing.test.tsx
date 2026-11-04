@@ -11,6 +11,7 @@ vi.mock('@/api/hooks', () => ({
   // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin.
   useSessionMcp: vi.fn(() => ({ data: undefined })),
   usePermissionRules: vi.fn(() => ({ data: [] })),
+  useMemoryFile: vi.fn(() => ({ data: undefined })),
   useRevokePermissionRule: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useReconnectSessionMcp: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
   useModels: () => ({ data: [] }),

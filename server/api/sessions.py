@@ -57,6 +57,7 @@ from server.sessions.orchestrator import (
 from server.sessions import session_actions
 from server.sessions import read_state
 from server.sessions import worktree_files
+from server.sessions import memory_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
@@ -2183,6 +2184,30 @@ async def session_file_content(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
         _raise_daemon_outdated_or_reraise(exc, "read session files")
+
+
+@router.get("/{session_id}/memory-file")
+async def session_memory_file(
+    session_id: str,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """``{path, type, text, truncated, editable}`` of one of the session's loaded memory
+    files (D-13 Context card viewer), read on the daemon that owns it. ``path`` must be
+    exactly a path of the session's current ``memoryFiles``; anything else — or a set
+    entry resolving outside the roots the CLI loads memory from (see
+    ``server/sessions/memory_files.py``) — is 404 ``MEMORY_FILE_UNKNOWN``. Unknown
+    session 404; an old daemon 409 ``daemon_outdated``."""
+    try:
+        return await _get_orchestrator(request).memory_file(session_id, path=path)
+    except memory_files.MemoryFileError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"code": exc.code}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "read memory files")
 
 
 class ForkRequest(BaseModel):

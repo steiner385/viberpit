@@ -317,6 +317,11 @@ class Session(Base):
     # composer's command palette instead of an empty autocomplete. NULL until the
     # session has been live once. Nullable so init_db backfills on dev SQLite w/o a migration.
     command_catalog: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # The CLI's loaded memory files (D-13), ``[{path, type, tokens}]`` in load order,
+    # from the last context reading. Replayed on attach and the allowlist of the
+    # memory-file viewer, so it must survive a daemon restart. NULL until a Claude turn
+    # reports it. Nullable so init_db's reconcile adds it on both dialects.
+    memory_files: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     # Session kind. "assistant" = the AI-drawer meta-assistant (spec
     # docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.1): hidden from the
     # session list, capacity-exempt, tool-restricted. NULL = a normal coding session.

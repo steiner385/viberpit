@@ -209,6 +209,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_diff",
     # So do the D-7 file list and file read.
     "session_files", "session_file",
+    # The D-13 memory-file read: the loaded set, worktree and config dir are its host's.
+    "memory_file",
     # A fork (D-8) is made from the source's transcript and worktree, on its host.
     "fork_session",
     # So is a rewind (D-9): the live client, transcript, worktree and undo backups.

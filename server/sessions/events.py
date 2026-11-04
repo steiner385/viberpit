@@ -485,11 +485,19 @@ class ContextUsage:
     from ``turnEnd.usage``: that usage is the CLI's per-turn aggregate (cache reads
     summed across every API round-trip in the turn), so a multi-tool turn blows
     past the window and pins the readout at 0%. ``percentage`` is percent USED
-    (0–100), mirroring the SDK; ``model`` is the model the usage was computed for."""
+    (0–100), mirroring the SDK; ``model`` is the model the usage was computed for.
+    ``memory_files`` (D-13) is the CLI's loaded memory set from the same reply,
+    ``[{path, type, tokens}]`` in CLI load order (``memory_files.normalize_memory_files``);
+    None — omitted from the wire — for an engine that reports none."""
     used_tokens: int; max_tokens: int; percentage: float; model: str | None = None
-    def to_wire(self): return {"type": "contextUsage", "usedTokens": self.used_tokens,
-                               "maxTokens": self.max_tokens, "percentage": self.percentage,
-                               "model": self.model}
+    memory_files: list | None = None
+    def to_wire(self):
+        out = {"type": "contextUsage", "usedTokens": self.used_tokens,
+               "maxTokens": self.max_tokens, "percentage": self.percentage,
+               "model": self.model}
+        if self.memory_files is not None:
+            out["memoryFiles"] = self.memory_files
+        return out
 
 
 @dataclass

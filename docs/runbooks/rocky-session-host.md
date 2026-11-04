@@ -139,6 +139,13 @@ If either is missing from `findmnt`, or a read against it hangs/errors (`ls
 | `~/.claude-accounts` | Credentials, ledger, account config unreadable | New sessions fail with `accounts_need_reauth`-style errors even for accounts that are actually fine; existing sessions may error mid-turn if they touch the store |
 | `~/.claude` | Shared skills/commands/hooks/plugins gone | Sessions launch but silently run with rocky's stale/empty local skillset instead of dobby's — no error, just wrong behavior (this is the exact bug the mount was added to fix; see `.superpowers/sdd/2026-08-20-rocky-session-host/cross-host-path-audit.md` Finding 1) |
 
+**The `~/.claude` mount caches attributes, so dobby's edits reach rocky late (#3246).** The user memory file
+`~/.claude/CLAUDE.md` (D-13) is shared by every account through this mount. Settings › Memory rewrites it
+atomically on dobby, but rocky's sshfs attribute cache (600 s) can make a session starting on rocky in that
+window see the old file, or a read clipped to the old size. That is the #1005 torn-read pattern. The save
+says so ("Sessions on other hosts can take up to 10 minutes to see this change"). #3246 tracks a coherent
+mount or a cache bypass for this file.
+
 **Remount:**
 
 ```bash

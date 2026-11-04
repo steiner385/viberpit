@@ -91,7 +91,8 @@ def open_beneath(root_fd: int, rel: str | bytes) -> int:
         os.close(dfd)
 
 
-def replace_file_beneath(root_fd: int, rel: str, data: bytes, mode: int) -> None:
+def replace_file_beneath(root_fd: int, rel: str, data: bytes, mode: int, *,
+                         fsync: bool = False) -> None:
     """Atomically make ``rel`` beneath ``root_fd`` a regular file holding ``data`` with
     permission bits ``mode``, following no symlink.
 
@@ -99,7 +100,11 @@ def replace_file_beneath(root_fd: int, rel: str, data: bytes, mode: int) -> None
     with ``create``), so a symlinked component raises ``SymlinkInPath`` before anything
     is written. The bytes go to a fresh ``O_EXCL|O_NOFOLLOW`` temp file in the parent,
     which is then renamed over the leaf: a symlink at the leaf is replaced, never
-    written through. A directory at the leaf raises (``IsADirectoryError``)."""
+    written through. A directory at the leaf raises (``IsADirectoryError``). Any
+    failure before the rename removes the temp file and leaves the leaf as it was.
+
+    ``fsync`` makes it durable: the temp file is fsynced before the rename and the
+    parent directory after it (the D-13 user-memory editor; a bulk fork copy skips it)."""
     parts = _split(rel)
     name = os.fsdecode(parts[-1])
     pfd = open_dir_beneath(root_fd, parts[:-1], create=True)
@@ -111,7 +116,12 @@ def replace_file_beneath(root_fd: int, rel: str, data: bytes, mode: int) -> None
             with os.fdopen(fd, "wb") as out:
                 out.write(data)
                 os.fchmod(out.fileno(), stat.S_IMODE(mode))
+                if fsync:
+                    out.flush()
+                    os.fsync(out.fileno())
             os.replace(tmp, name, src_dir_fd=pfd, dst_dir_fd=pfd)
+            if fsync:
+                os.fsync(pfd)
         except BaseException:
             try:
                 os.unlink(tmp, dir_fd=pfd)

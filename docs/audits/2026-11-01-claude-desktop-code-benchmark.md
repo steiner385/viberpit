@@ -62,15 +62,15 @@ Full inventories, with an evidence tag on every item:
 | 1 Shell & IA | 11.5 / 16 | 72% |
 | 2 Transcript | 21 / 21 | 100% |
 | 3 Composer | 26.5 / 29 | 91% |
-| 4 Commands & config | 9 / 15 | 60% |
+| 4 Commands & config | 11 / 15 | 73% |
 | 5 Settings | 3.5 / 8 | 44% |
 | 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 22.5 / 25 | 90% |
 | 8 Code review & dev | 7.5 / 12 | 62% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **135.5 / 161** | **84%** |
-| **Target completion** (excl. rejected rows) | **133 / 151** | **88%** |
+| **Overall (weighted)** | **137.5 / 161** | **85%** |
+| **Target completion** (excl. rejected rows) | **135 / 151** | **89%** |
 
 ### 1 Shell & IA
 
@@ -130,7 +130,7 @@ Full inventories, with an evidence tag on every item:
 | Plugins + marketplace browse/install | 2 | ◐ | enable/disable + detail; no marketplace |
 | Skills management | 1 | ✅ |  |
 | MCP servers + per-tool toggles | 2 | ◐ | servers, OAuth, scope; no per-tool toggles |
-| CLAUDE.md / memory-file editor | 2 | ❌ |  |
+| CLAUDE.md / memory-file editor | 2 | ✅ | as decided (D8): the Context card lists every memory file the CLI loaded, with tokens, each viewable; Settings › Memory edits the user CLAUDE.md shared by every account (etag conflict, Keep my draft); repo files read-only. Claude only (Codex reports none); type labels are the CLI's (rules/imports show as User/Project); rocky sees a save after up to 10 min (#3246) (D-13) |
 | Hooks editor | 1 | ✅ | Desktop has none — VP ahead |
 | Output styles | 1 | ❌ |  |
 | Custom commands | 1 | ✅ |  |
@@ -213,31 +213,30 @@ Full inventories, with an evidence tag on every item:
 | # | Gap | Dimension | Points lost |
 |---|---|---|---:|
 | 1 | Split view / tiled panes | 1 Shell & IA | 2 |
-| 2 | CLAUDE.md / memory-file editor | 4 Commands & config | 2 |
-| 3 | Integrated terminal | 8 Code review & dev | 2 |
-| 4 | Pin / star sessions | 1 Shell & IA | 1 |
-| 5 | ⌘K palette over sessions + branches | 1 Shell & IA | 1 |
-| 6 | Effort picker in session | 3 Composer | 1 |
-| 7 | Fast-mode toggle | 3 Composer | 1 |
-| 8 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
-| 9 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
-| 10 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
-| 11 | Output styles | 4 Commands & config | 1 |
-| 12 | Worktree location / policy | 5 Settings | 1 |
-| 13 | Presets / environments selectable at new session | 5 Settings | 1 |
-| 14 | Sandbox settings | 5 Settings | 1 |
-| 15 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
-| 16 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 17 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 18 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
-| 19 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 20 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 21 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 22 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
-| 23 | Notification levels per event type | 5 Settings | 0.5 |
-| 24 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 25 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 26 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 2 | Integrated terminal | 8 Code review & dev | 2 |
+| 3 | Pin / star sessions | 1 Shell & IA | 1 |
+| 4 | ⌘K palette over sessions + branches | 1 Shell & IA | 1 |
+| 5 | Effort picker in session | 3 Composer | 1 |
+| 6 | Fast-mode toggle | 3 Composer | 1 |
+| 7 | App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 4 Commands & config | 1 |
+| 8 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
+| 9 | MCP servers + per-tool toggles | 4 Commands & config | 1 |
+| 10 | Output styles | 4 Commands & config | 1 |
+| 11 | Worktree location / policy | 5 Settings | 1 |
+| 12 | Presets / environments selectable at new session | 5 Settings | 1 |
+| 13 | Sandbox settings | 5 Settings | 1 |
+| 14 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
+| 15 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
+| 16 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
+| 17 | PR viewer: checks, threads, merge, auto-merge | 8 Code review & dev | 1 |
+| 18 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 19 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 20 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 21 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 5 Settings | 0.5 |
+| 22 | Notification levels per event type | 5 Settings | 0.5 |
+| 23 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 24 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 25 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

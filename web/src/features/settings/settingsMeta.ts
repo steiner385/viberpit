@@ -4,12 +4,12 @@
  *
  * Split out of `settingsDefs.ts` (D-10) because that file eagerly imports every
  * section component, and the ⌘K palette (`features/palette`) needs the names
- * and keywords without dragging twenty-one sections into its chunk. This is the
+ * and keywords without dragging twenty-two sections into its chunk. This is the
  * ONE source of the metadata: `settingsDefs` imports it and adds the component
  * and the page-only fields; nothing else declares a section's label.
  *
  * The nav ICON is a page field, not metadata (D-10 ruling): the palette never
- * draws one, and importing twenty-one icons here split them into shared chunks
+ * draws one, and importing twenty-two icons here split them into shared chunks
  * on the initial path. It lives beside the component in `settingsDefs`.
  */
 
@@ -70,6 +70,10 @@ const META = [
     description: 'Machines that can run sessions: each host’s cap, dispatch weight and health.' },
   { id: 'accounts',      group: 'capacity',  label: 'Accounts',
     description: 'Claude Max and Copilot accounts the rotation can pick from.' },
+  // D-13: first in the group — the user's own instructions change more often than
+  // what is installed.
+  { id: 'memory',        group: 'claude',    label: 'Memory',
+    description: 'Your user memory file, the CLAUDE.md every account loads into every session.', keywords: ['CLAUDE.md', 'instructions', 'user memory'] },
   { id: 'plugins',       group: 'claude',    label: 'Plugins',
     description: 'Installed Claude Code plugins and what each one adds.' },
   { id: 'skills',        group: 'claude',    label: 'Skills',
