@@ -48,7 +48,7 @@ class _Cli:
     """One throwaway stream-json CLI. ``ask`` writes one control request and waits for
     ITS reply before returning, so no two writes are ever in flight together."""
 
-    def __init__(self, binary: str) -> None:
+    def __init__(self, binary: str, extra_args: list[str] | None = None) -> None:
         self._root = tempfile.mkdtemp(prefix="d14-settings-contract.")
         cwd, cfg, home = (os.path.join(self._root, n) for n in ("cwd", "cfg", "home"))
         for p in (cwd, cfg, home):
@@ -61,7 +61,8 @@ class _Cli:
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
         }
         argv = [binary, "-p", "--input-format", "stream-json", "--output-format",
-                "stream-json", "--verbose", "--session-id", str(uuid.uuid4())]
+                "stream-json", "--verbose", "--session-id", str(uuid.uuid4()),
+                *(extra_args or [])]
         self._proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, cwd=cwd, env=env)
         self._buf = b""

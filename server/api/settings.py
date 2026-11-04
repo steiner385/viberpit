@@ -1,6 +1,7 @@
 """Settings API — the single app-settings row (permission defaults, etc.)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,6 +14,7 @@ from server.config import get_settings
 from server.db import get_db
 from server.db.models import AppSettings
 from server.hostname import self_host_name
+from server.library import scan
 from server.sessions.global_cap import GlobalCap, drain_if_raised, read_global_cap
 from server.sessions.types import VALID_SESSION_MODES
 from server.version import running_git_sha
@@ -120,6 +122,10 @@ class SettingsBody(BaseModel):
     # Operator tier (v2 spec B1). Same three-state contract; null clears back to
     # VIBERPIT_ASSISTANT_OPERATOR_TOOLS, which is false.
     assistantOperatorTools: bool | None = None
+    # The output style a coding session spawns with when it has none of its own
+    # (D-16a). Same three-state contract: explicit null clears to the CLI's `default`.
+    # Validated against GET /api/settings/output-styles (built-ins + shared user dir).
+    defaultOutputStyle: str | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
@@ -174,8 +180,28 @@ def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
         "assistantEnabled": s.assistant_enabled,
         "assistantModel": s.assistant_model,
         "assistantOperatorTools": s.assistant_operator_tools,
+        "defaultOutputStyle": s.default_output_style,
         **_server_blocks(cap),
     }
+
+
+@router.get("/output-styles")
+async def list_output_styles(_identity: str = Depends(current_identity)) -> dict:
+    """The styles Settings › Output styles offers as the default (D-16a):
+    ``{styles: [{name, source: "builtin"|"user", description, path?}]}`` — the CLI's
+    built-ins, then the shared ``~/.claude/output-styles/*.md`` files (``path`` is the
+    file name, for the read-only viewer)."""
+    return {"styles": await asyncio.to_thread(scan.list_output_styles)}
+
+
+@router.get("/output-styles/{path}")
+async def read_output_style(path: str, _identity: str = Depends(current_identity)) -> dict:
+    """One shared user style file, read-only: ``{name, path, content}``. 404 for any
+    path that is not a ``.md`` file directly in the shared dir."""
+    out = await asyncio.to_thread(scan.read_output_style, path)
+    if out is None:
+        raise HTTPException(status_code=404, detail="output style not found")
+    return out
 
 
 @router.get("")
@@ -238,6 +264,12 @@ async def put_settings_row(
         row.assistant_model = body.assistantModel
     if "assistantOperatorTools" in body.model_fields_set:
         row.assistant_operator_tools = body.assistantOperatorTools
+    if "defaultOutputStyle" in body.model_fields_set:
+        style = body.defaultOutputStyle
+        known = await asyncio.to_thread(scan.list_output_styles)
+        if style is not None and style not in {s["name"] for s in known}:
+            raise HTTPException(status_code=422, detail="invalid defaultOutputStyle")
+        row.default_output_style = style
     # LAST, after every other field above has had its chance to raise: this
     # block commits (not merely flushes), which is this handler's one point of
     # no return. `get_db`'s deferred commit made the whole PUT atomic before

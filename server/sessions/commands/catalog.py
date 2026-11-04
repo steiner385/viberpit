@@ -65,9 +65,13 @@ CODING_ONLY = frozenset({"btw"})
 # would change the running process behind the session's persisted record (D-14) — and
 # fast mode bills usage credits at a higher rate — so both only ever change through
 # ViberPit's gated, recorded path.
-APP_ONLY = frozenset({"fast", "effort"})
+#
+# `/output-style` (D-16a) is the CLI's style switch, and its own copy writes
+# `.claude/settings.local.json` INTO the session worktree; `/plan` is not in the SDK list
+# today, but a future headless `/plan` must not bypass the mode picker's overlay either.
+APP_ONLY = frozenset({"fast", "effort", "output-style", "plan"})
 # Commands executed via a dedicated SDK method (not raw passthrough).
-CONTROL = {"model", "clear", "effort"}
+CONTROL = {"model", "clear", "effort", "output-style", "plan"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
 # Tunable; see docs/superpowers/spikes/2026-06-22-slash-commands-verdicts.md.
 EXCLUDED = {
@@ -206,6 +210,22 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
         Command(name="effort", description="Set this session's effort level (default clears it)",
                 argument_hint="<level|default>", kind="control", source=APP),
         gate=flag_settings_supported,
+    ),
+    # `/output-style [style]` (D-16a) sets the session's output style through the same
+    # `set_output_style` action as `POST /sessions/{id}/output-style` and the + menu's
+    # Style submenu; bare, it lists the styles as a notice. Claude with live flag
+    # settings only (the orchestrator also refuses it for the Assistant drawer).
+    AppCommand(
+        Command(name="output-style", description="Set this session's output style",
+                argument_hint="[style]", kind="control", source=APP),
+        gate=flag_settings_supported,
+    ),
+    # `/plan [on|off]` (D-16a) toggles plan mode through `set_permission_mode`, the
+    # ModePicker's path (`default` returns to the pre-plan mode). Every engine has it.
+    AppCommand(
+        Command(name="plan", description="Turn plan mode on or off (bare: toggle)",
+                argument_hint="[on|off]", kind="control", source=APP),
+        gate=_always,
     ),
 )
 

@@ -38,7 +38,8 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
 from .driver_stream import _STREAM_DONE, DriverStream
 from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
                             SETTINGS_INVALID, SETTINGS_REFUSED, SETTINGS_UNAVAILABLE,
-                            SettingsError, effort_levels, live_fast_mode, model_options)
+                            SettingsError, effort_levels, live_fast_mode,
+                            live_output_style, model_options, output_styles)
 from .memory_files import normalize_memory_files
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
@@ -370,7 +371,8 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, on_memory_files=None,
-                 on_model_options=None, on_fast_mode_state=None, on_mcp_status=None, clock=None, suggester=None,
+                 on_model_options=None, on_fast_mode_state=None, on_output_styles=None,
+                 on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  on_prompt_uuid: Callable[[str, str, str], None] | None = None,
@@ -440,6 +442,9 @@ class ClaudeAgentDriver:
         # fast-mode state, from ``initialize`` and each ``system/init`` (the SDK's typed
         # ``ResultMessage`` drops the copy the CLI also puts on ``result`` frames).
         self._on_fast_mode_state = on_fast_mode_state
+        # async callback ``on_output_styles(session_id, styles, current)`` (D-16a): the
+        # CLI's ``initialize`` style list and its starting style, once per CLI start.
+        self._on_output_styles = on_output_styles
         # Serializes ``apply_flag_settings``: each reply is awaited before the next write
         # goes out, since back-to-back writes read stale values (D-14 spike §1.3).
         self._flag_settings_lock = asyncio.Lock()
@@ -2433,14 +2438,21 @@ class ClaudeAgentDriver:
         """Report the CLI's model list (D-14) once per CLI start, from the ``initialize``
         reply the SDK already holds. When the callback says the stored fast mode was
         dropped, send ``{"fastMode": false}`` — best-effort: this CLI was spawned with
-        it on. Best-effort throughout, DEBUG on failure (a refusal is INFO already)."""
-        if self._on_model_options is None and self._on_fast_mode_state is None:
+        it on. Best-effort throughout, DEBUG on failure (a refusal is INFO already).
+
+        The same read reports the CLI's output styles (D-16a, ``on_output_styles``)."""
+        if (self._on_model_options is None and self._on_fast_mode_state is None
+                and self._on_output_styles is None):
             return
         try:
             info = await self.server_info()
             if info is None:
                 return
             await self._report_fast_mode_state(info)
+            styles = output_styles(info)
+            if self._on_output_styles is not None and styles is not None:
+                await self._on_output_styles(self.session_id, styles,
+                                             live_output_style(info))
             if self._on_model_options is None:
                 return
             dropped = await self._on_model_options(self.session_id, model_options(info))
@@ -2996,6 +3008,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_memory_files=config.on_memory_files,
             on_model_options=config.on_model_options,
             on_fast_mode_state=config.on_fast_mode_state,
+            on_output_styles=config.on_output_styles,
             on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,

@@ -1180,6 +1180,17 @@ class RemoteOrchestrator:
         except DaemonError as exc:
             raise _settings_error(exc) from exc
 
+    async def set_output_style(self, session_id, style: str | None, *,
+                               identity: str = SYSTEM_IDENTITY) -> dict:
+        """Proxy set_output_style (D-16a) to the daemon that owns the session. Errors
+        are rebuilt as for ``set_fast_mode``: KeyError, SettingsError with a known
+        code, else the DaemonError (an old daemon's ``UnknownMethod``)."""
+        try:
+            return await self._client.call("set_output_style", session_id=session_id,
+                                           style=style, identity=identity)
+        except DaemonError as exc:
+            raise _settings_error(exc) from exc
+
     async def resolve_model_approval(self, session_id: str, decision: str, *,
                                      model: str | None = None,
                                      identity: str) -> "SessionRecord":

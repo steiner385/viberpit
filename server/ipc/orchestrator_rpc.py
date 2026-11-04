@@ -349,6 +349,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         # D-14 fast mode: {enabled}, applied on the daemon that owns the live client. A
         # refusal raises SettingsError, whose error_data carries the code.
         "set_fast_mode",
+        # D-16a output style: {style}, applied on the daemon that owns the live client
+        # and the CLI's style list. A refusal raises SettingsError (code in error_data).
+        "set_output_style",
         "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_pr_autofix_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",

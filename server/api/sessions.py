@@ -22,7 +22,7 @@ from typing import Any, Literal, NoReturn, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
 
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
@@ -340,6 +340,12 @@ def _record_to_dict(
         "fastModeDisabledReason": getattr(record, "fast_mode_disabled_reason", None),
         "fastModeAvailable": flag_settings.fast_mode_available(
             getattr(record, "fast_mode_models", None), getattr(record, "model", None)),
+        # Output style (D-16a): the style the session runs (the CLI's live reading, else
+        # the stored choice; null = not known yet) and the styles its CLI listed — [] for
+        # an engine or kind without styles, the kill switch off, or no list reported.
+        "outputStyle": (getattr(record, "output_style_live", None)
+                        or getattr(record, "output_style", None)),
+        "availableOutputStyles": flag_settings.available_output_styles(record),
         # The effort levels the current model accepts (CLI `supportedEffortLevels`): the
         # picker offers exactly these; [] hides it, null = not reported yet.
         "supportedEffortLevels": (record.effort_levels_now()
@@ -2563,6 +2569,40 @@ async def set_session_fast_mode(
         _raise_daemon_outdated_or_reraise(exc, "toggle fast mode")
     await record_audit(db=db, type="session.fast_mode", identity=identity,
                        detail={"session_id": session_id, "enabled": body.enabled})
+    return result
+
+
+class OutputStyleRequest(BaseModel):
+    # Required, nullable: null resets the session to the app default.
+    style: StrictStr | None = Field(...)
+
+
+@router.post("/{session_id}/output-style")
+async def set_session_output_style(
+    session_id: str,
+    body: OutputStyleRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Set the session's output style (D-16a), live on the daemon that owns it and
+    persisted for every later spawn; ``null`` resets it to the app default. 200
+    ``{style}``. Unknown session 404; 409 ``OUTPUT_STYLE_UNKNOWN`` for a name the
+    session's CLI did not list (nothing is sent), ``OUTPUT_STYLE_UNAVAILABLE`` for an
+    engine or session without styles, another ``SETTINGS_CODES`` code when the CLI
+    refused or never answered, or ``daemon_outdated`` from an old daemon."""
+    try:
+        result = await _get_orchestrator(request).set_output_style(
+            session_id, body.style, identity=identity)
+    except flag_settings.SettingsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "set the output style")
+    await record_audit(db=db, type="session.output_style", identity=identity,
+                       detail={"session_id": session_id, "style": body.style})
     return result
 
 

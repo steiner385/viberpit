@@ -1144,6 +1144,9 @@ class SessionOrchestrator:
         self._engine_registry = driver_registry or AgentDriverRegistry(
             self._default_driver_factories())
         self._drivers: dict[str, AgentDriver] = {}
+        # The app-wide default output style (D-16a), cached for the sync spawn factory;
+        # ``refresh_default_output_style`` re-reads it before every spawn.
+        self._default_output_style: str | None = None
         # In-flight spawns, keyed by session_id: a future resolved when
         # _spawn_session exits (registered driver or raised). _spawn_session
         # pre-seeds the record with status="idle" BEFORE driver.start() — seconds
@@ -2994,6 +2997,7 @@ class SessionOrchestrator:
             on_memory_files=self._persist_memory_files,
             on_model_options=self._record_model_options,
             on_fast_mode_state=self._record_fast_mode_state,
+            on_output_styles=self._record_output_styles,
             on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
@@ -6105,6 +6109,8 @@ class SessionOrchestrator:
             assistant_api = await self._setup_overlay_for_kind(
                 session_id, kind=kind, identity=identity, model=model,
                 engine=selected_engine)
+            # The spawn factory reads the cached app-default output style (D-16a).
+            await self.refresh_default_output_style()
 
             driver = self._create_driver(
                 engine=selected_engine,
@@ -8099,7 +8105,113 @@ class SessionOrchestrator:
             out[flag_settings.FAST_MODE_KEY] = True
         if rec.reasoning_effort and rec.engine is AgentEngine.CLAUDE_CODE:
             out[flag_settings.EFFORT_KEY] = rec.reasoning_effort
+        style = self._effective_output_style(session_id)
+        if style is not None and style != flag_settings.DEFAULT_OUTPUT_STYLE:
+            out[flag_settings.OUTPUT_STYLE_KEY] = style
         return out
+
+    # ── Output styles (D-16a) ────────────────────────────────────────────────────
+
+    def _takes_output_style(self, session_id: str) -> bool:
+        """Can this session carry an output style at all? A Claude coding session with
+        the flag-settings channel (kill switch included). Codex has no styles, and the
+        Assistant drawer's prompt is ViberPit's own, so neither ever takes one."""
+        rec = self._records.get(session_id)
+        return (rec is not None and flag_settings.takes_output_style(rec)
+                and flag_settings_supported(self._capabilities_of(session_id)))
+
+    def _effective_output_style(self, session_id: str) -> str | None:
+        """The style a spawn of this session starts with: its own choice, else the app
+        default (``AppSettings.default_output_style``, as last read by
+        ``refresh_default_output_style``), else None (the CLI's ``default``)."""
+        if not self._takes_output_style(session_id):
+            return None
+        rec = self._records[session_id]
+        return rec.output_style or getattr(self, "_default_output_style", None)
+
+    async def refresh_default_output_style(self) -> None:
+        """Re-read the app-wide default style from the DB. Called before every spawn
+        the orchestrator makes (the sync spawn factory reads the cached value) and by
+        ``set_output_style``. A failed read keeps the last value (INFO)."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import AppSettings
+        try:
+            async with db_session() as db:
+                value = (await db.execute(sa_select(AppSettings.default_output_style).where(
+                    AppSettings.id == "singleton"))).scalar_one_or_none()
+        except Exception as exc:
+            log.info("output_style default not refreshed: %s", exc)
+            return
+        self._default_output_style = value or None
+
+    def available_output_styles(self, session_id: str) -> list[str]:
+        """The styles this session can switch to now: the CLI's ``initialize`` list when
+        the session takes styles at all, else []. THE gate for ``set_output_style`` and
+        `/output-style`; the payload's ``availableOutputStyles`` applies the same rule."""
+        if not self._takes_output_style(session_id):
+            return []
+        return flag_settings.available_output_styles(self._records[session_id])
+
+    async def _record_output_styles(self, session_id: str, styles: list[str],
+                                    current: str | None) -> None:
+        """Driver ``on_output_styles`` callback: cache the CLI's style list and the
+        style it started with (in memory — each CLI start re-reports them)."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.output_styles = list(styles)
+            rec.output_style_live = current
+
+    async def set_output_style(self, session_id: str, style: str | None, *,
+                               identity: str = SYSTEM_IDENTITY) -> dict:
+        """Set the session's output style (D-16a), or reset it to the app default with
+        None: live on a running Claude driver (``apply_flag_settings {outputStyle}``,
+        reply awaited) and persisted so every later spawn starts with it. Returns
+        ``{style}`` — the stored choice.
+
+        The CLI accepts any name silently, so *style* must be one the session's CLI
+        listed: else ``SettingsError OUTPUT_STYLE_UNKNOWN`` and nothing is sent. An
+        engine or kind without styles, or a list not reported yet, is
+        ``OUTPUT_STYLE_UNAVAILABLE``. A failed write re-raises and leaves the record as
+        it was; a session with no live client just persists for the next spawn."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            raise KeyError(session_id)
+        available = self.available_output_styles(session_id)
+        err: flag_settings.SettingsError | None = None
+        if not available:
+            err = flag_settings.SettingsError(
+                flag_settings.OUTPUT_STYLE_UNAVAILABLE,
+                "output styles are not available for this session")
+        elif style is not None and style not in available:
+            err = flag_settings.SettingsError(
+                flag_settings.OUTPUT_STYLE_UNKNOWN, f"unknown output style {style!r}")
+        if err is not None:
+            log.info("session.output_style refused id=%s style=%r error_data=%s",
+                     session_id, style, err.error_data)
+            raise err
+        if style is None:
+            await self.refresh_default_output_style()
+        target = (style or getattr(self, "_default_output_style", None)
+                  or flag_settings.DEFAULT_OUTPUT_STYLE)
+        driver = self._flag_settings_driver(session_id)
+        live = False
+        if driver is not None:
+            try:
+                await driver.apply_flag_settings({flag_settings.OUTPUT_STYLE_KEY: target})
+                live = True
+            except flag_settings.SettingsError as exc:
+                if exc.code != flag_settings.SETTINGS_UNAVAILABLE:
+                    raise
+                # No live client: the persisted value is applied at the next spawn.
+        rec.output_style = style
+        rec.output_style_live = target if live else None
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(sa_update(DbSession).where(DbSession.id == session_id).values(
+                output_style=style))
+        log.info("session.output_style id=%s style=%r by=%s live=%s", session_id, style,
+                 identity, live)
+        return {"style": style}
 
     def fast_mode_available(self, session_id: str) -> bool:
         """Can this session turn fast mode on right now? Its engine has the flag-settings
@@ -19458,6 +19570,7 @@ class SessionOrchestrator:
             command_catalog=getattr(row, "command_catalog", None),
             memory_files=getattr(row, "memory_files", None),
             fast_mode=bool(getattr(row, "fast_mode", False)),
+            output_style=getattr(row, "output_style", None),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             pr_resolution_note=getattr(row, "pr_resolution_note", None),
@@ -22565,6 +22678,7 @@ class SessionOrchestrator:
                     model=rec.model, engine=resume_engine)
                 if assistant_api is not None:
                     built_assistant_apis.append(assistant_api)
+                await self.refresh_default_output_style()   # read by the spawn (D-16a)
                 return self._create_driver(
                     engine=resume_engine,
                     session_id=session_id,
@@ -22969,6 +23083,7 @@ class SessionOrchestrator:
         # prompt on every tool call of a session they just took over.
         async with db_session() as db:
             permission_mode = await resolve_permission_mode(db, account=cand.account)
+        await self.refresh_default_output_style()   # read by the spawn (D-16a)
 
         def _build(resume_arg):
             return self._create_driver(
@@ -24262,6 +24377,8 @@ class SessionOrchestrator:
                 fast_mode_available=self.fast_mode_available(session_id)) is None:
             why = ("this session's model doesn't offer fast mode" if bare == "fast"
                    else "live settings are off for this session")
+            if bare == "output-style" and flag_settings_supported(capabilities):
+                why = "this session's engine has no output styles"
             log.info("command.app_only_gated session=%s name=%s", session_id, bare)
             return {"name": bare, "render": "notice",
                     "data": {"text": f"/{bare} isn't available — {why}."}}
@@ -24365,6 +24482,16 @@ class SessionOrchestrator:
             text = (f"Effort → {label}" if self._drivers.get(session_id) is not None
                     else f"Effort → {label} — saved; applies when the session resumes")
             return {"name": "effort", "render": "notice", "data": {"text": text}}
+        # /output-style (D-16a) runs the same action as the route and the + menu, so the
+        # CLI's own copy — which writes `.claude/settings.local.json` into the worktree —
+        # never runs (APP_ONLY). Bare, it lists the styles as a notice. Orchestrator-
+        # level like /effort: a detached session saves it for the next spawn.
+        if app_cmd is not None and app_cmd.name == "output-style":
+            return await self._run_output_style_command(session_id, args, identity)
+        # /plan [on|off] (D-16a) is the ModePicker's plan toggle: the same
+        # set_permission_mode, whose `default` returns to the pre-plan mode.
+        if app_cmd is not None and app_cmd.name == "plan":
+            return await self._run_plan_command(session_id, args, identity)
         d = self._drivers.get(session_id)
         if d is None:
             return {"name": str(name).lstrip("/"), "render": "notice",
@@ -24385,6 +24512,54 @@ class SessionOrchestrator:
         if cmd is None:
             raise KeyError(name)
         return await cmd_dispatcher.dispatch(d, cmd, args or "")
+
+    async def _run_output_style_command(self, session_id: str, args: str | None,
+                                        identity: str) -> dict:
+        """`/output-style [style]`: set it (``set_output_style``), or list the styles."""
+        name = (args or "").strip()
+        rec = self._records.get(session_id)
+        if not name:
+            styles = self.available_output_styles(session_id)
+            if not styles:
+                text = "Output styles aren't known yet — open the session and try again."
+            else:
+                current = (getattr(rec, "output_style_live", None)
+                           or getattr(rec, "output_style", None)
+                           or flag_settings.DEFAULT_OUTPUT_STYLE)
+                listed = ", ".join(f"{s} (current)" if s == current else s for s in styles)
+                text = f"Output styles: {listed}. Usage: /output-style <style>"
+            return {"name": "output-style", "render": "notice", "data": {"text": text}}
+        try:
+            await self.set_output_style(session_id, name, identity=identity)
+        except flag_settings.SettingsError as exc:
+            reason = (f"{name!r} isn't one of this session's styles"
+                      if exc.code == flag_settings.OUTPUT_STYLE_UNKNOWN else str(exc))
+            return {"name": "output-style", "render": "notice",
+                    "data": {"text": f"Output style unchanged — {reason}."}}
+        text = (f"Output style → {name}" if self._drivers.get(session_id) is not None
+                else f"Output style → {name} — saved; applies when the session resumes")
+        return {"name": "output-style", "render": "notice", "data": {"text": text}}
+
+    async def _run_plan_command(self, session_id: str, args: str | None,
+                                identity: str) -> dict:
+        """`/plan [on|off]`: plan mode on, off (back to the pre-plan mode), or toggled.
+        A detached session has no driver to hold the plan overlay, so it is told to
+        open the session (the mode picker is the same: it acts on a live driver)."""
+        arg = (args or "").strip().lower()
+        if arg not in ("", "on", "off"):
+            return {"name": "plan", "render": "notice",
+                    "data": {"text": "Usage: /plan [on|off]"}}
+        d = self._drivers.get(session_id)
+        if d is None:
+            return {"name": "plan", "render": "notice",
+                    "data": {"text": "This session isn't live — open it and try again."}}
+        on = (getattr(d, "mode", None) != "plan") if arg == "" else arg == "on"
+        async with db_session() as db:
+            await session_actions.set_permission_mode(
+                self, db, session_id=session_id, mode="plan" if on else "default",
+                identity=identity)
+        return {"name": "plan", "render": "notice",
+                "data": {"text": "Plan mode on" if on else "Plan mode off"}}
 
     async def cancel_queued(self, session_id, index: int) -> bool:
         d = self._drivers.get(session_id)
@@ -26497,6 +26672,7 @@ class SessionOrchestrator:
                     record.id, kind=getattr(record, "kind", None), identity=identity,
                     model=record.model, engine=record.engine)
                 _lap("prepare")
+                await self.refresh_default_output_style()   # read by the spawn (D-16a)
                 new_driver = self._create_driver(
                     engine=record.engine,
                     session_id=record.id,
