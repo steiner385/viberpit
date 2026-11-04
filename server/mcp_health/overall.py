@@ -17,23 +17,10 @@ Grant = Literal["never", "dead", "expired", "expiring", "live", "none"]
 
 NOT_SIGNED_IN = "Not signed in — one sign-in covers every account and runner."
 _REJECTED_PREFIX = "Sign-in rejected"
-# Best state first: a server with several matching bundles takes the best of them.
-_GRANT_RANK: tuple[Grant, ...] = ("live", "expiring", "expired", "never")
 # Best row status first; ``needs-auth`` only counts when no grant exists to contradict it.
 _ROW_RANK = ("connected", "pending", "needs-auth")
 # Probes run only on demand, so this window bounds how long a stale row can pin a status.
 FRESH_S = 24 * 3600
-
-
-def store_key_name(name: str, plugin_name: str | None) -> str:
-    """The ``serverName`` a bundle carries: plain for user servers, namespaced for plugins."""
-    return name if plugin_name is None else f"plugin:{plugin_name}:{name}"
-
-
-def _matching(store: dict, key_name: str, url: str | None) -> list[dict]:
-    return [b for b in store.values()
-            if isinstance(b, dict) and b.get("serverName") == key_name
-            and (url is None or b.get("serverUrl") == url)]
 
 
 def _bundle_state(bundle: dict, now_ms: int) -> Grant:
@@ -47,19 +34,19 @@ def _bundle_state(bundle: dict, now_ms: int) -> Grant:
     return "expiring" if exp <= now_ms + LEAD_S * 1000 else "live"
 
 
-def grant_state(store: dict, *, key_name: str, url: str | None, now_ms: int) -> Grant:
-    bundles = _matching(store, key_name, url)
-    if not bundles:
-        return "none"
-    states = {_bundle_state(b, now_ms) for b in bundles}
-    return next(g for g in _GRANT_RANK if g in states)
+def grant_state(store: dict, *, key: str, now_ms: int) -> Grant:
+    """The grant filed at *key*, the CLI's own ``mcp-oauth`` key (``viberpit.mcp_keys``)."""
+    bundle = store.get(key)
+    return _bundle_state(bundle, now_ms) if isinstance(bundle, dict) else "none"
 
 
-def best_expiry(store: dict, *, key_name: str, url: str | None) -> int | None:
-    """The latest ``expiresAt`` (ms) among matching bundles that still hold a token."""
-    exps = [int(exp) for b in _matching(store, key_name, url)
-            if has_token(b) and (exp := bundle_expiry(b)) is not None and exp > 0]
-    return max(exps) if exps else None
+def best_expiry(store: dict, *, key: str) -> int | None:
+    """The ``expiresAt`` (ms) of the bundle at *key*, if it still holds a token."""
+    bundle = store.get(key)
+    if not isinstance(bundle, dict) or not has_token(bundle):
+        return None
+    exp = bundle_expiry(bundle)
+    return int(exp) if exp is not None and exp > 0 else None
 
 
 def _observed_ms(row: dict) -> float | None:

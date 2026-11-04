@@ -147,6 +147,16 @@ _SHUTDOWN_DB_TIMEOUT_S = 10.0
 _security_warned = False
 
 
+async def _mcp_oauth_tick() -> None:
+    """One refresher tick: reconcile grants onto their CLI keys, then refresh and republish,
+    purging the keys the reconcile dropped or moved."""
+    from server.mcp_health import grants as mcp_grants
+    from viberpit import mcp_oauth_refresh
+
+    drop = await asyncio.to_thread(mcp_grants.reconcile_grants)
+    await asyncio.to_thread(lambda: mcp_oauth_refresh.run_once(drop_keys=drop))
+
+
 async def seed_host_ssh_from_env() -> None:
     """One-time bridge from the retired VIBERPIT_DAEMON_SSH_HOST/_REPO deploy path: when
     both are set and a Host row is named after the ssh host's hostname part with NULL
@@ -564,22 +574,22 @@ async def _lifespan(app: FastAPI):
     # The store is the only holder of MCP refresh tokens; account dirs get the public
     # view, so no CLI refreshes a shared grant (spec 2026-10-13). This is the single
     # refresher, on the one refresh authority only: N refreshers of a rotating grant
-    # are what killed aws-oauth. Each 60 s tick also republishes to every account dir.
+    # are what killed aws-oauth. Each 60 s tick first reconciles grants onto their servers'
+    # current CLI keys (server/mcp_health/grants.py), then republishes to every account dir,
+    # purging the keys the reconcile deleted or moved.
     app.state.mcp_oauth_refresh_task = None
     from server.config import get_settings as _mcp_refresh_settings
     from viberpit import accounts as _vp_accounts
 
     if (_mcp_refresh_settings().mcp_oauth_refresh_enabled
             and _vp_accounts.is_refresh_authority()):
-        from viberpit import mcp_oauth_refresh as _mcp_oauth_refresh
-
         async def _mcp_oauth_refresh_loop() -> None:
             _log = _logging.getLogger("server.mcp_oauth")
             while True:
                 try:
-                    await asyncio.to_thread(_mcp_oauth_refresh.run_once)
+                    await _mcp_oauth_tick()
                 except Exception:
-                    # run_once never raises by contract; this guards the loop itself.
+                    # Neither call raises by contract; this guards the loop itself.
                     _log.warning("mcp oauth refresh tick failed", exc_info=True)
                 await asyncio.sleep(60.0)
 

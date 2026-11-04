@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import unittest
@@ -207,3 +208,119 @@ def test_shared_mcp_concurrent_processes_preserve_each_server():
         data = read_json(paths.shared_mcp_path())
         assert len(data) == 8
         assert all(value["expiresAt"] == 10 for value in data.values())
+
+
+def _seed_store(store: dict) -> bytes:
+    from viberpit import paths
+    from viberpit.creds import write_json_secure
+    path = paths.shared_mcp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_secure(path, store)
+    return path.read_bytes()
+
+
+def test_worker_never_writes_store(monkeypatch):
+    from viberpit import creds, fleet_role, paths
+    from viberpit.configdir import CREDENTIALS_NAME
+    with temp_env():
+        before = _seed_store({"srv|1": {"accessToken": "a", "refreshToken": "r", "expiresAt": 1}})
+        cfg = paths.account_cfg_dir("w")
+        cfg.mkdir(parents=True, exist_ok=True)
+        (cfg / CREDENTIALS_NAME).write_text(json.dumps(
+            {"mcpOAuth": {"srv|1": {"accessToken": "b", "refreshToken": "r2", "expiresAt": 99},
+                          "new|2": {"accessToken": "c", "refreshToken": "r3", "expiresAt": 5}}}))
+        monkeypatch.setenv(fleet_role.ROLE_ENV, fleet_role.WORKER)
+        calls = []
+
+        def update(store):
+            calls.append(1)
+            return {}
+
+        assert creds.update_shared_mcp(update) == creds.read_shared_mcp()
+        assert creds.merge_shared_mcp({"x|3": {"accessToken": "z", "expiresAt": 1}}) == 0
+        assert creds.capture_cfg_mcp(
+            {"srv|1": {"accessToken": "b", "refreshToken": "r2", "expiresAt": 99}}) == 0
+        creds.sync_cfg_mcp_oauth(cfg)
+        assert calls == []
+        assert paths.shared_mcp_path().read_bytes() == before
+
+
+def test_worker_publish_still_updates_dir(monkeypatch):
+    from viberpit import creds, fleet_role, paths
+    from viberpit.configdir import CREDENTIALS_NAME
+    with temp_env():
+        before = _seed_store({"srv|1": {"accessToken": "a", "refreshToken": "r", "expiresAt": 1}})
+        cfg = paths.account_cfg_dir("w")
+        cfg.mkdir(parents=True, exist_ok=True)
+        (cfg / CREDENTIALS_NAME).write_text(json.dumps({"mcpOAuth": {}}))
+        monkeypatch.setenv(fleet_role.ROLE_ENV, fleet_role.WORKER)
+        assert creds.sync_cfg_mcp_oauth(cfg) is True
+        published = json.loads((cfg / CREDENTIALS_NAME).read_text())["mcpOAuth"]["srv|1"]
+        assert published["accessToken"] == "a" and "refreshToken" not in published
+        assert paths.shared_mcp_path().read_bytes() == before
+
+
+def test_primary_writes_store(monkeypatch):
+    from viberpit import creds, fleet_role, paths
+    monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    with temp_env():
+        assert creds.merge_shared_mcp({"srv|1": {"accessToken": "a", "expiresAt": 1}}) == 1
+        assert "srv|1" in json.loads(paths.shared_mcp_path().read_text())
+
+
+def test_dropped_key_not_recaptured_and_purged_from_dir(monkeypatch):
+    from viberpit import creds, fleet_role, paths
+    from viberpit.configdir import CREDENTIALS_NAME
+    monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    with temp_env():
+        _seed_store({"live|1": {"serverName": "live", "accessToken": "a", "refreshToken": "r",
+                                "expiresAt": 1}})
+        cfg = paths.account_cfg_dir("d")
+        cfg.mkdir(parents=True, exist_ok=True)
+        orphan = {"serverName": "linear", "serverUrl": "https://mcp.linear.app/mcp"}
+        (cfg / CREDENTIALS_NAME).write_text(json.dumps(
+            {"claudeAiOauth": {"accessToken": "c"}, "mcpOAuth": {"linear|0": orphan}}))
+        assert creds.sync_cfg_mcp_oauth(cfg, drop=frozenset({"linear|0"})) is True
+        data = json.loads((cfg / CREDENTIALS_NAME).read_text())
+        assert "linear|0" not in data["mcpOAuth"] and "live|1" in data["mcpOAuth"]
+        assert data["claudeAiOauth"] == {"accessToken": "c"}
+        assert "linear|0" not in creds.read_shared_mcp()
+
+
+def test_capture_and_publish_skip_drop_keys(monkeypatch):
+    from viberpit import creds, fleet_role
+    monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    with temp_env():
+        _seed_store({})
+        offered = creds.capture_cfg_mcp(
+            {"old|1": {"serverName": "old", "accessToken": "a", "expiresAt": 9}},
+            drop=frozenset({"old|1"}))
+        assert offered == 0 and creds.read_shared_mcp() == {}
+        published = creds.publish_mcp({"old|1": {"accessToken": "a"}, "keep|2": {"accessToken": "k"}},
+                                      {"old|1": {"accessToken": "s"}}, drop=frozenset({"old|1"}))
+        assert published == {"keep|2": {"accessToken": "k"}}
+
+
+def test_refresh_bearing_dir_bundle_in_drop_is_captured_and_kept(monkeypatch):
+    """A refresh token is never deleted: a dir bundle holding one is captured into the store
+    and stays in the dir (as the public view) even when its key is in *drop*."""
+    from viberpit import creds, fleet_role, paths
+    from viberpit.configdir import CREDENTIALS_NAME
+    monkeypatch.delenv(fleet_role.ROLE_ENV, raising=False)
+    with temp_env():
+        _seed_store({})
+        cfg = paths.account_cfg_dir("d")
+        cfg.mkdir(parents=True, exist_ok=True)
+        bundle = {"serverName": "srv", "accessToken": "a", "refreshToken": "r", "expiresAt": 9}
+        (cfg / CREDENTIALS_NAME).write_text(json.dumps({"mcpOAuth": {"K|1": bundle}}))
+        creds.sync_cfg_mcp_oauth(cfg, drop=frozenset({"K|1"}))
+        assert creds.read_shared_mcp()["K|1"]["refreshToken"] == "r"
+        data = json.loads((cfg / CREDENTIALS_NAME).read_text())
+        assert "K|1" in data["mcpOAuth"]
+        assert "refreshToken" not in data["mcpOAuth"]["K|1"]
+
+
+def test_publish_never_removes_a_refresh_bearing_dir_bundle():
+    from viberpit import creds
+    held = {"accessToken": "a", "refreshToken": "r", "expiresAt": 9}
+    assert creds.publish_mcp({"K|1": held}, {}, drop=frozenset({"K|1"})) == {"K|1": held}

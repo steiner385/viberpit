@@ -39,7 +39,7 @@ Show whether each MCP server actually works, per account and per host, and let t
 Each server shows one **overall** status, derived on the server (`server/mcp_health/overall.py`, returned as `overall` by `GET /api/library/mcp`), in this order:
 
 1. A counted row is `failed` → **Failed**, with its reason. A configuration problem signing in cannot fix.
-2. The shared grant in `store/mcp.shared.json` is never/dead/expired → **Needs auth**. The grant is matched by server name and the configured `url`, so orphaned bundles are ignored.
+2. The shared grant in `store/mcp.shared.json` is never/dead/expired → **Needs auth**. The grant is read at the CLI's exact key (`<serverName>|<hash of type, url, headers>`, `viberpit.mcp_keys`), so a bundle filed under any other key is ignored. Only http/sse servers with an explicit `type` have a knowable key; any other server reads as no grant without a lookup.
 3. The grant is live or expiring, but a live session observed the server rejecting the token → **Failed**, "token rejected".
 4. Otherwise, the best counted row status. No counted rows → **Not checked yet**.
 
@@ -71,7 +71,15 @@ Reconnect failures are logged and show up in the next status poll; they never fa
 
 `store/mcp.shared.json` is the only file that holds MCP refresh tokens, so no session's CLI refreshes a shared grant. On the refresh authority, the edge refreshes each bundle that expires within 10 minutes. It checks every 60 s, writes the result back compare-and-swap, and publishes the public view to every Anthropic account dir. Session start (`compose`) uses the same sync, so it never rolls back a rotation and never writes a refresh token into a dir. A dead grant (`invalid_grant` and the CLI's equivalents) is cleared to the CLI's signed-out shape and needs a Reauth. Any other failure is retried on the next tick.
 
-**Kill switch** - `VIBERPIT_MCP_OAUTH_REFRESH_ENABLED` (default on). When off, nothing refreshes MCP grants, and a token stays valid only until it expires.
+**Reconcile** - Each tick, before refreshing, the edge files every grant under its server's current CLI key (`server/mcp_health/grants.py`, `viberpit.mcp_rekey`). Editing a server's URL or renaming it changes the key and would orphan the live grant, so:
+- **Keys:** the wanted set is every configured http/sse server with an explicit `type`; its key is the CLI's formula over `type`, `url` and `headers` (`grants.key_for`, which the status readout also uses). A config with `${…}` in its URL or a header value is skipped: the CLI hashes the expanded value.
+- **Moves:** a grant moves to a wanted key only when its grant identity (from the protected-resource metadata) equals the server's, both URLs share an origin, and the wanted key already exists in the store. The CLI writes a discovery bundle there when it first connects, so this guards against our key formula drifting from the CLI's; until then nothing moves. An unknown identity never moves. Identities are fetched before the store lock is taken, never under it, and a failed lookup is not retried for 5 minutes.
+- **Refresh tokens are never deleted:** a bundle holding a refresh token is only ever moved, in the store and in account dirs alike.
+- **Drops:** an empty bundle (no token) is deleted only when it is provably dead: its name is a configured server's (superseded by that server's current key), or it is `plugin:<plugin>:<name>` for a plugin that is not enabled. Any other empty bundle is kept, since a project `.mcp.json` may own it. An access-token-only bundle superseded by a configured server of the same name is deleted only once the server's current key holds a live grant or both identities are known and differ. An unconfigured bundle with a token is kept.
+- **Purge:** the dropped keys and moved bundles' old keys are purged from every account dir in the same tick's publish, so capture never offers a stale copy back. Each purged key stays tombstoned for 30 minutes, so a dir that missed a tick still gets it purged. If `claude.shared.json` exists but can't be read, the tick skips reconcile (one WARNING) and purges only tombstoned keys; an absent file just means no user servers.
+- **Single writer:** only the refresh-authority host (dobby: the edge, the primary daemon and the CLI) writes the shared store, serialised by its lock; workers never do. A worker's reconcile is a no-op, and its merge and capture leave the store alone. Logs carry keys and counts, never token values.
+
+**Kill switch** - `VIBERPIT_MCP_OAUTH_REFRESH_ENABLED` (default on). When off, nothing refreshes MCP grants, and a token stays valid only until it expires. Reconcile runs in the same tick, so the switch disables it too.
 
 ## In-session readout
 

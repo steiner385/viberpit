@@ -37,6 +37,7 @@ from server.api.repos import known_repo_slugs
 from server.mcp_auth import McpAuthBusy
 from server.mcp_scope import store as scope_store
 from server.mcp_scope.servers import configured_server_keys
+from server.mcp_health import grants as mcp_grants
 from server.mcp_health import overall as mcp_overall
 from server.mcp_health import store as mcp_store
 from server.sessions.facade import call_with_deadline
@@ -238,14 +239,13 @@ async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
         store = {}
     now_ms = int(time.time() * 1000)
     for server in out["servers"]:
-        key_name = mcp_overall.store_key_name(server["name"], server.get("pluginName"))
-        url = (server.get("config") or {}).get("url")
+        key = mcp_grants.key_for(server)  # None: no knowable CLI key, so no grant lookup
         for row in server["status"]:
             row["counted"] = mcp_overall.counted(row, enabled_accounts=enabled, live_session_ids=live, now_ms=now_ms)
         server["overall"] = mcp_overall.derive_overall(
-            grant=mcp_overall.grant_state(store, key_name=key_name, url=url, now_ms=now_ms),
+            grant=mcp_overall.grant_state(store, key=key, now_ms=now_ms) if key else "none",
             rows=[r for r in server["status"] if r["counted"]], now_ms=now_ms,
-            expires_at_ms=mcp_overall.best_expiry(store, key_name=key_name, url=url))
+            expires_at_ms=mcp_overall.best_expiry(store, key=key) if key else None)
     return out
 
 

@@ -21,6 +21,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from . import creds, paths
+from .mcp_keys import DEFAULT_PORTS, url_origin
 from .mcp_names import short_name
 
 log = logging.getLogger(__name__)
@@ -187,24 +188,21 @@ def token_endpoint(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
 
 _resource_cache: dict[str, str] = {}
 
-_DEFAULT_PORTS = {"http": 80, "https": 443}
-
-
-def _url_href(url: str) -> str:
+def url_href(url: str) -> str:
     """*url* as the CLI serializes it (WHATWG ``new URL(url).href``) for the http(s) parts that
     differ from the raw string: lower-case scheme and host, no default port, and ``/`` for an
     empty path. Railway's metadata names the bare origin ``https://mcp.railway.com``; the CLI
     authorized with ``…com/`` and the token endpoint compares exactly (400 invalid_target)."""
     parts = urllib.parse.urlsplit(url)
     scheme = parts.scheme.lower()
-    if scheme not in _DEFAULT_PORTS or not parts.hostname or "@" in parts.netloc:
+    if scheme not in DEFAULT_PORTS or not parts.hostname or "@" in parts.netloc:
         return url
     try:
         port = parts.port
     except ValueError:
         return url
     netloc = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname  # IPv6 literal
-    if port is not None and port != _DEFAULT_PORTS[scheme]:
+    if port is not None and port != DEFAULT_PORTS[scheme]:
         netloc = f"{netloc}:{port}"
     return urllib.parse.urlunsplit((scheme, netloc, parts.path or "/", parts.query, parts.fragment))
 
@@ -212,11 +210,11 @@ def _url_href(url: str) -> str:
 def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
     """The ``resource`` to send, chosen as the CLI's MCP SDK does: the protected-resource
     metadata's ``resource`` when ``discoveryState.resourceMetadataUrl`` serves one, else the
-    server URL minus its fragment, serialized as the URL's ``href`` (:func:`_url_href`). The
+    server URL minus its fragment, serialized as the URL's ``href`` (:func:`url_href`). The
     token endpoint rejects any other value: aws-oauth is configured as
     ``…/mcp?oauth=initialize`` but its metadata names ``…/mcp``."""
     server_url = bundle.get("serverUrl")
-    fallback = _url_href(urllib.parse.urldefrag(server_url)[0]) if isinstance(server_url, str) else ""
+    fallback = url_href(urllib.parse.urldefrag(server_url)[0]) if isinstance(server_url, str) else ""
     prm_url = _discovery_state(bundle).get("resourceMetadataUrl")
     if not (isinstance(prm_url, str) and prm_url):
         return fallback
@@ -229,10 +227,64 @@ def resource_indicator(bundle: dict, *, fetch_json: FetchJson | None = None) -> 
         doc = None
     resource = doc.get("resource") if isinstance(doc, dict) else None
     if isinstance(resource, str) and resource:
-        resource = _url_href(resource)
+        resource = url_href(resource)
         _resource_cache[prm_url] = resource
         return resource
     return fallback
+
+
+# --- grant identity (RFC 9728) --------------------------------------------------------------
+
+_identity_cache: dict[str, tuple[str, str]] = {}
+# A failed lookup is not retried for IDENTITY_FAILURE_TTL_S (monotonic clock), so an offline
+# or 404ing PRM endpoint costs one fetch per window, not one per tick.
+IDENTITY_FAILURE_TTL_S = 300.0
+_identity_failed_until: dict[str, float] = {}
+_monotonic = time.monotonic
+
+
+def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tuple[str, str] | None:
+    """``(authorization_server, resource)`` named by the protected-resource metadata at
+    *prm_url*, both serialized by :func:`url_href`; None when the fetch fails or either field
+    is missing, or when ``resource`` is not on *prm_url*'s origin (RFC 9728 §3.3: a server
+    must not claim another's grant). Two grants with an equal identity are interchangeable,
+    so the re-key plan may move one to the other's key. A success is cached per *prm_url*; a
+    failure is remembered separately for :data:`IDENTITY_FAILURE_TTL_S` (returning None
+    without a fetch) and never shadows a success."""
+    if prm_url in _identity_cache:
+        return _identity_cache[prm_url]
+    now = _monotonic()
+    if _identity_failed_until.get(prm_url, 0.0) > now:
+        return None
+    identity = _fetch_identity(prm_url, fetch_json)
+    if identity is None:
+        _identity_failed_until[prm_url] = now + IDENTITY_FAILURE_TTL_S
+        return None
+    _identity_failed_until.pop(prm_url, None)
+    _identity_cache[prm_url] = identity
+    return identity
+
+
+def _fetch_identity(prm_url: str, fetch_json: FetchJson | None) -> tuple[str, str] | None:
+    try:
+        doc = (fetch_json or _default_fetch_json)(prm_url)
+    except Exception:
+        log.debug("mcp oauth grant identity fetch failed url=%s", prm_url, exc_info=True)
+        return None
+    if not isinstance(doc, dict):
+        return None
+    servers = doc.get("authorization_servers")
+    resource = doc.get("resource")
+    auth_server = servers[0] if isinstance(servers, list) and servers else None
+    if not (isinstance(auth_server, str) and auth_server and isinstance(resource, str) and resource):
+        return None
+    identity = (url_href(auth_server), url_href(resource))
+    origin = url_origin(identity[1])
+    if origin is None or origin != url_origin(prm_url):
+        # RFC 9728 §3.3: a document naming another origin's resource is forged or misrouted.
+        log.debug("mcp oauth grant identity resource origin mismatch url=%s", prm_url)
+        return None
+    return identity
 
 
 # --- the grant ----------------------------------------------------------------------------
@@ -326,11 +378,11 @@ def _swap_if_unchanged(key: str, used_refresh_token: str, replacement: dict) -> 
     return swapped
 
 
-def _publish_all(names: list[str]) -> int:
+def _publish_all(names: list[str], *, drop: frozenset[str] = frozenset()) -> int:
     written = 0
     for name in names:
         try:
-            written += bool(creds.sync_cfg_mcp_oauth(paths.account_cfg_dir(name)))
+            written += bool(creds.sync_cfg_mcp_oauth(paths.account_cfg_dir(name), drop=drop))
         except Exception:
             log.debug("mcp oauth publish failed account=%s", name, exc_info=True)
     return written
@@ -379,10 +431,12 @@ def _refresh_due(summary: dict, post_form: PostForm | None, fetch_json: FetchJso
 
 
 def run_once(*, accounts_list: list[str] | None = None, post_form: PostForm | None = None,
-             fetch_json: FetchJson | None = None, now_ms: int | None = None) -> dict:
+             fetch_json: FetchJson | None = None, now_ms: int | None = None,
+             drop_keys: frozenset[str] = frozenset()) -> dict:
     """One refresher tick. Never raises.
 
-    1. Capture + publish every Anthropic account dir (strips any refresh-token copy).
+    1. Capture + publish every Anthropic account dir (strips any refresh-token copy), purging
+       *drop_keys* (the keys the edge's grant reconcile just deleted or moved) from each.
     2. Refresh each due store bundle outside the store lock; write back compare-and-swap.
     3. If the store changed, publish again."""
     summary: dict = {"refreshed": [], "dead": [], "transient": [], "published": 0}
@@ -395,12 +449,12 @@ def run_once(*, accounts_list: list[str] | None = None, post_form: PostForm | No
             names = []
     else:
         names = list(accounts_list)
-    summary["published"] += _publish_all(names)
+    summary["published"] += _publish_all(names, drop=drop_keys)
     try:
         changed = _refresh_due(summary, post_form, fetch_json, now_ms)
     except Exception:
         log.debug("mcp oauth refresher: tick failed", exc_info=True)
         changed = False
     if changed:
-        summary["published"] += _publish_all(names)
+        summary["published"] += _publish_all(names, drop=drop_keys)
     return summary

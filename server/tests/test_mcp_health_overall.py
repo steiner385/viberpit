@@ -1,49 +1,45 @@
 from server.mcp_health import overall as o
 
 NOW = 1_800_000_000_000
+KEY = "aws|0123456789abcdef"
 
 
 def b(name="aws", url="https://u?x=1", tok="t", exp=NOW + 3_600_000, rt="r"):
     return {"serverName": name, "serverUrl": url, "accessToken": tok, "expiresAt": exp, "refreshToken": rt}
 
 
-def test_store_key_name():
-    assert o.store_key_name("aws-oauth", None) == "aws-oauth"
-    assert o.store_key_name("railway", "railway") == "plugin:railway:railway"
-
-
 def test_grant_none_without_bundle():
-    assert o.grant_state({}, key_name="aws", url="https://u?x=1", now_ms=NOW) == "none"
+    assert o.grant_state({}, key=KEY, now_ms=NOW) == "none"
 
 
 def test_grant_never_for_cleared_bundle():
-    assert o.grant_state({"k": b(tok="", exp=0, rt=None)}, key_name="aws", url="https://u?x=1", now_ms=NOW) == "never"
+    assert o.grant_state({KEY: b(tok="", exp=0, rt=None)}, key=KEY, now_ms=NOW) == "never"
 
 
 def test_grant_live_expiring_expired():
     def s(exp):
-        return {"k": b(exp=exp)}
+        return {KEY: b(exp=exp)}
 
-    assert o.grant_state(s(NOW + 3_600_000), key_name="aws", url="https://u?x=1", now_ms=NOW) == "live"
-    assert o.grant_state(s(NOW + 60_000), key_name="aws", url="https://u?x=1", now_ms=NOW) == "expiring"
-    assert o.grant_state(s(NOW - 1), key_name="aws", url="https://u?x=1", now_ms=NOW) == "expired"
-
-
-def test_grant_ignores_orphan_bundle_with_other_url():
-    store = {"orphan": b(url="https://u", tok="", exp=0, rt=None), "live": b()}
-    assert o.grant_state(store, key_name="aws", url="https://u?x=1", now_ms=NOW) == "live"
-    assert o.grant_state({"orphan": b(url="https://u")}, key_name="aws", url="https://u?x=1", now_ms=NOW) == "none"
+    assert o.grant_state(s(NOW + 3_600_000), key=KEY, now_ms=NOW) == "live"
+    assert o.grant_state(s(NOW + 60_000), key=KEY, now_ms=NOW) == "expiring"
+    assert o.grant_state(s(NOW - 1), key=KEY, now_ms=NOW) == "expired"
 
 
-def test_grant_best_bundle_wins():
-    store = {"a": b(tok="", exp=0, rt=None), "b": b()}
-    assert o.grant_state(store, key_name="aws", url="https://u?x=1", now_ms=NOW) == "live"
+def test_grant_uses_exact_cli_key():
+    # Right serverName and URL, but stored under a different key: the CLI cannot see it.
+    assert o.grant_state({"aws|ffffffffffffffff": b()}, key=KEY, now_ms=NOW) == "none"
+    assert o.best_expiry({"aws|ffffffffffffffff": b()}, key=KEY) is None
+    assert o.grant_state({KEY: b()}, key=KEY, now_ms=NOW) == "live"
+
+
+def test_grant_reads_the_bundle_at_the_key():
+    assert o.grant_state({KEY: b()}, key=KEY, now_ms=NOW) == "live"
 
 
 def test_best_expiry():
-    store = {"a": b(exp=NOW - 5), "b": b(exp=NOW - 1), "c": b(tok="", exp=NOW + 9)}
-    assert o.best_expiry(store, key_name="aws", url=None) == NOW - 1
-    assert o.best_expiry({}, key_name="aws", url=None) is None
+    assert o.best_expiry({KEY: b(exp=NOW - 1)}, key=KEY) == NOW - 1
+    assert o.best_expiry({KEY: b(tok="", exp=NOW + 9)}, key=KEY) is None
+    assert o.best_expiry({}, key=KEY) is None
 
 
 def _iso(age_s: int) -> str:

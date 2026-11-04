@@ -319,7 +319,7 @@ def test_run_once_defaults_to_anthropic_accounts(monkeypatch):
     from viberpit import accounts
     seen = []
     monkeypatch.setattr(accounts, "_anthropic_account_names", lambda: ["a1", "a2"])
-    monkeypatch.setattr(mor.creds, "sync_cfg_mcp_oauth", lambda cfg, server=None: seen.append(cfg.name) or False)
+    monkeypatch.setattr(mor.creds, "sync_cfg_mcp_oauth", lambda cfg, server=None, drop=frozenset(): seen.append(cfg.name) or False)
     mor.run_once(now_ms=NOW)
     assert seen == ["a1", "a2"]
 
@@ -399,3 +399,11 @@ def test_dead_grant_codes_match_case_insensitively():
         mor.refresh_bundle(_bundle(), **kw)
     with pytest.raises(mor.McpRefreshTransient):
         mor.refresh_bundle(_bundle(), **kw)
+
+
+def test_run_once_threads_drop_keys_to_publish(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mor.creds, "sync_cfg_mcp_oauth",
+                        lambda cfg, server=None, drop=frozenset(): seen.append((cfg.name, drop)) or False)
+    mor.run_once(accounts_list=["a1", "a2"], drop_keys=frozenset({"old|1"}), now_ms=NOW)
+    assert seen == [("a1", frozenset({"old|1"})), ("a2", frozenset({"old|1"}))]
