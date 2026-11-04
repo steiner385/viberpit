@@ -15,6 +15,9 @@ links:
     - web/src/features/sessions/SessionBody.tsx
     - web/src/features/sessions/composer/Composer.tsx
     - web/src/features/palette/AppPalette.tsx
+    - web/src/features/sessions/transcript/search/TranscriptSearchBar.tsx
+    - web/src/features/sessions/transcript/TurnSummaryCard.tsx
+    - server/sessions/search.py
     - web/src/session/ordering.ts
     - web/src/shell/shortcuts.ts
     - server/sessions/read_state.py
@@ -147,6 +150,7 @@ close it. It works while typing in the composer.
 | Previous / next session in list order (wraps; with none open, ] opens the first and [ the last) | ⌘⌥[ / ⌘⌥] | Alt+[ / Alt+] |
 | Open the Nth session in the list | ⌘⌥1–9 | Alt+Shift+1–9 |
 | Scroll to your previous / next prompt | ⌘⌥↑ / ⌘⌥↓ | Alt+↑ / Alt+↓ |
+| Search this conversation | ⌘F | Ctrl+F |
 
 - Session keys follow the Active list's current order, including its grouping, filters and search. The
   session header's previous/next arrows use the same order.
@@ -156,6 +160,33 @@ close it. It works while typing in the composer.
   Shift; ⌥↑/↓ moves the caret in a text field, so the prompt jump uses ⌘⌥↑/↓ on macOS.
 - The prompt jump moves relative to the topmost visible message, stops following new output, and leaves
   focus where it was.
+
+**Search in a conversation** — ⌘F (Ctrl+F) opens a search bar at the top of the transcript. It searches
+the whole conversation on the server, including history that is not loaded yet.
+- **Where ⌘F works:** with focus in the transcript (a click there is enough), in the message box, or with
+  nothing focused. Anywhere else, such as another field, the Files or Changes tab, or Settings, it is the
+  browser's own find. The ⌘K palette also offers "Search this conversation".
+- **Matching:** every word you type must appear in a message, ignoring case. Your prompts and the replies'
+  text are searched; thinking, tool calls and sub-agent work are not.
+- **Results start with the newest:** the bar jumps straight to the newest match if it is already on screen,
+  and shows `N of M`. Enter or ↑ goes to the next older match, and Shift+Enter or ↓ to the next newer one;
+  both wrap. When older matches exist past the result limit, the count reads `M+`.
+- **Older matches:** stepping to a match above the loaded history loads the pages in between, then centres
+  the match. A long reply is centred on the match itself, not the reply's middle. Scrolling, Scroll to
+  bottom or sending a message stops it; nothing more than 2000 turns back is loaded.
+- **Highlights:** every match is highlighted in prompts and reply text (never inside code), and the current
+  one stands out. Esc closes the bar and puts focus back where it was.
+
+**Turn summary card** — when a turn ends, a card at the bottom of the transcript says how it ended. It
+replaces the old pinned "Your turn" panel above the composer.
+- **Outcome:** Complete, Handed back (with the session's reason), Your turn, Turn failed, or the usage-limit
+  label. Sessions waiting on a permission, plan or question, or ready for review, show their own card
+  instead. While a session is still working but has asked you something, the card is the "Asked you" note.
+- **Likely complete:** a handed-back session the server reads as probably finished offers **Mark complete**
+  and **Not done** here. The list card's "Likely complete" pill stays.
+- **Files:** the files the turn changed (up to 5, then `+K more`) with a `+N −M` total when every change
+  could be counted (Codex and notebook edits list their paths only), and an **Open Changes** button.
+- **Replies:** suggested replies are one tap. Screen readers hear the hand-off reason once, when it changes.
 
 **Session rail and Details tab** — the old meta strip under the session header is gone. A
 right-hand session rail (20rem, collapsible, remembered per browser) shows four cards:

@@ -1,5 +1,5 @@
 import { createContext, useContext, useId, useMemo, type ComponentProps } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import remarkMath from 'remark-math'
@@ -13,7 +13,13 @@ import { isFilePathRef } from './filePathRef'
 import { PathRef } from './PathRef'
 import { ResultImage } from './ResultImages'
 
-interface Props { children: string; streaming?: boolean }
+interface Props {
+  children: string
+  streaming?: boolean
+  /** The transcript search's highlight pass (D-11), run last — built by `Markdown`
+   *  (`rehypeSearchHighlight`) so this lazy module imports none of the search code. */
+  searchPlugin?: NonNullable<Options['rehypePlugins']>[number]
+}
 
 const ImageLinkContext = createContext(false)
 
@@ -30,7 +36,7 @@ function MarkdownImage({ src, alt }: ComponentProps<'img'>) {
 // remark/rehype chain, highlight.js and KaTeX below are ~240kB gzip and nothing
 // outside a transcript needs them. Import this file directly and that whole
 // chain lands back in the initial payload — `npm run budget` is what says so.
-export function MarkdownDoc({ children, streaming = false }: Props) {
+export function MarkdownDoc({ children, streaming = false, searchPlugin }: Props) {
   // Sanitized IDs are unique across messages; local links follow the same prefix.
   const idPrefix = `markdown-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}-`
   const schema = {
@@ -78,12 +84,16 @@ export function MarkdownDoc({ children, streaming = false }: Props) {
       return <code {...props}>{children}</code>
     },
   }), [idPrefix, streaming])
+  // Sanitize author HTML before trusted math/highlighting generate markup. The
+  // search marks (D-11) go last: they wrap the final tree's text nodes, skipping
+  // code and math (`rehypeSearchHighlight`).
+  const rehypePlugins: NonNullable<Options['rehypePlugins']> = [rehypeRaw, [rehypeSanitize, schema], rehypeKatex, rehypeHighlight]
+  if (searchPlugin) rehypePlugins.push(searchPlugin)
   return (
     <div className="markdown max-w-none text-ink">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        // Sanitize author HTML before trusted math/highlighting generate markup.
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, schema], rehypeKatex, rehypeHighlight]}
+        rehypePlugins={rehypePlugins}
         components={components}
       >
         {children}

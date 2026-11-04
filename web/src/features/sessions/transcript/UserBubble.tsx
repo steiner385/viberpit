@@ -1,9 +1,10 @@
 import { cn } from '@/lib/utils'
 import type { ImageRef } from '@/lib/toolContent'
+import type { SearchHighlight } from './search/TranscriptSearchContext'
 
-interface Props { text?: string; images?: ImageRef[] }
+interface Props { text?: string; images?: ImageRef[]; highlight?: SearchHighlight }
 
-export function UserBubble({ text, images }: Props) {
+export function UserBubble({ text, images, highlight }: Props) {
   return (
     <div className="flex justify-end">
       <div
@@ -14,7 +15,7 @@ export function UserBubble({ text, images }: Props) {
           'whitespace-pre-wrap text-sm',
         )}
       >
-        {text}
+        {text !== undefined && (highlight ? highlight.kit.renderText(text, highlight) : text)}
         {images && images.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-2">
             {images.map((img, i) => (

@@ -17,7 +17,9 @@ import {
   type Shortcut,
   type ShortcutContext,
 } from './shortcuts'
-import { DISPATCH_PROMPT_ID, SESSION_COMPOSER_ATTR, textEntryClaimsKey } from '@/lib/detachKeyGuard'
+import {
+  DISPATCH_PROMPT_ID, SESSION_COMPOSER_ATTR, SESSION_TRANSCRIPT_ATTR, focusAllowsTranscriptSearch, textEntryClaimsKey,
+} from '@/lib/detachKeyGuard'
 
 function ev(over: Partial<KeyboardLike>): KeyboardLike {
   return { key: '', code: '', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...over }
@@ -35,6 +37,8 @@ function ctx(over: Partial<ShortcutContext> = {}): ShortcutContext {
     interactive: true,
     active: null,
     yieldsToTextEntry: false,
+    transcriptOpen: false,
+    transcriptSearchFocus: false,
     ...over,
   }
 }
@@ -59,7 +63,7 @@ const SHELL_HANDLED = [
   'compose.help', 'compose.nav', 'insession.stop', 'insession.detach', 'insession.detachEsc',
   'insession.forceDetach', 'insession.denyPermission',
   'session.listPrev', 'session.listNext', 'session.jumpN',
-  'transcript.promptPrev', 'transcript.promptNext',
+  'transcript.promptPrev', 'transcript.promptNext', 'transcript.search',
 ]
 const shellRow = (e: KeyboardLike, c: ShortcutContext) =>
   matchShortcut(e, (s) => SHELL_HANDLED.includes(s.id), c)?.id
@@ -459,10 +463,11 @@ describe('shortcutAllowed', () => {
     // Two permissive contexts, idle and busy: the Esc rows split on `sessionBusy`
     // by design (stop vs detach), so no ONE context reaches both. A pending
     // deniable permission is part of "permissive": it is the positive fact
-    // `insession.denyPermission` needs, and no row treats it as a blocker.
+    // `insession.denyPermission` needs, and no row treats it as a blocker. So is
+    // an on-screen transcript (`transcript.search`, D-11).
     const permissive = [
-      ctx({ sessionOpen: true, hasDeniablePermission: true }),
-      ctx({ sessionOpen: true, sessionBusy: true, hasDeniablePermission: true }),
+      ctx({ sessionOpen: true, hasDeniablePermission: true, transcriptOpen: true, transcriptSearchFocus: true }),
+      ctx({ sessionOpen: true, sessionBusy: true, hasDeniablePermission: true, transcriptOpen: true, transcriptSearchFocus: true }),
     ]
     for (const s of SHORTCUTS) {
       expect(permissive.some((c) => shortcutAllowed(s, c)), `${s.id}`).toBe(true)
@@ -1137,5 +1142,60 @@ describe('matchShortcut — the row scope has no context', () => {
     expect(listAction(ev({ key: '?' }))).toBeUndefined()
     expect(listAction(ev({ key: 'z', ctrlKey: true }))).toBeUndefined()
     expect(headerAction(ev({ key: '?' }))).toBeUndefined()
+  })
+})
+
+// ─── D-11: ⌘F / Ctrl+F — the transcript search ──────────────────────────────
+
+describe('transcript.search', () => {
+  const pane = document.createElement('div')
+  pane.setAttribute(SESSION_TRANSCRIPT_ATTR, '')
+  const inPane = document.createElement('div')
+  pane.appendChild(inPane)
+  const sessionComposer = document.createElement('textarea')
+  sessionComposer.setAttribute(SESSION_COMPOSER_ATTR, '')
+  const otherInput = document.createElement('input')
+  const chromeButton = document.createElement('button')
+  const open = (over: Partial<ShortcutContext> = {}) =>
+    ctx({ sessionOpen: true, transcriptOpen: true, transcriptSearchFocus: true, ...over })
+  const f = (over: Partial<KeyboardLike> = {}) => ev({ key: 'f', code: 'KeyF', ctrlKey: true, ...over })
+
+  it('matches ⌘F and Ctrl+F on the key the layout types, with KeyF only for a non-Latin layout', () => {
+    expect(shellRow(f(), open())).toBe('transcript.search')
+    expect(shellRow(f({ ctrlKey: false, metaKey: true }), open())).toBe('transcript.search')
+    expect(shellRow(f({ key: 'F' }), open())).toBe('transcript.search')
+    // Russian layout: the F key reports "а".
+    expect(shellRow(f({ key: 'а' }), open())).toBe('transcript.search')
+    // Dvorak: the QWERTY F key types "u" — that is not F, whatever its code.
+    expect(shellRow(f({ key: 'u' }), open())).toBeUndefined()
+    // Dvorak's F lives on the QWERTY Y key.
+    expect(shellRow(f({ key: 'f', code: 'KeyY' }), open())).toBe('transcript.search')
+  })
+
+  it('leaves ⌘⇧F / Ctrl+Shift+F, a bare F and a double chord alone', () => {
+    expect(shellRow(f({ shiftKey: true, key: 'F' }), open())).toBeUndefined()
+    expect(shellRow(ev({ key: 'f', code: 'KeyF' }), open())).toBeUndefined()
+    expect(shellRow(f({ metaKey: true }), open())).toBeUndefined()
+    expect(shellRow(f({ altKey: true }), open())).toBeUndefined()
+  })
+
+  it('the focus scope: the transcript, the session composer, or nowhere', () => {
+    for (const el of [inPane, pane, sessionComposer, document.body, null]) {
+      expect(focusAllowsTranscriptSearch(el), String(el)).toBe(true)
+    }
+    for (const el of [otherInput, chromeButton]) expect(focusAllowsTranscriptSearch(el)).toBe(false)
+  })
+
+  it('fires only when the KEY\'s focus is in scope — the per-event `transcriptSearchFocus`', () => {
+    expect(shellRow(f(), open())).toBe('transcript.search')
+    // Any other focus: neither matched nor prevented, so the browser's find works.
+    expect(shellRow(f(), open({ transcriptSearchFocus: false }))).toBeUndefined()
+  })
+
+  it('needs an open session WITH its transcript on screen, and no overlay', () => {
+    expect(shellRow(f(), open({ sessionOpen: false }))).toBeUndefined()
+    // The Files / Changes tabs unmount the transcript.
+    expect(shellRow(f(), open({ transcriptOpen: false }))).toBeUndefined()
+    expect(shellRow(f(), open({ overlayOpen: true }))).toBeUndefined()
   })
 })

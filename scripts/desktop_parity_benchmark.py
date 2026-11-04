@@ -30,8 +30,8 @@ D=[
  ("Compaction marker",1,"Y",""),
  ("Per-message copy as Markdown",2,"Y",""),
  ("Clickable file paths (open / attach as context)",2,"Y",""),
- ("In-transcript search",1,"N",""),
- ("Post-turn summary card (completed / ready for review)",1,"P","'Likely complete' panel"),
+ ("In-transcript search",1,"Y","⌘F: server search over the replay, highlights, newest-first next/prev that pages back to any hit (D-11)"),
+ ("Post-turn summary card (completed / ready for review)",1,"Y","transcript tail card: outcome, changed files with +/−, Open Changes, Likely complete (D-11)"),
 ]),
 ("3 Composer",[
  ("Enter/Shift+Enter, per-session drafts",3,"Y",""),

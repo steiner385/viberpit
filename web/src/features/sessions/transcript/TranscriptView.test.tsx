@@ -1,10 +1,18 @@
-import { afterEach, describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, screen, act } from '@testing-library/react'
 import { elementScroll, type Virtualizer, type VirtualizerOptions } from '@tanstack/react-virtual'
 import type { RefObject } from 'react'
 import { TranscriptView } from './TranscriptView'
 import type { Turn } from '@/session/reducer'
 import { SessionGestureProvider, useTranscriptJumpHandle, type TranscriptJump } from '@/shell/sessionGestures'
+import { loadSearchKit } from './search/loadSearchKit'
+
+// The jump's dead ends toast (D-11).
+const toastInfo = vi.hoisted(() => vi.fn())
+vi.mock('sonner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('sonner')>()
+  return { ...actual, toast: Object.assign(vi.fn(), actual.toast, { info: toastInfo }) }
+})
 
 type Opts = VirtualizerOptions<HTMLDivElement, Element>
 
@@ -342,5 +350,197 @@ describe('TranscriptView jumpPrompt', () => {
     const ref = handle!
     unmount()
     expect(ref.current).toBeNull()
+  })
+})
+
+// ── ⌘F: jump to a search hit, paging older history in first (D-11) ──────────
+
+describe('TranscriptView scrollToTurn', () => {
+  const text = (id: string) => [{ kind: 'text' as const, id: `${id}:x`, text: id }]
+  /** An exchange per ordinal: the prompt `u<n>`, then the reply `a<n>` holding ordinal n. */
+  const exchanges = (from: number, to: number): Turn[] => {
+    const out: Turn[] = []
+    for (let n = from; n <= to; n++) {
+      out.push({ id: `u${n}`, role: 'user', blocks: text(`u${n}`) })
+      out.push({ id: `a${n}`, role: 'assistant', blocks: text(`a${n}`), ordinal: n })
+    }
+    return out
+  }
+
+  let handle: RefObject<TranscriptJump | null> | null = null
+  function Probe() {
+    handle = useTranscriptJumpHandle()
+    return null
+  }
+
+  beforeEach(() => { toastInfo.mockReset() })
+
+  type ViewProps = Partial<React.ComponentProps<typeof TranscriptView>>
+  function renderPaged(props: ViewProps) {
+    const onLoadOlder = vi.fn()
+    const tree = (p: ViewProps) => (
+      <SessionGestureProvider>
+        <TranscriptView {...base} sessionId="s1" onLoadOlder={onLoadOlder} loadingOlder={false} {...p} />
+        <Probe />
+      </SessionGestureProvider>
+    )
+    const view = render(tree(props))
+    const spy = () => vi.spyOn(capturedVirtualizer!, 'scrollToIndex').mockImplementation(() => {})
+    let scrollToIndex = spy()
+    const rerender = (p: ViewProps) => {
+      view.rerender(tree({ ...props, ...p }))
+      if (!vi.isMockFunction(capturedVirtualizer!.scrollToIndex)) scrollToIndex = spy()
+    }
+    /** Start a jump and let the search kit (lazy) load — the jump runs once it has. */
+    const jump = async (turnId: string, ordinal: number, role: 'user' | 'assistant' = 'assistant') => {
+      act(() => { handle!.current!.scrollToTurn(turnId, ordinal, role) })
+      await act(async () => { await loadSearchKit() })
+    }
+    return { ...view, onLoadOlder, rerender, jump, scrollToIndex: () => scrollToIndex }
+  }
+
+  /** The index `rows` puts the turn with id `id` at, for these props. */
+  const rowOf = (id: string) => {
+    const { count, getItemKey } = capturedVirtualizer!.options
+    return Array.from({ length: count }, (_, i) => getItemKey(i)).indexOf(`turn-${id}`)
+  }
+
+  it('centres a loaded hit\'s row and holds it there, unpinned', async () => {
+    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
+    await t.jump('a2', 2)
+    expect(t.scrollToIndex()).toHaveBeenLastCalledWith(rowOf('a2'), { align: 'center' })
+    expect(capturedVirtualizer!.shouldAdjustScrollPositionOnItemSizeChange).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeInTheDocument()
+    expect(t.onLoadOlder).not.toHaveBeenCalled()
+  })
+
+  it('holds every row above the hit — not just above the viewport — so a centred hit stays put', async () => {
+    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
+    await t.jump('a3', 3)
+    const v = capturedVirtualizer!
+    const hold = v.shouldAdjustScrollPositionOnItemSizeChange!
+    const target = rowOf('a3')
+    v.scrollOffset = 0 // every row is "in view"…
+    const item = (index: number) => ({ index, key: 'k', start: index * 100, size: 100, end: index * 100 + 100, lane: 0 })
+    expect(hold(item(target - 1), -50, v)).toBe(true) // …yet a row above the hit is compensated
+    expect(hold(item(target), -50, v)).toBe(false)
+    expect(hold(item(target + 1), -50, v)).toBe(false)
+  })
+
+  it('a user hit lands on the prompt itself', async () => {
+    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
+    await t.jump('u3', 3, 'user')
+    expect(t.scrollToIndex()).toHaveBeenLastCalledWith(rowOf('u3'), { align: 'center' })
+  })
+
+  it('pages older history in through onLoadOlder until the hit is loaded, then scrolls to it', async () => {
+    const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
+    await t.jump('a3', 3)
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+
+    // The first page is in flight, then lands: 6..12 — still short of 3.
+    t.rerender({ loadingOlder: true })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+    t.rerender({ turns: exchanges(6, 12), earliestTurn: 6, loadingOlder: false })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(2)
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+
+    // The second page reaches it.
+    t.rerender({ loadingOlder: true })
+    t.rerender({ turns: exchanges(2, 12), earliestTurn: 2, loadingOlder: false })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(2)
+    expect(t.scrollToIndex()).toHaveBeenLastCalledWith(rowOf('a3'), { align: 'center' })
+  })
+
+  it('Scroll to bottom mid-paging cancels the jump: no more pages, no yank back up', async () => {
+    const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
+    await t.jump('a3', 3)
+    t.rerender({ loadingOlder: true }) // the first page is in flight…
+    fireEvent.click(screen.getByRole('button', { name: 'Scroll to bottom' })) // …the user takes over
+    t.rerender({ turns: exchanges(6, 12), earliestTurn: 6, loadingOlder: false })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+    // Even with the hit's turn loaded later, nothing scrolls to it.
+    t.rerender({ turns: exchanges(2, 12), earliestTurn: 2 })
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull()
+  })
+
+  it('a user scroll mid-paging cancels the jump too', async () => {
+    const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
+    await t.jump('a3', 3)
+    t.rerender({ loadingOlder: true })
+    await act(nextFrame)
+    const scroller = screen.getByTestId('transcript-scroll')
+    Object.defineProperty(scroller, 'scrollTop', { value: 500, writable: true, configurable: true })
+    fireEvent.scroll(scroller)
+    t.rerender({ turns: exchanges(2, 12), earliestTurn: 2, loadingOlder: false })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+  })
+
+  it('a page that brings nothing (a failed fetch) ends the jump, and says so', async () => {
+    const t = renderPaged({ turns: exchanges(10, 12), earliestTurn: 10 })
+    await t.jump('a3', 3)
+    t.rerender({ loadingOlder: true })
+    t.rerender({ loadingOlder: false }) // the fetch failed: earliestTurn unchanged
+    t.rerender({ turns: [...exchanges(10, 12)] })
+    expect(t.onLoadOlder).toHaveBeenCalledTimes(1)
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(toastInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it('more than 2000 turns back is refused up front, and says so', async () => {
+    const t = renderPaged({ turns: exchanges(2500, 2502), earliestTurn: 2500 })
+    await t.jump('a5', 5)
+    expect(t.onLoadOlder).not.toHaveBeenCalled()
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(toastInfo).toHaveBeenCalledWith(expect.stringMatching(/too far back/))
+  })
+
+  it('a loaded hit with no row to land on says so instead of doing nothing', async () => {
+    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
+    await t.jump('gone', 9)
+    expect(t.scrollToIndex()).not.toHaveBeenCalled()
+    expect(toastInfo).toHaveBeenCalledWith(expect.stringMatching(/find that match/))
+  })
+
+  it('centres a TALL turn on its current mark, not on the row\'s middle', async () => {
+    const t = renderPaged({ turns: exchanges(0, 5), earliestTurn: 0 })
+    const v = capturedVirtualizer!
+    const scrollToOffset = vi.spyOn(v, 'scrollToOffset').mockImplementation(() => {})
+    const scroller = screen.getByTestId('transcript-scroll')
+    Object.defineProperty(scroller, 'clientHeight', { value: 400, configurable: true })
+    await t.jump('a2', 2)
+    // jsdom lays nothing out: stand in the hit's row — 2000px tall — with its
+    // current mark 100px below the row's top.
+    const index = rowOf('a2')
+    const row = document.createElement('div')
+    row.setAttribute('data-index', String(index))
+    row.getBoundingClientRect = () => ({ top: 1000, height: 2000 }) as DOMRect
+    const mark = document.createElement('mark')
+    mark.setAttribute('data-search-current', 'true')
+    mark.getBoundingClientRect = () => ({ top: 1100, height: 20 }) as DOMRect
+    row.appendChild(mark)
+    scroller.prepend(row)
+    await act(nextFrame)
+    await act(nextFrame)
+    const start = v.measurementsCache[index].start
+    expect(scrollToOffset).toHaveBeenLastCalledWith(start + 100 + 10 - 200)
+  })
+})
+
+describe('TranscriptView search pane', () => {
+  it('the session scroller takes focus on a click (tabIndex -1) without an outline, inside the searchable pane', () => {
+    render(<TranscriptView {...base} />)
+    const scroller = screen.getByTestId('transcript-scroll')
+    expect(scroller).toHaveAttribute('tabindex', '-1')
+    expect(scroller.className).toContain('outline-none')
+    expect(scroller.closest('[data-session-transcript]')).not.toBeNull()
+  })
+
+  it('the assistant drawer\'s transcript is not the searchable pane', () => {
+    render(<TranscriptView {...base} turns={[{ id: 'u', role: 'user', blocks: [{ kind: 'text', id: 'u:x', text: 'u' }] }]} variant="assistant" />)
+    expect(screen.getByTestId('transcript-scroll').closest('[data-session-transcript]')).toBeNull()
   })
 })

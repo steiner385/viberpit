@@ -23,10 +23,10 @@ import { PendingQuestionPanel } from '@/features/sessions/panels/PendingQuestion
 import { PendingPermissionPanel } from '@/features/sessions/panels/PendingPermissionPanel'
 import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanner'
 import { InterruptedAskNotice } from '@/features/sessions/transcript/InterruptedAskNotice'
-import { YourTurnPanel } from '@/features/sessions/panels/YourTurnPanel'
 import { PendingModelApprovalPanel } from '@/features/sessions/panels/PendingModelApprovalPanel'
 import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
+import { summaryOutcome } from '@/session/turnSummary'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
 import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff } from '@/api/hooks'
@@ -60,8 +60,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   const caps = useEngineCapabilities(sessionRecord?.engine)
   const { mutate: modelApproval, isPending: modelApprovalPending } = useModelApproval()
   const setAccountPin = useSetAccountPin()
-  // "Mark complete" / "Not done" on a handed-back session — the same mutation the
-  // list card offers, so the decision can be taken beside the transcript evidence.
+  // "Mark complete" / "Not done" on a handed-back session's summary card — the same
+  // mutation the list card offers, so the decision is taken beside the evidence.
   const resolveSuspected = useResolveSuspectedComplete()
   // Per-viewer read state (D-10): this is the live open session, so it is read.
   useAutoMarkViewed(rt.sessionId, sessionRecord?.updatedAt)
@@ -78,6 +78,10 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   // The worktree diff summary (D-4): it lists the Changes tab, and the header's
   // chip reads the same query. `busy` going false (a turn ended) refetches it.
   const busy = statusTier(rt.state.status.state) === 'busy'
+  // The summary card's hand-off (D-11) — "Asked you" mid-turn, "Handed back" after —
+  // for the persistent live region to announce once (`SessionAriaLive`).
+  const handOffOutcome = summaryOutcome(rt.state.status.state, sessionRecord?.handBackReason, null, busy)
+  const handOff = handOffOutcome?.reason ? { label: handOffOutcome.label, reason: handOffOutcome.reason } : null
   const diffSummary = useSessionDiff(rt.sessionId, { summary: true, busy })
   const hasChanges = (diffSummary.data?.files.length ?? 0) > 0
   // The Files tab (D-7) reads the session's worktree, so it needs one.
@@ -248,6 +252,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                                      appliedRewindId={rt.state.rewind?.rewindId ?? null}
                                      onExpired={rt.dismissRewind}>
                       <TranscriptView
+                        sessionId={rt.sessionId}
                         turns={rt.state.turns}
                         rotations={rt.state.rotations}
                         rewind={rt.state.rewind}
@@ -264,6 +269,21 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                         loadingOlder={rt.state.loadingOlder}
                         onLoadOlder={rt.onLoadOlder}
                         followSignal={rt.state.pendingSentSeq}
+                        // The post-turn summary card (D-11), the transcript's tail row: how
+                        // the turn ended, its files, the replies. The hand-back facts come
+                        // from the record (server source of truth for the hand-back row);
+                        // `summaryOutcome` gates them on the live status.
+                        summary={{
+                          status: rt.state.status.state,
+                          handBackReason: sessionRecord?.handBackReason,
+                          suspectedCompleteReason: sessionRecord?.suspectedCompleteReason,
+                          suggestions: rt.suggestions,
+                          onPrompt: rt.onPrompt,
+                          onResolveSuspectedComplete: (decision) =>
+                            resolveSuspected.mutate({ id: rt.sessionId, decision }),
+                          resolvePending: resolveSuspected.isPending,
+                          onOpenChanges: hasChanges ? () => setView('changes') : undefined,
+                        }}
                       />
                      </RewindProvider>
                     </ForkProvider>
@@ -345,28 +365,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                   />
                 )}
 
-                {/* Pinned call-to-action for a finished turn ('done') or a hand-back
-                    ('handed_back'). The session list flags these sessions loudly, but
-                    inside the session the only cue was a calm gray pill (or an amber
-                    one) and an ask buried in transcript prose — so pin an explicit CTA
-                    with the cached suggestions as one-tap replies, and for a hand-back
-                    lead with the session's own reason (see YourTurnPanel). */}
-                <YourTurnPanel
-                  statusState={rt.state.status.state}
-                  suggestions={rt.suggestions}
-                  onPrompt={rt.onPrompt}
-                  // Both read from the record (server source of truth for the hand-back
-                  // row); the panel itself gates them on the live status.
-                  handBackReason={sessionRecord?.handBackReason}
-                  suspectedCompleteReason={sessionRecord?.suspectedCompleteReason}
-                  onResolveSuspectedComplete={(decision) =>
-                    resolveSuspected.mutate({ id: rt.sessionId, decision })
-                  }
-                  resolvePending={resolveSuspected.isPending}
-                />
-
                 {/* sr-only aria-live mirror (owns its own ref + effect) */}
-                <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
+                <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} handOff={handOff} />
               </>
             )
 

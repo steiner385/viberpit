@@ -21,7 +21,7 @@ import { useDeliveryWorkspace } from '@/features/delivery/useDeliveryWorkspace'
 import { isPendingSessionId } from '@/lib/pendingSessions'
 import { isPreSpawnStatus } from '@/api/types'
 import { setServerSttEnabled } from '@/lib/sttCapability'
-import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
+import { focusAllowsTranscriptSearch, textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import { stepSessionId } from '@/session/listStep'
 import { NO_FILTERS, isFiltered } from '@/session/listFilters'
@@ -342,6 +342,8 @@ function AppShellInner() {
       interactive: mode !== 'kiosk',
       active,
       yieldsToTextEntry: textEntryClaimsKey(e, active),
+      transcriptOpen: transcriptJump.current !== null,
+      transcriptSearchFocus: focusAllowsTranscriptSearch(active),
     }
   }
 
@@ -372,6 +374,7 @@ function AppShellInner() {
     'session.listNext': () => workspace.stepSession('next'),
     'transcript.promptPrev': () => transcriptJump.current?.jumpPrompt('prev'),
     'transcript.promptNext': () => transcriptJump.current?.jumpPrompt('next'),
+    'transcript.search': () => transcriptJump.current?.openSearch(),
   }
 
   // ── the ⌘K palette (D-10) ──
@@ -402,7 +405,9 @@ function AppShellInner() {
 
   const keyHandlers: ShortcutHandlers = {
     'app.palette': (e) => setPaletteOpen({
-      context: { ...shortcutContext(e), yieldsToTextEntry: false },
+      // The per-KEY facts do not hold for the palette's actions, which run after it
+      // closes: nothing is mid-typing, and ⌘F's focus scope is the key's alone.
+      context: { ...shortcutContext(e), yieldsToTextEntry: false, transcriptSearchFocus: true },
       actions: actionHandlers,
     }),
     'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),

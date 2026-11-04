@@ -318,12 +318,17 @@ function findTurnIdx(turns: Turn[], id: string): number {
  */
 const ROLE_TURN_SUFFIX = { user: '#user', assistant: '#agent' } as const
 
+/** Whether `t` is `role`'s half of engine turn `id` — under its bare id, its engine
+ *  id, or the role-suffixed id `newRoleTurnId` minted. The transcript search (D-11)
+ *  resolves a hit's `turnId` to a rendered turn through this same rule. */
+export function turnHoldsEngineTurn(t: Turn, id: string, role: Turn['role']): boolean {
+  return t.role === role && (t.engineTurnId === id || t.id === id || t.id === id + ROLE_TURN_SUFFIX[role])
+}
+
 /** Index of the turn carrying `role`'s half of engine turn `id`, or -1. */
 function findRoleTurnIdx(turns: Turn[], id: string, role: Turn['role']): number {
-  const yielded = id + ROLE_TURN_SUFFIX[role]
   for (let i = turns.length - 1; i >= 0; i--) {
-    const t = turns[i]
-    if (t.role === role && (t.engineTurnId === id || t.id === id || t.id === yielded)) return i
+    if (turnHoldsEngineTurn(turns[i], id, role)) return i
   }
   return -1
 }

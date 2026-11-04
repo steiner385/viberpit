@@ -27062,11 +27062,15 @@ class SessionOrchestrator:
         quietly misses one slow session is the established degradation for this path,
         whereas a 500 would drop the user's entire result list.
         """
+        from server.audit import redact_text
         from server.sessions.search import events_text, transcript_text
 
+        # Both arms answer with REDACTED text: a match on a raw secret would let a
+        # search for `sk-ant` enumerate the sessions that hold one, though the ids
+        # are all it returns. Redaction is what every transcript surface applies.
         path = await self.resolve_transcript_path(session_id)
         if path:
-            return await asyncio.to_thread(transcript_text, path)
+            return redact_text(await asyncio.to_thread(transcript_text, path))
         # limit=None: search the FULL history. A trailing window would make a term
         # findable only until the session grew past the page size, which reads as
         # search randomly forgetting things.
@@ -27075,9 +27079,65 @@ class SessionOrchestrator:
             return ""
         # In-process replay yields event objects; a remote/daemon hop has already
         # serialised them to wire dicts. Accept both, exactly as the export does.
-        return events_text([
+        return redact_text(events_text([
             e.to_wire() if hasattr(e, "to_wire") else e for e in window.events
-        ])
+        ]))
+
+    async def transcript_search(self, session_id: str, q: str, limit: int) -> dict:
+        """In-session transcript search (D-11): ``{hits, truncated, totalTurns}``.
+
+        Walks the session's FULL replay (``transcript_window(limit=None)``), never the
+        JSONL: only the replay honours a rewind's cut and a fork's source, and its
+        TurnStarts are the cursor space the hits' ordinals must page in. Matching and
+        scope are ``search.search_events``.
+
+        ``KeyError`` for a session this daemon has neither a record nor a row for —
+        asked only once the replay found nothing, so a session with history costs no
+        extra row read. Never raises otherwise: a replay that cannot be read, or an
+        existence check the DB cannot answer, is the empty result at INFO — the user
+        sees "no matches", never a 404 for a session that may well exist.
+        """
+        from sqlalchemy import select as sa_select
+
+        from server.audit import redact_event
+        from server.sessions.search import SEARCH_MAX_LIMIT, parse_terms, search_events
+
+        empty = {"hits": [], "truncated": False, "totalTurns": 0}
+        terms = parse_terms(q)
+        if not terms:
+            return empty
+        try:
+            # background=True: a replay timeout here is a search that found nothing,
+            # not a blank transcript, so it logs at INFO like every failure below.
+            window = await self.transcript_window(session_id, limit=None, background=True)
+        except Exception as exc:
+            log.info("session.transcript_search id=%s replay failed: %s",
+                     session_id, type(exc).__name__)
+            return empty
+        if window is None:
+            if session_id not in self._records and session_id not in self._drivers:
+                try:
+                    async with db_session() as db:
+                        found = (await db.execute(
+                            sa_select(DbSession.id).where(DbSession.id == session_id)
+                        )).first()
+                except Exception as exc:
+                    log.info("session.transcript_search id=%s existence check failed: %s",
+                             session_id, type(exc).__name__)
+                    return empty
+                if found is None:
+                    raise KeyError(f"No session with id {session_id}")
+            log.info("session.transcript_search id=%s no readable history", session_id)
+            return empty
+        # Redacted BEFORE matching, exactly as the WS bridge, the transcript page and
+        # the export send it: matches, snippets and offsets are then all over the text
+        # the client renders, and a query for a secret's body finds nothing. The
+        # visible `[REDACTED]` marker is findable like any rendered word.
+        hits, truncated = search_events(
+            [redact_event(e.to_wire() if hasattr(e, "to_wire") else e)
+             for e in window.events],
+            terms, max(1, min(int(limit), SEARCH_MAX_LIMIT)))
+        return {"hits": hits, "truncated": truncated, "totalTurns": window.total_turns}
 
     def snapshot_deploy(self, *, path: str | None = None) -> dict:
         """SAVE step: record sessions with a live driver so a daemon-affecting restart

@@ -39,7 +39,7 @@ vi.mock('@/api/hooks', () => ({
     )?.capabilities,
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
-  // "Mark complete" / "Not done" on a handed-back session's pinned panel.
+  // "Mark complete" / "Not done" on a handed-back session's summary card.
   useResolveSuspectedComplete: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // Auto-viewed (D-10): opening the session posts `viewed`.
   useMarkSessionViewed: vi.fn(() => ({ mutate: vi.fn() })),
@@ -129,6 +129,9 @@ describe('SessionBody', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useEngineOffers).mockReturnValue([])
+    vi.mocked(hooks.useSessionDiff).mockReturnValue(
+      { data: undefined } as unknown as ReturnType<typeof hooks.useSessionDiff>,
+    )
   })
 
   it('marks the open session viewed once it renders (D-10 auto-viewed)', () => {
@@ -172,19 +175,23 @@ describe('SessionBody', () => {
     expect(screen.getByText(/Queued — position 3/i)).toBeInTheDocument()
   })
 
-  it('pins the Your-turn panel with one-tap suggestion replies when the status is done', () => {
+  // D-11: the post-turn summary card is the transcript's tail row; it replaced the
+  // pinned Your-turn panel (and its "Likely complete" branch).
+  it('ends a finished turn with the summary card and its one-tap suggestion replies', () => {
     // `rt.suggestions` is the runtime's one derivation (live event, else the record
-    // cache — see useSessionRuntime.test "suggestions"); the panel reads only that.
+    // cache — see useSessionRuntime.test "suggestions"); the card reads only that.
     const rt = makeRuntime([])
     rt.state.status = { state: 'done', count: 0 }
     rt.suggestions = ['Run the tests']
     renderBody(<SessionBody rt={rt} />)
-    expect(screen.getByTestId('your-turn-panel')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Run the tests' }))
+    const card = screen.getByRole('region', { name: 'Turn summary' })
+    expect(within(screen.getByTestId('transcript-scroll')).getByRole('region', { name: 'Turn summary' })).toBe(card)
+    expect(card).toHaveTextContent('Your turn')
+    fireEvent.click(within(card).getByRole('button', { name: 'Run the tests' }))
     expect(rt.onPrompt).toHaveBeenCalledWith('Run the tests', [], undefined, 'suggested')
   })
 
-  it('pins the hand-back reason, the suggestions and Mark complete for a handed-back session', () => {
+  it('leads a handed-back card with the reason, and Mark complete / Not done answer the hint', () => {
     // The critique's P0: a handed-back session (the only needs-you state with no
     // card to answer) opened onto raw transcript with the ask at the bottom. The
     // record carries the session's own sentence and the server's "likely
@@ -202,19 +209,53 @@ describe('SessionBody', () => {
     rt.state.status = { state: 'handed_back', count: 0 }
     rt.suggestions = ['Go', 'Skip document for now']
     renderBody(<SessionBody rt={rt} />)
-    const region = screen.getByRole('region', { name: /handed back/i })
-    expect(region).toHaveTextContent('Say go and I will start document')
+    const card = screen.getByRole('region', { name: 'Turn summary' })
+    expect(card).toHaveTextContent('Handed back')
+    expect(card).toHaveTextContent('Say go and I will start document')
+    expect(card).toHaveTextContent('Likely complete')
     fireEvent.click(screen.getByRole('button', { name: 'Skip document for now' }))
     expect(rt.onPrompt).toHaveBeenCalledWith('Skip document for now', [], undefined, 'suggested')
     fireEvent.click(screen.getByRole('button', { name: /mark complete/i }))
     expect(mutate).toHaveBeenCalledWith({ id: 's1', decision: 'confirm' })
+    fireEvent.click(screen.getByRole('button', { name: /not done/i }))
+    expect(mutate).toHaveBeenCalledWith({ id: 's1', decision: 'reject' })
   })
 
-  it('does not pin the Your-turn panel while a turn is running', () => {
+  it('shows no summary card while a turn is running', () => {
     const rt = makeRuntime([])
     rt.state.status = { state: 'in_progress', count: 1 }
     renderBody(<SessionBody rt={rt} />)
-    expect(screen.queryByTestId('your-turn-panel')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Turn summary' })).toBeNull()
+  })
+
+  it('notes a mid-turn hand-back ("Asked you") while the turn is still running', () => {
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([makeSession({
+      id: 's1', status: 'in_progress', handBackReason: 'Which database should I use?',
+    })]))
+    const rt = makeRuntime([])
+    rt.state.status = { state: 'in_progress', count: 1 }
+    renderBody(<SessionBody rt={rt} />)
+    const card = screen.getByRole('region', { name: 'Turn summary' })
+    expect(card).toHaveTextContent('Asked you')
+    expect(card).toHaveTextContent('Which database should I use?')
+  })
+
+  it('lists the turn\'s files, and Open Changes switches to the Changes view', () => {
+    vi.mocked(hooks.useSessionDiff).mockReturnValue({
+      data: { files: [{ path: 'src/a.ts', additions: 1, deletions: 1 }] },
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useSessionDiff>)
+    const rt = makeRuntime([{
+      kind: 'tool', id: 'b1', toolId: 'x1', name: 'Edit', toolKind: 'edit',
+      input: { file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }, result: { ok: true, payload: {} },
+    }])
+    rt.state.status = { state: 'done', count: 0 }
+    renderBody(<SessionBody rt={rt} />)
+    const card = screen.getByRole('region', { name: 'Turn summary' })
+    expect(within(card).getByRole('list', { name: 'Changed files' })).toHaveTextContent('/repo/src/a.ts')
+    expect(card).toHaveTextContent('+1 −1')
+    fireEvent.click(within(card).getByRole('button', { name: 'Open Changes' }))
+    expect(screen.getByRole('tab', { name: 'Changes' })).toHaveAttribute('aria-selected', 'true')
   })
 })
 

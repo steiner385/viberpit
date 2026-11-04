@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { flattenRows, buildRenderRows, ownPromptRowIndex } from './transcriptRows'
-import type { Turn as TurnType, RotationMarker } from '@/session/reducer'
+import type { Turn as TurnType, RotationMarker, RewindMarker } from '@/session/reducer'
 
 const turn = (id: string, model?: string | null): TurnType => ({ id, role: 'assistant', blocks: [], model })
 const rot = (afterTurnId: string | null): RotationMarker => ({ from: 'a', to: 'b', afterTurnId })
@@ -82,6 +82,60 @@ describe('buildRenderRows', () => {
   it('appends the flattened transcript after the head markers', () => {
     const rows = buildRenderRows([turn('t1'), turn('t2')], [rot('t1')], { earliestTurn: 0 })
     expect(rows.map((r) => r.kind)).toEqual(['begin', 'turn', 'rotation', 'turn'])
+  })
+})
+
+describe('buildRenderRows — the post-turn summary row (D-11)', () => {
+  const user = (id: string): TurnType => ({ id, role: 'user', blocks: [] })
+  const edited: TurnType = {
+    id: 'a2', role: 'assistant',
+    blocks: [{ kind: 'tool', id: 'b1', toolId: 'x1', name: 'Edit', toolKind: 'edit',
+               input: { file_path: '/r/a.ts', old_string: 'x', new_string: 'y' }, result: { ok: true, payload: {} } }],
+  }
+  const rewind: RewindMarker = { rewindId: 'rw-1', filesRestored: [] }
+  const done = { status: 'done' }
+
+  it('sits after the last turn and its dividers, before the rewind divider', () => {
+    const rows = buildRenderRows([user('u1'), edited], [rot('a2')], { rewind, summary: done })
+    expect(rows.map((r) => r.kind)).toEqual(['turn', 'turn', 'rotation', 'summary', 'rewind'])
+  })
+
+  it('carries the outcome and the last logical turn\'s files', () => {
+    const rows = buildRenderRows([turn('a1'), user('u1'), edited], [], { summary: done })
+    const row = rows[rows.length - 1]
+    expect(row.kind).toBe('summary')
+    if (row.kind !== 'summary') return
+    expect(row.outcome.label).toBe('Your turn')
+    expect(row.files).toEqual([{ path: '/r/a.ts', plus: 1, minus: 1 }])
+  })
+
+  it('keys the summary row by a constant, so its measured size survives a new turn', () => {
+    const before = buildRenderRows([user('u1'), edited], [], { summary: done }).find((r) => r.kind === 'summary')
+    const after = buildRenderRows([user('u1'), edited, user('u2'), turn('a9')], [], { summary: done })
+      .find((r) => r.kind === 'summary')
+    expect(before?.key).toBe('summary')
+    expect(after?.key).toBe('summary')
+  })
+
+  it('is absent without summary inputs (read-only views), and for a status with its own card', () => {
+    expect(buildRenderRows([user('u1'), edited], []).some((r) => r.kind === 'summary')).toBe(false)
+    for (const status of ['waiting_input', 'waiting_question', 'ready_review', 'waiting_external']) {
+      expect(buildRenderRows([user('u1'), edited], [], { summary: { status } }).some((r) => r.kind === 'summary'))
+        .toBe(false)
+    }
+  })
+
+  it('is absent while a turn runs, and when the transcript ends on a prompt with no reply yet', () => {
+    expect(buildRenderRows([user('u1'), edited], [], { summary: { status: 'in_progress' } })
+      .some((r) => r.kind === 'summary')).toBe(false)
+    expect(buildRenderRows([turn('a1'), user('u2')], [], { summary: done })
+      .some((r) => r.kind === 'summary')).toBe(false)
+  })
+
+  it('is the "Asked you" note while busy with a hand-back reason, even mid-reply', () => {
+    const rows = buildRenderRows([user('u1')], [], { summary: { status: 'in_progress', handBackReason: 'Go?' } })
+    const row = rows[rows.length - 1]
+    expect(row.kind === 'summary' && row.outcome.mode).toBe('asked')
   })
 })
 

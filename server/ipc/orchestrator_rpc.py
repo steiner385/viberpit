@@ -333,6 +333,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         "set_permission_mode", "set_model_for_session",
         "cancel_queued", "resolve_permission", "answer_question",
         "resolve_transcript_path", "transcript_search_text",
+        # D-11 in-session search: {hits, truncated, totalTurns} of JSON scalars, from
+        # the replay on the owning daemon. An unknown session raises KeyError.
+        "transcript_search",
         "has_transcript",
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "repark_pending_initial_prompt",

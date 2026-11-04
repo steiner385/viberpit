@@ -1000,3 +1000,136 @@ describe('session switching — Apple chords (⌘⌥)', () => {
     expect(press(railLink(), { key: ']', code: 'BracketRight', altKey: true }).defaultPrevented).toBe(false)
   })
 })
+
+// ── D-11: ⌘F / Ctrl+F searches the open transcript ───────────────────────────
+//
+// Only from the transcript, the session composer, or nowhere (`document.body`):
+// anywhere else the browser's own find must still work, so the key is neither
+// matched nor prevented.
+
+describe('⌘F / Ctrl+F opens the transcript search', () => {
+  const searchBar = () => screen.queryByRole('searchbox', { name: 'Search this transcript' })
+  const find = (target: Element, mod: 'ctrlKey' | 'metaKey' = 'ctrlKey') =>
+    press(target, { key: 'f', code: 'KeyF', [mod]: true })
+
+  /** The open session with a transcript on screen (the empty placeholder is not one). */
+  async function renderTranscript(path = '/sessions/s1') {
+    const view = renderApp({ path, mode: 'desktop' })
+    await waitFor(() => expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument())
+    await act(async () => {
+      const emit = (frame: Record<string, unknown>) => handlers['sessionEvent']?.forEach((cb) => cb(frame))
+      emit({ type: 'replayComplete' })
+      emit({ type: 'user', turnId: 'u1', text: 'find the widget' })
+      emit({ type: 'turnStart', turnId: 'a1' })
+      emit({ type: 'textDelta', turnId: 'a1', text: 'Found the widget.' })
+      emit({ type: 'turnEnd', turnId: 'a1' })
+    })
+    return view
+  }
+
+  it('with nothing focused (document.body)', async () => {
+    await renderTranscript()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).toBe(document.body)
+    expect(find(document.body).defaultPrevented).toBe(true)
+    expect(await screen.findByRole('searchbox', { name: 'Search this transcript' })).toHaveFocus()
+  })
+
+  it('from the session composer, on ⌘F as well as Ctrl+F', async () => {
+    const user = userEvent.setup()
+    await renderTranscript()
+    await user.click(composer())
+    expect(find(composer(), 'metaKey').defaultPrevented).toBe(true)
+    expect(await screen.findByRole('searchbox', { name: 'Search this transcript' })).toBeInTheDocument()
+  })
+
+  it('from the transcript — a click focuses its scroller', async () => {
+    const user = userEvent.setup()
+    await renderTranscript()
+    const scroller = screen.getByTestId('transcript-scroll')
+    await user.click(scroller)
+    expect(scroller).toHaveFocus()
+    expect(find(scroller).defaultPrevented).toBe(true)
+    expect(await screen.findByRole('searchbox', { name: 'Search this transcript' })).toBeInTheDocument()
+  })
+
+  it('⌘F while the bar is open reselects its query', async () => {
+    const user = userEvent.setup()
+    await renderTranscript()
+    find(document.body)
+    const input = await screen.findByRole('searchbox', { name: 'Search this transcript' }) as HTMLInputElement
+    await user.type(input, 'widget')
+    await user.click(composer())
+    expect(find(composer()).defaultPrevented).toBe(true)
+    expect(input).toHaveFocus()
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 6])
+    // …and from inside the bar's own input too.
+    expect(find(input).defaultPrevented).toBe(true)
+  })
+
+  it('Esc closes the bar and returns focus to where ⌘F was pressed — without detaching', async () => {
+    const user = userEvent.setup()
+    const app = await renderTranscript()
+    await user.click(composer())
+    find(composer())
+    const input = await screen.findByRole('searchbox', { name: 'Search this transcript' })
+    await user.keyboard('{Escape}')
+    expect(input).not.toBeInTheDocument()
+    expect(composer()).toHaveFocus()
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('the ⌘K palette offers it with a transcript open — whatever had focus when ⌘K was pressed', async () => {
+    const user = userEvent.setup()
+    await renderTranscript()
+    // From the list search, where ⌘F itself is the browser's: the focus gate is the
+    // KEY's, so the palette (which has focus by the time the action runs) lists it.
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    press(search, { key: 'k', code: 'KeyK', ctrlKey: true })
+    const option = await screen.findByRole('option', { name: /Search this conversation/ })
+    await user.click(option)
+    expect(await screen.findByRole('searchbox', { name: 'Search this transcript' })).toBeInTheDocument()
+  })
+
+  it('NOT from another text entry (the list search) — the browser finds instead', async () => {
+    const user = userEvent.setup()
+    await renderTranscript()
+    const search = screen.getByRole('searchbox', { name: /search sessions/i })
+    await user.click(search)
+    expect(find(search).defaultPrevented).toBe(false)
+    expect(searchBar()).toBeNull()
+  })
+
+  it('NOT from the chrome (a focused nav link)', async () => {
+    await renderTranscript()
+    railLink().focus()
+    expect(find(railLink()).defaultPrevented).toBe(false)
+    expect(searchBar()).toBeNull()
+  })
+
+  it('NOT on the Files tab — no transcript is on screen', async () => {
+    SESSIONS.push(session({ id: 's3', name: 'Three', cwd: '/work/three' }))
+    try {
+      await renderTranscript('/sessions/s3?view=files')
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      expect(find(document.body).defaultPrevented).toBe(false)
+      expect(searchBar()).toBeNull()
+    } finally {
+      SESSIONS.pop()
+    }
+  })
+
+  it('NOT in Settings — no session is open', async () => {
+    renderApp({ path: '/settings', mode: 'desktop' })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(find(document.body).defaultPrevented).toBe(false)
+  })
+
+  it('NOT with no session open', () => {
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(find(document.body).defaultPrevented).toBe(false)
+  })
+})

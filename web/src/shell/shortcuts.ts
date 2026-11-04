@@ -62,6 +62,19 @@ export interface ShortcutContext {
    * only sees the context, so the context is what carries the answer.
    */
   yieldsToTextEntry: boolean
+  /** The open session's transcript is on screen — its jump/search handle is
+   *  registered (`TranscriptJump`). False on the Files / Changes / Browser / Details
+   *  tabs, which unmount it. */
+  transcriptOpen: boolean
+  /**
+   * ⌘F may take the browser's find from THIS keydown's focus
+   * (`focusAllowsTranscriptSearch`: the transcript, the session composer, or
+   * nowhere). Per event like `yieldsToTextEntry`, and for the same reason: it is a
+   * fact about the key, not the app — so the ⌘K palette, whose snapshot is taken
+   * from wherever ⌘K was pressed and whose action runs after it closes, forces it
+   * true, and offers the search whenever a transcript is open.
+   */
+  transcriptSearchFocus: boolean
 }
 
 export interface Shortcut {
@@ -504,6 +517,19 @@ export const SHORTCUTS: Shortcut[] = [
     group: 'in-session',
     match: navChord((e) => e.code === 'ArrowDown'),
     when: (c) => c.sessionOpen && altChordAllowed(c) },
+  // ⌘F / Ctrl+F (D-11): search this transcript. On `e.key` like ⌘K, falling
+  // back to the physical `KeyF` only when the layout reports no Latin letter.
+  // It takes the browser's find ONLY from the transcript, the session composer or
+  // nowhere (`transcriptSearchFocus`) — from any other field, the list or
+  // the chrome it neither matches nor prevents, so the browser's find still
+  // works there. Shift is excluded: ⌘⇧F is the browser's / OS's own. Read-only,
+  // so kiosk is not excluded. While the bar is open, the same row refocuses and
+  // selects its query.
+  { id: 'transcript.search', keys: 'Ctrl+F', keysMac: '⌘F', description: 'Search this conversation',
+    group: 'in-session',
+    match: cmdOrCtrl((e) => !e.shiftKey
+      && (e.key === 'f' || e.key === 'F' || (!/^[a-z]$/i.test(e.key) && e.code === 'KeyF'))),
+    when: (c) => c.sessionOpen && c.transcriptOpen && !c.overlayOpen && c.transcriptSearchFocus },
   // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
   // session — that is Alt+[ / Alt+] / ⌘⌥[ ] above). All three are reserved by the
   // browser's own UI — see the "NOT BOUND, and why" block at the top of this

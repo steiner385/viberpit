@@ -32,7 +32,13 @@ from server.library.names import valid_mcp_name
 from server.mcp_scope.servers import configured_server_keys
 from server.quick_replies import observe_reply
 from server.automations.registry import assisted_by_label, origin_label, work_class_for_origin
-from server.sessions.search import parse_terms, session_matches
+from server.sessions.search import (
+    SEARCH_DEFAULT_LIMIT,
+    SEARCH_EMPTY,
+    SEARCH_MAX_LIMIT,
+    parse_terms,
+    session_matches,
+)
 from server.sessions.types import (
     ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_CREATE, RESUME_ELIGIBLE_STATUSES, is_assistant,
 )
@@ -1238,6 +1244,31 @@ async def search_sessions(
         items = [(r.id, r.name) for r in records]
         ids = await _search_ids(items, orch.transcript_search_text, terms)
     return {"ids": ids}
+
+
+@router.get("/{session_id}/search")
+async def search_session_transcript(
+    session_id: str,
+    request: Request,
+    q: str = "",
+    limit: int = Query(SEARCH_DEFAULT_LIMIT, ge=1, le=SEARCH_MAX_LIMIT),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """In-session transcript search (D-11): ``{hits: [{turnId, ordinal, role, snippet,
+    matchStart, matchEnd}], truncated, totalTurns}``, from the replay on the daemon
+    that owns the session (``search.search_events``). Two segments, so it never
+    shadows the list ``/search`` above. A query with no terms is 400
+    ``SEARCH_EMPTY``; unknown session 404; an old daemon 409 ``daemon_outdated``."""
+    if not parse_terms(q):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail={"code": SEARCH_EMPTY,
+                                    "message": "Search needs at least one term."})
+    try:
+        return await _get_orchestrator(request).transcript_search(session_id, q, limit)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "search transcripts")
 
 
 # ---------------------------------------------------------------------------
