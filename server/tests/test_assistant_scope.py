@@ -416,6 +416,13 @@ def test_tool_targets_refuses_a_malformed_target(name, args):
 # The two new READ tools
 # --------------------------------------------------------------------------- #
 
+def test_the_diff_description_does_not_overclaim_redaction():
+    tools = {t.name: t for t in build_tools(_Recorder().api())}
+    desc = tools["get_session_diff"].description
+    assert "Credential-shaped strings" in desc and "#3242" in desc
+    assert "Secrets in the patch are redacted" not in desc
+
+
 def test_the_new_tools_are_read_class():
     assert TOOL_SPECS["get_session_diff"].tool_class is ToolClass.READ
     assert TOOL_SPECS["search_session_transcript"].tool_class is ToolClass.READ
@@ -683,37 +690,122 @@ def _bare_orch(tmp_path, monkeypatch):
     orch._records = {}
     orch._overlays = {}
     orch._drivers = {}
+    orch._assistant_scopes = {}
     orch._clock = time.time
     return orch
 
 
-@pytest.mark.asyncio
-async def test_a_rotation_rebuild_seeds_the_new_driver_from_the_old(tmp_path, monkeypatch):
-    """M2: rotation / 401 recompose / crash recovery rebuild the overlay while the old
-    driver is still registered."""
-    orch = _bare_orch(tmp_path, monkeypatch)
-    orch._drivers["s-asst"] = _FakeDriver(X)
-    scope = await _overlay_scope(orch, monkeypatch)
-    orch._drivers["s-asst"] = _FakeDriver()   # the rebuilt driver, no context yet
-    assert scope() == X
+def _real_orch():
+    import os
+    from unittest.mock import patch
+
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+    with patch.dict(os.environ, {"VIBERPIT_DEV": "1"}):
+        return SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
+                                   usage_fn=lambda name: None)
+
+
+def test_the_scope_memo_is_declared_in_init():
+    assert _real_orch()._assistant_scopes == {}
 
 
 @pytest.mark.asyncio
-async def test_an_idle_reap_rebuild_seeds_from_the_last_observed_scope(tmp_path, monkeypatch):
-    """M2: after an idle reap the old driver is gone by the time the overlay is
-    rebuilt; the scope last read for the session seeds the new one."""
+async def test_a_rotation_rebuild_records_the_outgoing_scope(tmp_path, monkeypatch):
+    """Rotation / recompose / crash recovery rebuild the overlay while the old driver
+    is still registered: its scope is what the new driver is seeded with."""
     orch = _bare_orch(tmp_path, monkeypatch)
     orch._drivers["s-asst"] = _FakeDriver(X)
-    first = await _overlay_scope(orch, monkeypatch)
-    assert first() == X
-    del orch._drivers["s-asst"]                # reaped
-    scope = await _overlay_scope(orch, monkeypatch)
-    orch._drivers["s-asst"] = _FakeDriver()
-    assert scope() == X
-    # Its own first context wins over the seed.
-    fresh = _FakeDriver(Y)
-    orch._drivers["s-asst"] = fresh
-    assert scope() == Y
+    await _overlay_scope(orch, monkeypatch)
+    assert orch._assistant_scopes["s-asst"] == X
+
+
+@pytest.mark.asyncio
+async def test_a_reap_records_the_scope_even_with_no_tool_call_and_close_drops_it():
+    """The idle reap records the outgoing driver's scope when it tears it down — no
+    tool call needed. Closing (the session ends) drops the entry."""
+    orch = _real_orch()
+    orch._drivers["s-asst"] = _FakeDriver(X)
+    await orch._teardown_driver_state("s-asst", keep_assistant_scope=True)
+    assert orch._assistant_scopes["s-asst"] == X
+    orch._drivers["s-asst"] = _FakeDriver(Y)
+    await orch._teardown_driver_state("s-asst")
+    assert "s-asst" not in orch._assistant_scopes
+
+
+def test_the_reap_keeps_the_scope_and_the_other_teardowns_do_not():
+    """Pin the call sites: only the assistant idle reap asks teardown to keep it."""
+    import inspect
+
+    from server.sessions.orchestrator import SessionOrchestrator
+    reap = inspect.getsource(SessionOrchestrator._reap_idle_assistants_once)
+    assert "keep_assistant_scope=True" in reap
+    for name in ("close_session", "archive_session"):
+        src = inspect.getsource(getattr(SessionOrchestrator, name))
+        assert "keep_assistant_scope" not in src
+
+
+def test_a_rebuilt_driver_is_seeded_eagerly_and_its_first_scoped_write_raises_no_card():
+    """The seed is applied when the driver is BUILT (`_create_driver`), so the
+    pre-card gate sees it on the rebuilt driver's first turn even before any context
+    or tool call."""
+    from claude_agent_sdk import PermissionResultDeny
+
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.engine import AgentEngine
+    from server.sessions.permissions import PermissionRegistry
+
+    orch = _real_orch()
+    reg = PermissionRegistry()
+    built: list = []
+
+    class _Registry:
+        def create(self, engine, config):
+            d = ClaudeAgentDriver(config.session_id, config.account, config.cwd,
+                                  config.config_dir, mode="interactive",
+                                  sdk_factory=lambda *a, **k: None, registry=reg,
+                                  identity="me", assistant_api=config.assistant_api)
+            built.append(d)
+            return d
+
+    orch._engine_registry = _Registry()
+    orch._assistant_scopes["s-asst"] = X
+    d = orch._create_driver(engine=AgentEngine.CLAUDE_CODE, session_id="s-asst",
+                            account="a", cwd="/tmp/r", config_dir="/tmp/cfg",
+                            mode="interactive", identity="me", resume="r",
+                            on_sync_back=lambda: None, assistant_api=_Recorder().api())
+    assert d.context_scope == X
+
+    async def run():
+        events: list = []
+        d._emit = events.append  # type: ignore[method-assign]
+        out = await d._can_use_tool("mcp__viberpit__send_prompt", {"id": X, "text": "go"})
+        assert isinstance(out, PermissionResultDeny)
+        assert out.message.startswith(f"{SCOPED_READ_ONLY}: ")
+        assert reg.pending("s-asst") == [] and events == []
+
+    asyncio.run(run())
+
+
+def test_a_coding_driver_is_never_seeded():
+    from server.sessions.engine import AgentEngine
+    orch = _real_orch()
+    seeded: list = []
+
+    class _D(_FakeDriver):
+        def seed_context_scope(self, scope):
+            seeded.append(scope)
+
+    class _Registry:
+        def create(self, engine, config):
+            return _D()
+
+    orch._engine_registry = _Registry()
+    orch._assistant_scopes["s-code"] = X
+    orch._create_driver(engine=AgentEngine.CLAUDE_CODE, session_id="s-code", account="a",
+                        cwd="/tmp/r", config_dir="/tmp/cfg", mode="interactive",
+                        identity="me", resume=None, on_sync_back=lambda: None)
+    assert seeded == []
 
 
 @pytest.mark.asyncio

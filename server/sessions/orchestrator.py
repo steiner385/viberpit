@@ -1267,6 +1267,12 @@ class SessionOrchestrator:
         # in-process MCP server bound to that session, so it is neither persisted nor
         # sent over RPC — a restart rebuilds it with the session.
         self._overlays: dict[str, Any] = {}
+        # assistant session_id → the D-12 side-chat scope its NEXT driver is seeded
+        # with (`_create_driver`): written as the outgoing driver goes — by the overlay
+        # rebuild while it is still registered (rotation, recompose, crash recovery) or
+        # by the idle reap's teardown — and dropped by every other teardown (the
+        # session has ended). In-memory, like the drivers it describes.
+        self._assistant_scopes: dict[str, str | None] = {}
         # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
         # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
         # skipped during selection so one un-deletable archive can't wedge the whole
@@ -2150,25 +2156,15 @@ class SessionOrchestrator:
         # late, at tool-call time, off whichever driver is registered for this session —
         # the driver is built FROM this overlay, so it does not exist yet here.
         #
-        # A rebuild (rotation, 401 recompose, crash recovery, idle reap) starts a driver
-        # that has sent no context yet, so it is seeded with the scope this session last
-        # had: the outgoing driver's when it is still registered (every rebuild but the
-        # reap), else the scope last read at a tool call (the reap drops the driver
-        # first). The seed lapses once the new driver sends a context of its own.
-        scopes: dict[str, str | None] = self.__dict__.setdefault("_assistant_scopes", {})
+        # A rebuild while the outgoing driver is still registered (rotation, 401
+        # recompose, crash recovery) records its scope now, for `_create_driver` to seed
+        # the new driver with; the idle reap recorded it at teardown instead.
         outgoing = self._drivers.get(session_id)
-        seed = (getattr(outgoing, "context_scope", None) if outgoing is not None
-                else scopes.get(session_id))
+        if outgoing is not None:
+            self._assistant_scopes[session_id] = getattr(outgoing, "context_scope", None)
 
         def current_scope() -> str | None:
-            driver = self._drivers.get(session_id)
-            if driver is None:
-                return None
-            if driver is not outgoing and seed is not None:
-                getattr(driver, "seed_context_scope", lambda _s: None)(seed)
-            scope = getattr(driver, "context_scope", None)
-            scopes[session_id] = scope
-            return scope
+            return getattr(self._drivers.get(session_id), "context_scope", None)
 
         server = (build_server(api, operator=operator, current_scope=current_scope)
                   if selected is AgentEngine.CLAUDE_CODE else None)
@@ -2921,7 +2917,7 @@ class SessionOrchestrator:
         fork_resume_at: str | None = None
         if fork_from is not None and not resume:
             resume, fork_resume_at = fork_from
-        return self._engine_registry.create(engine, AgentDriverConfig(
+        driver = self._engine_registry.create(engine, AgentDriverConfig(
             session_id=session_id,
             account=account,
             cwd=cwd,
@@ -2963,6 +2959,16 @@ class SessionOrchestrator:
             suggester=suggester,
             assistant_api=assistant_api,
         ))
+        if assistant_api is not None:
+            # D-12: seed a rebuilt assistant driver with its predecessor's side-chat
+            # scope HERE, at build time, so every gate that reads the driver's
+            # `context_scope` — the pre-card checks included — sees it on its first
+            # turn, before any context of its own. Every driver build goes through
+            # this method. The seed lapses at the driver's first sent context.
+            seed = self._assistant_scopes.get(session_id)
+            if seed is not None:
+                driver.seed_context_scope(seed)
+        return driver
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -6343,7 +6349,9 @@ class SessionOrchestrator:
                 return await _drain()
         return await _drain()
 
-    async def _teardown_driver_state(self, session_id: str) -> AgentDriver | None:
+    async def _teardown_driver_state(self, session_id: str, *,
+                                     keep_assistant_scope: bool = False,
+                                     ) -> AgentDriver | None:
         """Unregister a session's live driver plus every per-session dict keyed off it,
         stop its virtual X11 display, and RETURN the popped driver (None if none was
         registered) so the caller owns the ``aclose()``.
@@ -6371,6 +6379,14 @@ class SessionOrchestrator:
         the caller having already been told "sent", with no promptRejected.
         """
         driver = self._drivers.pop(session_id, None)
+        # D-12 side-chat scope: the idle reap (``keep_assistant_scope``) keeps the
+        # record and resumes the thread on reopen, so it records the outgoing driver's
+        # scope for the next build to be seeded with — whether or not a tool ever read
+        # it. Every other teardown ends the session, so the entry goes.
+        if keep_assistant_scope and driver is not None:
+            self._assistant_scopes[session_id] = getattr(driver, "context_scope", None)
+        else:
+            self._assistant_scopes.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
         self._turn_restart_at.pop(session_id, None)
         self._self_model_state.pop(session_id, None)
@@ -6722,7 +6738,7 @@ class SessionOrchestrator:
                 # start_display is idempotent, so a later resume re-leasing it is a no-op.
                 # (`driver` above is the same object: nothing between the turn-in-flight
                 # check and here awaits, so no other coroutine can have swapped it.)
-                await self._teardown_driver_state(rec.id)
+                await self._teardown_driver_state(rec.id, keep_assistant_scope=True)
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
                     await db.execute(
