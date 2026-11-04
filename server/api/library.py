@@ -238,7 +238,12 @@ async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
     if not isinstance(store, dict):
         log.warning("shared MCP store is not an object; reporting no grants")
         store = {}
-    health = await grant_health.load()
+    try:
+        health = await grant_health.load()
+    except Exception:
+        # Health only refines the grant state; the MCP list must not fail without it.
+        log.warning("mcp grant health unreadable; reporting grants without it", exc_info=True)
+        health = {}
     now_ms = int(time.time() * 1000)
     for server in out["servers"]:
         key = mcp_grants.key_for(server)  # None: no knowable CLI key, so no grant lookup

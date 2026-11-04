@@ -424,3 +424,34 @@ def test_get_mcp_expired_grant_surfaces_refresh_error_with_status_rows(shared, m
     [s] = _client(None, monkeypatch).get("/api/library/mcp").json()["servers"]
     assert any(r["counted"] for r in s["status"])
     assert s["overall"]["grant"] == "expired" and reason in s["overall"]["error"]
+
+
+def test_get_mcp_survives_unreadable_grant_health(shared, monkeypatch, caplog):  # noqa: F811
+    from viberpit import creds
+    _write_user_server()
+    key = cli_oauth_key("notion", {"type": "http", "url": "https://x"})
+    monkeypatch.setattr(creds, "read_shared_mcp", lambda: {key: {
+        "serverName": "notion", "serverUrl": "https://x", "accessToken": "", "expiresAt": 0}})
+
+    async def load(keys=None):
+        raise RuntimeError("db down")
+
+    async def none_rows():
+        return []
+
+    async def enabled():
+        return {"a"}
+
+    async def live():
+        return set()
+
+    monkeypatch.setattr(library.grant_health, "load", load)
+    monkeypatch.setattr(library.mcp_store, "rows", none_rows)
+    monkeypatch.setattr(library, "_enabled_accounts", enabled)
+    monkeypatch.setattr(library, "_live_session_ids", live)
+    r = _client(None, monkeypatch).get("/api/library/mcp")
+    assert r.status_code == 200
+    [s] = r.json()["servers"]
+    assert s["overall"]["grant"] == "never"   # derived from the store alone
+    assert any(rec.levelname == "WARNING" and "grant health" in rec.getMessage()
+               for rec in caplog.records)

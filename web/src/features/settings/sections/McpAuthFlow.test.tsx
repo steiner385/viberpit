@@ -50,7 +50,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: null,
         authUrl: 'https://api.notion.com/v1/oauth/authorize?client_id=abc',
-        accounts: [],
         startedAt: 123,
       }))
 
@@ -79,7 +78,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: null,
         authUrl: null,
-        accounts: ['acct1', 'acct2'],
         startedAt: 123,
       }))
 
@@ -99,7 +97,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: 'OAuth provider returned 401 — check credentials.',
         authUrl: null,
-        accounts: [],
         startedAt: 123,
       }))
 
@@ -129,7 +126,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: null,
         authUrl: null,
-        accounts: [],
         startedAt: 123,
       }))
 
@@ -150,7 +146,6 @@ describe('McpAuthFlow', () => {
         server: 'notion',
         message: null,
         authUrl: null,
-        accounts: [],
         startedAt: 123,
       }))
 
