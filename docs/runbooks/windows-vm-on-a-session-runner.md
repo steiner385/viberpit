@@ -263,7 +263,40 @@ bash scripts/winvm/smoke.sh     # full live smoke: sync, desktop, exit code, tim
   ```
 
   Synced trees under `C:\work\` are gone afterwards; sessions recreate them with `winsync`. The guest
-  clock resumes from snapshot time; if it lags, `ssh win11 'w32tm /resync /force'`.
+  clock resumes from snapshot time, and in the `clean` snapshot the Windows Time service is stopped
+  (`w32tm /resync` fails with 0x80070426), so set the clock from the host after a revert:
+
+  ```bash
+  T=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  ssh win11 "Set-Service w32time -StartupType Automatic; Start-Service w32time; Set-Date -Date ([datetime]::Parse('$T').ToLocalTime())"
+  ```
+- **After a hard reset of the runner** (2026-11-04: rocky's journal stopped mid-stream with no
+  shutdown sequence, so nothing shut the guest down). The VM autostarts but can sit with a blank
+  console ("Display output is not active"), no ARP for `192.168.122.76`, busy vCPUs and a firmware RIP
+  (`virsh qemu-monitor-command win11 --hmp "info registers"`, RIP around `7ff0xxxx`).
+  `/var/log/libvirt/qemu/win11.log` shows qemu repairing leaked qcow2 clusters, which is harmless.
+  The daemon stops advertising `windows` on its own, since the ssh check fails. Recover with the
+  restore-to-clean revert above (instant), then fix the clock.
+- **Detach the install media once the build is done.** A stale CD-first boot order can stall a cold
+  boot at the firmware, and the unattend ISO holds the VM password in plain text:
+
+  ```bash
+  for t in $(sudo virsh domblklist win11 --details | awk '$2=="cdrom"{print $3}'); do
+    sudo virsh change-media win11 "$t" --eject --config
+  done
+  sudo virsh edit win11     # drop every per-device <boot order=.../>; keep <boot dev='hd'/> in <os>
+  sudo rm -f /var/lib/libvirt/isos/unattend.iso
+  sudo rm -rf /var/lib/libvirt/win11-build/iso
+  ```
+- **A rollout skipped the runner** (it was down, so the deploy marked it `offline`, and the fleet
+  then fences it with "version skew ... deployed=<new>"). Re-running the deploy does not help,
+  because with live equal to target it updates no host. Once nothing on the runner is mid-turn,
+  fast-forward its checkout to the deployed sha and restart its daemon:
+  `git -C ~/GitHub/viberpit merge --ff-only <sha> && sudo systemctl restart viberpit-daemon`.
+  Re-run `pip install -e '.[server]'` first if `pyproject.toml` or `uv.lock` changed. A unit installed
+  from the current `deploy/viberpit-daemon-remote.service` does this itself on every start, through
+  `ExecStartPre=… server.deploy.runner_sync`. Check with `systemctl cat viberpit-daemon | grep
+  ExecStartPre`; rocky's installed unit predated it on 2026-11-04.
 - **Refresh `clean`** after installing tooling: `sudo virsh snapshot-delete win11 clean`, then
   re-create it as in §9.
 - **Who holds the desktop:** `flock -n ~/.cache/viberpit/winvm.lock true && echo free || cat
