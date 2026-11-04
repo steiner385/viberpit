@@ -45,6 +45,7 @@ EVENT_CLASSES: frozenset[str] = frozenset(
         "decision_needed",
         "ci_systemic_red",
         "ci_spend_alarm",
+        "mcp_auth_needed",
     }
 )
 

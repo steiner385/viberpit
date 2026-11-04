@@ -223,11 +223,10 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
 
   // Success
   if (state === 'success') {
-    const count = status?.accounts.length ?? accounts.length
     return (
       <div className="mt-1 px-3 pb-2">
         <p className="text-xs text-success">
-          Authorized — cleared for {count} account(s).
+          Authorized — restoring every account and runner.
         </p>
       </div>
     )

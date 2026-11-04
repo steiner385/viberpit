@@ -312,6 +312,12 @@ def tick(monkeypatch):
         state["heals"].append((server, list(accts), probe, signed_in))
         return {"refreshed": 0, "reconnected": 0}
     monkeypatch.setattr(al_mod, "after_login", fake_after_login)
+    from server.sessions import push as push_mod
+    state["pushes"] = []
+
+    async def fake_notify_event(event_class, title, body, **kw):
+        state["pushes"].append({"event_class": event_class, "title": title, "body": body, **kw})
+    monkeypatch.setattr(push_mod, "notify_event", fake_notify_event)
     orch = _HealOrch()
     state["orch"] = orch
 
@@ -334,6 +340,7 @@ async def test_transient_then_refreshed_heals_without_alert(isolated_db, tick):
     assert [t.kind for t in t2] == ["healed"]  # a heal, never an alert
     assert tick["heals"] == [("railway", ["alice", "bob"], False, False)]
     assert tick["orch"].probes == 1
+    assert tick["pushes"] == []
 
 
 @pytest.mark.asyncio
@@ -392,6 +399,84 @@ async def test_heal_failure_is_logged_and_never_breaks_the_tick(isolated_db, tic
     assert len(out) == 2
     assert tick["orch"].probes == 1  # the other server's heal and the probe still ran
     assert any(r.levelno == logging.WARNING and "heal" in r.getMessage() for r in caplog.records)
+
+
+async def _alerted_for(key: str = K1) -> str | None:
+    from server.mcp_health import grant_health
+    return (await grant_health.load([key])).get(key, {}).get("alertedFor")
+
+
+@pytest.mark.asyncio
+async def test_dead_grant_alerts_once_across_ticks(isolated_db, tick):
+    for _ in range(3):
+        await tick["run"](_out("dead", error="invalid_grant"))
+    assert len(tick["pushes"]) == 1
+    [p] = tick["pushes"]
+    assert p["event_class"] == "mcp_auth_needed"
+    assert p["title"] == "MCP sign-in needed: railway"
+    assert p["body"] == ("railway's sign-in was revoked or expired. Sign in once to restore it "
+                         "for every account and runner.")
+    assert p["url"] == "/settings/mcp"
+    assert p["fanout_when_unconfigured"] is True
+    assert p["orch"] is tick["orch"]
+    assert await _alerted_for() == "dead:never"
+
+
+@pytest.mark.asyncio
+async def test_new_generation_alerts_again(isolated_db, tick):
+    await tick["run"](_out("dead"))
+    await tick["run"](_out("dead"))
+    assert len(tick["pushes"]) == 1
+    await tick["run"](_out("refreshed"))  # recovered (e.g. re-signed-in): a new generation
+    await tick["run"](_out("dead"))
+    await tick["run"](_out("dead"))
+    assert len(tick["pushes"]) == 2
+    assert (await _alerted_for()).startswith("dead:") and await _alerted_for() != "dead:never"
+
+
+@pytest.mark.asyncio
+async def test_expired_while_failing_alerts_once(isolated_db, tick):
+    import time as _time
+    tick["store"] = {K1: {"expiresAt": int(_time.time() * 1000) - 60_000, "refreshToken": "RT"}}
+    reason = "HTTP 503 " + "x" * 300
+    for _ in range(3):
+        await tick["run"](_out("transient", error=reason))
+    [p] = tick["pushes"]
+    assert p["event_class"] == "mcp_auth_needed"
+    assert p["title"] == "MCP sign-in needed: railway"
+    assert p["body"] == (f"railway's sign-in expired — background refresh is failing: "
+                         f"{reason[:160]}. Sign in again.")
+    assert await _alerted_for() == "expired:never"
+
+
+@pytest.mark.asyncio
+async def test_alert_failure_retries_next_tick(isolated_db, tick, monkeypatch, caplog):
+    from server.mcp_health import alerts
+    from server.mcp_health import grant_health
+
+    marks: list = []
+    real_mark = grant_health.mark_alerted
+
+    async def spy_mark(key, alerted_for):
+        marks.append((key, alerted_for))
+        await real_mark(key, alerted_for)
+    monkeypatch.setattr(grant_health, "mark_alerted", spy_mark)
+
+    def boom(t):
+        raise RuntimeError("push backend down")
+    real_copy = alerts.alert_copy
+    monkeypatch.setattr(alerts, "alert_copy", boom)
+    out = await tick["run"](_out("dead"), _out("dead", key=K2, label="notion"))
+    assert len(out) == 2  # the tick still completed
+    assert marks == [] and tick["pushes"] == []
+    assert await _alerted_for() is None
+    assert any(r.levelno == logging.WARNING and "alert" in r.getMessage() for r in caplog.records)
+
+    monkeypatch.setattr(alerts, "alert_copy", real_copy)
+    await tick["run"](_out("dead"), _out("dead", key=K2, label="notion"))
+    assert sorted(p["title"] for p in tick["pushes"]) == [
+        "MCP sign-in needed: notion", "MCP sign-in needed: railway"]
+    assert sorted(marks) == sorted([(K1, "dead:never"), (K2, "dead:never")])
 
 
 def test_keys_for_server_maps_short_name_to_cli_keys(shared: Path):  # noqa: F811

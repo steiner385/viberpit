@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
@@ -31,6 +31,9 @@ from viberpit import brand
 from server.reauth import REAUTH_DISPLAY_KEY, ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 from server.version import running_git_sha
+
+if TYPE_CHECKING:
+    from server.mcp_health import grant_health
 
 # API routers (T036–T038)
 from server.api.sessions import router as sessions_router
@@ -150,16 +153,17 @@ _SHUTDOWN_DB_TIMEOUT_S = 10.0
 _security_warned = False
 
 
-async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> list:
+async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> "list[grant_health.Transition]":
     """One refresher tick: reconcile grants onto their CLI keys, then refresh and republish,
     purging the keys the reconcile dropped or moved and never refreshing superseded ones.
     Then record each grant's outcome (``mcp_grant_health``) and heal the sessions stuck on
-    every server whose failing grant refreshed again.
+    every server whose failing grant refreshed again. Last, push once per dead or
+    expired grant generation (``mcp_auth_needed``).
 
-    *orch_getter* is read at heal time: the lifespan swaps ``app.state.sessions`` for the
-    FleetOrchestrator. Returns this tick's grant-health transitions; the alert ones are for
-    the caller to deliver."""
+    *orch_getter* is read at heal/alert time: the lifespan swaps ``app.state.sessions`` for
+    the FleetOrchestrator. Returns this tick's grant-health transitions."""
     from server.mcp_health import after_login as mcp_after_login
+    from server.mcp_health import alerts as mcp_alerts
     from server.mcp_health import grant_health
     from server.mcp_health import grants as mcp_grants
     from viberpit import creds as vp_creds
@@ -177,6 +181,8 @@ async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> list:
     healed = [t.server for t in transitions if t.kind == "healed"]
     if healed:
         await mcp_after_login.heal_servers(orch_getter(), healed)
+    if any(t.kind != "healed" for t in transitions):
+        await mcp_alerts.send_alerts(transitions, orch=orch_getter())
     return transitions
 
 
@@ -610,7 +616,6 @@ async def _lifespan(app: FastAPI):
             _log = _logging.getLogger("server.mcp_oauth")
             while True:
                 try:
-                    # Alert transitions are delivered by the caller (phase 3 task 4).
                     await _mcp_oauth_tick(lambda: app.state.sessions)
                 except Exception:
                     # Neither call raises by contract; this guards the loop itself.

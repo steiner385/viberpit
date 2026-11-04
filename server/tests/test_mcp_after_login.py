@@ -128,3 +128,27 @@ async def test_after_login_sign_in_mark_failure_still_reconnects(monkeypatch, cl
     out = await after_login.after_login(orch, "notion", ["alice"], signed_in=True)
     assert out["reconnected"] == 2
     assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_app_mcp_auth_on_success_runs_after_login_signed_in(monkeypatch):
+    """The interactive sign-in follow-through create_app() wires into McpAuthManager runs
+    after_login against the live app.state.sessions with signed_in=True (a new alert
+    generation), never the refresher's heal shape."""
+    from server.app import create_app
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
+    calls: list = []
+
+    async def fake_after_login(orch, server, accounts, *, probe=True, signed_in=False):
+        calls.append((orch, server, list(accounts), probe, signed_in))
+        return {"refreshed": 0, "reconnected": 0}
+    monkeypatch.setattr(after_login, "after_login", fake_after_login)
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=lambda name: None,
+                               poll_interval=9999.0)
+    app = create_app(orchestrator=orch)
+    swapped = object()  # the lifespan swaps app.state.sessions after construction
+    app.state.sessions = swapped
+    await app.state.mcp_auth._on_success("notion", ["alice"])
+    assert calls == [(swapped, "notion", ["alice"], True, True)]

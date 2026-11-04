@@ -419,6 +419,10 @@ def _emitted_event_classes() -> set[str]:
     return found
 
 
+def test_mcp_auth_needed_is_emitted_by_a_real_call_site():
+    assert "mcp_auth_needed" in _emitted_event_classes()
+
+
 def test_watch_conditions_are_actually_emitted():
     """server/assistant/watches.py's CONDITION_MAP must never map a kind/condition to an
     event_class that no real notify_event(...) call site emits — that would be a watch

@@ -81,6 +81,10 @@ def test_event_classes_include_ci_systemic_red_and_ci_spend_alarm():
     assert {"ci_systemic_red", "ci_spend_alarm"} <= EVENT_CLASSES
 
 
+def test_mcp_auth_needed_is_an_event_class():
+    assert "mcp_auth_needed" in EVENT_CLASSES
+
+
 def test_scope_none_is_wildcard_and_exact_must_equal():
     ev = _ev(repo="o/r", account="acct", automation="autopilot")
     assert scope_matches(_rule(), ev)  # all None → wildcard
