@@ -1248,7 +1248,7 @@ export function transcriptReducer(
       // driver's id (live, with its `promptUuid`) or under the uuid (replayed), and the
       // event names it by the id its sender held plus the uuid — so any of the turn's
       // keys may match either. A view without the turn asks for a replay, which follows
-      // the server's cut chain, and shows no divider it could not place.
+      // the server's cut chain and still records the divider marker.
       // Defined keys only: an omitted promptUuid must not match every turn without one.
       const keys = new Set([ev.toTurnId, ev.promptUuid].filter(Boolean))
       let idx = -1
@@ -1256,7 +1256,15 @@ export function transcriptReducer(
         const t = state.turns[i]
         if (t.role === 'user' && (keys.has(t.id) || keys.has(t.engineTurnId) || keys.has(t.promptUuid))) idx = i
       }
-      if (idx === -1) return { ...state, replayFor: `rewound:${ev.rewindId}` }
+      if (idx === -1) {
+        // The marker survives replayReset and undo is keyed by session + rewindId, so
+        // the miss path sets it too: the replayed (already cut) view gets the divider
+        // and Undo like the view that held the turn.
+        return {
+          ...state, replayFor: `rewound:${ev.rewindId}`,
+          rewind: { rewindId: ev.rewindId, filesRestored: ev.filesRestored },
+        }
+      }
       const kept = state.turns.slice(0, idx)
       const ids = new Set(kept.map((t) => t.id))
       return {

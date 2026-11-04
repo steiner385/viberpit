@@ -68,6 +68,12 @@ describe("failedPrompts — the latest prompt's own failed replies (Rewind & ret
     expect(got.get('t1#after:p2')).toBe(p2)
   })
 
+  it('drops a targeted steering prompt whose first reply continues an earlier engine turn', () => {
+    const p1 = user('p1'), p2 = user(UUID)
+    const seg = reply('t1#after:p2', true, { engineTurnId: 't1' })
+    expect(failedPrompts([p1, reply('t1', false), p2, seg]).size).toBe(0)
+  })
+
   it("maps a later segment of the prompt's own engine turn", () => {
     const p1 = user('p1')
     const got = failedPrompts([p1, reply('t1', false), reply('t1#x', true, { engineTurnId: 't1' })])

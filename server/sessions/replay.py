@@ -284,11 +284,13 @@ class TranscriptAnchors:
     can cut at a uuid is answered by the entry sets, not by ``anchors``:
     ``entries`` holds every top-level entry uuid in the file, ``dangling`` the
     assistant entries carrying a tool_use, and ``compacted`` everything at or before
-    the last compact_boundary."""
+    the last compact_boundary; ``prompts`` the human user turns on the active chain
+    (what ``resolve_prompt_uuid`` rebuilds a rewind target from)."""
     anchors: dict[str, str] = field(default_factory=dict)
     entries: frozenset[str] = frozenset()
     dangling: frozenset[str] = frozenset()
     compacted: frozenset[str] = frozenset()
+    prompts: tuple[str, ...] = ()  # user-turn ids (= uuids) on the chain, in order, no owner prefix
 
 
 class _ActiveChain:
@@ -585,7 +587,9 @@ def _parse_transcript(path: str, until_uuid: str | None = None
     facts = TranscriptAnchors(
         anchors={e.turn_id: e.uuid for e in events if isinstance(e, ev.TurnAnchor)},
         entries=frozenset(entry_uuids), dangling=frozenset(tool_use_entries),
-        compacted=frozenset(pre_compaction))
+        compacted=frozenset(pre_compaction),
+        prompts=tuple(e.turn_id for e in events
+                      if isinstance(e, ev.UserMessage) and not e.owner_prefix))
     return events, meta_event, facts
 
 

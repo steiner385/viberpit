@@ -46,13 +46,13 @@ describe('useSessionRuntime — rewindUndone', () => {
     expect(attach).toHaveBeenCalledTimes(2)
   })
 
-  it('replays once, with no divider, for a rewind whose target this view does not hold', () => {
+  it('replays once, and still sets the divider marker, for a rewind whose target this view does not hold', () => {
     attach.mockClear()
     const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     act(() => onEvent?.({ type: 'replayComplete', sessionId: 's1' }))
     const ev = { type: 'rewound', sessionId: 's1', rewindId: 'r2', toTurnId: 'x', promptUuid: 'y', filesRestored: [] }
     act(() => onEvent?.(ev))
-    expect(result.current.state.rewind).toBeNull()
+    expect(result.current.state.rewind).toEqual({ rewindId: 'r2', filesRestored: [] })
     expect(attach).toHaveBeenCalledTimes(2)
     act(() => onEvent?.(ev))
     expect(attach).toHaveBeenCalledTimes(2)
