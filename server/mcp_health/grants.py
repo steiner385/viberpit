@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from viberpit import creds, mcp_oauth_refresh, paths
 from viberpit.mcp_keys import cli_oauth_key, store_name
@@ -69,6 +70,22 @@ def wanted_servers() -> list[WantedServer]:
     return wanted
 
 
+@dataclass(frozen=True)
+class ReconcileResult:
+    """What one reconcile tells the refresher: *drop* is the keys to purge from the account
+    dirs; *skip* is the superseded refresh-bearing keys it must not refresh."""
+    drop: frozenset[str]
+    skip: frozenset[str]
+
+
+def superseded_refresh_keys(store: dict, wanted: list[WantedServer]) -> frozenset[str]:
+    """Store keys that hold a refresh token but are no wanted server's key. Refreshing one
+    could rotate a single-use token the live key's twin still depends on."""
+    live = {w.key for w in wanted}
+    return frozenset(k for k, blob in store.items()
+                     if k not in live and isinstance(blob, dict) and blob.get("refreshToken"))
+
+
 def _user_config_unreadable() -> bool:
     """True when ``claude.shared.json`` exists but is not a readable JSON object. Absent is
     fine (no user servers); unreadable is not: every user server would look unconfigured."""
@@ -88,18 +105,19 @@ def _live_tombstones(now: float, *, present: dict) -> frozenset[str]:
     return frozenset(k for k in _tombstones if k not in present)
 
 
-def reconcile_grants(*, clock: Callable[[], float] = time.monotonic) -> frozenset[str]:
+def reconcile_grants(*, clock: Callable[[], float] = time.monotonic) -> ReconcileResult:
     """Move grants to their servers' current keys and drop dead bundles; return the keys to
     purge from the account dirs: this tick's dropped keys and moved bundles' old keys (so
     capture never offers a dir's leftover copy back), plus every key purged within
     :data:`TOMBSTONE_TTL_S` that is not back in the store. A dir copy holding a refresh token
-    is never purged (``creds.publish_mcp``). Never raises: WARNING + empty set."""
+    is never purged (``creds.publish_mcp``). ``skip`` is :func:`superseded_refresh_keys` of the
+    post-plan store. Never raises: WARNING + a result with no skip."""
     try:
         now = clock()
         snapshot = creds.read_shared_mcp()
         if _user_config_unreadable():
             log.warning("mcp grants reconcile skipped: claude.shared.json is unreadable")
-            return _live_tombstones(now, present=snapshot)
+            return ReconcileResult(drop=_live_tombstones(now, present=snapshot), skip=frozenset())
         from server.library import scan
 
         wanted = wanted_servers()
@@ -127,14 +145,15 @@ def reconcile_grants(*, clock: Callable[[], float] = time.monotonic) -> frozense
 
         creds.update_shared_mcp(apply)
         if plan is None:  # a worker: the store is not ours to change
-            return frozenset()
+            return ReconcileResult(drop=frozenset(), skip=frozenset())
         purge = plan.dropped | frozenset(plan.moved)
         if purge:
             log.info("mcp grants reconciled moved=%s dropped=%s",
                      sorted(f"{old}->{new}" for old, new in plan.moved.items()), sorted(plan.dropped))
         for key in purge:
             _tombstones[key] = now + TOMBSTONE_TTL_S
-        return _live_tombstones(now, present=plan.store)  # includes this tick's purge
+        return ReconcileResult(drop=_live_tombstones(now, present=plan.store),  # includes this tick's purge
+                               skip=superseded_refresh_keys(plan.store, wanted))
     except Exception:
         log.warning("mcp grants reconcile failed", exc_info=True)
-        return frozenset()
+        return ReconcileResult(drop=frozenset(), skip=frozenset())

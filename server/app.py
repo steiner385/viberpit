@@ -149,12 +149,13 @@ _security_warned = False
 
 async def _mcp_oauth_tick() -> None:
     """One refresher tick: reconcile grants onto their CLI keys, then refresh and republish,
-    purging the keys the reconcile dropped or moved."""
+    purging the keys the reconcile dropped or moved and never refreshing superseded ones."""
     from server.mcp_health import grants as mcp_grants
     from viberpit import mcp_oauth_refresh
 
-    drop = await asyncio.to_thread(mcp_grants.reconcile_grants)
-    await asyncio.to_thread(lambda: mcp_oauth_refresh.run_once(drop_keys=drop))
+    result = await asyncio.to_thread(mcp_grants.reconcile_grants)
+    await asyncio.to_thread(
+        lambda: mcp_oauth_refresh.run_once(drop_keys=result.drop, skip_keys=result.skip))
 
 
 async def seed_host_ssh_from_env() -> None:

@@ -75,7 +75,7 @@ def test_reconcile_grants_moves_and_reports(shared: Path, monkeypatch, caplog): 
         return AWS_ID
 
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
-    drop = grants.reconcile_grants()
+    drop = grants.reconcile_grants().drop
     assert drop == frozenset({OLD_KEY, "plugin:linear:linear|0"})
     store = creds.read_shared_mcp()
     assert set(store) == {NEW_KEY, "projsrv|0"}
@@ -95,7 +95,7 @@ def test_reconcile_grants_steady_state_is_quiet(shared: Path, monkeypatch, caplo
         "serverName": "aws-oauth", "accessToken": "AT-live-secret", "refreshToken": "RT-live-secret"}})
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity",
                         lambda *a, **k: pytest.fail("steady state must not fetch"))
-    assert grants.reconcile_grants() == frozenset()
+    assert grants.reconcile_grants().drop == frozenset()
     assert not [r for r in caplog.records if "reconciled" in r.getMessage()]
 
 
@@ -105,7 +105,7 @@ def test_reconcile_grants_swallows_errors(shared: Path, monkeypatch, caplog):  #
 
     monkeypatch.setattr(scan, "list_mcp_servers", boom)
     with caplog.at_level(logging.WARNING):
-        assert grants.reconcile_grants() == frozenset()
+        assert grants.reconcile_grants().drop == frozenset()
     assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
@@ -114,11 +114,13 @@ async def test_edge_tick_reconciles_then_refreshes_with_the_drop_keys(monkeypatc
     from server import app as app_mod
 
     calls: list = []
-    monkeypatch.setattr(grants, "reconcile_grants", lambda: calls.append("reconcile") or frozenset({"old|k"}))
+    monkeypatch.setattr(grants, "reconcile_grants", lambda: calls.append("reconcile") or grants.ReconcileResult(
+                            drop=frozenset({"old|k"}), skip=frozenset({"sup|1"})))
     monkeypatch.setattr(mcp_oauth_refresh, "run_once",
                         lambda **kw: calls.append(("run_once", kw)))
     await app_mod._mcp_oauth_tick()
-    assert calls == ["reconcile", ("run_once", {"drop_keys": frozenset({"old|k"})})]
+    assert calls == ["reconcile", ("run_once", {"drop_keys": frozenset({"old|k"}),
+                                          "skip_keys": frozenset({"sup|1"})})]
 
 
 def test_key_for_skips_placeholders_and_non_candidates():
@@ -165,7 +167,7 @@ def test_identity_fetched_outside_the_store_lock(shared: Path, monkeypatch):  # 
 
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
     monkeypatch.setattr(creds, "update_shared_mcp", update)
-    assert grants.reconcile_grants() == frozenset()
+    assert grants.reconcile_grants().drop == frozenset()
     assert fetched == []
     assert set(creds.read_shared_mcp()) == {NEW_KEY, OLD_KEY}  # nothing moved
 
@@ -192,7 +194,7 @@ def test_identity_prefetch_feeds_the_locked_plan(shared: Path, monkeypatch):  # 
 
     monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", identity)
     monkeypatch.setattr(creds, "update_shared_mcp", update)
-    assert grants.reconcile_grants() == frozenset({OLD_KEY})
+    assert grants.reconcile_grants().drop == frozenset({OLD_KEY})
     assert fetched and not any(locked for _, locked in fetched)  # prefetched before the lock
     assert creds.read_shared_mcp()[NEW_KEY]["refreshToken"] == "RT-live-secret"
 
@@ -202,10 +204,10 @@ def test_purged_keys_tombstoned_for_thirty_minutes(shared: Path, monkeypatch):  
     dead = {"serverName": "plugin:linear:linear", "serverUrl": "https://mcp.linear.app/mcp"}
     creds.write_json_secure(paths.shared_mcp_path(), {"plugin:linear:linear|0": dead})
     t0 = 5000.0
-    assert grants.reconcile_grants(clock=lambda: t0) == frozenset({"plugin:linear:linear|0"})
+    assert grants.reconcile_grants(clock=lambda: t0).drop == frozenset({"plugin:linear:linear|0"})
     assert creds.read_shared_mcp() == {}
-    assert grants.reconcile_grants(clock=lambda: t0 + 10 * 60) == frozenset({"plugin:linear:linear|0"})
-    assert grants.reconcile_grants(clock=lambda: t0 + 31 * 60) == frozenset()
+    assert grants.reconcile_grants(clock=lambda: t0 + 10 * 60).drop == frozenset({"plugin:linear:linear|0"})
+    assert grants.reconcile_grants(clock=lambda: t0 + 31 * 60).drop == frozenset()
 
 
 def test_tombstone_not_returned_once_the_key_is_back_in_the_store(shared: Path):  # noqa: F811
@@ -213,7 +215,7 @@ def test_tombstone_not_returned_once_the_key_is_back_in_the_store(shared: Path):
     grants._tombstones["back|1"] = 10_000.0
     creds.write_json_secure(paths.shared_mcp_path(), {"back|1": {
         "serverName": "back", "accessToken": "a", "refreshToken": "r"}})
-    assert grants.reconcile_grants(clock=lambda: 100.0) == frozenset()
+    assert grants.reconcile_grants(clock=lambda: 100.0).drop == frozenset()
 
 
 def test_unreadable_user_config_skips_the_tick(shared: Path, monkeypatch, caplog):  # noqa: F811
@@ -224,7 +226,7 @@ def test_unreadable_user_config_skips_the_tick(shared: Path, monkeypatch, caplog
     grants._tombstones["gone|1"] = 10_000.0
     monkeypatch.setattr(creds, "update_shared_mcp", lambda fn: pytest.fail("must not write"))
     with caplog.at_level(logging.WARNING):
-        assert grants.reconcile_grants(clock=lambda: 100.0) == frozenset({"gone|1"})
+        assert grants.reconcile_grants(clock=lambda: 100.0).drop == frozenset({"gone|1"})
     assert creds.read_shared_mcp() == store
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
 
@@ -233,4 +235,31 @@ def test_absent_user_config_is_no_user_servers(shared: Path):  # noqa: F811
     assert not paths.shared_claude_json_path().exists()
     dead = {"serverName": "plugin:linear:linear", "serverUrl": "https://mcp.linear.app/mcp"}
     creds.write_json_secure(paths.shared_mcp_path(), {"plugin:linear:linear|0": dead})
-    assert grants.reconcile_grants() == frozenset({"plugin:linear:linear|0"})
+    assert grants.reconcile_grants().drop == frozenset({"plugin:linear:linear|0"})
+
+
+def _w(key):
+    return WantedServer(key=key, store_name="n", url="https://x.example/mcp")
+
+
+def test_superseded_refresh_keys():
+    store = {"wanted|1": {"refreshToken": "r"}, "stale|1": {"refreshToken": "r"},
+             "stale-empty|1": {"serverName": "x"}, "stale-blank|1": {"refreshToken": ""},
+             "junk|1": "not-a-dict"}
+    assert grants.superseded_refresh_keys(store, [_w("wanted|1")]) == frozenset({"stale|1"})
+    assert grants.superseded_refresh_keys(store, [_w("wanted|1"), _w("stale|1")]) == frozenset()
+
+
+def test_reconcile_reports_superseded_keys_to_skip(shared: Path, monkeypatch):  # noqa: F811
+    _write_servers({"aws-oauth": {"type": "http", "url": NEW_URL}})
+    creds.write_json_secure(paths.shared_mcp_path(), {
+        NEW_KEY: {"serverName": "aws-oauth", "refreshToken": "RT-live-secret"},
+        "projsrv|0": {"serverName": "projsrv", "refreshToken": "RT-proj"}})
+    monkeypatch.setattr(mcp_oauth_refresh, "grant_identity", lambda *a, **k: None)
+    result = grants.reconcile_grants()
+    assert result.skip == frozenset({"projsrv|0"})
+
+
+def test_reconcile_error_paths_skip_nothing(shared: Path, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(scan, "list_mcp_servers", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert grants.reconcile_grants() == grants.ReconcileResult(drop=frozenset(), skip=frozenset())

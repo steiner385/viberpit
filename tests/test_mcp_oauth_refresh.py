@@ -312,7 +312,8 @@ def test_run_once_never_raises(monkeypatch):
     monkeypatch.setattr(mor.creds, "read_shared_mcp", boom)
     monkeypatch.setattr(mor.creds, "sync_cfg_mcp_oauth", boom)
     out = mor.run_once(accounts_list=["alice"], now_ms=NOW)
-    assert out == {"refreshed": [], "dead": [], "transient": [], "published": 0}
+    assert out == {"refreshed": [], "dead": [], "transient": [], "published": 0,
+                   "outcomes": []}
 
 
 def test_run_once_defaults_to_anthropic_accounts(monkeypatch):
@@ -407,3 +408,47 @@ def test_run_once_threads_drop_keys_to_publish(monkeypatch):
                         lambda cfg, server=None, drop=frozenset(): seen.append((cfg.name, drop)) or False)
     mor.run_once(accounts_list=["a1", "a2"], drop_keys=frozenset({"old|1"}), now_ms=NOW)
     assert seen == [("a1", frozenset({"old|1"})), ("a2", frozenset({"old|1"}))]
+
+
+def test_run_once_reports_per_key_outcomes():
+    ok, dead, slow = _bundle(serverName="ok"), _bundle(serverName="dead"), _bundle(serverName="slow")
+    _seed({"ok|1": ok, "dead|1": dead, "slow|1": slow}, {})
+    http = FakeHttp(metadata=_meta(), responses=[_ok(), (400, {"error": "invalid_grant"}),
+                                                 (400, {"error": "e" * 900})])
+    out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    by_key = {o["key"]: o for o in out["outcomes"]}
+    assert {k: v["outcome"] for k, v in by_key.items()} == {"ok|1": "refreshed", "dead|1": "dead",
+                                                              "slow|1": "transient"}
+    assert by_key["ok|1"]["label"] == "ok" and by_key["ok|1"]["error"] is None
+    assert by_key["dead|1"]["error"] is None
+    assert by_key["slow|1"]["error"] and len(by_key["slow|1"]["error"]) <= 500
+    assert out["refreshed"] == ["ok"] and out["dead"] == ["dead"] and out["transient"] == ["slow"]
+
+
+def test_run_once_skips_superseded_keys():
+    _seed({"old|1": _bundle(serverName="old"), "new|1": _bundle(serverName="new")}, {})
+    http = FakeHttp(metadata=_meta(), responses=[_ok()])
+    out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW,
+                       skip_keys=frozenset({"old|1"}))
+    assert out["refreshed"] == ["new"] and [o["key"] for o in out["outcomes"]] == ["new|1"]
+    assert len(http.posts) == 1
+    assert creds.read_json(paths.shared_mcp_path())["old|1"]["refreshToken"] == "RT-OLD-secret"
+
+
+def test_transient_error_text_has_no_token():
+    _seed({"aws|1": _bundle()}, {})
+    body = "boom RT-OLD-secret AT-NEW-secret CLIENT-SECRET-x"
+    http = FakeHttp(metadata=_meta(), responses=[RuntimeError(body)])
+    out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    [o] = out["outcomes"]
+    assert o["outcome"] == "transient" and o["error"]
+    assert not any(s in o["error"] for s in SECRETS)
+
+
+@pytest.mark.parametrize("code", ["RT-OLD-secret and more words", "a" * 200, "bad code!"])
+def test_oauth_error_code_that_is_not_a_code_is_not_echoed(code):
+    _seed({"aws|1": _bundle()}, {})
+    http = FakeHttp(metadata=_meta(), responses=[(400, {"error": code, "error_description": "RT-OLD-secret"})])
+    out = mor.run_once(accounts_list=[], post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    [o] = out["outcomes"]
+    assert "RT-OLD-secret" not in o["error"] and "400" in o["error"] and len(o["error"]) < 100
