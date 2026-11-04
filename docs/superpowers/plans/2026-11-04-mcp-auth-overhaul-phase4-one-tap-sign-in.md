@@ -163,7 +163,9 @@ CLI can sign in. See "Open decision".
   starts it.
 - Run the full gate. Open a ready PR that says "Phase 4 of 5", and arm `--squash --auto`.
 
-## Open decision (Tony): KinDash
+## Decision (Tony, 2026-11-04): KinDash → option (a), tracked as cairnea/KinDash#20485. Phase 4 adds no static-client config.
+
+### Options considered
 
 KinDash's auth server offers no dynamic client registration, so no MCP client can sign in to it
 today, the CLI included. Options:
