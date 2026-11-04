@@ -25548,13 +25548,16 @@ class SessionOrchestrator:
         _same_model = (
             record is not None and record.model not in (None, "default")
             and record.model == model)
-        # An effort-only pick (D-14: the same model CHOICE, a new effort) changes no
-        # model either — including on a session that runs the inherited default — so it
-        # never parks an approval: the park would drop the effort and ask to approve the
-        # model the session already runs. A ``block`` verdict still refuses it below.
+        # An effort-only pick (D-14) that sends no model to the CLI never parks either:
+        # the park would drop the effort and ask to approve the model the session
+        # already runs. That is ONLY a request that keeps the record's own choice by
+        # leaving the model unset (None on a session with no explicit model — what
+        # `/effort` sends) — or the explicit same model above. An explicit "default"
+        # still parks: it hands the binary the now-gated inherited default. A
+        # ``block`` verdict still refuses either below.
         _effort_only = (
             record is not None and not isinstance(reasoning_effort, _EffortUnchanged)
-            and (record.model or "default") == (model or "default"))
+            and model is None and record.model is None)
         # UI-only: the same CHOICE (None == "default") queues no model change, so it
         # must not raise model_pending ("after this turn").
         _same_choice = record is not None and (
