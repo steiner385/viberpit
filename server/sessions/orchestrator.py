@@ -13975,7 +13975,14 @@ class SessionOrchestrator:
 
         out = await self.ready_merge(repo, int(pr_number))
         armed = bool(out.get("autoMergeArmed"))
-        record = dict(gate) if armed else {**gate, "outcome": "refused"}
+        if armed:
+            record = dict(gate)
+        else:
+            # `code` (PR_HUMAN_HOLD / PR_HUMAN_HOLD_UNKNOWN) tells a failed hold check
+            # from a genuine refusal; absent for a plain gh decline.
+            detail = {**(gate.get("detail") or {}),
+                      **({"code": out["code"]} if out.get("code") else {})}
+            record = {**gate, "outcome": "refused", "detail": detail}
         async with db_session() as db:
             await db.execute(update(Initiative).where(
                 Initiative.id == initiative_id).values(last_auto_gate=record))

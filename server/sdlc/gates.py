@@ -111,6 +111,8 @@ def _summary(record: dict) -> str:
     detail = record.get("detail") or {}
     gate = record.get("gate")
     if record.get("outcome") == "refused":
+        if detail.get("code") == "PR_HUMAN_HOLD_UNKNOWN":
+            return "hold check failed"
         return "auto-merge unavailable" if gate == "artifact.merge" else "refused"
     if gate in ("stage.advance", "stage.advance_built") and detail.get("to"):
         return f"advanced to {detail['to']}"
