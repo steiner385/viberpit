@@ -1393,3 +1393,41 @@ async def test_x11_metrics_passes_daemon_native_display_through_from_primary():
             return {"enabled": True, "nativeDisplay": {"available": False, "reason": "cookie_missing"}}
     fo = FleetOrchestrator(_FakeRouter({"rocky": _Prim("rocky")}), primary="rocky")
     assert (await fo.x11_metrics())["nativeDisplay"]["reason"] == "cookie_missing"
+
+
+class _DetailOrch(_FakeOrch):
+    def __init__(self, name, result=None, fail=None):
+        super().__init__(name); self.result = result; self.fail = fail
+    async def pr_detail(self, repo, number):
+        self.calls.append(("pr_detail", repo, number))
+        if self.fail is not None:
+            raise self.fail
+        return self.result
+
+
+@pytest.mark.asyncio
+async def test_pr_detail_primary_hit_skips_workers():
+    prim = _DetailOrch("dobby", {"number": 7})
+    wk = _DetailOrch("rocky", {"number": 7, "from": "rocky"})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": prim, "rocky": wk}), primary="dobby")
+    assert await fo.pr_detail("o/r", 7) == {"number": 7}
+    assert wk.calls == []
+
+
+@pytest.mark.asyncio
+async def test_pr_detail_miss_falls_through_to_the_worker_that_owns_the_session():
+    # A worker-host session's PR outside the Pipeline population is only in that
+    # worker's per-branch cache; the primary alone said "Live details unavailable".
+    prim = _DetailOrch("dobby", None)
+    wk = _DetailOrch("rocky", {"number": 7, "from": "rocky"})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": prim, "rocky": wk}), primary="dobby")
+    assert await fo.pr_detail("o/r", 7) == {"number": 7, "from": "rocky"}
+
+
+@pytest.mark.asyncio
+async def test_pr_detail_not_synced_marker_beats_a_plain_miss_and_unreachable_worker():
+    marker = {"pr_not_synced": True, "syncError": "boom"}
+    prim = _DetailOrch("dobby", marker)
+    wk = _DetailOrch("rocky", fail=ConnectionError("down"))
+    fo = FleetOrchestrator(_FakeRouter({"dobby": prim, "rocky": wk}), primary="dobby")
+    assert await fo.pr_detail("o/r", 7) == marker

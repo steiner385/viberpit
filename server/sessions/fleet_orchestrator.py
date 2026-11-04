@@ -1022,6 +1022,31 @@ class FleetOrchestrator:
             await asyncio.to_thread(persist_quota_snapshot, account, snapshot)
         return merged
 
+    async def pr_detail(self, repo: str, number: int) -> "dict | None":
+        """PR tab detail: the primary's answer, else the first worker that has it.
+
+        ``_session_pr_entry`` reads only the serving daemon's own sessions, so a PR
+        owned by a worker-host session and outside the Pipeline population is a miss
+        on the primary ("Live details unavailable"). A primary ``pr_not_synced``
+        marker is kept when no worker has the PR either, so the route still 502s
+        with the reason rather than 404ing."""
+        primary = await self._primary_orch().pr_detail(repo, number)
+        if primary is not None and not primary.get("pr_not_synced"):
+            return primary
+
+        async def _one(name: str):
+            try:
+                return await self._router.get(name).pr_detail(repo, number)
+            except Exception as e:  # noqa: BLE001 — a dead worker must not blank the tab
+                await self._log_unreachable(name, e, "pr_detail")
+                return None
+
+        workers = [n for n in await self._fanout_names() if n != self._primary]
+        for found in await asyncio.gather(*(_one(n) for n in workers)):
+            if found is not None and not found.get("pr_not_synced"):
+                return found
+        return primary
+
     def subscribe(self, session_id: str):
         # Sync per-session iterator. The WS handler calls ensure_driver (async, warms
         # the cache) before subscribe, so the cache is populated by now; on a miss we
