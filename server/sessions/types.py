@@ -222,6 +222,11 @@ class SessionRecord:
     # the edge can serve ``fastModeAvailable`` (``flag_settings.supports_fast_mode``).
     fast_mode: bool = False
     fast_mode_models: list[str] | None = None
+    # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
+    # detached session can still check an effort against its model's levels. Daemon-
+    # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
+    # owning daemon. None until a Claude driver has started there.
+    model_options: list | None = None
     # Fork anchors (D-8): turn id -> the CLI transcript uuid that turn can be forked
     # from, fed live by the driver's TurnAnchor events and merged from the transcript
     # on a lookup miss (SessionOrchestrator.resolve_turn_anchor). Insertion-ordered and

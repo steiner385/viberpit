@@ -103,6 +103,23 @@ def supports_fast_mode(fast_models: Iterable[str] | None, model: str | None) -> 
     return fast_models is not None and _model_key(model) in set(fast_models)
 
 
+def model_options(server_info: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The ``initialize.models[]`` rows trimmed to what ViberPit reads: ``value``,
+    ``resolvedModel``, ``supportsFastMode`` and ``supportedEffortLevels``. The per-session
+    cache ``SessionRecord.model_options`` (daemon-local) holds this list."""
+    keys = ("value", "resolvedModel", "supportsFastMode", "supportedEffortLevels")
+    return [{k: row[k] for k in keys if k in row} for row in _model_rows(server_info)]
+
+
+def fast_mode_available(fast_models: Iterable[str] | None, model: str | None) -> bool:
+    """THE fast-mode availability computation, shared by the session payload and the
+    orchestrator gate: the ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch is on AND the
+    cached list marks *model* fast-capable. (Only a flag-settings engine fills the list;
+    the orchestrator also checks the engine capability.)"""
+    from server.sessions.engine import flag_settings_enabled
+    return flag_settings_enabled() and supports_fast_mode(fast_models, model)
+
+
 def effort_levels(server_info: Mapping[str, Any] | None,
                   model: str | None) -> list[str] | None:
     """The effort levels the live model accepts, or None when the list does not say."""

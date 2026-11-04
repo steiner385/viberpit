@@ -336,10 +336,11 @@ class AgentDriverConfig:
     #: set (D-13), in load order — each time the context reading reports one. Only
     #: Claude reports a set; other engines never call it.
     on_memory_files: Callable[[str, list], Awaitable[None]] | None = None
-    #: Fired with (session id, model ids) once per CLI start (D-14): the models the
-    #: CLI's ``initialize`` list marks ``supportsFastMode``. Only engines with
-    #: ``flag_settings`` (Claude) call it.
-    on_fast_mode_models: Callable[[str, list], Awaitable[None]] | None = None
+    #: Fired with (session id, model rows) once per CLI start (D-14): the CLI's
+    #: ``initialize`` model list (``flag_settings.model_options``). Returns True when the
+    #: session's stored fast mode was dropped (the model lacks it), and the driver then
+    #: tells the CLI ``{"fastMode": false}``. Only ``flag_settings`` engines call it.
+    on_model_options: Callable[[str, list], Awaitable[bool | None]] | None = None
     #: Fired with the sanitized MCP status snapshot each time a Claude driver polls it.
     on_mcp_status: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired (synchronously, with the session id) when a Task sub-agent starts or ends,

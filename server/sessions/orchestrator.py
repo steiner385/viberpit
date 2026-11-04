@@ -2992,7 +2992,7 @@ class SessionOrchestrator:
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
             on_memory_files=self._persist_memory_files,
-            on_fast_mode_models=self._record_fast_mode_models,
+            on_model_options=self._record_model_options,
             on_mcp_status=self._persist_mcp_status,
             on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_background_work_changed=self._refresh_background_work,
@@ -8027,24 +8027,32 @@ class SessionOrchestrator:
                     memory_files=files)
             )
 
-    async def _record_fast_mode_models(self, session_id: str, models: list) -> None:
-        """Driver ``on_fast_mode_models`` callback (D-14): cache which models the CLI's
-        ``initialize`` marks ``supportsFastMode`` on the record. In memory only — every
-        CLI start re-reports it. A Copilot session caches none: fast mode bills Anthropic
-        usage credits, and a proxied third-party model is never offered it."""
+    async def _record_model_options(self, session_id: str, rows: list) -> bool:
+        """Driver ``on_model_options`` callback (D-14): cache the CLI's model rows
+        (``model_options``, daemon-local — a detached session's effort check reads them)
+        and which models are fast-capable (``fast_mode_models``, served on the payload).
+        In memory only — every CLI start re-reports them. A Copilot session caches no
+        fast models: fast mode bills Anthropic usage credits, and a proxied third-party
+        model is never offered it.
+
+        Returns True when a stored fast mode was dropped: once the CLI says what it has,
+        a flag its model lacks (a spawn with no list yet — after a restart — passed it
+        on trust) is cleared, so a later switch onto a fast model cannot resurrect it.
+        The list is now KNOWN to lack it, so the CLI's fast mode is inert and recording
+        off is truthful; the driver still tells the CLI ``{"fastMode": false}``."""
         rec = self._records.get(session_id)
         if rec is None:
-            return
-        if _provider_of(rec.account) == _copilot_mod.PROVIDER:
-            models = []
-        rec.fast_mode_models = list(models)
-        # Fail closed once the CLI says what it has: a stored fast mode its model lacks
-        # (a spawn with no list yet — after a restart — passed the flag on trust) is
-        # dropped, so a later switch onto a fast model cannot silently resurrect it.
+            return False
+        rec.model_options = list(rows)
+        rec.fast_mode_models = (
+            [] if _provider_of(rec.account) == _copilot_mod.PROVIDER
+            else flag_settings.fast_mode_models({"models": rows}))
         if rec.fast_mode and not self.fast_mode_available(session_id):
             await self._persist_fast_mode(session_id, False)
             log.info("session.fast_mode cleared id=%s model=%s (not available at start)",
                      session_id, rec.model)
+            return True
+        return False
 
     def _spawn_flag_settings(self, session_id: str) -> dict:
         """The flag-layer settings a spawn of this session starts with (D-14): fast mode
@@ -8072,11 +8080,12 @@ class SessionOrchestrator:
         """Can this session turn fast mode on right now? Its engine has the flag-settings
         channel AND the CLI listed its current model as ``supportsFastMode``. THE gate:
         ``set_fast_mode``, the ``/fast`` command and the payload's ``fastModeAvailable``
-        (``flag_settings.supports_fast_mode`` over the same record) all agree."""
+        (``flag_settings.fast_mode_available`` over the same record, kill switch
+        included) all agree."""
         rec = self._records.get(session_id)
         if rec is None or not flag_settings_supported(self._capabilities_of(session_id)):
             return False
-        return flag_settings.supports_fast_mode(rec.fast_mode_models, rec.model)
+        return flag_settings.fast_mode_available(rec.fast_mode_models, rec.model)
 
     def _flag_settings_driver(self, session_id: str) -> Any:
         """This session's live driver when its engine writes flag settings (D-14), else
@@ -8107,11 +8116,16 @@ class SessionOrchestrator:
         FAST_UNAVAILABLE``. Turning it off is always allowed. A session with no live
         client (detached, or its CLI gone) just persists: the next spawn applies it.
 
-        The record never says off while the CLI may be on (fast mode bills usage
-        credits): a refused or lost enable keeps the record OFF, and a lost one
-        (``SETTINGS_FAILED`` — it may have landed) is compensated with a best-effort
-        ``{"fastMode": false}``. A failed disable still records off; the next model
-        switch and the next spawn re-assert it. Both re-raise the error."""
+        Invariant: the record never says off while the CLI may be on (fast mode bills
+        usage credits). Every failed write re-raises; the record is then:
+
+        * a REFUSED write (either way) — unchanged: the CLI kept its state.
+        * a lost disable (``SETTINGS_FAILED``) — unchanged: the CLI may still be on, so
+          ⚡ stays lit and the user can retry.
+        * a lost enable — it may have landed, so a best-effort ``{"fastMode": false}``
+          compensates: off if that lands, else ON (unknown is treated as billing).
+        * no live client (``SETTINGS_UNAVAILABLE``) — the requested value: nothing runs
+          now, and the next spawn applies the record."""
         rec = self._records.get(session_id)
         if rec is None:
             raise KeyError(session_id)
@@ -8130,8 +8144,8 @@ class SessionOrchestrator:
             except flag_settings.SettingsError as exc:
                 if exc.code != flag_settings.SETTINGS_UNAVAILABLE:
                     if enabled and exc.code == flag_settings.SETTINGS_FAILED:
-                        await self._assert_fast_mode(driver, False)
-                    await self._persist_fast_mode(session_id, False)
+                        compensated = await self._assert_fast_mode(driver, False)
+                        await self._persist_fast_mode(session_id, not compensated)
                     raise
                 # No live client: the persisted value is applied at the next spawn.
         await self._persist_fast_mode(session_id, enabled)
@@ -8155,15 +8169,26 @@ class SessionOrchestrator:
         sent ``{"fastMode": <record>}``, every switch, so any drift (a refused clear, a
         write whose reply was lost) is put right at the next opportunity. Never raises:
         the switch already happened, and the next switch and the next spawn re-assert
-        the record again."""
+        the record again.
+
+        The clear keeps the record-never-off-while-billing invariant: with a live CLI it
+        is recorded off only when the ``{"fastMode": false}`` landed or the new model is
+        KNOWN to lack fast mode (inert there). A failed clear on an unknown list leaves
+        the record on — the model may have it — for the next switch or spawn to retry."""
         rec = self._records.get(session_id)
         if rec is None:
             return
-        if rec.fast_mode and not self.fast_mode_available(session_id):
-            await self._persist_fast_mode(session_id, False)
-            log.info("session.fast_mode cleared id=%s model=%s (not available)",
-                     session_id, rec.model)
         driver = self._flag_settings_driver(session_id)
+        if rec.fast_mode and not self.fast_mode_available(session_id):
+            landed = driver is None or await self._assert_fast_mode(driver, False)
+            if landed or rec.fast_mode_models is not None:
+                await self._persist_fast_mode(session_id, False)
+                log.info("session.fast_mode cleared id=%s model=%s (not available)",
+                         session_id, rec.model)
+            else:
+                log.info("session.fast_mode kept on id=%s model=%s: the clear failed and "
+                         "the model list is unknown", session_id, rec.model)
+            return
         if driver is not None:
             await self._assert_fast_mode(driver, bool(rec.fast_mode))
 
@@ -25496,6 +25521,20 @@ class SessionOrchestrator:
         _flag_driver = self._flag_settings_driver(session_id)
         if _flag_driver is not None and not isinstance(reasoning_effort, _EffortUnchanged):
             await _flag_driver.check_effort(model, reasoning_effort)
+        elif (not isinstance(reasoning_effort, _EffortUnchanged)
+              and reasoning_effort is not None and record is not None
+              and record.model_options is not None
+              and flag_settings_supported(self._capabilities_of(session_id))):
+            # Detached: the last levels the CLI reported for this model, when known —
+            # a typo gets the picker's refusal; an unknown list accepts, as before.
+            levels = flag_settings.effort_levels({"models": record.model_options}, model)
+            if levels is not None and reasoning_effort not in levels:
+                err = flag_settings.SettingsError(
+                    flag_settings.SETTINGS_INVALID,
+                    f"effort {reasoning_effort!r} is not one of {levels}")
+                log.info("session.effort refused id=%s error_data=%s", session_id,
+                         err.error_data)
+                raise err
         async with db_session() as _db:
             _policy = await resolve_model_policy(_db, model=gate_model, account=_account)
         if _policy == "block":

@@ -36,9 +36,9 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
                      REWIND_UNAVAILABLE, RewindError, conversation_request, files_request,
                      map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
-from .flag_settings import (EFFORT_KEY, SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
+from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
                             SETTINGS_INVALID, SETTINGS_REFUSED, SETTINGS_UNAVAILABLE,
-                            SettingsError, effort_levels, fast_mode_models)
+                            SettingsError, effort_levels, model_options)
 from .memory_files import normalize_memory_files
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
@@ -370,7 +370,7 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, on_memory_files=None,
-                 on_fast_mode_models=None, on_mcp_status=None, clock=None, suggester=None,
+                 on_model_options=None, on_mcp_status=None, clock=None, suggester=None,
                  desired_disabled_mcp: list[str] | None = None, assistant_api=None, on_sub_agents_changed=None, on_background_work_changed=None,
                  on_turn_anchor: Callable[[str, str, str], None] | None = None,
                  on_prompt_uuid: Callable[[str, str, str], None] | None = None,
@@ -432,9 +432,10 @@ class ClaudeAgentDriver:
         # memory set from the same reading, persisted so attach re-emits it and the
         # owning-host viewer can allow exactly those paths.
         self._on_memory_files = on_memory_files
-        # async callback ``on_fast_mode_models(session_id, ids)`` (D-14): the models the
-        # CLI's ``initialize`` list marks ``supportsFastMode``, reported once per CLI start.
-        self._on_fast_mode_models = on_fast_mode_models
+        # async callback ``on_model_options(session_id, rows)`` (D-14): the CLI's
+        # ``initialize`` model list, reported once per CLI start. True back = the stored
+        # fast mode was dropped, so this CLI (started with it) is told to turn it off.
+        self._on_model_options = on_model_options
         # Serializes ``apply_flag_settings``: each reply is awaited before the next write
         # goes out, since back-to-back writes read stale values (D-14 spike §1.3).
         self._flag_settings_lock = asyncio.Lock()
@@ -1182,7 +1183,7 @@ class ClaudeAgentDriver:
         self._closing = False
         self._start_listener()
         self._start_mcp_settle()
-        await self._report_fast_mode_models()
+        await self._report_model_options()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
                           interrupt: bool = False,
@@ -2395,17 +2396,23 @@ class ClaudeAgentDriver:
                  self.session_id, err.error_data, err)
         return err
 
-    async def _report_fast_mode_models(self) -> None:
-        """Report the CLI's fast-mode-capable models (D-14) once per CLI start, from the
-        ``initialize`` reply the SDK already holds. Best-effort, DEBUG on failure."""
-        if self._on_fast_mode_models is None:
+    async def _report_model_options(self) -> None:
+        """Report the CLI's model list (D-14) once per CLI start, from the ``initialize``
+        reply the SDK already holds. When the callback says the stored fast mode was
+        dropped, send ``{"fastMode": false}`` — best-effort: this CLI was spawned with
+        it on. Best-effort throughout, DEBUG on failure (a refusal is INFO already)."""
+        if self._on_model_options is None:
             return
         try:
             info = await self.server_info()
-            if info is not None:
-                await self._on_fast_mode_models(self.session_id, fast_mode_models(info))
+            if info is None:
+                return
+            dropped = await self._on_model_options(self.session_id, model_options(info))
+            if dropped:
+                with contextlib.suppress(SettingsError):
+                    await self.apply_flag_settings({FAST_MODE_KEY: False})
         except Exception:
-            log.debug("on_fast_mode_models failed session=%s", self.session_id, exc_info=True)
+            log.debug("on_model_options failed session=%s", self.session_id, exc_info=True)
 
     @contextlib.asynccontextmanager
     async def rewind_hold(self) -> AsyncIterator[None]:
@@ -2771,7 +2778,7 @@ class ClaudeAgentDriver:
         self._source = _MessageSource(client)
         self._closing = False
         self._start_listener()
-        await self._report_fast_mode_models()
+        await self._report_model_options()
         # Fresh CLI process: forget the old latch/snapshot and settle again.
         self._mcp_unsupported = False
         self._mcp_enforced = False
@@ -2951,7 +2958,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_status=config.on_status,
             on_context_usage=config.on_context_usage,
             on_memory_files=config.on_memory_files,
-            on_fast_mode_models=config.on_fast_mode_models,
+            on_model_options=config.on_model_options,
             on_mcp_status=config.on_mcp_status,
             on_sub_agents_changed=config.on_sub_agents_changed,
             on_background_work_changed=config.on_background_work_changed,

@@ -184,7 +184,7 @@ def test_flag_settings_is_a_claude_capability_only() -> None:
 
 
 def _driver(control: FakeControl | None, *, info: dict | None = INFO,
-            on_fast_mode_models=None) -> ClaudeAgentDriver:
+            on_model_options=None) -> ClaudeAgentDriver:
     def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
              on_pre_compact=None):
         client = FakeSDKClient([], on_can_use_tool=can_use_tool, startup_frames=[],
@@ -194,7 +194,7 @@ def _driver(control: FakeControl | None, *, info: dict | None = INFO,
         return client
     return ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                              sdk_factory=make, registry=PermissionRegistry(),
-                             identity="u", on_fast_mode_models=on_fast_mode_models)
+                             identity="u", on_model_options=on_model_options)
 
 
 @pytest.mark.asyncio
@@ -269,21 +269,40 @@ async def test_no_live_client_or_channel_is_unavailable() -> None:
     assert ei.value.code == fs.SETTINGS_UNAVAILABLE
 
 
+_ROW_KEYS = ("value", "resolvedModel", "supportsFastMode", "supportedEffortLevels")
+ROWS = [{k: r[k] for k in _ROW_KEYS if k in r} for r in MODELS]
+
+
 @pytest.mark.asyncio
-async def test_driver_reports_fast_models_once_per_cli_start() -> None:
+async def test_driver_reports_the_model_options_once_per_cli_start() -> None:
     seen: list = []
 
-    async def on_fast(sid, ids):
-        seen.append((sid, ids))
+    async def on_options(sid, rows):
+        seen.append((sid, rows))
+        return False
 
-    d = _driver(FakeControl(), on_fast_mode_models=on_fast)
+    control = FakeControl()
+    d = _driver(control, on_model_options=on_options)
     await d.start()
     try:
-        assert seen == [("s1", FAST_IDS)]
+        assert seen == [("s1", ROWS)]
         await d.reconnect()                       # /clear: a fresh CLI re-reports it
-        assert seen == [("s1", FAST_IDS), ("s1", FAST_IDS)]
+        assert seen == [("s1", ROWS), ("s1", ROWS)]
     finally:
         await d.aclose()
+    assert control.patches == []
+
+
+@pytest.mark.asyncio
+async def test_driver_turns_fast_mode_off_when_the_record_drops_it_at_start() -> None:
+    async def drop(sid, rows):
+        return True
+
+    control = FakeControl(_control_error("busy"))  # best-effort: a refusal is swallowed
+    d = _driver(control, on_model_options=drop)
+    await d.start()
+    await d.aclose()
+    assert control.patches == [{"fastMode": False}]
 
 
 @pytest.mark.asyncio
@@ -503,6 +522,7 @@ async def test_the_kill_switch_turns_flag_settings_off(env, monkeypatch) -> None
     assert flag_settings_supported(ClaudeAgentDriver.capabilities) is False
     assert capabilities_to_wire(ClaudeAgentDriver.capabilities)["flagSettings"] is False
     assert env.orch.fast_mode_available(env.rec.id) is False
+    assert _payload(env.rec)["fastModeAvailable"] is False    # the payload agrees
     with pytest.raises(fs.SettingsError) as ei:
         await env.orch.set_fast_mode(env.rec.id, True)
     assert ei.value.code == fs.FAST_UNAVAILABLE
@@ -535,7 +555,7 @@ def test_codex_record_is_never_fast_available() -> None:
 async def test_a_copilot_session_caches_no_fast_models(env) -> None:
     with patch("server.sessions.orchestrator._provider_of",
                return_value=__import__("viberpit.copilot", fromlist=["x"]).PROVIDER):
-        await env.orch._record_fast_mode_models(env.rec.id, FAST_IDS)
+        await env.orch._record_model_options(env.rec.id, ROWS)
     assert env.rec.fast_mode_models == [] and env.orch.fast_mode_available(env.rec.id) is False
 
 
@@ -546,7 +566,7 @@ async def test_a_cli_refusal_keeps_the_record_off(env) -> None:
         await env.orch.set_fast_mode(env.rec.id, True)
     assert ei.value.code == fs.SETTINGS_REFUSED
     assert env.control.patches == [{"fastMode": True}]      # definite refusal: no compensation
-    assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
+    assert env.rec.fast_mode is False and not (await _row(env.rec.id)).fast_mode
 
 
 @pytest.mark.asyncio
@@ -634,12 +654,56 @@ async def test_an_enable_with_no_reply_is_compensated_and_kept_off(env, caplog) 
 
 
 @pytest.mark.asyncio
-async def test_a_failed_disable_still_records_off(env) -> None:
+@pytest.mark.parametrize("failure", [_control_error("busy"), _timeout_error()])
+async def test_a_failed_disable_keeps_the_record_on(env, failure) -> None:
+    """The CLI may still be on (billing), so the record must not say off: ⚡ stays lit
+    and the user can retry."""
     await env.orch.set_fast_mode(env.rec.id, True)
-    env.control.replies = [_timeout_error()]
+    env.control.replies = [failure]
     with pytest.raises(fs.SettingsError):
         await env.orch.set_fast_mode(env.rec.id, False)
+    assert env.rec.fast_mode is True and (await _row(env.rec.id)).fast_mode is True
+    assert _payload(env.rec)["fastMode"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_disable_with_no_live_client_records_off(env) -> None:
+    await env.orch.set_fast_mode(env.rec.id, True)
+    env.orch._drivers[env.rec.id]._stream_ended = True
+    assert await env.orch.set_fast_mode(env.rec.id, False) == {"enabled": False}
     assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_compensation_leaves_the_record_on(env) -> None:
+    """Enable lost its reply AND the compensating off failed: the CLI may be on, so the
+    record says on (unknown is billed until proven otherwise)."""
+    env.control.replies = [_timeout_error(), _control_error("busy")]
+    with pytest.raises(fs.SettingsError) as ei:
+        await env.orch.set_fast_mode(env.rec.id, True)
+    assert ei.value.code == fs.SETTINGS_FAILED
+    assert env.control.patches == [{"fastMode": True}, {"fastMode": False}]
+    assert env.rec.fast_mode is True and (await _row(env.rec.id)).fast_mode is True
+
+
+@pytest.mark.asyncio
+async def test_a_refused_enable_on_an_already_on_session_keeps_it_on(env) -> None:
+    await env.orch.set_fast_mode(env.rec.id, True)
+    env.control.replies = [_control_error("busy")]
+    with pytest.raises(fs.SettingsError):
+        await env.orch.set_fast_mode(env.rec.id, True)
+    assert env.rec.fast_mode is True and (await _row(env.rec.id)).fast_mode is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_clear_with_an_unknown_list_keeps_the_record_on(env) -> None:
+    """Unknown list + a refused clear: the model may have fast mode, so the CLI may be
+    billing — the record stays on. (A KNOWN model without it is inert: cleared.)"""
+    await env.orch.set_fast_mode(env.rec.id, True)
+    env.rec.fast_mode_models = None
+    env.control.replies = [_control_error("busy")]
+    await env.orch.set_model_for_session(env.rec.id, "claude-opus-5-5")
+    assert env.rec.fast_mode is True and (await _row(env.rec.id)).fast_mode is True
 
 
 @pytest.mark.asyncio
@@ -649,9 +713,11 @@ async def test_a_spawn_on_a_model_without_fast_mode_clears_the_stored_flag(env) 
     await env.orch.set_model_for_session(env.rec.id, "sonnet")
     env.rec.fast_mode = True                       # as a pre-fix row could hold it
     env.rec.fast_mode_models = None
+    before = len(env.control.patches)
     await env.orch._drivers[env.rec.id].reconnect()
     assert env.spawns.calls[-1]["flag_settings"] == {"fastMode": True}
     assert env.rec.fast_mode is False and (await _row(env.rec.id)).fast_mode is False
+    assert env.control.patches[before:] == [{"fastMode": False}]   # and the CLI is told
 
 
 # Review Focus 2
@@ -890,6 +956,18 @@ async def test_slash_effort_on_a_detached_session_saves_for_the_next_spawn(env) 
     out = await env.orch.run_command(env.rec.id, "effort", "low")
     assert out is not None and "saved" in out["data"]["text"]
     assert (await _row(env.rec.id)).reasoning_effort == "low"
+
+
+@pytest.mark.asyncio
+async def test_slash_effort_on_a_detached_session_checks_the_last_known_levels(env) -> None:
+    env.orch._drivers.pop(env.rec.id)
+    bad = await env.orch.run_command(env.rec.id, "effort", "turbo")
+    assert bad is not None and "Effort unchanged" in bad["data"]["text"]
+    assert (await _row(env.rec.id)).reasoning_effort is None
+    env.rec.model_options = None                   # nothing known: accepted, as before
+    ok = await env.orch.run_command(env.rec.id, "effort", "turbo")
+    assert ok is not None and "saved" in ok["data"]["text"]
+    assert (await _row(env.rec.id)).reasoning_effort == "turbo"
 
 
 @pytest.mark.asyncio
