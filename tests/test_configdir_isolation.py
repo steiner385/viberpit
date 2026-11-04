@@ -453,7 +453,34 @@ class TestReconcileLinks(unittest.TestCase):
             cfg_dir = paths.account_cfg_dir("alpha")
             cfg_dir.mkdir(parents=True, exist_ok=True)
             (cfg_dir / "CLAUDE.md").symlink_to("/dev/null")
-            configdir.reconcile_links("alpha")
+            with self.assertLogs("viberpit.configdir", level="INFO") as logs:
+                configdir.reconcile_links("alpha")
+            self.assertEqual(Path(os.readlink(cfg_dir / "CLAUDE.md")), base / "CLAUDE.md")
+            # A re-point is logged, so a shared-base mismatch between hosts is visible.
+            msgs = [r.getMessage() for r in logs.records if r.levelname == "INFO"]
+            self.assertTrue(any("relinked" in m and "alpha" in m and "CLAUDE.md" in m
+                                and "/dev/null" in m for m in msgs), msgs)
+
+    def test_a_wrong_link_vanishing_before_the_repoint_never_fails_the_compose(self):
+        """Another composer (dobby and rocky share the store over sshfs) may remove the
+        wrong link between the readlink and the unlink."""
+        from unittest import mock
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "CLAUDE.md").symlink_to("/dev/null")
+            real = os.readlink
+
+            def racing(p, *a, **kw):
+                out = real(p, *a, **kw)
+                if Path(p) == cfg_dir / "CLAUDE.md":
+                    os.unlink(p)  # the other composer got there first
+                return out
+            with mock.patch.object(configdir.os, "readlink", racing):
+                configdir.reconcile_links("alpha")
             self.assertEqual(Path(os.readlink(cfg_dir / "CLAUDE.md")), base / "CLAUDE.md")
 
     # -------------------------------------------------------------------------

@@ -172,9 +172,14 @@ def reconcile_links(name: str) -> None:
             continue  # only symlink entries that actually exist in shared_base
         link = cfg_dir / entry_name
         if link.is_symlink():
-            if Path(os.readlink(link)) == source:
+            current = Path(os.readlink(link))
+            if current == source:
                 continue  # already correct — nothing to do
-            link.unlink()
+            # Logged: a link re-pointed on every compose means two hosts disagree on
+            # shared_base(). missing_ok — another composer may have removed it already.
+            log.info("configdir.relinked account=%s entry=%s from=%s to=%s",
+                     name, entry_name, current, source)
+            link.unlink(missing_ok=True)
         elif link.exists():
             if entry_name in SHARED_USER_FILES:
                 log.info("configdir.share_kept_private account=%s entry=%s "

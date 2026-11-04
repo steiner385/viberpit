@@ -68,8 +68,8 @@ def _memory_files(binary: str, *, shared_exists: bool,
         }
         argv = [binary, "-p", "--input-format", "stream-json", "--output-format",
                 "stream-json", "--verbose", "--session-id", str(uuid.uuid4())]
-        if setting_sources is not None:  # the SDK's own translation (subprocess_cli.py)
-            argv += ["--setting-sources", ",".join(setting_sources)]
+        if setting_sources is not None:  # one argument, exactly as the SDK's subprocess_cli.py
+            argv.append(f"--setting-sources={','.join(setting_sources)}")
         frames = [
             {"type": "control_request", "request_id": "init",
              "request": {"subtype": "initialize", "hooks": None}},
