@@ -35,7 +35,8 @@ from server.pm.holds import (
     actor_for_request,
     release_via_api,
 )
-from server.pm.dispatch_trust import ignored_refs, untrusted_refs
+from server.pm.dispatch_trust import (
+    bundled_gated_refs, gated_platforms, ignored_refs, untrusted_refs)
 from server.pm.refs import split_ref
 from server.sessions.global_cap import read_global_cap
 
@@ -563,6 +564,14 @@ async def backlog_runner_dispatch(body: DispatchBody, request: Request,
             "error": "ignored",
             "message": f"{', '.join(ignored)}: labelled viberpit-ignore, so the runner "
                        "will not dispatch it (remove the label to allow it)"})
+    # Host-platforms spec §3: an env-gated issue is dispatched alone — refused here,
+    # like the two above, before any hold is released.
+    bundled = bundled_gated_refs(await gated_platforms(db, body.refs))
+    if bundled:
+        raise HTTPException(status_code=422, detail={
+            "error": "platform_singleton",
+            "message": f"{', '.join(bundled)}: env-gated work is dispatched alone, "
+                       "never bundled with other issues"})
     actor = actor_for_request(request)
     for ref in body.refs:
         parts = split_ref(ref)

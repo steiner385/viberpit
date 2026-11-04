@@ -77,8 +77,8 @@ class _Router:
     async def reachable_names(self, *, always=None):
         return sorted(set(self.reachable) | ({always} if always else set()))
 
-    async def pick(self, *, prefer=None, engine=None, expected_contract_sha256=None,
-                   ignore_capacity=False):
+    async def pick(self, *, prefer=None, engine=None, platform=None,
+                   expected_contract_sha256=None, ignore_capacity=False):
         self.picks.append(dict(prefer=prefer, engine=engine, ignore_capacity=ignore_capacity))
         if self.engine_refusal:
             raise NoEngineHostAvailable(engine or AgentEngine.CODEX, {"dobby": "binary_not_found"})

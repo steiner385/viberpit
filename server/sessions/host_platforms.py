@@ -16,16 +16,20 @@ import logging
 import time
 from typing import Awaitable, Callable, Final
 
+from viberpit.engines import AgentEngine
+
 from server.aio import cancel_and_reap
 
 __all__ = [
     "PLATFORMS_INFO_KEY",
     "KNOWN_PLATFORMS",
+    "PlatformDispatchRefused",
     "PlatformProbe",
     "configured_platforms",
     "build_platforms_info",
     "parse_platforms_info",
     "platform_dispatchable",
+    "platform_launch_engine",
     "ssh_vm_check",
 ]
 
@@ -71,6 +75,37 @@ def parse_platforms_info(value: object) -> frozenset[str]:
 def platform_dispatchable(platforms: frozenset[str], platform: str | None) -> bool:
     """May work requiring *platform* (``None`` = no requirement) go to this runner?"""
     return platform is None or platform in platforms
+
+
+class PlatformDispatchRefused(RuntimeError):
+    """A platform-gated launch that must not happen, raised before anything spawns.
+
+    Gated work runs only where the platform is (anti-goal: an ``env: windows``
+    session on a host that cannot reach the VM), so every path that cannot
+    guarantee that refuses instead of falling back to a local or Codex spawn."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def platform_launch_engine(platform: str, engine: AgentEngine, *,
+                           routing_enabled: bool) -> AgentEngine:
+    """The engine a launch gated to *platform* runs on, or ``PlatformDispatchRefused``.
+
+    Only the routed path can place a session on a platform host, so with automation
+    host routing off there is nowhere safe to spawn. And platform work is Claude-only
+    (design call 5): Codex's workspace-write sandbox has no egress to reach the VM,
+    so a Codex-pinned origin is refused rather than given a sandbox exception."""
+    if not routing_enabled:
+        raise PlatformDispatchRefused(
+            f"{platform} work needs automation host routing "
+            "(VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED), which is off; "
+            "it is never spawned on this host instead")
+    if engine is AgentEngine.CODEX:
+        raise PlatformDispatchRefused(
+            f"{platform} work runs on Claude only, and this origin's engine is codex")
+    return AgentEngine.CLAUDE_CODE
 
 
 async def ssh_vm_check(host: str) -> bool:

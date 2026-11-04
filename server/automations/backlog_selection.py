@@ -46,6 +46,12 @@ class Batch:
     # Empty for every batch with nothing decided — and an empty map renders no
     # prompt text at all, so an undecided dispatch reads exactly as it always did.
     decisions: dict[str, str] = field(default_factory=dict)
+    # The non-Linux platform the primary is gated to (``queue.gated_platform``:
+    # ``env: windows`` → ``"windows"``), carried off the candidate pool like
+    # ``primary_hold_kind``. A gated batch is always the primary alone
+    # (``plan_to_batch``), and the spawn routes it ONLY to a host advertising the
+    # platform (host-platforms spec §3). ``None`` = runs anywhere.
+    platform: str | None = None
 
 
 def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:

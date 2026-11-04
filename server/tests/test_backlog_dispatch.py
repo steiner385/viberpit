@@ -661,6 +661,21 @@ async def test_manual_dispatch_stays_an_ungated_operator_override(dispatch_orch)
 
 
 @pytest.mark.asyncio
+async def test_manual_dispatch_routes_a_gated_issue_alone(dispatch_orch):
+    """Host-platforms spec §3: a manual dispatch of an ``env: windows`` issue is
+    routed (``Batch.platform``) even when the pool no longer offers it, and is
+    never bundled with other issues."""
+    await _label(7, "env: windows")
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    assert (await dispatch_orch.backlog_runner_dispatch(["o/r#7"]))["status"] == "spawned"
+    assert dispatch_orch._backlog_spawn.call_args[0][0].platform == "windows"
+    dispatch_orch._backlog_spawn.reset_mock()
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#8", "o/r#7"])
+    assert (r["status"], r["reason_codes"]) == ("refused", ["platform_singleton"])
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_public_proposal_retry_after_no_account_restores_all_issues(dispatch_orch):
     from server.automations.action_providers import BacklogRunnerActionProvider
     provider = BacklogRunnerActionProvider(dispatch_orch)

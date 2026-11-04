@@ -258,6 +258,10 @@ class QueueEntry:
     # Carried off the row so a caller downstream of ranking (item 4's spawn) can
     # still pick the hold's prompt/rung without re-reading the row.
     hold_kind: str | None = None
+    # The row's ``gated_platform`` verdict, carried for the same reason as
+    # ``urgent``: an entry has no labels, and the runner must route a gated issue
+    # to a platform host and dispatch it alone (host-platforms spec §3).
+    platform: str | None = None
 
 
 def is_bot_login(author: str | None) -> bool:
@@ -566,7 +570,8 @@ def rank(
     kept.sort(key=rank_key)
     return [
         QueueEntry(r.ref, r.repo, r.number, r.product, r.title, r.body, r.url, r.score,
-                   r.gh_created_at, is_urgent(r), hold_kind=r.hold_kind)
+                   r.gh_created_at, is_urgent(r), hold_kind=r.hold_kind,
+                   platform=gated_platform(r.labels))
         for r in kept
     ], skipped
 
@@ -589,4 +594,7 @@ def to_candidate(e: QueueEntry) -> dict:
         # Carried so the runner's spawn (item 4) can pick the hold's prompt/rung
         # without re-reading the row — same reason ``urgent`` rides along.
         "hold_kind": e.hold_kind,
+        # Carried so selection can plan a gated issue alone and the spawn can route
+        # it to a platform host (``Batch.platform``).
+        "platform": e.platform,
     }

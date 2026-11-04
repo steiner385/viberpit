@@ -388,8 +388,14 @@ class FleetOrchestrator:
             setattr(_call, _DEADLINE_ATTR, True)
         return _call
 
-    async def create_session(self, *, prefer: str | None = None, **kwargs):
+    async def create_session(self, *, prefer: str | None = None,
+                             platform: str | None = None, **kwargs):
         engine: AgentEngine | None = None
+        if platform is not None:
+            # Sent only when set: an ungated request stays byte-identical for a
+            # daemon that predates the key. A gated one is only ever offered hosts
+            # that advertise the platform (pick below), which no such daemon does.
+            kwargs["platform"] = platform
         if "engine" in kwargs:
             engine = parse_agent_engine(kwargs["engine"])
             if engine is AgentEngine.CLAUDE_CODE:
@@ -434,8 +440,8 @@ class FleetOrchestrator:
         sha = expected_contract_sha256(engine)
         try:
             order = await self._router.pick(
-                prefer=prefer, engine=engine, expected_contract_sha256=sha,
-                ignore_capacity=assistant)
+                prefer=prefer, engine=engine, platform=platform,
+                expected_contract_sha256=sha, ignore_capacity=assistant)
         except NoEngineHostAvailable:
             # "Install the Codex binary" stays the answer: a queued session would
             # wait forever for a runner that does not exist.
@@ -452,7 +458,8 @@ class FleetOrchestrator:
             # split-brain half of the refusal is kept — nothing runs in-process here;
             # the row is written by a daemon, and started by whichever daemon frees a
             # slot (see SessionOrchestrator._maybe_start_queued's host-capacity rule).
-            return await self._queue_for_capacity(refusal, engine=engine, sha=sha, kwargs=kwargs)
+            return await self._queue_for_capacity(refusal, engine=engine, platform=platform,
+                                                  sha=sha, kwargs=kwargs)
         if assistant:
             # `prefer` only REORDERS — pick() keeps the other hosts as failover, and
             # _dispatch cascades past a primary whose spawn raised. For the assistant
@@ -505,7 +512,8 @@ class FleetOrchestrator:
             return rec
         raise last_exc if last_exc is not None else NoHostAvailable("no host accepted the session")
 
-    async def _queue_hosts(self, *, engine: AgentEngine | None, sha: str | None) -> list[str]:
+    async def _queue_hosts(self, *, engine: AgentEngine | None, platform: str | None,
+                           sha: str | None) -> list[str]:
         """Daemons that can PERSIST a queued row, best first — the primary leads.
 
         Preferring the primary keeps the row on the daemon that owns unstamped and
@@ -515,16 +523,25 @@ class FleetOrchestrator:
         registry does not know to be unreachable is still worth asking: a
         skew-fenced daemon cannot START a session but can perfectly well persist one,
         and a durable queued row beats an error.
+
+        A *platform*-gated session gets no such fallback: it may only be persisted
+        on a host advertising the platform, or a Linux daemon would own the row.
+        With none, the refusal stands (the daemon drain applies the same rule,
+        ``SessionOrchestrator._local_host_serves_platform``).
         """
         try:
             hosts = await self._router.pick(
-                engine=engine, expected_contract_sha256=sha, ignore_capacity=True)
+                engine=engine, platform=platform, expected_contract_sha256=sha,
+                ignore_capacity=True)
         except NoHostAvailable:
+            if platform is not None:
+                return []
             hosts = await self._fanout_names()
         return sorted(hosts, key=lambda h: (h != self._primary, h))
 
     async def _queue_for_capacity(self, refusal: NoHostAvailable, *,
-                                  engine: AgentEngine | None, sha: str | None, kwargs: dict):
+                                  engine: AgentEngine | None, platform: str | None,
+                                  sha: str | None, kwargs: dict):
         """Persist the session as 'queued' on the first daemon that will take it.
 
         Re-raises *refusal* (the typed NoHostAvailable the API already maps to its
@@ -532,7 +549,7 @@ class FleetOrchestrator:
         queue attempt must not masquerade as the capacity verdict, and an older
         daemon that rejects the ``queue_only`` kwarg is simply skipped.
         """
-        hosts = await self._queue_hosts(engine=engine, sha=sha)
+        hosts = await self._queue_hosts(engine=engine, platform=platform, sha=sha)
         if not hosts:
             raise refusal
         log.info("fleet.create_session: every host is at capacity — queueing on %s",

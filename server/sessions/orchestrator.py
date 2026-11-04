@@ -98,6 +98,8 @@ from server.sessions import read_state as _read_state
 from server.sessions import dispatch
 from server.sessions import events as ev
 from server.sessions import host_heartbeat
+from server.sessions.host_platforms import (
+    KNOWN_PLATFORMS, PlatformDispatchRefused, parse_platforms_info, platform_dispatchable)
 from server.sessions.liveness import heartbeat_interval_s
 from server.sessions import primary_lease
 from server.sessions import session_lease
@@ -3962,8 +3964,15 @@ class SessionOrchestrator:
         ownership_token: str | None = None,
         parent_session_id: str | None = None,
         queue_only: bool = False,
+        platform: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
+
+        *platform* is the non-Linux platform an env-gated launch was routed for
+        (host-platforms spec §3; the edge's ``FleetRouter.pick`` already chose a host
+        advertising it). It is stamped on the row — what ``platform_busy`` counts and
+        what the session guide keys on — and a child of a stamped session inherits
+        it (design call 7).
 
         *queue_only* is the edge's verdict that EVERY fleet host is at its
         ``max_sessions``: persist the session as 'queued' without consulting the
@@ -3997,6 +4006,10 @@ class SessionOrchestrator:
         # during the rolling-upgrade window; wire deserializers apply the same legacy
         # default explicitly.
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))
+        if platform is not None and platform not in KNOWN_PLATFORMS:
+            raise ValueError(f"unknown platform {platform!r}")
+        if platform is None and parent_session_id is not None:
+            platform = await self._session_platform(parent_session_id)
 
         # Trusted internal launch correlation; deliberately absent from HTTP input.
         # Engine and hard refusals precede the durable start transition.
@@ -4082,7 +4095,8 @@ class SessionOrchestrator:
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                    model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None)
+                    model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None,
+                    platform=platform)
 
             # Product capacity cap (#2229): a repo whose product already holds the
             # Backlog Runner's own concurrent-session pin gets queued rather than
@@ -4107,7 +4121,7 @@ class SessionOrchestrator:
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                    queue_reason=queue_reason)
+                    queue_reason=queue_reason, platform=platform)
             try:
                 return await self._spawn_session(
                     session_id, name=name, account=account, initial_prompt=initial_prompt,
@@ -4119,7 +4133,8 @@ class SessionOrchestrator:
                     owner_identity=owner_identity, engine=selected_engine,
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
-                    auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                    platform=platform)
             except AllAccountsBusy as busy:
                 # Wait for quota rather than refuse — for people AND automations
                 # (2026-10-08). Re-auth is not a wait (it never clears on its own), and
@@ -4144,7 +4159,7 @@ class SessionOrchestrator:
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                    queue_reason="account_limited")
+                    queue_reason="account_limited", platform=platform)
 
         if ownership_token is None:
             return await launch()
@@ -4242,12 +4257,24 @@ class SessionOrchestrator:
         automations keep working unchanged).
         """
         from server.config import get_settings
+        # A platform-gated launch (host-platforms spec §3) has NO local fallback: only
+        # the edge's router knows which host can reach the platform (anti-goal: a
+        # windows session on a host without the VM). Routing off is a refusal before
+        # any spawn; an unreachable edge propagates as itself, because a transport
+        # failure can come after the edge started the launch, and the caller's
+        # ownership check (still ``claimed`` or not) is what tells the two apart.
+        platform = kwargs.get("platform")
         if not get_settings().automation_host_routing_enabled:
+            if platform is not None:
+                raise PlatformDispatchRefused(
+                    f"{platform} work needs automation host routing, which is off")
             return await self.create_session(**kwargs)
         from server.sessions.internal_dispatch import EdgeUnreachable, create_via_edge
         try:
             return await create_via_edge(port=get_settings().port, **kwargs)
         except EdgeUnreachable as exc:
+            if platform is not None:
+                raise
             log.warning("automation_create_session: edge unreachable (%s) — "
                         "spawning locally on %s instead", exc, self_host_name() or "this host")
             return await self.create_session(**kwargs)
@@ -4353,6 +4380,7 @@ class SessionOrchestrator:
                                auto_archive_opt_out_reason: str | None = None,
                                queue_reason: str = "global_cap",
                                replace_row: bool = False,
+                               platform: str | None = None,
                                ) -> SessionRecord:
         """Persist a 'queued' row + queue entry for a session that cannot start yet.
 
@@ -4385,6 +4413,8 @@ class SessionOrchestrator:
             if replace_row:
                 existing = await db.get(DbSession, session_id)
                 if existing is not None:
+                    # The replaced row's stamp survives the swap (design call 7).
+                    platform = platform or existing.platform
                     await db.delete(existing)
                     await db.flush()
             db.add(DbSession(
@@ -4392,6 +4422,7 @@ class SessionOrchestrator:
                 parent_session_id=parent_session_id,
                 engine=selected_engine.value, engine_session_id=None,
                 reasoning_effort=reasoning_effort, status="queued", pid=None,
+                platform=platform,
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
@@ -4473,7 +4504,8 @@ class SessionOrchestrator:
                                  engine=AgentEngine.CLAUDE_CODE,
                                  autopilot_paused: bool = False,
                                  auto_archive_opt_out_reason: str | None = None,
-                                 model_reason: str | None = None) -> SessionRecord:
+                                 model_reason: str | None = None,
+                                 platform: str | None = None) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
         with the requested model in `pending_model`, no queue entry, no capacity slot.
 
@@ -4505,7 +4537,7 @@ class SessionOrchestrator:
                 parent_session_id=parent_session_id,
                 engine=selected_engine.value, engine_session_id=None,
                 reasoning_effort=reasoning_effort,
-                status="pending_approval", pid=None,
+                status="pending_approval", pid=None, platform=platform,
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref,
@@ -4872,6 +4904,7 @@ class SessionOrchestrator:
                 # The failed spawn may or may not have INSERTed a row before raising;
                 # remove any partial row first so the re-INSERT can't collide on PK.
                 existing = await db.get(DbSession, session_id)
+                platform = existing.platform if existing is not None else None
                 if existing is not None:
                     await db.delete(existing)
                 await db.flush()
@@ -4884,7 +4917,7 @@ class SessionOrchestrator:
                     account_name=kwargs.get("account") or "",
                     engine=selected_engine.value, engine_session_id=None,
                     reasoning_effort=kwargs.get("reasoning_effort"),
-                    status="pending_approval", pid=None,
+                    status="pending_approval", pid=None, platform=platform,
                     cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
                     permission_mode=kwargs.get("permission_mode"),
                     name_is_auto=kwargs.get("name_is_auto"),
@@ -5087,6 +5120,16 @@ class SessionOrchestrator:
                     await sq.remove(sid)
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
                                 sid, row.status if row is not None else "<gone>")
+                    continue
+                # A platform-gated entry starts only on a host advertising its
+                # platform (host-platforms spec §3) — before ownership and adoption,
+                # so a Linux host never re-stamps it, and even "Start now" cannot put
+                # it where the platform is not. Left queued, never removed.
+                if row.platform is not None and not await self._local_host_serves_platform(
+                        row.platform):
+                    foreign.add(sid)
+                    log.debug("session_queue.platform_unserved id=%s platform=%s — left "
+                              "for a host advertising it", sid, row.platform)
                     continue
                 # Ownership (#852 rule, same as every other acting loop): a worker
                 # drains only its own stamp; the primary drains NULL/own stamps and
@@ -5303,6 +5346,34 @@ class SessionOrchestrator:
                     await sq.remove(sid)
                     started += 1
         return started
+
+    async def _session_platform(self, session_id: str) -> str | None:
+        """``Session.platform`` of *session_id* — what a fork or a child inherits
+        (design call 7). ``None`` for an unknown id."""
+        async with db_session() as db:
+            row = await db.get(DbSession, session_id)
+        return row.platform if row is not None else None
+
+    async def _local_host_serves_platform(self, platform: str) -> bool:
+        """Does THIS daemon's registry row advertise *platform* right now?
+
+        The same answer the edge routes on (``Host.platforms`` from the probe, enabled
+        and not probed down), read for the queue drain: a queued gated session must
+        never be started — or adopted — by a host that cannot reach the platform, and
+        the platform host itself waits while its VM is down. Fails CLOSED: no row, or
+        an unreadable registry, is "no"; the entry stays queued for a later drain."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import Host
+        try:
+            async with db_session() as db:
+                me = (await db.execute(sa_select(Host).where(
+                    Host.name == self_host_name()))).scalar_one_or_none()
+        except Exception:
+            log.warning("session_queue: registry unreadable — not starting a %s entry",
+                        platform, exc_info=True)
+            return False
+        return (me is not None and me.enabled and me.healthy is not False
+                and platform_dispatchable(parse_platforms_info(me.platforms), platform))
 
     async def _local_host_cap(self) -> int | None:
         """``Host.max_sessions`` for THIS daemon's registry row; None = uncapped.
@@ -5739,6 +5810,7 @@ class SessionOrchestrator:
         parent_session_id: str | None = None,
         fork_worktree: worktrees.ForkWorktreeInfo | None = None,
         fork_from: tuple[str, str] | None = None,
+        platform: str | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -6092,6 +6164,7 @@ class SessionOrchestrator:
                         display_fallback_reason=display_fallback_reason,
                         autopilot_paused=autopilot_paused or None,
                         auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                        platform=platform,
                     )
                     db.add(row)
             row_persisted = True
@@ -9789,6 +9862,15 @@ class SessionOrchestrator:
         if plan is None:                       # out of policy — the ctx recorded why
             return None
         engine, _launch_config = plan
+        # An env-gated batch (host-platforms spec §3) runs on Claude, routed to a
+        # platform host — decided here, before the engine-specific prompt is built,
+        # and refused (recorded by the ctx) when there is no routed path or the
+        # origin is pinned to Codex (design call 5).
+        if batch.platform is not None:
+            engine = await self._backlog_ctx.platform_launch_or_refuse(
+                batch.primary, batch.platform, engine)
+            if engine is None:
+                return None
         # WHAT this dispatch is FOR (spec §5), decided before anything acts on it:
         # an ``evidence``-held primary is an auto-filed error report nobody has
         # triaged, so it is INVESTIGATED, not implemented. The kind picks the seed
@@ -9902,6 +9984,7 @@ class SessionOrchestrator:
             model=model,
             reasoning_effort=reasoning_effort,
             detail=detail,
+            platform=batch.platform,
         )
         # A de-duped spawn hands back the session that already existed: the
         # context resolves the same key (``dedupe_key=batch.primary``) it did, so
@@ -10031,6 +10114,13 @@ class SessionOrchestrator:
                     detail={"reason_codes": ["untrusted_author" if untrusted else "ignored"],
                             "refs": untrusted or ignored, "product": st.get("product")})
                 return "refused"
+        platform, refusal = await self._backlog_batch_platform(pending_issues)
+        if refusal is not None:
+            await self._backlog_ctx.emit(
+                "info", f"skipped {primary}: {refusal}", kind="implementation_refused",
+                target=primary, detail={"reason_codes": ["platform_singleton"],
+                                        "product": st.get("product")})
+            return "refused"
         candidate = by_ref.get(primary, {})
         titles = dict(st.get("titles") or {})
         if candidate.get("title"):
@@ -10044,7 +10134,8 @@ class SessionOrchestrator:
                       # and product. Without it a proposed investigation would be
                       # tapped into an implementation (spec 2026-09-18 §5).
                       primary_hold_kind=(candidate.get("hold_kind")
-                                         or st.get("primary_hold_kind")))
+                                         or st.get("primary_hold_kind")),
+                      platform=platform)
         # Spec 003 §7a, the half the tap was missing (#1523): the loop verifies
         # live immediately before it claims, but a PROPOSED claim was verified
         # whenever the proposal was made — possibly hours before a person taps
@@ -10114,6 +10205,13 @@ class SessionOrchestrator:
             return {"status": "refused", "session_id": None, "session_name": None,
                     "reason_codes": ["ignored"],
                     "reason": f"{', '.join(ignored)}: labelled viberpit-ignore"}
+        # Routed like the loop's own batches (an operator override is still only ever
+        # placed on a platform host), but deliberately NOT refused while the platform
+        # is ``platform_busy``: the ``winrun`` lock is the hard guarantee (design call 2).
+        platform, why = await self._backlog_batch_platform(refs)
+        if why is not None:
+            return {"status": "refused", "session_id": None, "session_name": None,
+                    "reason_codes": ["platform_singleton"], "reason": why}
         primary = refs[0]
         _mode, config = await self._backlog_read_config()
         candidates = await self._backlog_query_queue(config)
@@ -10130,8 +10228,24 @@ class SessionOrchestrator:
                       # pool, and the claim row is the only other account of its
                       # hold — which is what the dispatch KIND is read from (§5).
                       primary_hold_kind=(by_ref.get(primary, {}).get("hold_kind")
-                                         or previous.get("primary_hold_kind")))
+                                         or previous.get("primary_hold_kind")),
+                      platform=platform)
         return await self._backlog_dispatch_batch(batch, source="manual", model=model)
+
+    async def _backlog_batch_platform(self, refs: list[str]) -> tuple[str | None, str | None]:
+        """``(platform, refusal)`` for a batch dispatched WITHOUT re-ranking (the
+        propose tap, manual dispatch): the primary's gated platform, read off the
+        mirrored labels because the pool may no longer offer the ref (claimed, or
+        skipped ``platform_busy``). A gated issue is always dispatched alone
+        (``plan_to_batch``'s rule), so a several-issue batch with one in it is refused."""
+        from server.pm.dispatch_trust import bundled_gated_refs, gated_platforms
+        async with db_session() as db:
+            by_ref = await gated_platforms(db, refs)
+        bundled = bundled_gated_refs(by_ref)
+        if bundled:
+            return None, (f"{', '.join(bundled)}: env-gated work is dispatched alone, "
+                          "never bundled")
+        return by_ref.get(refs[0]), None
 
     async def _backlog_admission(self, batch, *, source: str, existing_slot: bool,
                                  existing_token: str | None = None):
@@ -18350,7 +18464,8 @@ class SessionOrchestrator:
                 permission_mode=rec.permission_mode, attachment_ids=None,
                 name_is_auto=False, origin=None, origin_ref=None, model=rec.model,
                 reasoning_effort=rec.reasoning_effort, engine=rec.engine,
-                parent_session_id=session_id, fork_worktree=fork_wt, fork_from=fork_from)
+                parent_session_id=session_id, fork_worktree=fork_wt, fork_from=fork_from,
+                platform=await self._session_platform(session_id))
         except BaseException:
             await self._run_rollback_shielded(
                 asyncio.to_thread(worktrees.discard_fork_worktree, fork_wt),
