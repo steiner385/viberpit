@@ -164,6 +164,22 @@ def test_refresh_success_rotates_and_sends_resource():
     assert "Authorization" not in headers
 
 
+def test_refresh_uses_the_configured_client_id_when_the_bundle_has_none(tmp_path):
+    # A pre-registered client (KinDash refuses dynamic registration) whose bundle never
+    # recorded its id must still send client_id, or the token endpoint answers 400.
+    from viberpit import paths
+    shared = paths.shared_claude_json_path()
+    shared.parent.mkdir(parents=True, exist_ok=True)
+    shared.write_text(json.dumps({"mcpServers": {"aws-oauth": {"oauth": {"clientId": "pinned-cid"}}}}))
+    bundle = _bundle()
+    del bundle["clientId"]
+    http = FakeHttp(metadata=_meta(), responses=[_ok()])
+    new = mor.refresh_bundle(bundle, post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    _, form, _ = http.posts[0]
+    assert form["client_id"] == "pinned-cid"
+    assert new["clientId"] == "pinned-cid"
+
+
 def test_refresh_keeps_old_refresh_token_when_omitted_and_drops_expiry_without_expires_in():
     http = FakeHttp(metadata=_meta(), responses=[_ok(refresh_token=None, expires_in=None)])
     new = mor.refresh_bundle(_bundle(), post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)

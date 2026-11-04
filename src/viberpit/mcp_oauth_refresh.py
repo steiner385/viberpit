@@ -382,6 +382,25 @@ def client_auth(client_id: str, secret: str | None, metadata: dict,
 
 # --- the grant ----------------------------------------------------------------------------
 
+def _configured_client_id(server_name: object) -> str | None:
+    """The ``oauth.clientId`` the shared config pins for *server_name*, else ``None``.
+
+    A server that refuses dynamic client registration (KinDash) is signed in with a
+    pre-registered client, and the bundle a sign-in wrote may not record that id. The
+    refresh still has to send it, or the token endpoint answers 400 invalid_request."""
+    if not isinstance(server_name, str) or not server_name:
+        return None
+    try:
+        with open(paths.shared_claude_json_path(), encoding="utf-8") as fh:
+            servers = (json.load(fh).get("mcpServers") or {})
+        oauth = (servers.get(server_name) or {}).get("oauth") or {}
+    except (OSError, ValueError, AttributeError):
+        log.debug("mcp oauth configured client id read failed server=%s", server_name, exc_info=True)
+        return None
+    client_id = oauth.get("clientId") if isinstance(oauth, dict) else None
+    return client_id if isinstance(client_id, str) and client_id else None
+
+
 def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
                    fetch_json: FetchJson | None = None, now_ms: int | None = None) -> dict:
     """Run the ``refresh_token`` grant for *bundle*; return the refreshed bundle.
@@ -396,7 +415,7 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
     if not url:
         raise McpRefreshTransient("no token endpoint")
     form = {"grant_type": "refresh_token", "refresh_token": refresh_token}
-    client_id = bundle.get("clientId")
+    client_id = bundle.get("clientId") or _configured_client_id(bundle.get("serverName"))
     if isinstance(client_id, str) and client_id:
         form["client_id"] = client_id
     resource = resource_indicator(bundle, fetch_json=fetch_json)
@@ -416,6 +435,8 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
     if status == 200 and isinstance(access_token, str) and access_token:
         new = dict(bundle)
         new["accessToken"] = access_token
+        if isinstance(client_id, str) and client_id:
+            new["clientId"] = client_id
         rotated = payload.get("refresh_token")
         new["refreshToken"] = rotated if isinstance(rotated, str) and rotated else refresh_token
         expires_in = payload.get("expires_in")
