@@ -177,6 +177,21 @@ describe('McpSection', () => {
     expect(api.post).toHaveBeenCalledWith('/library/mcp/notion/auth', undefined)
   })
 
+  it('renders no Fix auth when the server failed for a non-auth reason', async () => {
+    mockServers([srv('notion', 'http', [row({ status: 'failed' })],
+      { status: 'failed', error: 'Incompatible auth server…', grant: 'never' })])
+    renderSection()
+    expect(await screen.findByText('Incompatible auth server…')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /fix auth/i })).toBeNull()
+  })
+
+  it('offers Fix auth when needs-auth with a dead grant', async () => {
+    mockServers([srv('notion', 'http', [row({ status: 'needs-auth' })],
+      { status: 'needs-auth', error: null, grant: 'dead' })])
+    renderSection()
+    expect(await screen.findByRole('button', { name: /fix auth/i })).toBeTruthy()
+  })
+
   it('renders no Fix auth for grant none', async () => {
     mockServers([srv('notion', 'http', [row({ status: 'needs-auth' })],
       { status: 'needs-auth', error: null, grant: 'none' })])

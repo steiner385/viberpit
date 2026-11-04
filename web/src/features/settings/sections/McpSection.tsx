@@ -9,6 +9,9 @@ import { McpScopeControl } from './McpScopeControl'
 import { serverKey } from './mcpServerKey'
 import { relativeAge } from './mcpStatus'
 
+// Grants for which signing in again is the fix.
+const SIGN_IN_GRANTS = ['never', 'dead', 'expired']
+
 function testErrorMessage(err: unknown): string {
   switch (apiErrorCode(err)) {
     case 'unknown_account':
@@ -94,7 +97,7 @@ export function McpSection() {
       <ul className="space-y-2">
         {servers.map((s) => {
           const key = `${s.source}/${s.name}`
-          const signInNeeded = ['never', 'dead', 'expired'].includes(s.overall.grant)
+          const signInNeeded = s.overall.status === 'needs-auth' && SIGN_IN_GRANTS.includes(s.overall.grant)
           const open = expanded.has(key)
           return (
           <li key={key}>

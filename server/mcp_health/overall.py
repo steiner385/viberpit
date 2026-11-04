@@ -7,10 +7,10 @@ a configuration failure, or a live session the server rejected. Token values nev
 here."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal
 
-from server.mcp_health.status import _expiry, _token
+from server.mcp_health.status import bundle_expiry, format_utc_ms, has_token
 from viberpit.mcp_oauth_refresh import LEAD_S
 
 Grant = Literal["never", "dead", "expired", "expiring", "live", "none"]
@@ -21,6 +21,8 @@ _REJECTED_PREFIX = "Sign-in rejected"
 _GRANT_RANK: tuple[Grant, ...] = ("live", "expiring", "expired", "never")
 # Best row status first; ``needs-auth`` only counts when no grant exists to contradict it.
 _ROW_RANK = ("connected", "pending", "needs-auth")
+# Probes run only on demand, so this window bounds how long a stale row can pin a status.
+FRESH_S = 24 * 3600
 
 
 def store_key_name(name: str, plugin_name: str | None) -> str:
@@ -35,8 +37,8 @@ def _matching(store: dict, key_name: str, url: str | None) -> list[dict]:
 
 
 def _bundle_state(bundle: dict, now_ms: int) -> Grant:
-    exp = _expiry(bundle)
-    if not _token(bundle) or (exp is not None and exp <= 0):
+    exp = bundle_expiry(bundle)
+    if not has_token(bundle) or (exp is not None and exp <= 0):
         return "never"                      # a cleared bundle
     if exp is None:
         return "live"                       # a token with no expiry never lapses
@@ -56,14 +58,29 @@ def grant_state(store: dict, *, key_name: str, url: str | None, now_ms: int) -> 
 def best_expiry(store: dict, *, key_name: str, url: str | None) -> int | None:
     """The latest ``expiresAt`` (ms) among matching bundles that still hold a token."""
     exps = [int(exp) for b in _matching(store, key_name, url)
-            if _token(b) and (exp := _expiry(b)) is not None and exp > 0]
+            if has_token(b) and (exp := bundle_expiry(b)) is not None and exp > 0]
     return max(exps) if exps else None
 
 
-def counted(row: dict, *, enabled_accounts: set[str], live_session_ids: set[str]) -> bool:
-    """Whether a per-account row speaks for the server: its account is enabled, and a
-    session row's session is still live (a probe row has no session)."""
+def _observed_ms(row: dict) -> float | None:
+    raw = row.get("observedAt")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000
+    except ValueError:
+        return None
+
+
+def counted(row: dict, *, enabled_accounts: set[str], live_session_ids: set[str],
+            now_ms: int) -> bool:
+    """Whether a per-account row speaks for the server: its account is enabled, it was
+    observed within ``FRESH_S``, and a session row's session is still live (a probe row
+    has no session)."""
     if row.get("account") not in enabled_accounts:
+        return False
+    observed = _observed_ms(row)
+    if observed is None or now_ms - observed > FRESH_S * 1000:
         return False
     return row.get("source") != "session" or row.get("sessionId") in live_session_ids
 
@@ -71,8 +88,7 @@ def counted(row: dict, *, enabled_accounts: set[str], live_session_ids: set[str]
 def _expired_copy(expires_at_ms: int | None) -> str:
     if expires_at_ms is None:
         return "Sign-in expired — background refresh is failing; sign in again."
-    when = datetime.fromtimestamp(expires_at_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-    return f"Sign-in expired {when} UTC — background refresh is failing; sign in again."
+    return f"Sign-in expired {format_utc_ms(expires_at_ms)} UTC — background refresh is failing; sign in again."
 
 
 def _marker(error: str) -> str:

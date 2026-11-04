@@ -42,9 +42,16 @@ def test_cache_reader_is_gone():
     assert not any(n.startswith("_needs_auth") for n in dir(scan))
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+
+
 ROWS = [
-    {"server": "notion", "account": "a", "host": "dobby", "status": "connected"},
-    {"server": "plugin:p:other", "account": "a", "host": "dobby", "status": "failed"},
+    {"server": "notion", "account": "a", "host": "dobby", "status": "connected",
+     "observedAt": _now_iso()},
+    {"server": "plugin:p:other", "account": "a", "host": "dobby", "status": "failed",
+     "observedAt": _now_iso()},
 ]
 
 
@@ -283,7 +290,7 @@ def test_get_mcp_overall_ignores_disabled_account_row(shared: Path, monkeypatch)
     _write_aws()
     _write_store({"serverName": "aws", "serverUrl": "https://u?x=1", "accessToken": "t"})
     rows = [{"server": "aws", "account": "gone", "host": "dobby", "status": "needs-auth",
-             "source": "probe"}]
+             "source": "probe", "observedAt": _now_iso()}]
     body = _overall_client(monkeypatch, rows).get("/api/library/mcp").json()
     [s] = body["servers"]
     assert s["overall"] == {"status": None, "error": None, "grant": "live"}
@@ -294,11 +301,22 @@ def test_get_mcp_overall_never_signed_in(shared: Path, monkeypatch):  # noqa: F8
     _write_aws()
     _write_store({"serverName": "aws", "serverUrl": "https://u?x=1", "accessToken": ""})
     rows = [{"server": "aws", "account": "a", "host": "dobby", "status": "connected",
-             "source": "probe"}]
+             "source": "probe", "observedAt": _now_iso()}]
     [s] = _overall_client(monkeypatch, rows).get("/api/library/mcp").json()["servers"]
     assert s["overall"]["status"] == "needs-auth"
     assert s["overall"]["grant"] == "never"
     assert s["status"][0]["counted"] is True
+
+
+def test_get_mcp_survives_corrupt_shared_store(shared: Path, monkeypatch, caplog):  # noqa: F811
+    from viberpit import paths
+    _write_aws()
+    paths.shared_mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    paths.shared_mcp_path().write_text("{not json")
+    r = _overall_client(monkeypatch, []).get("/api/library/mcp")
+    assert r.status_code == 200
+    assert r.json()["servers"][0]["overall"]["grant"] == "none"
+    assert any("shared MCP store" in m for m in caplog.messages)
 
 
 @pytest.mark.asyncio

@@ -46,16 +46,37 @@ def test_best_expiry():
     assert o.best_expiry({}, key_name="aws", url=None) is None
 
 
+def _iso(age_s: int) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(NOW / 1000 - age_s, tz=timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+
+
+def _fresh() -> str:
+    return _iso(60)
+
+
 def test_disabled_account_row_not_counted():
-    row = {"account": "old", "source": "session", "sessionId": "s1", "status": "needs-auth"}
-    assert not o.counted(row, enabled_accounts={"a"}, live_session_ids={"s1"})
+    row = {"account": "old", "source": "session", "sessionId": "s1", "status": "needs-auth",
+           "observedAt": _fresh()}
+    assert not o.counted(row, enabled_accounts={"a"}, live_session_ids={"s1"}, now_ms=NOW)
+
+
+def test_stale_row_not_counted_recent_row_counted_missing_not_counted():
+    base = {"account": "a", "source": "probe", "sessionId": None, "status": "connected"}
+    kw = dict(enabled_accounts={"a"}, live_session_ids=set(), now_ms=NOW)
+    assert not o.counted({**base, "observedAt": _iso(25 * 3600)}, **kw)
+    assert o.counted({**base, "observedAt": _iso(3600)}, **kw)
+    assert not o.counted(base, **kw)
+    assert not o.counted({**base, "observedAt": "garbage"}, **kw)
 
 
 def test_ended_session_row_not_counted_probe_row_counted():
-    sess = {"account": "a", "source": "session", "sessionId": "gone", "status": "connected"}
-    probe = {"account": "a", "source": "probe", "sessionId": None, "status": "connected"}
-    assert not o.counted(sess, enabled_accounts={"a"}, live_session_ids=set())
-    assert o.counted(probe, enabled_accounts={"a"}, live_session_ids=set())
+    sess = {"account": "a", "source": "session", "sessionId": "gone", "status": "connected",
+            "observedAt": _fresh()}
+    probe = {"account": "a", "source": "probe", "sessionId": None, "status": "connected",
+             "observedAt": _fresh()}
+    assert not o.counted(sess, enabled_accounts={"a"}, live_session_ids=set(), now_ms=NOW)
+    assert o.counted(probe, enabled_accounts={"a"}, live_session_ids=set(), now_ms=NOW)
 
 
 def test_never_reads_needs_auth():

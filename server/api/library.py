@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -40,6 +41,8 @@ from server.mcp_health import overall as mcp_overall
 from server.mcp_health import store as mcp_store
 from server.sessions.facade import call_with_deadline
 from server.sessions.claude_driver import ClaudeAgentDriver
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/library", tags=["library"])
 
@@ -225,13 +228,20 @@ async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
     out = scan.list_mcp_servers(status_rows=await _status_rows())
     enabled = await _enabled_accounts()
     live = await _live_session_ids()
-    store = await asyncio.to_thread(creds.read_shared_mcp)
+    try:
+        store = await asyncio.to_thread(creds.read_shared_mcp)
+    except Exception:
+        log.warning("shared MCP store unreadable; reporting no grants", exc_info=True)
+        store = {}
+    if not isinstance(store, dict):
+        log.warning("shared MCP store is not an object; reporting no grants")
+        store = {}
     now_ms = int(time.time() * 1000)
     for server in out["servers"]:
         key_name = mcp_overall.store_key_name(server["name"], server.get("pluginName"))
         url = (server.get("config") or {}).get("url")
         for row in server["status"]:
-            row["counted"] = mcp_overall.counted(row, enabled_accounts=enabled, live_session_ids=live)
+            row["counted"] = mcp_overall.counted(row, enabled_accounts=enabled, live_session_ids=live, now_ms=now_ms)
         server["overall"] = mcp_overall.derive_overall(
             grant=mcp_overall.grant_state(store, key_name=key_name, url=url, now_ms=now_ms),
             rows=[r for r in server["status"] if r["counted"]], now_ms=now_ms,
