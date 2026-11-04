@@ -74,6 +74,13 @@ try {{
            RedirectStandardOutput = "$d\out"; RedirectStandardError = "$d\err"
            WorkingDirectory = $env:USERPROFILE }}
   if ($spec.args) {{ $sp.ArgumentList = $spec.args }}
+  if ($spec.script) {{
+    # --ps: run from a file. -EncodedCommand with a redirected stderr makes Windows PowerShell
+    # 5.1 serialize the error stream as CLIXML; -File keeps it plain text. BOM = read as UTF-8.
+    $f = "$d\cmd.ps1"
+    [IO.File]::WriteAllText($f, $spec.script, (New-Object Text.UTF8Encoding $true))
+    $sp.ArgumentList = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$f`""
+  }}
   if ($spec.cwd) {{ $sp.WorkingDirectory = $spec.cwd }}
   $p = Start-Process @sp
   $null = $p.Handle  # keeps ExitCode readable after exit
@@ -172,13 +179,15 @@ def _fmt(template: str, rid: str, **kw: object) -> str:
 def build_spec(command: list[str], *, ps: bool, cwd: str | None) -> dict:
     """What the desktop task starts: ``file`` plus a ready-made Windows argument string."""
     if ps:
+        # The task wrapper writes `script` to a .ps1 and runs it with -File (see _RUN_PS1): the
+        # -EncodedCommand form made stderr CLIXML ("#< CLIXML <Objs ...>"), which the first real
+        # env:windows session had to grep out. Quiet progress so no progress records reach it either.
         script = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8\n"
+                  "$ProgressPreference = 'SilentlyContinue'\n"
                   + " ".join(command) + "\n"
                   # bash-like status: the last statement's success, a native exit code if it set one
                   "$__ok = $?\nif (-not $__ok) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }\nexit 0\n")
-        spec = {"file": "powershell.exe",
-                "args": "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
-                        + _winvm.b64_utf16(script)}
+        spec = {"file": "powershell.exe", "script": script}
     else:
         spec = {"file": command[0], "args": subprocess.list2cmdline(command[1:])}
     if cwd:

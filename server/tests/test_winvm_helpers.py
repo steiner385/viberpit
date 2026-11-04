@@ -320,12 +320,25 @@ def test_winrun_command_survives_arbitrary_arguments():
     assert json.loads(base64.b64decode(b64)) == spec
 
 
-def test_winrun_ps_mode_runs_the_script_through_encoded_powershell():
+def test_winrun_ps_mode_ships_the_script_for_the_wrapper_to_run():
     winrun = _import(WINRUN)
     spec = winrun.build_spec(["Get-Process", "|", "Select", "-First", "1"], ps=True, cwd=None)
     assert spec["file"] == "powershell.exe"
-    encoded = spec["args"].split("-EncodedCommand ")[1]
-    assert "Get-Process | Select -First 1" in base64.b64decode(encoded).decode("utf-16-le")
+    assert "Get-Process | Select -First 1" in spec["script"]
+    assert "args" not in spec
+
+
+def test_winrun_ps_mode_keeps_stderr_plain_text():
+    # -EncodedCommand with a redirected stderr made powershell.exe write "#< CLIXML <Objs ...>"
+    # (seen live in the first real env:windows session, which had to grep it out). The wrapper
+    # must run --ps from a file, and the script must quiet progress records before the command.
+    winrun = _import(WINRUN)
+    spec = winrun.build_spec(["Write-Error", "boom"], ps=True, cwd=None)
+    script = spec["script"]
+    assert script.index("$ProgressPreference = 'SilentlyContinue'") < script.index("Write-Error boom")
+    run_ps1 = winrun.run_script("abc123", spec)
+    assert '-File `"$f`"' in run_ps1 and "EncodedCommand" not in run_ps1.split("# --ps")[0]
+    assert "New-Object Text.UTF8Encoding $true" in run_ps1   # BOM: 5.1 reads the file as UTF-8
 
 
 # -------------------------------------------------------------------------------------- winsync
