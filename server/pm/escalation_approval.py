@@ -94,7 +94,7 @@ async def approve_escalation(db, orch: Any, wi: WorkItem, *, model: str, actor: 
             "does not work it, so there is nothing to escalate — Retry releases the hold")
     # Busy is not a policy verdict (the queue only defers it), but this tap dispatches
     # without re-ranking, so it must hold the same line: one live session per VM.
-    if (pinned := gated_platform(wi.labels or ())) is not None and pinned in busy:
+    if (pinned := gated_platform(wi.labels or (), platforms)) is not None and pinned in busy:
         raise EscalationApprovalError(
             "platform_busy",
             f"{wi.repo}#{wi.number} needs the {pinned} host, which already has a working "

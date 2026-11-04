@@ -24,7 +24,7 @@ from server.sessions.host_engines import (
     LEGACY_ENGINES,
     engine_dispatchable,
 )
-from server.sessions.host_platforms import platform_dispatchable
+from server.sessions.host_platforms import LINUX_ONLY, platform_dispatchable
 
 # Free memory at or above this is "plenty" — more does not score higher.
 _MEM_SATURATION_MB = 4096
@@ -56,7 +56,7 @@ class HostCandidate:
     engines: Mapping[AgentEngine, EngineAvailability] = field(
         default_factory=lambda: dict(LEGACY_ENGINES))
     #: Host platforms this runner advertises; Linux-only until it says otherwise.
-    platforms: frozenset[str] = frozenset({"linux"})
+    platforms: frozenset[str] = LINUX_ONLY
 
 
 def engine_rejection(

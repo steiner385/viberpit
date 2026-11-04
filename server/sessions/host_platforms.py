@@ -23,6 +23,7 @@ from server.aio import cancel_and_reap
 __all__ = [
     "PLATFORMS_INFO_KEY",
     "KNOWN_PLATFORMS",
+    "LINUX_ONLY",
     "PlatformDispatchRefused",
     "PlatformProbe",
     "configured_platforms",
@@ -40,16 +41,21 @@ log = logging.getLogger(__name__)
 #: The ``/info`` key. Named once so the daemon writer and the edge reader cannot drift.
 PLATFORMS_INFO_KEY: Final = "platforms"
 
+#: THE host OS names. ``server.pm.queue._ENV_PLATFORMS`` (what an ``env:`` label pins)
+#: is derived from this set, so a new platform is added here once.
 KNOWN_PLATFORMS: Final[frozenset[str]] = frozenset({"linux", "windows", "macos"})
 
-_LINUX: Final = frozenset({"linux"})
+#: The implied platform of every runner, and THE Linux-only default: a legacy
+#: ``/info`` (``parse_platforms_info``), ``HostCandidate.platforms`` and the queue's
+#: ``FLEET_PLATFORMS`` all read it from here.
+LINUX_ONLY: Final[frozenset[str]] = frozenset({"linux"})
 _CHECK_TIMEOUT_S: Final = 10.0
 _warned_unknown: set[str] = set()
 
 
 def configured_platforms(raw: str | None) -> frozenset[str]:
     """Parse ``VIBERPIT_HOST_PLATFORMS`` (comma list). Always includes ``linux``."""
-    out = set(_LINUX)
+    out = set(LINUX_ONLY)
     for part in (raw or "").split(","):
         name = part.strip().lower()
         if not name:
@@ -70,8 +76,8 @@ def build_platforms_info(advertised: frozenset[str]) -> list[str]:
 def parse_platforms_info(value: object) -> frozenset[str]:
     """Read ``/info.platforms``. Absent, malformed or empty means Linux only."""
     if not isinstance(value, list) or not value:
-        return _LINUX
-    return _LINUX | {v for v in value if isinstance(v, str) and v in KNOWN_PLATFORMS}
+        return LINUX_ONLY
+    return LINUX_ONLY | {v for v in value if isinstance(v, str) and v in KNOWN_PLATFORMS}
 
 
 def platform_dispatchable(platforms: frozenset[str], platform: str | None) -> bool:
@@ -188,7 +194,7 @@ class PlatformProbe:
         self._checked_at = self._clock()
 
     async def advertised(self, configured: frozenset[str]) -> frozenset[str]:
-        out = set(configured) | _LINUX
+        out = set(configured) | LINUX_ONLY
         if "windows" in out:
             if not self._fresh() and (self._refresh is None or self._refresh.done()):
                 self._refresh = asyncio.create_task(

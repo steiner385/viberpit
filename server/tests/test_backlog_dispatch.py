@@ -676,6 +676,24 @@ async def test_manual_dispatch_routes_a_gated_issue_alone(dispatch_orch):
 
 
 @pytest.mark.asyncio
+async def test_manual_dispatch_routes_a_multi_os_issue_to_the_advertised_platform(
+        dispatch_orch, monkeypatch):
+    """``env: windows`` + ``env: macos`` with only windows advertised: the dispatch
+    without re-ranking routes where the queue would — windows, not the unadvertised
+    macos (final review, Important #3)."""
+    from server.db import db_session
+    from server.db.models import Host
+    monkeypatch.setenv("VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED", "true")
+    async with db_session() as db:
+        db.add(Host(name="rocky", endpoint="https://rocky:9443", enabled=True,
+                    healthy=True, weight=100, platforms=["linux", "windows"]))
+    await _label(7, "env: windows", "env: macos")
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    assert (await dispatch_orch.backlog_runner_dispatch(["o/r#7"]))["status"] == "spawned"
+    assert dispatch_orch._backlog_spawn.call_args[0][0].platform == "windows"
+
+
+@pytest.mark.asyncio
 async def test_public_proposal_retry_after_no_account_restores_all_issues(dispatch_orch):
     from server.automations.action_providers import BacklogRunnerActionProvider
     provider = BacklogRunnerActionProvider(dispatch_orch)

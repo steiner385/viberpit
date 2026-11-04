@@ -700,18 +700,51 @@ def test_real_target_still_skipped_with_windows_host():
     (("env: linux",), None), (("env: staging",), None),
 ])
 def test_gated_platform(labels, expected):
-    from server.pm.queue import gated_platform
-    assert gated_platform(labels) == expected
+    from server.pm.queue import FLEET_PLATFORMS, gated_platform
+    assert gated_platform(labels, FLEET_PLATFORMS) == expected
 
 
 def test_gated_platform_both_is_none():
     from server.pm.queue import gated_platform
-    assert gated_platform(("env: both",)) is None
+    assert gated_platform(("env: both",), WIN) is None
 
 
 def test_gated_platform_union_with_linux_is_ungated():
     from server.pm.queue import gated_platform
-    assert gated_platform(("env: windows", "env: linux")) is None
+    assert gated_platform(("env: windows", "env: linux"), WIN) is None
+
+
+def test_multi_os_union_routes_to_the_advertised_platform():
+    """``env: windows`` + ``env: macos`` with only windows advertised: the environment
+    check calls it runnable, so routing, the busy check and the stamp must all target
+    windows — not ``min`` of the named set, macos, which no host advertises (final
+    review, Important #3). Both verdicts read one ``env:`` parser."""
+    from server.pm.queue import gated_platform, needs_unavailable_environment
+    labels = ("env: windows", "env: macos")
+    assert not needs_unavailable_environment(labels, WIN)
+    assert gated_platform(labels, WIN) == "windows"
+    row = _row(labels=labels)
+    entries, skipped = rank([row], platforms=WIN, **ENV_KW)
+    assert [e.platform for e in entries] == ["windows"] and skipped == {}
+    # ...and it is the windows host it waits on.
+    assert skip_reason(row, platforms=WIN, busy_platforms=frozenset({"windows"}),
+                       **ENV_KW) == "platform_busy"
+    assert skip_reason(row, platforms=WIN, busy_platforms=frozenset({"macos"}),
+                       **ENV_KW) is None
+    # Both advertised: the first in sorted order. Neither: environment-skipped.
+    assert gated_platform(labels, WIN | {"macos"}) == "macos"
+    assert skip_reason(row, **ENV_KW) == "environment"
+
+
+def test_env_platforms_cover_every_known_host_platform():
+    """``_ENV_PLATFORMS`` is derived from ``KNOWN_PLATFORMS``: every host OS name is an
+    ``env:`` value pinning itself, and no ``env:`` value names an unknown OS."""
+    from server.pm.queue import _ENV_PLATFORMS
+    from server.sessions.host_platforms import KNOWN_PLATFORMS
+    for name in KNOWN_PLATFORMS:
+        assert _ENV_PLATFORMS[name] == frozenset({name})
+    for allowed in _ENV_PLATFORMS.values():
+        assert allowed is None or allowed <= KNOWN_PLATFORMS
 
 
 def test_platform_busy_after_environment():

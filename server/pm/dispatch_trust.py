@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.automations.product_policy import load_policies, policy_for_repo, trusted_authors
 from server.db.models import WorkItem
+from server.pm.fleet_platforms import fleet_platform_state
 from server.pm.queue import IGNORE_LABEL, gated_platform, is_trusted_author
 from server.pm.refs import split_ref
 
@@ -74,8 +75,11 @@ async def ignored_refs(db: AsyncSession, refs: Iterable[str]) -> list[str]:
 
 
 async def gated_platforms(db: AsyncSession, refs: Iterable[str]) -> dict[str, str | None]:
-    """ref -> its mirrored issue's ``gated_platform`` (``None``: ungated, or not
-    mirrored — ``untrusted_refs`` already refuses an unmirrored ref)."""
+    """ref -> its mirrored issue's ``gated_platform`` against the fleet's live
+    advertised set (``fleet_platform_state``, as the queue ranks with), so a multi-OS
+    issue routes where the queue would (``None``: ungated, or not mirrored —
+    ``untrusted_refs`` already refuses an unmirrored ref)."""
+    platforms, _busy = await fleet_platform_state(db)
     out: dict[str, str | None] = {}
     for ref in refs:
         parts = split_ref(ref)
@@ -85,7 +89,7 @@ async def gated_platforms(db: AsyncSession, refs: Iterable[str]) -> dict[str, st
             labels = (await db.execute(select(WorkItem.labels).where(
                 WorkItem.repo == repo, WorkItem.number == number,
                 WorkItem.kind == "issue"))).scalar_one_or_none()
-        out[ref] = gated_platform(labels or ())
+        out[ref] = gated_platform(labels or (), platforms)
     return out
 
 
