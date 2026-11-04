@@ -4,7 +4,7 @@ import copy
 import pytest
 
 from viberpit import mcp_oauth_refresh as mor
-from viberpit.mcp_keys import cli_oauth_key, prm_url_for
+from viberpit.mcp_keys import cli_oauth_key, prm_url_for, url_origin
 from viberpit.mcp_rekey import RekeyPlan, WantedServer, plan_rekey
 
 AWS_OLD_URL = "https://aws-mcp.us-east-1.api.aws/mcp"
@@ -28,6 +28,8 @@ def _grant(name, url, *, prm=AWS_PRM, access="t", refresh="r", expires=100):
                                                   "resourceMetadataUrl": prm}}
     if refresh is not None:
         b["refreshToken"] = refresh
+    if prm is None:
+        del b["discoveryState"]["resourceMetadataUrl"]
     return b
 
 
@@ -66,11 +68,62 @@ def test_moves_grant_to_new_key_after_url_edit():
 
 
 def test_unknown_identity_never_moves():
-    store = {AWS_OLD_KEY: _grant("other-name", AWS_OLD_URL)}
+    store = {AWS_OLD_KEY: _grant("aws-oauth", AWS_OLD_URL)}
     plan = plan_rekey(store, [WantedServer(AWS_NEW_KEY, "aws-oauth", AWS_NEW_URL)], _Identity({}))
     assert plan.moved == {}
+    assert plan.dropped == frozenset()
     assert AWS_NEW_KEY not in plan.store
-    assert AWS_OLD_KEY in plan.store  # unconfigured name with a token is kept
+    assert AWS_OLD_KEY in plan.store  # superseded but token-holding, identity unknown: kept
+
+
+def test_superseded_token_bundle_without_prm_kept():
+    store = {AWS_OLD_KEY: _grant("aws-oauth", AWS_OLD_URL, prm=None)}
+    plan = plan_rekey(store, [WantedServer(AWS_NEW_KEY, "aws-oauth", AWS_NEW_URL)],
+                      _Identity({AWS_PRM: AWS_ID}))
+    assert plan.dropped == frozenset() and AWS_OLD_KEY in plan.store
+
+
+def test_superseded_token_bundle_dropped_when_identity_differs():
+    other_prm = "https://elsewhere.example/.well-known/oauth-protected-resource/mcp"
+    store = {AWS_OLD_KEY: _grant("aws-oauth", "https://elsewhere.example/mcp", prm=other_prm)}
+    ident = _Identity({AWS_PRM: AWS_ID, other_prm: ("https://other-as/", "https://elsewhere.example/mcp")})
+    plan = plan_rekey(store, [WantedServer(AWS_NEW_KEY, "aws-oauth", AWS_NEW_URL)], ident)
+    assert plan.moved == {}
+    assert plan.dropped == frozenset({AWS_OLD_KEY})
+
+
+def test_superseded_token_bundle_dropped_when_wanted_usable():
+    store = {AWS_NEW_KEY: _grant("aws-oauth", AWS_NEW_URL),
+             AWS_OLD_KEY: _grant("aws-oauth", AWS_OLD_URL)}
+    ident = _Identity({})
+    plan = plan_rekey(store, [WantedServer(AWS_NEW_KEY, "aws-oauth", AWS_NEW_URL)], ident)
+    assert plan.dropped == frozenset({AWS_OLD_KEY})
+    assert plan.moved == {} and ident.calls == []
+
+
+def test_superseded_tokenless_bundle_dropped():
+    store = {AWS_OLD_KEY: _grant("aws-oauth", AWS_OLD_URL, access="", refresh=None)}
+    plan = plan_rekey(store, [WantedServer(AWS_NEW_KEY, "aws-oauth", AWS_NEW_URL)], _Identity({}))
+    assert plan.dropped == frozenset({AWS_OLD_KEY})
+
+
+def test_cross_origin_donor_never_moves():
+    evil_prm = "https://evil.example/.well-known/oauth-protected-resource/mcp"
+    store = {"stray|eeeeeeeeeeeeeeee": _grant("stray", "https://evil.example/mcp", prm=evil_prm)}
+    ident = _Identity({AWS_PRM: AWS_ID, evil_prm: AWS_ID})  # forged equal identity
+    plan = plan_rekey(store, [WantedServer(AWS_NEW_KEY, "aws-oauth", AWS_NEW_URL)], ident)
+    assert plan.moved == {}
+    assert AWS_NEW_KEY not in plan.store
+
+
+def test_same_name_donor_preferred_on_identity_tie():
+    other = "aws-other|0000000000000003"
+    store = {other: _grant("aws-other", AWS_OLD_URL, expires=99),
+             AWS_OLD_KEY: _grant("aws-oauth", AWS_OLD_URL, expires=1)}
+    plan = plan_rekey(store, [WantedServer(AWS_NEW_KEY, "aws-oauth", AWS_NEW_URL)],
+                      _Identity({AWS_PRM: AWS_ID}))
+    assert plan.moved == {AWS_OLD_KEY: AWS_NEW_KEY}
+    assert other in plan.store
 
 
 def test_same_name_different_identity_drops_not_moves():
@@ -156,10 +209,14 @@ def test_grant_identity_normalises_and_caches():
         calls.append(url)
         raise OSError("down")
 
+    assert mor.grant_identity(prm, fetch_json=boom) == ("https://backboard.railway.com/",
+                                                        "https://mcp.railway.com/")  # cached
     other = "https://x.example/.well-known/oauth-protected-resource"
     assert mor.grant_identity(other, fetch_json=boom) is None
     assert other not in mor._identity_cache
-    assert mor.grant_identity(other, fetch_json=fetch) is not None  # failure was not cached
+    doc = {"resource": "https://x.example", "authorization_servers": ["https://as.example"]}
+    assert mor.grant_identity(other, fetch_json=lambda _u: doc) == ("https://as.example/",
+                                                                   "https://x.example/")
 
 
 @pytest.mark.parametrize("doc", [None, {}, {"resource": "https://r/"},
@@ -169,3 +226,18 @@ def test_grant_identity_normalises_and_caches():
 def test_grant_identity_missing_fields_is_none(doc):
     assert mor.grant_identity("https://p/", fetch_json=lambda _u: doc) is None
     assert "https://p/" not in mor._identity_cache
+
+
+def test_grant_identity_rejects_cross_origin_resource():
+    prm = "https://a.example/.well-known/oauth-protected-resource"
+    doc = {"resource": "https://b.example/", "authorization_servers": ["https://as.example/"]}
+    assert mor.grant_identity(prm, fetch_json=lambda _u: doc) is None
+    assert prm not in mor._identity_cache
+
+
+def test_url_origin():
+    assert url_origin("HTTPS://Mcp.Railway.com") == ("https", "mcp.railway.com", 443)
+    assert url_origin("http://h:8080/x?q") == ("http", "h", 8080)
+    assert url_origin("https://h:443/") == url_origin("https://h")
+    assert url_origin("ftp://h/") is None
+    assert url_origin("not a url") is None

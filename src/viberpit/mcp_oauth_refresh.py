@@ -21,6 +21,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from . import creds, paths
+from .mcp_keys import DEFAULT_PORTS, url_origin
 from .mcp_names import short_name
 
 log = logging.getLogger(__name__)
@@ -187,9 +188,6 @@ def token_endpoint(bundle: dict, *, fetch_json: FetchJson | None = None) -> str:
 
 _resource_cache: dict[str, str] = {}
 
-_DEFAULT_PORTS = {"http": 80, "https": 443}
-
-
 def url_href(url: str) -> str:
     """*url* as the CLI serializes it (WHATWG ``new URL(url).href``) for the http(s) parts that
     differ from the raw string: lower-case scheme and host, no default port, and ``/`` for an
@@ -197,14 +195,14 @@ def url_href(url: str) -> str:
     authorized with ``…com/`` and the token endpoint compares exactly (400 invalid_target)."""
     parts = urllib.parse.urlsplit(url)
     scheme = parts.scheme.lower()
-    if scheme not in _DEFAULT_PORTS or not parts.hostname or "@" in parts.netloc:
+    if scheme not in DEFAULT_PORTS or not parts.hostname or "@" in parts.netloc:
         return url
     try:
         port = parts.port
     except ValueError:
         return url
     netloc = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname  # IPv6 literal
-    if port is not None and port != _DEFAULT_PORTS[scheme]:
+    if port is not None and port != DEFAULT_PORTS[scheme]:
         netloc = f"{netloc}:{port}"
     return urllib.parse.urlunsplit((scheme, netloc, parts.path or "/", parts.query, parts.fragment))
 
@@ -243,8 +241,10 @@ _identity_cache: dict[str, tuple[str, str]] = {}
 def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tuple[str, str] | None:
     """``(authorization_server, resource)`` named by the protected-resource metadata at
     *prm_url*, both serialized by :func:`url_href`; None when the fetch fails or either field
-    is missing. Two grants with an equal identity are interchangeable, so the re-key plan
-    may move one to the other's key. Cached per *prm_url*; a None is never cached."""
+    is missing, or when ``resource`` is not on *prm_url*'s origin (RFC 9728 §3.3: a server
+    must not claim another's grant). Two grants with an equal identity are interchangeable,
+    so the re-key plan may move one to the other's key. Cached per *prm_url*; a None is never
+    cached."""
     if prm_url in _identity_cache:
         return _identity_cache[prm_url]
     try:
@@ -260,6 +260,11 @@ def grant_identity(prm_url: str, *, fetch_json: FetchJson | None = None) -> tupl
     if not (isinstance(auth_server, str) and auth_server and isinstance(resource, str) and resource):
         return None
     identity = (url_href(auth_server), url_href(resource))
+    origin = url_origin(identity[1])
+    if origin is None or origin != url_origin(prm_url):
+        # RFC 9728 §3.3: a document naming another origin's resource is forged or misrouted.
+        log.debug("mcp oauth grant identity resource origin mismatch url=%s", prm_url)
+        return None
     _identity_cache[prm_url] = identity
     return identity
 

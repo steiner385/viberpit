@@ -3,10 +3,11 @@
 The CLI files a grant under ``<serverName>|<hash(type, url, headers)>`` (``mcp_keys``), so
 editing a server's URL or renaming it orphans the live grant under a key the CLI never looks
 up again. :func:`plan_rekey` moves such a grant to the wanted key, but only when its grant
-identity (``mcp_oauth_refresh.grant_identity``) equals the wanted server's; an unknown
-identity never moves. It then drops the only two kinds of bundle ever deleted: one
-superseded by a configured server of the same name under another key, and an unwanted one
-holding no token at all.
+identity (``mcp_oauth_refresh.grant_identity``) equals the wanted server's and both URLs
+share an origin; an unknown identity never moves. It then drops the only two kinds of
+bundle ever deleted: one superseded by a configured server of the same name under another
+key (if it holds a token, only once that is provably safe), and an unwanted one holding no
+token at all.
 
 Pure: no IO beyond the injected ``identity_of``, which is called only when a wanted server
 lacks a usable grant, so a steady-state tick never touches the network. Token values are
@@ -18,7 +19,7 @@ import copy
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .mcp_keys import prm_url_for
+from .mcp_keys import prm_url_for, url_origin
 
 IdentityOf = Callable[[str], "tuple[str, str] | None"]
 
@@ -54,57 +55,76 @@ def _expires_at(bundle: dict) -> float:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
-def _donors(store: dict, wanted_keys: set[str]) -> list[str]:
-    return [key for key, bundle in store.items()
-            if key not in wanted_keys and isinstance(bundle, dict)
-            and bundle.get("refreshToken") and _prm_url(bundle)]
+def _same_origin(a: object, b: str) -> bool:
+    origin = url_origin(a) if isinstance(a, str) else None
+    return origin is not None and origin == url_origin(b)
 
 
 def plan_rekey(store: dict, wanted: list[WantedServer], identity_of: IdentityOf) -> RekeyPlan:
     """Plan moving grants onto their servers' current keys, then dropping dead bundles.
 
     A wanted server without a usable grant (no ``refreshToken``, empty ``accessToken``) takes
-    the donor (an unwanted bundle with a ``refreshToken`` and a ``resourceMetadataUrl``) whose
-    identity equals its own, latest ``expiresAt`` first. Drop rules run on the post-move
-    store. *store* is not mutated."""
+    a donor: an unwanted bundle with a ``refreshToken`` and a ``resourceMetadataUrl``, whose
+    ``serverUrl`` shares the wanted URL's origin and whose identity equals the wanted
+    server's. Among several, one already named for the server wins, then the latest
+    ``expiresAt``. Drop rules run on the post-move store: an empty bundle always goes; a
+    superseded one holding a token goes only when its server's key now holds a usable grant
+    or both identities are known and differ. *store* is not mutated."""
     out = copy.deepcopy(store)
     wanted_keys = {w.key for w in wanted}
     moved: dict[str, str] = {}
-    donor_identity: dict[str, tuple[str, str] | None] = {}
+    identities: dict[str, tuple[str, str] | None] = {}
+
+    def identity(prm: str | None) -> tuple[str, str] | None:
+        if not prm:
+            return None
+        if prm not in identities:
+            identities[prm] = identity_of(prm)
+        return identities[prm]
 
     for w in wanted:
         if _usable(out.get(w.key)):
             continue
-        donors = _donors(out, wanted_keys)
+        donors = [key for key, bundle in out.items()
+                  if key not in wanted_keys and isinstance(bundle, dict)
+                  and bundle.get("refreshToken") and _prm_url(bundle)
+                  and _same_origin(bundle.get("serverUrl"), w.url)]
         if not donors:
             continue
-        prm = prm_url_for(w.url)
-        target = identity_of(prm) if prm else None
+        target = identity(prm_url_for(w.url))
         if target is None:
             continue
-        matching = []
-        for key in donors:
-            if key not in donor_identity:
-                donor_prm = _prm_url(out[key])
-                donor_identity[key] = identity_of(donor_prm) if donor_prm else None
-            if donor_identity[key] == target:
-                matching.append(key)
+        matching = [key for key in donors if identity(_prm_url(out[key])) == target]
         if not matching:
             continue
-        donor = max(matching, key=lambda k: _expires_at(out[k]))
+        donor = max(matching, key=lambda k: (out[k].get("serverName") == w.store_name,
+                                             _expires_at(out[k])))
         bundle = out.pop(donor)
         bundle["serverName"] = w.store_name
         bundle["serverUrl"] = w.url
-        out[w.key] = bundle
+        out[w.key] = bundle  # replaces at most an unusable (token-less) bundle
         moved[donor] = w.key
 
-    wanted_names = {w.store_name for w in wanted}
+    by_name = {w.store_name: w for w in wanted}
     dropped = set()
     for key, bundle in list(out.items()):
         if key in wanted_keys:
             continue
-        name = bundle.get("serverName") if isinstance(bundle, dict) else None
-        if name in wanted_names or not _usable(bundle):  # (a) superseded, (b) empty
+        # A non-dict value under an unwanted key holds no token, so it counts as empty.
+        if not _usable(bundle):  # (b) empty, or (a) superseded with no token
+            drop = True
+        else:
+            owner = by_name.get(bundle.get("serverName"))
+            if owner is None:
+                drop = False  # unconfigured, token-holding: maybe a repo .mcp.json server
+            elif _usable(out.get(owner.key)):
+                drop = True  # (a) superseded by a live grant
+            else:
+                own = _prm_url(bundle)
+                theirs = identity(prm_url_for(owner.url)) if own else None
+                mine = identity(own) if theirs is not None else None
+                drop = theirs is not None and mine is not None and theirs != mine
+        if drop:
             del out[key]
             dropped.add(key)
     return RekeyPlan(store=out, moved=moved, dropped=frozenset(dropped))

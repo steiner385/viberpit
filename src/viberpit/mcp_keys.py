@@ -36,3 +36,20 @@ def prm_url_for(server_url: str) -> str | None:
 def store_name(name: str, plugin_name: str | None) -> str:
     """The ``serverName`` a bundle carries: plain for user servers, namespaced for plugins."""
     return name if plugin_name is None else f"plugin:{plugin_name}:{name}"
+
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def url_origin(url: str) -> tuple[str, str, int] | None:
+    """``(scheme, host, port)`` of an http(s) URL, lower-cased with the default port filled
+    in, or None for anything else. Two URLs share an origin iff these are equal."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    if scheme not in DEFAULT_PORTS or not parts.hostname:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    return scheme, parts.hostname, port if port is not None else DEFAULT_PORTS[scheme]
