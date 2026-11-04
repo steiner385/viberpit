@@ -22,6 +22,7 @@ import type {
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent, MemoryFileContent, UserMemory, UserMemorySaved,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse, RuleWire,
+  PrDetail, PrMutationResult, PrArmResult,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
@@ -159,6 +160,8 @@ export const QK = {
   sessionFiles: (id: string, q?: string) =>
     q !== undefined ? ['session-files', id, q] as const : ['session-files', id] as const,
   sessionFile: (id: string, path: string) => ['session-file', id, path] as const,
+  /** One PR's detail (D-15 PR tab): `repo` is `owner/name`. */
+  prDetail: (repo: string, number: number) => ['pr-detail', repo, number] as const,
   /** One loaded memory file of a session (D-13). */
   memoryFile: (id: string, path: string) => ['memory-file', id, path] as const,
   /** The shared user memory file. Its own root, not under `settings`: invalidating the
@@ -723,6 +726,63 @@ export function useFixPr() {
   return useMutation<Session, ApiRequestError, { id: string; number: number }>({
     mutationFn: ({ id, number }) => api.post<Session>(`/sessions/${id}/fix-pr`, { number }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+/** `/prs/{owner}/{name}/{number}` — `repo` is `owner/name`, each half encoded. */
+function prPath(repo: string, number: number): string {
+  return `/prs/${repo.split('/').map(encodeURIComponent).join('/')}/${number}`
+}
+
+/**
+ * One PR's detail for the session PR tab (D-15): the cached PR with the live checks,
+ * reviews and review threads on top. Polls every 30 s while mounted — the tab mounts
+ * it only while it is the visible view, and React Query pauses the interval in a
+ * background browser tab. A 404 (the PR is in no cache) or 502 (its repo's sync is
+ * failing) fails at once: the tab falls back to the session payload's own PR data.
+ */
+export function usePrDetail(repo: string | null, number: number | null) {
+  return useQuery<PrDetail, ApiRequestError>({
+    queryKey: QK.prDetail(repo ?? '', number ?? 0),
+    queryFn: () => api.get<PrDetail>(prPath(repo!, number!)),
+    enabled: !!repo && number != null,
+    refetchInterval: 30_000,
+    retry: (n, e) => (e instanceof ApiRequestError && e.status === 502 ? false : shouldRetryQuery(n, e)),
+  })
+}
+
+/** Invalidate what a PR mutation changes: the PR's detail and the sessions list (its `prs`). */
+function invalidatePr(qc: QueryClient, repo: string, number: number) {
+  qc.invalidateQueries({ queryKey: QK.prDetail(repo, number) })
+  qc.invalidateQueries({ queryKey: QK.sessions })
+}
+
+/**
+ * Merge a PR now (squash, the only method the route accepts). gh refusing is a 200
+ * `{ok: false, error}`; a `hold:human` PR is a 409 `PR_HUMAN_HOLD`. The tab renders
+ * both inline, so no global toast.
+ */
+export function useMergePr() {
+  const qc = useQueryClient()
+  return useMutation<PrMutationResult, ApiRequestError, { repo: string; number: number }>({
+    mutationFn: ({ repo, number }) => api.post<PrMutationResult>(`${prPath(repo, number)}/merge`, { method: 'squash' }),
+    onSuccess: (_r, { repo, number }) => invalidatePr(qc, repo, number),
+    meta: { suppressErrorToast: true },
+  })
+}
+
+/**
+ * Arm (`enabled: true` — ready the PR, then squash auto-merge, through the server's
+ * one arm path `ready_merge`) or disable (`enabled: false`, always allowed) auto-merge.
+ * Same inline-error contract as `useMergePr`.
+ */
+export function useSetAutoMerge() {
+  const qc = useQueryClient()
+  return useMutation<PrMutationResult | PrArmResult, ApiRequestError, { repo: string; number: number; enabled: boolean }>({
+    mutationFn: ({ repo, number, enabled }) =>
+      api.post<PrMutationResult | PrArmResult>(`${prPath(repo, number)}/auto-merge`, { enabled }),
+    onSuccess: (_r, { repo, number }) => invalidatePr(qc, repo, number),
+    meta: { suppressErrorToast: true },
   })
 }
 

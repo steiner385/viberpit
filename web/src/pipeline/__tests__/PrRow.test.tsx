@@ -611,6 +611,30 @@ describe('PrRow ready+auto-merge action', () => {
     expect(msg.textContent).toContain('✗');     // non-colour failure channel (UX-L4)
     expect(msg.textContent).toContain('Error:'); // …plus a text prefix
   });
+
+  it('surfaces a 409 hold:human refusal\'s detail.error text, never [object Object] (D-15)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 409, json: async () => ({ detail: {
+        code: 'PR_HUMAN_HOLD',
+        error: 'acme/widgets#8962 carries `hold:human`: a human owns its merge. Merge it on GitHub.' } }),
+    }));
+    render(<PrRow pr={draft()} hasDeploy />);
+    fireEvent.click(screen.getByTestId('pr-ready-merge'));
+    const msg = await screen.findByTestId('pr-action-msg');
+    expect(msg).toHaveClass('err');
+    expect(msg.textContent).toContain('a human owns its merge. Merge it on GitHub.');
+    expect(msg.textContent).not.toContain('[object Object]');
+    expect(msg.textContent).not.toContain('HTTP 409');
+  });
+
+  it('surfaces a string detail (404) as its text', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 404, json: async () => ({ detail: 'PR not found' }),
+    }));
+    render(<PrRow pr={draft()} hasDeploy />);
+    fireEvent.click(screen.getByTestId('pr-ready-merge'));
+    expect((await screen.findByTestId('pr-action-msg')).textContent).toContain('PR not found');
+  });
 });
 
 describe('PrRow keyboard expand (UX-H1)', () => {

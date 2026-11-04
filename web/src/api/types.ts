@@ -571,6 +571,79 @@ export interface PullRequestInfo {
   eta_high_seconds?: number | null
   /** Per-check drill-down groups (head commit + merge group); snake_case to match backend. */
   check_groups?: CheckGroup[]
+  // The rest of `PullRequestInfo.to_dict()` (server/github/pr_status.py), declared for
+  // the session PR tab (D-15). Optional: an older payload may predate any of them.
+  is_draft?: boolean
+  head_ref?: string
+  head_sha?: string
+  /** One row per check run on the head commit; `conclusion` is lowercase. */
+  checks_detail?: { name: string; conclusion: string; started_at: string | null; completed_at: string | null }[]
+  /** MERGEABLE | CONFLICTING | UNKNOWN. */
+  mergeable?: string | null
+  /** GitHub's mergeStateStatus: CLEAN | BLOCKED | BEHIND | DIRTY | UNSTABLE | DRAFT | UNKNOWN | ''. */
+  merge_state_status?: string
+  auto_merge_enabled?: boolean
+  in_merge_queue?: boolean
+  /** Label names (first 20). */
+  labels?: string[]
+}
+
+/** One live check on a PR's head commit (`GET /api/prs/…` detail); `conclusion` lowercase, null while running. */
+export interface PrDetailCheck {
+  name: string | null
+  status: string | null
+  conclusion: string | null
+  url: string | null
+}
+
+/** One comment of a review thread. `body` is the reviewer's markdown and `url` is
+ *  unchecked: both are untrusted (render through the sanitized renderer, link only http(s)). */
+export interface PrThreadComment {
+  author: string | null
+  body: string
+  createdAt: string | null
+  url: string | null
+}
+
+/** One review thread, in GitHub's order. `line` falls back to `originalLine`. */
+export interface PrReviewThread {
+  id: string
+  path: string
+  line: number | null
+  resolved: boolean
+  outdated: boolean
+  comments: PrThreadComment[]
+}
+
+/**
+ * `GET /api/prs/{owner}/{name}/{number}` (D-15): the cached `PullRequestInfo` with the
+ * live half on top. The live `checks` LIST replaces the cached summary string, and
+ * fails open to `[]` (as do `reviews` and `threads`) when the live fetch fails.
+ */
+export interface PrDetail extends Omit<PullRequestInfo, 'checks'> {
+  checks: PrDetailCheck[]
+  reviews: { author: string | null; state: string | null }[]
+  threads: PrReviewThread[]
+  isDraft: boolean
+  autoMergeEnabled: boolean
+  mergeStateStatus: string
+  humanHold: boolean
+  merged?: boolean
+  sessionId?: string | null
+}
+
+/** `POST /api/prs/…/merge` and `…/auto-merge {enabled: false}`: gh's stderr verbatim when `ok` is false. */
+export interface PrMutationResult {
+  ok: boolean
+  error: string
+}
+
+/** `POST /api/prs/…/auto-merge {enabled: true}` — the `ready_merge` body plus `ok` (= armed). */
+export interface PrArmResult extends PrMutationResult {
+  markedReady: boolean
+  autoMergeArmed: boolean
+  alreadyArmed: boolean
+  cleanReadyToMerge: boolean
 }
 
 export interface CheckRow {
