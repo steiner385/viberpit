@@ -31,7 +31,7 @@ def test_capability_set_covers_every_declared_field():
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
         "account_rotation", "account_switch_new_thread",
         "vendor_commands", "vendor_skills", "durable_tool_surface",
-        "library_management", "mcp_status", "rewind",
+        "library_management", "mcp_status", "rewind", "flag_settings",
     }
 
 

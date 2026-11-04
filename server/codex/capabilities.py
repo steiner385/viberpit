@@ -176,6 +176,10 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # rewind_conversation); no Codex mechanism has been examined, so every rewind
     # control stays hidden for Codex sessions.
     rewind=False,
+    # Live flag settings (D-14) are the Claude CLI's `apply_flag_settings`. Codex keeps
+    # its own effort path (thread settings, `reasoning_effort`) and has no verified fast
+    # mode (`model/list` serviceTiers is unconsumed), so no fast-mode control shows.
+    flag_settings=False,
 )
 
 #: Human-readable reason the Library surface (`GET /api/library/engines`)

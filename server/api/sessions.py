@@ -57,6 +57,7 @@ from server.sessions.orchestrator import (
 from server.sessions import session_actions
 from server.sessions import read_state
 from server.sessions import worktree_files
+from server.sessions import flag_settings
 from server.sessions import memory_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
@@ -325,6 +326,12 @@ def _record_to_dict(
         # True while a "switch after this turn" model change waits for the in-flight
         # turn to end (transient, never persisted) — the picker shows it as pending.
         "modelPending": getattr(record, "model_pending", False),
+        # Fast mode (D-14): the stored choice, and whether it can be on right now — the
+        # CLI listed the current model as fast-capable (only a flag-settings engine,
+        # Claude, ever reports that list). The ⚡ toggle and `/fast` show only then.
+        "fastMode": bool(getattr(record, "fast_mode", False)),
+        "fastModeAvailable": flag_settings.supports_fast_mode(
+            getattr(record, "fast_mode_models", None), getattr(record, "model", None)),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "inferredGoal": getattr(record, "inferred_goal", None),
@@ -2469,8 +2476,9 @@ async def set_session_model(
     db=Depends(get_db),
 ):
     """Switch a session's model (→ `set_model_for_session`), optionally with a
-    reasoning ``effort``. 409 if the model is blocked by policy; 400
-    ``unsupported_reasoning_effort`` for an effort on a Claude session."""
+    reasoning ``effort``. 409 if the model is blocked by policy. On Claude the effort
+    applies live (D-14): 400 ``SETTINGS_INVALID`` for a level the model does not accept,
+    409 with another ``SETTINGS_CODES`` code when the CLI refused the write."""
     orch = _get_orchestrator(request)
     via = getattr(request.state, "via", None)
     effort = body.effort if body.effort is not None else EFFORT_UNCHANGED
@@ -2480,6 +2488,38 @@ async def set_session_model(
             identity=identity, via=via, effort=effort)
     except ActionError as exc:
         return _action_error_response(exc)
+
+
+class FastModeRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/{session_id}/fast")
+async def set_session_fast_mode(
+    session_id: str,
+    body: FastModeRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Turn the session's fast mode on or off (D-14), live on the daemon that owns it and
+    persisted for every later spawn. 200 ``{enabled}``. Unknown session 404; 409
+    ``FAST_UNAVAILABLE`` when the engine or current model has no fast mode, another
+    ``SETTINGS_CODES`` code when the CLI refused or never answered, or
+    ``daemon_outdated`` from an old daemon."""
+    try:
+        result = await _get_orchestrator(request).set_fast_mode(
+            session_id, body.enabled, identity=identity)
+    except flag_settings.SettingsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "toggle fast mode")
+    await record_audit(db=db, type="session.fast_mode", identity=identity,
+                       detail={"session_id": session_id, "enabled": body.enabled})
+    return result
 
 
 @router.post("/{session_id}/suggest")

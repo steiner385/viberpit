@@ -322,6 +322,11 @@ class Session(Base):
     # memory-file viewer, so it must survive a daemon restart. NULL until a Claude turn
     # reports it. Nullable so init_db's reconcile adds it on both dialects.
     memory_files: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Fast mode (D-14): the session's choice, applied at spawn through the ``--settings``
+    # JSON and live through ``apply_flag_settings``. NULL/False = off (the default);
+    # cleared when the session moves to a model without fast mode. Nullable so
+    # init_db's reconcile adds it on both dialects.
+    fast_mode: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # Session kind. "assistant" = the AI-drawer meta-assistant (spec
     # docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.1): hidden from the
     # session list, capacity-exempt, tool-restricted. NULL = a normal coding session.

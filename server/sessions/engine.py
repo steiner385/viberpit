@@ -109,6 +109,11 @@ class AgentCapabilities:
     #: checkpoints) and cut the conversation back to a user prompt, live on the idle
     #: client. Gated by the ``VIBERPIT_REWIND_ENABLED`` kill switch (rewind_supported).
     rewind: bool = False
+    #: Live flag settings (D-14): the driver writes the CLI's flag-layer settings on the
+    #: running session (``apply_flag_settings``) — fast mode and a live effort change —
+    #: and applies the session's stored ones at spawn. Whether fast mode is available
+    #: is still per MODEL (``SessionRecord.fast_mode_models``), not per engine.
+    flag_settings: bool = False
 
 
 def fork_enabled() -> bool:
@@ -316,6 +321,10 @@ class AgentDriverConfig:
     #: set (D-13), in load order — each time the context reading reports one. Only
     #: Claude reports a set; other engines never call it.
     on_memory_files: Callable[[str, list], Awaitable[None]] | None = None
+    #: Fired with (session id, model ids) once per CLI start (D-14): the models the
+    #: CLI's ``initialize`` list marks ``supportsFastMode``. Only engines with
+    #: ``flag_settings`` (Claude) call it.
+    on_fast_mode_models: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired with the sanitized MCP status snapshot each time a Claude driver polls it.
     on_mcp_status: Callable[[str, list], Awaitable[None]] | None = None
     #: Fired (synchronously, with the session id) when a Task sub-agent starts or ends,

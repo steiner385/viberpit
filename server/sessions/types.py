@@ -214,6 +214,13 @@ class SessionRecord:
     # context usage, and the allowlist of the owning-host memory-file viewer
     # (``memory_files.read_memory_file``). None until a Claude turn reports it.
     memory_files: list | None = None
+    # Fast mode (D-14): the session's choice (persisted, re-applied at every spawn), and
+    # the models the CLI's last ``initialize`` marked ``supportsFastMode`` — alias and
+    # full id (``flag_settings.fast_mode_models``). The list is in-memory only (each CLI
+    # start re-reports it); None until a Claude driver has started. Both ride to_dict so
+    # the edge can serve ``fastModeAvailable`` (``flag_settings.supports_fast_mode``).
+    fast_mode: bool = False
+    fast_mode_models: list[str] | None = None
     # Fork anchors (D-8): turn id -> the CLI transcript uuid that turn can be forked
     # from, fed live by the driver's TurnAnchor events and merged from the transcript
     # on a lookup miss (SessionOrchestrator.resolve_turn_anchor). Insertion-ordered and
@@ -345,6 +352,8 @@ class SessionRecord:
             "contextMaxTokens": self.context_max_tokens,
             "commandCatalog": self.command_catalog,
             "memoryFiles": self.memory_files,
+            "fastMode": self.fast_mode,
+            "fastModeModels": self.fast_mode_models,
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
             "kind": self.kind,
@@ -414,6 +423,8 @@ class SessionRecord:
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
             memory_files=d.get("memoryFiles"),
+            fast_mode=bool(d.get("fastMode", False)),
+            fast_mode_models=d.get("fastModeModels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),
             sub_agents=d.get("subAgents"),

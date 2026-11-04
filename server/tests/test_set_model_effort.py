@@ -3,8 +3,9 @@
 The prompt row's effort picker re-sends the session's current model with a new
 effort. The route threads it into ``set_model_for_session(reasoning_effort=…)``
 only when present — an ordinary model switch must keep ``EFFORT_UNCHANGED`` so it
-never touches a Codex session's effort — and refuses it for a Claude session with
-the same ``unsupported_reasoning_effort`` code session creation uses. The remote
+never touches a Codex session's effort. On a Claude session it is applied LIVE
+through the CLI's flag settings (D-14, ``test_fast_mode``), and a refused write comes
+back as its ``SettingsError`` code. The remote
 hop (RemoteOrchestrator → daemon RPC) carries it too, so a session on another
 fleet host behaves the same.
 """
@@ -103,14 +104,30 @@ def test_effort_omitted_leaves_effort_unchanged():
     assert fake.calls[0]["reasoning_effort"] is EFFORT_UNCHANGED
 
 
-def test_effort_on_a_claude_session_is_refused():
+def test_effort_on_a_claude_session_reaches_set_model_for_session():
+    """D-14: the bug was that Claude refused (and before that, ignored) an effort."""
     client, fake = _make_client(AgentEngine.CLAUDE_CODE)
     with patch.dict(os.environ, _ENV), client:
         r = client.post(f"/api/sessions/{_SID}/model",
                         json={"model": "opus", "effort": "high"}, headers=_H)
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "unsupported_reasoning_effort"
-    assert fake.calls == []
+    assert r.status_code == 200, r.text
+    assert fake.calls == [{"sid": _SID, "model": "opus", "when": "now",
+                           "reasoning_effort": "high"}]
+
+
+@pytest.mark.parametrize("code,http", [("SETTINGS_INVALID", 400), ("SETTINGS_REFUSED", 409)])
+def test_a_refused_live_effort_is_its_settings_code(code, http):
+    from server.sessions.flag_settings import SettingsError
+    client, fake = _make_client(AgentEngine.CLAUDE_CODE)
+
+    async def refuse(*a, **k):
+        raise SettingsError(code, "no")
+
+    fake.set_model_for_session = refuse  # type: ignore[method-assign]
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post(f"/api/sessions/{_SID}/model",
+                        json={"model": "opus", "effort": "turbo"}, headers=_H)
+    assert r.status_code == http and r.json()["detail"]["code"] == code
 
 
 class _RecordingClient:

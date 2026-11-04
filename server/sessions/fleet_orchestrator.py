@@ -215,6 +215,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     "fork_session",
     # So is a rewind (D-9): the live client, transcript, worktree and undo backups.
     "rewind_session", "undo_rewind",
+    # So is fast mode (D-14): the live client it is written to, and the record's model list.
+    "set_fast_mode",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",

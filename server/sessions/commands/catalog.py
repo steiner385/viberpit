@@ -54,11 +54,16 @@ def parse_command_line(raw: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 # Commands handled by a dedicated client-side render (no model turn).
-CLIENT = {"help", "context", "mcp", "fork", "rewind", "btw"}
+CLIENT = {"help", "context", "mcp", "fork", "rewind", "btw", "fast"}
 # Commands a coding session offers but the Assistant drawer's own session never does —
 # whoever publishes them. `/btw` (D-12) opens a side chat about the session it is typed
 # in; the drawer has no side chat about itself.
 CODING_ONLY = frozenset({"btw"})
+# Commands ViberPit owns outright: the engine's own entry of that name is never offered,
+# not even as a passthrough. The CLI publishes `/fast`, but its toggle would bypass the
+# session's persisted choice (D-14) — and fast mode bills usage credits at a higher rate,
+# so it must only ever change through ViberPit's gated, recorded path.
+APP_ONLY = frozenset({"fast"})
 # Commands executed via a dedicated SDK method (not raw passthrough).
 CONTROL = {"model", "clear"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
@@ -106,6 +111,12 @@ class AppCommand:
 
     command: Command
     gate: Callable[[AgentCapabilities], bool]
+    #: The command also needs this session's fast mode to be available right now
+    #: (D-14: per MODEL, so not an engine capability — `fast_mode_available`).
+    needs_fast_mode: bool = False
+
+    def offered(self, capabilities: AgentCapabilities, *, fast_mode_available: bool) -> bool:
+        return self.gate(capabilities) and (fast_mode_available or not self.needs_fast_mode)
 
 
 def _always(_caps: AgentCapabilities) -> bool:
@@ -177,14 +188,25 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
                 argument_hint="<question>", kind="client", source=APP),
         gate=_assistant_enabled,
     ),
+    # `/fast` (D-14) toggles the session's fast mode. Offered only where the engine has
+    # live flag settings AND the CLI lists the current model as fast-capable. The browser
+    # runs it (it posts to `POST /sessions/{id}/fast`); `APP_ONLY` drops the CLI's own.
+    AppCommand(
+        Command(name="fast", description="Toggle fast mode: faster output on the same model",
+                argument_hint="[on|off]", kind="client", source=APP),
+        gate=lambda caps: caps.flag_settings,
+        needs_fast_mode=True,
+    ),
 )
 
 
-def classify(name: str, capabilities: AgentCapabilities | None = None) -> str:
+def classify(name: str, capabilities: AgentCapabilities | None = None, *,
+             fast_mode_available: bool = False) -> str:
     """The execution kind of *name*. With *capabilities*, a CLIENT name whose app-owned
     entry is gated off for this engine is the engine's own command (passthrough)."""
     if name in CLIENT:
-        if capabilities is not None and app_command(name, capabilities) is None:
+        if capabilities is not None and app_command(
+                name, capabilities, fast_mode_available=fast_mode_available) is None:
             return "passthrough"
         return "client"
     if name in CONTROL:
@@ -192,8 +214,10 @@ def classify(name: str, capabilities: AgentCapabilities | None = None) -> str:
     return "passthrough"
 
 
-def app_command(name: str, capabilities: AgentCapabilities) -> Command | None:
+def app_command(name: str, capabilities: AgentCapabilities, *,
+                fast_mode_available: bool = False) -> Command | None:
     """The app-owned command *name* for this engine, or None when it is gated off.
+    *fast_mode_available* is the session's own fast-mode gate (D-14), for `/fast`.
 
     THE gate `run_command` consults before intercepting a command, so the
     palette and the dispatcher agree on which app-owned commands exist for a
@@ -202,12 +226,14 @@ def app_command(name: str, capabilities: AgentCapabilities) -> Command | None:
     """
     lookup = str(name).lstrip("/")
     for entry in APP_COMMANDS:
-        if entry.command.name == lookup and entry.gate(capabilities):
+        if entry.command.name == lookup and entry.offered(
+                capabilities, fast_mode_available=fast_mode_available):
             return entry.command
     return None
 
 
-def _coerce(entry, capabilities: AgentCapabilities) -> Command | None:
+def _coerce(entry, capabilities: AgentCapabilities, *,
+            fast_mode_available: bool = False) -> Command | None:
     if isinstance(entry, str):
         name, desc, hint = entry, "", None
     elif isinstance(entry, dict):
@@ -217,19 +243,21 @@ def _coerce(entry, capabilities: AgentCapabilities) -> Command | None:
     else:
         return None
     name = str(name).lstrip("/").strip()
-    if not name or name in EXCLUDED:
+    if not name or name in EXCLUDED or name in APP_ONLY:
         return None
     # An engine whose catalog entries are invoked natively never produces a
     # passthrough entry: passthrough means "write `/name` into the prompt and
     # let the engine parse it", which an engine that does not parse slash syntax
     # would forward to the model as literal text.
-    kind = "skill" if capabilities.vendor_skills else classify(name, capabilities)
+    kind = ("skill" if capabilities.vendor_skills
+            else classify(name, capabilities, fast_mode_available=fast_mode_available))
     return Command(name=name, description=str(desc), argument_hint=hint,
                    kind=kind, source=VENDOR)
 
 
 def build_catalog(
-    server_info: dict | None, capabilities: AgentCapabilities, *, kind: str | None
+    server_info: dict | None, capabilities: AgentCapabilities, *, kind: str | None,
+    fast_mode_available: bool = False,
 ) -> list[Command]:
     """The commands *this* session accepts: the engine's, then ViberPit's own.
 
@@ -243,19 +271,23 @@ def build_catalog(
     whether vendor entries are read at all — an engine with
     ``vendor_commands=False`` has no such list, so anything arriving in
     `server_info` for it would be a stale cache rather than a fact.
+
+    *fast_mode_available* is the session's per-model fast-mode gate (D-14,
+    ``SessionOrchestrator.fast_mode_available``): `/fast` is offered only when it holds.
     """
     entries = (server_info or {}).get("commands") or []
     out: list[Command] = []
     seen: set[str] = set(CODING_ONLY) if is_assistant_kind(kind) else set()
     if capabilities.vendor_commands:
         for e in entries:
-            cmd = _coerce(e, capabilities)
+            cmd = _coerce(e, capabilities, fast_mode_available=fast_mode_available)
             if cmd is None or cmd.name in seen:
                 continue
             seen.add(cmd.name)
             out.append(cmd)
     for entry in APP_COMMANDS:
-        if entry.command.name in seen or not entry.gate(capabilities):
+        if entry.command.name in seen or not entry.offered(
+                capabilities, fast_mode_available=fast_mode_available):
             continue
         seen.add(entry.command.name)
         out.append(entry.command)
