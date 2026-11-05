@@ -312,7 +312,11 @@ async def update_note(db: AsyncSession, ladder: MilestoneLadder, note_id: str, *
     if status is not None:
         _check_status(note.kind, status)
     body = _note_text(text) if text is not None else None
-    if note.created_by not in (None, actor.identity) and not is_owner(actor):
+    # A session changes only its own notes: NULL counts as someone else's for it. For a
+    # person a NULL creator stays editable (a pre-attribution note has no one to defer to).
+    own = (note.created_by == actor.identity if is_session(actor)
+           else note.created_by in (None, actor.identity))
+    if not own and not is_owner(actor):
         raise MilestoneActionError(403, "owner_required", {"createdBy": note.created_by})
 
     before = {"status": note.status, "text": note.text}

@@ -717,3 +717,27 @@ async def test_system_actor_cannot_add_note(isolated_db):
     async with db_session() as db:
         e = await _err(add_note(db, await _ladder(db), actor=SYSTEM, kind="ask", text="x"))
     assert (e.status, e.code) == (403, "person_or_session_required")
+
+
+@pytest.mark.asyncio
+async def test_session_cannot_edit_null_creator_note(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        lad = await _ladder(db)
+        n = await add_note(db, lad, actor=OWNER, kind="ask", text="Sign the DPA")
+        n.created_by = None
+        await db.flush()
+        e = await _err(update_note(db, lad, n.id, actor=AGENT, status="done"))
+        assert (e.status, e.code) == (403, "owner_required")
+        n = await update_note(db, lad, n.id, actor=OWNER, status="done")
+    assert n.status == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity", ["assistant:x", "lan@local"])
+async def test_agent_actor_cannot_add_note(isolated_db, identity):
+    await _seed()
+    async with db_session() as db:
+        e = await _err(add_note(db, await _ladder(db), actor=Actor(identity, "api"),
+                                kind="ask", text="x"))
+    assert (e.status, e.code) == (403, "person_or_session_required")
