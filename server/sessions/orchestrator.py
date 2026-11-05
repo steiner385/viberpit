@@ -21813,9 +21813,10 @@ class SessionOrchestrator:
                            identity: str = SYSTEM_IDENTITY) -> list[dict]:
         """Turn one MCP tool on or off in a live session (D-16b) and persist the override.
 
-        Saved first, then applied live — the whole recomposed ``permissions`` object
-        through the flag layer, reply awaited, under the driver's one lock — and a refused
-        apply restores the override it replaced. Returns the
+        Saved, then applied live — the whole recomposed ``permissions`` object through
+        the flag layer, reply awaited — as one critical section under the driver's
+        per-tool lock; a failed apply restores the override it replaced
+        (``ClaudeAgentDriver.set_mcp_tool_override``). Returns the
         session's servers as ``mcp_status_for`` serves them. ``KeyError`` for an unknown
         session; ``SettingsError``: ``MCP_TOOLS_UNAVAILABLE`` with no switches (Codex,
         not live, kill switch, a server whose tool list is unknown), ``MCP_TOOL_UNKNOWN``
@@ -21839,20 +21840,16 @@ class SessionOrchestrator:
                           f"the tool list of {server!r} is unknown")
         if state is None or tool not in {t.name for t in state.tools}:
             raise refused(flag_settings.MCP_TOOL_UNKNOWN, f"{server!r} has no tool {tool!r}")
-        # Persist first, then apply: a failed write applies nothing (and nothing a
-        # restart would revert); a refused apply restores the override it replaced.
-        previous = await mcp_scope_store.set_session_tool_override(session_id, server, tool,
-                                                                   enabled)
-        try:
-            await driver.set_mcp_tool_override(server, tool, enabled)
-        except Exception:
-            try:
-                await mcp_scope_store.set_session_tool_override(session_id, server, tool,
-                                                                previous)
-            except Exception:
-                log.warning("mcp tool override not restored session=%s server=%s tool=%s",
-                            session_id, server, tool, exc_info=True)
-            raise
+        # Write, apply and compensate run as ONE critical section under the driver's
+        # per-tool lock (the driver calls ``persist`` inside it): the DB and the CLI change
+        # in the same order, and a refused apply restores only the value it wrote over.
+        # This runs on the daemon that owns the driver (``set_mcp_tool`` is a per-session
+        # RPC), so the write is under the same lock in remote mode too.
+
+        async def persist(value: bool | None) -> bool | None:
+            return await mcp_scope_store.set_session_tool_override(session_id, server, tool,
+                                                                   value)
+        await driver.set_mcp_tool_override(server, tool, enabled, persist=persist)
         log.info("session.mcp_tool id=%s server=%s tool=%s enabled=%s by=%s", session_id,
                  server, tool, enabled, identity)
         return self._mcp_wire(session_id, driver, driver.last_mcp_status)

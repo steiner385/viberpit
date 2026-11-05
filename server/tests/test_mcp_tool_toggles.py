@@ -52,7 +52,8 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions.remote import RemoteOrchestrator
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.test_fast_mode import (MODELS, FakeControl, _control_error, _fake_usage,
-                                         _no_title, _no_warnings, _seed_account)
+                                         _no_title, _no_warnings, _seed_account,
+                                         _timeout_error)
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 
@@ -724,6 +725,151 @@ async def test_a_failed_start_apply_is_served_as_not_enforced(env) -> None:
     servers = await env.orch.mcp_status_for(rec.id)
     assert servers[0]["toolsEnforced"] is True
     assert _tools_of(servers)["tool_b"] == (False, "default")
+
+
+# Fix round 2, item 5: write -> apply -> compensate is ONE critical section under the
+# driver's per-tool lock.
+
+
+def _track_accepted(control: FakeControl) -> list[dict]:
+    """Record each ``permissions`` object the fake CLI ACCEPTED (a refused or timed-out
+    request is recorded in ``sent`` too, but never took effect)."""
+    accepted: list[dict] = []
+    send = control._send_control_request
+
+    async def tracked(request, timeout=60.0):
+        reply = await send(request, timeout)
+        perms = (request.get("settings") or {}).get("permissions")
+        if perms is not None:
+            accepted.append(perms)
+        return reply
+    control._send_control_request = tracked  # type: ignore[method-assign]
+    return accepted
+
+
+def _cli_deny(accepted: list[dict]) -> set[str]:
+    """What the fake CLI runs under: the last ``permissions`` object it accepted."""
+    return set(accepted[-1]["deny"]) if accepted else set()
+
+
+async def _db_overrides(sid: str) -> dict:
+    return (await _row(sid)).mcp_tool_overrides or {}
+
+
+@pytest.mark.asyncio
+async def test_the_override_is_written_inside_the_drivers_lock(env) -> None:
+    rec = await env.create()
+    driver = env.orch._drivers[rec.id]
+    real = scope_store.set_session_tool_override
+    held: list[bool] = []
+
+    async def spy(*a, **k):
+        held.append(driver._mcp_tool_lock.locked())
+        return await real(*a, **k)
+    with patch.object(scope_store, "set_session_tool_override", spy):
+        await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+        env.control.replies = [_control_error("nope")]
+        with pytest.raises(fs.SettingsError):
+            await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", True, identity="u")
+    assert held == [True, True, True]          # write, write, compensation: all locked
+
+
+@pytest.mark.asyncio
+async def test_the_ab_ordering_race_ends_with_cli_equal_db_equal_b(env) -> None:
+    import asyncio
+    rec = await env.create()
+    accepted = _track_accepted(env.control)
+    real = scope_store.set_session_tool_override
+    calls = 0
+
+    async def slow_first(*a, **k):          # A's write is slow: B must wait for all of A
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await asyncio.sleep(0.05)
+        return await real(*a, **k)
+    with patch.object(scope_store, "set_session_tool_override", slow_first):
+        a = asyncio.create_task(env.orch.set_mcp_tool(rec.id, "probe", "tool_a", True,
+                                                      identity="u"))
+        driver = env.orch._drivers[rec.id]
+        while not driver._mcp_tool_lock.locked():     # A has written inside the lock
+            await asyncio.sleep(0.005)
+        b = asyncio.create_task(env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False,
+                                                      identity="u"))
+        await asyncio.gather(a, b)
+    assert await _db_overrides(rec.id) == {"probe": {"tool_a": False}}
+    assert _cli_deny(accepted) == {"mcp__probe__tool_a"}
+
+
+@pytest.mark.asyncio
+async def test_a_refused_a_does_not_clobber_b(env) -> None:
+    import asyncio
+    rec = await env.create()
+    accepted = _track_accepted(env.control)
+    # B committed before A: A's compensation restores B's value, not "no override".
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", True, identity="u")
+    env.control.replies = [_control_error("nope")]
+    with pytest.raises(fs.SettingsError):
+        await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+    assert await _db_overrides(rec.id) == {"probe": {"tool_a": True}}
+    assert _cli_deny(accepted) == set()
+    # Concurrent: a refused A, then B; B's committed override survives A's compensation.
+    env.control.replies = [_control_error("nope")]
+    env.control.gate = asyncio.Event()             # hold A's (refused) reply
+    a = asyncio.create_task(env.orch.set_mcp_tool(rec.id, "probe", "tool_b", False,
+                                                  identity="u"))
+    while env.control.in_flight == 0:
+        await asyncio.sleep(0.005)
+    b = asyncio.create_task(env.orch.set_mcp_tool(rec.id, "probe", "tool_b", True,
+                                                  identity="u"))
+    await asyncio.sleep(0.02)
+    env.control.gate.set()
+    results = await asyncio.gather(a, b, return_exceptions=True)
+    assert isinstance(results[0], fs.SettingsError) and not isinstance(results[1], Exception)
+    assert await _db_overrides(rec.id) == {"probe": {"tool_a": True, "tool_b": True}}
+    assert _cli_deny(accepted) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_apply_leaves_db_equal_cli_and_propagates(env) -> None:
+    import asyncio
+    rec = await env.create()
+    accepted = _track_accepted(env.control)
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_c", False, identity="u")
+    env.control.gate = asyncio.Event()
+    task = asyncio.create_task(env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False,
+                                                     identity="u"))
+    while env.control.in_flight == 0:          # the apply is on the wire
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.01)
+    env.control.gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await _db_overrides(rec.id) == {"probe": {"tool_c": False}}
+    assert _cli_deny(accepted) == {"mcp__probe__tool_c"}      # resent to match the DB
+    servers = await env.orch.mcp_status_for(rec.id)
+    assert servers[0]["toolsEnforced"] is True
+    assert _tools_of(servers)["tool_a"] == (True, "default")
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_apply_is_not_enforced_until_the_next_compose(env, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    rec = await env.create()
+    accepted = _track_accepted(env.control)
+    env.control.replies = [_timeout_error()]
+    with pytest.raises(fs.SettingsError) as ei:
+        await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+    assert ei.value.code == fs.SETTINGS_FAILED
+    assert await _db_overrides(rec.id) == {}
+    assert (await env.orch.mcp_status_for(rec.id))[0]["toolsEnforced"] is False
+    assert any("state unknown after a timed-out toggle" in r.getMessage()
+               and r.levelno == logging.INFO for r in caplog.records)
+    assert _no_warnings(caplog) == []
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_b", False, identity="u")
+    assert (await env.orch.mcp_status_for(rec.id))[0]["toolsEnforced"] is True
+    assert _cli_deny(accepted) == {"mcp__probe__tool_b"}
 
 
 # ---------------------------------------------------------------- RPC / remote / fleet / facade

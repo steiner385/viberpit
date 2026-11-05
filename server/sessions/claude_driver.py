@@ -10,7 +10,7 @@ import logging
 import os
 import time
 import uuid
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Awaitable, Callable
 from claude_agent_sdk import (AssistantMessage, PermissionResultAllow, PermissionResultDeny,
                               ResultMessage, SystemMessage, TaskStartedMessage, TaskUpdatedMessage,
                               TaskNotificationMessage, TERMINAL_TASK_STATUSES)
@@ -2710,17 +2710,66 @@ class ClaudeAgentDriver:
             MCP_TOOLS_NOT_APPLIED,
             "Tool settings not applied — every MCP tool is on. Restart the session."))
 
-    async def set_mcp_tool_override(self, server: str, tool: str, enabled: bool) -> None:
-        """A live per-tool toggle (D-16b): under ``_mcp_tool_lock``, take the desired
-        rules, add the override, then compose and send the WHOLE ``permissions`` object
-        (``deny: []`` restores every tool). Concurrent toggles serialize, so none is lost.
-        A refusal raises ``SettingsError`` and leaves the applied rules as they were."""
+    async def set_mcp_tool_override(self, server: str, tool: str, enabled: bool, *,
+                                    persist: Callable[[bool | None], Awaitable[bool | None]]
+                                    | None = None) -> None:
+        """A live per-tool toggle (D-16b), as ONE critical section under
+        ``_mcp_tool_lock``: write the override (``persist(enabled)``, which returns the
+        value it replaced), add it to the desired rules, compose and send the WHOLE
+        ``permissions`` object (``deny: []`` restores every tool), and record it as
+        applied once the CLI accepts. Concurrent toggles serialize, so the DB and the CLI
+        end in the same order and none is lost.
+
+        Any failure compensates before the lock is released (``_undo_tool_override``):
+        a refusal raises ``SettingsError`` with the applied state unchanged; a timeout or
+        a cancellation leaves the CLI unknown and is handled there. The caller's
+        cancellation is always re-raised."""
         async with self._mcp_tool_lock:
-            if self._mcp_tool_desired is None:
+            desired = self._mcp_tool_desired
+            if desired is None:
                 raise self._settings_refused(SettingsError(
                     MCP_TOOLS_UNAVAILABLE, "no per-tool rules on this session"))
-            await self._apply_tool_rules_locked(
-                self._mcp_tool_desired.with_override(server, tool, enabled))
+            previous = await persist(enabled) if persist is not None else None
+            try:
+                await self._apply_tool_rules_locked(desired.with_override(server, tool, enabled))
+            except BaseException as exc:
+                await run_to_completion(
+                    self._undo_tool_override(exc, desired, persist, previous),
+                    name=f"mcp-tool-undo:{self.session_id}")
+                raise
+
+    async def _undo_tool_override(self, exc: BaseException, desired, persist,
+                                  previous: bool | None) -> None:
+        """Compensate a failed live toggle, still under ``_mcp_tool_lock`` (and run to
+        completion even if the caller is cancelled): restore only the override this call
+        wrote over, then make the CLI match.
+
+        - A refusal (the CLI answered ``error``): nothing landed; the applied state stands.
+        - A timeout (``SETTINGS_FAILED``): it may have landed. The applied state is
+          unknown, so the session reads ``mcp_tools_enforced=False`` (INFO) until the next
+          successful compose.
+        - A cancellation: the write may be in flight. The desired rules are resent so the
+          CLI matches the restored DB; if that fails too, ``mcp_tools_enforced=False``.
+
+        Never raises: the caller re-raises the original failure."""
+        try:
+            if persist is not None:
+                await persist(previous)
+            if isinstance(exc, asyncio.CancelledError):
+                try:
+                    await self._apply_tool_rules_locked(desired)
+                except Exception:
+                    self._mcp_tools_enforced = False
+                    log.info("mcp tool state unknown after a cancelled toggle session=%s",
+                             self.session_id)
+            elif getattr(exc, "code", None) == SETTINGS_FAILED:
+                self._mcp_tools_enforced = False
+                log.info("mcp tool state unknown after a timed-out toggle session=%s",
+                         self.session_id)
+        except Exception:
+            self._mcp_tools_enforced = False
+            log.warning("mcp tool override not restored session=%s", self.session_id,
+                        exc_info=True)
 
     async def _poll_mcp_status(self) -> list | None:
         """One get_mcp_status round-trip -> emit + persist. Best-effort, DEBUG on failure.
