@@ -335,6 +335,14 @@ class FleetOrchestrator:
         # ended ``failed``, or one a dead edge left behind. Held (driver builds answer
         # SessionMoving) until the reconcile settles it.
         self._held: dict[str, str] = {}
+        # When this edge process started (naive UTC). One edge per deployment: a move
+        # claim older than this can belong to no live saga, so the reconcile treats it
+        # as stale at once instead of waiting out MOVE_STALE_S (D-17).
+        from server.db.clock import naive_utc_now
+        self.started_at = naive_utc_now()
+        # session_id -> monotonic time the reconcile first saw the target holding the
+        # lease without the import marker (session_move.IMPORT_STALL_S).
+        self._lease_wait: dict[str, float] = {}
 
     def _primary_orch(self):
         return self._router.get(self._primary)
@@ -517,6 +525,14 @@ class FleetOrchestrator:
 
     def held_ids(self) -> list[str]:
         return list(self._held)
+
+    def lease_wait_seconds(self, session_id: str) -> float:
+        """Seconds since the reconcile first saw this lease-without-marker state."""
+        first = self._lease_wait.setdefault(session_id, time.monotonic())
+        return time.monotonic() - first
+
+    def clear_lease_wait(self, session_id: str) -> None:
+        self._lease_wait.pop(session_id, None)
 
     @staticmethod
     async def _record_from_row_of(session_id: str):

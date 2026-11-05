@@ -101,6 +101,12 @@ TRANSCRIPT_RETRY_S = 1.0
 #: reconcile — never finalizing the source on the lease alone.
 IMPORT_SETTLE_S = 30.0
 IMPORT_SETTLE_POLL_S = 0.5
+#: How long the reconcile lets a target hold the lease WITHOUT the import marker before
+#: it stops calling that "an import in progress": past this the holder is not running
+#: an import (e.g. it was resumed outside the saga after an edge restart), so it is
+#: verified on the holder — tree, transcript, live driver — and kept, or the session
+#: goes back to the source. Never wedged.
+IMPORT_STALL_S = MOVE_STALE_S
 #: Background tasks listed in a refusal / preflight (the UI's confirm list).
 BACKGROUND_LIST_CAP = 20
 
@@ -525,7 +531,7 @@ async def _release_claim(session_id: str) -> None:
     async with db_session() as db:
         await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
                          .values(moving_to=None, move_started_at=None,
-                                 move_imported_by=None))
+                                 move_imported_by=None, move_manifest=None))
         await db.commit()
 
 
@@ -538,6 +544,31 @@ async def _abandon_claim(session_id: str) -> None:
     async with db_session() as db:
         await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
                          .values(move_started_at=None))
+        await db.commit()
+
+
+async def clear_import_marker(session_id: str, host: str) -> None:
+    """Withdraw *host*'s import-complete evidence (CAS on ``move_imported_by == host``)
+    — the target's abandon does this before it touches any tree."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(
+            DbSession.id == session_id, DbSession.move_imported_by == host)
+            .values(move_imported_by=None))
+        await db.commit()
+
+
+async def _store_manifest(session_id: str, manifest: dict | None) -> None:
+    """Keep the in-flight move's manifest with its claim, for a reconcile after an edge
+    restart (the transcript marker it verifies a holder against, the WIP bundle)."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                         .values(move_manifest=manifest))
         await db.commit()
 
 
@@ -672,6 +703,11 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
             code = MOVE_EXPORT_FAILED
             outcome = await _restore(fleet, sid, source, target, None, ctx, restamped=False)
             raise MoveError(code, f"export on {source} failed: {exc}", outcome=outcome) from exc
+        try:
+            await _store_manifest(sid, manifest)
+        except Exception:
+            log.warning("session.move could not store the manifest id=%s — a reconcile "
+                        "after an edge restart will work without it", sid, exc_info=True)
         try:
             await _restamp(sid, host=target, moved_from=source, moved_at=_NOW)
         except Exception as exc:
@@ -837,14 +873,20 @@ async def reconcile_stale_moves(sessions: Any, *, older_than_s: float = MOVE_STA
     for row in rows:
         if fleet.moving_target(row.id) is not None:
             continue   # a live saga in this edge
-        if row.move_started_at is not None and row.move_started_at >= cutoff:
-            continue   # maybe a live saga elsewhere, or one that just ended: not ours
+        if (row.move_started_at is not None and row.move_started_at >= cutoff
+                and row.move_started_at >= fleet.started_at):
+            # Recent, and claimed while THIS edge was already running: a saga that just
+            # ended (one edge — a live one would be in moving_target). A claim older
+            # than this edge process can belong to no live saga: stale at once.
+            continue
         fleet.hold_move(row.id, row.moving_to)
         try:
             # Re-read under the hold: the scan may be stale (a saga that ended since).
             current = await _claim_row(row.id)
-            if current is None or current.moving_to != row.moving_to:
-                continue
+            if (current is None or current.moving_to != row.moving_to
+                    or current.move_started_at != row.move_started_at
+                    or fleet.moving_target(row.id) is not None):
+                continue   # gone, a different claim, or a live saga took it
             if await _reconcile_one(fleet, current):
                 settled.append(row.id)
         except Exception:
@@ -902,21 +944,30 @@ async def _reconcile_one(fleet: Any, row) -> bool:
     source = (row.moved_from if restamped else row.host) or fleet.primary_name
     holder = await _fresh_lease_holder(sid)
     imported = getattr(row, "move_imported_by", None) == target
+    manifest = getattr(row, "move_manifest", None)
+    verify_holder = False
     if holder == target and not imported:
-        # The target took the lease but has not finished (the lease is claimed BEFORE
-        # ensure_driver): an import in progress, not a winner. Never finalize the
-        # source on it; wait for the marker or for the lease to lapse.
-        _episode_log(fleet, sid, "session.move_reconcile id=%s: %s holds the lease without "
-                     "the import marker — import in progress, retrying", sid, target)
-        return False
+        # The target took the lease without the marker (the lease is claimed BEFORE
+        # ensure_driver). Within IMPORT_STALL_S that is an import in progress: never
+        # finalize the source on it. Past it the holder is not running an import: verify
+        # it on the holder (tree, transcript, live driver → the marker) or fall back.
+        waited = fleet.lease_wait_seconds(sid)
+        if waited < IMPORT_STALL_S:
+            _episode_log(fleet, sid, "session.move_reconcile id=%s: %s holds the lease "
+                         "without the import marker — import in progress, retrying",
+                         sid, target)
+            return False
+        verify_holder = True
+    else:
+        fleet.clear_lease_wait(sid)
     first: str
     if holder is not None and holder == source:
         first = source
     else:
-        first = target if imported else source
+        first = target if (imported or verify_holder) else source
     order: list[str] = [first]
     other = source if first == target else target
-    if other == source or imported:
+    if other == source or imported or verify_holder:
         order.append(other)
     _episode_log(fleet, sid, "session.move_reconcile id=%s claim=%s→%s stamp=%s lease=%s "
                  "imported=%s order=%s", sid, source, target, row.host, holder, imported,
@@ -933,20 +984,22 @@ async def _reconcile_one(fleet: Any, row) -> bool:
         else:
             await _restamp(sid, host=source, moved_from=row.moved_from, moved_at=row.moved_at)
         fleet.note_host(sid, cand)
-        if cand != holder:
+        if cand != holder or (cand == target and verify_holder):
             try:
-                await _orch(fleet, cand).transfer_import(sid, None, source=loser, local=True)
+                await _orch(fleet, cand).transfer_import(sid, manifest, source=loser,
+                                                         local=True)
             except Exception:
                 log.info("session.move reconcile: %s could not resume id=%s", cand, sid,
                          exc_info=True)
                 continue
         try:
-            await _orch(fleet, loser).transfer_finalize(sid, None, owner=cand)
+            await _orch(fleet, loser).transfer_finalize(sid, manifest, owner=cand)
         except Exception:
             log.info("session.move reconcile: dropping %s's copy failed id=%s", loser, sid,
                      exc_info=True)
         await _release_claim(sid)
         fleet.release_hold(sid)
+        fleet.clear_lease_wait(sid)
         _warned(fleet).discard(sid)
         await _audit("system", None, {"sessionId": sid, "from": source, "to": target,
                                       "outcome": f"reconciled:{cand}", "lease": holder})

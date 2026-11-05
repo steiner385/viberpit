@@ -266,6 +266,11 @@ class Session(Base):
     # here once its driver started on the moved session (transcript verified). A
     # directory on the target is NOT that evidence — a half-finished import has one.
     move_imported_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The in-flight move's manifest (bundle + transcript marker), written by the edge
+    # after export, so a reconcile after an edge restart can verify a holder's
+    # transcript and handle the WIP commit exactly. Cleared with the claim.
+    move_manifest: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     # Why a session the locality rule would have made "native" was routed to "virtual"
     # (NativeDisplay.unavailable_reason(), or "native_disabled" when this host has no
     # native display). NULL = no fallback happened. Nullable so init_db backfills it.

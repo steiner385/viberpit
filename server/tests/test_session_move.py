@@ -261,6 +261,9 @@ class FakeHost:
             await self.gate.wait()
         key = "restore" if local else "import"
         if key in self.fail:
+            if local:                      # _abandon(local): close the driver here
+                self.drivers.discard(sid)
+                await _release(sid, self.name)
             raise self.fail[key]
         async with db_session() as db:
             row = await db.get(DbSession, sid)
@@ -286,8 +289,9 @@ class FakeHost:
             raise sm.MoveError(sm.MOVE_LEASE_HELD)
         self.drivers.add(sid)
         self.events.append((self.name, "restore" if local else "import"))
-        if not local:
-            await sm.mark_import_complete(sid, self.name)
+        # Like the daemon: the marker CAS only lands where this host is the claim's
+        # target (a reconcile adopting a target that resumed outside the saga).
+        await sm.mark_import_complete(sid, self.name)
         self.origin.discard(sid)          # delete_transfer_refs (best-effort, both paths)
         return {"sessionId": sid, "host": self.name, "driver": True}
 
@@ -764,7 +768,7 @@ async def test_reconcile_falls_back_when_the_winner_cannot_resume(fleet):
 @pytest.mark.asyncio
 async def test_reconcile_leaves_fresh_and_live_claims_alone(fleet):
     fx = fleet
-    await _stale_claim(host="dobby", age_s=30)
+    await _stale_claim(host="dobby", age_s=0)    # claimed while this edge runs
     assert await sm.reconcile_stale_moves(fx.f) == []
     await _stale_claim(host="dobby", age_s=900)
     fx.f.begin_move(SID, "rocky")                     # a live saga in this edge
@@ -1574,3 +1578,211 @@ async def test_a_stuck_reconcile_warns_once_per_episode(fleet, caplog):
         await sm.reconcile_stale_moves(fx.f)
     assert any(r.levelno >= logging.WARNING for r in caplog.records
                if r.name == "server.sessions.session_move")
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+# Fix round 3
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+async def _marker() -> str | None:
+    return (await _row()).move_imported_by
+
+
+@pytest.mark.asyncio
+async def test_a_marker_write_that_raises_after_commit_keeps_the_target_tree(
+        monkeypatch, two_hosts):
+    """Item 1: the marker commit landed, then the context exit raised. Nothing after
+    the marker may abandon: the marker says "live here", so the tree must stay."""
+    h = two_hosts
+    manifest = _manifest(h)
+    o = await _target(monkeypatch, h)
+    real = sm.mark_import_complete
+
+    async def commit_then_raise(sid, host):
+        await real(sid, host)
+        raise RuntimeError("connection reset after COMMIT")
+    monkeypatch.setattr(sm, "mark_import_complete", commit_then_raise)
+    with pytest.raises(RuntimeError):
+        await o.transfer_import(SID, manifest, source="dobby")
+    assert await _marker() == "rocky"
+    assert h.b_cwd.exists() and SID in o._drivers          # consistent with the marker
+
+
+@pytest.mark.asyncio
+async def test_abandon_clears_the_marker_before_touching_the_tree(monkeypatch, two_hosts):
+    """Item 1: a marker left set from an earlier attempt must not survive the tree."""
+    h = two_hosts
+    manifest = _manifest(h)
+    o = await _target(monkeypatch, h)
+    async with db_session() as db:
+        await db.execute(update(DbSession).where(DbSession.id == SID)
+                         .values(move_imported_by="rocky"))
+        await db.commit()
+    o.ensure_driver = AsyncMock(return_value=None)
+    with pytest.raises(sm.MoveError):
+        await o.transfer_import(SID, manifest, source="dobby")
+    assert await _marker() is None
+    assert not h.b_cwd.exists()
+
+
+async def _stale_rows():
+    return await sm._scan_claims()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_a_claim_a_live_saga_took_after_the_scan(fleet, monkeypatch):
+    """Item 2: the scan saw a stale claim; a saga in this edge started before the
+    re-read. The reconcile must leave it to the saga."""
+    fx = fleet
+    await _stale_claim(host="dobby")
+    rows = await _stale_rows()
+
+    async def stale_scan():
+        return rows
+    real_hold = fx.f.hold_move
+
+    def hold_then_saga_starts(sid, target):
+        real_hold(sid, target)
+        fx.f.begin_move(SID, "rocky")             # between the hold and the re-read
+    monkeypatch.setattr(sm, "_scan_claims", stale_scan)
+    monkeypatch.setattr(fx.f, "hold_move", hold_then_saga_starts)
+    assert await sm.reconcile_stale_moves(fx.f) == []
+    assert "restore" not in fx.dobby.calls
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_a_different_saga_with_the_same_target(fleet, monkeypatch):
+    """Item 2: same moving_to, but a different (newer) claim than the one scanned."""
+    fx = fleet
+    await _stale_claim(host="dobby")
+    rows = await _stale_rows()
+    await _stale_claim(host="dobby", age_s=5)          # a new claim since the scan
+
+    async def stale_scan():
+        return rows
+    monkeypatch.setattr(sm, "_scan_claims", stale_scan)
+    assert await sm.reconcile_stale_moves(fx.f) == []
+    assert "restore" not in fx.dobby.calls
+    assert (await _row()).moving_to == "rocky"
+
+
+def _restarted_edge(fx) -> FleetOrchestrator:
+    """A new edge process over the same daemons: no live sagas, a fresh start time."""
+    router = FleetRouter()
+    router.add("dobby", fx.dobby)
+    router.add("rocky", fx.rocky)
+    return FleetOrchestrator(router, primary="dobby")
+
+
+@pytest.mark.asyncio
+async def test_edge_restart_mid_saga_settles_on_the_first_pass_source_side(fleet):
+    """Item 3: the edge died 30 s into a move (after export). A claim older than this
+    edge's own start belongs to no live saga — held and settled at once, not in 10 min."""
+    fx = fleet
+    await fx.dobby.transfer_export(SID, target="rocky")
+    await _stale_claim(host="dobby", age_s=30)
+    edge = _restarted_edge(fx)
+    assert await sm.reconcile_stale_moves(edge) == [SID]
+    row = await _row()
+    assert (row.host, row.moving_to) == ("dobby", None)
+    assert fx.dobby.records[SID].host == "dobby" and SID not in fx.rocky.records
+    assert fx.origin == set()
+    assert await _lease_holder() == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_edge_restart_target_resumed_outside_the_saga_is_verified_and_kept(
+        fleet, monkeypatch):
+    """Item 3: after the restamp the edge died; the target got resumed some other way
+    and holds the lease with no marker. Past the stall bound it is verified on the
+    holder (tree, transcript, live driver), marked, kept — and only then is the source
+    finalized. No wedge."""
+    fx = fleet
+    monkeypatch.setattr(sm, "IMPORT_STALL_S", 0.0, raising=False)
+    manifest = await fx.dobby.transfer_export(SID, target="rocky")
+    await getattr(sm, "_store_manifest", AsyncMock())(SID, manifest)
+    await _stale_claim(host="rocky", moved_from="dobby", age_s=30)
+    assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+    fx.rocky.trees.add(SID)
+    fx.rocky.drivers.add(SID)
+    edge = _restarted_edge(fx)
+    assert await sm.reconcile_stale_moves(edge) == [SID]
+    row = await _row()
+    assert (row.host, row.moving_to) == ("rocky", None)
+    assert SID in fx.rocky.trees and SID not in fx.dobby.trees
+    assert fx.dobby.events[-2:] == [("rocky", "restore"), ("dobby", "finalize")]
+    assert await _lease_holder() == "rocky"
+
+
+@pytest.mark.asyncio
+async def test_edge_restart_target_that_fails_verification_falls_back_to_the_source(
+        fleet, monkeypatch):
+    fx = fleet
+    monkeypatch.setattr(sm, "IMPORT_STALL_S", 0.0, raising=False)
+    manifest = await fx.dobby.transfer_export(SID, target="rocky")
+    await getattr(sm, "_store_manifest", AsyncMock())(SID, manifest)
+    await _stale_claim(host="rocky", moved_from="dobby", age_s=30)
+    assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+    fx.rocky.trees.add(SID)
+    fx.rocky.drivers.add(SID)
+    fx.rocky.fail["restore"] = sm.MoveError(sm.MOVE_TRANSCRIPT_STALE)
+    edge = _restarted_edge(fx)
+    assert await sm.reconcile_stale_moves(edge) == [SID]
+    row = await _row()
+    assert (row.host, row.moving_to) == ("dobby", None)
+    _on_source_only_on(fx, edge)
+    assert await _lease_holder() == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_lease_without_marker_within_the_stall_bound_still_waits(fleet):
+    fx = fleet
+    await fx.dobby.transfer_export(SID, target="rocky")
+    await _stale_claim(host="rocky", moved_from="dobby", age_s=30)
+    assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+    edge = _restarted_edge(fx)
+    assert await sm.reconcile_stale_moves(edge) == []
+    assert SID in fx.dobby.trees and "finalize" not in fx.dobby.calls
+
+
+def _on_source_only_on(fx, edge) -> None:
+    assert fx.dobby.records[SID].host == "dobby"
+    assert SID not in fx.rocky.records
+    assert SID in fx.dobby.trees and SID not in fx.rocky.trees
+    assert edge._host_cache.get(SID) == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_a_source_resumed_after_an_edge_restart_never_runs_on_the_wip(
+        monkeypatch, two_hosts, visibility):
+    """Item 3, defence in depth on this path: the source daemon restarted too and
+    rehydrated the row (still stamped dobby, claim set); its ordinary resume unpacks the
+    transfer WIP before anything runs."""
+    h = two_hosts
+    o = await _source(monkeypatch, h)
+    base = _git("rev-parse", "HEAD", cwd=h.cwd)
+    (h.cwd / "wip.py").write_text("x\n")
+    await o.transfer_export(SID, target="rocky", carry_dirty=True)
+    assert _git("rev-parse", "HEAD", cwd=h.cwd) != base        # WIP committed
+    async with db_session() as db:
+        await db.execute(update(DbSession).where(DbSession.id == SID)
+                         .values(moving_to="rocky"))
+        await db.commit()
+    o._records.clear()
+    o._install_row(await _row())                                # what rehydrate builds
+    o._ensure_lock = asyncio.Lock()
+    o._claim_session = AsyncMock(return_value=True)
+    o._ensure_session_cwd = AsyncMock(return_value=True)
+
+    class _Stop(Exception):
+        pass
+
+    async def stop(**kw):
+        raise _Stop
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "disabled_for_session", stop)
+    with pytest.raises(_Stop):
+        await o.ensure_driver(SID)
+    assert _git("rev-parse", "HEAD", cwd=h.cwd) == base
+    assert (h.cwd / "wip.py").read_text() == "x\n"

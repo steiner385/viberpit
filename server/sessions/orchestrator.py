@@ -22905,6 +22905,16 @@ class SessionOrchestrator:
                         and state.age_s < SESSION_LEASE_TTL_S):
                     self._retarget_record(session_id, state.holder)
                 return
+            # Withdraw the import-complete evidence BEFORE touching any tree: a marker
+            # that outlives this tree would let the edge finalize the source too.
+            try:
+                await sm.clear_import_marker(session_id, me)
+            except Exception:
+                log.warning("session.move could not clear the import marker id=%s — "
+                            "keeping this host's tree", session_id, exc_info=True)
+                await self._close_for_transfer(session_id)
+                self._retarget_record(session_id, source or "")
+                return
             await self._close_for_transfer(session_id)
             self._retarget_record(session_id, source or "")
             if created and bundle is not None:
@@ -22933,9 +22943,11 @@ class SessionOrchestrator:
                                            f"imported at {info.path}, row says {cwd}")
                 self._install_row(row)
                 self._rearmed.discard(session_id)
-                if not local:
-                    await self._verify_moved_transcript(
-                        session_id, (manifest or {}).get("transcript"))
+                # Never resume a stale transcript — also on a local adoption (the
+                # reconcile verifying a target that resumed outside the saga), whenever
+                # the manifest's marker is known.
+                await self._verify_moved_transcript(
+                    session_id, (manifest or {}).get("transcript"))
                 if not await self._claim_session(session_id, why="transfer import",
                                                  adopt=True):
                     raise sm.MoveError(sm.MOVE_LEASE_HELD,
@@ -22944,10 +22956,6 @@ class SessionOrchestrator:
             driver = await self.ensure_driver(session_id)
             if driver is None:
                 raise sm.MoveError(sm.MOVE_RESUME_FAILED, "The conversation did not resume.")
-            if not local:
-                # Import-complete evidence for the crash reconcile: written only now,
-                # after the transcript check and a started driver.
-                await sm.mark_import_complete(session_id, me)
         except BaseException:
             try:
                 await _abandon()
@@ -22955,6 +22963,12 @@ class SessionOrchestrator:
                 log.warning("session.move could not undo a failed import id=%s",
                             session_id, exc_info=True)
             raise
+        # Import-complete evidence for the crash reconcile — the TRUE last step, outside
+        # the try: once it may have committed, nothing can abandon this tree any more.
+        # A CAS on moving_to == me, so it is a no-op on a source's restore. If it raises,
+        # this host keeps a live driver on a verified tree with or without the marker;
+        # the edge then waits for the marker or leaves it to the reconcile.
+        await sm.mark_import_complete(session_id, me)
         for text in (manifest or {}).get("preambles") or []:
             self._queue_prompt_preamble(session_id, text)
         if not local and source:
