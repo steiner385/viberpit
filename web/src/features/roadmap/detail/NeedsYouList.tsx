@@ -1,6 +1,6 @@
 // Everything in scope waiting on a human: attention issues, needs-you
 // initiatives, per-product proposal counts (which are decisions, not work),
-// and the control-band incidents. One list so "what needs me" is answered in one
+// open release-milestone asks, and the control-band incidents. One list so "what needs me" is answered in one
 // place rather than by three panels a human has to remember to visit. Blocked
 // work is WAITING, not needs-you (design 2026-10-14 §1): it follows in a quiet
 // section of its own and is never counted.
@@ -11,9 +11,9 @@ import { IncidentQueue } from '@/initiatives/IncidentQueue'
 import { EmptyState } from '@/ui/EmptyState'
 import { SectionHeading } from '@/ui/SectionHeading'
 import { initiativeAsk } from '@/features/products/vocab'
-import { capabilityPath, inboxPath, initiativePath } from '../roadmapNavState'
+import { capabilityPath, inboxPath, initiativePath, milestonesPath } from '../roadmapNavState'
 import { TIER_TEXT } from '../roadmapTier'
-import { needsYouRows, waitingRows } from './needsYou'
+import { milestoneAsks, needsYouRows, waitingRows } from './needsYou'
 import { LeafList } from './LeafList'
 import { HeldIssueCard } from './HeldIssueCard'
 import { OwnerDigestCard } from './OwnerDigestCard'
@@ -44,6 +44,8 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
   products: ProductNode[]; repos?: readonly string[]; capability?: CapabilityNode; overview?: boolean
 }) {
   const { initiatives, issues, pseudo } = needsYouRows(products, capability)
+  // A product whose only attention is asks still gets a row.
+  const asks = products.filter((p) => milestoneAsks(p, capability) > 0)
   // Not on the overview: it answers "what needs me" only.
   const waiting = overview ? { initiatives: [], issues: [] } : waitingRows(products, capability)
   const waitingCount = waiting.initiatives.length + waiting.issues.length
@@ -57,7 +59,8 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
   const inScope = new Set(products.map((p) => p.slug))
   const { data: holds } = useHolds(products.length === 1 ? products[0].slug : undefined, { enabled: !capability })
   const held = capability ? [] : (holds?.held ?? []).filter((h) => inScope.has(h.product))
-  const empty = initiatives.length === 0 && issues.length === 0 && pseudo.length === 0 && held.length === 0
+  const empty = initiatives.length === 0 && issues.length === 0 && pseudo.length === 0 && asks.length === 0
+    && held.length === 0
   if (overview && empty) return null
 
   return (
@@ -123,6 +126,22 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
               {p.counts.needsHome > 0 && <span className="text-ink-muted">{p.counts.needsHome} need a home — these issues need capability assignment; they may not yet have an Inbox proposal.</span>}
             </li>
           ))}
+        </ul>
+      )}
+      {asks.length > 0 && (
+        <ul className="flex flex-col gap-1" aria-label="Milestone asks">
+          {asks.map((p) => {
+            const count = milestoneAsks(p)
+            return (
+              <li key={p.slug} className="rounded-md border border-edge bg-surface p-3 text-sm">
+                <span className="font-medium text-ink">{p.name ?? p.slug}</span>
+                {' · '}
+                <Link className="text-accent hover:underline" to={milestonesPath(p.slug)}>
+                  {count} {count === 1 ? 'milestone ask' : 'milestone asks'}
+                </Link>
+              </li>
+            )
+          })}
         </ul>
       )}
       {waitingCount > 0 && (

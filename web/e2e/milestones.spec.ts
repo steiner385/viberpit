@@ -1,6 +1,7 @@
 /**
- * Release milestones (spec 2026-11-05 §9) — E2E smoke for the read-only page
- * at `/roadmap/:productSlug/milestones`.
+ * Release milestones (spec 2026-11-05 §9) — E2E for the page at
+ * `/roadmap/:productSlug/milestones`: the read-only ladder, ticking a manual
+ * condition, and the override dialog round trip (writes answer with the full view).
  *
  * Same harness as `roadmap.spec.ts`: `npm run build && npm run preview`
  * (Playwright's `webServer` starts it), no backend, every `/api/*` call
@@ -19,6 +20,10 @@ const cond = (over: Record<string, unknown> & { key: string }) => ({
   measuredAt: null, ageSeconds: null, error: null, sourceUrl: null, manualBy: null, manualEvidence: null,
   ...over,
 })
+
+function note(over: Record<string, unknown> & { id: string; kind: string; text: string; status: string }) {
+  return { ref: null, url: null, milestoneKey: null, createdBy: 'tony', createdAt: ago(86400), resolvedBy: null, resolvedAt: null, ...over }
+}
 
 const leaves = (done: number, inFlight: number, notStarted: number) => ({
   done, inFlight, notStarted, total: done + inFlight + notStarted, measuredAt: ago(240),
@@ -55,7 +60,7 @@ const LADDER = {
     title: 'Launch readiness', specPath: null, specUrl: null,
     sourcePath: 'docs/product/milestones.yaml', sourceSha: 'abc1234', syncedAt: ago(600),
     parseError: null, parseErrorSha: null, currentKey: 'household', currentRemoved: false,
-    updatedAt: ago(240), autoRefresh: true,
+    updatedAt: ago(240), autoRefresh: true, ladderComplete: false, asksOpen: 1,
   },
   milestones: [
     milestone('household', 'Phase 0', 'Household gate', 'current', {
@@ -76,6 +81,19 @@ const LADDER = {
   numbers: [
     cond({ key: 'rubric-gap', label: 'evidence cells missing', kind: 'ci_metric', status: 'info', value: { n: 293 }, measuredAt: ago(3 * 3600) }),
   ],
+  notes: {
+    decisions: [note({ id: 'd1', kind: 'decision', ref: 'D1', text: 'Lifetime free PLUS for friendly families', status: 'locked' })],
+    asks: [note({ id: 'a1', kind: 'ask', text: 'Confirm the DPA with the payment processor', status: 'open', milestoneKey: 'household' })],
+  },
+}
+
+type View = typeof LADDER
+
+/** The view after a write: a deep copy with `edit` applied, as the server answers. */
+function after(edit: (v: View) => void): View {
+  const v = structuredClone(LADDER)
+  edit(v)
+  return v
 }
 
 const PROJECT = {
@@ -85,10 +103,19 @@ const PROJECT = {
   featureCount: 0, workItemCount: 0,
 }
 
-async function interceptApi(page: Page, ladder: unknown = LADDER) {
+type Write = { method: string; path: string; status?: number; json: unknown }
+
+/** Mocks every `/api/*` read; `writes` answer the milestone write routes and
+ *  record each request body in `seen`. */
+async function interceptApi(page: Page, ladder: unknown = LADDER, writes: Write[] = [], seen: unknown[] = []) {
   await page.route('**/api/**', (route) => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/api/pm/projects/kindash/milestones') {
+    const req = route.request()
+    const path = new URL(req.url()).pathname
+    const write = writes.find((w) => w.method === req.method() && w.path === path)
+    if (write) {
+      seen.push(req.postDataJSON())
+      route.fulfill({ status: write.status ?? 200, json: write.json })
+    } else if (path === '/api/pm/projects/kindash/milestones') {
       route.fulfill({ json: ladder })
     } else if (path === '/api/pm/projects/kindash') {
       route.fulfill({ json: PROJECT })
@@ -140,4 +167,79 @@ test('no ladder: the EmptyState names the definition file', async ({ page }) => 
   await interceptApi(page, { ladder: null })
   await page.goto('/roadmap/kindash/milestones')
   await expect(page.getByText('docs/product/milestones.yaml')).toBeVisible()
+})
+
+test.describe('Milestones — manage', () => {
+  test.use({ viewport: { width: 1440, height: 900 } })
+
+  test('ticks a manual condition with evidence; the answer replaces the view', async ({ page }) => {
+    const seen: unknown[] = []
+    const ticked = after((v) => {
+      Object.assign(v.milestones[1].gate[0], {
+        status: 'met', value: { met: true }, manualBy: 'tony', manualEvidence: 'call notes 11/04', measuredAt: ago(1),
+      })
+    })
+    await interceptApi(page, LADDER, [
+      { method: 'PUT', path: '/api/pm/projects/kindash/milestones/friendly/conditions/manual', json: ticked },
+    ], seen)
+    await page.goto('/roadmap/kindash/milestones')
+    const friendly = page.getByRole('listitem', { name: /Phase 1/ })
+    await friendly.getByRole('button', { name: 'Tick: A manual check' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Tick condition' })
+    await dialog.getByLabel(/Reading/).selectOption('met')
+    await dialog.getByLabel(/Evidence/).fill('call notes 11/04')
+    await dialog.getByRole('button', { name: 'Save tick' }).click()
+    await expect(dialog).toBeHidden()
+    expect(seen).toEqual([{ met: true, evidence: 'call notes 11/04', url: null }])
+    await expect(friendly).toContainText('by tony · call notes 11/04')
+    await expect(friendly.getByRole('button', { name: 'Update: A manual check' })).toBeVisible()
+  })
+
+  test('override dialog round trip: lists what is unmet, needs a reason, advances', async ({ page }) => {
+    const seen: unknown[] = []
+    const advanced = after((v) => {
+      v.ladder.currentKey = 'friendly'
+      Object.assign(v.milestones[0], {
+        state: 'done', exitedAt: ago(1),
+        exitOverride: { by: 'tony', reason: 'owner accepted the nightly risk', at: ago(1), unmet: [] },
+      })
+      v.milestones[1].state = 'current'
+    })
+    await interceptApi(page, LADDER, [
+      { method: 'POST', path: '/api/pm/projects/kindash/milestones/advance', json: advanced },
+    ], seen)
+    await page.goto('/roadmap/kindash/milestones')
+    await page.getByRole('button', { name: 'Advance with override…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Advance with override' })
+    await expect(dialog.getByRole('list', { name: 'Not met yet' }).getByRole('listitem')).toHaveCount(3)
+    const submit = dialog.getByRole('button', { name: 'Advance with override' })
+    await dialog.getByLabel(/Reason/).fill('too short')
+    await expect(submit).toBeDisabled()
+    await dialog.getByLabel(/Reason/).fill('owner accepted the nightly risk')
+    await submit.click()
+    await expect(dialog).toBeHidden()
+    expect(seen).toEqual([{ expectedCurrent: 'household', overrideReason: 'owner accepted the nightly risk' }])
+    await expect(page.getByText('Advanced by override: owner accepted the nightly risk')).toBeVisible()
+    await expect(page.getByRole('listitem', { name: /Phase 1/ })).toHaveAttribute('aria-current', 'step')
+  })
+})
+
+test.describe('Milestones — manage on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 } })
+
+  test('a refused override says only the owner can override; the dialog fits the screen', async ({ page }) => {
+    await interceptApi(page, LADDER, [
+      { method: 'POST', path: '/api/pm/projects/kindash/milestones/advance', status: 403,
+        json: { detail: { error: 'override_requires_owner' } } },
+    ])
+    await page.goto('/roadmap/kindash/milestones')
+    await page.getByRole('button', { name: 'Advance with override…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Advance with override' })
+    await dialog.getByLabel(/Reason/).fill('owner accepted the nightly risk')
+    await dialog.getByRole('button', { name: 'Advance with override' }).click()
+    await expect(dialog.getByRole('alert')).toHaveText('Only the owner can override from the ViberPit app')
+    const box = await dialog.boundingBox()
+    expect(box!.x).toBeGreaterThanOrEqual(0)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390)
+  })
 })

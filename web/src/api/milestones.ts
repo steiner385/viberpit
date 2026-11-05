@@ -6,8 +6,8 @@
  * served by `server/api/pm_milestones.py`).
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ApiRequestError } from './client'
-import { PM_MUTATION_META } from './hooks'
+import { api, apiErrorCode, ApiRequestError } from './client'
+import { PM_MUTATION_META, QK } from './hooks'
 
 /** Read-time status (`server/pm/milestone_status.py`); `info` is a number with no target. */
 export type ConditionStatus = 'met' | 'unmet' | 'unknown' | 'info'
@@ -100,11 +100,39 @@ export interface MilestoneLadder {
   currentRemoved: boolean
   updatedAt: string | null
   autoRefresh: boolean
+  /** No current milestone and at least one done: nothing left to advance. */
+  ladderComplete: boolean
+  /** Open owner asks on the whole ladder (the header strip's "N asks need you"). */
+  asksOpen: number
 }
+
+/** `server/pm/milestone_asks.py:NOTE_KINDS`, `DECISION_STATUSES`, `ASK_STATUSES`. */
+export type NoteKind = 'decision' | 'ask'
+export type DecisionStatus = 'locked' | 'proposed' | 'superseded'
+export type AskStatus = 'open' | 'done' | 'dropped'
+
+/** An owner decision or ask (spec M11), ladder-wide when `milestoneKey` is null.
+ *  `milestoneKey` may name a removed rung: the owner still resolves it. */
+export interface MilestoneNote {
+  id: string
+  kind: NoteKind
+  ref: string | null
+  text: string
+  url: string | null
+  status: DecisionStatus | AskStatus
+  milestoneKey: string | null
+  createdBy: string | null
+  createdAt: string | null
+  resolvedBy: string | null
+  resolvedAt: string | null
+}
+
+/** Server order: decisions locked, proposed, superseded; asks open first; each oldest first. */
+export interface MilestoneNotes { decisions: MilestoneNote[]; asks: MilestoneNote[] }
 
 export type MilestonesView =
   | { ladder: null }
-  | { ladder: MilestoneLadder; milestones: Milestone[]; numbers: MilestoneCondition[] }
+  | { ladder: MilestoneLadder; milestones: Milestone[]; numbers: MilestoneCondition[]; notes: MilestoneNotes }
 
 /** `POST …/refresh`: 202 stamped, 429 inside the window, 409 automatic refresh off. */
 export type RefreshMilestonesResult =
@@ -128,6 +156,92 @@ export async function refreshMilestones(slug: string): Promise<RefreshMilestones
     }
     throw err
   }
+}
+
+/** The scope a numbers-panel entry is ticked under; mirrors
+ *  `server/pm/milestone_actions.py:NUMBERS_SCOPE`. */
+export const NUMBERS_SCOPE = 'numbers'
+/** Mirrors `milestone_actions.STATUS_NOTE_MAX`, `NOTE_TEXT_MAX`, `OVERRIDE_REASON_MIN`. */
+export const STATUS_NOTE_MAX = 200
+export const NOTE_TEXT_MAX = 500
+export const OVERRIDE_REASON_MIN = 10
+
+/** A manual tick: `met` for a gate condition, `value` for a numbers entry. */
+export interface TickVars {
+  scope: string
+  conditionKey: string
+  met?: boolean
+  value?: number
+  evidence: string
+  url?: string | null
+}
+export interface StatusNoteVars { key: string; statusNote: string | null }
+export interface AddNoteVars {
+  kind: NoteKind
+  text: string
+  ref?: string | null
+  url?: string | null
+  milestoneKey?: string | null
+  status?: DecisionStatus | AskStatus
+}
+export interface UpdateNoteVars { id: string; status?: DecisionStatus | AskStatus; text?: string }
+/** `expectedCurrent` null starts a ladder with no current milestone. */
+export interface AdvanceVars { expectedCurrent: string | null; overrideReason?: string }
+
+const enc = encodeURIComponent
+
+// Every write answers with the full view (the same body as GET).
+export function tickCondition(slug: string, { scope, conditionKey, ...body }: TickVars): Promise<MilestonesView> {
+  return api.put<MilestonesView>(`${base(slug)}/${enc(scope)}/conditions/${enc(conditionKey)}`, body)
+}
+export function setStatusNote(slug: string, { key, statusNote }: StatusNoteVars): Promise<MilestonesView> {
+  return api.patch<MilestonesView>(`${base(slug)}/${enc(key)}`, { statusNote })
+}
+export function addNote(slug: string, body: AddNoteVars): Promise<MilestonesView> {
+  return api.post<MilestonesView>(`${base(slug)}/notes`, body)
+}
+export function updateNote(slug: string, { id, ...body }: UpdateNoteVars): Promise<MilestonesView> {
+  return api.patch<MilestonesView>(`${base(slug)}/notes/${enc(id)}`, body)
+}
+export function advanceMilestone(slug: string, body: AdvanceVars): Promise<MilestonesView> {
+  return api.post<MilestonesView>(`${base(slug)}/advance`, body)
+}
+
+export const MILESTONE_ERROR_FALLBACK = 'That change did not go through. Try again.'
+
+/** THE copy for every code `server/pm/milestone_actions.py` raises (plus the route's
+ *  `no_ladder`). Plain words for the person at the page, never the code itself. */
+const MILESTONE_ERROR_COPY: Record<string, string> = {
+  stale_current: 'Someone else advanced this ladder',
+  gate_unmet: 'The gate is not met yet. Give a reason to advance with an override.',
+  override_requires_owner: 'Only the owner can override from the ViberPit app',
+  override_not_needed: 'The gate is met now, so no override is needed. Advance without a reason.',
+  reason_too_short: `Give a reason of at least ${OVERRIDE_REASON_MIN} characters.`,
+  evidence_required: 'Add evidence for this tick.',
+  owner_required: 'Only the owner can change what someone else recorded.',
+  person_required: 'Only a person can make this change, not an automation.',
+  ladder_complete: 'This ladder is complete. There is nothing left to advance.',
+  no_milestones: 'This ladder has no milestones to start.',
+  not_manual: 'This condition is measured automatically, so it cannot be ticked.',
+  bad_tick: 'Choose Met or Not met, or enter a number.',
+  too_long: 'That text is too long. Shorten it and try again.',
+  text_required: 'Write the note before saving it.',
+  bad_kind: 'Choose whether this is a decision or an ask.',
+  bad_status: 'That status does not apply to this kind of note.',
+  unknown_milestone: 'That milestone is no longer on the ladder. Reload the page.',
+  unknown_condition: 'That condition is no longer in the definition file. Reload the page.',
+  unknown_note: 'That note no longer exists. Reload the page.',
+  nothing_to_update: 'There was nothing to change.',
+  no_ladder: 'This product has no milestone ladder.',
+}
+
+export function milestoneErrorCopy(code: string | null): string {
+  return (code !== null && Object.hasOwn(MILESTONE_ERROR_COPY, code)) ? MILESTONE_ERROR_COPY[code] : MILESTONE_ERROR_FALLBACK
+}
+
+/** A failed write's words, or null when there is no failure. */
+export function milestoneErrorText(err: unknown): string | null {
+  return err ? milestoneErrorCopy(apiErrorCode(err)) : null
 }
 
 /** The one definition of the milestones query key. */
@@ -160,3 +274,28 @@ export function useRefreshMilestones(slug: string) {
     meta: PM_MUTATION_META,
   })
 }
+
+/** THE write hook: the answer replaces the cached view (no refetch). The map's
+ *  needs-you badge counts open asks, so it is marked stale; it refetches only
+ *  where it is on screen. A 409 `stale_current` means the ladder moved under the
+ *  caller, so the view is refetched to show where it is now. */
+function useMilestoneWrite<V>(slug: string, write: (slug: string, vars: V) => Promise<MilestonesView>) {
+  const qc = useQueryClient()
+  return useMutation<MilestonesView, ApiRequestError, V>({
+    mutationFn: (vars) => write(slug, vars),
+    onSuccess: (view) => {
+      qc.setQueryData(milestonesKey(slug), view)
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    onError: (err) => {
+      if (apiErrorCode(err) === 'stale_current') void qc.invalidateQueries({ queryKey: milestonesKey(slug) })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export const useTickCondition = (slug: string) => useMilestoneWrite(slug, tickCondition)
+export const useSetStatusNote = (slug: string) => useMilestoneWrite(slug, setStatusNote)
+export const useAddNote = (slug: string) => useMilestoneWrite(slug, addNote)
+export const useUpdateNote = (slug: string) => useMilestoneWrite(slug, updateNote)
+export const useAdvanceMilestone = (slug: string) => useMilestoneWrite(slug, advanceMilestone)

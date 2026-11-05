@@ -2,15 +2,39 @@
 // narrow column, then the label at full width so it reads at a glance. Line 2:
 // the status text, the value against its target, its age, and a deep link.
 // Status is glyph + text, never colour alone; a failed reading's error rides a
-// tooltip and `aria-describedby`.
-import { useId } from 'react'
+// tooltip and `aria-describedby`. A manual condition, when the row is managed,
+// offers Tick (or Update once ticked), which opens the tick dialog.
+import { useId, useState } from 'react'
 import type { MilestoneCondition } from '@/api/milestones'
 import { TONE_TEXT } from '@/ui/Badge'
 import { cn } from '@/lib/utils'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
+import { Button } from '@/ui/Button'
 import { STATUS_META, conditionValue } from './format'
+import { TickDialog } from './TickDialog'
 
-export function ConditionRow({ condition: c }: { condition: MilestoneCondition }) {
+/** Where a row's tick goes: the product and the milestone key (or `NUMBERS_SCOPE`). */
+export interface TickTarget { slug: string; scope: string }
+
+/** "Tick" until someone has ticked it, then "Update". */
+const tickVerb = (c: MilestoneCondition) => (c.manualBy ? 'Update' : 'Tick')
+
+/** The Tick / Update button and its dialog, for a manual condition. */
+export function TickControl({ condition: c, target }: { condition: MilestoneCondition; target: TickTarget }) {
+  const [open, setOpen] = useState(false)
+  const verb = tickVerb(c)
+  return (
+    <>
+      <Button type="button" size="sm" variant="secondary" className="h-7 shrink-0 px-2 text-xs"
+        aria-label={`${verb}: ${c.label}`} onClick={() => setOpen(true)}>
+        {verb}
+      </Button>
+      {open && <TickDialog open onClose={() => setOpen(false)} slug={target.slug} scope={target.scope} condition={c} />}
+    </>
+  )
+}
+
+export function ConditionRow({ condition: c, manage }: { condition: MilestoneCondition; manage?: TickTarget }) {
   const errorId = useId()
   const meta = STATUS_META[c.status] ?? STATUS_META.unknown
   const value = conditionValue(c)
@@ -21,6 +45,7 @@ export function ConditionRow({ condition: c }: { condition: MilestoneCondition }
           {meta.glyph}
         </span>
         <span className="min-w-0 flex-1 text-ink">{c.label}</span>
+        {manage && c.kind === 'manual' && <TickControl condition={c} target={manage} />}
       </div>
       <div className="flex flex-wrap gap-x-2 pl-5 text-xs text-ink-muted">
         <span
@@ -38,7 +63,7 @@ export function ConditionRow({ condition: c }: { condition: MilestoneCondition }
           </a>
         )}
         {c.manualBy && (
-          <span>Ticked by {c.manualBy}{c.manualEvidence ? ` · ${c.manualEvidence}` : ''}</span>
+          <span className="[overflow-wrap:anywhere]">by {c.manualBy}{c.manualEvidence ? ` · ${c.manualEvidence}` : ''}</span>
         )}
       </div>
       {c.error && <span id={errorId} className="sr-only">{c.error}</span>}

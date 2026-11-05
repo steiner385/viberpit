@@ -8,11 +8,19 @@ const q = vi.hoisted(() => ({
   milestones: { data: undefined as unknown, isLoading: false, isError: false, refetch: () => {} },
   project: { data: undefined as unknown },
   refresh: { mutate: vi.fn(), reset: vi.fn(), isPending: false, data: undefined as unknown },
+  advance: { mutate: vi.fn(), reset: vi.fn(), isPending: false, error: null as unknown },
 }))
+const { idle } = vi.hoisted(() => ({ idle: () => ({ mutate: () => {}, reset: () => {}, isPending: false, error: null }) }))
 vi.mock('@/api/hooks', () => ({ useProject: () => q.project }))
-vi.mock('@/api/milestones', () => ({
+vi.mock('@/api/milestones', async (orig) => ({
+  ...(await orig<typeof import('@/api/milestones')>()),
   useMilestones: () => q.milestones,
   useRefreshMilestones: () => q.refresh,
+  useAdvanceMilestone: () => q.advance,
+  useSetStatusNote: idle,
+  useTickCondition: idle,
+  useAddNote: idle,
+  useUpdateNote: idle,
 }))
 
 const tree = () => (
@@ -26,6 +34,7 @@ beforeEach(() => {
   q.milestones = { data: ladderView(), isLoading: false, isError: false, refetch: () => {} }
   q.project = { data: { name: 'KinDash', repos: [{ id: 'r', repo: 'cairnea/KinDash', isPrimary: true }] } }
   q.refresh = { mutate: vi.fn(), reset: vi.fn(), isPending: false, data: undefined }
+  q.advance = { mutate: vi.fn(), reset: vi.fn(), isPending: false, error: null }
 })
 
 describe('MilestonesPage', () => {
@@ -36,6 +45,31 @@ describe('MilestonesPage', () => {
     expect(strip).toHaveTextContent('1 of 4 gate conditions met · 1 unknown')
     expect(strip).toHaveTextContent('1 in flight')
     expect(strip).toHaveTextContent('Updated 4m ago')
+    expect(strip).toHaveTextContent('2 asks need you')
+  })
+
+  it('stacks the side column Needs you, Numbers, Decisions', () => {
+    mount()
+    const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
+    expect(headings).toEqual(['Needs you', 'Numbers', 'Decisions'])
+  })
+
+  it('offers Start when nothing is current or done, and starts from the top', () => {
+    q.milestones.data = ladderView({ currentKey: null }, {
+      milestones: ladderView().milestones.map((m) => ({ ...m, state: 'upcoming' as const })),
+    })
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(q.advance.mutate).toHaveBeenCalledWith({ expectedCurrent: null })
+  })
+
+  it('shows the Ladder complete banner and no Start once every rung is done', () => {
+    q.milestones.data = ladderView({ currentKey: null, ladderComplete: true }, {
+      milestones: ladderView().milestones.map((m) => ({ ...m, state: 'done' as const })),
+    })
+    mount()
+    expect(screen.getByText('Ladder complete')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
   })
 
   it('renders one card per milestone, the current one marked', () => {

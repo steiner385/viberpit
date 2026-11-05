@@ -3,7 +3,7 @@
 // counted.
 import { describe, it, expect } from 'vitest'
 import { cap, ini, product } from '../__fixtures__/map'
-import { needsYouCount, needsYouRows, waitingRows, waitingSummary } from './needsYou'
+import { milestoneAsks, needsYouCount, needsYouRows, waitingRows, waitingSummary } from './needsYou'
 
 const p = product({
   slug: 'kindash', name: 'KinDash',
@@ -158,5 +158,27 @@ describe('issue attention counts', () => {
       .toEqual([['child', 1]])
     expect(needsYouCount([scoped])).toBe(0)
     expect(needsYouRows([product({ slug: 'empty' })]).issues).toEqual([])
+  })
+})
+
+describe('open milestone asks (parity: test_needs_you_total_counts_open_asks)', () => {
+  const counts = { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 0, awaitingTriage: 0, needsHome: 0 }
+  it('counts one per open ask, apart from the once-per-product triage row', () => {
+    expect(needsYouCount([product({ slug: 'a', counts: { ...counts, milestoneAsks: 3 } })])).toBe(3)
+    expect(needsYouCount([product({ slug: 'b', counts: { ...counts, milestoneAsks: 2, awaitingTriage: 2 } })])).toBe(3)
+  })
+  it('an older server that omits milestoneAsks counts 0', () => {
+    expect(needsYouCount([product({ slug: 'c', counts })])).toBe(0)
+  })
+  it('asks are never a pseudo row (that would count them once, not N times)', () => {
+    const p = product({ slug: 'kindash', counts: { ...counts, milestoneAsks: 2 } })
+    expect(milestoneAsks(p)).toBe(2)
+    expect(needsYouRows([p]).pseudo).toEqual([])
+  })
+  it('asks are product-level: a capability scope counts none', () => {
+    const scope = cap({ slug: 'x' })
+    const p = product({ slug: 'kindash', capabilities: [scope], counts: { ...counts, milestoneAsks: 2 } })
+    expect(milestoneAsks(p, scope)).toBe(0)
+    expect(needsYouCount([p], scope)).toBe(0)
   })
 })

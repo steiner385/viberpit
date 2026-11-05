@@ -1,26 +1,22 @@
 // One rung of the ladder (spec 2026-11-05 §9): header (label, name, audience,
 // platform chips, status line), the gate, the leaves bar, and the open leaves.
-// The current card is the `aria-current="step"`; done cards are muted.
-import { useId } from 'react'
+// The current card is the `aria-current="step"`; done cards are muted. The current
+// card edits its status line and advances; a card not yet done ticks its manual
+// conditions; a done card is a record and offers nothing.
+import { useId, useState } from 'react'
 import type { Milestone, MilestoneLeaf } from '@/api/milestones'
 import { Banner } from '@/ui/Banner'
+import { Button } from '@/ui/Button'
 import { Card } from '@/ui/Card'
 import { cn } from '@/lib/utils'
 import { ConditionRow } from './ConditionRow'
+import { AdvanceDialog } from './AdvanceDialog'
 import { LeavesBar } from './LeavesBar'
-import { milestoneTitle } from './format'
+import { StatusNoteEditor } from './StatusNoteEditor'
+import { milestoneTitle, statusLine } from './format'
 
 /** Open leaves shown on a card before "+N more" (spec §9; print caps at 4 in Phase 2). */
 const OPEN_LEAVES_CAP = 6
-
-const day = (iso: string | null) =>
-  iso ? new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
-
-function statusLine(m: Milestone): string {
-  if (m.state === 'current') return m.statusNote ? `Current · ${m.statusNote}` : 'Current'
-  if (m.state === 'done') return `Done · entered ${day(m.enteredAt)} · exited ${day(m.exitedAt)}`
-  return 'Upcoming'
-}
 
 function LeafRow({ leaf }: { leaf: MilestoneLeaf }) {
   const title = leaf.title ?? leaf.ref
@@ -39,8 +35,14 @@ function LeafRow({ leaf }: { leaf: MilestoneLeaf }) {
   )
 }
 
-export function MilestoneCard({ milestone: m }: { milestone: Milestone }) {
+export function MilestoneCard({ milestone: m, slug, next }: {
+  milestone: Milestone
+  slug: string
+  /** The rung an Advance moves to (null: it completes the ladder). Read only on the current card. */
+  next: Milestone | null
+}) {
   const headingId = useId()
+  const [advancing, setAdvancing] = useState(false)
   const current = m.state === 'current'
   const done = m.state === 'done'
   const open = [
@@ -79,7 +81,9 @@ export function MilestoneCard({ milestone: m }: { milestone: Milestone }) {
             ))}
           </ul>
         )}
-        <p className={cn('text-xs font-medium', current ? 'text-accent' : 'text-ink-muted')}>{statusLine(m)}</p>
+        {current
+          ? <StatusNoteEditor slug={slug} milestone={m} />
+          : <p className="text-xs font-medium text-ink-muted">{statusLine(m)}</p>}
       </header>
 
       {done && m.exitOverride && (
@@ -88,7 +92,7 @@ export function MilestoneCard({ milestone: m }: { milestone: Milestone }) {
 
       {m.gate.length > 0
         ? <ul aria-label="Gate" className="flex flex-col divide-y divide-edge">
-            {m.gate.map((c) => <ConditionRow key={c.key} condition={c} />)}
+            {m.gate.map((c) => <ConditionRow key={c.key} condition={c} manage={done ? undefined : { slug, scope: m.key }} />)}
           </ul>
         : <p className="text-xs text-ink-muted">No gate conditions.</p>}
 
@@ -106,6 +110,16 @@ export function MilestoneCard({ milestone: m }: { milestone: Milestone }) {
               : <span>+{hidden} more</span>)}
             {m.leaves.done > 0 && <span>{m.leaves.done} done</span>}
           </div>
+        </div>
+      )}
+
+      {current && (
+        <div className="mt-auto flex flex-col gap-2 border-t border-edge pt-3">
+          <Button type="button" size="sm" variant={m.gateSummary.ready ? 'primary' : 'secondary'}
+            onClick={() => setAdvancing(true)}>
+            {m.gateSummary.ready ? 'Advance' : 'Advance with override…'}
+          </Button>
+          {advancing && <AdvanceDialog open onClose={() => setAdvancing(false)} slug={slug} milestone={m} next={next} />}
         </div>
       )}
     </Card>

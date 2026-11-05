@@ -2,10 +2,15 @@
 // leads with the status text, then the value against its target and its age
 // (status is glyph + text, never colour alone). A failed reading's error rides a
 // tooltip and `aria-describedby`.
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { ConditionRow } from './ConditionRow'
 import { HOUSEHOLD, ago, cond } from './__fixtures__/ladder'
+
+vi.mock('@/api/milestones', async (orig) => ({
+  ...(await orig<typeof import('@/api/milestones')>()),
+  useTickCondition: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false, error: null }),
+}))
 
 const [rubric, laneFixes, nightly, consent] = HOUSEHOLD.gate
 
@@ -63,7 +68,23 @@ describe('ConditionRow', () => {
 
   it('shows who ticked a manual condition and the evidence', () => {
     mount(cond({ key: 'm', status: 'met', value: { met: true }, manualBy: 'tony', manualEvidence: 'call notes', measuredAt: ago(60) }))
-    expect(screen.getByRole('listitem')).toHaveTextContent('Ticked by tony · call notes')
+    expect(screen.getByRole('listitem')).toHaveTextContent('by tony · call notes')
+  })
+
+  it('a manual condition offers Tick, then Update once ticked; either opens the tick dialog', () => {
+    const manual = cond({ key: 'setup', label: 'Every family completes setup' })
+    const { unmount } = render(<ul><ConditionRow condition={manual} manage={{ slug: 'kindash', scope: 'friendly' }} /></ul>)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Tick: Every family completes setup' }))
+    expect(screen.getByRole('dialog', { name: 'Tick condition' })).toBeInTheDocument()
+    unmount()
+    render(<ul><ConditionRow condition={{ ...manual, manualBy: 'tony', value: { met: true } }} manage={{ slug: 'kindash', scope: 'friendly' }} /></ul>)
+    expect(screen.getByRole('button', { name: 'Update: Every family completes setup' })).toBeInTheDocument()
+  })
+
+  it('offers no Tick for a measured condition, nor without manage', () => {
+    render(<ul><ConditionRow condition={rubric} manage={{ slug: 'kindash', scope: 'household' }} /></ul>)
+    expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('says never measured when there is no reading', () => {

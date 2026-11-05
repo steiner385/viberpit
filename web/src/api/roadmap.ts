@@ -113,6 +113,9 @@ export interface ProductCounts {
   capabilities: number
   awaitingTriage: number
   needsHome: number
+  /** Open release-milestone asks (`server/pm/milestone_asks.py`), each one needs-you
+   *  item. Optional: an older server does not send it; read a missing one as 0. */
+  milestoneAsks?: number
   /** Waiting counters by reason. Optional: an older server does not send them. */
   waiting?: Record<WaitingKey, number>
 }
