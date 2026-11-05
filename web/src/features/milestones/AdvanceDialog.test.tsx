@@ -1,12 +1,14 @@
 // Advancing the ladder (spec 2026-11-05 §7, §9 actions): a met gate advances on a
 // confirm; an unmet one lists what is unmet or unknown and needs a reason of at
 // least 10 characters. The owner rule and a concurrent advance answer in words.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ApiRequestError } from '@/api/client'
-import type { AdvanceMutation } from '@/api/milestones'
+import type { AdvanceMutation, Milestone } from '@/api/milestones'
+import { useAdvanceMilestone, useMilestones } from '@/api/milestones'
 import { AdvanceDialog } from './AdvanceDialog'
-import { FRIENDLY, HOUSEHOLD } from './__fixtures__/ladder'
+import { FRIENDLY, HOUSEHOLD, ladderView } from './__fixtures__/ladder'
 
 const q = vi.hoisted(() => ({
   advance: { mutate: vi.fn(), reset: vi.fn(), isPending: false, error: null as unknown },
@@ -69,5 +71,69 @@ describe('AdvanceDialog', () => {
   it('the last rung says the ladder completes', () => {
     mount({ next: null })
     expect(screen.getByRole('dialog')).toHaveTextContent('This completes the ladder.')
+  })
+
+  it('clears a leftover error when it opens, so an old failure does not echo inside it', () => {
+    q.advance.error = new ApiRequestError(409, { detail: { error: 'gate_unmet' } })
+    mount()
+    expect(q.advance.reset).toHaveBeenCalledTimes(1)
+  })
+})
+
+// The real hooks, fetch stubbed: a refused advance whose code says the gate moved
+// (gate_unmet / override_not_needed) refetches the view, and the dialog switches
+// mode from the fresh props instead of trapping the owner in the stale one.
+describe('AdvanceDialog — a gate that moved under the dialog', () => {
+  const fetchMock = vi.fn()
+  const respond = (status: number, body: unknown) =>
+    fetchMock.mockResolvedValueOnce({ status, ok: status < 400, json: async () => body })
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const metHousehold: Milestone = {
+    ...HOUSEHOLD,
+    gate: HOUSEHOLD.gate.map((c) => ({ ...c, status: 'met' as const })),
+    gateSummary: { met: 4, total: 4, unknown: 0, ready: true },
+  }
+
+  function Harness() {
+    const view = useMilestones('kindash').data
+    const advance = useAdvanceMilestone('kindash')
+    if (!view || view.ladder === null || !('milestones' in view)) return null
+    const current = view.milestones.find((m) => m.key === 'household')
+    return current ? <AdvanceDialog open onClose={() => {}} advance={advance} milestone={current} next={FRIENDLY} /> : null
+  }
+
+  function mountReal() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    return render(<QueryClientProvider client={qc}><Harness /></QueryClientProvider>)
+  }
+
+  it('a gate_unmet reply refetches the view and the dialog asks for an override reason', async () => {
+    respond(200, ladderView({}, { milestones: [metHousehold, FRIENDLY] }))
+    mountReal()
+    const plain = await screen.findByRole('dialog', { name: 'Advance' })
+    expect(within(plain).queryByLabelText(/Reason/)).toBeNull()
+    respond(409, { detail: { error: 'gate_unmet', unmet: [] } })
+    respond(200, ladderView({}, { milestones: [HOUSEHOLD, FRIENDLY] }))
+    fireEvent.click(within(plain).getByRole('button', { name: 'Advance' }))
+    const override = await screen.findByRole('dialog', { name: 'Advance with override' })
+    expect(within(override).getByLabelText(/Reason/)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('an override_not_needed reply refetches the view and the dialog drops the reason', async () => {
+    respond(200, ladderView({}, { milestones: [HOUSEHOLD, FRIENDLY] }))
+    mountReal()
+    const override = await screen.findByRole('dialog', { name: 'Advance with override' })
+    fireEvent.change(within(override).getByLabelText(/Reason/), { target: { value: 'owner accepted the risk' } })
+    respond(409, { detail: { error: 'override_not_needed' } })
+    respond(200, ladderView({}, { milestones: [metHousehold, FRIENDLY] }))
+    fireEvent.click(within(override).getByRole('button', { name: 'Advance with override' }))
+    const plain = await screen.findByRole('dialog', { name: 'Advance' })
+    expect(within(plain).queryByLabelText(/Reason/)).toBeNull()
   })
 })

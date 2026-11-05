@@ -4,8 +4,10 @@
 // and needs a reason. The server owns both rules; this only mirrors the minimum
 // length so the button says when it can be pressed. The mutation is the page's
 // (`MilestonesPage`): a 409 `stale_current` refetches the view, the card stops
-// being current and this dialog unmounts, so the page says what happened.
-import { useId, useState } from 'react'
+// being current and this dialog unmounts, so the page says what happened. A 409
+// `gate_unmet` / `override_not_needed` refetches too, and the dialog switches
+// between plain and override from the fresh milestone.
+import { useEffect, useId, useState } from 'react'
 import type { AdvanceMutation, Milestone } from '@/api/milestones'
 import { OVERRIDE_REASON_MIN, milestoneErrorText } from '@/api/milestones'
 import { Button } from '@/ui/Button'
@@ -31,6 +33,10 @@ export function AdvanceDialog({ open, onClose, advance, milestone: m, next }: {
   const ready = !override || trimmed.length >= OVERRIDE_REASON_MIN
   const error = milestoneErrorText(advance.error)
   const title = override ? 'Advance with override' : 'Advance'
+  // The mutation is the page's, so an earlier failure (Start's, another card's)
+  // would otherwise echo in here on open. `reset` is stable across renders.
+  const { reset } = advance
+  useEffect(() => { reset() }, [reset])
 
   const close = () => {
     advance.reset()

@@ -281,10 +281,15 @@ export function useRefreshMilestones(slug: string) {
   })
 }
 
+/** The refusals that mean the view under the caller is out of date: the ladder
+ *  moved (`stale_current`), or the gate did (`gate_unmet`, `override_not_needed`),
+ *  so the Advance dialog must switch mode from fresh props. */
+const REFETCH_ON: ReadonlySet<string> = new Set(['stale_current', 'gate_unmet', 'override_not_needed'])
+
 /** THE write hook: the answer replaces the cached view (no refetch). The map's
  *  needs-you badge counts open asks, so it is marked stale; it refetches only
- *  where it is on screen. A 409 `stale_current` means the ladder moved under the
- *  caller, so the view is refetched to show where it is now. */
+ *  where it is on screen. A refusal in `REFETCH_ON` refetches the view to show
+ *  where the ladder is now. */
 function useMilestoneWrite<V>(slug: string, write: (slug: string, vars: V) => Promise<MilestonesView>) {
   const qc = useQueryClient()
   return useMutation<MilestonesView, ApiRequestError, V>({
@@ -294,7 +299,8 @@ function useMilestoneWrite<V>(slug: string, write: (slug: string, vars: V) => Pr
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     onError: (err) => {
-      if (apiErrorCode(err) === 'stale_current') void qc.invalidateQueries({ queryKey: milestonesKey(slug) })
+      const code = apiErrorCode(err)
+      if (code !== null && REFETCH_ON.has(code)) void qc.invalidateQueries({ queryKey: milestonesKey(slug) })
     },
     meta: PM_MUTATION_META,
   })
