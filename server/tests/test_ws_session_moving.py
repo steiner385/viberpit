@@ -58,7 +58,31 @@ def test_prompt_on_a_live_session_is_held_not_dropped(ws_env, caplog):
     assert rejected[0]["movingTo"] == "rocky"
     assert not [e for e in events if e.get("type") == "promptAck"
                 and e.get("stage") == "failed"]
+    assert "interrupt" not in rejected[0]          # a plain prompt stays plain
     assert not _no_ws_errors(caplog)
+
+
+@pytest.mark.parametrize("held", ["moving", "recovering"])
+def test_a_held_interrupt_and_post_keeps_its_interrupt_flag(ws_env, held):
+    """#3317: the rejection echoes ``interrupt`` so the browser's re-queued retry is
+    still "interrupt and post", not a plain prompt queued behind the turn."""
+    _app, orch, client = ws_env([])
+    sid = client.portal.call(orch.create_session, "mover").id
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        _attach(ws, sid)
+        if held == "moving":
+            orch.send_prompt = _moving(sid)  # type: ignore[method-assign]
+        else:
+            async def _unavailable(*_a, **_k):
+                return "recovering"
+            orch.send_prompt = _unavailable  # type: ignore[method-assign]
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": sid,
+                                 "text": "stop and do this", "interrupt": True}))
+        events = _drain_events(ws, until=_is_rejected)
+    rejected = [e for e in events if _is_rejected(e)]
+    assert rejected, [e.get("type") for e in events]
+    assert rejected[0]["interrupt"] is True
+    assert rejected[0]["text"] == "stop and do this"
 
 
 def test_prompt_retried_after_no_driver_is_held_when_the_retry_meets_a_move(ws_env, caplog):

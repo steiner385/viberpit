@@ -115,8 +115,13 @@ workers (the primary is the sole refresher to avoid racing shared token files).
     manifest, so a stale sshfs view is refused) and resumes. The source worktree is removed only
     after the target's driver has started and a recovery snapshot ref exists. Any failure after the
     export restores the session on the source. While it runs the card shows "Moving to <host>…"
-    and sends are held (the draft is kept). If the app cannot tell how a move ended, the dialog says
-    "outcome unknown"; check the session's host in a minute.
+    and sends are held (the draft is kept; a held "interrupt and post" retries as one). If the app
+    cannot tell how a move ended, the dialog says "outcome unknown"; check the session's host in a
+    minute.
+  - **Stopping a turn:** Stop and stopping a subagent are refused only while a move is actually
+    running. A claim that is merely held (a failed move awaiting the reconcile, or one stuck on a
+    removed host) does not block them, so a turn an automation starts meanwhile can still be
+    stopped.
   - **Recovery:** a claim left by a crash is reconciled on its own, at once after an edge restart
     and otherwise after 10 minutes. The target is trusted only once it has written its
     import-complete marker; holding the lease alone is not enough. One WARNING is logged per stuck

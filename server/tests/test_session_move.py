@@ -250,6 +250,14 @@ class FakeHost:
     async def ensure_driver(self, sid, *a, **k):
         return object() if sid in self.records else None
 
+    async def interrupt(self, sid):
+        self.calls.append("interrupt")
+        return True
+
+    async def stop_subagent(self, sid, tool_use_id):
+        self.calls.append("stop_subagent")
+        return True
+
     async def transfer_preflight(self, sid):
         self.calls.append("preflight")
         return {"present": sid in self.trees, "dirtyCount": 0, "dirtyPaths": [],
@@ -648,6 +656,21 @@ async def test_live_record_writes_answer_session_moving_while_in_flight(fleet, n
     assert ei.value.code == sm.SESSION_MOVING
     fx.rocky.gate.set()
     await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [("interrupt", ()), ("stop_subagent", ("tu-1",))])
+async def test_stopping_a_turn_still_works_while_a_move_is_merely_held(fleet, name, args):
+    """#3317: a HELD claim (a failed move, a dead edge's leftover, a removed host) can
+    last indefinitely, and a daemon-local automation may start a turn on the lease
+    holder meanwhile. Nothing could stop it: interrupt/stop_subagent answered
+    SessionMoving. Only a live saga (an idle session mid-transfer) blocks them."""
+    fx = fleet
+    fx.f.hold_move(SID, "rocky")
+    with pytest.raises(sm.SessionMoving):              # driver builds stay held …
+        await fx.f.send_prompt(SID, "hi")
+    assert await getattr(fx.f, name)(SID, *args) is True   # … stopping a turn does not
+    assert fx.dobby.calls == [name]
 
 
 @pytest.mark.asyncio

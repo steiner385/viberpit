@@ -32,13 +32,17 @@ export interface WsCommandsMsg      { type: 'commands';      sessionId: string; 
 export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'mcp' | 'notice' | 'clear'; data?: unknown; error?: string }
 export interface WsUpdatePendingMsg   { type: 'updatePending' }
 export interface WsUpdateCancelledMsg { type: 'updateCancelled' }
-export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string; replySource?: 'suggested' }
+export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string; replySource?: 'suggested'; interrupt?: boolean }
 /** Positive receipt for a prompt frame — the counterpart to promptRejected. See
  *  server/bridge/ws.py; `stage` is the PromptStage vocabulary (session/promptStage.ts). */
 export interface WsPromptAckMsg { type: 'promptAck'; sessionId: string; stage: PromptStage }
 
 /** What `SessionSocket.prompt()` did with the text: put it on the wire, or hold it here. */
 export type PromptSendResult = 'sent' | 'buffered'
+
+/** A prompt held in the browser for a later flush. `interrupt` is set only for an
+ *  "interrupt and post" the server refused — a buffered prompt never gains it. */
+type PendingPrompt = { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext; replySource?: 'suggested'; interrupt?: boolean }
 
 export type WsInboundMsg =
   | WsStatusMsg
@@ -107,7 +111,7 @@ export class SessionSocket {
   private _queryClient: QueryClient | null = null
   private readonly url: string
   private _updatePending = false
-  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext; replySource?: 'suggested' }[] = []
+  private _pendingPrompts: PendingPrompt[] = []
   private static readonly MAX_PENDING = 50
   // A prompt the server refused for any reason OTHER than a deploy drain (no_driver,
   // recovering, unavailable, busy, rate limited) is held and retried on this backoff.
@@ -517,7 +521,7 @@ export class SessionSocket {
     this._emit('updatePendingChange', { active: this._updatePending, count: this._pendingPrompts.length })
   }
 
-  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext; replySource?: 'suggested' }) {
+  private _enqueuePrompt(p: PendingPrompt) {
     if (this._pendingPrompts.length >= SessionSocket.MAX_PENDING) {
       const dropped = this._pendingPrompts.shift()
       // No silent caps — tell the user a held message was lost rather than dropping it quietly.
@@ -540,7 +544,8 @@ export class SessionSocket {
     for (const p of pending) {
       this._send({ type: 'prompt', sessionId: p.sessionId, text: p.text,
         ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}),
-        ...(p.context ? { context: p.context } : {}), ...(p.replySource ? { replySource: p.replySource } : {}) })
+        ...(p.context ? { context: p.context } : {}), ...(p.replySource ? { replySource: p.replySource } : {}),
+        ...(p.interrupt ? { interrupt: true } : {}) })
     }
     this._emitUpdatePending()
   }
@@ -949,7 +954,10 @@ export class SessionSocket {
         // absent reason is an older edge, which only ever refused during a drain.
         const draining = msg.reason === undefined || msg.reason === 'draining'
         if (draining) this._updatePending = true
-        this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds, replySource: msg.replySource })
+        // `interrupt` rides back too (#3317): a held "interrupt and post" retries as
+        // one, not as a plain prompt queued behind whatever turn runs by then.
+        this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds,
+          replySource: msg.replySource, ...(msg.interrupt ? { interrupt: true } : {}) })
         if (!draining) this._scheduleHeldRetry()
         // Tell the transcript too: its bubble has been showing "Sending…" for a frame
         // that came back. Without this the re-queue is correct but invisible.
