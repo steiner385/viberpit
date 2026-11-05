@@ -1148,8 +1148,10 @@ class SessionOrchestrator:
         # ``refresh_default_output_style`` re-reads it before every spawn.
         self._default_output_style: str | None = None
         # Sessions whose initial prompt a person typed (create_session's
-        # ``initial_prompt_human``): the APP_ONLY gate's evidence at spawn (D-16a S1).
-        self._human_initial_prompts: set[str] = set()
+        # ``initial_prompt_human``) -> that person: the APP_ONLY gate's evidence for a
+        # create-time command, and who it runs as (D-16a S1). Persisted as
+        # ``sessions.initial_command_identity`` so a rehydrate keeps the same answer.
+        self._initial_command_identity: dict[str, str] = {}
         # In-flight spawns, keyed by session_id: a future resolved when
         # _spawn_session exits (registered driver or raised). _spawn_session
         # pre-seeds the record with status="idle" BEFORE driver.start() — seconds
@@ -4013,8 +4015,10 @@ class SessionOrchestrator:
         *initial_prompt_human* (D-16a, security review S1): a person typed
         *initial_prompt* into a create request (``POST /api/sessions`` from a Tailscale
         user). Only then may an ``APP_ONLY`` command there (`/plan`, `/fast`, …) run;
-        from any other creator it is refused like any automated prompt. Held in memory
-        only, so a daemon restart before the spawn forgets it (fail closed).
+        from any other creator it is refused like any automated prompt, and it runs as
+        *identity* (the creator), whoever opens the session. Persisted on the row at
+        spawn (``initial_command_identity``); a restart before the spawn forgets it
+        (fail closed).
 
         *platform* is the non-Linux platform an env-gated launch was routed for
         (host-platforms spec §3; the edge's ``FleetRouter.pick`` already chose a host
@@ -4111,8 +4115,9 @@ class SessionOrchestrator:
         if parent_session_id is not None:
             from server.automations.ownership import register_child_execution
             await register_child_execution(session_id, parent_session_id)
-        if initial_prompt_human:
-            self._human_initial_prompts.add(session_id)
+        if (initial_prompt_human and identity and identity != SYSTEM_IDENTITY
+                and cmd_catalog.app_only_command(initial_prompt) is not None):
+            self._initial_command_identity[session_id] = identity
 
         async def launch() -> SessionRecord:
             nonlocal cwd
@@ -6175,8 +6180,7 @@ class SessionOrchestrator:
             # The one shape that still waits is a bare slash command: it must execute
             # through the WS bridge's command dispatch (#943), which only exists on a
             # live socket, not be handed to the model as literal text.
-            human_prompt = session_id in getattr(self, "_human_initial_prompts", set())
-            getattr(self, "_human_initial_prompts", set()).discard(session_id)
+            human_prompt = session_id in getattr(self, "_initial_command_identity", {})
             defer_for_bridge = self._initial_prompt_waits_for_attach(
                 initial_prompt, attachment_ids)
             if (defer_for_bridge and not human_prompt
@@ -6250,6 +6254,14 @@ class SessionOrchestrator:
                     )
                     db.add(row)
             row_persisted = True
+            if human_prompt:
+                # Durable proof a person typed this create-time command (D-16a S1): a
+                # rehydrate re-parks it only with this, and runs it as them.
+                async with db_session() as db:
+                    from sqlalchemy import update as sa_update
+                    await db.execute(sa_update(DbSession).where(
+                        DbSession.id == session_id).values(
+                        initial_command_identity=self._initial_command_identity[session_id]))
 
             # Patch the model on the pre-seeded record (resolved by driver.set_model above).
             _pre_record.model = model
@@ -6263,8 +6275,7 @@ class SessionOrchestrator:
                 delivery = await self.send_prompt(
                     session_id, initial_prompt or "", attachment_ids,
                     command_origin=(cmd_catalog.COMMAND_ORIGIN_CREATE if human_prompt
-                                    else None),
-                    identity=identity if human_prompt else None)
+                                    else None))
                 if delivery == cmd_catalog.APP_COMMAND_REFUSED:
                     log.info("session.create: initial prompt was a refused app command "
                              "session=%s", session_id)
@@ -19882,7 +19893,18 @@ class SessionOrchestrator:
                 continue
             if row.id in self._pending_initial_prompt:
                 continue  # already staged this boot (e.g. by unarchive)
-            if self._initial_prompt_waits_for_attach(prompt, None):
+            if cmd_catalog.app_only_command(prompt) is not None:
+                # An app command (`/plan`, `/fast` …) — the same decision as the spawn
+                # (D-16a S1): re-parked only when the row proves a person typed it, to
+                # run as them; otherwise dropped, never re-driven as whoever attaches.
+                creator = getattr(row, "initial_command_identity", None)
+                if not creator or not self._initial_prompt_waits_for_attach(prompt, None):
+                    log.info("initial_prompt_recover: app command dropped session=%s "
+                             "(not a person's create-time command)", row.id)
+                    continue
+                self._initial_command_identity[row.id] = creator
+                self._pending_initial_prompt[row.id] = prompt
+            elif self._initial_prompt_waits_for_attach(prompt, None):
                 # A bare slash command: restore the parked-for-the-bridge contract
                 # exactly as _spawn_session set it up (#943) — the bridge's command
                 # dispatch, not the model, has to run it.
@@ -23573,21 +23595,27 @@ class SessionOrchestrator:
             log.info("send_prompt: app command not run, session not live session=%s "
                      "name=%s", session_id, name)
             return "no_driver"
-        refusal: str | None = None
-        if command_origin not in cmd_catalog.HUMAN_COMMAND_ORIGINS or not identity:
-            refusal = f"Slash commands from automation are not run: /{name}"
-        elif cmd.extra_lines or attachments:
+        if command_origin == cmd_catalog.COMMAND_ORIGIN_CREATE:
+            # A parked create-time command: authorized ONLY by the orchestrator's own
+            # record that a person typed it into their create request — the caller's
+            # word is not enough — and run as that creator (one-shot).
+            identity = self._initial_command_identity.pop(session_id, None)
+        human = command_origin in cmd_catalog.HUMAN_COMMAND_ORIGINS and bool(identity)
+        refused = cmd_catalog.app_command_refusal(name, human=human)
+        if refused is None and (cmd.extra_lines or attachments):
             dropped = " and ".join(part for part, on in (
                 ("the text after it", cmd.extra_lines), ("the attachments", attachments))
                 if on)
-            refusal = (f"/{name} wasn't run and nothing was sent: {dropped} can't go with "
-                       f"a slash command. Send the command on its own.")
-        if refusal is not None:
+            refused = {"name": name, "ok": False, "render": "notice",
+                       "error": "app command refused",
+                       "data": {"text": f"/{name} wasn't run and nothing was sent: "
+                                        f"{dropped} can't go with a slash command. Send "
+                                        f"the command on its own."}}
+        if refused is not None:
             log.info("send_prompt: app command refused session=%s name=%s origin=%s "
                      "extra_lines=%s attachments=%s", session_id, name, command_origin,
                      cmd.extra_lines, attachments)
-            self._emit_command_result(d, session_id, {
-                "name": name, "render": "notice", "data": {"text": refusal}})
+            self._emit_command_result(d, session_id, refused)
             return cmd_catalog.APP_COMMAND_REFUSED
         by = str(identity)          # non-empty: an anonymous sender was refused above
         log.info("send_prompt: app command routed, not sent session=%s name=%s by=%s",

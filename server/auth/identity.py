@@ -426,6 +426,22 @@ def human_gate_via(conn: Request | WebSocket) -> str | None:
     return LOCAL_TRUSTED_VIA if get_settings().rules_trust_local_host else LOCAL_PROCESS_VIA
 
 
+def human_via(via: str | None) -> bool:
+    """Is a caller with this ``human_gate_via`` attribution a person? No token-borne
+    ``via`` (assistant, external MCP, CLI, internal, session) and not an unattested
+    process on this host — except ``LOCAL_TRUSTED_VIA``, the operator's opt-in, which
+    ``session_actions.require_human`` admits too."""
+    return via is None or via == LOCAL_TRUSTED_VIA
+
+
+def human_sender(conn: Request | WebSocket) -> bool:
+    """THE "is a person behind this request or socket" check for the app-command gate
+    (D-16a S1): REST ``POST /prompt`` and ``POST /sessions``, and the WS composer and
+    ``command`` frame all ask it. Reads ``/proc`` (``human_gate_via``), so callers ask
+    only when an app command is actually at stake."""
+    return human_via(human_gate_via(conn))
+
+
 def attested_front_end_hop(conn: Request | WebSocket) -> bool:
     """True only when this request reached the edge through a front-end on behalf of a
     client that is not this host.

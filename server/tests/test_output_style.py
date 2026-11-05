@@ -646,7 +646,11 @@ async def test_a_spawn_initial_app_command(env, human, attachments, parked) -> N
             attachment_ids=attachments, initial_prompt_human=human)
     assert sent == []
     assert (rec.id in env.orch._pending_initial_prompt) is parked
-    assert rec.id not in env.orch._human_initial_prompts
+    # The creator is kept (in memory and on the row) only while the command waits.
+    assert env.orch._initial_command_identity.get(rec.id) == (
+        "u@example.com" if parked else None)
+    assert (await _row(rec.id)).initial_command_identity == (
+        "u@example.com" if human else None)
 
 
 class _FakeDriver:
@@ -690,7 +694,7 @@ def _rest(text: str, *, human_gate=None, headers=_H, fail: bool = False):
 
     with patch.dict(os.environ, _ENV), _client(STYLES) as c, \
             patch.object(SessionOrchestrator, "ensure_driver", fake_ensure), \
-            patch("server.api.sessions.human_gate_via", return_value=human_gate):
+            patch("server.auth.identity.human_gate_via", return_value=human_gate):
         orch = c.app.state.sessions
         getattr(orch, "_orch", orch)._drivers[SID] = driver
         if fail:
@@ -752,7 +756,7 @@ def test_the_assistant_token_path_is_refused() -> None:
     orch._drivers[SID] = driver  # type: ignore[assignment]
     with patch.dict(os.environ, _ENV), TestClient(app, raise_server_exceptions=False) as c, \
             patch.object(SessionOrchestrator, "ensure_driver", fake_ensure), \
-            patch("server.api.sessions.human_gate_via", return_value=None):
+            patch("server.auth.identity.attested_front_end_hop", return_value=True):
         r = c.post(f"/api/sessions/{SID}/prompt", json={"text": "/plan off"}, headers=_H)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "app_command_refused"
     assert driver.prompts == [] and driver.mode == "full-auto"
@@ -1117,7 +1121,7 @@ def test_post_sessions_marks_a_persons_initial_app_command(text, gate, expected)
 
     with patch.dict(os.environ, _ENV), _client() as c, \
             patch.object(SessionOrchestrator, "create_session", fake_create), \
-            patch("server.api.sessions.human_gate_via", return_value=gate):
+            patch("server.auth.identity.human_gate_via", return_value=gate):
         c.post("/api/sessions", json={"name": "x", "initialPrompt": text}, headers=_H)
     assert seen == [expected]
 
@@ -1139,3 +1143,88 @@ async def test_remote_create_strips_the_flag_for_an_old_daemon() -> None:
     rec = await RemoteOrchestrator(_Old()).create_session(  # type: ignore[arg-type]
         name="n", initial_prompt="/fast on", initial_prompt_human=True)
     assert rec.id == "s" and "initial_prompt_human" not in calls[-1]
+
+
+# ── Fix round 3: a create-time command runs only on the orchestrator's own record ──
+
+
+async def _plan_audits() -> list:
+    from server.db.models import AuditEvent
+    async with db_session() as db:
+        return [(r.identity, r.detail.get("mode")) for r in (await db.execute(
+            select(AuditEvent).where(AuditEvent.type == "permission_mode.change"))
+            ).scalars().all()]
+
+
+@pytest.mark.asyncio
+async def test_a_parked_create_command_runs_as_its_creator(env) -> None:
+    """The bridge hands a parked create-time command back with the CREATE origin only;
+    the orchestrator runs it as the person recorded at create — not the attacher."""
+    from server.sessions.commands.catalog import APP_COMMAND, COMMAND_ORIGIN_CREATE
+    rec = await env.orch.create_session(
+        "Mine", cwd=str(env.clone), model="opus", permission_mode="acceptEdits",
+        identity="alice@example.com", initial_prompt="/plan on", initial_prompt_human=True)
+    prompt = env.orch.pop_pending_initial_prompt(rec.id)
+    assert prompt == "/plan on"
+    assert await env.orch.send_prompt(rec.id, prompt, command_origin=COMMAND_ORIGIN_CREATE,
+                                      identity="bob@example.com") == APP_COMMAND
+    assert env.orch._drivers[rec.id].mode == "plan"
+    assert await _plan_audits() == [("alice@example.com", "plan")]
+    # One-shot: the same claim again has no record behind it.
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED
+    assert await env.orch.send_prompt(rec.id, "/plan off",
+                                      command_origin=COMMAND_ORIGIN_CREATE) == APP_COMMAND_REFUSED
+    assert env.orch._drivers[rec.id].mode == "plan"
+
+
+@pytest.mark.asyncio
+async def test_a_create_origin_without_a_record_is_refused(env) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED, COMMAND_ORIGIN_CREATE
+    await env.orch.run_command(env.rec.id, "plan", "on", identity="u@example.com")
+    assert await env.orch.send_prompt(env.rec.id, "/plan off",
+                                      command_origin=COMMAND_ORIGIN_CREATE,
+                                      identity="u@example.com") == APP_COMMAND_REFUSED
+    assert env.orch._drivers[env.rec.id].mode == "plan"
+
+
+async def _restart(env) -> SessionOrchestrator:
+    orch2 = SessionOrchestrator(sdk_factory=Spawns(FakeControl()), poll_interval=9999.0,
+                                usage_fn=_fake_usage, repo_root=str(env.repo_root))
+    await orch2.rehydrate()
+    return orch2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["/plan off", "/fast on"])
+async def test_a_refused_automated_initial_command_is_never_re_parked(env, text) -> None:
+    """Round 3, item 3: an automated create-time command, refused at spawn, starts no
+    turn — so its row keeps a NULL engine_session_id and the old rehydrate re-parked it
+    on every restart for the bridge to run as whoever attached."""
+    rec = await env.orch.create_session(
+        "Automated", cwd=str(env.clone), model="opus", permission_mode="full-auto",
+        identity="u@example.com", initial_prompt=text, origin="pr-doctor",
+        origin_ref="x#1")
+    assert rec.id not in env.orch._pending_initial_prompt
+    row = await _row(rec.id)
+    assert row.engine_session_id is None and row.initial_command_identity is None
+    await env.orch.stop()
+    orch2 = await _restart(env)
+    try:
+        assert orch2.pop_pending_initial_prompt(rec.id) is None      # nothing to attach-run
+        assert rec.id not in orch2._initial_command_identity
+    finally:
+        await orch2.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_persons_parked_initial_command_survives_a_restart_as_them(env) -> None:
+    rec = await env.orch.create_session(
+        "Mine", cwd=str(env.clone), model="opus", permission_mode="acceptEdits",
+        identity="alice@example.com", initial_prompt="/plan on", initial_prompt_human=True)
+    await env.orch.stop()
+    orch2 = await _restart(env)
+    try:
+        assert orch2.pop_pending_initial_prompt(rec.id) == "/plan on"
+        assert orch2._initial_command_identity[rec.id] == "alice@example.com"
+    finally:
+        await orch2.stop()

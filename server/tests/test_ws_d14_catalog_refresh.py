@@ -11,6 +11,16 @@ from server.tests.test_ws import _IDENTITY_HEADERS, _drain_events
 from server.tests.test_ws import ws_env as ws_env  # noqa: F401 — fixture lives in test_ws
 
 
+@pytest.fixture(autouse=True)
+def _a_person_at_the_composer():
+    """A TestClient socket is an unattested local process — which the app-command gate
+    refuses (D-16a S1). These tests speak as a person reaching the edge through the
+    front-end hop, unless a test patches it back."""
+    from unittest.mock import patch
+    with patch("server.auth.identity.attested_front_end_hop", return_value=True):
+        yield
+
+
 class _Ev:
     def __init__(self, wire): self._wire = wire
     def to_wire(self): return dict(self._wire)
@@ -219,3 +229,84 @@ def test_a_typed_command_that_raises_answers_ok_false(ws_env):
     assert result["ok"] is False and result["error"] == "command failed"
     assert [f for f in frames if f.get("type") == "promptAck"][-1]["stage"] == "delivered"
     assert handed == []
+
+
+# ── Fix round 3: ONE human check for the WS composer and command frame ──
+
+@pytest.mark.parametrize("sender", ["cli", "assistant", "unattested-local", "person"])
+def test_the_composer_gate_matches_rests(ws_env, sender):
+    """WS asks human_sender — the same check REST does: a `ccas2:` socket (via=cli), an
+    Assistant attribution and an unattested local process are refused; a person runs."""
+    from unittest.mock import patch
+    if sender == "unattested-local":
+        gate = patch("server.auth.identity.attested_front_end_hop", return_value=False)
+    elif sender == "person":
+        gate = patch("server.auth.identity.attested_front_end_hop", return_value=True)
+    else:
+        gate = patch("server.auth.identity.human_gate_via", return_value=sender)
+    frames, handed, orch, sid = _send_typed(ws_env, "/plan on", patches=[gate])
+    result = next(f for f in frames if f.get("type") == "commandResult")
+    ack = [f for f in frames if f.get("type") == "promptAck"][-1]["stage"]
+    assert handed == []
+    if sender == "person":
+        assert result["ok"] is True and ack == "delivered"
+        assert orch._drivers[sid].mode == "plan"
+    else:
+        assert result["ok"] is False and ack == "failed"
+        assert result["data"]["text"] == "Slash commands from automation are not run: /plan"
+        assert orch._drivers[sid].mode != "plan"
+
+
+def _command_frame(ws_env, name, args, *, human: bool):
+    from unittest.mock import patch
+    _app, orch, client = ws_env([])
+    sid = client.portal.call(orch.create_session, "frames").id
+    gate = (patch("server.auth.identity.attested_front_end_hop", return_value=True) if human
+            else patch("server.auth.identity.human_gate_via", return_value="cli"))
+    with gate, client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": sid}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "command", "sessionId": sid, "name": name,
+                                 "args": args}))
+        frames = _drain_events(ws, until=lambda f: f.get("type") == "commandResult")
+    return next(f for f in frames if f.get("type") == "commandResult"), orch, sid
+
+
+@pytest.mark.parametrize("name,args", [("plan", "on"), ("fast", "on"), ("effort", "high"),
+                                       ("output-style", "Concise")])
+def test_a_non_person_command_frame_cannot_run_an_app_command(ws_env, name, args):
+    result, orch, sid = _command_frame(ws_env, name, args, human=False)
+    assert result["ok"] is False
+    assert result["data"]["text"] == f"Slash commands from automation are not run: /{name}"
+    assert orch._drivers[sid].mode != "plan"
+
+
+def test_a_persons_command_frame_still_runs_an_app_command(ws_env):
+    result, orch, sid = _command_frame(ws_env, "plan", "on", human=True)
+    assert result["ok"] is True and orch._drivers[sid].mode == "plan"
+
+
+def test_other_command_frames_keep_todays_behaviour_for_any_socket(ws_env):
+    result, _orch, _sid = _command_frame(ws_env, "help", "", human=False)
+    assert result["ok"] is True and result["render"] == "help"
+
+
+def test_human_via_is_the_one_rule():
+    from server.auth.identity import LOCAL_PROCESS_VIA, LOCAL_TRUSTED_VIA, human_via
+    assert human_via(None) and human_via(LOCAL_TRUSTED_VIA)
+    for via in (LOCAL_PROCESS_VIA, "cli", "assistant", "mcp-external", "internal", "session"):
+        assert not human_via(via), via
+
+
+def test_an_expected_command_failure_logs_at_info(ws_env, caplog):
+    """Round 3, item 4: a failed command is answered ok:false — not an incident."""
+    import logging
+    from unittest.mock import patch
+
+    from server.sessions.orchestrator import SessionOrchestrator
+    caplog.set_level(logging.INFO, logger="server.bridge.ws")
+    with patch.object(SessionOrchestrator, "run_command", side_effect=RuntimeError("x")):
+        result, _orch, _sid = _command_frame(ws_env, "help", "", human=True)
+    assert result["ok"] is False and result["error"] == "command failed"
+    failed = [r for r in caplog.records if "ws.command failed" in r.getMessage()]
+    assert failed and all(r.levelno == logging.INFO for r in failed)

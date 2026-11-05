@@ -61,7 +61,7 @@ from server.automations.ownership import StaleOwnership
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
-from server.auth.identity import human_gate_via, verify_identity
+from server.auth.identity import human_gate_via, human_sender, verify_identity
 from server.quick_replies import observe_reply
 from server.auth.middleware import require_ws_identity
 from server.config import get_settings
@@ -73,8 +73,9 @@ from server.obs.context import bind_session, log_event
 from server.obs.logdedupe import LogThrottle, log_throttled
 from server.obs.metrics import assistant_mentions_total, assistant_prompts_total
 from server.obs.tasks import supervise
-from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
-                                             COMMAND_ORIGIN_COMPOSER, app_only_command,
+from server.sessions.commands.catalog import (APP_ONLY, APP_COMMAND, APP_COMMAND_REFUSED,
+                                             COMMAND_ORIGIN_COMPOSER, COMMAND_ORIGIN_CREATE,
+                                             app_command_refusal, app_only_command,
                                              parse_command_line)
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
@@ -1090,7 +1091,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except KeyError:
                 return False
             except Exception:
-                log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
+                # INFO: a command that fails is answered (ok:false below), not an incident
+                # — a WARNING here auto-files an issue per failed /model or /account.
+                log.info("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
                 await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                              "name": name, "ok": False, "error": "command failed"}))
                 return True
@@ -1267,6 +1270,16 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # runCommandFromText.
                 handled = False
                 parsed = parse_command_line(pending_prompt)
+                if app_only_command(pending_prompt) is not None:
+                    # An app command (`/plan`, `/fast` …) parked at create (D-16a S1):
+                    # the orchestrator runs it only on its own record that a person typed
+                    # it, as that person — never as whoever attached.
+                    status = await orchestrator.send_prompt(
+                        session_id, pending_prompt, command_origin=COMMAND_ORIGIN_CREATE)
+                    if status in ("no_driver", "recovering"):
+                        await orchestrator.repark_pending_initial_prompt(
+                            session_id, pending_prompt)
+                    return
                 if parsed is not None:
                     handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
                 if not handled:
@@ -1966,9 +1979,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             extra: dict[str, bool | dict | str] = {"interrupt": True} if interrupt else {}
             # The APP_ONLY gate (D-16a S1): a person at the composer may run `/plan`,
             # `/fast` … by typing them, attributed to this socket's identity. A `ccas2:`
-            # token socket (via="cli": `viberpit ask`, an agent) is not a person. Only
-            # passed for an app command, so every ordinary prompt's call is unchanged.
-            if via != "cli" and app_only_command(text) is not None:
+            # token socket (via="cli": `viberpit ask`, an agent) or an unattested local
+            # process is not a person — human_sender, the same check REST uses. Only
+            # asked for an app command, so every ordinary prompt's call is unchanged.
+            if app_only_command(text) is not None and human_sender(websocket):
                 extra["command_origin"] = COMMAND_ORIGIN_COMPOSER
                 extra["identity"] = identity
             # The context chip (spec §4.5) and the per-identity prompt rate
@@ -2229,7 +2243,18 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             elif msg_type == "command":
                 name = msg.get("name", "")
                 args = msg.get("args", "")
-                if not await _run_command_and_reply(session_id, name, args):
+                # The APP_ONLY sender gate (D-16a S1), the same one the prompt path uses:
+                # `/plan`, `/fast`, `/effort`, `/output-style` change permissions, billing
+                # or model settings, so a non-person socket (a `ccas2:` agent, an
+                # unattested local process) is refused. Every other command is unchanged.
+                refused = (app_command_refusal(name, human=human_sender(websocket))
+                           if str(name).lstrip("/") in APP_ONLY else None)
+                if refused is not None:
+                    log.info("ws.command app command refused session=%s name=%s",
+                             session_id, name)
+                    await _send(redact_event({"type": "commandResult",
+                                              "sessionId": session_id, **refused}))
+                elif not await _run_command_and_reply(session_id, name, args):
                     await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                                  "name": name, "ok": False, "error": "unknown command"}))
 

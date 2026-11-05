@@ -81,6 +81,19 @@ APP_COMMAND = "app_command"
 #: attachments). Nothing ran and nothing reached the engine; it is never a delivery.
 APP_COMMAND_REFUSED = "app_command_refused"
 
+def app_command_refusal(name: str, *, human: bool) -> dict | None:
+    """THE APP_ONLY sender gate (D-16a S1), shared by the prompt path
+    (``SessionOrchestrator.send_prompt``) and the WS ``command`` frame: the ``ok: false``
+    commandResult for an ``APP_ONLY`` command a non-person sent, else None (allowed —
+    including every command outside ``APP_ONLY``, which keeps its own rules)."""
+    bare = str(name).lstrip("/")
+    if human or bare not in APP_ONLY:
+        return None
+    return {"name": bare, "ok": False, "render": "notice",
+            "error": "app command refused",
+            "data": {"text": f"Slash commands from automation are not run: /{bare}"}}
+
+
 #: Who is sending a prompt, for the APP_ONLY gate (D-16a, security review S1). Only a
 #: person may run `/plan off` (a privilege change) or `/fast on` (billing) by typing it:
 #: the WS composer, ``POST /sessions/{id}/prompt`` from a Tailscale user, and the

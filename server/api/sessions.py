@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, StrictStr
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
 from server.sessions import diff_patch
-from server.auth.identity import human_gate_via
+from server.auth.identity import human_gate_via, human_sender
 from server.auth.middleware import current_client_node, current_identity
 from server.library.names import valid_mcp_name
 from server.mcp_scope.servers import configured_server_keys
@@ -1029,9 +1029,7 @@ async def create_session(
     # A person typed an app command (`/plan`, `/fast` …) as the initial prompt: only then
     # may it run (D-16a S1). Sent only when True, like the toggles above; an Assistant /
     # agent token (`via` set) or an unattested local process is not a person.
-    if (app_only_command(body.initialPrompt) is not None
-            and getattr(request.state, "via", None) is None
-            and human_gate_via(request) is None):
+    if app_only_command(body.initialPrompt) is not None and human_sender(request):
         _toggle_kwargs["initial_prompt_human"] = True
 
     try:
@@ -2043,12 +2041,9 @@ async def send_session_prompt(
     path the WebSocket prompt flow uses — so one tap from the list gets a stalled
     session moving. 404 if unknown; 409 if the session exists but can't be resumed."""
     orch = _get_orchestrator(request)
-    # A person is behind this request only when no token recorded another sender
-    # (`via` is set for the Assistant, `ccas2:` agents, internal and session callers)
-    # and, for an app command, the human-only gate's local-process check agrees
-    # (human_gate_via reads /proc, so only for the rare prompt that needs it).
-    human = getattr(request.state, "via", None) is None and (
-        app_only_command(body.text) is None or human_gate_via(request) is None)
+    # Is a person behind this app command (D-16a S1)? human_sender — the one check the
+    # WS composer and command frame use too — reads /proc, so only for an app command.
+    human = app_only_command(body.text) is not None and human_sender(request)
     record, delivery = await resume_and_send_prompt(orch, session_id, body.text, identity,
                                                     interrupt=body.interrupt, human=human)
     if delivery == APP_COMMAND_REFUSED:
