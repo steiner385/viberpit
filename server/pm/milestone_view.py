@@ -12,7 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from server.pm.milestone_def import Condition, condition_from_json, from_json
+from server.pm.milestone_def import Condition, LadderDef, condition_from_json, from_json
 from server.pm.milestone_github import DONE_REF_STATES
 from server.pm.milestone_refresh import LEAVES_KEY, leaves_scope
 from server.pm.milestone_status import effective_max_age, gate_met, status_at
@@ -76,6 +76,33 @@ def _condition(cond: Condition, row: Any | None, now: datetime) -> dict[str, Any
     }
 
 
+def _gate_defs(definition: LadderDef | None, milestone: Any) -> tuple[Condition, ...]:
+    """The milestone's gate from the ladder definition; a removed (current) rung,
+    gone from the definition, keeps its last stored gate."""
+    if definition is not None:
+        for m in definition.milestones:
+            if m.key == milestone.key:
+                return m.gate
+    return tuple(condition_from_json(c) for c in milestone.gate or [])
+
+
+def _gate(gate_defs: Sequence[Condition], milestone_key: str,
+          by_key: Mapping[tuple[str, str], Any], now: datetime) -> list[dict[str, Any]]:
+    return [_condition(c, by_key.get((milestone_key, c.key)), now) for c in gate_defs]
+
+
+def read_time_gate(ladder: Any, milestone: Any, measurements: Iterable[Any],
+                   now: datetime) -> list[dict[str, Any]]:
+    """The milestone's gate conditions with read-time statuses (freshness applied):
+    THE gate both the view and ``milestone_actions.advance`` judge. A stale or
+    missing reading is ``unknown``, so ``gate_met`` over these is never fooled."""
+    at = aware_utc(now)
+    assert at is not None
+    definition = from_json(ladder.definition) if ladder.definition else None
+    by_key = {(r.scope, r.key): r for r in measurements}
+    return _gate(_gate_defs(definition, milestone), milestone.key, by_key, at)
+
+
 def _leaves(row: Any | None) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for it in ((row.value or {}).get("items") if row is not None else None) or []:
@@ -114,7 +141,6 @@ def build_milestones_view(
     rows = list(measurements)
     by_key = {(r.scope, r.key): r for r in rows}
     definition = from_json(ladder.definition) if ladder.definition else None
-    def_gate = {m.key: m.gate for m in definition.milestones} if definition else {}
 
     ordered = sorted(milestones, key=lambda m: (m.ordinal is None, m.ordinal or 0))
     current = next((m for m in ordered if m.state == "current"), None)
@@ -122,10 +148,7 @@ def build_milestones_view(
     for m in ordered:
         if m.removed_at is not None and m is not current:
             continue
-        gate_defs = def_gate.get(m.key)
-        if gate_defs is None:  # a removed (current) rung keeps its last stored gate
-            gate_defs = tuple(condition_from_json(c) for c in m.gate or [])
-        gate = [_condition(c, by_key.get((m.key, c.key)), at) for c in gate_defs]
+        gate = _gate(_gate_defs(definition, m), m.key, by_key, at)
         statuses = [g["status"] for g in gate]
         out.append({
             "key": m.key,
