@@ -23,6 +23,7 @@ from server.assistant.context import PromptContext, render_context_header
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
 from server.config import get_settings
+from server.mcp_scope.resolve import McpToolRules
 from server.mcp_health.status import (apply_auth_latch, observed_auth_failure, read_mcp_oauth,
                                       rejected_error, sanitize_statuses, server_for_tool,
                                       token_fingerprint)
@@ -36,7 +37,8 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
                      REWIND_UNAVAILABLE, RewindError, conversation_request, files_request,
                      map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
-from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, OUTPUT_STYLE_KEY, PERMISSIONS_KEY,
+from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, MCP_TOOLS_NOT_APPLIED,
+                            MCP_TOOLS_UNAVAILABLE, OUTPUT_STYLE_KEY, PERMISSIONS_KEY,
                             SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
                             SETTINGS_INVALID, SETTINGS_REFUSED, SETTINGS_UNAVAILABLE,
                             SettingsError, compose_permissions, effort_levels, live_fast_mode,
@@ -463,11 +465,14 @@ class ClaudeAgentDriver:
         self._mcp_enforced = False
         # Per-tool MCP rules (D-16b): ``load_mcp_tool_rules(session_id)`` reads the
         # persisted ones at every CLI start; the composed denies are sent through the flag
-        # layer before the first prompt. ``_permissions_sent`` is the last object the CLI
-        # accepted (None: nothing sent to this process yet).
+        # layer before the first prompt.
         self._load_mcp_tool_rules = load_mcp_tool_rules
-        self._mcp_tool_rules = None
-        self._permissions_sent: dict | None = None
+        # Applied (the CLI accepted them) vs desired (what the next compose starts from;
+        # differs only after a failed start apply). Both change under _mcp_tool_lock only.
+        self._mcp_tool_rules: McpToolRules | None = None
+        self._mcp_tool_desired: McpToolRules | None = None
+        self._mcp_tools_enforced = True
+        self._mcp_tool_lock = asyncio.Lock()
         self._mcp_unsupported = False                 # latched after the first control-request failure
         self._mcp_poll_task: asyncio.Task | None = None
         # Fired (synchronously, with the session id) when a Task sub-agent starts or
@@ -2639,63 +2644,83 @@ class ClaudeAgentDriver:
         if not enabled:
             desired.append(name)
         self._desired_disabled_mcp = desired
-        # A server switched off drops its tool denies; switched back on, they return.
-        await self._recompose_mcp_tool_denies()
+        # Per-tool denies stay composed while a server is off (a deny for an absent
+        # server is a no-op), so they are already in force when it reconnects: no resend.
         await self._poll_mcp_status()
 
     @property
     def mcp_tool_rules(self):
-        """The per-tool rules this CLI runs under (``McpToolRules``), or None when there
-        are none to apply (kill switch off, rules unreadable, no loader)."""
+        """The per-tool rules the CLI has ACCEPTED (``McpToolRules``) — what this session
+        really runs under — or None when there are none (kill switch off, rules
+        unreadable, no loader). Never a desired state the CLI refused."""
         return self._mcp_tool_rules
 
-    def _composed_permissions(self, rules) -> dict:
-        return compose_permissions(rules, disabled_servers=self._desired_disabled_mcp or ())
+    @property
+    def mcp_tools_enforced(self) -> bool:
+        """False when the per-tool rules could not be applied at CLI start (after one
+        retry): the CLI runs with every tool on until a live toggle or a restart lands."""
+        return self._mcp_tools_enforced
 
     async def _send_permissions(self, permissions: dict) -> None:
         """THE one sender of the flag-layer ``permissions`` key (D-16b): *permissions* is
         always a whole ``flag_settings.compose_permissions`` object. Refusals raise
-        ``SettingsError`` (INFO)."""
+        ``SettingsError`` (INFO). Callers hold ``_mcp_tool_lock``."""
         await self.apply_flag_settings({PERMISSIONS_KEY: permissions})
-        self._permissions_sent = permissions
+
+    async def _apply_tool_rules_locked(self, rules) -> None:
+        """Compose *rules*, send the whole object and — only once the CLI accepted it —
+        record them as applied and desired. THE compose-send-assign step; the caller
+        holds ``_mcp_tool_lock``, so no two composes interleave. Raises ``SettingsError``
+        and leaves the applied state untouched on a refusal."""
+        await self._send_permissions(compose_permissions(rules))
+        self._mcp_tool_rules = self._mcp_tool_desired = rules
+        self._mcp_tools_enforced = True
 
     async def _apply_mcp_tool_denies(self) -> None:
         """Once per CLI start, right after ``initialize`` and before the first prompt: load
-        the persisted per-tool rules and send the composed denies. An empty deny set sends
-        nothing. Best-effort: a refusal is INFO (``_settings_refused``), anything else
-        DEBUG; a start never fails on it."""
-        self._permissions_sent = None
+        the persisted per-tool rules and send the composed denies (an empty deny set sends
+        nothing: a fresh CLI has none). A failed send is retried once; a second failure
+        leaves the session ``mcp_tools_enforced=False`` with every tool on, logs a WARNING
+        and posts an error notice. A start never fails on it."""
         if self._load_mcp_tool_rules is None:
             return
-        try:
-            self._mcp_tool_rules = await self._load_mcp_tool_rules(self.session_id)
-            if self._mcp_tool_rules is None:
+        async with self._mcp_tool_lock:
+            self._mcp_tools_enforced = True
+            try:
+                rules = await self._load_mcp_tool_rules(self.session_id)
+            except Exception:
+                log.debug("mcp tool rules not loaded session=%s", self.session_id,
+                          exc_info=True)
+                rules = None
+            self._mcp_tool_rules = self._mcp_tool_desired = rules
+            if rules is None or not compose_permissions(rules)["deny"]:
                 return
-            composed = self._composed_permissions(self._mcp_tool_rules)
-            if composed["deny"]:
-                await self._send_permissions(composed)
-        except SettingsError:
-            pass  # logged at INFO by _settings_refused
-        except Exception:
-            log.debug("mcp tool denies not applied session=%s", self.session_id, exc_info=True)
+            self._mcp_tool_rules = McpToolRules()       # applied so far: nothing
+            failure: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    await self._apply_tool_rules_locked(rules)
+                    return
+                except Exception as exc:
+                    failure = exc
+            self._mcp_tools_enforced = False
+        log.warning("mcp tool denies not applied session=%s error=%s", self.session_id,
+                    getattr(failure, "error_data", None) or type(failure).__name__)
+        self._emit(ev.ErrorEvent(
+            MCP_TOOLS_NOT_APPLIED,
+            "Tool settings not applied — every MCP tool is on. Restart the session."))
 
-    async def _recompose_mcp_tool_denies(self) -> None:
-        """Resend the whole ``permissions`` object when the server-level set changed what
-        it holds. Best-effort, like ``_apply_mcp_tool_denies``."""
-        if self._mcp_tool_rules is None:
-            return
-        composed = self._composed_permissions(self._mcp_tool_rules)
-        if composed == (self._permissions_sent or {"deny": []}):
-            return
-        with contextlib.suppress(SettingsError):
-            await self._send_permissions(composed)
-
-    async def set_mcp_tool_rules(self, rules) -> None:
-        """Run under *rules* from now on (a live per-tool toggle, D-16b): recompose and
-        send the WHOLE ``permissions`` object — ``deny: []`` restores every tool. A
-        refusal raises ``SettingsError`` and leaves the old rules in force."""
-        await self._send_permissions(self._composed_permissions(rules))
-        self._mcp_tool_rules = rules
+    async def set_mcp_tool_override(self, server: str, tool: str, enabled: bool) -> None:
+        """A live per-tool toggle (D-16b): under ``_mcp_tool_lock``, take the desired
+        rules, add the override, then compose and send the WHOLE ``permissions`` object
+        (``deny: []`` restores every tool). Concurrent toggles serialize, so none is lost.
+        A refusal raises ``SettingsError`` and leaves the applied rules as they were."""
+        async with self._mcp_tool_lock:
+            if self._mcp_tool_desired is None:
+                raise self._settings_refused(SettingsError(
+                    MCP_TOOLS_UNAVAILABLE, "no per-tool rules on this session"))
+            await self._apply_tool_rules_locked(
+                self._mcp_tool_desired.with_override(server, tool, enabled))
 
     async def _poll_mcp_status(self) -> list | None:
         """One get_mcp_status round-trip -> emit + persist. Best-effort, DEBUG on failure.

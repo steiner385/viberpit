@@ -102,6 +102,13 @@ def test_rule_names_use_the_clis_normalisation() -> None:
     assert mcp_tool_rule("probe", "tool_b") == "mcp__probe__tool_b"
     assert mcp_tool_rule("plugin:p:s", "a.b") == "mcp__plugin_p_s__a_b"
     assert server_for_tool("mcp__plugin_p_s__x", ["plugin:p:s"]) == "plugin:p:s"
+    # Fix round 1 item 4: the CLI's En() collapses `_` runs and trims for claude.ai
+    # connectors only (2.1.318 @280040372; probed: `claude.ai My__Conn`).
+    assert mcp_tool_rule("claude.ai My__Conn", "tool_a") == "mcp__claude_ai_My_Conn__tool_a"
+    assert mcp_tool_rule("claude.ai  Notion.", "x") == "mcp__claude_ai_Notion__x"
+    assert mcp_tool_rule("a.b  c", "x__y") == "mcp__a_b__c__x__y"
+    assert server_for_tool("mcp__claude_ai_My_Conn__t", ["claude.ai My__Conn"]) == \
+        "claude.ai My__Conn"
 
 
 # ---------------------------------------------------------------- resolution / composer
@@ -119,11 +126,11 @@ def test_effective_deny_formula() -> None:
     assert rules.state("probe", "zz") == (True, "default")
 
 
-def test_a_server_off_at_server_level_contributes_no_denies() -> None:
+def test_the_composition_does_not_depend_on_server_level_state() -> None:
+    """Fix round 1 item 3: a server off at the server level keeps its tool denies (a deny
+    for an absent server is a no-op), so they hold the moment it reconnects."""
     rules = McpToolRules(defaults={"probe": {"tool_a": False}}, overrides={"gh": {"x": False}})
-    assert fs.compose_permissions(rules, disabled_servers=["probe"]) == {
-        "deny": ["mcp__gh__x"]}
-    assert fs.compose_permissions(rules, disabled_servers=["probe", "gh"]) == {"deny": []}
+    assert fs.compose_permissions(rules) == {"deny": ["mcp__gh__x", "mcp__probe__tool_a"]}
 
 
 def test_compose_permissions_is_the_whole_object() -> None:
@@ -348,56 +355,132 @@ async def test_a_live_reenable_sends_the_whole_object_and_deny_empty_restores() 
     d, control, _ = _driver(B_OFF)
     await d.start()
     try:
-        await d.set_mcp_tool_rules(B_OFF.with_override("probe", "tool_b", True))
+        await d.set_mcp_tool_override("probe", "tool_b", True)
         assert control.patches[-1] == {"permissions": {"deny": []}}
         assert d.mcp_tool_rules.state("probe", "tool_b") == (True, "session")
     finally:
         await d.aclose()
 
 
+# Fix round 1, item 2: a failed live toggle leaves the reported state = the applied one.
 @pytest.mark.asyncio
-async def test_a_refused_live_write_keeps_the_old_rules() -> None:
+async def test_a_refused_live_write_keeps_the_applied_rules() -> None:
     d, control, _ = _driver(B_OFF)
     await d.start()
     try:
         control.replies = [_control_error("nope")]
         with pytest.raises(fs.SettingsError) as ei:
-            await d.set_mcp_tool_rules(B_OFF.with_override("probe", "tool_b", True))
+            await d.set_mcp_tool_override("probe", "tool_b", True)
         assert ei.value.code == fs.SETTINGS_REFUSED and d.mcp_tool_rules == B_OFF
+        # The next toggle composes from what was applied, not from the refused write.
+        await d.set_mcp_tool_override("probe", "tool_a", False)
+        assert control.patches[-1] == {
+            "permissions": {"deny": ["mcp__probe__tool_a", "mcp__probe__tool_b"]}}
     finally:
         await d.aclose()
 
 
+# Fix round 1, item 1: concurrent toggles serialize under one lock; none is lost.
 @pytest.mark.asyncio
-async def test_a_refusal_at_start_never_fails_the_start(caplog) -> None:
-    caplog.set_level(logging.INFO)
-    control = FakeControl(_control_error("nope"))
-    d, control, _ = _driver(B_OFF, control=control)
+async def test_two_concurrent_overrides_both_end_up_denied() -> None:
+    import asyncio
+    d, control, _ = _driver(McpToolRules())
     await d.start()
     try:
-        assert _no_warnings(caplog) == []
-        assert any("apply_flag_settings refused" in r.getMessage() for r in caplog.records)
+        control.gate = asyncio.Event()
+        a = asyncio.create_task(d.set_mcp_tool_override("probe", "tool_a", False))
+        b = asyncio.create_task(d.set_mcp_tool_override("probe", "tool_b", False))
+        await asyncio.sleep(0.05)
+        control.gate.set()
+        await asyncio.gather(a, b)
+        assert control.max_in_flight == 1
+        assert control.patches[-1] == {
+            "permissions": {"deny": ["mcp__probe__tool_a", "mcp__probe__tool_b"]}}
+        assert [d.mcp_tool_rules.state("probe", t)[0] for t in ("tool_a", "tool_b")] == [
+            False, False]
     finally:
         await d.aclose()
 
 
-# Review Focus 3
 @pytest.mark.asyncio
-async def test_server_off_drops_its_tool_denies_and_on_restores_them() -> None:
+async def test_a_server_toggle_racing_a_tool_toggle_loses_neither() -> None:
+    import asyncio
+    d, control, clients = _driver(McpToolRules())
+    await d.start()
+    try:
+        control.gate = asyncio.Event()
+        tool = asyncio.create_task(d.set_mcp_tool_override("probe", "tool_b", False))
+        server = asyncio.create_task(d.toggle_mcp_server("gh", False))
+        await asyncio.sleep(0.05)
+        control.gate.set()
+        await asyncio.gather(tool, server)
+        assert control.patches == [{"permissions": {"deny": ["mcp__probe__tool_b"]}}]
+        assert clients[-1].toggled == [("gh", False)]
+        assert d.mcp_tool_rules.state("probe", "tool_b") == (False, "session")
+    finally:
+        await d.aclose()
+
+
+# Fix round 1, item 2: a failed start apply is retried once, then reported.
+@pytest.mark.asyncio
+async def test_a_failed_start_apply_retries_then_reports_not_enforced(caplog) -> None:
+    from server.sessions import events as ev
+    caplog.set_level(logging.INFO)
+    control = FakeControl(_control_error("nope"), _control_error("nope again"))
+    d, control, _ = _driver(B_OFF, control=control)
+    emitted: list = []
+    real_emit = d._emit
+
+    def record(e):
+        emitted.append(e)
+        return real_emit(e)
+    d._emit = record  # type: ignore[method-assign]
+    await d.start()                                   # never fails the start
+    try:
+        assert len(control.patches) == 2              # one retry
+        assert d.mcp_tools_enforced is False
+        assert d.mcp_tool_rules == McpToolRules()      # applied: nothing — every tool on
+        warnings = _no_warnings(caplog)
+        assert any("mcp tool denies not applied" in m for _, m in warnings)
+        [notice] = [e for e in emitted if isinstance(e, ev.ErrorEvent)]
+        assert notice.code == fs.MCP_TOOLS_NOT_APPLIED and "Restart" in notice.message
+        # A later live toggle composes from the desired rules and restores enforcement.
+        await d.set_mcp_tool_override("probe", "tool_c", False)
+        assert control.patches[-1] == {
+            "permissions": {"deny": ["mcp__probe__tool_b", "mcp__probe__tool_c"]}}
+        assert d.mcp_tools_enforced is True
+    finally:
+        await d.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_start_apply_that_succeeds_on_retry_is_enforced(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    d, control, _ = _driver(B_OFF, control=FakeControl(_control_error("blip")))
+    await d.start()
+    try:
+        assert d.mcp_tools_enforced is True and d.mcp_tool_rules == B_OFF
+        assert _no_warnings(caplog) == []
+    finally:
+        await d.aclose()
+
+
+# Review Focus 3, as amended by fix round 1 item 3: a server that is off keeps its tool
+# denies in force, so re-enabling it opens no window and sends nothing.
+@pytest.mark.asyncio
+async def test_server_off_keeps_its_tool_denies_so_reenabling_has_no_gap() -> None:
     rules = McpToolRules(defaults={"probe": {"tool_b": False}},
                          overrides={"probe": {"tool_c": False}})
     d, control, _ = _driver(rules, desired=["probe"])
     await d.start()
     try:
-        assert control.patches == []          # the server is off: no stray denies
+        both = {"permissions": {"deny": ["mcp__probe__tool_b", "mcp__probe__tool_c"]}}
+        assert control.patches == [both]       # already in force while the server is off
         await d.toggle_mcp_server("probe", True)
-        assert control.patches == [
-            {"permissions": {"deny": ["mcp__probe__tool_b", "mcp__probe__tool_c"]}}]
         await d.toggle_mcp_server("probe", False)
-        assert control.patches[-1] == {"permissions": {"deny": []}}
-        n = len(control.patches)
-        await d.toggle_mcp_server("other", False)       # no change in what it holds
-        assert len(control.patches) == n
+        await d.toggle_mcp_server("probe", True)
+        assert control.patches == [both]       # no resend, no gap
+        assert d.mcp_tool_rules == rules
     finally:
         await d.aclose()
 
@@ -601,6 +684,46 @@ async def test_a_cli_refusal_saves_nothing(env) -> None:
     assert ei.value.code == fs.SETTINGS_REFUSED
     assert not (await _row(rec.id)).mcp_tool_overrides
     assert _tools_of(await env.orch.mcp_status_for(rec.id))["tool_a"] == (True, "default")
+
+
+# Fix round 1, item 5: the override is written first; a refused apply restores the
+# override it replaced, and a failed write applies nothing.
+@pytest.mark.asyncio
+async def test_a_refused_apply_restores_the_previous_override(env) -> None:
+    rec = await env.create()
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+    env.control.replies = [_control_error("nope")]
+    with pytest.raises(fs.SettingsError):
+        await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", True, identity="u")
+    assert (await _row(rec.id)).mcp_tool_overrides == {"probe": {"tool_a": False}}
+    assert _tools_of(await env.orch.mcp_status_for(rec.id))["tool_a"] == (False, "session")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_override_write_applies_nothing(env) -> None:
+    rec = await env.create()
+
+    async def broken(*a, **k):
+        raise RuntimeError("db down")
+    with patch.object(scope_store, "set_session_tool_override", broken):
+        with pytest.raises(RuntimeError, match="db down"):
+            await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+    assert env.control.patches == []
+    assert _tools_of(await env.orch.mcp_status_for(rec.id))["tool_a"] == (True, "default")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_start_apply_is_served_as_not_enforced(env) -> None:
+    await scope_store.set_tool_default("probe", "tool_b", False)
+    env.control.replies = [_control_error("nope"), _control_error("nope")]
+    rec = await env.create()
+    servers = await env.orch.mcp_status_for(rec.id)
+    assert servers[0]["toolsEnforced"] is False
+    assert _tools_of(servers)["tool_b"] == (True, "default")   # what the CLI really runs
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+    servers = await env.orch.mcp_status_for(rec.id)
+    assert servers[0]["toolsEnforced"] is True
+    assert _tools_of(servers)["tool_b"] == (False, "default")
 
 
 # ---------------------------------------------------------------- RPC / remote / fleet / facade

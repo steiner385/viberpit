@@ -21806,14 +21806,16 @@ class SessionOrchestrator:
         return getattr(driver, "mcp_tool_rules", None)
 
     def _mcp_wire(self, session_id: str, driver: Any, states: list) -> list[dict]:
-        return mcp_servers_wire(states, self._mcp_tool_rules(session_id, driver))
+        return mcp_servers_wire(states, self._mcp_tool_rules(session_id, driver),
+                                enforced=getattr(driver, "mcp_tools_enforced", True) is not False)
 
     async def set_mcp_tool(self, session_id: str, server: str, tool: str, enabled: bool, *,
                            identity: str = SYSTEM_IDENTITY) -> list[dict]:
         """Turn one MCP tool on or off in a live session (D-16b) and persist the override.
 
-        Applied live first — the whole recomposed ``permissions`` object through the flag
-        layer, reply awaited — then saved, so a refusal saves nothing. Returns the
+        Saved first, then applied live — the whole recomposed ``permissions`` object
+        through the flag layer, reply awaited, under the driver's one lock — and a refused
+        apply restores the override it replaced. Returns the
         session's servers as ``mcp_status_for`` serves them. ``KeyError`` for an unknown
         session; ``SettingsError``: ``MCP_TOOLS_UNAVAILABLE`` with no switches (Codex,
         not live, kill switch, a server whose tool list is unknown), ``MCP_TOOL_UNKNOWN``
@@ -21837,11 +21839,20 @@ class SessionOrchestrator:
                           f"the tool list of {server!r} is unknown")
         if state is None or tool not in {t.name for t in state.tools}:
             raise refused(flag_settings.MCP_TOOL_UNKNOWN, f"{server!r} has no tool {tool!r}")
-        await driver.set_mcp_tool_rules(rules.with_override(server, tool, enabled))
+        # Persist first, then apply: a failed write applies nothing (and nothing a
+        # restart would revert); a refused apply restores the override it replaced.
+        previous = await mcp_scope_store.set_session_tool_override(session_id, server, tool,
+                                                                   enabled)
         try:
-            await mcp_scope_store.set_session_tool_override(session_id, server, tool, enabled)
-        except KeyError:    # row deleted mid-flight: the toggle took effect, don't fail it
-            log.debug("mcp tool override not saved, session row gone session=%s", session_id)
+            await driver.set_mcp_tool_override(server, tool, enabled)
+        except Exception:
+            try:
+                await mcp_scope_store.set_session_tool_override(session_id, server, tool,
+                                                                previous)
+            except Exception:
+                log.warning("mcp tool override not restored session=%s server=%s tool=%s",
+                            session_id, server, tool, exc_info=True)
+            raise
         log.info("session.mcp_tool id=%s server=%s tool=%s enabled=%s by=%s", session_id,
                  server, tool, enabled, identity)
         return self._mcp_wire(session_id, driver, driver.last_mcp_status)

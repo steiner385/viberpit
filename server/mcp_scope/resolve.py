@@ -47,14 +47,12 @@ class McpToolRules:
         return McpToolRules(defaults=self.defaults, overrides=ov)
 
 
-def effective_disabled_tools(rules: McpToolRules, *,
-                             disabled_servers: Iterable[str] = ()) -> list[tuple[str, str]]:
+def effective_disabled_tools(rules: McpToolRules) -> list[tuple[str, str]]:
     """The sorted ``(server, tool)`` pairs to deny: (default-disabled tools minus the
-    session-enabled ones) plus the session-disabled ones. A server that is off at the
-    server level contributes none — it is already off, and its tools come back with it."""
-    off = set(disabled_servers)
+    session-enabled ones) plus the session-disabled ones. Independent of the server-level
+    scope: a server that is off keeps its tool pairs, so they hold when it comes back."""
     pairs = {(s, t) for src in (rules.defaults, rules.overrides) for s, ts in src.items()
-             if s not in off for t in ts}
+             for t in ts}
     return sorted(p for p in pairs if not rules.state(*p)[0])
 
 
@@ -72,7 +70,10 @@ def tools_wire(server: str, tools: Iterable[Any] | None,
     return out
 
 
-def servers_wire(states: Iterable[Any], rules: McpToolRules | None) -> list[dict]:
+def servers_wire(states: Iterable[Any], rules: McpToolRules | None, *,
+                 enforced: bool = True) -> list[dict]:
     """Sanitized ``McpServerState`` rows as the session MCP endpoint serves them:
-    ``to_wire`` plus ``tools`` (``tools_wire``)."""
-    return [{**s.to_wire(), "tools": tools_wire(s.name, s.tools, rules)} for s in states]
+    ``to_wire`` plus ``tools`` (``tools_wire``, from the APPLIED rules) and
+    ``toolsEnforced`` — False when the CLI start could not apply them (every tool on)."""
+    return [{**s.to_wire(), "tools": tools_wire(s.name, s.tools, rules),
+             "toolsEnforced": enforced} for s in states]

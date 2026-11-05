@@ -115,8 +115,10 @@ async def session_tool_overrides(session_id: str) -> dict[str, dict[str, bool]]:
 
 
 async def set_session_tool_override(session_id: str, server: str, tool: str,
-                                    enabled: bool) -> dict[str, dict[str, bool]]:
-    """Record a session's override of *server*'s *tool*; ``KeyError`` for a gone row."""
+                                    enabled: bool | None) -> bool | None:
+    """Record (or with None clear) a session's override of *server*'s *tool*; returns the
+    override it replaced (None: there was none), so a caller can restore it.
+    ``KeyError`` for a gone row."""
     async with db_session() as db:
         locked = await db.execute(
             update(DbSession).where(DbSession.id == session_id).values(id=DbSession.id))
@@ -125,9 +127,16 @@ async def set_session_tool_override(session_id: str, server: str, tool: str,
         row = (await db.execute(select(DbSession).where(DbSession.id == session_id)
                                 .execution_options(populate_existing=True))).scalar_one()
         merged = _nested_bools(row.mcp_tool_overrides)
-        merged[server] = {**merged.get(server, {}), tool: enabled}
-        row.mcp_tool_overrides = merged
-        return merged
+        tools = dict(merged.get(server, {}))
+        previous = tools.pop(tool, None)
+        if enabled is not None:
+            tools[tool] = enabled
+        if tools:
+            merged[server] = tools
+        else:
+            merged.pop(server, None)
+        row.mcp_tool_overrides = merged or None
+        return previous
 
 
 async def session_overrides(session_id: str) -> dict[str, bool]:

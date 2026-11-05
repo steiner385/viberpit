@@ -49,6 +49,9 @@ MCP_TOOL_UNKNOWN = "MCP_TOOL_UNKNOWN"
 #: (Codex), a session that is not live, a kill switch off, or a server whose tool list
 #: is unknown (a ``toolCount``-only ``mcp_status`` reply).
 MCP_TOOLS_UNAVAILABLE = "MCP_TOOLS_UNAVAILABLE"
+#: Not a refusal code: the session notice posted when a CLI start could not apply the
+#: per-tool denies (D-16b fix round 1). Every MCP tool is then on until a restart.
+MCP_TOOLS_NOT_APPLIED = "MCP_TOOLS_NOT_APPLIED"
 SETTINGS_CODES = frozenset({SETTINGS_UNAVAILABLE, SETTINGS_REFUSED, SETTINGS_INVALID,
                             SETTINGS_FAILED, FAST_UNAVAILABLE, OUTPUT_STYLE_UNKNOWN,
                             OUTPUT_STYLE_UNAVAILABLE, MCP_TOOL_UNKNOWN,
@@ -223,7 +226,7 @@ def effort_levels(server_info: Mapping[str, Any] | None,
     return [str(v) for v in levels] if isinstance(levels, list) else None
 
 
-def compose_permissions(rules: Any, *, disabled_servers: Iterable[str] = ()) -> dict[str, Any]:
+def compose_permissions(rules: Any) -> dict[str, Any]:
     """THE flag-layer ``permissions`` object ViberPit sends (D-16b), whole.
 
     ``apply_flag_settings`` REPLACES a top-level key wholesale (D-16 spike §2.1, probe 3
@@ -235,12 +238,12 @@ def compose_permissions(rules: Any, *, disabled_servers: Iterable[str] = ()) -> 
     must be added HERE, or each send silently drops the others.
 
     Today it holds ``deny``: one ``mcp__<server>__<tool>`` rule per disabled tool of
-    *rules* (an ``mcp_scope.resolve.McpToolRules``), none for a server in
-    *disabled_servers* (off at the server level already). An empty ``deny`` is a valid
-    patch: it restores every tool. It never goes into the spawn ``--settings``: spawn
-    denies are a floor no live patch can lift (§2.1)."""
+    *rules* (an ``mcp_scope.resolve.McpToolRules``). A server that is off at the server
+    level keeps its tool denies (a deny for an absent server is a no-op), so they are
+    already in force the moment it reconnects. An empty ``deny`` is a valid patch: it
+    restores every tool. It never goes into the spawn ``--settings``: spawn denies are a
+    floor no live patch can lift (§2.1)."""
     from server.mcp_health.status import mcp_tool_rule
     from server.mcp_scope.resolve import effective_disabled_tools
-    deny = [mcp_tool_rule(server, tool)
-            for server, tool in effective_disabled_tools(rules, disabled_servers=disabled_servers)]
-    return {"deny": sorted(set(deny))}
+    return {"deny": sorted({mcp_tool_rule(server, tool)
+                            for server, tool in effective_disabled_tools(rules)})}

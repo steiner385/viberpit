@@ -100,9 +100,21 @@ def tool_from_wire(d: object) -> McpTool | None:
     return tools[0] if tools else None
 
 
+_CLAUDE_AI_PREFIX = "claude.ai "
+_UNDERSCORES = re.compile(r"_+")
+
+
 def normalized_name(name: str) -> str:
-    """A server or tool name as the CLI spells it inside ``mcp__<server>__<tool>``."""
-    return _NON_NAME.sub("_", name)
+    """A server or tool name as the CLI spells it inside ``mcp__<server>__<tool>``: the
+    CLI's ``En`` (claude 2.1.318 @280040372) replaces ``[^a-zA-Z0-9_-]`` with ``_`` and,
+    for a ``claude.ai `` connector, also collapses ``_`` runs and trims one ``_`` at
+    each end. Probed: ``claude.ai My__Conn`` -> ``claude_ai_My_Conn``."""
+    out = _NON_NAME.sub("_", name)
+    if name.startswith(_CLAUDE_AI_PREFIX):
+        out = _UNDERSCORES.sub("_", out)
+        out = out[1:] if out.startswith("_") else out
+        out = out[:-1] if out.endswith("_") else out
+    return out
 
 
 def mcp_tool_rule(server: str, tool: str) -> str:
