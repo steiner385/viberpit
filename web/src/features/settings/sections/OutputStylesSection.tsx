@@ -10,9 +10,11 @@
  * session can pick one from its own `+` menu. Lazy (`settingsDefs`), like Memory.
  */
 import { useId, useState } from 'react'
-import { useOutputStyleFile, useOutputStyles, useSettings, useUpdateSettings } from '@/api/hooks'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/api/client'
+import { useSettings, useUpdateSettings } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
-import type { OutputStyleInfo } from '@/api/types'
+import type { OutputStyleFile, OutputStyleInfo } from '@/api/types'
 import { FileError, FileLines } from '@/features/sessions/files/FileViewer'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
@@ -26,6 +28,29 @@ import { useUnsavedChangesGuard } from '../useUnsavedChangesGuard'
 const DIR = '~/.claude/output-styles/'
 /** The CLI's own style: a NULL default means it. */
 const CLI_DEFAULT = 'default'
+
+// The two reads only this section makes live here, in its lazy chunk, not in the
+// eagerly loaded `api/hooks` (bundle budget, D-16a review).
+const STYLES_KEY = ['output-styles'] as const
+
+/** The styles the Settings default can be: the five built-ins in CLI order, then the
+ *  shared `~/.claude/output-styles/*.md` files. */
+function useOutputStyles() {
+  return useQuery<{ styles: OutputStyleInfo[] }>({
+    queryKey: STYLES_KEY,
+    queryFn: () => api.get<{ styles: OutputStyleInfo[] }>('/settings/output-styles'),
+  })
+}
+
+/** One shared user style's file for the read-only viewer. Any refusal (not a `.md`
+ *  directly in the shared dir, gone) is a 404. */
+function useOutputStyleFile(path: string) {
+  return useQuery<OutputStyleFile>({
+    queryKey: [...STYLES_KEY, 'file', path],
+    queryFn: () => api.get<OutputStyleFile>(`/settings/output-styles/${encodeURIComponent(path)}`),
+    retry: false,
+  })
+}
 
 const SOURCE_LABEL: Record<OutputStyleInfo['source'], string> = { builtin: 'Built-in', user: 'User' }
 

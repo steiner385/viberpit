@@ -895,8 +895,11 @@ export function transcriptReducer(
       // appending a duplicate bubble. Adoption is display-only — it deliberately
       // does NOT consume pendingSent (only the replaying=true path above proves
       // durability), so the buffer still re-asserts if the next replay lacks it.
+      //
+      // Never a `failed` bubble (D-16a): that prompt was not delivered, so an echo of the
+      // same text is the user's re-send, whose own pending bubble must take it.
       const pendIdx = state.turns.findIndex(
-        (t) => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
+        (t) => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX) && t.pending !== 'failed'
           && t.blocks.some((b) => b.kind === 'text' && b.text === text),
       )
       if (pendIdx !== -1) {
@@ -1673,8 +1676,17 @@ export function transcriptReducer(
       if (ev.stage !== 'failed') return { ...state, turns }
       // `failed` is terminal — not delivered, never retried (a refused app command, a
       // session that could not be woken) — so hand the text back to the composer.
-      const sent = state.pendingSent.find((p) => p.id === state.turns[idx].id)
-      return sent ? { ...state, turns, returnedPrompt: { text: sent.text } } : { ...state, turns }
+      // It also leaves the re-assert buffer: it is not on its way, so neither a replay
+      // drain nor `replayComplete` may match or resurrect it (a re-send of the same text
+      // is a new entry).
+      const failedId = state.turns[idx].id
+      const sent = state.pendingSent.find((p) => p.id === failedId)
+      if (!sent) return { ...state, turns }
+      return {
+        ...state, turns,
+        pendingSent: state.pendingSent.filter((p) => p.id !== failedId),
+        returnedPrompt: { text: sent.text },
+      }
     }
 
     case '_promptStalled': {

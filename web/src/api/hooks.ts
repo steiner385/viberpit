@@ -21,7 +21,6 @@ import type {
   DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent, MemoryFileContent, UserMemory, UserMemorySaved,
-  OutputStyleInfo, OutputStyleFile,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse, RuleWire,
   PrDetail, PrMutationResult, PrArmResult,
 } from './types'
@@ -168,10 +167,6 @@ export const QK = {
   /** The shared user memory file. Its own root, not under `settings`: invalidating the
    *  settings payload must not refetch (and re-base) an open memory draft. */
   userMemory: ['user-memory'] as const,
-  /** The styles Settings offers as the default (D-16a): built-ins + shared user files. */
-  outputStyles: ['output-styles'] as const,
-  /** One shared user style's file, for the read-only viewer. */
-  outputStyleFile: (path: string) => ['output-styles', 'file', path] as const,
 }
 
 /**
@@ -2006,28 +2001,6 @@ export function useSaveUserMemory() {
     onSuccess: (data, { text }) => {
       qc.setQueryData<UserMemory>(QK.userMemory, { text, etag: data.etag, exists: true })
     },
-  })
-}
-
-// --- Output styles (D-16a): Settings › Output styles ---
-
-/** The styles the Settings default can be: the five built-ins in CLI order, then the
- *  shared `~/.claude/output-styles/*.md` files. */
-export function useOutputStyles() {
-  return useQuery<{ styles: OutputStyleInfo[] }>({
-    queryKey: QK.outputStyles,
-    queryFn: () => api.get<{ styles: OutputStyleInfo[] }>('/settings/output-styles'),
-  })
-}
-
-/** One shared user style's file for the read-only viewer; null = nothing open. Any
- *  refusal (not a `.md` directly in the shared dir, gone) is a 404. */
-export function useOutputStyleFile(path: string | null) {
-  return useQuery<OutputStyleFile>({
-    queryKey: QK.outputStyleFile(path ?? ''),
-    queryFn: () => api.get<OutputStyleFile>(`/settings/output-styles/${encodeURIComponent(path ?? '')}`),
-    enabled: path !== null,
-    retry: false,
   })
 }
 

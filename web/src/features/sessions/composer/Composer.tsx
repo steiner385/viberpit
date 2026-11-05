@@ -63,8 +63,8 @@ interface Props {
   extraPlusEntries?: readonly PlusMenuEntry[]
   /** A sent prompt the server did not deliver and will not retry (a `promptAck`
    *  `failed`: a refused app command, or a session that could not be woken). A fresh
-   *  object each time; its text goes back into the box when the box is empty, so
-   *  nothing typed is lost to a refusal. */
+   *  object each time; its text goes back into the box — into an empty box as is,
+   *  else below the draft after a blank line — so nothing typed is lost. */
   returnedDraft?: { text: string } | null
 }
 
@@ -207,17 +207,20 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalDraft])
 
-  // A returned prompt (see `returnedDraft`) refills an EMPTY box only — a draft typed
-  // since the send is never overwritten. Keyed on the object, like `externalDraft`;
-  // one already there at mount was returned to an earlier mount, not this one.
+  // A returned prompt (see `returnedDraft`) fills an EMPTY box as is. A box that
+  // already holds text (a draft typed since, or an earlier returned prompt) keeps it
+  // and gets this one below, after a blank line — never overwritten, never dropped.
+  // Keyed on the object, like `externalDraft`; one already there at mount was
+  // returned to an earlier mount, not this one.
   const seenReturned = useRef(returnedDraft)
   useEffect(() => {
     if (returnedDraft === seenReturned.current) return
     seenReturned.current = returnedDraft
-    if (!returnedDraft || text.trim() !== '') return
+    if (!returnedDraft) return
     suggestedDraft.current = null
+    const next = text.trim() === '' ? returnedDraft.text : `${text.replace(/\s+$/, '')}\n\n${returnedDraft.text}`
     // eslint-disable-next-line react-hooks/set-state-in-effect -- refill the box the moment a prompt comes back
-    recallTo(0, returnedDraft.text)
+    recallTo(0, next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [returnedDraft])
 

@@ -152,3 +152,44 @@ describe('transcriptReducer — a failed prompt is handed back', () => {
     expect(s.returnedPrompt).not.toBe(first)
   })
 })
+
+/**
+ * D-16a review: a failed prompt that is re-sent. The failed bubble is not on its
+ * way, so the echo of the re-send must adopt the RE-SEND's bubble, and a reconnect
+ * must not resurrect the failed one as a phantom duplicate.
+ */
+describe('transcriptReducer — re-sending a failed prompt', () => {
+  function failedThenResent() {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    s = transcriptReducer(s, { type: '_trackSentPrompt', text: 'hello' })
+    return transcriptReducer(s, { type: '_promptStage', stage: 'delivered' })
+  }
+
+  it('a failed prompt leaves the re-assert buffer', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.pendingSent).toEqual([])
+  })
+
+  it('the live echo adopts the re-send, and the failed bubble stays failed', () => {
+    let s = failedThenResent()
+    expect(s.turns.map((t) => t.pending)).toEqual(['failed', 'delivered'])
+    s = transcriptReducer({ ...s, replaying: false }, { type: 'user', turnId: 'real-1', text: 'hello' })
+    expect(s.turns).toHaveLength(2)
+    expect(s.turns[0]).toMatchObject({ id: 'pending:0', pending: 'failed' })
+    expect(s.turns[1].id).toBe('real-1')
+    expect(s.turns[1].pending).toBeUndefined()
+  })
+
+  it('a reconnect replay plus replayComplete shows the delivered prompt once, no phantom', () => {
+    let s = failedThenResent()
+    s = transcriptReducer(s, { type: 'replayReset' })
+    s = transcriptReducer(s, { type: 'user', turnId: 'real-1', text: 'hello' })
+    s = transcriptReducer(s, { type: 'replayComplete' })
+    expect(s.pendingSent).toEqual([])
+    const hellos = s.turns.filter((t) => t.role === 'user'
+      && t.blocks.some((b) => b.kind === 'text' && b.text === 'hello'))
+    expect(hellos.map((t) => t.id)).toEqual(['real-1'])
+  })
+})
