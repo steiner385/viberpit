@@ -1456,3 +1456,121 @@ async def test_export_checks_the_live_card_not_the_resting_status(
     drv.awaiting_user_input = False
     manifest = await o.transfer_export(SID, target="rocky")
     assert manifest["target"] == "rocky"
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+# Fix round 2
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_a_saga_ending_during_a_reconcile_scan_leaves_no_hold(fleet, monkeypatch):
+    """A: the scan saw the claim while the saga ran; the saga finished (claim cleared,
+    end_move) before the reconcile got to that row. Nothing may stay held."""
+    fx = fleet
+    fx.rocky.gate = asyncio.Event()
+    saga = asyncio.create_task(_move(fx))
+    while "import" not in fx.rocky.calls:
+        await asyncio.sleep(0.01)
+    scanned = await sm._scan_claims()                  # sees the live claim
+    assert [r.id for r in scanned] == [SID]
+    fx.rocky.gate.set()
+    assert (await saga)["outcome"] == "moved"          # claim released, end_move done
+
+    async def stale_scan():
+        return scanned
+    monkeypatch.setattr(sm, "_scan_claims", stale_scan)
+    assert await sm.reconcile_stale_moves(fx.f) == []
+    assert fx.f._held == {}
+    assert (await fx.f.get_session(SID)).moving_to is None
+    assert await fx.f.ensure_driver(SID) is not None   # drivable, not SESSION_MOVING
+
+
+@pytest.mark.asyncio
+async def test_a_hold_whose_claim_is_gone_is_released(fleet):
+    """A: a hold left from an earlier pass is released once the DB has no claim."""
+    fx = fleet
+    fx.f.hold_move(SID, "rocky")
+    assert await sm.reconcile_stale_moves(fx.f) == []
+    assert fx.f._held == {}
+
+
+@pytest.mark.asyncio
+async def test_a_lease_without_the_import_marker_never_finalizes_the_source(
+        fleet, monkeypatch):
+    """B: the target claimed the lease (import in progress), the edge's import RPC timed
+    out, then the target's ensure_driver failed and it abandoned its own tree. The
+    source must not have been finalized on the lease alone: it survives and the session
+    is restored there."""
+    fx = fleet
+    monkeypatch.setattr(sm, "IMPORT_SETTLE_S", 0.3, raising=False)
+    monkeypatch.setattr(sm, "IMPORT_SETTLE_POLL_S", 0.02, raising=False)
+    abandoned = asyncio.Event()
+
+    async def import_then_fail(sid, manifest=None, *, source=None, local=False):
+        fx.rocky.calls.append("restore" if local else "import")
+        if local:
+            raise sm.MoveError(sm.MOVE_WORKTREE_MISSING)
+        assert await session_lease.acquire(sid, "rocky", ttl_s=120) is not None
+        fx.rocky.trees.add(sid)
+
+        async def ensure_driver_fails_later():
+            await asyncio.sleep(0.1)
+            fx.rocky.trees.discard(sid)                 # _abandon removes its tree
+            await _release(sid, "rocky")
+            abandoned.set()
+        asyncio.get_running_loop().create_task(ensure_driver_fails_later())
+        raise RuntimeError("DaemonTimeout: transfer_import")   # the edge gave up
+    fx.rocky.transfer_import = import_then_fail
+    with pytest.raises(sm.MoveError) as ei:
+        await _move(fx)
+    await abandoned.wait()
+    assert "finalize" not in fx.dobby.calls
+    assert SID in fx.dobby.trees                        # the only tree survives
+    assert ei.value.outcome == "failed"                 # left to the reconcile
+    assert await sm.reconcile_stale_moves(fx.f) == [SID]
+    row = await _row()
+    assert (row.host, row.moving_to) == ("dobby", None)
+    _on_source_only(fx)
+    assert await _lease_holder() == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_waits_for_a_target_holding_the_lease_without_the_marker(fleet):
+    """B: in the reconcile too, a lease without the marker is an import in progress —
+    never a winner, never a reason to finalize the source."""
+    fx = fleet
+    await fx.dobby.transfer_export(SID, target="rocky")
+    await _stale_claim(host="rocky", moved_from="dobby")
+    assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+    fx.rocky.trees.add(SID)
+    assert await sm.reconcile_stale_moves(fx.f) == []
+    assert "finalize" not in fx.dobby.calls and SID in fx.dobby.trees
+    assert (await _row()).moving_to == "rocky"
+    with pytest.raises(sm.SessionMoving):
+        await fx.f.ensure_driver(SID)
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_reconcile_warns_once_per_episode(fleet, caplog):
+    """C: neither host can resume — one WARNING for the episode, INFO after."""
+    import logging
+    fx = fleet
+    await fx.dobby.transfer_export(SID, target="rocky")
+    await _stale_claim(host="dobby")
+    fx.dobby.fail["restore"] = RuntimeError("down")
+    with caplog.at_level(logging.INFO, logger="server.sessions.session_move"):
+        for _ in range(3):
+            assert await sm.reconcile_stale_moves(fx.f) == []
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and r.name == "server.sessions.session_move"]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    fx.dobby.fail.pop("restore")
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="server.sessions.session_move"):
+        assert await sm.reconcile_stale_moves(fx.f) == [SID]
+    await _stale_claim(host="dobby")                    # a NEW episode warns again
+    fx.dobby.fail["restore"] = RuntimeError("down again")
+    with caplog.at_level(logging.INFO, logger="server.sessions.session_move"):
+        await sm.reconcile_stale_moves(fx.f)
+    assert any(r.levelno >= logging.WARNING for r in caplog.records
+               if r.name == "server.sessions.session_move")

@@ -96,6 +96,11 @@ MOVE_RECONCILE_INTERVAL_S = 60.0
 #: refreshes it (verified 2026-11-05), so a short retry is all the slack it needs.
 TRANSCRIPT_ATTEMPTS = 3
 TRANSCRIPT_RETRY_S = 1.0
+#: After a restore failed while the target holds the lease without the import-complete
+#: marker, how long the edge waits for that marker before leaving the session to the
+#: reconcile — never finalizing the source on the lease alone.
+IMPORT_SETTLE_S = 30.0
+IMPORT_SETTLE_POLL_S = 0.5
 #: Background tasks listed in a refusal / preflight (the UI's confirm list).
 BACKGROUND_LIST_CAP = 20
 
@@ -738,10 +743,10 @@ async def _restore(fleet: Any, sid: str, source: str, target: str, manifest: dic
         return OUTCOME_RESTORED
     except Exception:
         log.warning("session.move restore on %s failed id=%s", source, sid, exc_info=True)
-    holder = await _fresh_lease_holder(sid)
-    if holder == target:
-        # The target answered too late for the edge but is driving it now: it is the
-        # target's session. Never restore over a live twin — and drop the source's
+    if await _await_import_marker(sid, target):
+        # The target answered too late for the edge but finished: its driver started on
+        # a verified transcript (the marker says so — a lease alone does not, it is
+        # taken BEFORE ensure_driver). It is the target's session; drop the source's
         # copy, which the failed restore may have unpacked and re-recorded.
         try:
             await _restamp(sid, host=target, moved_from=source, moved_at=_NOW)
@@ -755,6 +760,32 @@ async def _restore(fleet: Any, sid: str, source: str, target: str, manifest: dic
         await _finalize(fleet, sid, source, target, manifest)
         return OUTCOME_MOVED
     return OUTCOME_FAILED
+
+
+async def _import_marker(sid: str) -> str | None:
+    from sqlalchemy import select as sa_select
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        return (await db.execute(sa_select(DbSession.move_imported_by).where(
+            DbSession.id == sid))).scalar_one_or_none()
+
+
+async def _await_import_marker(sid: str, target: str) -> bool:
+    """Did the target finish its import? True once ``move_imported_by == target``. While
+    the target holds a fresh lease without it, the import is still in progress: wait,
+    bounded by :data:`IMPORT_SETTLE_S`. No lease and no marker: it is not coming."""
+    deadline = time.monotonic() + IMPORT_SETTLE_S
+    while True:
+        try:
+            if await _import_marker(sid) == target:
+                return True
+        except Exception:
+            log.info("session.move marker read failed id=%s", sid, exc_info=True)
+            return False
+        if await _fresh_lease_holder(sid) != target or time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(IMPORT_SETTLE_POLL_S)
 
 
 async def _finalize(fleet: Any, sid: str, source: str, target: str,
@@ -773,38 +804,88 @@ async def _finalize(fleet: Any, sid: str, source: str, target: str,
 
 # ── edge: crash reconcile ───────────────────────────────────────────────────────────
 
+async def _scan_claims() -> list:
+    """Every row with a move claim (``moving_to`` set)."""
+    from sqlalchemy import select as sa_select
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        return list((await db.execute(sa_select(DbSession).where(
+            DbSession.moving_to.isnot(None)))).scalars().all())
+
+
 async def reconcile_stale_moves(sessions: Any, *, older_than_s: float = MOVE_STALE_S
                                 ) -> list[str]:
     """Settle every claim older than *older_than_s* (or abandoned: no start time) that no
     live saga in this process owns. Every claim this edge is not running is also HELD —
     driver builds answer SESSION_MOVING — until it is settled. Returns the ids settled.
     Never raises."""
-    from sqlalchemy import select as sa_select
-    from server.db import db_session
     from server.db.clock import naive_utc_now
-    from server.db.models import Session as DbSession
     fleet = _require_fleet(sessions)
     cutoff = naive_utc_now() - timedelta(seconds=older_than_s)
     try:
-        async with db_session() as db:
-            rows = (await db.execute(sa_select(DbSession).where(
-                DbSession.moving_to.isnot(None)))).scalars().all()
+        rows = await _scan_claims()
     except Exception:
         log.warning("session.move reconcile: claim scan failed", exc_info=True)
         return []
+    claimed = {r.id for r in rows}
+    for sid in fleet.held_ids():
+        if sid not in claimed and fleet.moving_target(sid) is None:
+            fleet.release_hold(sid)        # its claim is gone: never hold a free session
+    _warned(fleet).intersection_update(claimed)   # a gone claim ends its episode
     settled: list[str] = []
     for row in rows:
         if fleet.moving_target(row.id) is not None:
             continue   # a live saga in this edge
-        fleet.hold_move(row.id, row.moving_to)
         if row.move_started_at is not None and row.move_started_at >= cutoff:
-            continue   # maybe a live saga in another edge: not stale yet
+            continue   # maybe a live saga elsewhere, or one that just ended: not ours
+        fleet.hold_move(row.id, row.moving_to)
         try:
-            if await _reconcile_one(fleet, row):
+            # Re-read under the hold: the scan may be stale (a saga that ended since).
+            current = await _claim_row(row.id)
+            if current is None or current.moving_to != row.moving_to:
+                continue
+            if await _reconcile_one(fleet, current):
                 settled.append(row.id)
         except Exception:
-            log.warning("session.move reconcile failed id=%s", row.id, exc_info=True)
+            _episode_log(fleet, row.id, "session.move reconcile failed id=%s", row.id, exc_info=True)
+        finally:
+            try:
+                still = await _claim_row(row.id)
+            except Exception:
+                still = row          # unknown: keep holding; the next sweep re-checks
+            if still is None or not still.moving_to or fleet.moving_target(row.id):
+                fleet.release_hold(row.id)
     return settled
+
+
+def _warned(fleet: Any) -> set[str]:
+    """Sessions whose current stuck episode already logged its WARNING (one per episode,
+    INFO after — each WARNING auto-files an issue). Per edge process, on the fleet;
+    cleared when the claim is settled or gone."""
+    warned = getattr(fleet, "_move_warned", None)
+    if warned is None:
+        warned = set()
+        fleet._move_warned = warned
+    return warned
+
+
+def _episode_log(fleet: Any, sid: str, msg: str, *args: Any, **kw: Any) -> None:
+    warned = _warned(fleet)
+    level = logging.INFO if sid in warned else logging.WARNING
+    warned.add(sid)
+    log.log(level, msg, *args, **kw)
+
+
+async def _claim_row(sid: str):
+    """The row, iff it still carries a move claim."""
+    from sqlalchemy import select as sa_select
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        row = (await db.execute(sa_select(DbSession).where(
+            DbSession.id == sid))).scalar_one_or_none()
+    return row if row is not None and row.moving_to else None
 
 
 async def _reconcile_one(fleet: Any, row) -> bool:
@@ -821,17 +902,25 @@ async def _reconcile_one(fleet: Any, row) -> bool:
     source = (row.moved_from if restamped else row.host) or fleet.primary_name
     holder = await _fresh_lease_holder(sid)
     imported = getattr(row, "move_imported_by", None) == target
+    if holder == target and not imported:
+        # The target took the lease but has not finished (the lease is claimed BEFORE
+        # ensure_driver): an import in progress, not a winner. Never finalize the
+        # source on it; wait for the marker or for the lease to lapse.
+        _episode_log(fleet, sid, "session.move_reconcile id=%s: %s holds the lease without "
+                     "the import marker — import in progress, retrying", sid, target)
+        return False
     first: str
-    if holder is not None and holder in (source, target):
-        first = holder
+    if holder is not None and holder == source:
+        first = source
     else:
         first = target if imported else source
     order: list[str] = [first]
     other = source if first == target else target
     if other == source or imported:
         order.append(other)
-    log.warning("session.move_reconcile id=%s claim=%s→%s stamp=%s lease=%s imported=%s "
-                "order=%s", sid, source, target, row.host, holder, imported, order)
+    _episode_log(fleet, sid, "session.move_reconcile id=%s claim=%s→%s stamp=%s lease=%s "
+                 "imported=%s order=%s", sid, source, target, row.host, holder, imported,
+                 order)
     for cand in order:
         loser = target if cand == source else source
         if cand == target:
@@ -848,8 +937,8 @@ async def _reconcile_one(fleet: Any, row) -> bool:
             try:
                 await _orch(fleet, cand).transfer_import(sid, None, source=loser, local=True)
             except Exception:
-                log.warning("session.move reconcile: %s could not resume id=%s", cand, sid,
-                            exc_info=True)
+                log.info("session.move reconcile: %s could not resume id=%s", cand, sid,
+                         exc_info=True)
                 continue
         try:
             await _orch(fleet, loser).transfer_finalize(sid, None, owner=cand)
@@ -858,6 +947,7 @@ async def _reconcile_one(fleet: Any, row) -> bool:
                      exc_info=True)
         await _release_claim(sid)
         fleet.release_hold(sid)
+        _warned(fleet).discard(sid)
         await _audit("system", None, {"sessionId": sid, "from": source, "to": target,
                                       "outcome": f"reconciled:{cand}", "lease": holder})
         return True
@@ -868,8 +958,8 @@ async def _reconcile_one(fleet: Any, row) -> bool:
                        moved_at=None if restamped else row.moved_at)
         fleet.note_host(sid, source)
     await _abandon_claim(sid)
-    log.warning("session.move reconcile: no host could resume id=%s — retrying next pass",
-                sid)
+    _episode_log(fleet, sid, "session.move reconcile: no host could resume id=%s — retrying "
+                 "next pass", sid)
     return False
 
 

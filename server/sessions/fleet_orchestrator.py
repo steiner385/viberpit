@@ -515,6 +515,9 @@ class FleetOrchestrator:
     def release_hold(self, session_id: str) -> None:
         self._held.pop(session_id, None)
 
+    def held_ids(self) -> list[str]:
+        return list(self._held)
+
     @staticmethod
     async def _record_from_row_of(session_id: str):
         from sqlalchemy import select as _sel
