@@ -13,16 +13,17 @@ import { cn } from '@/lib/utils'
 import { ConditionRow } from './ConditionRow'
 import { AdvanceDialog } from './AdvanceDialog'
 import { LeavesBar } from './LeavesBar'
+import { PrintMore } from './PrintStamp'
 import { StatusNoteEditor } from './StatusNoteEditor'
-import { milestoneTitle, statusLine } from './format'
+import { PRINT_GATE_CAP, PRINT_OPEN_LEAVES_CAP, milestoneTitle, printGateOrder, statusLine } from './format'
 
-/** Open leaves shown on a card before "+N more" (spec §9; print caps at 4 in Phase 2). */
+/** Open leaves shown on a card before "+N more" (spec §9); print shows fewer. */
 const OPEN_LEAVES_CAP = 6
 
-function LeafRow({ leaf }: { leaf: MilestoneLeaf }) {
+function LeafRow({ leaf, printHidden }: { leaf: MilestoneLeaf; printHidden: boolean }) {
   const title = leaf.title ?? leaf.ref
   return (
-    <li className="flex flex-wrap items-baseline gap-x-2 text-xs">
+    <li data-print={printHidden ? 'hide' : undefined} className="flex flex-wrap items-baseline gap-x-2 text-xs">
       {leaf.url
         ? <a href={leaf.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-ink hover:underline">{title}</a>
         : <span className="min-w-0 truncate text-ink">{title}</span>}
@@ -58,6 +59,8 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
   ]
   const hidden = open.length - OPEN_LEAVES_CAP
   const epicUrl = m.epics[0]?.url ?? null
+  const gateOrder = printGateOrder(m.gate)
+  const gateDropped = m.gate.filter((_, i) => gateOrder[i] >= PRINT_GATE_CAP)
 
   return (
     <Card
@@ -73,12 +76,12 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
       )}
     >
       <header className="flex flex-col gap-1">
-        <h2 id={headingId} className={cn('text-sm font-semibold', done ? 'text-ink-muted' : 'text-ink')}>
+        <h2 id={headingId} data-print="clamp" className={cn('text-sm font-semibold', done ? 'text-ink-muted' : 'text-ink')}>
           {milestoneTitle(m)}
         </h2>
-        {m.audience && <p className="text-xs text-ink-muted">{m.audience}</p>}
+        {m.audience && <p data-print="line" className="text-xs text-ink-muted">{m.audience}</p>}
         {m.platforms.length > 0 && (
-          <ul aria-label="Platforms" className="flex flex-wrap gap-1">
+          <ul aria-label="Platforms" data-print="chips" className="flex flex-wrap gap-1">
             {m.platforms.map((p, i) => (
               <li key={`${p.name}-${i}`} className="rounded-pill border border-edge px-2 py-0.5 text-xs text-ink-muted">
                 {p.off
@@ -90,7 +93,7 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
         )}
         {current
           ? <StatusNoteEditor slug={slug} milestone={m} />
-          : <p className="text-xs font-medium text-ink-muted">{statusLine(m)}</p>}
+          : <p data-print="line" className="text-xs font-medium text-ink-muted">{statusLine(m)}</p>}
       </header>
 
       {done && m.exitOverride && (
@@ -99,9 +102,17 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
 
       {m.gate.length > 0
         ? <ul aria-label="Gate" className="flex flex-col divide-y divide-edge">
-            {m.gate.map((c) => <ConditionRow key={c.key} condition={c} manage={tickable ? { slug, scope: m.key } : undefined} />)}
+            {m.gate.map((c, i) => (
+              <ConditionRow key={c.key} condition={c} manage={tickable ? { slug, scope: m.key } : undefined}
+                print={{ order: gateOrder[i], hidden: gateOrder[i] >= PRINT_GATE_CAP }} />
+            ))}
           </ul>
         : <p className="text-xs text-ink-muted">No gate conditions.</p>}
+      {gateDropped.length > 0 && (
+        <span data-print="only" className="text-xs text-ink-muted">
+          +{gateDropped.length} more ({gateDropped.filter((c) => c.status === 'met').length} met)
+        </span>
+      )}
       {removed && m.gate.some((c) => c.kind === 'manual') && (
         <p className="text-xs text-ink-muted">
           This milestone was removed from the definition file; restore it there to tick its conditions.
@@ -113,20 +124,23 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
           <LeavesBar leaves={m.leaves} />
           {open.length > 0 && (
             <ul aria-label="Open leaves" className="flex flex-col gap-1">
-              {open.slice(0, OPEN_LEAVES_CAP).map((l) => <LeafRow key={l.ref} leaf={l} />)}
+              {open.slice(0, OPEN_LEAVES_CAP).map((l, i) => (
+                <LeafRow key={l.ref} leaf={l} printHidden={i >= PRINT_OPEN_LEAVES_CAP} />
+              ))}
             </ul>
           )}
           <div className="flex flex-wrap gap-x-3 text-xs text-ink-muted">
             {hidden > 0 && (epicUrl
-              ? <a href={epicUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">+{hidden} more</a>
-              : <span>+{hidden} more</span>)}
+              ? <a data-print="screen" href={epicUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">+{hidden} more</a>
+              : <span data-print="screen">+{hidden} more</span>)}
+            <PrintMore count={open.length} cap={PRINT_OPEN_LEAVES_CAP} />
             {m.leaves.done > 0 && <span>{m.leaves.done} done</span>}
           </div>
         </div>
       )}
 
       {current && (
-        <div className="mt-auto flex flex-col gap-2 border-t border-edge pt-3">
+        <div data-print="hide" className="mt-auto flex flex-col gap-2 border-t border-edge pt-3">
           <Button type="button" size="sm" variant={m.gateSummary.ready ? 'primary' : 'secondary'}
             onClick={() => setAdvancing(true)}>
             {m.gateSummary.ready ? 'Advance' : 'Advance with override…'}

@@ -4,8 +4,10 @@
 // and how fresh the numbers are; the ladder and the side column (Needs you,
 // Numbers, Decisions) sit below it. Every write answers with the full view, which
 // replaces the cached one. Its own route rather than an 8th product tab
-// (docs/PAGE-TABS.md §4).
-import { useEffect, useId, useRef } from 'react'
+// (docs/PAGE-TABS.md §4). Export PDF prints this live view as one landscape page
+// (spec M6): print.css lays it out, hides the shell and every control, and the
+// print-only header and stamp say what and when.
+import { type CSSProperties, useEffect, useId, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useProject } from '@/api/hooks'
 import { apiErrorCode } from '@/api/client'
@@ -27,9 +29,11 @@ import { Skeleton } from '@/ui/Skeleton'
 import { MilestoneCard } from './MilestoneCard'
 import { NotesPanel } from './NotesPanel'
 import { NumbersPanel } from './NumbersPanel'
+import { PrintStamp } from './PrintStamp'
 import {
   MILESTONES_FILE, MILESTONES_REFRESH_ID, currentMilestone, gateLine, loadedView, milestoneTitle,
 } from './format'
+import './print.css'
 
 const AUTO_REFRESH_OFF =
   'Automatic refresh is off. Turn on Milestones Refresh in Automations to keep these numbers live.'
@@ -90,7 +94,7 @@ export function MilestonesPage() {
   }, [retryAfter, refresh.data, reset])
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
+    <div className="flex h-full min-h-0 flex-col" data-page-variant="standard" data-milestones-print>
       <PageHeader
         title="Milestones"
         documentTitle={`Milestones · ${productName}`}
@@ -155,16 +159,27 @@ export function MilestonesPage() {
                 </Banner>
               )}
               {!ladder.autoRefresh && (
-                <Banner
-                  tone="info"
-                  title={<span id={offId}>{AUTO_REFRESH_OFF}</span>}
-                  actions={
-                    <Link to={automationPath(MILESTONES_REFRESH_ID)} className="text-sm text-accent hover:underline">
-                      Open Milestones Refresh
-                    </Link>
-                  }
-                />
+                <div data-print="hide">
+                  <Banner
+                    tone="info"
+                    title={<span id={offId}>{AUTO_REFRESH_OFF}</span>}
+                    actions={
+                      <Link to={automationPath(MILESTONES_REFRESH_ID)} className="text-sm text-accent hover:underline">
+                        Open Milestones Refresh
+                      </Link>
+                    }
+                  />
+                </div>
               )}
+
+              {/* The printed page's header: what this is and when (the page's own
+                  header, with its breadcrumb, does not print). */}
+              <div data-print="head">
+                <p className="font-semibold text-ink">
+                  {productName}{ladder.title ? ` · ${ladder.title}` : ''}
+                </p>
+                <PrintStamp product={productName} />
+              </div>
 
               <section aria-label="Where we are" className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-edge bg-surface px-4 py-3 text-sm">
                 <p className="font-semibold text-ink">
@@ -195,16 +210,21 @@ export function MilestonesPage() {
                   >
                     Refresh
                   </Button>
+                  <Button size="sm" variant="secondary" onClick={() => window.print()}>
+                    Export PDF
+                  </Button>
                   {outcome && ladder.autoRefresh && (
-                    <span role="status" className="text-xs text-ink-muted">{outcome}</span>
+                    <span role="status" data-print="hide" className="text-xs text-ink-muted">{outcome}</span>
                   )}
                 </div>
               </section>
 
-              <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem]">
+              <div data-print="body" className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem]">
                 <ol
                   aria-label="Milestones"
-                  style={{ gridTemplateColumns: LADDER_COLUMNS }}
+                  data-print="ladder"
+                  // Print sets one row of N from `--print-cols` (print.css).
+                  style={{ gridTemplateColumns: LADDER_COLUMNS, '--print-cols': view.milestones.length } as CSSProperties}
                   className="grid gap-3"
                 >
                   {view.milestones.map((m) => (
@@ -213,7 +233,7 @@ export function MilestonesPage() {
                   ))}
                 </ol>
                 {/* Spec §9 order, kept when it stacks under the ladder below 2xl. */}
-                <div className="flex min-w-0 flex-col gap-6">
+                <div data-print="side" className="flex min-w-0 flex-col gap-6">
                   <NotesPanel kind="ask" slug={productSlug} view={view} />
                   <NumbersPanel numbers={view.numbers} slug={productSlug} />
                   <NotesPanel kind="decision" slug={productSlug} view={view} />

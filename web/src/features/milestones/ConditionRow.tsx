@@ -4,7 +4,7 @@
 // Status is glyph + text, never colour alone; a failed reading's error rides a
 // tooltip and `aria-describedby`. A manual condition, when the row is managed,
 // offers Tick (or Update once ticked), which opens the tick dialog.
-import { useId, useState } from 'react'
+import { type CSSProperties, useId, useState } from 'react'
 import type { MilestoneCondition } from '@/api/milestones'
 import { TONE_TEXT } from '@/ui/Badge'
 import { cn } from '@/lib/utils'
@@ -35,17 +35,24 @@ export function TickControl({ condition: c, target }: { condition: MilestoneCond
   )
 }
 
-export function ConditionRow({ condition: c, manage }: { condition: MilestoneCondition; manage?: TickTarget }) {
+export function ConditionRow({ condition: c, manage, print }: {
+  condition: MilestoneCondition
+  manage?: TickTarget
+  /** Its printed position, and whether the print cap drops it (print.css). */
+  print?: { order: number; hidden: boolean }
+}) {
   const errorId = useId()
   const meta = STATUS_META[c.status] ?? STATUS_META.unknown
   const value = conditionValue(c)
   return (
-    <li data-status={c.status} className="flex flex-col gap-0.5 py-1.5 text-sm">
+    <li data-status={c.status} data-print={print?.hidden ? 'hide' : undefined}
+      style={print ? ({ '--print-order': print.order } as CSSProperties) : undefined}
+      className="flex flex-col gap-0.5 py-1.5 text-sm">
       <div className="flex items-start gap-2">
         <span aria-hidden="true" className={cn('w-3 shrink-0 text-center text-xs font-medium leading-5', TONE_TEXT[meta.tone])}>
           {meta.glyph}
         </span>
-        <span className="min-w-0 flex-1 text-ink">{c.label}</span>
+        <span data-print="clamp" className="min-w-0 flex-1 text-ink">{c.label}</span>
         {manage && c.kind === 'manual' && <TickControl condition={c} target={manage} />}
       </div>
       <div className="flex flex-wrap gap-x-2 pl-5 text-xs text-ink-muted">

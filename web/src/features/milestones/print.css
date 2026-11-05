@@ -1,0 +1,193 @@
+/* Milestones Export PDF (spec 2026-11-05 M6, §9 "Export"): the live view printed
+   as ONE landscape Letter page. Imported only by MilestonesPage, so it ships in
+   the page's lazy chunk; every rule keys on `[data-milestones-print]` (the page
+   root), so once loaded it stays inert on every other page.
+
+   Hooks (`data-print`), set by the milestone components:
+     only    print-only (the "+N more" past a cap)    screen  screen-only
+     hide    never printed                           head    the print header
+     clamp   a condition label or card title, two lines at most
+     line    a card's audience or status line, one line
+     chips   a card's platform chips, one row     ladder / body / side / numbers  layout
+
+   Content past the caps is truncated, never paginated (caps: format.ts). */
+
+/* On screen the print-only pieces do not exist. */
+@media not print {
+  [data-milestones-print] :is([data-print="only"], [data-print="head"]) { display: none; }
+}
+
+/* A named page, not a bare `@page`: this sheet stays loaded after the user
+   leaves, and printing any other page must keep the browser's defaults. */
+@page milestones {
+  size: letter landscape;
+  margin: 0.4in;
+}
+
+@media print {
+  /* The app is a fixed-viewport column whose inner pane scrolls (index.css clamps
+     html/body); in print that pane would clip the page. Un-clip the document and
+     every ancestor of the page, and drop everything else: the shell (nav rail,
+     top bar, list, banners, dock, drawer) and every portal (dialogs, toasts). */
+  html:has([data-milestones-print]) {
+    /* rem-based spacing shrinks to fit; the type below is set in pt. */
+    font-size: 12px;
+    /* A dark scheme would paint the page margins dark under "Background graphics". */
+    color-scheme: light !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  html:has([data-milestones-print]) body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body:has([data-milestones-print]) *:has([data-milestones-print]) {
+    display: block !important;
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: none !important;
+  }
+  body:has([data-milestones-print]) *:not(:has([data-milestones-print])):not([data-milestones-print]):not([data-milestones-print] *) {
+    display: none !important;
+  }
+
+  /* Light on white whatever the theme: the light `--t-*` values from index.css
+     `:root` (kept equal by MilestonesPage.print.test.tsx). Status keeps its glyph
+     and text, so nothing here leans on colour. */
+  [data-milestones-print] {
+    --t-canvas: #f6f7f9;  --t-surface: #ffffff;  --t-surface-raised: #eef1f5;
+    --t-edge: #d9dde3;    --t-edge-strong: #b9c1cc;
+    --t-ink: #1a1f29;     --t-ink-muted: #646a77;  --t-ink-faint: #8b929e;
+    --t-accent: #2461e7;  --t-accent-ink: #ffffff; --t-accent-wash: #e8effc;
+    --t-success: #147c3b; --t-success-wash: #e6f4ea;
+    --t-warning: #9a5d00; --t-warning-wash: #fbf0dc;
+    --t-danger:  #c23636; --t-danger-wash:  #fbe9e7;
+    --t-info:    #4f6d8f; --t-info-wash:    #e9eef5;
+    --t-neutral: #646a77; --t-neutral-wash: #eceff3;
+    color-scheme: light;
+    page: milestones;
+    display: block !important;
+    height: auto !important;
+    color: var(--t-ink);
+    background: #fff;
+    font-size: 9pt;
+    line-height: 1.25;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  /* Unlayered, so it outranks the Tailwind size utilities (they sit in a layer). */
+  [data-milestones-print] * { font-size: inherit; line-height: inherit; }
+  [data-milestones-print] .text-xs { font-size: 8pt; }
+
+  /* Not content: the page's own header (breadcrumb), every control and dialog. */
+  [data-milestones-print] > header,
+  [data-milestones-print] :is(button, [role="dialog"], [data-print="hide"], [data-print="screen"]) {
+    display: none !important;
+  }
+  [data-milestones-print] [data-page-scroll] {
+    display: block;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+  [data-milestones-print] [data-page-scroll] > div { gap: 4px; }
+
+  /* Links print as their text; the browser appends no URL. */
+  [data-milestones-print] a { color: inherit; text-decoration: none; }
+
+  /* Header: product · ladder, the stamp beside it; then the "Where we are" strip. */
+  [data-milestones-print] [data-print="head"] {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  [data-milestones-print] [data-print="head"] > :first-child { font-size: 13pt; }
+  [data-milestones-print] section[aria-label="Where we are"] { padding: 4px 8px; column-gap: 12px; row-gap: 2px; }
+
+  /* The ladder in one row of N, the minimum card width waived; below it, Needs
+     you · Numbers · Decisions in three columns. */
+  [data-milestones-print] [data-print="body"] { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  [data-milestones-print] [data-print="ladder"] {
+    grid-template-columns: repeat(var(--print-cols), minmax(0, 1fr)) !important;
+    gap: 6px;
+  }
+  [data-milestones-print] [data-print="ladder"] > li {
+    break-inside: avoid;
+    gap: 4px;
+    padding: 6px;
+  }
+  [data-milestones-print] [data-print="ladder"] h2 { font-size: 10.5pt; }
+  [data-milestones-print] [data-print="ladder"] header { gap: 1px; }
+  /* One row of chips; the ones past the card's edge are cut. */
+  [data-milestones-print] [data-print="chips"] { flex-wrap: nowrap; overflow: hidden; }
+  [data-milestones-print] [data-print="chips"] > li { flex-shrink: 0; white-space: nowrap; padding: 0 4px; }
+  [data-milestones-print] [aria-label="Open leaves"] { gap: 0; }
+  [data-milestones-print] [data-print="ladder"] > li > div:has(> [aria-label="Open leaves"]) { gap: 2px; }
+  [data-milestones-print] [data-print="ladder"] [data-leaves-bar] { margin-block: 1px; }
+  [data-milestones-print] [data-print="clamp"] {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  /* The gate in print order (unmet, unknown, met; caps in MilestoneCard). The
+     screen's dividers follow DOM order, so print drops them. */
+  [data-milestones-print] [data-print="line"] {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  [data-milestones-print] [data-print="ladder"] li[data-status] {
+    order: var(--print-order, 0);
+    padding-block: 2px;
+    gap: 0;
+    border-width: 0;
+  }
+  /* A condition's reading and each open leaf: one line, cut with an ellipsis. */
+  [data-milestones-print] [data-print="ladder"] li[data-status] > div + div,
+  [data-milestones-print] [aria-label="Open leaves"] > li {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  [data-milestones-print] [data-print="ladder"] li[data-status] > div + div > *,
+  [data-milestones-print] [aria-label="Open leaves"] > li > * { margin-right: 0.4em; }
+
+  [data-milestones-print] [data-print="side"] {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+    gap: 10px;
+  }
+  [data-milestones-print] [data-print="side"] > section { break-inside: avoid; gap: 3px; }
+  [data-milestones-print] [data-print="side"] ul { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  /* A note is one run, "where — ref text", clamped to two lines (a note runs to
+     500 characters) and ruled off from the next; its label leads, so the clamp
+     only cuts the text. */
+  [data-milestones-print] [data-print="side"] li {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    padding: 1px 0;
+    border-width: 0 0 1px;
+    border-radius: 0;
+    background: none;
+  }
+  [data-milestones-print] [data-print="side"] li > p { display: contents; }
+  [data-milestones-print] [data-print="numbers"] { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+  [data-milestones-print] [data-print="numbers"] > div { padding: 3px 6px; }
+  [data-milestones-print] [data-print="numbers"] dd:first-of-type { font-size: 11pt; }
+}
