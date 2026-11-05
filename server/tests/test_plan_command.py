@@ -133,3 +133,14 @@ async def test_plan_is_audited_as_a_permission_mode_change(env) -> None:
         rows = (await db.execute(select(AuditEvent).where(
             AuditEvent.type == "permission_mode.change"))).scalars().all()
     assert [(r.identity, r.detail["mode"]) for r in rows] == [("u@example.com", "plan")]
+
+
+@pytest.mark.asyncio
+async def test_bare_plan_reads_a_deferred_switch_not_the_live_mode(env) -> None:
+    """Codex defers a mid-turn switch (`_pending_profile`): live `mode` is still the old
+    one, so a bare `/plan` must toggle from where the session is heading (#3294)."""
+    driver = env.orch._drivers[env.rec.id]
+    driver.requested_mode = "plan"          # deferred switch into plan; live mode is not plan
+    calls = _ModeCalls(driver)
+    await env.orch.run_command(env.rec.id, "plan", "", identity=_U)
+    assert calls.calls == ["default"]

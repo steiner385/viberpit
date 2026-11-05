@@ -1398,7 +1398,7 @@ class CodexAgentDriver:
             )
             return
         resolved = mode
-        requested_mode = self._pending_profile[0] if self._pending_profile else self.mode
+        requested_mode = self.requested_mode
         if mode == "plan" and self.mode != "plan" and requested_mode != "plan":
             self._pre_plan_mode = self.mode
         elif mode == "default" and (self.mode == "plan" or requested_mode == "plan"):
@@ -1440,6 +1440,12 @@ class CodexAgentDriver:
             # A failed deferred switch keeps queued prompts. A successful manual
             # retry must resume that work; there is no active turn left to drain it.
             await self._drain_queue()
+
+    @property
+    def requested_mode(self) -> str:
+        """The mode the session is heading to: a switch deferred to the turn boundary
+        counts, so a toggle (bare `/plan`) reads the intent, not the stale live mode."""
+        return self._pending_profile[0] if self._pending_profile else self.mode
 
     async def _apply_pending_profile(self) -> None:
         pending, self._pending_profile = self._pending_profile, None
