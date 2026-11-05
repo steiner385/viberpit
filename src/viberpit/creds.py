@@ -207,17 +207,25 @@ def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = No
     if fleet_role.is_worker():
         update_shared_mcp(lambda store: store)  # log the once-per-process notice
         return 0
-    def merge(existing: dict) -> dict:
-        merged = dict(existing)
-        for key, new in incoming.items():
-            if not isinstance(new, dict):
-                continue
-            explicit = authenticated_keys is not None and key in authenticated_keys
-            if _mcp_bundle_replaces(existing.get(key), new, explicit=explicit):
-                merged[key] = new
-        return merged
+    return len(update_shared_mcp(
+        lambda existing: merge_mcp_bundles(existing, incoming, authenticated_keys=authenticated_keys)))
 
-    return len(update_shared_mcp(merge))
+
+def merge_mcp_bundles(existing: dict, incoming: dict, *,
+                      authenticated_keys: set[str] | None = None) -> dict:
+    """The per-key fold :func:`merge_shared_mcp` applies to the store. Pure.
+
+    Each dict bundle in *incoming* replaces its key in *existing* under
+    :func:`_mcp_bundle_replaces` (explicit for keys in *authenticated_keys*); non-dict values
+    are skipped. Returns a new dict; neither input is mutated."""
+    merged = dict(existing)
+    for key, new in incoming.items():
+        if not isinstance(new, dict):
+            continue
+        explicit = authenticated_keys is not None and key in authenticated_keys
+        if _mcp_bundle_replaces(existing.get(key), new, explicit=explicit):
+            merged[key] = new
+    return merged
 
 
 def public_view(bundle: dict) -> dict:
@@ -232,8 +240,8 @@ def _holds_refresh_token(blob: object) -> bool:
     return isinstance(blob, dict) and bool(blob.get("refreshToken"))
 
 
-def capture_cfg_mcp(dir_mcp: dict, *, drop: frozenset[str] = frozenset()) -> int:
-    """Offer a dir's MCP bundles to the shared store under the bundle policy (newer wins).
+def offerable_mcp(dir_mcp: dict, store: dict, *, drop: frozenset[str] = frozenset()) -> dict:
+    """The bundles a dir would offer *store*: the rule behind :func:`capture_cfg_mcp`. Pure.
 
     Keeps a login made directly in a terminal ``claude`` under that dir, including one from a
     provider that issues no refresh token. A bundle without a refresh token is offered only
@@ -242,14 +250,20 @@ def capture_cfg_mcp(dir_mcp: dict, *, drop: frozenset[str] = frozenset()) -> int
     A refresh-less key in *drop* (one the grant reconcile just deleted or moved) is never
     offered: the dir's leftover copy would otherwise land back in the store as "a key the
     store lacks". A bundle holding a refresh token is offered even when its key is in *drop*:
-    a refresh token is never deleted. Returns the number of bundles offered (0 on a worker,
-    which never writes the store)."""
-    if fleet_role.is_worker():
-        return merge_shared_mcp({})
-    store = read_shared_mcp()
-    held = {k: v for k, v in dir_mcp.items()
+    a refresh token is never deleted. Non-dict values are never offered."""
+    return {k: v for k, v in dir_mcp.items()
             if isinstance(v, dict)
             and (_holds_refresh_token(v) or (k not in drop and k not in store))}
+
+
+def capture_cfg_mcp(dir_mcp: dict, *, drop: frozenset[str] = frozenset()) -> int:
+    """Offer a dir's MCP bundles to the shared store under the bundle policy (newer wins).
+
+    Which bundles are offered is :func:`offerable_mcp`'s rule. Returns the number of bundles
+    offered (0 on a worker, which never writes the store)."""
+    if fleet_role.is_worker():
+        return merge_shared_mcp({})
+    held = offerable_mcp(dir_mcp, read_shared_mcp(), drop=drop)
     if held:
         merge_shared_mcp(held)
         log.debug("mcp capture: offered %d bundle(s) keys=%s", len(held), sorted(held))

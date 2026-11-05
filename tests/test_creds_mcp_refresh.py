@@ -203,6 +203,32 @@ def test_cleared_dir_is_never_captured(tmp_path, monkeypatch):
     assert _store(tmp_path)["k"] == live
 
 
+# --- the pure halves of capture and merge (#3287) --------------------------------------------
+
+def test_offerable_mcp_rule():
+    store = {"have": {"accessToken": "s"}}
+    dir_mcp = {"have": {"accessToken": "d"},                     # store has it, no refresh: not offered
+               "rt": {"accessToken": "d", "refreshToken": "r"},  # always offered
+               "new": {"accessToken": "d"},                      # store lacks it: offered
+               "dropped": {"accessToken": "d"},                  # refresh-less + in drop: not offered
+               "junk": "not a bundle"}                           # never offered
+    assert creds.offerable_mcp(dir_mcp, store, drop=frozenset({"dropped"})) == {
+        "rt": dir_mcp["rt"], "new": dir_mcp["new"]}
+    # A refresh-bearing bundle is offered even when its key is in drop.
+    assert creds.offerable_mcp(dir_mcp, store, drop=frozenset({"rt"}))["rt"] == dir_mcp["rt"]
+
+
+def test_merge_mcp_bundles_is_the_store_policy():
+    existing = {"k": {"accessToken": "a", "expiresAt": 10}}
+    assert creds.merge_mcp_bundles(existing, {"k": {"accessToken": "b", "expiresAt": 5}}) == existing
+    assert creds.merge_mcp_bundles(existing, {"k": {"accessToken": "b", "expiresAt": 5}},
+                                   authenticated_keys={"k"})["k"]["accessToken"] == "b"
+    assert creds.merge_mcp_bundles(existing, {"k": "junk"}) == existing
+    newer = {"k": {"accessToken": "b", "expiresAt": 11}, "n": {"accessToken": "c"}}
+    assert creds.merge_mcp_bundles(existing, newer) == newer
+    assert existing == {"k": {"accessToken": "a", "expiresAt": 10}}  # input untouched
+
+
 # --- a worker answers read_shared_mcp from the pushed view (#3287) --------------------------
 
 @pytest.fixture
