@@ -256,7 +256,7 @@ class Session(Base):
     # every terminal state; ``move_started_at`` is when it was claimed, so a saga that
     # died with its edge is reconciled once stale. ``moved_from`` / ``moved_at`` record
     # the last completed restamp. All naive UTC via db_utc_now, all nullable so init_db
-    # reconcile adds them on both dialects (migration 0105 is the record).
+    # reconcile adds them on both dialects (migration 0106 is the record).
     moving_to: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     move_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     moved_from: Mapped[str | None] = mapped_column(String, nullable=True, default=None)

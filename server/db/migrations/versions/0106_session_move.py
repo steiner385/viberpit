@@ -1,8 +1,8 @@
 """Move a session to another fleet host (D-17): sessions.moving_to, move_started_at,
 moved_from, moved_at.
 
-Revision ID: 0105_session_move
-Revises: 0104_curated_marketplaces
+Revision ID: 0106_session_move
+Revises: 0105_release_milestones
 
 ``moving_to`` is the compare-and-set claim of an in-flight move (NULL in every terminal
 state) and ``move_started_at`` its claim time, so a saga that died with its edge is
@@ -10,15 +10,15 @@ reconciled once stale. ``moved_from`` / ``moved_at`` record the last completed r
 All nullable: ``init_db``'s reconcile adds them on both dialects; this revision is the
 reviewable record.
 
-Chaining note: chained off 0104_curated_marketplaces (origin/master's newest revision when
+Chaining note: chained off 0105_release_milestones (origin/master's newest revision when
 written). If another revision lands first, re-chain ``down_revision`` to the newest one
 (``test_alembic_single_head`` enforces one head).
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0105_session_move"
-down_revision = "0104_curated_marketplaces"
+revision = "0106_session_move"
+down_revision = "0105_release_milestones"
 branch_labels = None
 depends_on = None
 
