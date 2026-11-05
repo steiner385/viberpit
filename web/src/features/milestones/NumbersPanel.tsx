@@ -10,7 +10,8 @@ export function NumbersPanel({ numbers }: { numbers: MilestoneCondition[] }) {
   return (
     <section aria-labelledby="milestones-numbers" className="flex flex-col gap-2">
       <SectionHeading id="milestones-numbers">Numbers</SectionHeading>
-      <dl className="flex flex-col gap-2">
+      {/* Stacked under the ladder below 2xl, the figures sit in a row; beside it, a column. */}
+      <dl className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-1">
         {numbers.map((n) => (
           // dt before dd for a valid group; the figure is lifted visually first.
           <div key={n.key} className="flex flex-col rounded-md border border-edge bg-surface p-3">

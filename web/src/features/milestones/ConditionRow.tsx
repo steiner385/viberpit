@@ -1,6 +1,8 @@
-// One gate condition (spec 2026-11-05 §9): status as glyph + text, the label,
-// the value against its target, its age, and a deep link. A failed reading's
-// error rides a tooltip and `aria-describedby`, so it is never colour alone.
+// One gate condition (spec 2026-11-05 §9). Line 1: the status glyph in a fixed
+// narrow column, then the label at full width so it reads at a glance. Line 2:
+// the status text, the value against its target, its age, and a deep link.
+// Status is glyph + text, never colour alone; a failed reading's error rides a
+// tooltip and `aria-describedby`.
 import { useId } from 'react'
 import type { MilestoneCondition } from '@/api/milestones'
 import { TONE_TEXT } from '@/ui/Badge'
@@ -13,20 +15,21 @@ export function ConditionRow({ condition: c }: { condition: MilestoneCondition }
   const meta = STATUS_META[c.status] ?? STATUS_META.unknown
   const value = conditionValue(c)
   return (
-    <li className="flex flex-col gap-0.5 py-1.5 text-sm">
+    <li data-status={c.status} className="flex flex-col gap-0.5 py-1.5 text-sm">
       <div className="flex items-start gap-2">
-        <span
-          data-status={c.status}
-          title={c.error ?? undefined}
-          aria-describedby={c.error ? errorId : undefined}
-          className="shrink-0 whitespace-nowrap text-xs font-medium text-ink"
-        >
-          <span aria-hidden="true" className={cn('inline-block w-3 text-center', TONE_TEXT[meta.tone])}>{meta.glyph}</span>
-          {' '}<span>{meta.text}</span>
+        <span aria-hidden="true" className={cn('w-3 shrink-0 text-center text-xs font-medium leading-5', TONE_TEXT[meta.tone])}>
+          {meta.glyph}
         </span>
         <span className="min-w-0 flex-1 text-ink">{c.label}</span>
       </div>
       <div className="flex flex-wrap gap-x-2 pl-5 text-xs text-ink-muted">
+        <span
+          title={c.error ?? undefined}
+          aria-describedby={c.error ? errorId : undefined}
+          className="font-medium text-ink"
+        >
+          {meta.text}
+        </span>
         {value && <span className="tabular-nums text-ink">{value}</span>}
         <span>{isValidTimestamp(c.measuredAt) ? relTime(c.measuredAt) : 'Never measured'}</span>
         {c.sourceUrl && (

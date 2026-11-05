@@ -1,6 +1,7 @@
-// One gate condition: status as glyph + text (never colour alone), the value
-// against its target, its age in the visible text, and the error in a tooltip
-// and `aria-describedby`.
+// One gate condition: line 1 is the status glyph and the full-width label; line 2
+// leads with the status text, then the value against its target and its age
+// (status is glyph + text, never colour alone). A failed reading's error rides a
+// tooltip and `aria-describedby`.
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { ConditionRow } from './ConditionRow'
@@ -10,12 +11,24 @@ const [rubric, laneFixes, nightly, consent] = HOUSEHOLD.gate
 
 const mount = (c = rubric) => render(<ul><ConditionRow condition={c} /></ul>)
 
+/** The row's two lines: [glyph, label] and the meta line. */
+function lines() {
+  const li = screen.getByRole('listitem')
+  const [head, meta] = Array.from(li.children) as HTMLElement[]
+  return { li, head, meta }
+}
+
 describe('ConditionRow', () => {
-  it('renders a stale row as ? Unknown with its age, the error described', () => {
+  it('renders a stale row as ? + label, then Unknown with its age, the error described', () => {
     mount(nightly)
+    const { li, head, meta } = lines()
+    expect(li).toHaveAttribute('data-status', 'unknown')
+    expect(head).toHaveTextContent(`?${nightly.label}`)
+    expect(head.firstElementChild).toHaveTextContent('?')
+    expect(head.firstElementChild).toHaveAttribute('aria-hidden', 'true')
+    expect(meta.firstElementChild).toHaveTextContent(/^Unknown$/)
+    expect(meta).toHaveTextContent('2d ago')
     const status = screen.getByText('Unknown')
-    expect(status.closest('[data-status]')).toHaveTextContent('? Unknown')
-    expect(screen.getByRole('listitem')).toHaveTextContent('2d ago')
     const described = status.closest('[aria-describedby]')!
     const note = document.getElementById(described.getAttribute('aria-describedby')!)
     expect(note).toHaveTextContent('GitHub returned 502 for nightly.yml')
@@ -24,13 +37,17 @@ describe('ConditionRow', () => {
 
   it('renders ✔ Met for a met condition', () => {
     mount(consent)
-    expect(screen.getByText('Met').closest('[data-status]')).toHaveTextContent('✔ Met')
+    const { head, meta } = lines()
+    expect(head.firstElementChild).toHaveTextContent('✔')
+    expect(meta.firstElementChild).toHaveTextContent(/^Met$/)
     expect(screen.getByText('3 of 3 closed')).toBeInTheDocument()
   })
 
   it('renders ✖ Not met and the value against its target', () => {
     mount(rubric)
-    expect(screen.getByText('Not met').closest('[data-status]')).toHaveTextContent('✖ Not met')
+    const { head, meta } = lines()
+    expect(head.firstElementChild).toHaveTextContent('✖')
+    expect(meta).toHaveTextContent(/^Not met293 → 0/)
     expect(screen.getByText('293 → 0')).toBeInTheDocument()
     expect(screen.getByRole('listitem')).toHaveTextContent('3h ago')
     expect(screen.getByRole('link', { name: /source/i })).toHaveAttribute('href', rubric.sourceUrl)

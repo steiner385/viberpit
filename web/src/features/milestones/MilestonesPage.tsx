@@ -3,7 +3,7 @@
 // strip says which milestone we are in, what is left in its gate, what is in
 // flight and how fresh the numbers are; the ladder and the Numbers panel sit
 // below it. Its own route rather than an 8th product tab (docs/PAGE-TABS.md §4).
-import { useId, type CSSProperties } from 'react'
+import { useId } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMilestones, useProject, useRefreshMilestones } from '@/api/hooks'
 import type { RefreshMilestonesResult } from '@/api/milestones'
@@ -29,6 +29,11 @@ import {
 const AUTO_REFRESH_OFF =
   'Automatic refresh is off. Turn on Milestones Refresh in Automations to keep these numbers live.'
 
+/** At most four rungs per row, none narrower than 15rem: each track is at least a
+ *  quarter of the row (so a fifth never fits) and at least 15rem (so a narrow row
+ *  wraps instead of squeezing); `min(100%, …)` keeps a single card inside a phone. */
+const LADDER_COLUMNS = 'repeat(auto-fit, minmax(min(100%, max(15rem, (100% - 3 * 0.75rem) / 4)), 1fr))'
+
 function refreshOutcome(r: RefreshMilestonesResult | undefined): string | null {
   if (!r) return null
   if (r.refreshed) return 'Refresh requested'
@@ -49,6 +54,7 @@ export function MilestonesPage() {
   const ladder = view?.ladder ?? null
   const current = view ? currentMilestone(view) : null
   const outcome = refreshOutcome(refresh.data)
+
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
@@ -144,11 +150,11 @@ export function MilestonesPage() {
                 </div>
               </section>
 
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_16rem]">
+              <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_16rem]">
                 <ol
                   aria-label="Milestones"
-                  style={{ '--milestone-cols': Math.max(1, view.milestones.length) } as CSSProperties}
-                  className="grid grid-cols-1 gap-3 lg:grid-cols-[repeat(var(--milestone-cols),minmax(0,1fr))]"
+                  style={{ gridTemplateColumns: LADDER_COLUMNS }}
+                  className="grid gap-3"
                 >
                   {view.milestones.map((m) => <MilestoneCard key={m.key} milestone={m} />)}
                 </ol>

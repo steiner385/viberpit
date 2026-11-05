@@ -85,4 +85,17 @@ describe('MilestonesPage', () => {
     mount()
     await waitFor(() => expect(screen.getByText('Try again in 42 s')).toBeInTheDocument())
   })
+
+  it('caps the ladder at four columns of at least 15rem; Numbers sits beside it only at 2xl', () => {
+    mount()
+    const ladder = screen.getByRole('list', { name: 'Milestones' })
+    const cols = ladder.style.gridTemplateColumns
+    expect(cols).toContain('auto-fit')
+    expect(cols).toContain('15rem')
+    expect(cols).toContain('/ 4')
+    const layout = ladder.parentElement!
+    expect(layout.className).toContain('2xl:grid-cols-')
+    expect(layout.className).not.toMatch(/(^|\s)xl:grid-cols-/)
+  })
+
 })
