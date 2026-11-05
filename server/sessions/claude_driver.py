@@ -44,6 +44,10 @@ from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, MCP_TOOLS_NOT_APPLIED,
                             SettingsError, compose_permissions, effort_levels, live_fast_mode,
                             live_output_style, model_options, output_styles)
 from .memory_files import normalize_memory_files
+from .plugin_reload import (RELOAD_BUSY, RELOAD_CONTROL_TIMEOUT_S, RELOAD_FAILED, RELOAD_REFUSED,
+                            RELOAD_UNAVAILABLE, ReloadError)
+from .plugin_reload import outcome as reload_outcome
+from .plugin_reload import request as reload_request
 from .failure import classify, TurnFailure
 from .engine import (EFFORT_UNCHANGED, AgentCapabilities, AgentDriverConfig,
                      AgentDriverFactory, AgentEngine, _EffortUnchanged,
@@ -2436,6 +2440,41 @@ class ClaudeAgentDriver:
         log.info("driver.apply_flag_settings session=%s keys=%s", self.session_id,
                  sorted(patch))
         return resp if isinstance(resp, dict) else {}
+
+    async def reload_plugins(self, *, hold_on_cache_impact: bool = True) -> dict:
+        """Ask the running CLI to reload its plugins (D-16c) and return the reduced
+        ``plugin_reload.outcome`` dict. Refusals raise ``ReloadError`` logged at INFO.
+
+        Sent raw on the SDK's control channel (the ``apply_flag_settings`` seam): the SDK
+        has no method for it. Refused while a turn is live, since a reload can change the
+        tool list under it."""
+        if self._client is None or self._stream_ended:
+            raise self._reload_refused(ReloadError(RELOAD_UNAVAILABLE, "session not live"))
+        send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
+        if send is None:
+            raise self._reload_refused(ReloadError(
+                RELOAD_UNAVAILABLE, "SDK client has no control channel"))
+        if self.rewind_busy():
+            raise self._reload_refused(ReloadError(RELOAD_BUSY, "session is mid-turn"))
+        try:
+            resp = await send(reload_request(hold_on_cache_impact),
+                              timeout=RELOAD_CONTROL_TIMEOUT_S)
+        except Exception as exc:
+            if _is_control_error_reply(exc):
+                raise self._reload_refused(ReloadError(RELOAD_REFUSED, str(exc))) from exc
+            code = RELOAD_UNAVAILABLE if isinstance(exc, CLIConnectionError) else RELOAD_FAILED
+            raise self._reload_refused(ReloadError(
+                code, f"no reply to reload_plugins: {exc}")) from exc
+        result = reload_outcome(resp)
+        log.info("driver.reload_plugins session=%s outcome=%s plugins=%d", self.session_id,
+                 result["outcome"], len(result["plugins"]))
+        return result
+
+    def _reload_refused(self, err: ReloadError) -> ReloadError:
+        """Log an expected reload refusal (INFO: a WARNING would auto-file an issue)."""
+        log.info("driver.reload_plugins refused session=%s code=%s message=%s",
+                 self.session_id, err.code, err.message)
+        return err
 
     def _settings_refused(self, err: SettingsError) -> SettingsError:
         """Log an expected settings refusal (INFO: a WARNING would auto-file an issue)."""
