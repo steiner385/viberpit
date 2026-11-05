@@ -26,7 +26,7 @@ export function StatusNoteEditor({ slug, milestone: m }: { slug: string; milesto
   if (draft === null) {
     return (
       <div className="flex items-center gap-1">
-        <p className="min-w-0 flex-1 text-xs font-medium text-accent [overflow-wrap:anywhere]">
+        <p data-print="line" className="min-w-0 flex-1 text-xs font-medium text-accent [overflow-wrap:anywhere]">
           {statusLine(m)}
         </p>
         {/* A text button, not a pencil icon: a lucide icon shared with the startup

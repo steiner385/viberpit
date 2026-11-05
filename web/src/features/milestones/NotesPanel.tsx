@@ -44,18 +44,24 @@ function NoteItem({ note: n, where, onAct, busy, printHidden = false }: {
   printHidden?: boolean
 }) {
   const actions = actionsFor(n)
+  const proposed = n.kind === 'decision' && n.status === 'proposed'
   return (
     <li data-print={printHidden ? 'hide' : undefined} className="flex min-w-0 flex-col gap-1 rounded-md border border-edge bg-surface p-3 text-sm">
       <p className="text-ink [overflow-wrap:anywhere]">
+        {/* Print leads with where the note belongs, so its two-line clamp only ever
+            cuts the text; the line below says it on screen. */}
+        <span data-print="only" className="font-medium text-ink-muted">
+          {where}{proposed ? ' · Proposed' : ''} —{' '}
+        </span>
         {n.ref && <span className="mr-1.5 font-mono text-xs text-ink-muted">{n.ref}</span>}
         {/* Only an absolute http(s) link becomes an href (stored-XSS guard). */}
         {isSafeHttpUrl(n.url)
           ? <a href={n.url} target="_blank" rel="noreferrer" className="hover:underline">{n.text}</a>
           : n.text}
       </p>
-      <p className="text-xs text-ink-muted [overflow-wrap:anywhere]">
+      <p data-print="screen" className="text-xs text-ink-muted [overflow-wrap:anywhere]">
         {where}
-        {n.kind === 'decision' && n.status === 'proposed' && <> · <span className="font-medium text-warning">Proposed</span></>}
+        {proposed && <> · <span className="font-medium text-warning">Proposed</span></>}
       </p>
       {actions.length > 0 && (
         <div data-print="hide" className="flex flex-wrap gap-2 pt-1">

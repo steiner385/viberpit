@@ -47,9 +47,12 @@ const KINDASH = (() => {
   return v
 })()
 
-/** Six rungs with open leaves; Phase 4's gate has six conditions, some long. */
+/** Six rungs with open leaves; Phase 4's gate has six conditions, some long, and
+ *  eight platforms; the current rung's status note runs to three lines. */
 const SIX = (() => {
   const v = structuredClone(KINDASH)
+  v.milestones[0].statusNote = 'the long phase by design, held open until every family has run a full month of '
+    + 'chores, allowances and the kiosk wall without a support call, and the nightly suite is green'
   const six = (n: number) => [
     cond({ key: 'g1', label: `Expansion ${n} gate ${LONG}`, status: 'met' }),
     cond({ key: 'g2', label: 'Zero open P0', status: 'unmet' }),
@@ -59,6 +62,10 @@ const SIX = (() => {
     cond({ key: 'g6', label: 'Pricing page live', status: 'met' }),
   ]
   const extra = [4, 5].map((n) => milestone(`phase-${n}`, `Phase ${n}`, `Expansion into a second long-named region ${n}`, 'upcoming', {
+    platforms: n === 4
+      ? ['Web', 'PWA', 'Kiosk wall', 'Android (Play)', 'iOS (TestFlight)', 'Chromebook', 'Smart display', 'Watch']
+        .map((name) => ({ name, off: false, note: null }))
+      : [{ name: 'Web', off: false, note: null }],
     gate: n === 4 ? six(n) : [cond({ key: 'g1', label: `Expansion ${n} gate ${LONG}` }), cond({ key: 'g2', label: 'Zero open P0' })],
     gateSummary: n === 4 ? { met: 3, total: 6, unknown: 1, ready: false } : { met: 0, total: 2, unknown: 2, ready: false },
     leaves: leaves(1, 2, 7),
@@ -69,6 +76,8 @@ const SIX = (() => {
 
 /** Letter landscape less the 0.4in `@page` margins, in CSS px (96/in): 10.2in × 7.7in. */
 const PRINTABLE = { width: 979, height: 739 }
+/** Room the content must leave at the foot of the page, so a fit is not a near miss. */
+const SPARE = 20
 
 /** Prints `ladder` at the stylesheet's own page size (the named `@page`), and
  *  returns the PDF's page count and each page's MediaBox. One page alone proves nothing
@@ -91,7 +100,7 @@ async function printed(page: Page, ladder: unknown, save?: string): Promise<{ pa
       docHeight: document.documentElement.scrollHeight,
     }
   })
-  expect(fit.bottom).toBeLessThanOrEqual(PRINTABLE.height)
+  expect(fit.bottom).toBeLessThanOrEqual(PRINTABLE.height - SPARE)
   expect(fit.docHeight).toBeLessThanOrEqual(PRINTABLE.height)
   const pdf = (await page.pdf({ preferCSSPageSize: true, printBackground: true, ...(save ? { path: save } : {}) })).toString('latin1')
   return {

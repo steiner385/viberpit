@@ -110,6 +110,24 @@ describe('MilestonesPage export', () => {
     for (const [k, v] of Object.entries(print)) expect(`--t-${k}: ${v}`).toBe(`--t-${k}: ${light[k]}`)
   })
 
+  it('print puts a note\'s milestone before its text, so the clamp only cuts the text', () => {
+    const long = 'x'.repeat(500)
+    q.milestones.data = ladderView({}, { notes: {
+      asks: [note({ id: 'a1', kind: 'ask', text: long, milestoneKey: 'household' })],
+      decisions: [note({ id: 'd1', kind: 'decision', ref: 'D1', status: 'proposed', text: long })],
+    } })
+    mount()
+    const ask = within(screen.getByRole('list', { name: 'Open asks' })).getByRole('listitem')
+    const [askText, askWhere] = ask.querySelectorAll('p')
+    // Print: a label ahead of the text; the trailing "where" line is screen-only.
+    expect(askText.firstElementChild).toHaveTextContent('Phase 0 · Household gate —')
+    expect(askText.firstElementChild).toHaveAttribute('data-print', 'only')
+    expect(askWhere).toHaveAttribute('data-print', 'screen')
+    expect(askWhere).toHaveTextContent('Phase 0 · Household gate')
+    const decision = within(screen.getByRole('list', { name: 'Decisions' })).getByRole('listitem')
+    expect(decision.querySelector('p')!.firstElementChild).toHaveTextContent('Whole ladder · Proposed —')
+  })
+
   it('print caps the gate at 4, unmet first, then unknown, then met', () => {
     const gate = [
       cond({ key: 'g0', label: 'Met A', status: 'met' }),

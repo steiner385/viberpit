@@ -81,7 +81,7 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
         </h2>
         {m.audience && <p data-print="line" className="text-xs text-ink-muted">{m.audience}</p>}
         {m.platforms.length > 0 && (
-          <ul aria-label="Platforms" className="flex flex-wrap gap-1">
+          <ul aria-label="Platforms" data-print="chips" className="flex flex-wrap gap-1">
             {m.platforms.map((p, i) => (
               <li key={`${p.name}-${i}`} className="rounded-pill border border-edge px-2 py-0.5 text-xs text-ink-muted">
                 {p.off
@@ -93,7 +93,7 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
         )}
         {current
           ? <StatusNoteEditor slug={slug} milestone={m} />
-          : <p className="text-xs font-medium text-ink-muted">{statusLine(m)}</p>}
+          : <p data-print="line" className="text-xs font-medium text-ink-muted">{statusLine(m)}</p>}
       </header>
 
       {done && m.exitOverride && (

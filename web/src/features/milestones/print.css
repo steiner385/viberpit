@@ -7,7 +7,8 @@
      only    print-only (the "+N more" past a cap)    screen  screen-only
      hide    never printed                           head    the print header
      clamp   a condition label or card title, two lines at most
-     line    a card's audience, one line     ladder / body / side / numbers  layout
+     line    a card's audience or status line, one line
+     chips   a card's platform chips, one row     ladder / body / side / numbers  layout
 
    Content past the caps is truncated, never paginated (caps: format.ts). */
 
@@ -97,7 +98,7 @@
     overflow: visible !important;
     padding: 0 !important;
   }
-  [data-milestones-print] [data-page-scroll] > div { gap: 6px; }
+  [data-milestones-print] [data-page-scroll] > div { gap: 4px; }
 
   /* Links print as their text; the browser appends no URL. */
   [data-milestones-print] a { color: inherit; text-decoration: none; }
@@ -114,7 +115,7 @@
 
   /* The ladder in one row of N, the minimum card width waived; below it, Needs
      you · Numbers · Decisions in three columns. */
-  [data-milestones-print] [data-print="body"] { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  [data-milestones-print] [data-print="body"] { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   [data-milestones-print] [data-print="ladder"] {
     grid-template-columns: repeat(var(--print-cols), minmax(0, 1fr)) !important;
     gap: 6px;
@@ -126,8 +127,11 @@
   }
   [data-milestones-print] [data-print="ladder"] h2 { font-size: 10.5pt; }
   [data-milestones-print] [data-print="ladder"] header { gap: 1px; }
-  [data-milestones-print] [aria-label="Platforms"] > li { padding: 0 4px; }
+  /* One row of chips; the ones past the card's edge are cut. */
+  [data-milestones-print] [data-print="chips"] { flex-wrap: nowrap; overflow: hidden; }
+  [data-milestones-print] [data-print="chips"] > li { flex-shrink: 0; white-space: nowrap; padding: 0 4px; }
   [data-milestones-print] [aria-label="Open leaves"] { gap: 0; }
+  [data-milestones-print] [data-print="ladder"] > li > div:has(> [aria-label="Open leaves"]) { gap: 2px; }
   [data-milestones-print] [data-print="ladder"] [data-leaves-bar] { margin-block: 1px; }
   [data-milestones-print] [data-print="clamp"] {
     display: -webkit-box;
@@ -168,22 +172,21 @@
   }
   [data-milestones-print] [data-print="side"] > section { break-inside: avoid; gap: 3px; }
   [data-milestones-print] [data-print="side"] ul { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  /* A note is one run of text, "ref text · where", clamped to two lines (a note
-     runs to 500 characters) and ruled off from the next. The paragraphs dissolve
-     into the clamp box so the two lines are counted across both. */
+  /* A note is one run, "where — ref text", clamped to two lines (a note runs to
+     500 characters) and ruled off from the next; its label leads, so the clamp
+     only cuts the text. */
   [data-milestones-print] [data-print="side"] li {
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
     overflow: hidden;
-    padding: 2px 0;
+    padding: 1px 0;
     border-width: 0 0 1px;
     border-radius: 0;
     background: none;
   }
   [data-milestones-print] [data-print="side"] li > p { display: contents; }
-  [data-milestones-print] [data-print="side"] li > p + p::before { content: " · "; }
   [data-milestones-print] [data-print="numbers"] { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
   [data-milestones-print] [data-print="numbers"] > div { padding: 3px 6px; }
   [data-milestones-print] [data-print="numbers"] dd:first-of-type { font-size: 11pt; }
