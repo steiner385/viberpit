@@ -396,6 +396,17 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
             src.gh_node_id = rel.node_id
         parent = by_ref.get(rel.parent_ref) if rel.parent_ref else None
         src.parent_work_item_id = parent.id if parent else None
+    # The pass lists OPEN issues only, so a closed sub-issue never arrives as its
+    # own rel and would never get a parent. An epic's ``subIssues`` connection spans
+    # every state (and every repo), so it is the authority for its children's parent.
+    for rel in rels:
+        epic = by_ref.get(f"{rel.repo}#{rel.number}")
+        if epic is None:
+            continue
+        for child_ref in rel.sub_issue_refs:
+            child = by_ref.get(child_ref) or _work_item_by_ref(db, child_ref)
+            if child is not None and child is not epic:
+                child.parent_work_item_id = epic.id
     bodies = {ref: item.body for ref, item in by_ref.items()
               if (item.state or "open") == "open"}
     observed = observed_deps(repo, rels, bodies)

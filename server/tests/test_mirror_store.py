@@ -94,6 +94,26 @@ def test_upsert_relations_sets_parents_and_plans_deps():
     assert native.active is False
 
 
+def test_upsert_relations_links_closed_and_cross_repo_sub_issues():
+    """The relations pass only lists OPEN issues, but an open epic's ``subIssues``
+    connection spans every state — a closed child never appears as its own rel, so
+    the epic's list is what must set its parent (else epic progress undercounts)."""
+    db = _db()
+    _seed(db)
+    db.add(WorkItem(repo=REPO, number=960, kind="issue", state="closed"))
+    db.add(WorkItem(repo="steiner385/KinDash", number=12, kind="issue", state="closed"))
+    db.commit()
+    mirror_store.upsert_relations(db, REPO, [
+        IssueRelView(repo=REPO, number=945, blocked_by=[], parent_ref=None,
+                     sub_issue_refs=[f"{REPO}#960", "steiner385/KinDash#12"]),
+    ])
+    epic = db.query(WorkItem).filter_by(repo=REPO, number=945).one()
+    closed = db.query(WorkItem).filter_by(repo=REPO, number=960).one()
+    other = db.query(WorkItem).filter_by(repo="steiner385/KinDash", number=12).one()
+    assert closed.parent_work_item_id == epic.id
+    assert other.parent_work_item_id == epic.id
+
+
 # --- rename_repo: alias → GitHub's canonical nameWithOwner (issue #999) --------
 
 CANON = "steiner385/viberpit-renamed"
