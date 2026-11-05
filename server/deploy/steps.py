@@ -492,6 +492,15 @@ def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> N
         raise DeployError("update", f"fast-forward failed: {m.stderr.strip()}")
 
 
+DEPS_FILES = ("pyproject.toml", "uv.lock")
+
+
+def deps_changed(changed_files: list[str] | None) -> bool:
+    """Whether a diff needs the venv reinstalled. Fails safe on an uncomputable diff
+    (None), exactly as ``classify_change`` does."""
+    return changed_files is None or any(f in DEPS_FILES for f in changed_files)
+
+
 def changed_paths(repo: str, a: str, b: str, paths: list[str], run: Run = subprocess.run) -> list[str]:
     r = run(["git", "-C", repo, "diff", "--name-only", a, b, "--", *paths],
             capture_output=True, text=True)
@@ -501,7 +510,7 @@ def changed_paths(repo: str, a: str, b: str, paths: list[str], run: Run = subpro
 def sync_deps_if_changed(repo: str, a: str, b: str, *, venv_python: str,
                          run: Run = subprocess.run) -> list[str]:
     done: list[str] = []
-    if changed_paths(repo, a, b, ["pyproject.toml", "uv.lock"], run=run):
+    if changed_paths(repo, a, b, list(DEPS_FILES), run=run):
         # Invoke pip as a module of the venv's interpreter, never via the `bin/pip`
         # launcher script: that launcher bakes the venv's ABSOLUTE path into its shebang
         # at creation time, so a venv that was later moved (or is reached through a

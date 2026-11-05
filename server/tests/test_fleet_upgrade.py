@@ -19,6 +19,7 @@ from server.api.fleet import (
     update_host, upgrade_host, UpgradeBody,
 )
 from server.sessions import host_upgrade
+from server.tests.test_deploy_runners import _checkout_probe
 
 # The fleet write handlers take the request only to reach `app.state.sessions`
 # for the queue drain (global_cap.drain_if_raised); a state with no `sessions`
@@ -199,6 +200,8 @@ _SSH_PREFIX = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=10", "deploy@rocky"]
 
 def _recorder(calls, fail_on: str | None = None):
     def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         if "show" in argv:
             return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
         calls.append(argv)

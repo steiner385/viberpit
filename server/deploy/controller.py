@@ -147,6 +147,95 @@ class DeployController:
         self.status.hosts[name] = progress.to_wire()
         self._persist_status()
 
+    def _lag_diff(self, target: str) -> Callable[[str], list[str] | None]:
+        """Per-runner restart input (#3290): the files between a runner's RUNNING sha and
+        *target*, diffed in this repo — the fetch put both commits here."""
+        return lambda process_sha: self._changed_files(self.repo, process_sha, target)
+
+    def _fold_runner_results(self, results: dict) -> list[str]:
+        """Publish each runner's outcome onto the status, set the RUNNERS phase, and hand
+        back the failures that fail the deploy (decision 1a: named, never rolled back)."""
+        for name, p in results.items():
+            self.status.hosts[name] = p.to_wire()
+            self.status.warnings.extend(f"{name}: {w}" for w in p.warnings)
+        failures = [f"{n} failed at {p.step or '?'}: {p.error or p.state}"
+                    for n, p in results.items() if p.state in self._runners.FAILED_STATES]
+        self._set(Phase.RUNNERS, PhaseState.FAILED if failures else PhaseState.DONE)
+        return failures
+
+    async def _fold_restores(self, results: dict, short: str) -> None:
+        """Fold every runner's restore into the one ``status.restore`` the UI reads, and
+        raise the needs-attention alert for any session a restart may have left behind."""
+        restored: list[str] = []
+        failed_sessions: list[str] = []
+        # Sessions whose restore outcome is unknown because the restore CALL failed
+        # on their host after its retries (#3082), and why, per host.
+        unconfirmed: list[str] = []
+        restore_errors: list[str] = []
+        for name, p in results.items():
+            r = p.restore or {}
+            restored += list(r.get("restored", []))
+            failed_sessions += list(r.get("failed", []))
+            unconfirmed += list(r.get("unconfirmed", []))
+            if r.get("error"):
+                restore_errors.append(f"{name}: {r['error']}")
+        self.status.restore = {"restored": restored, "failed": failed_sessions,
+                               "unconfirmed": unconfirmed}
+        # The full outcome, not just counts: this status object is wiped seconds later
+        # by the controller's own scheduled self-restart (issue #864).
+        log_event(log, logging.INFO, "deploy.sessions.reattach",
+                  deploy_id=self._deploy_id, recovered=len(restored),
+                  lost=len(failed_sessions), restored=restored, failed=failed_sessions,
+                  unconfirmed=unconfirmed, restore_errors=restore_errors)
+        if failed_sessions:
+            self.status.warnings.append(
+                f"resume failed for {len(failed_sessions)} session(s): "
+                f"{', '.join(failed_sessions)}")
+        if restore_errors:
+            self.status.warnings.append("session restore failed on " + "; ".join(
+                restore_errors))
+        if failed_sessions or restore_errors:
+            await self._alert_restore(short, failed_sessions, unconfirmed, restore_errors)
+
+    async def _resync_lagging_runners(self, target: str) -> bool:
+        """The edge is already on *target*: finish any runner still on older code (#3290).
+
+        Before this a deploy with nothing new for the edge returned at once, so a runner
+        that failed the previous deploy before its restart could only be finished by a
+        hand-run ``systemctl restart`` — with no session save/restore around it. Each
+        lagging runner gets the ordinary lifecycle, its restart decided from its own
+        running sha (``RunnerDeploy._lag_plan``).
+
+        Not held by the daemon-restart cooldown: that hold keeps the SAME sessions from
+        being interrupted twice, and a lagging daemon is one the last deploy did not
+        restart. A runner failure fails the deploy (decision 1a), as in the full path.
+        Returns whether any daemon was restarted.
+        """
+        try:
+            targets = await self._runners.load_runner_targets()
+            lagging = await self._runners.find_lagging_runners(
+                targets, target_sha=target, local_name=self._local_name,
+                local_daemon_enabled=self.daemon_enabled)
+        except Exception as e:  # noqa: BLE001 — the edge is current; report, don't fail
+            log.warning("deploy: runner lag check failed", exc_info=True)
+            self.status.warnings.append(f"runners: lag check failed: {_steps.err_reason(e)}")
+            return False
+        if not lagging:
+            return False
+        log_event(log, logging.INFO, "deploy.runners.resync", deploy_id=self._deploy_id,
+                  hosts=[t.name for t in lagging])
+        self._set(Phase.RUNNERS, PhaseState.RUNNING)
+        results = await self._runners.deploy_runners(
+            lagging, target_sha=target, daemon_changed=False, deps_changed=False,
+            local_name=self._local_name, local_daemon_enabled=self.daemon_enabled,
+            on_progress=self._on_host_progress, lag_diff=self._lag_diff(target))
+        failures = self._fold_runner_results(results)
+        short = await asyncio.to_thread(self._git.short_sha, self.repo, target)
+        await self._fold_restores(results, short)
+        if failures:
+            self.status.error = "runners: " + "; ".join(failures)
+        return any(p.restarted for p in results.values())
+
     async def _rollback(self, local: str, *, daemon_changed: bool) -> None:
         """Undo this deploy: the edge + local daemon via steps, then every REMOTE runner
         whose checkout the runners phase already advanced."""
@@ -260,7 +349,12 @@ class DeployController:
                 except DeployError as e:
                     self.status.warnings.append(f"frontend rebuild failed: {e}")
                 for p in Phase:
-                    self._set(p, PhaseState.DONE)
+                    if p is not Phase.RUNNERS:
+                        self._set(p, PhaseState.DONE)
+                # The edge has nothing new, but a runner may still be behind it.
+                daemon_restart_attempted = await self._resync_lagging_runners(remote)
+                if Phase.RUNNERS.value not in self.status.phases:
+                    self._set(Phase.RUNNERS, PhaseState.DONE)
                 return self.status
             # Can the units this deploy restarts actually be exec'd again? A unit keeps
             # running long after its ExecStart binary is gone (a live process holds open
@@ -311,8 +405,7 @@ class DeployController:
             # (changed / daemon_changed were classified in preflight.)
             # Whether each runner must reinstall its venv. Fails safe on an uncomputable
             # diff (changed is None), exactly as classify_change does.
-            deps_changed = (changed is None) or any(
-                f in ("pyproject.toml", "uv.lock") for f in changed)
+            deps_changed = _steps.deps_changed(changed)
             # The controller cannot restart itself inline — it is the process running
             # this deploy — so note it now; the deferred restart is scheduled in the
             # finally, once the status is terminal.
@@ -343,14 +436,11 @@ class DeployController:
                 targets, target_sha=remote, daemon_changed=daemon_changed,
                 deps_changed=deps_changed, local_name=self._local_name,
                 local_daemon_enabled=self.daemon_enabled,
-                on_progress=self._on_host_progress)
+                on_progress=self._on_host_progress, lag_diff=self._lag_diff(remote))
             self._runner_targets, self._runner_results = targets, results
-            for name, p in results.items():
-                self.status.hosts[name] = p.to_wire()
-                self.status.warnings.extend(f"{name}: {w}" for w in p.warnings)
-            runner_failures = [f"{n} failed at {p.step or '?'}: {p.error or p.state}"
-                               for n, p in results.items() if p.state in self._runners.FAILED_STATES]
-            self._set(Phase.RUNNERS, PhaseState.FAILED if runner_failures else PhaseState.DONE)
+            daemon_restart_attempted = daemon_changed or any(
+                p.restarted for p in results.values())
+            runner_failures = self._fold_runner_results(results)
 
             # --- restart (the edge) ---
             self._set(Phase.RESTART, PhaseState.RUNNING)
@@ -406,37 +496,7 @@ class DeployController:
             # allPhasesDone() gate reads the missing phase as 'pending' and reports a
             # spurious deploy failure with deploy.error still None.
             self._set(Phase.RESUME, PhaseState.RUNNING)
-            restored: list[str] = []
-            failed_sessions: list[str] = []
-            # Sessions whose restore outcome is unknown because the restore CALL failed
-            # on their host after its retries (#3082), and why, per host.
-            unconfirmed: list[str] = []
-            restore_errors: list[str] = []
-            for name, p in results.items():
-                r = p.restore or {}
-                restored += list(r.get("restored", []))
-                failed_sessions += list(r.get("failed", []))
-                unconfirmed += list(r.get("unconfirmed", []))
-                if r.get("error"):
-                    restore_errors.append(f"{name}: {r['error']}")
-            self.status.restore = {"restored": restored, "failed": failed_sessions,
-                                   "unconfirmed": unconfirmed}
-            # The full outcome, not just counts: this status object is wiped seconds later
-            # by the controller's own scheduled self-restart (issue #864).
-            log_event(log, logging.INFO, "deploy.sessions.reattach",
-                      deploy_id=self._deploy_id, recovered=len(restored),
-                      lost=len(failed_sessions), restored=restored, failed=failed_sessions,
-                      unconfirmed=unconfirmed, restore_errors=restore_errors)
-            if failed_sessions:
-                self.status.warnings.append(
-                    f"resume failed for {len(failed_sessions)} session(s): "
-                    f"{', '.join(failed_sessions)}")
-            if restore_errors:
-                self.status.warnings.append("session restore failed on " + "; ".join(
-                    restore_errors))
-            if failed_sessions or restore_errors:
-                await self._alert_restore(short, failed_sessions, unconfirmed,
-                                          restore_errors)
+            await self._fold_restores(results, short)
             self._set(Phase.RESUME, PhaseState.DONE)
 
             # --- publish (best-effort) ---
@@ -480,7 +540,9 @@ class DeployController:
             self.status.error = (f"{failed or 'deploy'}: unexpected {type(e).__name__}: "
                                  f"{_steps.err_reason(e)}")
             self.status.running = False
-            if failed not in (None, Phase.PREFLIGHT.value) and local:
+            # local == target: a runner resync on an already-current edge, nothing to undo.
+            if (failed not in (None, Phase.PREFLIGHT.value) and local
+                    and local != self.status.target_sha):
                 await self._rollback(local, daemon_changed=daemon_changed)
             return self.status
         finally:

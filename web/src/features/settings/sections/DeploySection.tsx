@@ -92,6 +92,17 @@ export function DeploySection() {
         <SettingsGroup legend="Last deploy" tone="danger">
           <div className="space-y-1 py-3">
             <DeployFailureNotice state={s} />
+            {s.canRetryRunners && (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                disabled={starting}
+                onClick={() => start(undefined)}
+              >
+                {starting ? 'Starting…' : 'Retry runners'}
+              </Button>
+            )}
           </div>
         </SettingsGroup>
       )}

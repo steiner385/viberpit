@@ -8,10 +8,16 @@ Transport rules (constitution IV — everything in ssh argv is validated first):
     lockfile changed;
   * ``sync`` after every checkout write, before the restart (2026-08-29 zero-byte module).
 
-A runner is restarted ONLY on a daemon-changing deploy: ``steps._EDGE_ONLY`` guarantees
-an edge-only diff touched no daemon-imported Python, so the running process already
-equals the new checkout's daemon code. The checkout is updated on EVERY deploy so
-``/info.checkoutSha`` matches the deployed commit and the skew gate (spec §4) stays green.
+A runner is restarted on a daemon-changing deploy, or when its OWN running process lags
+the target in daemon code (#3290): ``steps._EDGE_ONLY`` guarantees an edge-only diff
+touched no daemon-imported Python, but the diff is the EDGE's, so a runner that failed an
+earlier deploy before its restart is still on older daemon code the edge's diff no longer
+shows. The checkout is updated on EVERY deploy so ``/info.checkoutSha`` matches the
+deployed commit and the skew gate (spec §4) stays green.
+
+Before a remote checkout moves, ``_preflight_checkout`` refuses one that is off
+``RUNNER_BRANCH`` or carries local commits, naming the cause instead of surfacing git's
+"Not possible to fast-forward" advice (#3289). It diagnoses only; it never repairs.
 
 ``deploy_runners`` runs at most ``concurrency`` runners at once (decision 2a: 2) and
 isolates failures — one runner's failure never stops another (decision 1a).
@@ -29,7 +35,8 @@ from server.deploy import drain as _drain
 from server.host_units import resolve_unit
 from server.deploy.steps import (
     LOCAL_DAEMON_UNIT_FILE, REMOTE_DAEMON_UNIT_FILE, SSH_HOST_RE, SSH_REL_PATH_RE, SSH_REPO_RE,
-    _SHA_RE, check_daemon_unit_drift, short_sha_match,
+    _SHA_RE, check_daemon_unit_drift, classify_change, deps_changed as _deps_changed,
+    short_sha_match,
 )
 
 log = logging.getLogger("server.deploy.runners")
@@ -37,6 +44,14 @@ log = logging.getLogger("server.deploy.runners")
 Run = Callable[..., subprocess.CompletedProcess]
 Fetch = Callable[[str], Awaitable[dict]]
 Progress = Callable[[str, "HostProgress"], None]
+# Changed files between a sha a runner's PROCESS reports and the deploy target, computed
+# in the edge's repo (None = uncomputable). The controller supplies it; see _lag_plan.
+LagDiff = Callable[[str], "list[str] | None"]
+
+# The branch a runner checkout must be on: the one `merge --ff-only <target>` advances.
+RUNNER_BRANCH = "master"
+# How many local commits a checkout-preflight refusal names before summarising.
+_PREFLIGHT_COMMITS_SHOWN = 5
 
 SSH_OPTS = ("-oBatchMode=yes", "-oConnectTimeout=10")
 VERIFY_TIMEOUT_S = 180.0
@@ -76,6 +91,10 @@ class HostProgress:
     error: str | None = None
     sha: str | None = None
     moved: bool = False           # checkout advanced — a rollback must rewind it
+    # This deploy set out to restart the daemon (set before the drain), whether because
+    # the deploy changed daemon code or because this runner's process lagged (#3290). A
+    # rollback restarts exactly these runners.
+    restarted: bool = False
     restore: dict | None = None
     # Non-fatal findings the controller lifts into the deploy's warnings (unit drift).
     warnings: list[str] = field(default_factory=list)
@@ -174,6 +193,16 @@ _UNTRACKED_CLEAN_SCRIPT = (
     'if git -C {repo} cat-file -e {rev}:"$p" 2>/dev/null; then '
     'git -C {repo} clean -f -q -- "$p"; printf "%s\\0" "$p"; '
     'fi; done'
+)
+
+# Checkout preflight (#3289): are the files the checkout's local commits touch identical
+# to {rev}? Exit 0 = yes (the commits were squash-merged, so the checkout is safe to move
+# by hand); xargs exits 123 when the diff found a difference. {repo} and {rev} are
+# validated by every caller, exactly as for _UNTRACKED_CLEAN_SCRIPT; paths flow through
+# xargs -0, never through the script text.
+_LOCAL_COMMITS_MERGED_SCRIPT = (
+    'git -C {repo} diff --name-only -z {rev}...HEAD | '
+    'xargs -0 -r git -C {repo} diff --quiet HEAD {rev} --'
 )
 
 
@@ -295,6 +324,63 @@ class RunnerDeploy:
         if r.returncode != 0:
             return []
         return [p for p in (r.stdout or "").split("\0") if p]
+
+    async def _preflight_checkout(self, repo_path: str, target_sha: str) -> None:
+        """Refuse a checkout ``merge --ff-only`` cannot honestly move, saying why (#3289).
+
+        A runner checkout is deploy-managed, but a session can still do its PR work in it
+        rather than a worktree. On 2026-11-04 rocky sat on a feature branch holding the
+        UNSQUASHED commit of the very PR being deployed: same content, diverged history,
+        and the merge failed with git's advice to `merge --no-ff` or `rebase` — both wrong
+        for a runner. Two checks, before the merge and after the fetch (the target's
+        objects must be local for the second):
+
+        * HEAD must be ``RUNNER_BRANCH``. Off it, even a SUCCESSFUL ff-only merge would
+          advance the wrong branch.
+        * ``<target>..HEAD`` must be empty. Local commits are listed, with whether their
+          content is already in the target (the squash-merged, safe-to-move case).
+
+        Diagnostics only (constitution IV: no ``reset --hard`` outside rollback). Whether
+        the operator's work is safe to discard is not ours to decide.
+        """
+        problems: list[str] = []
+        r = await self._ssh_raw(["git", "-C", repo_path, "symbolic-ref", "--short", "-q", "HEAD"])
+        branch = (r.stdout or "").strip()
+        if r.returncode == 1:
+            problems.append(f"HEAD is detached, not on {RUNNER_BRANCH}")
+        elif r.returncode != 0:
+            detail = (r.stderr or r.stdout or "").strip()[:300]
+            raise RuntimeError(f"checkout preflight failed (rc={r.returncode}): {detail}")
+        elif branch != RUNNER_BRANCH:
+            problems.append(f"it is on branch {branch!r}, not {RUNNER_BRANCH}")
+
+        log_r = await self._ssh_raw(["git", "-C", repo_path, "log", "--format=%h%x09%s",
+                                     f"{target_sha}..HEAD"])
+        if log_r.returncode != 0:
+            detail = (log_r.stderr or log_r.stdout or "").strip()[:300]
+            raise RuntimeError(f"checkout preflight failed (rc={log_r.returncode}): {detail}")
+        commits = [c.replace("\t", " ", 1) for c in (log_r.stdout or "").splitlines() if c]
+        if commits:
+            shown = "; ".join(commits[:_PREFLIGHT_COMMITS_SHOWN])
+            more = len(commits) - _PREFLIGHT_COMMITS_SHOWN
+            listing = shown + (f"; +{more} more" if more > 0 else "")
+            problems.append(f"it has {len(commits)} local commit(s) not in "
+                            f"{target_sha[:12]} ({listing})")
+            script = _LOCAL_COMMITS_MERGED_SCRIPT.format(repo=repo_path, rev=target_sha)
+            same = await self._ssh_raw(["bash", "-c", shlex.quote(script)])
+            if same.returncode == 0:
+                problems.append(f"their changes are already in {target_sha[:12]} "
+                                "(squash-merged?), so the checkout is safe to move by hand")
+            else:
+                problems.append(f"their changes differ from {target_sha[:12]}: make sure "
+                                "they are pushed before moving the checkout")
+        if problems:
+            raise RuntimeError(
+                f"runner checkout {repo_path} cannot be fast-forwarded: "
+                + "; ".join(problems)
+                + f". A deploy only fast-forwards a clean {RUNNER_BRANCH}: put the checkout on "
+                f"{self.target.name} back on {RUNNER_BRANCH} by hand once its work is safe "
+                f"(e.g. `git -C {repo_path} checkout {RUNNER_BRANCH}`), then re-run the deploy")
 
     async def _merge(self, repo_path: str, remote: list[str], target_sha: str) -> None:
         """The `merge` step, with one recovery for a dirty checkout.
@@ -449,9 +535,45 @@ class RunnerDeploy:
                     f"{int(self._verify_timeout_s)}s")
             await asyncio.sleep(self._verify_interval_s)
 
+    async def _lag_plan(self, target_sha: str, lag_diff: LagDiff) -> tuple[bool, bool]:
+        """(restart, reinstall deps) for THIS runner on a deploy whose own diff is edge-only.
+
+        The deploy's classification is the edge's ``local..target`` diff. A runner that
+        failed an earlier deploy before its restart is still running older daemon code that
+        diff no longer covers, so it was never restarted however often the deploy re-ran
+        (#3290: rocky after 729b166). Classify this runner's own lag instead: the diff from
+        the sha its process reports on /info to the target.
+
+        An unreadable /info, or a process sha that is not a commit ("unknown" without a
+        .git), leaves the runner alone with a warning: a restart could not be verified
+        against such a sha, so it would only interrupt sessions to fail the verify.
+        """
+        try:
+            info = await self._fetch_info(self.target.endpoint)
+        except Exception as exc:  # noqa: BLE001 — unknown lag is reported, not fatal
+            self.progress.warnings.append(f"could not read /info to check daemon lag: {exc}"[:300])
+            return False, False
+        process = str(info.get("sha") or "")
+        if process and short_sha_match(process, target_sha):
+            return False, False
+        if not _SHA_RE.match(process):
+            self.progress.warnings.append(
+                f"daemon reports sha {process!r}, so whether it lags {target_sha[:12]} is unknown")
+            return False, False
+        changed = await asyncio.to_thread(lag_diff, process)
+        restart = classify_change(changed) == "daemon_changed"
+        if restart:
+            log.info("runner %s: process on %s lags %s in daemon code — restarting it",
+                     self.target.name, process, target_sha)
+        return restart, _deps_changed(changed)
+
     # ---- the lifecycle -----------------------------------------------------------
     async def deploy(self, *, target_sha: str, daemon_changed: bool, deps_changed: bool,
-                     local_daemon_enabled: bool) -> HostProgress:
+                     local_daemon_enabled: bool,
+                     lag_diff: LagDiff | None = None) -> HostProgress:
+        """One runner's lifecycle. *daemon_changed*/*deps_changed* are the deploy's own
+        (edge-diff) verdicts; with *lag_diff* a runner whose process lags the target in
+        daemon code is restarted even when they are False (see ``_lag_plan``)."""
         t = self.target
         if not t.enabled:
             self._mark("disabled")
@@ -485,32 +607,42 @@ class RunnerDeploy:
             except Exception:
                 log.warning("runner %s: session snapshot failed (continuing)", t.name, exc_info=True)
 
+            restart, reinstall = daemon_changed, deps_changed
+            if not daemon_changed and lag_diff is not None:
+                self._mark(step="lag-check")
+                lag_restart, lag_deps = await self._lag_plan(target_sha, lag_diff)
+                restart, reinstall = lag_restart, deps_changed or lag_deps
+
             if not local:
                 assert repo_path is not None
                 for step, remote in remote_update_commands(repo_path, target_sha,
-                                                           deps_changed=deps_changed):
-                    self._mark(step=step)
+                                                           deps_changed=reinstall):
                     if step == "merge":
+                        self._mark(step="checkout")
+                        await self._preflight_checkout(repo_path, target_sha)
+                        self._mark(step=step)
                         await self._merge(repo_path, remote, target_sha)
                         self.progress.moved = True
                     else:
+                        self._mark(step=step)
                         await self._ssh(step, remote)
 
-            if daemon_changed:
+            if restart:
+                self.progress.restarted = True
                 await self._drain_then()
                 self._mark(step="restart")
                 await self._restart(local=local)
 
-            sha = await self._verify(target_sha, require_process=daemon_changed)
+            sha = await self._verify(target_sha, require_process=restart)
             self.progress.sha = sha
 
-            if daemon_changed:
+            if restart:
                 self._mark(step="restore")
                 self.progress.restore = await self._restore(snapshot_ids)
             self._mark(step="unit-drift")
-            self.progress.warnings = await self._unit_drift(local=local)
+            self.progress.warnings += await self._unit_drift(local=local)
             self._mark("done")
-            log.info("deploy.runner.done host=%s sha=%s restarted=%s", t.name, sha, daemon_changed)
+            log.info("deploy.runner.done host=%s sha=%s restarted=%s", t.name, sha, restart)
         except Exception as exc:  # noqa: BLE001 — a runner failure is a REPORTED state
             self._mark("failed", step=self.progress.step, error=str(exc)[:500])
             log.warning("deploy.runner.failed host=%s step=%s: %s", t.name, self.progress.step, exc)
@@ -563,6 +695,7 @@ async def deploy_runners(targets: list[RunnerTarget], *, target_sha: str, daemon
                          deps_changed: bool, local_name: str, local_daemon_enabled: bool,
                          concurrency: int = DEFAULT_CONCURRENCY,
                          on_progress: Progress | None = None,
+                         lag_diff: LagDiff | None = None,
                          **runner_kwargs: Any) -> dict[str, HostProgress]:
     """Deploy every target, at most *concurrency* at a time. Returns name → progress."""
     sem = asyncio.Semaphore(max(1, concurrency))
@@ -572,10 +705,37 @@ async def deploy_runners(targets: list[RunnerTarget], *, target_sha: str, daemon
     async def one(rd: RunnerDeploy) -> None:
         async with sem:
             await rd.deploy(target_sha=target_sha, daemon_changed=daemon_changed,
-                            deps_changed=deps_changed, local_daemon_enabled=local_daemon_enabled)
+                            deps_changed=deps_changed, local_daemon_enabled=local_daemon_enabled,
+                            lag_diff=lag_diff)
 
     await asyncio.gather(*(one(rd) for rd in deploys.values()), return_exceptions=True)
     return {name: rd.progress for name, rd in deploys.items()}
+
+
+async def find_lagging_runners(targets: list[RunnerTarget], *, target_sha: str,
+                               local_name: str, local_daemon_enabled: bool,
+                               fetch_info: Fetch | None = None) -> list[RunnerTarget]:
+    """The deployable runners whose process or checkout is NOT on *target_sha* (#3290).
+
+    What a deploy with nothing new for the edge still has to do: a runner that failed the
+    last deploy kept its old code while the edge moved on. A host whose /info cannot be
+    read, or reports no sha, is left out — there is no evidence it lags.
+    """
+    fetch = fetch_info or _default_fetch_info()
+    candidates = [t for t in targets if is_deployable(t)
+                  and (local_daemon_enabled or not is_local(t, local_name))]
+
+    async def lags(t: RunnerTarget) -> bool:
+        try:
+            info = await fetch(t.endpoint)
+        except Exception:  # noqa: BLE001 — unreachable is not evidence of lag
+            log.debug("runner %s: /info unreadable during lag check", t.name, exc_info=True)
+            return False
+        shas = [str(s) for s in (info.get("sha"), info.get("checkoutSha")) if s]
+        return any(not short_sha_match(s, target_sha) for s in shas)
+
+    verdicts = await asyncio.gather(*(lags(t) for t in candidates))
+    return [t for t, lag in zip(candidates, verdicts) if lag]
 
 
 async def rewind_runners(targets: list[RunnerTarget], results: dict[str, HostProgress], *,
@@ -583,13 +743,14 @@ async def rewind_runners(targets: list[RunnerTarget], results: dict[str, HostPro
                          **runner_kwargs: Any) -> None:
     """Rollback helper: rewind every runner whose checkout this deploy moved.
 
-    *daemon_changed* is the deploy's own classification, threaded through so the rewind
-    restarts exactly the runners the deploy restarted — no more.
+    A runner is restarted on the way back exactly when the deploy restarted it: the
+    deploy's own classification (*daemon_changed*) or that runner's own lag restart
+    (``HostProgress.restarted``) — no more.
     """
     moved = [t for t in targets if results.get(t.name) is not None and results[t.name].moved]
     await asyncio.gather(
         *(RunnerDeploy(t, local_name=local_name, **runner_kwargs).rewind(
-            sha, daemon_changed=daemon_changed) for t in moved),
+            sha, daemon_changed=daemon_changed or results[t.name].restarted) for t in moved),
         return_exceptions=True)
 
 

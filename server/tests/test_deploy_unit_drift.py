@@ -15,6 +15,7 @@ import pytest
 
 from server.deploy import runners as R
 from server.deploy import steps
+from server.tests.test_deploy_runners import _checkout_probe
 
 UNIT = "viberpit-daemon.service"
 
@@ -24,6 +25,8 @@ def _systemd(installed: str, calls: list | None = None, *, rc: int = 0):
     def run(argv, **kw):
         if calls is not None:
             calls.append(list(argv))
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         if "LoadState" in argv:
             return subprocess.CompletedProcess(argv, 0, f"LoadState=loaded\nId={UNIT}\n", "")
         if "show" in argv:
