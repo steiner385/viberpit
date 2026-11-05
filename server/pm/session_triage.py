@@ -19,6 +19,7 @@ from server.db import db_session
 from server.db.models import Initiative, Project, ProjectRepo, WorkItem
 from server.mcp_spec import ToolArgError
 from server.pm.holds import actor_class
+from server.pm.milestone_asks import open_milestone_asks
 from server.sessions.tools.context import SessionToolContext
 
 
@@ -109,9 +110,18 @@ async def _needs_you(db: Any, args: NeedsYou, identity: str) -> dict:
                                   pendingOnly=True, _identity=identity, db=db)
     rows.extend({**p, "kind": "decision"} for p in decisions)
     rows.extend({**p, "kind": "classification"} for p in triage)
+    project_id = (await db.execute(select(Project.id).where(
+        Project.slug == args.product))).scalar_one_or_none()
+    asks = (await open_milestone_asks(db, [project_id])).get(project_id, []) \
+        if project_id is not None else []
+    rows.extend({"kind": "milestone_ask", "product": args.product, "text": a.text,
+                 "milestoneKey": a.milestone_key, "url": a.url, "id": a.id} for a in asks)
     # A deterministic order makes offset pagination useful across unchanged reads.
-    order = {"decision": 0, "classification": 1, "initiative": 2, "work_item": 3}
-    rows.sort(key=lambda r: (order[r["kind"]], str(r.get("slug") or r.get("id"))))
+    # Milestone asks keep open_milestone_asks' oldest-first order (a stable sort).
+    order = {"decision": 0, "milestone_ask": 1, "classification": 2, "initiative": 3,
+             "work_item": 4}
+    rows.sort(key=lambda r: (order[r["kind"]], "" if r["kind"] == "milestone_ask"
+                             else str(r.get("slug") or r.get("id"))))
     end = args.offset + args.limit
     return {"product": args.product, "counts": product["counts"], "total": len(rows),
             "items": rows[args.offset:end], "next_offset": end if end < len(rows) else None,

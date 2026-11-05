@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 from server.mcp_spec import ToolArgError
 from server.sessions.attachments import IMAGE_MEDIA_TYPES, MAX_BYTES, sniff_media_type
+from server.url_safety import is_absolute_http_url
 
 ARTIFACT_KINDS: tuple[str, ...] = ("url", "path", "image")
 
@@ -50,8 +51,7 @@ def parse_share_artifact(args: dict) -> dict:
     if not label:
         raise ToolArgError("label is required: a short human name for what this is")
     if kind == "url":
-        parts = urlsplit(value)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
+        if not is_absolute_http_url(value):
             raise ToolArgError("value must be an absolute http(s) URL")
     elif not value or not os.path.isabs(value):
         raise ToolArgError("value must be an absolute path on this host")

@@ -37,8 +37,8 @@ class MilestonesRefresh:
     work_class = "maintenance"
     description = ("Keeps each product's release-milestone gates current: every 10 minutes, "
                    "or at once when someone asks for a refresh, reads the GitHub searches, "
-                   "issue and PR states, epic sub-issues and workflow streaks the ladder "
-                   "names, and records each reading with its time.")
+                   "issue and PR states, epic sub-issues, workflow streaks and CI-published "
+                   "metrics the ladder names, and records each reading with its time.")
     modes: tuple[str, ...] = MODES
     engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema: list = []

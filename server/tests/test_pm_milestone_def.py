@@ -85,3 +85,19 @@ def test_rejects_non_finite_target(target):
             f"measure: {{kind: issue_count, query: q, op: le, target: {target}}}}}]}}]")
     with pytest.raises(MilestoneDefError, match="finite"):
         parse_ladder(text, primary_repo="o/r")
+
+
+def test_ci_metric_accepts_optional_branch():
+    text = ("version: 1\ntitle: t\nmilestones: [{key: a, name: A, gate: [{key: g, label: G, "
+            "measure: {kind: ci_metric, workflow: m.yml, metric: gap, branch: release, op: eq, target: 0}}]}]")
+    measure = parse_ladder(text, primary_repo="o/r").milestones[0].gate[0].measure
+    assert dict(measure.params) == {"workflow": "m.yml", "metric": "gap", "branch": "release"}
+
+
+@pytest.mark.parametrize("key", ["numbers", "notes", "advance"])
+def test_route_segment_keys_are_reserved(key):
+    """``notes`` and ``advance`` are static route segments under ``/milestones/`` and
+    ``numbers`` is the numbers panel's scope, so no milestone may take those keys."""
+    with pytest.raises(MilestoneDefError, match=f"key '{key}' is reserved"):
+        parse_ladder(f"version: 1\ntitle: t\nmilestones: [{{key: {key}, name: A}}]",
+                     primary_repo="o/r")

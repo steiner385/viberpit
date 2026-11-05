@@ -2,8 +2,9 @@
 // 2026-10-14 §1, `server/pm/attention.py`): an item NEEDS YOU only when a human
 // alone can unblock it — the `needs-you` tier. Everything else that is stopped
 // (the `blocked` tier) is WAITING: listed apart in `waitingRows`, never counted.
-// Counts are individual attention issues, initiative decisions, and product
-// triage rows.
+// Counts are individual attention issues, initiative decisions, product triage
+// rows, and open milestone asks (one each). Mirrored by
+// `server/pm/tree.py:needs_you_total`; the two must count the same.
 import { WAITING_KEYS, type CapabilityNode, type InitiativeNode, type ProductNode, type RoadmapTier, type WaitingKey } from '@/api/roadmap'
 import { WAITING_LABEL } from '@/features/products/vocab'
 import { flattenCapabilities } from '../lookup'
@@ -88,10 +89,17 @@ export function waitingRows(products: readonly ProductNode[], scope?: Capability
   }
 }
 
+/** A product's open milestone asks: one needs-you item EACH, unlike `pseudo` (one
+ *  per product). Product-level, so 0 in a capability scope; 0 when an older server
+ *  omits it, as Python's `counts.get("milestoneAsks", 0)`. The list's rows and the
+ *  count both read this. */
+export const milestoneAsks = (p: ProductNode, scope?: CapabilityNode): number => (scope ? 0 : p.counts.milestoneAsks ?? 0)
+
 /** Incidents have their own live count and query, and are excluded here. */
 export function needsYouCount(products: readonly ProductNode[], scope?: CapabilityNode): number {
   const { initiatives, issues, pseudo } = needsYouRows(products, scope)
   return initiatives.length + issues.reduce((n, issue) => n + issue.needsYou, 0) + pseudo.length
+    + products.reduce((n, p) => n + milestoneAsks(p, scope), 0)
 }
 
 /** The product's waiting counters (`counts.waiting`), non-zero only, in

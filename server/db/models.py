@@ -2713,6 +2713,33 @@ class MilestoneMeasurement(Base):
     manual_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class MilestoneNote(Base):
+    """An owner decision or owner ask on a ladder (spec 2026-11-05). ``milestone_key``
+    NULL means ladder-wide. ``kind`` is ``decision`` (status ``locked | proposed |
+    superseded``) or ``ask`` (status ``open | done | dropped``); ``ref`` is a short
+    handle such as ``D4``."""
+
+    __tablename__ = "milestone_notes"
+    __table_args__ = (Index("ix_milestone_notes_kind_status", "ladder_id", "kind", "status"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    ladder_id: Mapped[str] = mapped_column(
+        String, ForeignKey("milestone_ladders.id"), nullable=False, index=True)
+    milestone_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    text: Mapped[str | None] = mapped_column(String, nullable=True)
+    url: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MaterializationProposal(Base):
     """One proposed decomposition of a merged plan, awaiting the human gate
     (spec 003 §7b). ``payload`` is the parsed `materialize.Decomposition`

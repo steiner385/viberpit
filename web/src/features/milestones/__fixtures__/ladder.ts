@@ -3,7 +3,7 @@
 // the household gate current. `web/e2e/milestones.spec.ts` inlines a copy
 // (Playwright cannot resolve the `@/` alias). Times are relative to load so
 // relative-age labels are deterministic enough for the assertions.
-import type { Milestone, MilestoneCondition, MilestonesView } from '@/api/milestones'
+import type { Milestone, MilestoneCondition, MilestoneNote, MilestoneNotes, MilestonesView } from '@/api/milestones'
 
 const H = 3600
 export const ago = (secs: number) => new Date(Date.now() - secs * 1000).toISOString()
@@ -22,6 +22,7 @@ export function cond(over: Partial<MilestoneCondition> & { key: string }): Miles
     sourceUrl: null,
     manualBy: null,
     manualEvidence: null,
+    manualUrl: null,
     ...over,
   }
 }
@@ -148,7 +149,38 @@ export const NUMBERS: MilestoneCondition[] = [
   cond({ key: 'defects-by-ci', label: 'of recent defects found by CI (%)', status: 'info', value: { n: 40 }, measuredAt: ago(2 * 86400) }),
 ]
 
-export function ladderView(over: Partial<Extract<MilestonesView, { milestones: Milestone[] }>['ladder']> = {}): MilestonesView {
+export function note(over: Partial<MilestoneNote> & Pick<MilestoneNote, 'id' | 'kind' | 'text'>): MilestoneNote {
+  return {
+    ref: null,
+    url: null,
+    status: over.kind === 'ask' ? 'open' : 'locked',
+    milestoneKey: null,
+    createdBy: 'tony@example.com',
+    createdAt: ago(86400),
+    resolvedBy: null,
+    resolvedAt: null,
+    ...over,
+  }
+}
+
+/** Server order (`milestone_view._notes`): decisions locked, proposed, superseded;
+ *  asks open first, each oldest first. One ask is ladder-wide, one on the current rung. */
+export const NOTES: MilestoneNotes = {
+  decisions: [
+    note({ id: 'd1', kind: 'decision', ref: 'D1', text: 'Lifetime free PLUS for friendly families', createdAt: ago(9 * 86400) }),
+    note({ id: 'd2', kind: 'decision', ref: 'D2', status: 'proposed', text: 'Founder pricing at $4/month', url: 'https://github.com/cairnea/KinDash/issues/20300' }),
+    note({ id: 'd0', kind: 'decision', ref: 'D0', status: 'superseded', text: 'Charge from day one' }),
+  ],
+  asks: [
+    note({ id: 'a1', kind: 'ask', text: 'Name the 3 to 5 friendly families', createdAt: ago(3 * 86400) }),
+    note({ id: 'a2', kind: 'ask', ref: 'Q2', text: 'Confirm the DPA with the payment processor', milestoneKey: 'household' }),
+    note({ id: 'a3', kind: 'ask', status: 'done', text: 'Pick a launch city', resolvedBy: 'tony@example.com', resolvedAt: ago(3600) }),
+  ],
+}
+
+type LoadedLadder = Extract<MilestonesView, { milestones: Milestone[] }>
+
+export function ladderView(over: Partial<LoadedLadder['ladder']> = {}, view: Partial<Omit<LoadedLadder, 'ladder'>> = {}): LoadedLadder {
   return {
     ladder: {
       title: 'Launch readiness',
@@ -163,9 +195,13 @@ export function ladderView(over: Partial<Extract<MilestonesView, { milestones: M
       currentRemoved: false,
       updatedAt: ago(240),
       autoRefresh: true,
+      ladderComplete: false,
+      asksOpen: 2,
       ...over,
     },
     milestones: [HOUSEHOLD, FRIENDLY, COMMUNITY, PUBLIC],
     numbers: NUMBERS,
+    notes: NOTES,
+    ...view,
   }
 }

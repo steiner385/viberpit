@@ -23,6 +23,7 @@ from server.pm.desired_state import LIVE_SESSION_STATUSES
 from server.pm.drift import is_open_blocker
 from server.pm.fleet_platforms import fleet_platform_state
 from server.pm.map_changes import Pointer, open_pointer_rows
+from server.pm.milestone_asks import open_milestone_asks
 from server.pm.mirror_store import blocker_states, blocker_states_stmt
 from server.pm.outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                                 not_needed_suppression, rows_to_bounces, verdicts_by_ref)
@@ -280,6 +281,7 @@ async def product_nodes(db, *, issues_out: list[IssueAttention] | None = None) -
             incidents_by_repo.setdefault(repo, []).append(st or "")
 
     waiting_by_product = await _waiting_by_product(db, datetime.now(timezone.utc))
+    asks_by_project = await open_milestone_asks(db, pids)
 
     products = []
     for p in projects:
@@ -323,6 +325,7 @@ async def product_nodes(db, *, issues_out: list[IssueAttention] | None = None) -
             incident_statuses=tuple(s for r in my_repos for s in incidents_by_repo.get(r, [])),
             map_changes=map_changes.get(p.id),
             waiting=waiting_by_product.get(p.slug or p.id, {}),
+            milestone_asks=len(asks_by_project.get(p.id, [])),
         )))
     return products
 

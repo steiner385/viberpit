@@ -1,12 +1,15 @@
-// `/roadmap/:productSlug/milestones` — a product's release-milestone ladder,
-// read-only in Phase 1 (spec 2026-11-05 §9). At a glance first: the header
-// strip says which milestone we are in, what is left in its gate, what is in
-// flight and how fresh the numbers are; the ladder and the Numbers panel sit
-// below it. Its own route rather than an 8th product tab (docs/PAGE-TABS.md §4).
+// `/roadmap/:productSlug/milestones` — a product's release-milestone ladder
+// (spec 2026-11-05 §9). At a glance first: the header strip says which milestone
+// we are in, what is left in its gate, what is in flight, how many asks need you
+// and how fresh the numbers are; the ladder and the side column (Needs you,
+// Numbers, Decisions) sit below it. Every write answers with the full view, which
+// replaces the cached one. Its own route rather than an 8th product tab
+// (docs/PAGE-TABS.md §4).
 import { useEffect, useId, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useProject } from '@/api/hooks'
-import { useMilestones, useRefreshMilestones } from '@/api/milestones'
+import { apiErrorCode } from '@/api/client'
+import { milestoneErrorText, useAdvanceMilestone, useMilestones, useRefreshMilestones } from '@/api/milestones'
 import type { RefreshMilestonesResult } from '@/api/milestones'
 import { automationPath } from '@/features/delivery/deliveryNavState'
 import { ROADMAP } from '@/features/products/vocab'
@@ -22,6 +25,7 @@ import { PageHeader } from '@/ui/PageHeader'
 import { QueryFailureBanner } from '@/ui/QueryFailureBanner'
 import { Skeleton } from '@/ui/Skeleton'
 import { MilestoneCard } from './MilestoneCard'
+import { NotesPanel } from './NotesPanel'
 import { NumbersPanel } from './NumbersPanel'
 import {
   MILESTONES_FILE, MILESTONES_REFRESH_ID, currentMilestone, gateLine, loadedView, milestoneTitle,
@@ -47,6 +51,10 @@ export function MilestonesPage() {
   const milestones = useMilestones(productSlug)
   const { data: project } = useProject(productSlug, { poll: false })
   const refresh = useRefreshMilestones(productSlug)
+  // THE advance mutation for Start and every card's dialog, owned here so its
+  // error outlives the card: a 409 `stale_current` refetches, the card stops being
+  // current and its dialog unmounts.
+  const advance = useAdvanceMilestone(productSlug)
   const offId = useId()
 
   const productName = project?.name ?? productSlug
@@ -54,6 +62,14 @@ export function MilestonesPage() {
   const view = loadedView(milestones.data)
   const ladder = view?.ladder ?? null
   const current = view ? currentMilestone(view) : null
+  // The rung an Advance enters: the lowest live upcoming one (the server's rule).
+  const upcoming = view?.milestones.find((m) => m.state === 'upcoming') ?? null
+  const canStart = !!view && view.ladder.currentKey === null && !view.milestones.some((m) => m.state === 'done') && upcoming !== null
+  // The strip says what Start's failure was, and a stale advance from anywhere; a
+  // dialog's other refusals stay in the dialog.
+  const stale = apiErrorCode(advance.error) === 'stale_current'
+  const advanceError = stale || advance.variables?.expectedCurrent === null ? milestoneErrorText(advance.error) : null
+  const asksOpen = ladder?.asksOpen ?? 0
   const outcome = refreshOutcome(refresh.data)
 
   // The outcome line is transient: it clears when newer numbers land, and a 429's
@@ -133,6 +149,11 @@ export function MilestonesPage() {
               {ladder.currentRemoved && (
                 <Banner tone="warning" title="The current milestone was removed from the definition file" />
               )}
+              {ladder.ladderComplete && (
+                <Banner tone="success" title="Ladder complete">
+                  Every milestone is done. Add a new milestone to the definition file to keep going.
+                </Banner>
+              )}
               {!ladder.autoRefresh && (
                 <Banner
                   tone="info"
@@ -151,6 +172,15 @@ export function MilestonesPage() {
                 </p>
                 {current && <p className="text-ink">{gateLine(current.gateSummary)}</p>}
                 {current && <p className="text-ink">{current.leaves.inFlight} in flight</p>}
+                {asksOpen > 0 && (
+                  <p className="font-medium text-warning">{asksOpen} {asksOpen === 1 ? 'ask needs' : 'asks need'} you</p>
+                )}
+                {canStart && (
+                  <Button size="sm" onClick={() => advance.mutate({ expectedCurrent: null })} loading={advance.isPending}>
+                    Start
+                  </Button>
+                )}
+                {advanceError && <p role="alert" className="text-danger">{advanceError}</p>}
                 <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
                   <p className="text-ink-muted">
                     {isValidTimestamp(ladder.updatedAt) ? `Updated ${relTime(ladder.updatedAt)}` : 'Not measured yet'}
@@ -171,15 +201,23 @@ export function MilestonesPage() {
                 </div>
               </section>
 
-              <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_16rem]">
+              <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_18rem]">
                 <ol
                   aria-label="Milestones"
                   style={{ gridTemplateColumns: LADDER_COLUMNS }}
                   className="grid gap-3"
                 >
-                  {view.milestones.map((m) => <MilestoneCard key={m.key} milestone={m} />)}
+                  {view.milestones.map((m) => (
+                    <MilestoneCard key={m.key} milestone={m} slug={productSlug} next={upcoming} advance={advance}
+                      currentRemoved={view.ladder.currentRemoved} />
+                  ))}
                 </ol>
-                <NumbersPanel numbers={view.numbers} />
+                {/* Spec §9 order, kept when it stacks under the ladder below 2xl. */}
+                <div className="flex min-w-0 flex-col gap-6">
+                  <NotesPanel kind="ask" slug={productSlug} view={view} />
+                  <NumbersPanel numbers={view.numbers} slug={productSlug} />
+                  <NotesPanel kind="decision" slug={productSlug} view={view} />
+                </div>
               </div>
             </>
           )}

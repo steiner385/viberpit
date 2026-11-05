@@ -1,8 +1,10 @@
 """Release-milestone refresh (spec 2026-11-05 §7–§8): run a ladder's GitHub readings
 and write timestamped ``milestone_measurements`` rows.
 
-One refresh = one batched GraphQL query (plus epic continuation pages) and one run
-list per distinct ``(repo, workflow, branch, event)``. Each condition's reading is evaluated
+One refresh = one batched GraphQL query (plus epic continuation pages), one run
+list per distinct ``(repo, workflow, branch, event)`` for streaks, and one run list
+(plus at most ``CI_METRIC_PROBE_RUNS`` artifact reads) per distinct ``ci_metric``
+``(repo, workflow, branch)``. Each condition's reading is evaluated
 at write time (``milestone_status.evaluate``); read-time freshness is the view's job.
 
 Error rule (Review Focus 3): a reading that failed keeps the row's previous ``value``
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,7 +25,9 @@ from sqlalchemy import func, select
 
 from server.db import db_session
 from server.db.models import MilestoneLadder, MilestoneMeasurement, ProjectRepo
+from server.github.actions_api import MetricsContractError
 from server.github.host_failures import log_gh_failure
+from server.pm.map_changes import resolve_default_branch
 from server.pm.milestone_def import LadderDef, Measure, from_json
 from server.pm.milestone_github import (
     Target,
@@ -49,13 +54,18 @@ STALE_AFTER_S = 600
 MAX_EPIC_PAGES = 10
 #: Runs read per workflow and event (the API's largest page).
 RUNS_LIMIT = 100
-CI_METRIC_PHASE1_ERROR = "ci_metric is measured from Phase 2"
+#: Runs listed per ``ci_metric`` workflow, and how many successful ones are probed
+#: for the ``viberpit-metrics`` artifact (spec §6).
+CI_METRIC_RUNS_LIMIT = 10
+CI_METRIC_PROBE_RUNS = 3
 DEFAULT_STREAK_EVENTS: tuple[str, ...] = ("schedule", "workflow_dispatch")
 #: The ``key`` of a milestone's leaf-list row (scope ``leaves:<milestone key>``).
 LEAVES_KEY = "leaves"
 
 GraphQL = Callable[[str, str], Awaitable[dict]]
 ListRuns = Callable[..., list[dict]]
+ReadMetrics = Callable[[str, int], dict | None]
+DefaultBranch = Callable[[str], Awaitable[str]]
 _Key = tuple[str, str]
 
 
@@ -208,6 +218,80 @@ async def _read_streaks(project_id: str, ladder: LadderDef, *, primary_repo: str
     return readings
 
 
+async def _read_metrics_run(project_id: str, repo: str, workflow: str, runs: list[dict],
+                            read_metrics: ReadMetrics) -> tuple[dict, dict] | str:
+    """``(run, metrics.json)`` from the newest successful run that has the artifact,
+    probing at most ``CI_METRIC_PROBE_RUNS``; else the error for every condition."""
+    ok = [r for r in _newest_first(runs) if r.get("conclusion") == "success"]
+    if not ok:
+        return f"no successful run of {workflow}"
+    for run in ok[:CI_METRIC_PROBE_RUNS]:
+        try:
+            doc = await asyncio.to_thread(read_metrics, repo, int(run["id"]))
+        except MetricsContractError as exc:
+            return str(exc)
+        except Exception as exc:
+            log_gh_failure(log, str(exc), "milestone_refresh.metrics_artifact_failed project=%s",
+                           project_id, demote_edge_failures=True)
+            return "metrics artifact read failed"
+        if doc is not None:
+            return run, doc
+    return f"no viberpit-metrics artifact in the last {CI_METRIC_PROBE_RUNS} successful runs"
+
+
+def _metric_reading(metric: str, run: dict, doc: dict) -> Reading:
+    metrics = doc.get("metrics") or {}
+    if metric not in metrics:
+        return _error(f"metric '{metric}' missing")
+    v = metrics[metric]
+    not_a_number = _error(f"metric '{metric}' is not a number")
+    if isinstance(v, bool) or not isinstance(v, int | float):
+        return not_a_number
+    try:
+        n = float(v)  # OverflowError: an int too big for a float (a 400-digit literal)
+    except (OverflowError, TypeError, ValueError):
+        return not_a_number
+    if not math.isfinite(n):
+        return not_a_number
+    return Reading({"n": n}, parse_iso_utc(run.get("updated_at")), None, run.get("html_url"))
+
+
+async def _read_ci_metrics(project_id: str, ladder: LadderDef, *, primary_repo: str,
+                           list_runs: ListRuns, read_metrics: ReadMetrics,
+                           default_branch: DefaultBranch) -> dict[_Key, Reading]:
+    """Each distinct ``(repo, workflow, branch)`` read once (spec §6): the newest
+    successful run on the branch (the measure's ``branch``, else the repo's default,
+    resolved once per repo) that carries ``viberpit-metrics``."""
+    groups: dict[tuple[str, str, str | None], list[tuple[_Key, str]]] = {}
+    for scope, _ms, cond in ladder_conditions(ladder):
+        if cond.measure.kind != "ci_metric":
+            continue
+        p = cond.measure.params
+        named = str(p["branch"]) if p.get("branch") else None
+        groups.setdefault((primary_repo, str(p["workflow"]), named), []).append(
+            ((scope, cond.key), str(p["metric"])))
+    readings: dict[_Key, Reading] = {}
+    branches: dict[str, str] = {}
+    for (repo, workflow, named), conds in groups.items():
+        if named is None and repo not in branches:
+            branches[repo] = await default_branch(repo)
+        branch = named or branches[repo]
+        try:
+            runs = await asyncio.to_thread(list_runs, repo, workflow, branch=branch,
+                                           limit=CI_METRIC_RUNS_LIMIT)
+        except Exception as exc:
+            # A missing workflow is a definition problem the view shows; not an incident.
+            log.info("milestone_refresh.metric_runs_failed project=%s workflow=%s: %s",
+                     project_id, workflow, exc)
+            for key, _metric in conds:
+                readings[key] = _error(f"workflow runs read failed: {exc}")
+            continue
+        found = await _read_metrics_run(project_id, repo, workflow, runs, read_metrics)
+        for key, metric in conds:
+            readings[key] = _error(found) if isinstance(found, str) else _metric_reading(metric, *found)
+    return readings
+
+
 # ---------------------------------------------------------------- rows
 
 
@@ -279,9 +363,7 @@ def _plan(ladder: LadderDef, readings: Mapping[_Key, Reading], leaves: Mapping[s
         reading: Reading
         if m.kind in ("manual", "ladder_leaves"):
             continue
-        if m.kind == "ci_metric":
-            reading = _error(CI_METRIC_PHASE1_ERROR)
-        elif m.kind == "sub_issues":
+        if m.kind == "sub_issues":
             epic = sub_issues_epic(cond, ms)
             reading = (readings.get(epic_reading_key(epic)) or _error("not read")) if epic else _error("no epic to read")
         else:
@@ -361,11 +443,15 @@ async def _persist(ladder_id: str, writes: Mapping[_Key, _Write], now: datetime)
 
 
 async def refresh_ladder(project_id: str, *, graphql: GraphQL, list_runs: ListRuns, now: datetime,
-                         dry_run: bool = False) -> RefreshResult:
+                         dry_run: bool = False, read_metrics: ReadMetrics | None = None,
+                         default_branch: DefaultBranch = resolve_default_branch) -> RefreshResult:
     """Read every GitHub-backed condition of the product's ladder and upsert its rows
     (``dry_run``: compute and count, write nothing). ``graphql(owner, query)`` is called
     with the primary repo's owner and must return per-alias errors in the payload
-    (``partial_ok``); ``list_runs(repo, workflow, *, branch, event, limit)`` runs off-loop, once per event."""
+    (``partial_ok``); ``list_runs(repo, workflow, *, branch, event, limit)`` runs off-loop, once per event.
+    ``read_metrics(repo, run_id)`` (off-loop) returns a run's parsed ``metrics.json`` or
+    None; without it no ``ci_metric`` is read (its rows say "not read").
+    ``default_branch(repo)`` resolves a ``ci_metric`` with no ``branch``."""
     now = _utc(now)
     loaded = await _load(project_id)
     if loaded is None:
@@ -378,6 +464,10 @@ async def refresh_ladder(project_id: str, *, graphql: GraphQL, list_runs: ListRu
                                            graphql=graphql, now=now)
     readings.update(await _read_streaks(project_id, ladder, primary_repo=primary_repo,
                                         list_runs=list_runs))
+    if read_metrics is not None:
+        readings.update(await _read_ci_metrics(
+            project_id, ladder, primary_repo=primary_repo, list_runs=list_runs,
+            read_metrics=read_metrics, default_branch=default_branch))
     writes = _plan(ladder, readings, leaves, prev, now)
     if not dry_run:
         await _persist(ladder_id, writes, now)

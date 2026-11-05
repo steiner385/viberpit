@@ -58,6 +58,16 @@ export function milestoneTitle(m: Pick<Milestone, 'key' | 'label' | 'name'>): st
   return [m.label, m.name].filter(Boolean).join(' · ') || m.key
 }
 
+const day = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+
+/** A card's status line: "Current · <status note>", "Done · entered … exited …", "Upcoming". */
+export function statusLine(m: Pick<Milestone, 'state' | 'statusNote' | 'enteredAt' | 'exitedAt'>): string {
+  if (m.state === 'current') return m.statusNote ? `Current · ${m.statusNote}` : 'Current'
+  if (m.state === 'done') return `Done · entered ${day(m.enteredAt)} · exited ${day(m.exitedAt)}`
+  return 'Upcoming'
+}
+
 export type LoadedView = Extract<MilestonesView, { milestones: Milestone[] }>
 
 /** The loaded ladder, or null for "no ladder" and for anything else the read

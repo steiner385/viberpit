@@ -19,7 +19,8 @@ MILESTONES_PATH = "docs/product/milestones.yaml"
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _REF_RE = re.compile(r"^(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<n>[0-9]+)$")
 OPS = frozenset({"eq", "ne", "lt", "le", "gt", "ge"})
-RESERVED_MILESTONE_KEYS = frozenset({"numbers"})
+# Route segments under /milestones/ (server/api/pm_milestones.py) and the numbers scope.
+RESERVED_MILESTONE_KEYS = frozenset({"numbers", "notes", "advance"})
 
 
 class MilestoneDefError(ValueError):
@@ -42,7 +43,9 @@ MEASURE_KINDS: dict[str, MeasureKindSpec] = {
     "workflow_streak": MeasureKindSpec(
         frozenset({"workflow", "branch"}), frozenset({"events"}), 36 * _H, True
     ),
-    "ci_metric": MeasureKindSpec(frozenset({"workflow", "metric"}), frozenset(), 36 * _H, True),
+    "ci_metric": MeasureKindSpec(
+        frozenset({"workflow", "metric"}), frozenset({"branch"}), 36 * _H, True
+    ),
     "ladder_leaves": MeasureKindSpec(frozenset(), frozenset(), _H, False),
     "manual": MeasureKindSpec(frozenset(), frozenset(), None, True),
 }

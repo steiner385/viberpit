@@ -232,3 +232,37 @@ async def test_inventory_includes_held_pr_when_capability_issue_counts_are_zero(
     assert data["total"] == 1
     assert data["items"][0]["id"] == pr_id
     assert data["items"][0]["itemKind"] == "pr"
+
+
+@pytest.mark.asyncio
+async def test_roadmap_needs_you_lists_milestone_asks(isolated_db):
+    from datetime import timedelta
+
+    from server.db.models import MilestoneLadder, MilestoneNote, Project
+    async with db_session() as db:
+        project = Project(slug="sample", name="Sample")
+        other = Project(slug="elsewhere", name="Elsewhere")
+        db.add_all([project, other])
+        await db.flush()
+        lad = MilestoneLadder(project_id=project.id, title="t")
+        other_lad = MilestoneLadder(project_id=other.id, title="o")
+        db.add_all([lad, other_lad])
+        await db.flush()
+        now = datetime.now(timezone.utc)
+        ask = MilestoneNote(ladder_id=lad.id, kind="ask", status="open", text="Sign the DPA",
+                            milestone_key="household", url="https://e.x/dpa",
+                            created_at=now - timedelta(minutes=5))
+        db.add_all([ask,
+                    MilestoneNote(ladder_id=lad.id, kind="ask", status="done", text="old"),
+                    MilestoneNote(ladder_id=lad.id, kind="decision", status="proposed", text="d"),
+                    MilestoneNote(ladder_id=other_lad.id, kind="ask", status="open", text="x")])
+        await db.flush()
+        ask_id = ask.id
+    out = await call("roadmap_needs_you", {"product": "sample"})
+    assert not out.get("is_error"), out
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["total"] == 1
+    assert data["items"] == [{"kind": "milestone_ask", "product": "sample", "text": "Sign the DPA",
+                              "milestoneKey": "household", "url": "https://e.x/dpa",
+                              "id": ask_id}]
+    assert data["counts"]["milestoneAsks"] == 1

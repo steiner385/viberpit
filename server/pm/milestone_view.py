@@ -12,7 +12,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from server.pm.milestone_def import Condition, condition_from_json, from_json
+from server.pm.milestone_asks import ASK_KIND, DECISION_STATUSES, is_open_ask
+from server.pm.milestone_def import Condition, LadderDef, condition_from_json, from_json
 from server.pm.milestone_github import DONE_REF_STATES
 from server.pm.milestone_refresh import LEAVES_KEY, leaves_scope
 from server.pm.milestone_status import effective_max_age, gate_met, status_at
@@ -73,7 +74,35 @@ def _condition(cond: Condition, row: Any | None, now: datetime) -> dict[str, Any
         "sourceUrl": row.source_url if row is not None else None,
         "manualBy": row.manual_by if row is not None else None,
         "manualEvidence": row.manual_evidence if row is not None else None,
+        "manualUrl": row.manual_url if row is not None else None,
     }
+
+
+def _gate_defs(definition: LadderDef | None, milestone: Any) -> tuple[Condition, ...]:
+    """The milestone's gate from the ladder definition; a removed (current) rung,
+    gone from the definition, keeps its last stored gate."""
+    if definition is not None:
+        for m in definition.milestones:
+            if m.key == milestone.key:
+                return m.gate
+    return tuple(condition_from_json(c) for c in milestone.gate or [])
+
+
+def _gate(gate_defs: Sequence[Condition], milestone_key: str,
+          by_key: Mapping[tuple[str, str], Any], now: datetime) -> list[dict[str, Any]]:
+    return [_condition(c, by_key.get((milestone_key, c.key)), now) for c in gate_defs]
+
+
+def read_time_gate(ladder: Any, milestone: Any, measurements: Iterable[Any],
+                   now: datetime) -> list[dict[str, Any]]:
+    """The milestone's gate conditions with read-time statuses (freshness applied):
+    THE gate both the view and ``milestone_actions.advance`` judge. A stale or
+    missing reading is ``unknown``, so ``gate_met`` over these is never fooled."""
+    at = aware_utc(now)
+    assert at is not None
+    definition = from_json(ladder.definition) if ladder.definition else None
+    by_key = {(r.scope, r.key): r for r in measurements}
+    return _gate(_gate_defs(definition, milestone), milestone.key, by_key, at)
 
 
 def _leaves(row: Any | None) -> dict[str, Any]:
@@ -97,24 +126,51 @@ def _leaves(row: Any | None) -> dict[str, Any]:
     }
 
 
+def _note(n: Any) -> dict[str, Any]:
+    return {
+        "id": n.id, "kind": n.kind, "ref": n.ref, "text": n.text, "url": n.url,
+        "status": n.status, "milestoneKey": n.milestone_key, "createdBy": n.created_by,
+        "createdAt": iso_utc(n.created_at), "resolvedBy": n.resolved_by,
+        "resolvedAt": iso_utc(n.resolved_at),
+    }
+
+
+def _created(n: Any) -> tuple[bool, datetime | None, str]:
+    """Oldest first; the id breaks a tie so the order is total."""
+    at = aware_utc(n.created_at)
+    return at is None, at, str(n.id)
+
+
+def _notes(notes: Iterable[Any]) -> dict[str, list[dict[str, Any]]]:
+    """Ladder-wide decisions (locked, proposed, superseded) and asks (open first),
+    each group oldest first. Notes on a removed rung stay: the owner resolves them."""
+    rank = {s: i for i, s in enumerate(DECISION_STATUSES)}
+    rows = list(notes)
+    decisions = sorted((n for n in rows if n.kind == "decision"),
+                       key=lambda n: (rank.get(n.status, len(rank)), *_created(n)))
+    asks = sorted((n for n in rows if n.kind == ASK_KIND),
+                  key=lambda n: (not is_open_ask(n), *_created(n)))
+    return {"decisions": [_note(n) for n in decisions], "asks": [_note(n) for n in asks]}
+
+
 def build_milestones_view(
     ladder: Any,
     milestones: Sequence[Any],
     measurements: Iterable[Any],
     *,
+    notes: Iterable[Any],
     now: datetime,
     primary_repo: str | None,
     auto_refresh: bool,
 ) -> dict[str, Any]:
     """The view model for one ladder. *milestones* are ``Milestone`` rows (any order),
-    *measurements* the ladder's ``MilestoneMeasurement`` rows. Milestones with
-    ``removed_at`` are dropped unless current."""
+    *measurements* the ladder's ``MilestoneMeasurement`` rows, *notes* its
+    ``MilestoneNote`` rows. Milestones with ``removed_at`` are dropped unless current."""
     at = aware_utc(now)
     assert at is not None
     rows = list(measurements)
     by_key = {(r.scope, r.key): r for r in rows}
     definition = from_json(ladder.definition) if ladder.definition else None
-    def_gate = {m.key: m.gate for m in definition.milestones} if definition else {}
 
     ordered = sorted(milestones, key=lambda m: (m.ordinal is None, m.ordinal or 0))
     current = next((m for m in ordered if m.state == "current"), None)
@@ -122,10 +178,7 @@ def build_milestones_view(
     for m in ordered:
         if m.removed_at is not None and m is not current:
             continue
-        gate_defs = def_gate.get(m.key)
-        if gate_defs is None:  # a removed (current) rung keeps its last stored gate
-            gate_defs = tuple(condition_from_json(c) for c in m.gate or [])
-        gate = [_condition(c, by_key.get((m.key, c.key)), at) for c in gate_defs]
+        gate = _gate(_gate_defs(definition, m), m.key, by_key, at)
         statuses = [g["status"] for g in gate]
         out.append({
             "key": m.key,
@@ -154,6 +207,7 @@ def build_milestones_view(
                for c in (definition.numbers if definition else ())]
     fetched = [t for t in (aware_utc(r.fetched_at) for r in rows) if t is not None]
     spec_path = ladder.spec_path
+    note_rows = list(notes)
     return {
         "ladder": {
             "title": ladder.title,
@@ -169,7 +223,10 @@ def build_milestones_view(
             "currentRemoved": current is not None and current.removed_at is not None,
             "updatedAt": iso_utc(max(fetched)) if fetched else None,
             "autoRefresh": auto_refresh,
+            "ladderComplete": current is None and any(m.state == "done" for m in ordered),
+            "asksOpen": sum(1 for n in note_rows if is_open_ask(n)),
         },
         "milestones": out,
         "numbers": numbers,
+        "notes": _notes(note_rows),
     }

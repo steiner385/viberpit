@@ -150,3 +150,29 @@ describe('NeedsYouList owner digest — leads the tab (design 2026-10-14 §5)', 
     expect(screen.queryByTestId('owner-digest')).not.toBeInTheDocument()
   })
 })
+
+describe('NeedsYouList milestone asks (spec 2026-11-05 M11)', () => {
+  it('lists a product whose only attention is asks, linking its milestones page', () => {
+    const p = product({ slug: 'kindash', name: 'KinDash',
+      counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 0, awaitingTriage: 0, needsHome: 0, milestoneAsks: 2 } })
+    render(<MemoryRouter><NeedsYouList products={[p]} overview /></MemoryRouter>)
+    const list = screen.getByRole('list', { name: 'Milestone asks' })
+    expect(list).toHaveTextContent('KinDash · 2 milestone asks')
+    expect(screen.getByRole('link', { name: '2 milestone asks' })).toHaveAttribute('href', '/roadmap/kindash/milestones')
+    expect(screen.queryByText('Nothing needs you')).toBeNull()
+  })
+  it('says one milestone ask in the singular', () => {
+    const p = product({ slug: 'kindash', name: 'KinDash',
+      counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 0, awaitingTriage: 0, needsHome: 0, milestoneAsks: 1 } })
+    render(<MemoryRouter><NeedsYouList products={[p]} overview /></MemoryRouter>)
+    expect(screen.getByRole('link', { name: '1 milestone ask' })).toBeInTheDocument()
+  })
+})
+
+it('lists no milestone asks in a capability scope (they are product-level)', () => {
+  const scoped = cap({ slug: 'solo' })
+  const p = product({ slug: 'kindash', capabilities: [scoped],
+    counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 1, awaitingTriage: 0, needsHome: 0, milestoneAsks: 2 } })
+  render(<MemoryRouter><NeedsYouList products={[p]} capability={scoped} /></MemoryRouter>)
+  expect(screen.queryByRole('list', { name: 'Milestone asks' })).toBeNull()
+})

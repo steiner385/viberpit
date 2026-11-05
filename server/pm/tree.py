@@ -293,6 +293,10 @@ class ProductIn:
     # bucket (design 2026-10-14 §1) — the queue's skip reasons, classified by
     # `attention.waiting_reason_for_skip`. Served as `counts.waiting`.
     waiting: dict[str, int] = field(default_factory=dict)
+    # Open owner asks on the product's milestone ladder
+    # (``milestone_asks.open_milestone_asks``, spec 2026-11-05 M11): each one needs
+    # you, and any lifts the product to needs-you as ``awaiting_triage`` does.
+    milestone_asks: int = 0
 
 
 def _initiative_node(ini: InitiativeIn, project_slug: str, *,
@@ -464,8 +468,10 @@ def build_product_tree(product: ProductIn) -> dict:
     counts["capabilities"] = len(product.capabilities)
     counts["awaitingTriage"] = product.awaiting_triage
     counts["needsHome"] = product.needs_home
+    counts["milestoneAsks"] = product.milestone_asks
     counts["waiting"] = {k: int(product.waiting.get(k, 0)) for k in WAITING_KEYS}
-    pseudo = "needs-you" if (product.awaiting_triage or product.needs_home) else "idle"
+    pseudo = ("needs-you" if (product.awaiting_triage or product.needs_home
+                              or product.milestone_asks) else "idle")
     tier = max_tier(pseudo, *(r["tier"] for r in roots), *(i["tier"] for i in initiative_nodes),
                     *(incident_tier(s) for s in product.incident_statuses))
     return {"slug": product.slug, "name": product.name, "tier": tier, "counts": counts,
@@ -487,7 +493,8 @@ def needs_you_total(product: dict) -> int:
       gate, never once more per phase);
     - each capability's DIRECT needs-you issues: its count minus its children's and
       minus its primary leaf initiatives at ``needs-you``;
-    - one per product with triage proposals or owner-held items with no capability.
+    - one per product with triage proposals or owner-held items with no capability;
+    - one per open milestone ask (``counts.milestoneAsks``).
     """
     initiatives = product["initiatives"]
     n = sum(1 for i in initiatives if i.get("ownTier", i["tier"]) == "needs-you")
@@ -497,4 +504,5 @@ def needs_you_total(product: dict) -> int:
         n += max(0, cap["counts"]["needsYou"]
                  - sum(c["counts"]["needsYou"] for c in cap["children"]) - primary)
     counts = product["counts"]
-    return n + (1 if counts["awaitingTriage"] > 0 or counts["needsHome"] > 0 else 0)
+    return (n + (1 if counts["awaitingTriage"] > 0 or counts["needsHome"] > 0 else 0)
+            + counts.get("milestoneAsks", 0))

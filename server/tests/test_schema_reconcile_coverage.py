@@ -66,6 +66,9 @@ RECONCILE_EXEMPT: set[str] = {
     "milestone_measurements.ladder_id",
     "milestone_measurements.scope",
     "milestone_measurements.key",
+    # milestone_notes (0107): parent FK + kind are mandatory at INSERT by the notes writer.
+    "milestone_notes.ladder_id",
+    "milestone_notes.kind",
     "attention_samples.project_id",
     "attention_samples.needs_you",
     "sessions.name",           # required at session create; no sane default
