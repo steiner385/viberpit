@@ -502,6 +502,19 @@ def test_exchange_code_honours_the_echoed_client_secret_post():
     assert post.calls[0][1]["client_secret"] == "CLIENT-SECRET-789"
     assert post.calls[0][2] == {}
     assert bundle["clientSecret"] == "CLIENT-SECRET-789"
+    # Recorded, so the refresher authenticates the same way (the metadata lists basic too).
+    assert bundle["tokenEndpointAuthMethod"] == "client_secret_post"
+
+
+@pytest.mark.parametrize("client", [moc.Client("cid", None, REDIRECT, "client_secret_post"),
+                                    moc.Client("cid", "S", REDIRECT, None)])
+def test_exchange_code_records_the_auth_method_only_for_a_confidential_client_that_echoed_one(
+        client):
+    d, _ = _discover("aws")
+    post = Poster((200, {"access_token": "AT-secret-123"}))
+    bundle = moc.exchange_code(d, client, code="C", verifier="V", server_name="aws-oauth",
+                               now_ms=NOW, post_form=post)
+    assert "tokenEndpointAuthMethod" not in bundle
 
 
 def test_exchange_code_picks_the_auth_method_as_the_refresher_does():

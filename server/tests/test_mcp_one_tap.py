@@ -4,6 +4,7 @@ Task 2's network functions are faked at ``server.mcp_health.one_tap``'s lookup s
 shared MCP store is the real one under the conftest's isolated HOME."""
 from __future__ import annotations
 
+import dataclasses
 import types
 import urllib.parse
 
@@ -189,6 +190,125 @@ def test_callback_rejects_foreign_or_replayed_state(client: TestClient, fakes: F
         "/settings/mcp?signInError=state_invalid"
     assert _callback(client, code="c") == "/settings/mcp?signInError=state_invalid"
     assert len(fakes.merges) == 1
+
+
+@pytest.mark.parametrize("iss", ["https://auth.railway.example/", "https://auth.railway.example",
+                                 "HTTPS://AUTH.railway.example:443/"])
+def test_callback_accepts_the_issuer_it_started_at(client: TestClient, fakes: Fakes,
+                                                   iss: str) -> None:
+    # RFC 9207: iss is compared serialized (href), so a bare origin equals the stored "…/".
+    state = _start(client)
+    assert _callback(client, code="c", state=state, iss=iss) == "/settings/mcp?signedIn=railway"
+    assert len(fakes.merges) == 1
+
+
+@pytest.mark.parametrize("iss", ["https://evil.example/", "https://auth.railway.example/tenant",
+                                 "http://auth.railway.example/", ""])
+def test_callback_with_another_issuer_is_state_invalid_and_writes_nothing(
+        client: TestClient, fakes: Fakes, iss: str) -> None:
+    state = _start(client)
+    assert _callback(client, code="c", state=state, iss=iss) == \
+        "/settings/mcp?signInError=state_invalid"
+    assert fakes.exchanges == [] and fakes.merges == [] and fakes.after_login == []
+    # The state was consumed first: the right issuer cannot reuse it either.
+    assert _callback(client, code="c", state=state, iss=DISCOVERY.authorization_server) == \
+        "/settings/mcp?signInError=state_invalid"
+
+
+def test_mixed_up_error_response_is_not_read_as_denied(client: TestClient, fakes: Fakes) -> None:
+    state = _start(client)
+    assert _callback(client, error="access_denied", state=state, iss="https://evil.example/") == \
+        "/settings/mcp?signInError=state_invalid"
+
+
+def test_missing_iss_is_required_only_when_the_server_advertises_it(
+        client: TestClient, fakes: Fakes, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Absent and not advertised (the fixture's DISCOVERY): fine.
+    state = _start(client)
+    assert _callback(client, code="c", state=state) == "/settings/mcp?signedIn=railway"
+    # Advertised (Railway does): a callback without iss is refused.
+    advertising = dataclasses.replace(DISCOVERY, as_metadata={
+        **DISCOVERY.as_metadata, "authorization_response_iss_parameter_supported": True})
+    monkeypatch.setattr(one_tap, "discover", lambda server_url, **_kw: advertising)
+    state = _start(client)
+    assert _callback(client, code="c", state=state) == "/settings/mcp?signInError=state_invalid"
+    state = _start(client)
+    assert _callback(client, code="c", state=state, iss=DISCOVERY.authorization_server) == \
+        "/settings/mcp?signedIn=railway"
+    assert len(fakes.merges) == 2
+
+
+def test_start_gives_up_at_the_deadline_without_waiting_for_the_provider(
+        fakes: Fakes, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """A provider still probing at START_DEADLINE_S costs the tap the deadline, not the
+    provider's own timeouts: the start raises PasteBack while the thread is still waiting.
+    (Measured around the coroutine: a loop's shutdown waits for executor threads, which is
+    why asyncio.run / TestClient teardown would add the thread's remaining wait.)"""
+    import asyncio
+    import threading
+    import time
+
+    released = threading.Event()
+
+    def slow_discover(server_url, **_kw):  # noqa: ANN001, ANN202
+        released.wait(2.0)
+        return DISCOVERY
+
+    monkeypatch.setattr(one_tap, "discover", slow_discover)
+    monkeypatch.setattr(one_tap, "START_DEADLINE_S", 0.05)
+
+    async def run() -> float:
+        started = time.monotonic()
+        try:
+            with pytest.raises(one_tap.PasteBack):
+                await one_tap.start("tony@example.com", "railway")
+            return time.monotonic() - started
+        finally:
+            released.set()  # let the executor thread finish so the loop shuts down at once
+
+    with caplog.at_level("INFO"):
+        elapsed = asyncio.run(run())
+    assert elapsed < 1.0
+    assert fakes.redirect_uris == [] and one_tap.pending_count() == 0
+    warnings = [r for r in caplog.records if r.levelno == 30]
+    assert len(warnings) == 1 and "TimeoutError" in warnings[0].getMessage()
+
+
+def test_start_past_the_deadline_redirects_to_paste_back(
+        client: TestClient, fakes: Fakes, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    def slow_discover(server_url, **_kw):  # noqa: ANN001, ANN202
+        threading.Event().wait(0.2)
+        return DISCOVERY
+
+    monkeypatch.setattr(one_tap, "discover", slow_discover)
+    monkeypatch.setattr(one_tap, "START_DEADLINE_S", 0.01)
+    resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
+    assert fakes.redirect_uris == [] and one_tap.pending_count() == 0
+
+
+def test_nginx_vhost_logs_the_callback_without_its_query() -> None:
+    """deploy/viberpit-tailnet.nginx logs the callback with a format that carries no
+    $args / $request / $query_string (nginx's `combined` logs the full request line)."""
+    import re
+    from pathlib import Path
+
+    deploy = Path(__file__).resolve().parents[2] / "deploy"
+    vhost = (deploy / "viberpit-tailnet.nginx").read_text()
+    block = re.search(r"location = (\S+) \{(.*?)\}", vhost, re.DOTALL)
+    assert block is not None and block.group(1) == one_tap.CALLBACK_PATH
+    assert re.search(r"access_log\s+\S+\s+viberpit_redacted;", block.group(2))
+    assert "proxy_set_header" not in block.group(2)  # inherits the identity headers
+    formats = (deploy / "viberpit-log-formats.nginx").read_text()
+    definition = re.search(r"log_format viberpit_redacted(.*?);", formats, re.DOTALL)
+    assert definition is not None
+    for variable in ("$args", "$request ", "$request'", '$request"', "$query_string",
+                     "$request_uri"):
+        assert variable not in definition.group(1)
+    assert "$uri" in definition.group(1) and "$status" in definition.group(1)
 
 
 def test_foreign_state_writes_nothing(client: TestClient, fakes: Fakes) -> None:

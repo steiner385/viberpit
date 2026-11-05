@@ -206,6 +206,39 @@ def test_client_secret_post_when_basic_unsupported():
     assert form["client_secret"] == "CLIENT-SECRET-x" and "Authorization" not in headers
 
 
+def test_refresh_authenticates_the_way_the_exchange_did():
+    # The server lists basic too (the default pick), but the client was registered — and
+    # the code exchanged — as client_secret_post; the bundle records that.
+    http = FakeHttp(metadata=_meta(token_endpoint_auth_methods_supported=["client_secret_basic",
+                                                                          "client_secret_post"]),
+                    responses=[_ok()])
+    new = mor.refresh_bundle(_bundle(clientSecret="CLIENT-SECRET-x",
+                                     tokenEndpointAuthMethod="client_secret_post"),
+                             post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    _, form, headers = http.posts[0]
+    assert form["client_secret"] == "CLIENT-SECRET-x" and "Authorization" not in headers
+    assert new["tokenEndpointAuthMethod"] == "client_secret_post"
+
+
+def test_refresh_falls_back_to_the_cached_registrations_auth_method():
+    # A bundle from before the exchange recorded the method: the client cache for its
+    # authorization server knows it — but only for that very client.
+    def register(cache):
+        cache[mor.url_href(AS_URL)] = {"client_id": "cid", "redirect_uri": "r",
+                                       "token_endpoint_auth_method": "client_secret_post"}
+        return cache
+    creds.update_mcp_clients(register)
+    http = FakeHttp(metadata=_meta(), responses=[_ok(), _ok()])
+    mor.refresh_bundle(_bundle(clientSecret="CLIENT-SECRET-x"), post_form=http.post_form,
+                       fetch_json=http.fetch_json, now_ms=NOW)
+    _, form, headers = http.posts[0]
+    assert form["client_secret"] == "CLIENT-SECRET-x" and "Authorization" not in headers
+    mor.refresh_bundle(_bundle(clientId="cid-other", clientSecret="CLIENT-SECRET-x"),
+                       post_form=http.post_form, fetch_json=http.fetch_json, now_ms=NOW)
+    _, form, headers = http.posts[1]
+    assert "client_secret" not in form and headers["Authorization"].startswith("Basic ")
+
+
 @pytest.mark.parametrize("status,code", [(400, "invalid_grant"), (401, "invalid_grant"),
                                          (400, "invalid_refresh_token"), (400, "expired_refresh_token"),
                                          (401, "token_expired")])
