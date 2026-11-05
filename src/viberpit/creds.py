@@ -161,7 +161,14 @@ def update_mcp_clients(update: Callable[[dict], dict], path: Path | None = None)
 
 
 def read_shared_mcp() -> dict:
-    """The shared MCP store (``store/mcp.shared.json``), or ``{}`` when absent."""
+    """The shared MCP store: on a worker that has received a push, the authority's view as
+    pushed (#3287); the file (``store/mcp.shared.json``, or ``{}`` when absent) otherwise."""
+    if fleet_role.is_worker():
+        from .mcp_view_store import runner_view  # the view store imports public_view from here
+
+        pushed = runner_view().bundles()
+        if pushed is not None:
+            return pushed
     path = paths.shared_mcp_path()
     return read_json(path) if path.exists() else {}
 

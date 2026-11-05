@@ -203,6 +203,37 @@ def test_cleared_dir_is_never_captured(tmp_path, monkeypatch):
     assert _store(tmp_path)["k"] == live
 
 
+# --- a worker answers read_shared_mcp from the pushed view (#3287) --------------------------
+
+@pytest.fixture
+def _runner_state(tmp_path, monkeypatch):
+    from viberpit.mcp_view_store import reset_runner_view
+    monkeypatch.setenv("VIBERPIT_CLAUDE_CREDS_DIR", str(tmp_path / "state"))
+    _store_path(tmp_path, monkeypatch).write_text(json.dumps({"file": {"accessToken": "f"}}))
+    reset_runner_view()
+    yield
+    reset_runner_view()
+
+
+def test_worker_reads_pushed_view_when_held(_runner_state, monkeypatch):
+    from viberpit.mcp_view_store import runner_view
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    runner_view().sync({"pushed": {"accessToken": "p"}})
+    assert creds.read_shared_mcp() == {"pushed": {"accessToken": "p"}}
+
+
+def test_worker_falls_back_to_file_when_never_synced(_runner_state, monkeypatch):
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    assert creds.read_shared_mcp() == {"file": {"accessToken": "f"}}
+
+
+def test_primary_ignores_the_runner_view(_runner_state, monkeypatch):
+    from viberpit.mcp_view_store import runner_view
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    runner_view().sync({"pushed": {"accessToken": "p"}})
+    assert creds.read_shared_mcp() == {"file": {"accessToken": "f"}}
+
+
 # --- the locked update helper ---------------------------------------------------------------
 
 def test_update_shared_mcp_writes_only_on_change(tmp_path, monkeypatch):
