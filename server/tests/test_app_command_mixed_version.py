@@ -39,6 +39,7 @@ class _InfoClient:
     def __init__(self, info):
         self.info_calls = 0
         self._info = info
+        self.epoch = (info or {}).get("epoch") if isinstance(info, dict) else None
 
     async def info(self):
         self.info_calls += 1
@@ -73,6 +74,25 @@ async def test_remote_caches_info_for_engines_and_the_gate():
     await ro.has_app_command_gate("s2")
     await ro._engines()
     assert client.info_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_changed_epoch_drops_the_cached_info():
+    client = _InfoClient(_NEW_INFO)
+    ro = RemoteOrchestrator(client)
+    assert await ro.has_app_command_gate("s1") is True
+    # The host is rolled back to an older build: new process, new epoch, no capability.
+    client._info, client.epoch = {**_OLD_INFO, "epoch": "e2"}, "e2"
+    assert await ro.has_app_command_gate("s1") is False
+    assert client.info_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_info_logs_below_warning(caplog):
+    ro = RemoteOrchestrator(_InfoClient(DaemonError("DaemonUnavailable", "down")))
+    with caplog.at_level(logging.INFO, logger="server.sessions.remote"):
+        assert await ro.has_app_command_gate("s1") is False
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 def test_the_gate_is_asked_of_the_owning_host():
@@ -218,6 +238,7 @@ def test_rest_follows_the_owning_daemon(info, status):
     assert driver.prompts == []
     if status == 409:
         assert r.json()["detail"]["code"] == "app_command_refused"
+        assert "older ViberPit" in r.json()["detail"]["message"]
         assert calls == [] and driver.mode == "full-auto"
     else:
         assert calls == [("/plan on", "rest")] and driver.mode == "plan"

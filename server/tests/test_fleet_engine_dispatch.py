@@ -198,6 +198,8 @@ class _Client:
         self._info = info
         self.info_calls = 0
         self.created: list[dict] = []
+        # DaemonClient.epoch: the /info cache keys on it; constant = one daemon process.
+        self.epoch: str | None = None
 
     async def info(self) -> dict:
         self.info_calls += 1

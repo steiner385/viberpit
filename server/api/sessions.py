@@ -2060,10 +2060,18 @@ async def send_session_prompt(
     if delivery == APP_COMMAND_REFUSED:
         # An app command this sender may not run, or one sent with more text: nothing
         # ran and nothing reached the CLI (D-16a). The notice went to attached clients.
+        message = ("slash commands like /plan or /fast run only when a person sends "
+                   "them on their own; nothing was sent")
+        app_cmd = app_only_command(body.text)
+        if (app_cmd is not None
+                and not await session_actions.daemon_has_app_command_gate(orch, session_id)):
+            # The host predates the gate: say so, not "only a person" (same text the
+            # commandResult notice carries).
+            refusal = app_command_refusal(app_cmd.name, human=human, daemon_gate=False)
+            if refusal:
+                message = refusal["data"]["text"]
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
-            "code": "app_command_refused",
-            "message": "slash commands like /plan or /fast run only when a person sends "
-                       "them on their own; nothing was sent"})
+            "code": "app_command_refused", "message": message})
     # APP_COMMAND (D-16a): the text was an app command (`/output-style …`) and ran as
     # one — the orchestrator's send_prompt never hands those to the CLI.
     if delivery not in ("sent", "draining", APP_COMMAND):

@@ -427,7 +427,7 @@ class RemoteOrchestrator:
         self._client = client
         self._global_subs: set[asyncio.Queue] = set()
         self._global_pump: asyncio.Task | None = None
-        self._info_cache: tuple[float, dict] | None = None
+        self._info_cache: tuple[float, dict, str | None] | None = None
         # The three GitHub seams the edge-local map-changes service takes — the
         # same names ``SessionOrchestrator`` uses, so a test swaps them the same
         # way in either mode (they are ``GhWrite.__init__`` default arguments,
@@ -445,17 +445,22 @@ class RemoteOrchestrator:
         handling already covers, and each caller picks its own safe reading of None."""
         now = time.monotonic()
         cached = self._info_cache
-        if cached is not None and now - cached[0] < self._INFO_TTL_S:
+        # Keyed on the daemon epoch too: a host rolled back new → old restarts, so a
+        # changed epoch means the cached capabilities describe a process that is gone.
+        if (cached is not None and now - cached[0] < self._INFO_TTL_S
+                and cached[2] == self._client.epoch):
             return cached[1]
         try:
             info = await self._client.info()
         except Exception:  # noqa: BLE001 -- an unreachable daemon offers nothing new
-            log.warning("remote: /info unavailable — treating as legacy engines",
-                        exc_info=True)
+            # INFO, not WARNING: WARNING auto-files an issue, and this fires on every
+            # app command / engine probe for as long as the daemon is down.
+            log.info("remote: /info unavailable — engines read as legacy, app commands "
+                     "refused until it answers", exc_info=True)
             return None
         if not isinstance(info, dict):
             return None
-        self._info_cache = (now, info)
+        self._info_cache = (now, info, self._client.epoch)
         return info
 
     async def _engines(self) -> dict:
