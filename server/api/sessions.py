@@ -63,7 +63,8 @@ from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
 from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
-                                             COMMAND_ORIGIN_REST, app_only_command)
+                                             COMMAND_ORIGIN_REST, app_command_refusal,
+                                             app_only_command)
 from server.sessions.engine import (
     EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, parse_agent_engine)
 from server.sessions.model_policy import quota_model
@@ -2012,6 +2013,16 @@ async def resume_and_send_prompt(orch: Any, session_id: str, text: str, identity
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
+    # An app command bound for a daemon older than the APP_ONLY gate (D-16a) would reach
+    # the CLI there, so it is refused here, before any wake — the same answer as a
+    # daemon-side refusal.
+    app_cmd = app_only_command(text)
+    if (app_cmd is not None
+            and not await session_actions.daemon_has_app_command_gate(orch, session_id)
+            and app_command_refusal(app_cmd.name, human=human, daemon_gate=False)):
+        log.info("prompt: app command refused, daemon predates the gate session=%s "
+                 "name=%s", session_id, app_cmd.name)
+        return record, APP_COMMAND_REFUSED
     # Resume the session if it has no live driver (detached). ensure_driver is
     # idempotent for already-live sessions and returns None only if the session
     # can't be brought live.
@@ -2023,7 +2034,7 @@ async def resume_and_send_prompt(orch: Any, session_id: str, text: str, identity
         )
     # Only for an app command, so every ordinary prompt's call is unchanged.
     extra = ({"command_origin": COMMAND_ORIGIN_REST, "identity": identity}
-             if human and app_only_command(text) is not None else {})
+             if human and app_cmd is not None else {})
     return record, await orch.send_prompt(session_id, text, interrupt=interrupt, **extra)
 
 

@@ -51,7 +51,7 @@ D=[
 ]),
 ("4 Commands & config",[
  ("Engine slash-command passthrough",3,"Y",""),
- ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"Y","/help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14) /plan /output-style (D-16a, human senders only); /add-dir out of scope (not in D15)"),
+ ("App-handled /fork /rewind /btw /plan /effort /fast",2,"Y","/help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14) /plan /output-style (D-16a, human senders only); /add-dir out of scope (not in D15)"),
  ("Plugins + marketplace browse/install",2,"P","enable/disable + detail; no marketplace"),
  ("Skills management",1,"Y",""),
  ("MCP servers + per-tool toggles",2,"P","servers, OAuth, scope; no per-tool toggles"),

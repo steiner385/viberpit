@@ -411,7 +411,7 @@ ways into it from the composer and the transcript.
   they keep working, but cleanup skips them. **Reset** returns it to the server default. The branch prefix
   `viberpit/` is shown read-only: it guards automatic branch cleanup.
 
-**Output styles and app slash commands (D-16a)** — Claude sessions only.
+**Output styles and app slash commands (D-16a)** — output styles are Claude only; `/plan` works on both engines.
 - **Style ›** in the composer's `+` menu lists the styles the session's CLI reports (built-ins, your own, and
   plugin styles) and switches the style for the running session. Changing style mid-session re-sends the system
   prompt, so the next turn costs a prompt-cache miss; the tooltip says so. The menu is hidden for Codex, the

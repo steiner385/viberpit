@@ -126,7 +126,7 @@ Full inventories, with an evidence tag on every item:
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | Engine slash-command passthrough | 3 | ✅ |  |
-| App-handled /fork /rewind /btw /plan /effort /fast /add-dir | 2 | ✅ | /help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14) /plan /output-style (D-16a, human senders only); /add-dir out of scope (not in D15) |
+| App-handled /fork /rewind /btw /plan /effort /fast | 2 | ✅ | /help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14) /plan /output-style (D-16a, human senders only); /add-dir out of scope (not in D15) |
 | Plugins + marketplace browse/install | 2 | ◐ | enable/disable + detail; no marketplace |
 | Skills management | 1 | ✅ |  |
 | MCP servers + per-tool toggles | 2 | ◐ | servers, OAuth, scope; no per-tool toggles |

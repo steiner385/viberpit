@@ -427,10 +427,11 @@ def human_gate_via(conn: Request | WebSocket) -> str | None:
 
 
 def human_via(via: str | None) -> bool:
-    """Is a caller with this ``human_gate_via`` attribution a person? No token-borne
-    ``via`` (assistant, external MCP, CLI, internal, session) and not an unattested
-    process on this host — except ``LOCAL_TRUSTED_VIA``, the operator's opt-in, which
-    ``session_actions.require_human`` admits too."""
+    """THE "is a caller with this ``human_gate_via`` attribution a person?" rule: no
+    token-borne ``via`` (assistant, external MCP, CLI, internal, session) and not an
+    unattested process on this host — except ``LOCAL_TRUSTED_VIA``, the operator's
+    opt-in. ``session_actions.require_human`` decides through this (adding only its
+    system-identity check and its per-cause messages), as does ``human_sender``."""
     return via is None or via == LOCAL_TRUSTED_VIA
 
 

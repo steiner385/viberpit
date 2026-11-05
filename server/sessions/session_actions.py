@@ -16,7 +16,7 @@ import logging
 from typing import Any
 
 from server.audit import record_audit
-from server.auth.identity import LOCAL_PROCESS_VIA, LOCAL_TRUSTED_VIA
+from server.auth.identity import LOCAL_PROCESS_VIA, human_via
 from server.config import get_settings
 from server.sessions.engine import (EFFORT_UNCHANGED, AgentEngine, _EffortUnchanged,
                                     flag_settings_enabled)
@@ -114,14 +114,15 @@ def require_human(identity: str, via: str | None, *,
     this host asserting an identity header (``identity.LOCAL_PROCESS_VIA``, #2980; callers
     take ``via`` from ``identity.human_gate_via``) and not the system sentinel (spec §4).
     ``identity.LOCAL_TRUSTED_VIA`` is that local caller under the operator's opt-in
-    (``VIBERPIT_RULES_TRUST_LOCAL_HOST``, spec 2026-10-14) and is admitted.
+    (``VIBERPIT_RULES_TRUST_LOCAL_HOST``, spec 2026-10-14) and is admitted. Which ``via``
+    is a person is ``identity.human_via`` — the one rule the app-command gate uses too.
 
     ``action``/``code`` name the change for the refusal: the same gate guards widening a
     session's permission mode and its reasoning effort (#3291)."""
     refusal = f"Only a person in the UI can {action}."
     if identity == SYSTEM_IDENTITY:
         raise ActionError(code, refusal, 403)
-    if via == LOCAL_TRUSTED_VIA:
+    if human_via(via):
         return
     if via == LOCAL_PROCESS_VIA:
         # A browser on the edge host itself lands here too: it is indistinguishable from
@@ -133,8 +134,7 @@ def require_human(identity: str, via: str | None, *,
             "laptop), or have the host's admin set VIBERPIT_RULES_TRUST_LOCAL_HOST=true in "
             "the ViberPit environment file, which lets agents on this host do it too.",
             403)
-    if via is not None:
-        raise ActionError(code, refusal, 403)
+    raise ActionError(code, refusal, 403)
 
 
 def rules_enabled() -> bool:
@@ -465,6 +465,21 @@ async def set_output_style(
     await _audit(db, "session.output_style", identity,
                  {"sessionId": session_id, "style": style}, via)
     return result
+
+
+async def daemon_has_app_command_gate(orch, session_id: str) -> bool:
+    """Does the daemon that owns *session_id* intercept ``APP_ONLY`` commands in its
+    ``send_prompt`` (D-16a)? A daemon older than that hands ``/fast on`` or
+    ``/output-style X`` to the CLI, so during a rolling upgrade the edge refuses them
+    itself (``catalog.app_command_refusal(daemon_gate=False)``). Fails closed: an answer
+    that cannot be had reads as "no gate". The WS bridge and the REST prompt path both
+    ask here; ask only when an app command is at stake."""
+    try:
+        return bool(await orch.has_app_command_gate(session_id))
+    except Exception:
+        log.info("app-command gate unknown, refusing session=%s", session_id,
+                 exc_info=True)
+        return False
 
 
 async def set_model(

@@ -1077,6 +1077,21 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             client reads it top-level only."""
             await _send(redact_event({**wire, "sessionId": session_id}))
 
+        async def _refuse_for_older_daemon(session_id: str, name: str) -> bool:
+            """Answer an ``APP_ONLY`` command bound for a daemon without the gate
+            (``session_actions.daemon_has_app_command_gate``) with
+            ``app_command_refusal``'s notice, and return True; False when the daemon has
+            the gate (it then decides, exactly as before). Never forwards the command."""
+            if await session_actions.daemon_has_app_command_gate(orchestrator, session_id):
+                return False
+            refused = app_command_refusal(name, human=False, daemon_gate=False)
+            if refused is None:
+                return False
+            log.info("ws: app command refused, daemon predates the gate session=%s "
+                     "name=%s", session_id, name)
+            await _emit_command_result(session_id, {"type": "commandResult", **refused})
+            return True
+
         async def _run_command_and_reply(session_id: str, name: str, args: str) -> bool:
             """Dispatch a slash command and emit its commandResult frame, exactly
             as the interactive `command` frame does. Returns True if the command
@@ -1270,10 +1285,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # runCommandFromText.
                 handled = False
                 parsed = parse_command_line(pending_prompt)
-                if app_only_command(pending_prompt) is not None:
+                app_cmd = app_only_command(pending_prompt)
+                if app_cmd is not None:
                     # An app command (`/plan`, `/fast` …) parked at create (D-16a S1):
                     # the orchestrator runs it only on its own record that a person typed
-                    # it, as that person — never as whoever attached.
+                    # it, as that person — never as whoever attached. A daemon older than
+                    # that gate would hand it to the CLI, so the edge refuses it (and the
+                    # parked text is dropped: a refused command is never replayed).
+                    if await _refuse_for_older_daemon(session_id, app_cmd.name):
+                        return
                     status = await orchestrator.send_prompt(
                         session_id, pending_prompt, command_origin=COMMAND_ORIGIN_CREATE)
                     if status in ("no_driver", "recovering"):
@@ -1935,6 +1955,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             queued, so it still lands in milliseconds (see the dispatch site).
             """
             started = time.monotonic()
+            # An app command bound for a daemon that predates the APP_ONLY gate (D-16a)
+            # is refused here, before any wake: that daemon would hand it to the CLI.
+            # The same terminal "failed" ack as a daemon-side refusal below.
+            app_cmd = app_only_command(msg.get("text", ""))
+            if (app_cmd is not None
+                    and await _refuse_for_older_daemon(session_id, app_cmd.name)):
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "failed"})
+                return
             # Only the mutator is locked: _ensure_live can start a live forwarding
             # task, so it must not interleave with an auto re-attach for the SAME
             # session. The lock is per session, so nothing here can delay another
@@ -2246,9 +2275,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # The APP_ONLY sender gate (D-16a S1), the same one the prompt path uses:
                 # `/plan`, `/fast`, `/effort`, `/output-style` change permissions, billing
                 # or model settings, so a non-person socket (a `ccas2:` agent, an
-                # unattested local process) is refused. Every other command is unchanged.
-                refused = (app_command_refusal(name, human=human_sender(websocket))
-                           if str(name).lstrip("/") in APP_ONLY else None)
+                # unattested local process) is refused — and so is any of them bound for
+                # a daemon older than the gate, which would hand it to the CLI. Every
+                # other command is unchanged.
+                refused = (app_command_refusal(
+                    name, human=human_sender(websocket),
+                    daemon_gate=await session_actions.daemon_has_app_command_gate(
+                        orchestrator, session_id))
+                    if str(name).lstrip("/") in APP_ONLY else None)
                 if refused is not None:
                     log.info("ws.command app command refused session=%s name=%s",
                              session_id, name)

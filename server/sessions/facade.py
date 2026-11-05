@@ -119,6 +119,9 @@ class InProcessOrchestratorAdapter:
     # catch-up cursor with. None here means ws.py's epoch gate never matches → full replay,
     # which is moot anyway since ring_covers is a constant False (#497).
     def daemon_epoch(self): return None
+    # In-process, the orchestrator IS the daemon and its send_prompt always intercepts
+    # APP_ONLY commands (D-16a); only a remote daemon can predate that.
+    async def has_app_command_gate(self, session_id): return True
     def daemon_sha(self): return None
     # In-process mode makes no HTTP calls to a daemon, so there is no RPC pool that could
     # wedge. None (not an empty snapshot) so the health surface says "not applicable"

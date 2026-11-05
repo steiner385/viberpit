@@ -7,7 +7,7 @@ the vertical-slice methods only.
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from viberpit.quota import QuotaSnapshot
 from server.assistant.context import PromptContext
@@ -138,6 +138,39 @@ class _WireEvent:
 
     def to_wire(self) -> dict:
         return self._wire
+
+
+#: Additive ``create_session`` kwargs an older daemon rejects, by group, with why the
+#: group is dropped. See ``RemoteOrchestrator.create_session``.
+_CREATE_FALLBACKS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Display routing: the session is virtual there, which it would have been anyway.
+    (("client_node", "display"),
+     "predates display routing (session will use a virtual display)"),
+    # The per-session dispatch toggles: the autopilot pause is re-applied after create;
+    # the auto-archive opt-out has no pre-existing setter, so that daemon cannot honour it.
+    (("autopilot_paused", "auto_archive_opt_out_reason"),
+     "predates per-session toggles (autopilot pause re-applied after create; the "
+     "auto-archive opt-out is dropped on this daemon)"),
+    # D-16a: no APP_ONLY interception there, so nothing to authorize — the edge refuses
+    # app commands bound for it instead (``has_app_command_gate``).
+    (("initial_prompt_human",), "predates the app-command gate"),
+)
+
+
+def _create_fallback_for(exc: DaemonError, kwargs: dict) -> tuple[tuple[str, ...], str] | None:
+    """The ``_CREATE_FALLBACKS`` group *exc* rejected — a binding TypeError naming one of
+    its keys while *kwargs* still carries one — else None (a real error: re-raise)."""
+    if exc.err_type != "TypeError":
+        return None
+    for keys, why in _CREATE_FALLBACKS:
+        if (any(f"'{k}'" in exc.message for k in keys)
+                and any(k in kwargs for k in keys)):
+            return keys, why
+    return None
+
+
+def _is_command_result(wire: Any) -> bool:
+    return isinstance(wire, dict) and wire.get("type") == "commandResult"
 
 
 class RemoteDriverStream:
@@ -347,7 +380,10 @@ class RemoteDriver:
                 # The DaemonClient delivers a _SeqDict carrying the daemon source seq on
                 # .src_seq; a plain dict (or GAP sentinel) reads as None. Surface it so
                 # ws._forward_live can stamp srcSeq telemetry.
-                yield _WireEvent(wire, getattr(wire, "src_seq", None))
+                src = getattr(wire, "src_seq", None)
+                if self._replayed_command_result(wire, src):
+                    continue
+                yield _WireEvent(wire, src)
             return
 
         # Cursor catch-up: replay the pinned ring_tail snapshot (fetched by ws.py while the
@@ -356,6 +392,8 @@ class RemoteDriver:
         # join has no gap.
         head = self._catch_up_head
         for item in self._catch_up_snapshot:
+            if _is_command_result(item["event"]):
+                continue      # replayed: see _replayed_command_result
             yield _WireEvent(item["event"], item["seq"])
         # Continue live, dropping the overlap already delivered by the snapshot (seq<=head).
         # A GAP sentinel (src_seq None) is never an overlap — always forward it.
@@ -363,20 +401,33 @@ class RemoteDriver:
             src = getattr(wire, "src_seq", None)
             if src is not None and src <= head:
                 continue
+            if self._replayed_command_result(wire, src):
+                continue
             yield _WireEvent(wire, src)
+
+    def _replayed_command_result(self, wire: Any, src: int | None) -> bool:
+        """A ``commandResult`` the daemon ring REPLAYED to this attach — published at or
+        before the attach's head (``head_seq``). It is a one-shot notice for whoever was
+        attached when the command ran (D-16a: ``/plan``, ``/fast`` … typed as a prompt),
+        not turn content, so a re-attach must not show it again. The in-process driver
+        keeps it out of its replay buffer (``claude_driver._TURN_CONTENT``); this is the
+        same rule for the daemon ring, which holds every event."""
+        return (_is_command_result(wire) and src is not None
+                and self._head_seq is not None and src <= self._head_seq)
 
 
 class RemoteOrchestrator:
-    #: How long a daemon's `/info.engines` answer is reused before re-asking. Short
-    #: enough that a runner losing its Codex binary is noticed within one probe
-    #: cycle, long enough that a burst of Codex launches is one round trip.
-    _ENGINES_TTL_S = 20.0
+    #: How long a daemon's `/info` answer (engines, capabilities) is reused before
+    #: re-asking. Short enough that a runner losing its Codex binary — or an upgrade
+    #: gaining a capability — is noticed within one probe cycle, long enough that a
+    #: burst of Codex launches or app commands is one round trip.
+    _INFO_TTL_S = 20.0
 
     def __init__(self, client):
         self._client = client
         self._global_subs: set[asyncio.Queue] = set()
         self._global_pump: asyncio.Task | None = None
-        self._engines_cache: tuple[float, dict] | None = None
+        self._info_cache: tuple[float, dict] | None = None
         # The three GitHub seams the edge-local map-changes service takes — the
         # same names ``SessionOrchestrator`` uses, so a test swaps them the same
         # way in either mode (they are ``GhWrite.__init__`` default arguments,
@@ -388,29 +439,50 @@ class RemoteOrchestrator:
         self._gh_token_provider = gitrepos.app_token_for_repo
         self._gh_env = os.environ
 
-    async def _engines(self) -> dict:
-        """This daemon's advertised engines, cached briefly. Never raises.
-
-        A daemon that cannot answer `/info` at all is reported as the legacy
-        Claude-only map: unreachable is a *health* failure that the caller's own
-        error handling already covers, and inventing "Codex is fine" here would turn
-        it into a launch that fails much later and much less legibly.
-        """
-        from server.sessions.host_engines import LEGACY_ENGINES, parse_engines_info
-
+    async def _daemon_info(self) -> dict | None:
+        """This daemon's `/info`, cached for ``_INFO_TTL_S``; None when it cannot answer.
+        Never raises: unreachable is a *health* failure that each caller's own error
+        handling already covers, and each caller picks its own safe reading of None."""
         now = time.monotonic()
-        cached = self._engines_cache
-        if cached is not None and now - cached[0] < self._ENGINES_TTL_S:
+        cached = self._info_cache
+        if cached is not None and now - cached[0] < self._INFO_TTL_S:
             return cached[1]
         try:
             info = await self._client.info()
         except Exception:  # noqa: BLE001 -- an unreachable daemon offers nothing new
             log.warning("remote: /info unavailable — treating as legacy engines",
                         exc_info=True)
+            return None
+        if not isinstance(info, dict):
+            return None
+        self._info_cache = (now, info)
+        return info
+
+    async def _engines(self) -> dict:
+        """This daemon's advertised engines. Never raises.
+
+        A daemon that cannot answer `/info` at all is reported as the legacy
+        Claude-only map: inventing "Codex is fine" here would turn it into a launch
+        that fails much later and much less legibly.
+        """
+        from server.sessions.host_engines import LEGACY_ENGINES, parse_engines_info
+
+        info = await self._daemon_info()
+        if info is None:
             return dict(LEGACY_ENGINES)
-        engines = parse_engines_info(info if isinstance(info, dict) else None)
-        self._engines_cache = (now, engines)
-        return engines
+        return parse_engines_info(info)
+
+    async def has_app_command_gate(self, session_id: str) -> bool:
+        """Does this daemon's ``send_prompt`` intercept ``APP_ONLY`` commands (D-16a)?
+        False for a daemon that predates it — it would hand ``/fast on`` or
+        ``/output-style X`` to the CLI — and for one whose `/info` cannot be read (fail
+        closed: the edge then refuses the command itself). *session_id* is only the
+        fleet routing key; the answer is per daemon."""
+        from server.ipc.protocol import CAP_APP_COMMAND_GATE, CAPABILITIES_INFO_KEY
+
+        info = await self._daemon_info()
+        caps = (info or {}).get(CAPABILITIES_INFO_KEY)
+        return isinstance(caps, list) and CAP_APP_COMMAND_GATE in caps
 
     async def _require_engine(self, engine: AgentEngine) -> None:
         """Raise ``AgentEngineUnavailable`` unless this daemon can run *engine*."""
@@ -705,55 +777,29 @@ class RemoteOrchestrator:
                 # otherwise be handed a launch it cannot start. Claude never pays for
                 # this — the branch above returns before the round trip.
                 await self._require_engine(engine)
-        try:
-            r = await self._call_create_session(kwargs)
-        except DaemonError as exc:
-            if (exc.err_type == "TypeError"
-                    and ("'client_node'" in exc.message or "'display'" in exc.message)
-                    and ("client_node" in kwargs or "display" in kwargs)):
-                # Rolling upgrade: this daemon predates display routing and rejects
-                # the additive kwargs at call binding, before any work. Retry without
-                # them — the session is virtual there, which is what it would have
-                # been anyway. Same posture as the protocol-v1 `engine` pop above.
-                # Routed through _call_create_session again so a genuine error from
-                # the retry (AllAccountsBusy/CloneError/GhError) still reconstructs
-                # instead of propagating as a raw DaemonError.
-                log.warning("daemon predates display routing; creating without "
-                            "client_node/display (session will use a virtual display)")
-                stripped = {k: v for k, v in kwargs.items()
-                            if k not in ("client_node", "display")}
-                r = await self._call_create_session(stripped)
-            elif (exc.err_type == "TypeError"
-                    and ("'autopilot_paused'" in exc.message
-                         or "'auto_archive_opt_out_reason'" in exc.message)
-                    and ("autopilot_paused" in kwargs
-                         or "auto_archive_opt_out_reason" in kwargs)):
-                # Rolling upgrade: this daemon predates the per-session dispatch
-                # toggles. Start the session without them rather than fail the
-                # launch, then re-apply the autopilot half through
-                # set_autopilot_paused — an RPC every daemon already serves. The
-                # auto-archive opt-out has no such pre-existing setter, so it is
-                # the one thing an old daemon cannot honour; say so.
-                log.warning("daemon predates per-session toggles; creating without "
-                            "autopilot_paused/auto_archive_opt_out_reason "
-                            "(autopilot pause re-applied after create; the "
-                            "auto-archive opt-out is dropped on this daemon)")
-                stripped = {k: v for k, v in kwargs.items()
-                            if k not in ("autopilot_paused", "auto_archive_opt_out_reason")}
-                r = await self._call_create_session(stripped)
-                if kwargs.get("autopilot_paused"):
-                    await self.set_autopilot_paused(r["session"]["id"], True)
-            elif (exc.err_type == "TypeError" and "'initial_prompt_human'" in exc.message
-                    and "initial_prompt_human" in kwargs):
-                # Rolling upgrade: this daemon predates the D-16a APP_ONLY gate, so it
-                # has no app-command interception to authorize either. Create without
-                # the flag.
-                log.warning("daemon predates the app-command gate; creating without "
-                            "initial_prompt_human")
-                r = await self._call_create_session(
-                    {k: v for k, v in kwargs.items() if k != "initial_prompt_human"})
-            else:
-                raise
+        # Rolling upgrade: a daemon older than an additive kwarg rejects it at call
+        # binding, before any work — one TypeError per call, naming one key. So strip the
+        # named key's group and retry until the call binds: a daemon several releases
+        # behind sheds each group in turn. Every retry goes back through
+        # _call_create_session, so a genuine error from it (AllAccountsBusy/CloneError/
+        # GhError) still reconstructs instead of propagating as a raw DaemonError. INFO:
+        # an old daemon during an upgrade window is expected, not an incident.
+        attempt = dict(kwargs)
+        while True:
+            try:
+                r = await self._call_create_session(attempt)
+                break
+            except DaemonError as exc:
+                fallback = _create_fallback_for(exc, attempt)
+                if fallback is None:
+                    raise
+                keys, why = fallback
+                log.info("daemon %s; creating without %s", why, "/".join(keys))
+                attempt = {k: v for k, v in attempt.items() if k not in keys}
+        if kwargs.get("autopilot_paused") and "autopilot_paused" not in attempt:
+            # The autopilot half of the toggles goes through set_autopilot_paused, an
+            # RPC every daemon already serves.
+            await self.set_autopilot_paused(r["session"]["id"], True)
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None, *,

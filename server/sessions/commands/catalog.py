@@ -81,13 +81,24 @@ APP_COMMAND = "app_command"
 #: attachments). Nothing ran and nothing reached the engine; it is never a delivery.
 APP_COMMAND_REFUSED = "app_command_refused"
 
-def app_command_refusal(name: str, *, human: bool) -> dict | None:
+def app_command_refusal(name: str, *, human: bool,
+                        daemon_gate: bool = True) -> dict | None:
     """THE APP_ONLY sender gate (D-16a S1), shared by the prompt path
-    (``SessionOrchestrator.send_prompt``) and the WS ``command`` frame: the ``ok: false``
-    commandResult for an ``APP_ONLY`` command a non-person sent, else None (allowed —
-    including every command outside ``APP_ONLY``, which keeps its own rules)."""
+    (``SessionOrchestrator.send_prompt``), the WS ``command`` frame and the edge's
+    rolling-upgrade guard: the ``ok: false`` commandResult for an ``APP_ONLY`` command a
+    non-person sent, or one bound for a daemon without the gate (*daemon_gate* False —
+    it would hand the text to the CLI), else None (allowed — including every command
+    outside ``APP_ONLY``, which keeps its own rules)."""
     bare = str(name).lstrip("/")
-    if human or bare not in APP_ONLY:
+    if bare not in APP_ONLY:
+        return None
+    if not daemon_gate:
+        return {"name": bare, "ok": False, "render": "notice",
+                "error": "app command refused",
+                "data": {"text": f"/{bare} wasn't run and nothing was sent: this "
+                                 f"session's host is still on an older ViberPit. Try "
+                                 f"again once it has updated."}}
+    if human:
         return None
     return {"name": bare, "ok": False, "render": "notice",
             "error": "app command refused",

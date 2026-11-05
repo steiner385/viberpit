@@ -222,6 +222,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     "set_fast_mode",
     # And so is an output style (D-16a): the live client, and the CLI's style list.
     "set_output_style",
+    # Whether the owning daemon intercepts APP_ONLY commands (D-16a): a per-daemon
+    # capability, so it must be asked of the host the prompt would go to.
+    "has_app_command_gate",
     "set_permission_mode", "set_model_for_session",
     "resolve_permission", "answer_question", "pending_questions",
     "orphaned_interaction",
