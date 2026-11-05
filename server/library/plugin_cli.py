@@ -372,29 +372,36 @@ def _run_available_refresh() -> bool:
     return rc == 0
 
 
-async def host_outcome(host: str, call: Awaitable[dict[str, Any]]) -> dict[str, Any]:
-    """Await one host's ``plugin_op`` and label it. A host that cannot answer is a
-    ``failed`` outcome for THAT host — never an exception for the fan-out: an old daemon
-    (``UnknownMethod``) is ``daemon_outdated``, an unreachable one ``host_unreachable``."""
+def host_failure(host: str, exc: Exception) -> dict[str, Any]:
+    """Label one host's failed RPC. The single mapping from a daemon error to a ``failed``
+    row, shared by every fan-out: an old daemon (``UnknownMethod``) is ``daemon_outdated``,
+    an unreachable one ``host_unreachable``, a slow one ``host_timeout``."""
     from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
-    try:
-        res = await call
-    except DaemonError as exc:
+    if isinstance(exc, DaemonError):
         if exc.err_type == "UnknownMethod":
             return {"host": host, **_outcome("failed", "daemon_outdated",
                                              "This host's daemon predates plugin management; "
                                              "update it, then retry.")}
         log.warning("plugin_cli.host_error host=%s type=%s", host, exc.err_type)
         return {"host": host, **_outcome("failed", "daemon_error", exc.message)}
-    except DaemonTimeout:
+    if isinstance(exc, DaemonTimeout):
         return {"host": host, **_outcome("failed", "host_timeout",
                                          "The host did not answer in time; retry to confirm.")}
-    except (DaemonUnavailable, OSError) as exc:
+    if isinstance(exc, (DaemonUnavailable, OSError)):
         log.info("plugin_cli.host_unreachable host=%s error=%s", host, exc)
         return {"host": host, **_outcome("failed", "host_unreachable", "The host is unreachable.")}
-    except Exception:
-        log.warning("plugin_cli.host_failed host=%s", host, exc_info=True)
-        return {"host": host, **_outcome("failed", "error_internal", "Unexpected error on this host.")}
+    log.warning("plugin_cli.host_failed host=%s", host, exc_info=exc)
+    return {"host": host, **_outcome("failed", "error_internal", "Unexpected error on this host.")}
+
+
+async def host_outcome(host: str, call: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+    """Await one host's ``plugin_op`` and label it. A host that cannot answer is a
+    ``failed`` outcome for THAT host (see ``host_failure``) — never an exception for the
+    fan-out."""
+    try:
+        res = await call
+    except Exception as exc:
+        return host_failure(host, exc)
     if not isinstance(res, dict) or res.get("outcome") not in ("ok", "noop", "failed"):
         return {"host": host, **_outcome("failed", "unparseable_result", "Malformed host reply.")}
     return {"host": host, **res}
