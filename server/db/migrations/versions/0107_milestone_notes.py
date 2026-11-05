@@ -1,22 +1,22 @@
 """Release milestones Phase 2: milestone_notes (owner decisions and owner asks).
 
-Revision ID: 0106_milestone_notes
-Revises: 0105_release_milestones
+Revision ID: 0107_milestone_notes
+Revises: 0106_session_move
 
 ``milestone_notes`` holds a ladder's owner decisions (``locked | proposed | superseded``)
 and owner asks (``open | done | dropped``); ``milestone_key`` NULL is ladder-wide.
 ``init_db``'s ``create_all`` creates it on both dialects; this revision is the
 reviewable record.
 
-Chaining note: chained off 0105_release_milestones (master's newest revision when written).
+Chaining note: chained off 0106_session_move (master's newest revision when written).
 If another revision lands first, re-chain ``down_revision`` to the newest one
 (``test_alembic_single_head`` enforces one head).
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0106_milestone_notes"
-down_revision = "0105_release_milestones"
+revision = "0107_milestone_notes"
+down_revision = "0106_session_move"
 branch_labels = None
 depends_on = None
 
