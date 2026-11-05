@@ -125,9 +125,17 @@ def test_reorder_changes_ordinal_only():
 
 
 def test_start_ignored_after_creation():
+    """Ignored once milestone rows exist, even with none current."""
     plan = _plan(_rows(current=None), FIXTURE)
     assert plan.create_ladder is False
     assert plan.set_current is None
+
+
+def test_start_applies_on_first_good_parse_after_initial_error():
+    plan = _plan(LadderRowsView(exists=True, milestones=()), FIXTURE)
+    assert plan.create_ladder is False
+    assert plan.set_current == "household"
+    assert all(u["state"] == "upcoming" for u in plan.upserts)
 
 
 def test_file_removed_sets_error_keeps_rows():

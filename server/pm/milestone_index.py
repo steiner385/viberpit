@@ -7,7 +7,7 @@ Sync owns the *definition* half of a milestone row only. ``state``,
 ``entered_at``, ``exited_at``, ``exit_override`` and ``status_note`` are live
 state and never appear in an upsert for an existing row; a brand-new row gets
 ``state="upcoming"``, and ``set_current`` (the file's ``start``) is honoured
-only when the ladder itself is created.
+only while the ladder has no milestone rows at all.
 """
 from __future__ import annotations
 
@@ -118,6 +118,8 @@ def plan_ladder_sync(
         upserts=tuple(upserts),
         remove_keys=tuple(r.key for r in rows.milestones if r.key not in file_keys and not r.removed),
         revive_keys=tuple(r.key for r in rows.milestones if r.key in file_keys and r.removed),
-        set_current=ladder.start if not rows.exists else None,
+        # The start marker is DB state: seeded only when the first good parse
+        # creates milestone rows (also after a ladder created with only an error).
+        set_current=ladder.start if not rows.milestones else None,
         delete_ladder=False,
     )
