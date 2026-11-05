@@ -278,6 +278,10 @@ export function useSessionRuntime(
     }
     const onCommandResult = (msg: { sessionId: string; ok: boolean; render?: string; data?: unknown; error?: string }) => {
       if (msg.sessionId !== sessionId) return
+      // A refusal that explains itself (D-16a: an app command from automation, or one
+      // sent with more text) carries its own notice — show the server's words as-is.
+      const noticeText = msg.render === 'notice' ? (msg.data as { text?: unknown } | undefined)?.text : undefined
+      if (!msg.ok && typeof noticeText === 'string' && noticeText) { dispatch({ type: '_notice', text: noticeText }); return }
       if (!msg.ok) { dispatch({ type: '_notice', text: msg.error ? `Command failed: ${msg.error}` : 'Command failed' }); return }
       if (msg.render === 'clear')  { dispatch({ type: '_clear', text: (msg.data as { text: string })?.text ?? 'Conversation cleared' }); return }
       if (msg.render === 'notice') { dispatch({ type: '_notice', text: (msg.data as { text: string })?.text ?? '' }); return }

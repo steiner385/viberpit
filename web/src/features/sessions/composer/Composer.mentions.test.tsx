@@ -36,6 +36,7 @@ vi.mock('@/api/hooks', () => ({
   },
   useGenerateSuggestions: () => ({ mutateAsync: vi.fn() }),
   useSetFastMode: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetOutputStyle: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEngineCapabilities: () => undefined,
   useModels: () => ({ data: undefined }),
 }))

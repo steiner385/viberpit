@@ -2,7 +2,7 @@ import { lazy, type ComponentType } from 'react'
 import {
   SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck, ListChecks,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
-  Rocket, Gauge, Send, Route, Brain,
+  Rocket, Gauge, Send, Route, Brain, Type,
   type LucideIcon,
 } from 'lucide-react'
 import type { SettingsScope } from './scope'
@@ -32,6 +32,8 @@ import { McpSection } from './sections/McpSection'
 // Lazy (D-13): the memory editor is its own chunk. `HostedSection` holds the
 // Suspense boundary, so the chassis heading draws while it loads.
 const MemorySection = lazy(() => import('./sections/MemorySection'))
+// Lazy (D-16a), like Memory: the default picker and the style viewer are their own chunk.
+const OutputStylesSection = lazy(() => import('./sections/OutputStylesSection'))
 
 export type SettingsBadgeKey = 'accountsAttention' | 'deployPending'
 
@@ -80,6 +82,7 @@ const PAGE: Record<SettingsSectionId, SettingsPageFields> = {
   fleet:         { icon: Server, scope: 'server',  component: FleetSection, layout: 'wide', readout: 'hosts' },
   accounts:      { icon: Users, scope: 'server',  component: AccountsManager, layout: 'wide', badge: 'accountsAttention', readout: 'accounts' },
   memory:        { icon: Brain, scope: 'server',  component: MemorySection },
+  'output-styles': { icon: Type, scope: 'server', component: OutputStylesSection },
   plugins:       { icon: Puzzle, scope: 'server',  component: PluginsSection, layout: 'wide' },
   skills:        { icon: Sparkles, scope: 'server',  component: SkillsSection, layout: 'wide' },
   commands:      { icon: SquareTerminal, scope: 'server',  component: CommandsSection, layout: 'wide' },

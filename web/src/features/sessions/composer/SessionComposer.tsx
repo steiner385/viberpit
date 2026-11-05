@@ -11,6 +11,7 @@ import { Composer, type ComposerAttach } from './Composer'
 import type { MentionSource } from './MentionMenu'
 import { PromptRow, type PromptRowMenus } from './PromptRow'
 import { useMentionSessions } from './useMentionSessions'
+import { useOutputStyleEntry } from './outputStyle'
 import { deriveHistory } from '@/session/history'
 import { useEngineCapabilities, useGenerateSuggestions, useModels, useSessions, useSetFastMode } from '@/api/hooks'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
@@ -47,6 +48,10 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
   const hasCwd = !hideSessionControls && !!sessions?.find((s) => s.id === rt.sessionId)?.cwd
   const otherSessions = useMentionSessions(rt.sessionId)
   const genSuggestions = useGenerateSuggestions()
+  // D-16a: the `+` menu's Style ›, for a session composer only (the drawer has no
+  // session controls; its session lists no styles anyway).
+  const styleEntry = useOutputStyleEntry(rt.sessionId)
+  const extraPlusEntries = styleEntry && !hideSessionControls ? [styleEntry] : undefined
   const onPrompt = useCallback(
     (text: string, attachmentIds: string[], context?: PromptContext, replySource?: 'suggested') => {
       if (replySource) { rt.onPrompt(text, attachmentIds, contextProvider?.() ?? context, replySource); return }
@@ -87,6 +92,8 @@ export function SessionComposer({ rt, contextProvider, hideSessionControls = fal
         // The composer with session controls IS the session's; the assistant drawer hides them.
         sessionComposer={!hideSessionControls}
         attachRef={attachRef}
+        extraPlusEntries={extraPlusEntries}
+        returnedDraft={rt.state.returnedPrompt}
       />
       {!hideSessionControls && <SessionPromptRow rt={rt} menuRef={promptRowMenus} />}
     </>

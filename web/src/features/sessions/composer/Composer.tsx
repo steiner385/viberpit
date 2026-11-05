@@ -58,6 +58,14 @@ interface Props {
   /** Imperative attach for a transcript path's "Attach as @" (D-7), handed to the
    *  shell's bridge (`shell/sessionGestures`) by the dock's composer. */
   attachRef?: Ref<ComposerAttach>
+  /** More `+` menu entries after Attach and Slash commands — the session composer's
+   *  Style › submenu (D-16a). */
+  extraPlusEntries?: readonly PlusMenuEntry[]
+  /** A sent prompt the server did not deliver and will not retry (a `promptAck`
+   *  `failed`: a refused app command, or a session that could not be woken). A fresh
+   *  object each time; its text goes back into the box when the box is empty, so
+   *  nothing typed is lost to a refusal. */
+  returnedDraft?: { text: string } | null
 }
 
 /** What the composer lets the transcript do to its draft (D-7). */
@@ -70,7 +78,7 @@ export interface ComposerAttach {
   draftText: () => string
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef, extraPlusEntries = [], returnedDraft = null }: Props) {
   const { replies, statusText: repliesStatus } = useQuickReplies()
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
@@ -198,6 +206,20 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     textareaRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalDraft])
+
+  // A returned prompt (see `returnedDraft`) refills an EMPTY box only — a draft typed
+  // since the send is never overwritten. Keyed on the object, like `externalDraft`;
+  // one already there at mount was returned to an earlier mount, not this one.
+  const seenReturned = useRef(returnedDraft)
+  useEffect(() => {
+    if (returnedDraft === seenReturned.current) return
+    seenReturned.current = returnedDraft
+    if (!returnedDraft || text.trim() !== '') return
+    suggestedDraft.current = null
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refill the box the moment a prompt comes back
+    recallTo(0, returnedDraft.text)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [returnedDraft])
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -413,6 +435,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
         textareaRef.current?.focus()
       },
     }] : []),
+    ...extraPlusEntries,
   ]
 
   return (

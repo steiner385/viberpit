@@ -114,3 +114,41 @@ describe('transcriptReducer — pending prompt stage transitions', () => {
     expect(s.turns.map((t) => t.pending)).toEqual(['sent', 'buffered'])
   })
 })
+
+/**
+ * D-16a: a `failed` ack is terminal — the server refused an app command sent with more
+ * text or attachments, or could not wake the session — so the prompt goes back to the
+ * composer. No other stage returns it.
+ */
+describe('transcriptReducer — a failed prompt is handed back', () => {
+  it('a failed ack records the failed bubble\'s text as returnedPrompt', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: '/plan on\nmore' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.turns[0].pending).toBe('failed')
+    expect(s.returnedPrompt).toEqual({ text: '/plan on\nmore' })
+  })
+
+  it('the ack goes to the oldest pending bubble, and its text is the one returned', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'first' })
+    s = transcriptReducer(s, { type: '_trackSentPrompt', text: 'second' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.returnedPrompt).toEqual({ text: 'first' })
+  })
+
+  it('a delivered or received ack returns nothing', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hi' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'received' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'delivered' })
+    expect(s.returnedPrompt).toBeNull()
+  })
+
+  it('each return is a fresh object, so the same text twice refills twice', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: '/fast on\nx' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    const first = s.returnedPrompt
+    s = transcriptReducer(s, { type: '_trackSentPrompt', text: '/fast on\nx' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.returnedPrompt).toEqual(first)
+    expect(s.returnedPrompt).not.toBe(first)
+  })
+})

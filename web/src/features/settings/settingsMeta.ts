@@ -74,6 +74,9 @@ const META = [
   // what is installed.
   { id: 'memory',        group: 'claude',    label: 'Memory',
     description: 'Your user memory file, the CLAUDE.md every account loads into every session.', keywords: ['CLAUDE.md', 'instructions', 'user memory'] },
+  // D-16a: beside Memory — both shape how every session answers.
+  { id: 'output-styles', group: 'claude',    label: 'Output styles',
+    description: 'The style new sessions start with, and the styles every account can use.' },
   { id: 'plugins',       group: 'claude',    label: 'Plugins',
     description: 'Installed Claude Code plugins and what each one adds.' },
   { id: 'skills',        group: 'claude',    label: 'Skills',
