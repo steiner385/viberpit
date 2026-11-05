@@ -69,6 +69,7 @@ vi.mock('@/features/sessions/BackgroundWelcome', () => ({ BackgroundWelcome: stu
 vi.mock('@/features/pipeline/PipelinePage', () => ({ PipelinePage: stub('pipeline') }))
 vi.mock('@/features/roadmap/RoadmapPage', () => ({ RoadmapPage: stub('roadmap') }))
 vi.mock('@/features/roadmap/InitiativePage', () => ({ InitiativePage: stub('initiative') }))
+vi.mock('@/features/milestones/MilestonesPage', () => ({ MilestonesPage: stub('milestones') }))
 vi.mock('@/features/delivery/DeliveryPage', () => ({ DeliveryPage: stub('delivery') }))
 // The Settings pages are stubbed like every other page, and for one extra
 // reason: both read `useViewport()` (phone and tablet-portrait drill), which
@@ -443,7 +444,7 @@ describe('route table — every nav destination exists', () => {
 // ── the 68-cell matrix: every route × every layout mode ──────────────────────
 //
 // Umbrella §9: "Every route in §6 renders the same page at 390, 820, 1440 and
-// `?kiosk=1`." This is the jsdom half — 18 non-redirect paths × 4 layout modes.
+// `?kiosk=1`." This is the jsdom half — 19 non-redirect paths × 4 layout modes.
 // (The Playwright half, which asserts it at real pixel widths, is PR 10.)
 //
 // ## What each cell asserts, and why it is not one assertion
@@ -472,7 +473,7 @@ describe('route table — every nav destination exists', () => {
 // visibility here would encode "phone shows the welcome pane over its own list"
 // as the requirement, which is the opposite of the layout.
 
-/** The 18 non-redirect paths, each with the page it must land on. */
+/** The 19 non-redirect paths, each with the page it must land on. */
 const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/sessions', 'page-sessions'],
   ['/sessions/abc', 'page-session-detail'],
@@ -489,6 +490,7 @@ const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/roadmap', 'page-roadmap'],
   ['/roadmap/kindash', 'page-roadmap'],
   ['/roadmap/kindash/capabilities/tasks', 'page-roadmap'],
+  ['/roadmap/kindash/milestones', 'page-milestones'],
   ['/initiatives/views', 'page-initiative'],
   ['/sessions/archived', 'page-archived'],
   ['/sessions/archived/abc', 'page-review'],
@@ -583,8 +585,8 @@ describe('every route renders in every layout mode', () => {
     })
 
     expect([...new Set(covered)].sort()).toEqual([...pageRoutes].sort())
-    expect(pageRoutes).toHaveLength(18)
-    expect(MATRIX_PATHS).toHaveLength(18)
+    expect(pageRoutes).toHaveLength(19)
+    expect(MATRIX_PATHS).toHaveLength(19)
   })
 
   /**
@@ -621,8 +623,8 @@ describe('every route renders in every layout mode', () => {
     }),
   )
 
-  it('the matrix is 72 cells', () => {
-    expect(CELLS).toHaveLength(72)
+  it('the matrix is 76 cells', () => {
+    expect(CELLS).toHaveLength(76)
   })
 
   // The seventeen refused cells are exactly the kiosk rows for a section that is not
@@ -642,7 +644,8 @@ describe('every route renders in every layout mode', () => {
     expect(refused.map(([, path]) => path)).toEqual([
       '/sessions', '/sessions/abc', '/sessions/abc/agents/x',
       '/delivery', '/delivery/automations/pr-doctor', '/delivery/capacity/governor',
-      '/roadmap', '/roadmap/kindash', '/roadmap/kindash/capabilities/tasks', '/initiatives/views',
+      '/roadmap', '/roadmap/kindash', '/roadmap/kindash/capabilities/tasks', '/roadmap/kindash/milestones',
+      '/initiatives/views',
       '/sessions/archived', '/sessions/archived/abc',
       '/sessions/background', '/sessions/background/abc', '/sessions/background/abc/agents/x',
       '/settings/general',

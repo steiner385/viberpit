@@ -1,0 +1,113 @@
+// One rung of the ladder (spec 2026-11-05 §9): header (label, name, audience,
+// platform chips, status line), the gate, the leaves bar, and the open leaves.
+// The current card is the `aria-current="step"`; done cards are muted.
+import { useId } from 'react'
+import type { Milestone, MilestoneLeaf } from '@/api/milestones'
+import { Banner } from '@/ui/Banner'
+import { Card } from '@/ui/Card'
+import { cn } from '@/lib/utils'
+import { ConditionRow } from './ConditionRow'
+import { LeavesBar } from './LeavesBar'
+import { milestoneTitle } from './format'
+
+/** Open leaves shown on a card before "+N more" (spec §9; print caps at 4 in Phase 2). */
+const OPEN_LEAVES_CAP = 6
+
+const day = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+
+function statusLine(m: Milestone): string {
+  if (m.state === 'current') return m.statusNote ? `Current · ${m.statusNote}` : 'Current'
+  if (m.state === 'done') return `Done · entered ${day(m.enteredAt)} · exited ${day(m.exitedAt)}`
+  return 'Upcoming'
+}
+
+function LeafRow({ leaf }: { leaf: MilestoneLeaf }) {
+  const title = leaf.title ?? leaf.ref
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-2 text-xs">
+      {leaf.url
+        ? <a href={leaf.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-ink hover:underline">{title}</a>
+        : <span className="min-w-0 truncate text-ink">{title}</span>}
+      {leaf.prs.map((pr) => pr.url && (
+        <a key={pr.url} href={pr.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+          PR #{pr.number}
+        </a>
+      ))}
+      {leaf.state === 'not_started' && <span className="text-ink-faint">not started</span>}
+    </li>
+  )
+}
+
+export function MilestoneCard({ milestone: m }: { milestone: Milestone }) {
+  const headingId = useId()
+  const current = m.state === 'current'
+  const done = m.state === 'done'
+  const open = [
+    ...m.leaves.items.filter((l) => l.state === 'in_flight'),
+    ...m.leaves.items.filter((l) => l.state === 'not_started'),
+  ]
+  const hidden = open.length - OPEN_LEAVES_CAP
+  const epicUrl = m.epics[0]?.url ?? null
+
+  return (
+    <Card
+      as="li"
+      aria-labelledby={headingId}
+      aria-current={current ? 'step' : undefined}
+      data-state={m.state ?? 'upcoming'}
+      padding="sm"
+      className={cn(
+        'flex min-w-0 flex-col gap-3',
+        current && 'border-accent ring-1 ring-accent',
+        done && 'bg-canvas text-ink-muted',
+      )}
+    >
+      <header className="flex flex-col gap-1">
+        <h2 id={headingId} className={cn('text-sm font-semibold', done ? 'text-ink-muted' : 'text-ink')}>
+          {milestoneTitle(m)}
+        </h2>
+        {m.audience && <p className="text-xs text-ink-muted">{m.audience}</p>}
+        {m.platforms.length > 0 && (
+          <ul aria-label="Platforms" className="flex flex-wrap gap-1">
+            {m.platforms.map((p, i) => (
+              <li key={`${p.name}-${i}`} className="rounded-pill border border-edge px-2 py-0.5 text-xs text-ink-muted">
+                {p.off
+                  ? <><s>{p.name}</s>{` (${p.note ?? 'off'})`}</>
+                  : p.name}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className={cn('text-xs font-medium', current ? 'text-accent' : 'text-ink-muted')}>{statusLine(m)}</p>
+      </header>
+
+      {done && m.exitOverride && (
+        <Banner tone="warning" role="none" title="Advanced with an override">{m.exitOverride}</Banner>
+      )}
+
+      {m.gate.length > 0
+        ? <ul aria-label="Gate" className="flex flex-col divide-y divide-edge">
+            {m.gate.map((c) => <ConditionRow key={c.key} condition={c} />)}
+          </ul>
+        : <p className="text-xs text-ink-muted">No gate conditions.</p>}
+
+      {m.leaves.total > 0 && (
+        <div className="flex flex-col gap-2">
+          <LeavesBar leaves={m.leaves} />
+          {open.length > 0 && (
+            <ul aria-label="Open leaves" className="flex flex-col gap-1">
+              {open.slice(0, OPEN_LEAVES_CAP).map((l) => <LeafRow key={l.ref} leaf={l} />)}
+            </ul>
+          )}
+          <div className="flex flex-wrap gap-x-3 text-xs text-ink-muted">
+            {hidden > 0 && (epicUrl
+              ? <a href={epicUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">+{hidden} more</a>
+              : <span>+{hidden} more</span>)}
+            {m.leaves.done > 0 && <span>{m.leaves.done} done</span>}
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}

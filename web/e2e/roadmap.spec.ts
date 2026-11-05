@@ -231,6 +231,10 @@ async function interceptApi(page: Page) {
       // `ProjectHealth` object.
     } else if (path.startsWith('/api/pm/projects/') && path.endsWith('/health')) {
       route.fulfill({ json: HEALTH })
+    } else if (path.startsWith('/api/pm/projects/') && path.endsWith('/milestones')) {
+      // No ladder: the Overview's milestones line renders nothing (its own
+      // spec is `milestones.spec.ts`).
+      route.fulfill({ json: { ladder: null } })
     } else if (path.startsWith('/api/pm/projects/')) {
       route.fulfill({ json: PROJECT })
     } else if (path === '/api/sdlc/triage') {

@@ -9,6 +9,9 @@ import { capabilityKey, initiativeKey, productKey } from './treeRows'
 export const ROADMAP_PATH = '/roadmap'
 export const PRODUCT_ROUTE = `${ROADMAP_PATH}/:productSlug`
 export const CAPABILITY_ROUTE = `${ROADMAP_PATH}/:productSlug/capabilities/:capSlug`
+/** A product's release-milestone ladder (spec 2026-11-05 §9): its own page under
+ *  the product, not an 8th product tab (docs/PAGE-TABS.md §4's six-tab cap). */
+export const MILESTONES_ROUTE = `${ROADMAP_PATH}/:productSlug/milestones`
 /** Initiative detail keeps its own prefix (roadmap spec §4): `/initiatives/:slug`. */
 export const INITIATIVES_PATH = '/initiatives'
 export const INITIATIVE_ROUTE = `${INITIATIVES_PATH}/:initiativeSlug`
@@ -39,6 +42,7 @@ export const productPath = (productSlug: string) =>
   `${ROADMAP_PATH}/${encodeURIComponent(productSlug)}`
 export const capabilityPath = (productSlug: string, capSlug: string) =>
   `${productPath(productSlug)}/capabilities/${encodeURIComponent(capSlug)}`
+export const milestonesPath = (productSlug: string) => `${productPath(productSlug)}/milestones`
 export const initiativePath = (slug: string) => `${INITIATIVES_PATH}/${encodeURIComponent(slug)}`
 
 /** The Inbox scope, optionally narrowed to one product and/or with one proposal open. */
