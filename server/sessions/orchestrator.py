@@ -1185,6 +1185,10 @@ class SessionOrchestrator:
         # burning quota in the same worktree (#1040). A caller that finds an entry
         # here awaits it and takes its driver instead of building a second one.
         self._swapping: dict[str, asyncio.Future] = {}
+        # Sessions a resume admitted while this daemon was already at its cap (#3255).
+        # Resumes are exempt from the cap by design, so the count they leave over the cap
+        # is expected; /info reports it so the fleet alarm can tell it from a fault.
+        self._resumed_over_cap: set[str] = set()
         # Sessions that failed to re-launch after a daemon-affecting deploy:
         # session_id -> attempts so far. Seeded by restore_deploy, drained by the
         # daemon's recovery pass (_recover_resume_failures_once). Deploy-scoped and
@@ -23136,7 +23140,29 @@ class SessionOrchestrator:
             driver.seed_status(rec.status)
             await self._maybe_rearm_on_attach(session_id)
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
+            await self._note_resume_over_cap(session_id)
             return driver
+
+    async def _note_resume_over_cap(self, session_id: str) -> None:
+        """Record a resume that left this daemon over its cap (#3255).
+
+        A resume is admitted without the launch gate (it revives an existing session,
+        it does not add one to the cap), so it is the only way a daemon's owned count
+        can pass its cap. Recording it here, rather than gating the resume, keeps user
+        attaches unchanged; the alarm then treats exactly this much overage as expected.
+        """
+        if await self.owned_active_session_count() > await self._max_active_sessions():
+            self._resumed_over_cap.add(session_id)
+
+    async def resumed_over_cap_count(self) -> int:
+        """Live sessions a resume admitted past the cap, for /info (#3255).
+
+        Pruned on every read: a session that ended, archived, or went back to a
+        non-slot status no longer holds the overage, so it stops being excused."""
+        self._resumed_over_cap = {
+            sid for sid in self._resumed_over_cap
+            if (r := self._records.get(sid)) is not None and self._consumes_capacity_slot(r)}
+        return len(self._resumed_over_cap)
 
     async def _exit_complete_on_resume(self, session_id: str, rec) -> None:
         """Move a just-resumed `complete` session back to `done` (in-memory + DB).
