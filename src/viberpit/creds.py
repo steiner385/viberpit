@@ -260,6 +260,19 @@ def unmerged_offers(offers: dict, store: dict) -> frozenset[str]:
     return frozenset(k for k, v in offers.items() if merged.get(k) is v)
 
 
+def publishable_store(dir_mcp: dict, store: dict, *, drop: frozenset[str] = frozenset()) -> dict:
+    """*store* minus the keys *dir_mcp* is still ahead of: the part of the store a publish into
+    that dir may apply right now. Pure.
+
+    A dir copy the store has not caught up with is a login the authority has not merged yet
+    (on a worker, whose capture is a no-op, that is the ~60 s until the next push). Publishing
+    the store over it would replace the only refresh-token-bearing copy there is, so those keys
+    are withheld and the dir keeps its copy until a store that holds the login arrives. On the
+    edge the capture that precedes every publish makes this a no-op (#3287)."""
+    ahead = unmerged_offers(offerable_mcp(dir_mcp, store, drop=drop), store)
+    return {k: v for k, v in store.items() if k not in ahead} if ahead else store
+
+
 def offerable_mcp(dir_mcp: dict, store: dict, *, drop: frozenset[str] = frozenset()) -> dict:
     """The bundles a dir would offer *store*: the rule behind :func:`capture_cfg_mcp`. Pure.
 
@@ -366,15 +379,15 @@ def write_credentials(path: Path, data: dict) -> None:
 
 
 def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None,
-                       drop: frozenset[str] = frozenset(), store: dict | None = None) -> bool:
+                       drop: frozenset[str] = frozenset()) -> bool:
     """The one dir <-> store MCP OAuth sync for ONE cfg dir's .credentials.json, in place.
 
     1. Capture: the dir's refresh-token-bearing bundles merge into the shared store.
-    2. Publish: the store's public view lands in the dir per :func:`publish_mcp`.
+    2. Publish: the store's public view lands in the dir per :func:`publish_mcp`, minus the
+       keys the dir is still ahead of (:func:`publishable_store`), so a login the authority
+       has not merged yet is never stripped from the only place it exists.
 
-    *store* overrides :func:`read_shared_mcp` for the publish (the runner passes the pushed
-    view minus the keys its dir copy is still ahead of, :func:`unmerged_offers`). The keys
-    the authority pushed as purged (:func:`pushed_drop_keys`) are always in *drop*.
+    The keys the authority pushed as purged (:func:`pushed_drop_keys`) are always in *drop*.
 
     Refresh-less keys in *drop* are neither captured nor kept: they leave the dir. A bundle
     holding a refresh token is captured and kept whatever *drop* says.
@@ -394,8 +407,8 @@ def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None,
     existing = existing if isinstance(existing, dict) else {}
     drop = drop | pushed_drop_keys()
     capture_cfg_mcp(existing, drop=drop)
-    merged = publish_mcp(existing, read_shared_mcp() if store is None else store,
-                         server=server, drop=drop)
+    store = publishable_store(existing, read_shared_mcp(), drop=drop)
+    merged = publish_mcp(existing, store, server=server, drop=drop)
     if merged == existing:
         return False
     after = path.stat()

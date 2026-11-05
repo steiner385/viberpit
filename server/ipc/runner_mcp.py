@@ -44,7 +44,7 @@ def sync_local_dirs(*, mounts: Mounts | None = None) -> dict:
     ``cfg_root()`` holding ``CREDENTIALS_NAME``: its offers under :func:`creds.offerable_mcp`
     are read *before* the publish, folded with :func:`creds.merge_mcp_bundles`, then
     :func:`creds.sync_cfg_mcp_oauth` lands the view — minus the keys the dir is still ahead of
-    (:func:`creds.unmerged_offers`), so a login is stripped only once a pushed view holds it. A dir that fails is skipped (DEBUG with traceback) so one torn file never holds the
+    (:func:`creds.publishable_store`), so a login is stripped only once a pushed view holds it. A dir that fails is skipped (DEBUG with traceback) so one torn file never holds the
     others back. Never logs token values: counts only."""
     view = runner_view()
     store = view.bundles()
@@ -61,14 +61,10 @@ def sync_local_dirs(*, mounts: Mounts | None = None) -> dict:
         try:
             dir_mcp = creds.read_json(cred).get("mcpOAuth")
             dir_mcp = dir_mcp if isinstance(dir_mcp, dict) else {}
-            offered = creds.offerable_mcp(dir_mcp, store, drop=drop)
-            offers = creds.merge_mcp_bundles(offers, offered)
-            # A dir copy the view has not caught up with (a terminal login the edge has not
-            # merged yet) is left alone this tick: publishing the view over it would strip
-            # the only refresh token there is before the edge holds it.
-            ahead = creds.unmerged_offers(offered, store)
-            if creds.sync_cfg_mcp_oauth(cfg_dir, drop=drop,
-                                        store={k: v for k, v in store.items() if k not in ahead}):
+            offers = creds.merge_mcp_bundles(offers, creds.offerable_mcp(dir_mcp, store, drop=drop))
+            # The publish leaves a dir copy the view has not caught up with alone
+            # (creds.publishable_store), so a login is stripped only once the edge holds it.
+            if creds.sync_cfg_mcp_oauth(cfg_dir, drop=drop):
                 written += 1
         except Exception:
             log.debug("runner mcp view: skipping account dir %s", cfg_dir.name, exc_info=True)

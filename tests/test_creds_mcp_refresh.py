@@ -302,3 +302,13 @@ def test_pushed_drop_keys_only_on_a_worker_with_a_view(_runner_state, monkeypatc
     assert pushed_drop_keys() == frozenset({"gone"})
     monkeypatch.delenv("VIBERPIT_DAEMON_ROLE")
     assert pushed_drop_keys() == frozenset()  # the edge never reads the view
+
+
+def test_publishable_store_withholds_keys_the_dir_is_ahead_of():
+    from viberpit.creds import publishable_store
+    store = {"behind": {"accessToken": "s", "expiresAt": 1}, "same": {"accessToken": "s", "expiresAt": 5},
+             "other": {"accessToken": "o"}}
+    dir_mcp = {"behind": {"accessToken": "d", "refreshToken": "r", "expiresAt": 5},
+               "same": {"accessToken": "d", "refreshToken": "r", "expiresAt": 5}}
+    assert publishable_store(dir_mcp, store) == {"same": store["same"], "other": store["other"]}
+    assert publishable_store({}, store) is store
