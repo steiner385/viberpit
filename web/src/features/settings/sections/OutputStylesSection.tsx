@@ -12,7 +12,7 @@
 import { useId, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
-import { useSettings, useUpdateSettings } from '@/api/hooks'
+import { QK, useSettings, useUpdateSettings } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { OutputStyleFile, OutputStyleInfo } from '@/api/types'
 import { FileError, FileLines } from '@/features/sessions/files/FileViewer'
@@ -29,15 +29,11 @@ const DIR = '~/.claude/output-styles/'
 /** The CLI's own style: a NULL default means it. */
 const CLI_DEFAULT = 'default'
 
-// The two reads only this section makes live here, in its lazy chunk, not in the
-// eagerly loaded `api/hooks` (bundle budget, D-16a review).
-const STYLES_KEY = ['output-styles'] as const
-
 /** The styles the Settings default can be: the five built-ins in CLI order, then the
  *  shared `~/.claude/output-styles/*.md` files. */
 function useOutputStyles() {
   return useQuery<{ styles: OutputStyleInfo[] }>({
-    queryKey: STYLES_KEY,
+    queryKey: QK.outputStyles,
     queryFn: () => api.get<{ styles: OutputStyleInfo[] }>('/settings/output-styles'),
   })
 }
@@ -46,7 +42,7 @@ function useOutputStyles() {
  *  directly in the shared dir, gone) is a 404. */
 function useOutputStyleFile(path: string) {
   return useQuery<OutputStyleFile>({
-    queryKey: [...STYLES_KEY, 'file', path],
+    queryKey: [...QK.outputStyles, 'file', path],
     queryFn: () => api.get<OutputStyleFile>(`/settings/output-styles/${encodeURIComponent(path)}`),
     retry: false,
   })

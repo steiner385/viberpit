@@ -85,6 +85,8 @@ import { toast } from 'sonner'
 // Query keys
 export const QK = {
   accounts: ['accounts'] as const,
+  // Settings → Output styles: the list, and one style file's body under it.
+  outputStyles: ['output-styles'] as const,
   // Engine- AND account-scoped. Codex's list comes from the selected account's
   // own app-server and differs by plan, so a single ['models'] key would serve
   // one engine's catalogue to the other engine's picker the moment both are

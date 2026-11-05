@@ -24,7 +24,7 @@ from server.sessions.commands.catalog import app_command_refusal
 from server.sessions.facade import InProcessOrchestratorAdapter
 from server.sessions.fleet_orchestrator import _PER_SESSION
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.remote import RemoteDriver, RemoteOrchestrator
+from server.sessions.remote import AppCommandGateUnavailable, RemoteDriver, RemoteOrchestrator
 from server.tests.test_daemon_info_engines import _info
 from server.tests.test_ws import _IDENTITY_HEADERS, _drain_events
 from server.tests.test_ws import ws_env as ws_env  # noqa: F401 — fixture lives in test_ws
@@ -93,6 +93,27 @@ async def test_an_unreachable_info_logs_below_warning(caplog):
     with caplog.at_level(logging.INFO, logger="server.sessions.remote"):
         assert await ro.has_app_command_gate("s1") is False
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", ["/plan on", "/plan on\nthen do the work"])
+async def test_create_with_an_app_command_prompt_is_refused_on_an_old_daemon(prompt):
+    # Multi-line included: the edge's single-line guard never sees the create-time host.
+    ro = RemoteOrchestrator(_InfoClient(_OLD_INFO))
+    with pytest.raises(AppCommandGateUnavailable, match="older ViberPit"):
+        await ro.create_session(initial_prompt=prompt)
+
+
+@pytest.mark.asyncio
+async def test_create_with_an_app_command_prompt_passes_on_a_gated_daemon():
+    ro = RemoteOrchestrator(_InfoClient(_NEW_INFO))
+
+    async def create(attempt):
+        return {"session": {}}
+
+    ro._call_create_session = create
+    with patch("server.sessions.remote.SessionRecord.from_dict", lambda d: "rec"):
+        assert await ro.create_session(initial_prompt="/plan on") == "rec"
 
 
 def test_the_gate_is_asked_of_the_owning_host():
@@ -268,7 +289,7 @@ async def test_create_fallbacks_chain_and_log_at_info(caplog):
                                 "rows": 24, "cwd": "/tmp"}}
 
     rec = await RemoteOrchestrator(_Older()).create_session(  # type: ignore[arg-type]
-        name="n", initial_prompt="/fast on", autopilot_paused=True,
+        name="n", initial_prompt="hello", autopilot_paused=True,
         initial_prompt_human=True)
     assert rec.id == "s1"
     assert [m for m, _ in calls] == ["create_session"] * 3 + ["set_autopilot_paused"]

@@ -70,6 +70,7 @@ from server.sessions.engine import (
 from server.sessions.model_policy import quota_model
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy, select_account
+from server.sessions.remote import AppCommandGateUnavailable
 from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.sessions.background_tasks import EMPTY_BACKGROUND_WORK
 from server.obs.logdedupe import LogThrottle, log_event_throttled
@@ -1060,6 +1061,12 @@ async def create_session(
         # keeps "install the Codex binary" from reading as "no host available"
         # cannot drift between the two (#2184).
         return fleet_refusal_response(exc)
+    except AppCommandGateUnavailable as exc:
+        # The host's daemon predates the app-command gate (D-16a): nothing was launched.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"error": {"code": "app_command_refused", "message": str(exc)}},
+        )
     except AgentEngineUnavailable as exc:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
