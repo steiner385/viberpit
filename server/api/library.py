@@ -24,7 +24,7 @@ from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
 from server.db import db_session, get_db
 from server.db.models import INACTIVE_SESSION_STATUSES, Session as SessionRow
-from server.library import curated, mutate, plugin_cli, plugin_policy, scan
+from server.library import curated, directory_api, mutate, plugin_cli, plugin_policy, scan
 from server.library.mutate import ConfigUnreadableError
 from server.library.snapshots import snapshot_before_mutation
 from server.library.names import (
@@ -225,6 +225,21 @@ async def _check_install(db, plugin_id: str) -> dict:
         plugin_policy.check_install(plugin_id, records, catalog)
     except plugin_policy.PolicyRefusal as exc:
         raise _policy_http(exc, plugin_id) from None
+    if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
+        # The cache passed, but it is forgeable: the live Directory must agree (fail closed).
+        listing = (catalog.directory or {})[plugin_id.partition("@")[0]]
+        live = await directory_api.fetch_listing(str(listing.get("id")))
+        if live is None:
+            log.info("library.plugin_refused code=%s subject=%s",
+                     plugin_policy.DIRECTORY_UNAVAILABLE, plugin_id)
+            raise HTTPException(status_code=503, detail={
+                "code": plugin_policy.DIRECTORY_UNAVAILABLE,
+                "message": "The Anthropic Directory could not be reached to verify this "
+                           "listing's review; try again."})
+        try:
+            plugin_policy.check_directory_listing(listing, live)
+        except plugin_policy.PolicyRefusal as exc:
+            raise _policy_http(exc, plugin_id) from None
     args = {"plugin_id": plugin_id}
     if marketplace in records:
         args["expected_source"] = records[marketplace]

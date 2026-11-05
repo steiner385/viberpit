@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
-from server.library import plugin_cli, plugin_policy, scan
+from server.library import directory_api, plugin_cli, plugin_policy, scan
 from server.library.plugin_policy import InstallCatalog, PolicyRefusal
 
 DIR = plugin_policy.DIRECTORY_MARKETPLACE
@@ -709,6 +709,13 @@ def env(shared: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "unreviewed": _listing("none"),
     })
     monkeypatch.setattr(plugin_cli, "refresh_available", lambda **k: False)
+
+    async def live_echo(listing_id: str) -> dict | None:
+        """Default live Directory: agrees with the cache (tests override to diverge)."""
+        return next((v for v in (scan.directory_listings() or {}).values()
+                     if v.get("id") == listing_id), None)
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live_echo)
     fleet = _Fleet()
     with patch.dict(os.environ, _ENV):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
@@ -1334,3 +1341,89 @@ def test_directory_browse_source_is_the_reviewed_repository(shared: Path) -> Non
     by_id = {e["pluginId"]: e["source"] for e in scan.browse_entries({})}
     assert by_id == {f"pinned@{DIR}": f"https://github.com/obra/superpowers @ {sha[:12]}",
                      f"bare@{DIR}": "https://github.com/a/b", f"odd@{DIR}": None}
+
+
+# ----------------------------------------------- Directory review verified live (#3314)
+
+def test_directory_listing_passes_when_id_review_and_repo_match() -> None:
+    plugin_policy.check_directory_listing(_listing("done"), _listing("done"))
+    # A listing with no repository on BOTH sides passes on id + review alone.
+    bare = {"id": "plugin_x", "checks": {"review": {"state": "done"}}, "source": {"type": "directory"}}
+    plugin_policy.check_directory_listing(bare, dict(bare))
+
+
+def test_directory_listing_refuses_a_repointed_source() -> None:
+    live = _listing("done")
+    cached = _listing("done", source={"type": "directory",
+                                      "repository": {"url": "https://github.com/evil/b"}})
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(cached, live)
+    assert exc.value.code == "PLUGIN_UNREVIEWED"
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+    # A repository on only one side is a mismatch too.
+    bare = {"id": "plugin_x", "checks": {"review": {"state": "done"}}, "source": {"type": "directory"}}
+    for c, lv in ((bare, _listing("done")), (_listing("done"), bare)):
+        with pytest.raises(PolicyRefusal) as exc:
+            plugin_policy.check_directory_listing(c, lv)
+        assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+@pytest.mark.parametrize("live", [_listing("none"), _listing("done", id="plugin_other"), "nope"])
+def test_directory_listing_refuses_unreviewed_live_or_wrong_id_or_garbage(live: object) -> None:
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(_listing("done"), live)
+    assert exc.value.code == "PLUGIN_UNREVIEWED"
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+def test_directory_install_verifies_the_listing_live(env, monkeypatch) -> None:
+    client, fleet, _ = env
+    asked: list[str] = []
+
+    async def live(listing_id: str) -> dict | None:
+        asked.append(listing_id)
+        return _listing("done", id=listing_id)
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 200
+    assert asked == ["id_reviewed"]
+
+
+def test_directory_install_refuses_a_forged_cache(env, monkeypatch) -> None:
+    client, fleet, _ = env
+
+    async def live(listing_id: str) -> dict | None:
+        return _listing("none", id=listing_id)
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "PLUGIN_UNREVIEWED"
+    assert r.json()["detail"]["reason"] == "directory_mismatch"
+    assert fleet.calls == []
+
+
+def test_directory_install_fails_closed_when_the_api_is_down(env, monkeypatch) -> None:
+    client, fleet, _ = env
+
+    async def live(listing_id: str) -> dict | None:
+        return None
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/update", json={"confirm": True}, headers=_H)
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "PLUGIN_DIRECTORY_UNAVAILABLE"
+    assert fleet.calls == []
+
+
+def test_curated_marketplace_installs_never_call_the_directory(env, monkeypatch) -> None:
+    client, fleet, _ = env
+
+    async def live(listing_id: str) -> dict | None:
+        raise AssertionError("the Directory API must not be called for a curated marketplace")
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post("/api/library/plugins/good@mine/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 200
+    assert len(fleet.calls) == 1

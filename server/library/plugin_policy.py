@@ -65,10 +65,13 @@ PLUGIN_NOT_FOUND = "PLUGIN_NOT_FOUND"
 PLUGIN_UNREVIEWED = "PLUGIN_UNREVIEWED"
 COMMAND_SOURCE_REFUSED = "PLUGIN_COMMAND_SOURCE_REFUSED"
 ENTRY_SOURCE_REFUSED = "PLUGIN_ENTRY_SOURCE_REFUSED"
+DIRECTORY_UNAVAILABLE = "PLUGIN_DIRECTORY_UNAVAILABLE"
 
 #: ``MARKETPLACE_NOT_CURATED`` reasons — the UI tells "confirm it" from "it changed".
 REASON_NOT_CONFIRMED = "not_confirmed"
 REASON_SOURCE_CHANGED = "source_changed"
+#: ``PLUGIN_UNREVIEWED`` reason: the live Directory disagrees with the cached listing.
+REASON_DIRECTORY_MISMATCH = "directory_mismatch"
 
 # The CLI's own GitHub shorthand (``Lon`` @280765576); ``fullmatch`` everywhere (a ``$``
 # under ``re.match`` also accepts a trailing newline).
@@ -416,6 +419,34 @@ def is_reviewed(listing: Mapping[str, Any] | None) -> bool:
     """A Directory listing is reviewed ONLY when its state is exactly ``done``; ``none``,
     a missing block, or any state this code does not know is unreviewed."""
     return review_state(listing) == "done"
+
+
+def _listing_repo(listing: Mapping[str, Any]) -> str | None:
+    source = listing.get("source")
+    repo = source.get("repository") if isinstance(source, Mapping) else None
+    url = repo.get("url") if isinstance(repo, Mapping) else None
+    return _normalize_url(url) if isinstance(url, str) else None
+
+
+def check_directory_listing(cached: Mapping[str, Any], live: object) -> None:
+    """The cache file is forgeable; the live Directory API is the authority. Passes only
+    when *live* is the same listing (``id``), is reviewed, and names the same repository as
+    the cached one (both absent passes on id + review alone; one-sided or unparseable is a
+    mismatch)."""
+    mismatch = PolicyRefusal(
+        PLUGIN_UNREVIEWED,
+        "The Anthropic Directory does not confirm this listing as reviewed and unchanged, "
+        "so it cannot be installed from here.", reason=REASON_DIRECTORY_MISMATCH)
+    if not isinstance(live, Mapping) or live.get("id") != cached.get("id") \
+            or not isinstance(cached.get("id"), str) or not is_reviewed(live):
+        raise mismatch
+    if _listing_repo(live) != _listing_repo(cached):
+        raise mismatch
+    for side in (cached, live):  # a repository that is present but unparseable never matches
+        source = side.get("source")
+        has_repo = isinstance(source, Mapping) and source.get("repository") is not None
+        if has_repo and _listing_repo(side) is None:
+            raise mismatch
 
 
 def check_curated(marketplace: str, curated: Mapping[str, str],
