@@ -11656,6 +11656,19 @@ class SessionOrchestrator:
             for key, value in updates.items():
                 setattr(row, key, value)
 
+    @staticmethod
+    def _pm_sync_default_head(clone: str) -> str:
+        """The clone's default-branch ref: ``origin/HEAD``'s target, or
+        ``refs/remotes/origin/master`` when origin/HEAD is unset. The one
+        resolution every pm-sync default-branch read shares (blocking; run it
+        in a thread)."""
+        import subprocess
+        head = subprocess.run(
+            ["git", "-C", clone, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return head.stdout.strip() or "refs/remotes/origin/master"
+
     async def _pm_sync_read_docs_at_ref(
         self, repo: str, subdir: str, ref: str | None = None,
     ) -> "FeatureDocsRead":
@@ -11697,13 +11710,7 @@ class SessionOrchestrator:
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
-                head = await asyncio.to_thread(
-                    subprocess.run,
-                    ["git", "-C", clone, "symbolic-ref", "--quiet",
-                     "refs/remotes/origin/HEAD"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
+                resolved_ref = await asyncio.to_thread(self._pm_sync_default_head, clone)
             # Pin the ref to a concrete commit so every blob read below is against
             # one consistent snapshot, immune to a concurrent ref-moving fetch.
             rp = await asyncio.to_thread(
@@ -11838,13 +11845,7 @@ class SessionOrchestrator:
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
-                head = await asyncio.to_thread(
-                    subprocess.run,
-                    ["git", "-C", clone, "symbolic-ref", "--quiet",
-                     "refs/remotes/origin/HEAD"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
+                resolved_ref = await asyncio.to_thread(self._pm_sync_default_head, clone)
             show = await asyncio.to_thread(
                 subprocess.run,
                 ["git", "-C", clone, "show", f"{resolved_ref}:{path}"],
@@ -11883,9 +11884,7 @@ class SessionOrchestrator:
             return subprocess.run(
                 ["git", "-C", clone, *args], capture_output=True, text=True, timeout=30)
 
-        head = await asyncio.to_thread(
-            _git, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-        resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
+        resolved_ref = await asyncio.to_thread(self._pm_sync_default_head, clone)
         rp = await asyncio.to_thread(
             _git, "rev-parse", "--verify", f"{resolved_ref}^{{commit}}")
         if rp.returncode != 0:
