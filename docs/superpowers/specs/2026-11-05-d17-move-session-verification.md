@@ -493,3 +493,131 @@ Yes, three PRs. The first two are needed for the benchmark row.
   on the same host.
 - **Copilot** sessions on the target (proxy spin-up during resume). Not exercised.
 - **`codex app-server`** `thread/fork` or other cross-thread primitives beyond `ThreadResumeParams`. Not surveyed.
+
+## Gate results (2026-11-05)
+
+Task 0 of the D-17 plan, run 11:20–11:26 EST against GitHub, dobby (CLI 2.1.318) and rocky (CLI 2.1.293).
+Scratch clones and worktrees lived under `/tmp/d17-gate-38a5238a` on both hosts. Every git network call went through
+the product's token path: `server.github.app_auth.register_git_providers()` then `gitrepos.git_env_for_remote(url)`,
+with the daemon's App id and the `pr-dashy` key. Each call logged `app_token=yes`, so no call fell back to ambient
+auth. No daemon, DB row, real session, real worktree or branch was touched. The gate made two model calls, both
+with `--model haiku --max-turns 1` and a setup token (dobby: `crypto.read_oauth_token`; rocky: the runner's
+broker envelope, as `oauth_env_for` does). Each ran in a throwaway `CLAUDE_CONFIG_DIR` under `/tmp` with no
+`.credentials.json`, whose `projects` linked to the shared `~/.claude/projects`.
+
+### Gate 1: GitHub accepts the hidden ref — PASS
+
+- **Push (dobby, shallow scratch clone).** `git push --no-verify origin <sha>:refs/viberpit/transfer/d17-gate-38a5238a`
+  returned `* [new reference] 17cc2db9… -> refs/viberpit/transfer/d17-gate-38a5238a` in 2.25 s. GitHub raised no
+  refusal and no ruleset or protection message. `ls-remote` listed the ref.
+- **Fetch (rocky, its own scratch clone, same token path).** It returned `* [new ref] …` in 1.56 s, and
+  `log -1` showed the throwaway commit.
+- **Delete.** `push origin :refs/…` returned `- [deleted]`. Afterwards `git ls-remote …/viberpit 'refs/viberpit/*'` was empty.
+- **Design-relevant: deleted transfer commits stay public.**
+  - After the delete, a fresh `git init` + `git fetch --depth 1 https://github.com/steiner385/viberpit 17cc2db9…`
+    still succeeded (`cat-file -t` gave `commit`).
+  - `https://github.com/steiner385/viberpit/commit/17cc2db9…` returned **HTTP 200**.
+  - **`steiner385/viberpit` is a public repo** (`private=false`).
+  - So a D1(a) WIP commit is **published**: anyone who has the SHA can read it, with no auth, until GitHub GCs it.
+    Deleting the ref does not retract it.
+- **Not checked.** Org rulesets on `cairnea/KinDash`, because the rules allowed only `steiner385/viberpit`.
+
+### Gate 2: cross-host resume of a session whose worktree came over by `import_` — PASS
+
+- **Setup on dobby.**
+  - The worktree was at `/tmp/d17-gate-38a5238a/GitHub/viberpit-sessions/worktrees/viberpit/d17`
+    (`worktrees_base(repo_root)/viberpit/_short("d17-gate-1e459d18")`, the product layout with
+    `repo_root=/tmp/d17-gate-38a5238a/GitHub`). It was on local branch `d17-gate/1e459d18`, with one untracked file.
+  - Call 1: `claude --session-id 0f4e80b2-… -p "Remember this codeword for later: PERSIMMON-38a5238a. Reply with just OK."`
+    returned `OK` (exit 0, 1.49 s).
+  - The transcript was written under the worktree slug: 26 lines, every `cwd` the worktree, `version` 2.1.318.
+- **Export (dobby).** `worktree_transfer.export(dest, "d17-gate-1e459d18", carry_dirty=True)` took 2.36 s.
+  - It wrote the WIP commit `42381669`, base `ef0b8e56`, and pushed `refs/viberpit/transfer/d17-gate-1e459d18/head`.
+  - The current branch is correctly not pushed as a branch (`branches={}`).
+- **Import (rocky).** `worktree_transfer.import_(bundle, <scratch clone>, "/tmp/d17-gate-38a5238a/GitHub")` took 2.07 s.
+  - It recreated the worktree at the **byte-identical path** on branch `d17-gate/1e459d18`, with HEAD at the base `ef0b8e5`.
+  - The scratch file arrived as untracked (`??`) with its content intact, and the worktree was locked
+    (`ViberPit live session`).
+- **Resume (rocky, CLI 2.1.293).** Call 2: `claude --resume 0f4e80b2-… -p "What was the codeword I asked you to
+  remember? Reply with just the codeword."` was run from the imported worktree.
+  - **Exit 0. Output `PERSIMMON-38a5238a`**, so the history loaded.
+  - Wall time was 4.94 s, of which ~3 s was the CLI's "no stdin data received in 3s" wait (`ssh` without `-n`).
+    The no-model run below puts lookup-to-first-request at 0.89 s.
+- **Transcript after resume.**
+  - It grew 26 → 36 lines (231491 → 238557 B) **in the original file**, and no new file appeared in that slug.
+  - The 10 appended entries carry `cwd` = the same worktree path (5 entries), `version` 2.1.293, and the same `sessionId`.
+  - Because the path is identical, the `cwd` is unchanged and `transcript_path`'s fast path stays valid.
+- **Side effect.** The CLI also created an empty `projects/<slug(clone path)>/memory/` dir, keyed on the git
+  common-dir parent. Auto-memory therefore follows the **clone** path, which is also identical on both hosts
+  (`~/GitHub/.ccswitch/clones/<owner>/<name>`).
+
+### Gate 3: resume lookup speed over sshfs (rocky, real `projects/`, 2624 dirs) — PASS, with a caveat
+
+No model ran in this gate: a dummy API key, and `ANTHROPIC_BASE_URL` pointed at a local stub that answers 400.
+
+| Probe on rocky | Time |
+|---|---|
+| `readdir projects/` | 0.03 s |
+| `glob projects/*/<id>.jsonl` (the `_find_transcript` fallback), hit / miss | 5.02 s / 5.19 s (dobby, local disk: 0.08 s) |
+| CLI `--resume <id>`, **same cwd** (slug matches), to first API request | **0.89 s** |
+| CLI `--resume <id>`, **other cwd** (slug differs), to first API request | 7.16 s; a second run took 8.26 s |
+| CLI `--resume <bogus id>` → `No conversation found` | 8.83 s |
+
+- A slug-mismatched resume costs ~7–8 s, not the 200 s seen in 2026-08. **Keeping `cwd` identical is still worth
+  ~7 s per move** and keeps ViberPit's own lookup on the fast path.
+- The other-cwd resume also created an empty `projects/<slug(other cwd)>/memory/`. It appended to the original
+  file, as P1 found.
+
+### New finding: rocky's sshfs attribute cache can hide the source's last turn (no model, stub only)
+
+- **The mount.** rocky mounts `~/.claude` with `dir_cache=yes,dcache_timeout=600,attr_timeout=600,entry_timeout=600`
+  (`ps` on rocky).
+- **Probe.**
+  1. Write a synthetic two-entry transcript on dobby (exchange "PAPAYA").
+  2. On rocky, `stat` and `cat` it (977 B cached).
+  3. On dobby, append a second exchange ("MANGO"), giving 1986 B.
+  4. rocky's `stat` still said 977.
+- **Result.** The rocky CLI `--resume` sent **3 messages containing only PAPAYA**. The control (both exchanges
+  written before rocky ever looked) sent **5 messages, PAPAYA and MANGO**.
+  - The CLI's own append landed at the true EOF; no file was corrupted (30 or 37 lines, 0 bad).
+  - But the resumed conversation would branch off the stale leaf, so **the source's last turn is lost from the
+    model's context**.
+- **Remedy (measured).** Reading the file to EOF on rocky refreshes the cached size (stale 8 → 16 after
+  `open().read()`). An `O_APPEND` open and close does not.
+- **Scope.** This affects only a move **into** an sshfs host (dobby → rocky) when the target has stat'ed or
+  listed that transcript in the last 600 s. Any readdir of the slug dir caches attributes. rocky → dobby reads
+  dobby's local disk.
+
+### Design changes
+
+1. **`transfer_import` must refresh, then verify, the transcript before `ensure_driver`.**
+   - The source's `transfer_export` manifest carries the transcript's byte size and last entry `uuid`, read after
+     the driver closes.
+   - The target reads the file to EOF (this refreshes sshfs), then checks the size and the last `uuid`. If they
+     don't match, it retries briefly, then fails the move with outcome `restored`, rather than resuming a truncated
+     history.
+   - Add this to §E.1 step 5 and to the D-17a saga tests.
+2. **D1(a) cost: the WIP is published, not merely "exposed".**
+   - On a public repo the WIP commit is world-readable by SHA after ref deletion, verified above.
+   - The consent copy must say so.
+   - Either default to D1(b) (refuse a dirty tree) for **public** repos, or require that the consent names the repo
+     as public.
+   - This bears on owner decision D1. It does not block Task 1.
+3. **No change needed.**
+   - The hidden namespace is accepted under the App token, and so is cross-host fetch.
+   - `import_` keeps the path identical, so `cwd`, the slug, `transcript_path`'s fast path and the auto-memory slug
+     all match.
+   - 2.1.293 resumes and appends to a 2.1.318 transcript.
+
+### Cleanup (verified)
+
+- **GitHub.**
+  - Gate 1's ref was deleted by explicit push.
+  - Gate 2's `d17-gate-1e459d18/head` was deleted with `worktree_transfer.delete_transfer_refs`.
+  - Final `git ls-remote https://github.com/steiner385/viberpit 'refs/viberpit/*'` printed 0 lines.
+  - The two commits stay fetchable by SHA (see above).
+- **dobby.** These were removed:
+  - `/tmp/d17-gate-38a5238a` (clone, worktree, config dir) and the scripts dirs;
+  - every `~/.claude/projects/*d17-gate*` slug dir. A final `ls` matched none.
+- **rocky.** `/tmp/d17-gate-*` was removed; a final `ls` matched none. Its sshfs view of the deleted slug dirs stays
+  cached for up to 600 s, which is the same caching as above.
