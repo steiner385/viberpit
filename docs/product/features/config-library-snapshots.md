@@ -68,5 +68,6 @@ restore/export/import); `server/library/names.py` (identifier validation / path-
 (issue #600), `server/api/hooks.py`, `server/api/snapshots.py`;
 `web/src/components/library/{PluginsSection,SkillsSection,CommandsSection,McpSection}.tsx`,
 `web/src/components/settings/{PresetsSection,PermissionProfilesSection,HooksSection,SnapshotsSection}.tsx`.
+Plugin marketplace browse/install, per-host fan-out and its security notes (D-16c): see `plugin-marketplace.md`.
 PRs: #560 (Library tab), #565 (Settings-tab consolidation), #605 (presets/templates/permission
 profiles), #606 (hooks/schedules/notifications/snapshots), #877 (MCP auth), #232 (permissive MCP setup).
