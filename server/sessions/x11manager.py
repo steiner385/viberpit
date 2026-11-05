@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from server.aio import cancel_and_reap
 from server.sessions.desktop_session import probe_x11, socket_owner
 from server.sessions.adopt import _proc_lister, terminate_process_tree
 
@@ -148,6 +149,11 @@ class DisplaySpec:
     browser_profiles: list = field(default_factory=list)  # auto-minted --user-data-dir dirs to rm on teardown
     vnc_clients: int = 0
     debug_port: int | None = None
+    # D-18 dev-server preview: the one Chromium the session's "Open" drives (replaced on
+    # every Open), its auto profile, and a generation that retires a stale reaper.
+    preview: object | None = None
+    preview_profile: str | None = None
+    preview_gen: int = 0
 
 
 async def _terminate(proc, timeout: float = 5.0) -> None:
@@ -344,6 +350,71 @@ class X11Manager:
             except OSError:
                 pass
         await self._allocator.release(spec.lease)
+
+    def prune_browsers(self, session_id: str) -> None:
+        """Forget managed browsers that already exited (the user closed the window), so
+        the per-session cap counts live ones only."""
+        spec = self._specs.get(session_id)
+        if spec is not None:
+            spec.browsers = [b for b in spec.browsers if getattr(b, "returncode", None) is None]
+
+    async def stop_preview(self, session_id: str) -> None:
+        """Close the session's dev-server preview browser (its process tree and profile),
+        if any — the next Open replaces it rather than stacking another Chromium."""
+        spec = self._specs.get(session_id)
+        if spec is None or spec.preview is None:
+            return
+        proc, profile = spec.preview, spec.preview_profile
+        spec.preview, spec.preview_profile = None, None
+        spec.preview_gen += 1  # retire its reaper before the kill wakes it
+        try:
+            pid = getattr(proc, "pid", None)
+            if pid:
+                await asyncio.to_thread(terminate_process_tree, pid)
+            await _terminate(proc, timeout=2.0)
+        except Exception:
+            log.exception("x11: preview browser kill failed session=%s", session_id)
+        if proc in spec.browsers:
+            spec.browsers.remove(proc)
+        if profile is not None and profile in spec.browser_profiles:
+            spec.browser_profiles.remove(profile)
+            self._cleanup_profile(profile)
+
+    def track_preview(self, session_id: str, *, release_display: bool) -> None:
+        """Mark the browser just launched as the session's dev-server preview.
+
+        ``release_display``: the display exists only for this preview (a native session's
+        on-demand one), so it is stopped — Xvfb, pool lease and all — when the preview
+        browser exits, or once no VNC viewer has been attached for the VNC idle timeout
+        (the same bound that stops an unwatched x11vnc)."""
+        spec = self._specs.get(session_id)
+        if spec is None or not spec.browsers:
+            return
+        spec.preview = spec.browsers[-1]
+        spec.preview_profile = spec.browser_profiles[-1] if spec.browser_profiles else None
+        spec.preview_gen += 1
+        if release_display:
+            t = asyncio.create_task(
+                self._reap_preview_display(session_id, spec.preview_gen, spec.preview))
+            self._idle_tasks.add(t)
+            t.add_done_callback(self._idle_tasks.discard)
+
+    async def _reap_preview_display(self, session_id: str, gen: int, proc) -> None:
+        exited = asyncio.ensure_future(proc.wait())
+        try:
+            while True:
+                await asyncio.wait({exited}, timeout=self._vnc_idle_timeout_s)
+                spec = self._specs.get(session_id)
+                if spec is None or spec.preview_gen != gen:
+                    return  # torn down, or a newer preview owns the display now
+                if exited.done() or spec.vnc_clients == 0:
+                    log.info("x11: releasing preview display session=%s (%s)", session_id,
+                             "browser exited" if exited.done() else "idle")
+                    await self.stop_display(session_id)
+                    return
+        finally:
+            if not exited.done():
+                await cancel_and_reap(exited, phase="x11.preview_reap")
 
     async def stop_all(self) -> None:
         """Concurrently tear down every tracked display — the shutdown sweep (issue #206).

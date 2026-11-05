@@ -61,7 +61,6 @@ from server.sessions import worktree_files
 from server.sessions import flag_settings
 from server.sessions import memory_files
 from server.sessions import dev_servers as dev_server_routes
-from server.sessions.fleet_router import host_tailnet_name
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
@@ -2328,7 +2327,8 @@ async def session_dev_servers(
     """``{host, servers}`` (D-18): the dev servers the session started, detected on the
     daemon that owns it (``server/sessions/dev_servers.py``), each with an ``open`` route
     for THIS viewer — ``local-link`` when the viewer's tailnet node is the session's host,
-    ``tailnet-link`` for a server bound to every address on a host with a tailnet name,
+    ``tailnet-link`` (the host's tailnet IP, reported by its daemon) for a server bound
+    to every address,
     else ``vnc`` (``POST …/dev-servers/{port}/open``). The viewer's node comes from
     ``tailscale whois`` of the verified peer only; every URL is built here from detected
     data. Poll every few seconds at most: the daemon caches detection for
@@ -2343,13 +2343,11 @@ async def session_dev_servers(
     servers = [dict(s) for s in found.get("servers") or []]
     if not servers:
         return {"host": host, "servers": []}
-    # A whois subprocess (and a registry read) only when there is something to route.
+    # A whois subprocess only when there is something to route.
     client_node = await asyncio.to_thread(client_node_name, request)
-    tailnet = (await host_tailnet_name(host)
-               if any(s.get("bind") == "all" for s in servers) else None)
     for s in servers:
         s["open"] = dev_server_routes.open_route(s, client_node=client_node, runner=host,
-                                                 tailnet_name=tailnet)
+                                                 tailnet_ip=found.get("tailnetIp"))
     return {"host": host, "servers": servers}
 
 

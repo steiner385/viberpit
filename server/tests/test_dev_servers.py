@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -272,6 +273,53 @@ async def test_two_sessions_sharing_a_cwd_attribute_nothing_by_cwd(host) -> None
     assert ports == [5173, 5180, 8080]
 
 
+@pytest.fixture
+def home_host(tmp_path: Path) -> SimpleNamespace:
+    """Fix round 1: a live session A whose cwd is the home directory, two Codex
+    sessions under it sharing the account's app-server (cwd = the Codex home, also
+    under ~), and a daemon helper root whose cwd sits inside A's tree."""
+    p = FakeProc(tmp_path / "proc")
+    p.add(100, 1, ["/usr/bin/python3", "-m", "server.ipc"], cwd="/srv/viberpit")
+    p.add(200, 100, ["claude"], cwd="/home/u")  # A, no --resume: cwd-matched
+    p.add(201, 200, ["bash", "-c", "npm run dev"], cwd="/home/u")
+    p.add(202, 201, ["node", "vite"], cwd="/home/u/site", sockets=(9001,))
+    p.listen(9001, "127.0.0.1", 5173)
+    p.add(600, 100, ["/usr/bin/codex", "app-server"], cwd="/home/u/.viberpit/codex/acct")
+    p.add(601, 600, ["bash", "-lc", "npm run dev"], cwd="/home/u/w/c1")
+    p.add(602, 601, ["node", "vite"], cwd="/home/u/w/c1", sockets=(9020,))
+    p.listen(9020, "127.0.0.1", 5400)
+    p.add(611, 600, ["bash", "-lc", "pnpm dev"], cwd="/home/u/w/c2")
+    p.add(612, 611, ["node", "next"], cwd="/home/u/w/c2", sockets=(9021,))
+    p.listen(9021, "127.0.0.1", 5401)
+    # A Codex child with no session of its own below ~: A's by its own cwd.
+    p.add(621, 600, ["bash", "-lc", "python -m http.server"], cwd="/home/u/scratch")
+    p.add(622, 621, ["python", "-m", "http.server", "5402"], cwd="/home/u/scratch",
+          sockets=(9022,))
+    p.listen(9022, "127.0.0.1", 5402)
+    # A daemon helper root (cwd inside A's tree, no --resume) whose worker serves
+    # from elsewhere: the helper is nobody's, so its child is not A's.
+    p.add(700, 100, ["copilot2api", "--port", "0"], cwd="/home/u/.cache/viberpit")
+    p.add(701, 700, ["bash", "-c", "worker"], cwd="/opt/proxy")
+    p.add(702, 701, ["worker"], cwd="/opt/proxy", sockets=(9030,))
+    p.listen(9030, "127.0.0.1", 5500)
+    keys = _keys((SID_A, "", "/home/u"), (SID_B, "", "/home/u/w/c1"),
+                 (SID_C, "", "/home/u/w/c2"))
+    probe = _Probe({5173: None, 5400: None, 5401: None, 5402: None, 5500: None})
+    return SimpleNamespace(fs=ds.ProcFs(str(p.root)), keys=keys, probe=probe)
+
+
+@pytest.mark.asyncio
+async def test_a_home_directory_session_never_claims_other_sessions_servers(home_host) -> None:
+    det = ds.DevServerDetector(fs=home_host.fs, daemon_pid=100, probe=home_host.probe)
+    a = await det.detect(SID_A, home_host.keys, bg_commands=_no_bg)
+    assert sorted(s["port"] for s in a) == [5173, 5402]
+    assert {port for _, port in home_host.probe.calls} == {5173, 5402}
+    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg)
+    c = await det.detect(SID_C, home_host.keys, bg_commands=_no_bg)
+    assert [s["port"] for s in b] == [5400]
+    assert [s["port"] for s in c] == [5401]
+
+
 @pytest.mark.asyncio
 async def test_unknown_session_lists_nothing_and_probes_nothing(host) -> None:
     servers = await _detector(host).detect("nope", host.keys, bg_commands=_no_bg)
@@ -347,27 +395,33 @@ async def test_probe_gives_up_on_a_silent_listener_within_the_timeout() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not os.path.exists("/proc/net/tcp") or shutil.which("bash") is None,
+                    reason="needs Linux /proc/net/tcp and bash")
 @pytest.mark.asyncio
 async def test_real_proc_detects_http_server_and_not_a_raw_socket(tmp_path: Path) -> None:
     """No-model contract test: a stand-in session root (a direct child of this process,
     cwd in its worktree) starts ``python -m http.server`` on 127.0.0.1 and a raw
-    listener. The real ``/proc`` scan finds the server and never lists the raw socket."""
+    listener. The real ``/proc`` scan finds the server and never lists the raw socket.
+    Both bind port 0 and report the port they got — no pick-then-rebind race."""
     work = tmp_path / "worktree"
     work.mkdir()
     (work / "index.html").write_text("<title>stand-in</title>")
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
     raw = ("import socket,sys,time\ns=socket.socket();s.bind(('127.0.0.1',0));s.listen()\n"
-           "print(s.getsockname()[1],flush=True)\ntime.sleep(60)\n")
+           "print('RAW', s.getsockname()[1],flush=True)\ntime.sleep(60)\n")
     (work / "raw.py").write_text(raw)
-    script = (f"{sys.executable} -m http.server {port} --bind 127.0.0.1 >/dev/null 2>&1 & "
+    script = (f"{sys.executable} -u -m http.server 0 --bind 127.0.0.1 2>/dev/null & "
               f"{sys.executable} raw.py & wait")
     root = subprocess.Popen(["bash", "-c", script], cwd=work, stdout=subprocess.PIPE,
                             text=True, start_new_session=True)
     try:
         assert root.stdout is not None
-        raw_port = int(await asyncio.wait_for(asyncio.to_thread(root.stdout.readline), 10))
+        port = raw_port = 0
+        while not (port and raw_port):
+            line = await asyncio.wait_for(asyncio.to_thread(root.stdout.readline), 10)
+            if line.startswith("RAW "):
+                raw_port = int(line.split()[1])
+            elif line.startswith("Serving HTTP on"):  # "… port N (http://…/) …"
+                port = int(line.split(" port ")[1].split()[0])
         keys = [SessionKey(SID_A, "", str(work))]
         det = ds.DevServerDetector(daemon_pid=os.getpid())
         servers: list[dict] = []
@@ -398,24 +452,45 @@ _LOOP = {"port": 5173, "address": "127.0.0.1", "bind": "loopback", "pid": 1, "la
 _V6 = {"port": 5180, "address": "::1", "bind": "loopback", "pid": 1, "label": "x"}
 _ALL = {"port": 8080, "address": "127.0.0.1", "bind": "all", "pid": 1, "label": "x",
         "note": ds.EXPOSED_NOTE}
+_LOOP2 = {"port": 5174, "address": "127.0.0.2", "bind": "loopback", "pid": 1, "label": "x"}
+_ALL6 = {"port": 8081, "address": "::1", "bind": "all", "pid": 1, "label": "x",
+         "note": ds.EXPOSED_NOTE}
+_IP = "100.101.102.103"
+_IP6 = "fd7a:115c:a1e0::1"
 
 
 @pytest.mark.parametrize("server,client_node,tailnet,expected", [
-    (_LOOP, "rocky", "rocky.tail.ts.net", {"kind": "local-link", "url": "http://localhost:5173/"}),
-    (_LOOP, "ROCKY", None, {"kind": "local-link", "url": "http://localhost:5173/"}),
+    # local-link: the detected address itself (127.0.0.2 is not "localhost").
+    (_LOOP, "rocky", _IP, {"kind": "local-link", "url": "http://127.0.0.1:5173/"}),
+    (_LOOP, "ROCKY", None, {"kind": "local-link", "url": "http://127.0.0.1:5173/"}),
+    (_LOOP2, "rocky", None, {"kind": "local-link", "url": "http://127.0.0.2:5174/"}),
     (_V6, "rocky", None, {"kind": "local-link", "url": "http://[::1]:5180/"}),
-    (_ALL, "rocky", "rocky.tail.ts.net", {"kind": "local-link", "url": "http://localhost:8080/"}),
-    (_LOOP, "phone", "rocky.tail.ts.net", {"kind": "vnc"}),
-    (_LOOP, None, "rocky.tail.ts.net", {"kind": "vnc"}),
-    (_ALL, "phone", "rocky.tail.ts.net",
-     {"kind": "tailnet-link", "url": "http://rocky.tail.ts.net:8080/", "note": ds.EXPOSED_NOTE}),
+    (_ALL, "rocky", _IP, {"kind": "local-link", "url": "http://127.0.0.1:8080/"}),
+    (_LOOP, "phone", _IP, {"kind": "vnc"}),
+    (_LOOP, None, _IP, {"kind": "vnc"}),
+    # tailnet-link: the host's tailnet IP (Vite accepts IP literals as Host).
+    (_ALL, "phone", _IP,
+     {"kind": "tailnet-link", "url": f"http://{_IP}:8080/", "note": ds.EXPOSED_NOTE}),
+    (_ALL6, None, _IP6,
+     {"kind": "tailnet-link", "url": f"http://[{_IP6}]:8081/", "note": ds.EXPOSED_NOTE}),
+    # No known tailnet IP, or not an IP at all (never a name): vnc.
     (_ALL, "phone", None, {"kind": "vnc"}),
-    (_ALL, None, "100.64.0.9",
-     {"kind": "tailnet-link", "url": "http://100.64.0.9:8080/", "note": ds.EXPOSED_NOTE}),
+    (_ALL, "phone", "rocky.tail0dd570.ts.net", {"kind": "vnc"}),
 ])
 def test_open_route(server, client_node, tailnet, expected) -> None:
     assert ds.open_route(server, client_node=client_node, runner="rocky",
-                         tailnet_name=tailnet) == expected
+                         tailnet_ip=tailnet) == expected
+
+
+@pytest.mark.parametrize("own,expected", [
+    (["fd7a:115c:a1e0::1", "100.101.102.103"], "100.101.102.103"),  # IPv4 preferred
+    (["fd7a:115c:a1e0::1"], "fd7a:115c:a1e0::1"),
+    ([], None),
+])
+def test_self_tailnet_ip_reads_the_hosts_own_tailscale_status(own, expected) -> None:
+    with patch("server.sessions.dev_servers._self_tailscale_ips",
+               return_value=frozenset(ipaddress.ip_address(a) for a in own)):
+        assert ds.self_tailnet_ip() == expected
 
 
 def test_server_url_brackets_ipv6() -> None:
@@ -441,7 +516,7 @@ class _FakeX11:
         self.started.append(sid)
         if not self.start_ok:
             return None
-        self._specs.setdefault(sid, object())
+        self._specs.setdefault(sid, SimpleNamespace(browsers=[]))
         return self._specs[sid]
 
     async def stop_display(self, sid):
@@ -451,6 +526,15 @@ class _FakeX11:
     async def launch_browser(self, sid, url):
         self.launched.append((sid, url))
         return self.launch_ok
+
+    def prune_browsers(self, sid):
+        pass
+
+    async def stop_preview(self, sid):
+        self.previews_stopped = getattr(self, "previews_stopped", 0) + 1
+
+    def track_preview(self, sid, *, release_display):
+        self.tracked = getattr(self, "tracked", []) + [(sid, release_display)]
 
 
 def _rec(sid: str, cwd: str, *, display_mode: str = DISPLAY_NATIVE) -> SessionRecord:
@@ -480,12 +564,43 @@ def orch():
 
 @pytest.mark.asyncio
 async def test_orchestrator_dev_servers_names_this_host(orch) -> None:
-    with patch("server.sessions.orchestrator.self_host_name", return_value="rocky"):
+    with patch("server.sessions.orchestrator.self_host_name", return_value="rocky"), \
+            patch("server.sessions.dev_servers.self_tailnet_ip") as ip:
         res = await orch.o.dev_servers(SID_A)
-    assert res == {"host": "rocky", "servers": orch.found}
+    # No bind-all server: no tailnet IP is looked up.
+    assert res == {"host": "rocky", "tailnetIp": None, "servers": orch.found}
+    ip.assert_not_called()
     assert orch.calls == [(SID_A, [SID_A], False)]
     with pytest.raises(KeyError):
         await orch.o.dev_servers("nope")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_reports_its_own_tailnet_ip_for_an_exposed_server(orch) -> None:
+    """Item 6: the daemon answers with ITS host's tailnet IP — so a single-host dobby
+    whose daemon is a unix socket (no fleet endpoint naming it) still offers a
+    tailnet-link."""
+    orch.found[:] = [dict(_ALL)]
+    with patch("server.sessions.dev_servers._self_tailscale_ips",
+               return_value=frozenset({ipaddress.ip_address(_IP)})):
+        res = await orch.o.dev_servers(SID_A)
+    assert res["tailnetIp"] == _IP
+
+
+@pytest.mark.asyncio
+async def test_uds_daemon_reports_its_tailnet_ip(orch) -> None:
+    orch.found[:] = [dict(_ALL)]
+    app = create_daemon_app()
+    register_orchestrator_rpc(app, orch.o)
+    with patch("server.sessions.dev_servers._self_tailscale_ips",
+               return_value=frozenset({ipaddress.ip_address(_IP)})):
+        async with serve_daemon_uds(app) as sock:
+            client = DaemonClient(sock)
+            try:
+                res = await RemoteOrchestrator(client).dev_servers(SID_A)
+            finally:
+                await client.aclose()
+    assert res["tailnetIp"] == _IP
 
 
 @pytest.mark.asyncio
@@ -571,6 +686,148 @@ async def test_open_on_a_virtual_session_reuses_its_display(orch) -> None:
     await orch.o.open_dev_server(SID_A, port=5173)
     assert x11.launched == [(SID_A, "http://127.0.0.1:5173/")]
     assert len(x11._specs) == 1
+
+
+# ---------------------------------------------------------------- preview Chromium lifecycle
+
+
+class _Browser:
+    """An asyncio-subprocess stand-in whose ``wait`` blocks until it exits."""
+
+    _next_pid = 10_000_000  # above any pid_max: never a real process
+
+    def __init__(self) -> None:
+        _Browser._next_pid += 1
+        self.pid = _Browser._next_pid
+        self.returncode: int | None = None
+        self._exited = asyncio.Event()
+
+    def exit(self, code: int = 0) -> None:
+        self.returncode = code
+        self._exited.set()
+
+    def terminate(self) -> None:
+        self.exit(-15)
+
+    def kill(self) -> None:
+        self.exit(-9)
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+
+@pytest.fixture
+def real_x11(orch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The orchestrator over a real X11Manager (fake spawn): 6 browsers per session.
+    A process-tree kill ends the fake browser with that pid; nothing is signalled."""
+    from server.sessions import x11manager
+    from server.sessions.x11manager import DisplayAllocator, X11Manager
+    browsers: list[_Browser] = []
+
+    def kill_tree(pid, **_kw):
+        for b in browsers:
+            if b.pid == pid and b.returncode is None:
+                b.exit(-15)
+        return True
+    monkeypatch.setattr(x11manager, "terminate_process_tree", kill_tree)
+
+    async def spawn(*argv, **kw):
+        proc = _Browser()
+        if argv[0] == "xauth":
+            proc.exit()
+        if argv[0] == "chromium":
+            browsers.append(proc)
+        return proc
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24", max_browsers=6,
+                     spawn=spawn, ready_check=lambda d, xa: True,
+                     vnc_ready_check=lambda p: True, run_dir=str(tmp_path),
+                     vnc_idle_timeout_s=0.05)
+    orch.o._x11 = mgr
+    return SimpleNamespace(o=orch.o, mgr=mgr, browsers=browsers)
+
+
+def _live(browsers: list[_Browser]) -> list[_Browser]:
+    return [b for b in browsers if b.returncode is None]
+
+
+@pytest.mark.asyncio
+async def test_ten_opens_keep_one_live_preview_chromium(real_x11) -> None:
+    real_x11.o._records[SID_A].display_mode = DISPLAY_VIRTUAL
+    await real_x11.mgr.start_display(SID_A)
+    for _ in range(10):
+        res = await real_x11.o.open_dev_server(SID_A, port=5173)
+        assert res["ok"] is True
+    assert len(real_x11.browsers) == 10
+    assert len(_live(real_x11.browsers)) == 1
+    spec = real_x11.mgr.display_for(SID_A)
+    assert spec is not None and spec.browsers == _live(real_x11.browsers)
+    # A virtual session's display is the session's own: it stays.
+    real_x11.browsers[-1].exit()
+    await asyncio.sleep(0.2)
+    assert real_x11.mgr.display_for(SID_A) is not None
+
+
+@pytest.mark.asyncio
+async def test_the_cap_counts_live_browsers_only(real_x11) -> None:
+    """Six windows the user opened and closed again never block a preview."""
+    real_x11.o._records[SID_A].display_mode = DISPLAY_VIRTUAL
+    await real_x11.mgr.start_display(SID_A)
+    for _ in range(6):  # "Open a browser" up to the cap, each window closed after
+        assert (await real_x11.o.open_browser(SID_A, None))["ok"] is True
+        real_x11.browsers[-1].exit()
+    assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    assert len(_live(real_x11.browsers)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_native_sessions_preview_display_is_released_when_its_browser_exits(
+        real_x11) -> None:
+    for _ in range(3):
+        assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    assert len(_live(real_x11.browsers)) == 1
+    assert real_x11.mgr.display_for(SID_A) is not None
+    real_x11.browsers[-1].exit()  # the user closed the preview window
+    for _ in range(50):
+        if real_x11.mgr.display_for(SID_A) is None:
+            break
+        await asyncio.sleep(0.01)
+    assert real_x11.mgr.display_for(SID_A) is None
+    # Xvfb gone and the pool lease back: both displays allocatable again.
+    assert real_x11.mgr.metrics()["displays_allocated"] == 0
+    assert real_x11.o._records[SID_A].display_mode == DISPLAY_NATIVE
+
+
+@pytest.mark.asyncio
+async def test_a_native_sessions_idle_preview_display_is_released(real_x11) -> None:
+    """Nobody attached a viewer within the VNC idle bound: the preview display goes,
+    the browser with it."""
+    assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    for _ in range(100):
+        if real_x11.mgr.display_for(SID_A) is None:
+            break
+        await asyncio.sleep(0.01)
+    assert real_x11.mgr.display_for(SID_A) is None
+    for _ in range(100):  # stop_display forgets the spec first, then kills
+        if not _live(real_x11.browsers):
+            break
+        await asyncio.sleep(0.01)
+    assert _live(real_x11.browsers) == []
+
+
+@pytest.mark.asyncio
+async def test_a_watched_native_preview_display_stays_while_viewed(real_x11) -> None:
+    assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    await real_x11.mgr.attach(SID_A)
+    await asyncio.sleep(0.2)  # several idle bounds
+    assert real_x11.mgr.display_for(SID_A) is not None
+    real_x11.mgr.detach(SID_A)
+    for _ in range(100):
+        if real_x11.mgr.display_for(SID_A) is None:
+            break
+        await asyncio.sleep(0.01)
+    assert real_x11.mgr.display_for(SID_A) is None
 
 
 # ---------------------------------------------------------------- RPC / remote / fleet (RF 4)
@@ -690,49 +947,47 @@ def _route_client(*, host_name: str = "rocky", error: Exception | None = None,
         fake.dev_calls.append(("dev_servers", sid))
         if error is not None:
             raise error
-        return {"host": host_name, "servers": [dict(s) for s in _DETECTED]}
+        return {"host": host_name, "tailnetIp": fake.tailnet_ip,
+                "servers": [dict(s) for s in _DETECTED]}
 
     async def open_dev_server(sid, *, port):
         fake.dev_calls.append(("open_dev_server", sid, port))
         if open_error is not None:
             raise open_error
         return {"ok": True, "port": port, "url": f"http://127.0.0.1:{port}/"}
+    fake.tailnet_ip = _IP
     fake.dev_servers = dev_servers
     fake.open_dev_server = open_dev_server
     return client, fake
 
 
 _NODE = "server.api.sessions.client_node_name"
-_TAILNET = "server.api.sessions.host_tailnet_name"
-
-
 @pytest.mark.parametrize("viewer,tailnet,kinds", [
-    ("rocky", "rocky.tail.ts.net", ["local-link", "local-link"]),
-    ("dobby", "rocky.tail.ts.net", ["vnc", "tailnet-link"]),
+    ("rocky", _IP, ["local-link", "local-link"]),
+    ("dobby", _IP, ["vnc", "tailnet-link"]),
     ("phone", None, ["vnc", "vnc"]),
-    (None, "rocky.tail.ts.net", ["vnc", "tailnet-link"]),
+    (None, _IP, ["vnc", "tailnet-link"]),
 ])
 def test_get_routes_open_per_viewer(viewer, tailnet, kinds) -> None:
     client, fake = _route_client()
-
-    async def tailnet_name(name):
-        assert name == "rocky"
-        return tailnet
-    with patch.dict(os.environ, _ENV), patch(_NODE, return_value=viewer), \
-            patch(_TAILNET, side_effect=tailnet_name), client:
+    fake.tailnet_ip = tailnet
+    with patch.dict(os.environ, _ENV), patch(_NODE, return_value=viewer), client:
         r = client.get(f"/api/sessions/{SID}/dev-servers", headers=_H)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["host"] == "rocky"
     assert [s["open"]["kind"] for s in body["servers"]] == kinds
+    if "tailnet-link" in kinds:
+        assert body["servers"][1]["open"]["url"] == f"http://{_IP}:8080/"
     assert fake.dev_calls == [("dev_servers", SID)]
 
 
-def test_get_from_the_session_host_links_to_localhost() -> None:
+def test_get_from_the_session_host_links_to_the_detected_address() -> None:
     client, _ = _route_client()
     with patch.dict(os.environ, _ENV), patch(_NODE, return_value="rocky"), client:
         body = client.get(f"/api/sessions/{SID}/dev-servers", headers=_H).json()
-    assert body["servers"][0]["open"] == {"kind": "local-link", "url": "http://localhost:5173/"}
+    assert body["servers"][0]["open"] == {"kind": "local-link", "url": "http://127.0.0.1:5173/"}
+    assert "tailnetIp" not in body  # the daemon's IP is used for routes, never echoed
 
 
 def test_locality_cannot_be_spoofed_by_headers_or_params(monkeypatch) -> None:
@@ -748,8 +1003,12 @@ def test_locality_cannot_be_spoofed_by_headers_or_params(monkeypatch) -> None:
             return SimpleNamespace(returncode=0, stdout='{"Node": {"ComputedName": "rocky"}}')
         return SimpleNamespace(returncode=1, stdout="")
     monkeypatch.setattr(identity.subprocess, "run", fake_run)
-    client, _ = _route_client()
-    with patch.dict(os.environ, _ENV), patch(_TAILNET, return_value=None), client:
+    client, fake = _route_client()
+    fake.tailnet_ip = None
+    # The forwarding hop is a trusted proxy, so the request authenticates (200) and the
+    # locality assertion below always runs.
+    env = {**_ENV, "VIBERPIT_TRUSTED_PROXY_IPS": claimed}
+    with patch.dict(os.environ, env), client:
         r = client.get(f"/api/sessions/{SID}/dev-servers", params={"node": "rocky"},
                        headers={**_H, "X-Viberpit-Client-Node": "rocky", "Host": "rocky"})
         # X-Forwarded-For is the client's own choice (only tailscaled may set it), so
@@ -760,8 +1019,8 @@ def test_locality_cannot_be_spoofed_by_headers_or_params(monkeypatch) -> None:
                                headers={**_H, "X-Forwarded-For": claimed})
     assert r.status_code == 200
     assert [s["open"]["kind"] for s in r.json()["servers"]] == ["vnc", "vnc"]
-    assert forwarded.status_code == 401 or all(
-        s["open"]["kind"] != "local-link" for s in forwarded.json()["servers"])
+    assert forwarded.status_code == 200, forwarded.text
+    assert [s["open"]["kind"] for s in forwarded.json()["servers"]] == ["vnc", "vnc"]
 
 
 def test_get_with_no_servers_skips_the_whois() -> None:
@@ -844,22 +1103,3 @@ def test_post_open_rejects_a_non_port_path() -> None:
                for p in ("abc", "80", "70000", "-1")]
     assert [r.status_code for r in bad] == [422, 422, 422, 422]
     assert fake.dev_calls == []
-
-
-# ---------------------------------------------------------------- the tailnet name
-
-
-@pytest.mark.asyncio
-async def test_host_tailnet_name_comes_from_the_fleet_registry(isolated_db) -> None:
-    from server.db import db_session
-    from server.db.models import Host
-    from server.sessions.fleet_router import host_tailnet_name
-    async with db_session() as db:
-        db.add(Host(name="rocky", endpoint="https://rocky.tail0dd570.ts.net:9443"))
-        db.add(Host(name="dobby", endpoint="unix:///run/viberpit/daemon.sock"))
-        db.add(Host(name="loop", endpoint="https://127.0.0.1:9443"))
-    assert await host_tailnet_name("rocky") == "rocky.tail0dd570.ts.net"
-    assert await host_tailnet_name("ROCKY") == "rocky.tail0dd570.ts.net"
-    assert await host_tailnet_name("dobby") is None
-    assert await host_tailnet_name("loop") is None
-    assert await host_tailnet_name("nowhere") is None

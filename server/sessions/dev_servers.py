@@ -11,10 +11,11 @@ and the session match are ``memory_watch``'s (``scan_proc``, ``_subtree``,
    every address (``0.0.0.0`` / ``::``). A bind to one specific non-loopback address is
    not offered.
 2. Owned by a process attributed to the session:
-   - **subtree**: it descends from a direct child of the daemon (a *root*) that
-     ``match_session`` names as this session — or names nobody (the Codex app-server is
-     one per account, shared by every thread), in which case the process's OWN cwd must
-     match the session. A root itself (the CLI, x11vnc, a proxy) is never a dev server,
+   - **subtree**: it descends from a direct child of the daemon (a *root*) that is this
+     session by ``--resume`` id or an EXACT cwd (:func:`root_session_of`) — or that is
+     nobody's (the Codex app-server is one per account, shared by every thread; a
+     daemon helper), in which case the process's OWN cwd must match the session. A
+     process whose own cwd matches ANOTHER session is that session's, whatever its root. A root itself (the CLI, x11vnc, a proxy) is never a dev server,
      and neither is anything below a non-shell direct child of a root whose command line
      names MCP (the session's MCP servers).
    - **escaped**: outside every root (``setsid``/``nohup`` reparent to pid 1), it must be
@@ -48,6 +49,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from server.auth.identity import _self_tailscale_ips
 from server.sessions.adopt import ProcInfo, _read_proc
 from server.sessions.display_policy import (PREVIEW_LOCAL, PREVIEW_TAILNET,
                                             resolve_preview_route)
@@ -234,6 +236,27 @@ def session_of(info: ProcInfo | None, sessions: list[SessionKey]) -> str | None:
     return sid
 
 
+def root_session_of(info: ProcInfo | None, sessions: list[SessionKey]) -> str | None:
+    """The session a daemon child (a *root*) is, trusted only on strong evidence: its
+    ``--resume`` id, or a cwd EXACTLY one live session's. Never ``match_session``'s
+    prefix rule alone: a session at ``~`` would otherwise own every root below it — the
+    per-account Codex app-server (cwd = the Codex home) and the daemon's helpers — and
+    with them every other session's dev servers."""
+    if info is None:
+        return None
+    resume = _resume_arg(info.cmdline)
+    if resume:
+        hits = [s.session_id for s in sessions if s.engine_session_id == resume]
+        if len(hits) == 1:
+            return hits[0]
+    if info.cwd:
+        cwd = info.cwd.rstrip("/") or "/"
+        hits = [s.session_id for s in sessions if s.cwd and (s.cwd.rstrip("/") or "/") == cwd]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
 def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
                     daemon_pid: int) -> list[Candidate]:
     """Every listener attributed to ``session_id`` by the module rules 1–3. Reads only;
@@ -264,6 +287,13 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
             owners[pid] = session_of(info(pid), sessions)
         return owners[pid]
 
+    root_owners: dict[int, str | None] = {}
+
+    def root_owner_of(pid: int) -> str | None:
+        if pid not in root_owners:
+            root_owners[pid] = root_session_of(info(pid), sessions)
+        return root_owners[pid]
+
     daemon_cgroup = fs.cgroup(daemon_pid)
     # pid -> the tool shells' command lines above it (subtree), or () (escaped).
     eligible: dict[int, tuple[str, ...]] = {}
@@ -282,9 +312,12 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
             continue
         if pid == root:
             continue  # the agent itself, or the daemon's own helper
-        root_owner = owner(root)
+        root_owner = root_owner_of(root)
         if root_owner is not None and root_owner != session_id:
             continue
+        own = owner(pid)
+        if own is not None and own != session_id:
+            continue  # another session's, whatever tree it sits in
         chain = [pid]
         while chain[-1] != root:
             parent = by_pid.get(chain[-1])
@@ -299,7 +332,7 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
         if _exe(branch_info, by_pid.get(branch)) not in _SHELLS and branch_info is not None \
                 and _MCP.search(" ".join(branch_info.cmdline)):
             continue  # one of the session's MCP servers
-        if root_owner is None and owner(pid) != session_id:
+        if root_owner is None and own != session_id:
             continue  # a shared root (Codex app-server): the process's own cwd decides
         shells = []
         for p in chain[1:]:
@@ -402,19 +435,39 @@ def server_url(server: dict) -> str:
     return f"http://{_host_literal(server['address'])}:{int(server['port'])}/"
 
 
+def self_tailnet_ip() -> str | None:
+    """This host's own tailnet address (IPv4 preferred), from the ``tailscale status``
+    read identity already makes and caches — or None off-tailnet. Reported by the
+    daemon that owns the session, so every host (a unix-socket dobby included) names
+    its own. Blocking (a cached subprocess): call it off the event loop."""
+    ips = sorted(_self_tailscale_ips(), key=lambda a: (a.version, int(a)))
+    return str(ips[0]) if ips else None
+
+
+def _ip_or_none(value: object) -> str | None:
+    try:
+        return str(ipaddress.ip_address(str(value))) if value else None
+    except ValueError:
+        return None
+
+
 def open_route(server: dict, *, client_node: str | None, runner: str,
-               tailnet_name: str | None) -> dict:
-    """The ``open`` object for one entry, for this viewer (``display_policy`` decides)."""
+               tailnet_ip: str | None) -> dict:
+    """The ``open`` object for one entry, for this viewer (``display_policy`` decides).
+
+    ``local-link`` is the detected address itself (``127.0.0.2`` is not ``localhost``).
+    ``tailnet-link`` is the host's tailnet IP, never its MagicDNS name: Vite >= 6
+    refuses an unlisted ``Host`` name but accepts an IP literal. No valid IP → ``vnc``."""
+    ip = _ip_or_none(tailnet_ip)
     kind = resolve_preview_route(client_node=client_node, runner=runner,
                                  exposed=server.get("bind") == "all",
-                                 tailnet_reachable=bool(tailnet_name))
+                                 tailnet_reachable=ip is not None)
     port = int(server["port"])
     if kind == PREVIEW_LOCAL:
-        host = "[::1]" if ":" in server["address"] else "localhost"
-        return {"kind": kind, "url": f"http://{host}:{port}/"}
+        return {"kind": kind, "url": server_url(server)}
     if kind == PREVIEW_TAILNET:
-        assert tailnet_name is not None
-        return {"kind": kind, "url": f"http://{_host_literal(tailnet_name)}:{port}/",
+        assert ip is not None
+        return {"kind": kind, "url": f"http://{_host_literal(ip)}:{port}/",
                 "note": EXPOSED_NOTE}
     return {"kind": kind}
 
