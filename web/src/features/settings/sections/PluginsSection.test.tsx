@@ -177,6 +177,36 @@ describe('PluginsSection — installed plugins', () => {
     expect(await within(dialog).findByText(RESTART)).toBeTruthy()
   })
 
+  it('the Update card never shows the installed version or its contents as the incoming ones', async () => {
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: 'Update alpha' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Update plugin' })
+    expect(within(dialog).getByText('Contents unknown — inspect the marketplace before installing')).toBeTruthy()
+    expect(within(dialog).queryByText(/1 commands/)).toBeNull()
+    expect(within(dialog).queryByText(/1\.0\.0/)).toBeNull()
+  })
+
+  it('zero hosts answering is not done: says nothing changed and keeps Update offered', async () => {
+    vi.mocked(api.post).mockResolvedValue({ op: 'update', ok: false, hosts: [] })
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: 'Update alpha' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Update plugin' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Update' }))
+    expect(await within(dialog).findByText(/No host answered — nothing was changed/)).toBeTruthy()
+    expect(within(dialog).queryByText(/done on/)).toBeNull()
+    expect(within(dialog).queryByText(RESTART)).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Update' })).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeTruthy()
+  })
+
+  it('Uninstall with zero hosts answering reports nothing changed', async () => {
+    vi.mocked(api.del).mockResolvedValue({ op: 'uninstall', ok: false, hosts: [] })
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: 'Uninstall alpha' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Uninstall' }))
+    expect(await screen.findByText(/Uninstall alpha: No host answered — nothing was changed/)).toBeTruthy()
+  })
+
   it('Uninstall asks first, then DELETEs and lists each host', async () => {
     vi.mocked(api.del).mockResolvedValue({ op: 'uninstall', ok: true, hosts: hosts(['dobby', 'ok'], ['rocky', 'ok']) })
     renderSection()

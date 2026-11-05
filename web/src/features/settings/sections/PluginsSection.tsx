@@ -15,7 +15,7 @@ import { ConsentDialog, type ConsentTarget } from './plugins/ConsentDialog'
 import { HostOutcomes, type OpRecord } from './plugins/HostOutcomes'
 import { MarketplacesPanel } from './plugins/MarketplacesPanel'
 import { useOpRecord } from './plugins/useOpRecord'
-import { INSTALL_OFF_COPY, clip, marketplaceSourceText, refusalMessage, runnableSummary } from './plugins/pluginText'
+import { INSTALL_OFF_COPY, clip, marketplaceSourceText, refusalMessage } from './plugins/pluginText'
 
 export default function PluginsSection() {
   const { data, isLoading } = useLibraryPlugins()
@@ -78,10 +78,12 @@ function updateTarget(p: LibraryPlugin, marketplaces: LibraryMarketplace[]): Con
     mode: 'update',
     pluginId: p.id,
     name: p.name,
-    version: p.version,
+    // The incoming version's contents and number are unknown here: the installed
+    // plugin's would misstate what the update brings (CONTENTS_UNKNOWN shows instead).
+    version: null,
     marketplace: p.marketplace,
     source: marketplaceSourceText(marketplaces.find((m) => m.name === p.marketplace)),
-    runs: runnableSummary(p.components),
+    runs: null,
   }
 }
 

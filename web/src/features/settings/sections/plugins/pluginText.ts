@@ -11,6 +11,8 @@ export const CONSENT_COPY =
 /** Shown after an install or update succeeds — verbatim. */
 export const RESTART_COPY = 'Running sessions pick this up when they restart.'
 export const CONTENTS_UNKNOWN = 'Contents unknown — inspect the marketplace before installing'
+/** A fan-out no host answered: never success. */
+export const NO_HOSTS_COPY = 'No host answered — nothing was changed'
 export const SOURCE_CHANGED_COPY = 'The source changed since this page loaded — review it again'
 export const INSTALL_OFF_COPY =
   'Installing, updating and adding marketplaces is turned off on this server. Enable, disable, uninstall and remove still work.'

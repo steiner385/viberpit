@@ -15,8 +15,8 @@ Binding CLI facts (docs/superpowers/specs/2026-11-04-d16-verification.md §1, re
   disagrees is a forgery, and any line naming a command gate refuses the run.
 * A no-op exits 1 with a ``failureCode`` (``already_in_goal_state``, ``not_installed``,
   ``not_configured``), so outcomes key on ``failureCode``, never on the exit code.
-* ``installPath`` is absolute, so the CLI runs with ``CLAUDE_CONFIG_DIR=shared_base()``:
-  the registry then names ``~/.claude/plugins/cache/…`` and survives account removal.
+* ``installPath`` is absolute, so the CLI's config dir is ``shared_base()`` (set through
+  ``account_auth.helper_env``, the one env builder): the registry then names ``~/.claude/plugins/cache/…`` and survives account removal.
 
 Never passed: ``-y``, ``--accept-command`` (consent to a marketplace command),
 ``--sparse``, ``--claudeai``, ``--marketplace`` (adds a marketplace at install time),
@@ -102,12 +102,22 @@ def _cwd() -> str:
     return helper_cwd()
 
 
+def _config_dir_env() -> dict[str, str]:
+    """The config-dir pin, from the canonical env builder (#751). ``writes_back``: the CLI
+    must mutate the shared base itself, not a scratch copy. ``account=""``: the shared base
+    is no account's dir, so skip the reverse lookup. Only the config-dir key is kept — the
+    rest of ``helper_env`` is the calling process's env, which this run must not inherit."""
+    from server.sessions.account_auth import helper_env
+    key = "CLAUDE_CONFIG_DIR"
+    return {key: helper_env(str(paths.shared_base()), "", writes_back=True)[key]}
+
+
 def _env(nonce: str) -> dict[str, str]:
     env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+    env.update(_config_dir_env())
     env.update({
         "HOME": str(Path.home()),
-        "CLAUDE_CONFIG_DIR": str(paths.shared_base()),
         "CLAUDE_CODE_RESULT_NONCE": nonce,
         "GIT_TERMINAL_PROMPT": "0",
         "NO_COLOR": "1",

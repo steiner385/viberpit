@@ -26,7 +26,8 @@ export function ConsentDialog({ target, onClose }: { target: ConsentTarget; onCl
   const update = useUpdatePlugin()
   const op = useOpRecord(target.mode === 'install' ? install : update)
   const verb = target.mode === 'install' ? 'Install' : 'Update'
-  const done = op.record !== null
+  // Zero hosts answering is not done: nothing changed, so the action stays offered.
+  const done = op.record !== null && (op.record.result.hosts ?? []).length > 0
   return (
     <Dialog open onClose={onClose} title={`${verb} plugin`} size="lg">
       <div className="space-y-3 text-sm min-w-0">

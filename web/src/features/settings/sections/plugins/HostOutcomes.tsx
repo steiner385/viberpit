@@ -4,7 +4,7 @@
 import { Button } from '@/ui/Button'
 import { Badge, type Tone } from '@/ui/Badge'
 import type { PluginHostOutcome, PluginOpResult } from '@/api/types'
-import { clip } from './pluginText'
+import { NO_HOSTS_COPY, clip } from './pluginText'
 
 const LABEL: Record<PluginHostOutcome['outcome'], { text: string; tone: Tone }> = {
   ok: { text: 'ok', tone: 'success' },
@@ -29,7 +29,23 @@ export function HostOutcomes({ record, retrying = false, onDismiss }: {
   const { result } = record
   const hosts = result.hosts ?? []
   const failed = hosts.filter((h) => h.outcome === 'failed').length
-  if (hosts.length === 0) return null
+  if (hosts.length === 0) {
+    // Zero hosts is never success: nothing ran anywhere.
+    return (
+      <div aria-live="polite" aria-label="Host results" role="group"
+        className="mt-2 rounded-md border border-danger p-2 text-xs min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="min-w-0 break-words text-danger">{record.label}: {NO_HOSTS_COPY}</span>
+          {record.retry && (
+            <Button size="sm" variant="secondary" loading={retrying} onClick={record.retry}>Retry</Button>
+          )}
+          {onDismiss && (
+            <Button size="sm" variant="ghost" onClick={onDismiss} aria-label="Dismiss host results">Dismiss</Button>
+          )}
+        </div>
+      </div>
+    )
+  }
   const ok = result.ok && failed === 0
   const headline = ok
     ? `${record.label}: done on ${hosts.length === 1 ? 'the host' : `all ${hosts.length} hosts`}.`

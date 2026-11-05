@@ -197,14 +197,18 @@ def _valid_marketplace_or_400(name: str) -> None:
 
 
 async def _fan_out(request: Request, op: str, args: dict) -> dict:
-    """Snapshot, then run *op* on every host. ``ok`` is true only when every host
-    reported ``ok`` or ``noop``; a partial failure is reported, never rolled back."""
+    """Snapshot, then run *op* on every host. ``ok`` is true only when at least one host
+    answered and every host reported ``ok`` or ``noop``; a partial failure is reported,
+    never rolled back, and zero hosts is never success (nothing was changed)."""
     await asyncio.to_thread(snapshot_before_mutation)  # #604 pre-mutation safety net
     # Capture lazily — FleetOrchestrator replaces app.state.sessions after router build.
     orch = request.app.state.sessions
     hosts = await orch.plugin_op_everywhere(op, args)
-    return {"op": op, "ok": all(h.get("outcome") in ("ok", "noop") for h in hosts),
-            "hosts": hosts}
+    return {"op": op, "hosts": hosts, "ok": _all_ok(hosts)}
+
+
+def _all_ok(hosts: list[dict]) -> bool:
+    return bool(hosts) and all(h.get("outcome") in ("ok", "noop") for h in hosts)
 
 
 async def _check_install(db, plugin_id: str) -> dict:
@@ -314,6 +318,17 @@ async def add_marketplace(body: MarketplaceAddBody, request: Request,
         raise _policy_http(plugin_policy.PolicyRefusal(
             plugin_policy.MARKETPLACE_SOURCE_REFUSED, "Unrecognized source.", 400), source)
     out = await _fan_out(request, "marketplace_add", {"source": source})
+    for host in out["hosts"]:  # the name each host's CLI actually recorded
+        name = host.get("marketplace")
+        if host.get("outcome") not in ("ok", "noop") or not isinstance(name, str):
+            continue
+        try:
+            plugin_policy.check_marketplace_name(name, normalized)
+        except plugin_policy.PolicyRefusal as exc:
+            log.info("library.plugin_refused code=%s host=%s name=%r", exc.code, host.get("host"), name)
+            host.update(outcome="failed", failureCode=exc.code,
+                        message=f"{exc.message} Added on this host, but not confirmed.")
+    out["ok"] = _all_ok(out["hosts"])
     names = sorted({h["marketplace"] for h in out["hosts"]
                     if h.get("outcome") in ("ok", "noop") and isinstance(h.get("marketplace"), str)
                     and plugin_policy.valid_marketplace_name(h["marketplace"])})
@@ -348,6 +363,10 @@ async def confirm_marketplace(name: str, body: MarketplaceConfirmBody, request: 
             f"Marketplace {name!r} no longer points at the source shown — source changed, "
             "review it again.", reason=plugin_policy.REASON_SOURCE_CHANGED), name)
     await _vetted_source(plugin_policy.add_form(current))
+    try:  # the CONFIGURED name, not just the one the repo would get
+        plugin_policy.check_marketplace_name(name, current)
+    except plugin_policy.PolicyRefusal as exc:
+        raise _policy_http(exc, name) from None
     await curated.confirm(db, name, current)
     await record_audit(db=db, type="library_marketplace_confirmed", identity=identity,
                        detail={"name": name, "normalizedSource": current}, via=via)

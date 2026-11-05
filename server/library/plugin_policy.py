@@ -114,6 +114,8 @@ def valid_marketplace_name(name: object) -> bool:
 # --------------------------------------------------------------------------- normalizer
 
 def _normalize_url(url: str) -> str | None:
+    if not url.isascii():  # before any case-fold: see normalize_source
+        return None
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password \
             or parts.query or parts.fragment:
@@ -140,10 +142,15 @@ def normalize_source(source: object) -> str | None:
       trailing ``/`` or ``.git``;
     * ``{"source": "directory", "path": P}`` → ``directory:P`` (exists so a host-side check
       can name it; the add and confirm policies refuse it);
-    * a ``ref``/``path``/``sparsePaths`` pin, an ``http``/ssh/file URL, or any other source
-      type → ``None``, which never equals a recorded source (fail closed).
+    * a ``ref``/``path``/``sparsePaths`` pin, an ``http``/ssh/file URL, any non-ASCII
+      string, or any other source type → ``None``, which never equals a recorded source
+      (fail closed). Non-ASCII is refused BEFORE lower-casing: ``str.lower`` folds some
+      non-ASCII letters into ASCII (KELVIN SIGN ``\u212a`` → ``k``), so the owner would
+      approve one string while the CLI fetches another.
     """
     if isinstance(source, str):
+        if not source.isascii():
+            return None
         s = source.strip()
         if _GITHUB_RE.fullmatch(s):
             return f"github:{s}".lower()
@@ -158,7 +165,8 @@ def normalize_source(source: object) -> str | None:
         return None
     if kind == "github":
         repo = source.get("repo")
-        return f"github:{repo}".lower() if isinstance(repo, str) and _GITHUB_RE.fullmatch(repo) else None
+        return f"github:{repo}".lower() if isinstance(repo, str) and repo.isascii() \
+            and _GITHUB_RE.fullmatch(repo) else None
     if kind in ("git", "url"):
         url = source.get("url")
         return _normalize_url(url) if isinstance(url, str) else None
@@ -243,11 +251,33 @@ def _would_be_name(repo: str) -> str:
 
 
 def _guard_reserved(owner: str, repo: str) -> None:
-    name = _would_be_name(repo)
-    if (name in RESERVED_MARKETPLACE_NAMES or _IMPERSONATION_RE.search(name)) \
+    _guard_name(_would_be_name(repo), owner)
+
+
+def _guard_name(name: str, owner: str) -> None:
+    lowered = name.lower()
+    if (lowered in RESERVED_MARKETPLACE_NAMES or _IMPERSONATION_RE.search(lowered)) \
             and owner.lower() != _OFFICIAL_OWNER:
         raise PolicyRefusal(MARKETPLACE_NAME_RESERVED,
                             f"{name!r} is reserved for Anthropic's own marketplaces.", 400)
+
+
+def _source_owner(normalized: str) -> str:
+    """The GitHub owner of a normalized source, else ``""`` (only GitHub can be
+    ``anthropics``)."""
+    if normalized.startswith("github:"):
+        return normalized[len("github:"):].split("/", 1)[0]
+    segments = normalized[len("https:"):].split("/") if normalized.startswith("https:") else []
+    return segments[1] if len(segments) >= 3 and segments[0] == "github.com" else ""
+
+
+def check_marketplace_name(name: str, normalized: str | None) -> None:
+    """Refuse to curate a marketplace CONFIGURED under a reserved or official-looking
+    name unless its source is owned by ``anthropics``. :func:`check_marketplace_source`
+    guards the name a repo would get; this guards the name it actually has — a session can
+    edit ``known_marketplaces.json`` so ``claude-plugins-official`` points at ``evil/x``,
+    and the owner must never be asked to confirm that."""
+    _guard_name(name, _source_owner(normalized or ""))
 
 
 def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
@@ -267,6 +297,8 @@ def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
         raise refuse("not a string")
     if not source or len(source) > _MAX_SOURCE or source != source.strip():
         raise refuse("empty, too long or padded")
+    if not source.isascii():
+        raise refuse("non-ASCII characters")
     if any(not c.isprintable() or c.isspace() for c in source):
         raise refuse("whitespace or control characters")
     if any(c in source for c in ";|&$`<>(){}[]*?!\\'\"#%^,=+") or ".." in source:

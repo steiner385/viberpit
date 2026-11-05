@@ -1048,3 +1048,112 @@ def test_browse_entries_never_include_unreviewed(shared: Path) -> None:
     _write_directory(shared, {f"p{i}": _listing("none" if i % 2 else "done") for i in range(6)})
     out = scan.browse_entries({})
     assert [e["pluginId"] for e in out] == [f"p{i}@{DIR}" for i in (0, 2, 4)]
+
+
+# =========================================================================== final-review fix wave
+
+KELVIN = "K"  # KELVIN SIGN: str.lower() folds it to ASCII "k"
+CYRILLIC_O = "о"  # looks like ASCII "o"
+
+
+@pytest.mark.parametrize("source", [
+    f"https://github.com/{KELVIN}evin/tools", f"{KELVIN}evin/tools",
+    {"source": "github", "repo": f"{KELVIN}evin/tools"},
+    {"source": "git", "url": f"https://github.com/{KELVIN}evin/tools.git"},
+    f"https://gitlab.com/{KELVIN}evin/tools",
+    f"https://github.com/kevin/t{CYRILLIC_O}{CYRILLIC_O}ls",
+    {"source": "url", "url": f"https://git.ex{CYRILLIC_O}mple.com/m"},
+])
+def test_normalizer_refuses_non_ascii_before_case_folding(source: object) -> None:
+    """Final review, item 2: lower() ran before any ASCII check, so a Kelvin-sign URL
+    normalized to github:kevin/tools — the owner approved one string, the CLI fetched
+    another. Non-ASCII never normalizes."""
+    assert plugin_policy.normalize_source(source) is None
+
+
+@pytest.mark.parametrize("source", [
+    f"https://github.com/{KELVIN}evin/tools", f"{KELVIN}evin/tools",
+    f"https://github.com/kevin/t{CYRILLIC_O}{CYRILLIC_O}ls", f"https://git.ex{CYRILLIC_O}mple.com/a/b",
+])
+def test_marketplace_source_refuses_non_ascii(source: str) -> None:
+    with pytest.raises(PolicyRefusal) as ei:
+        plugin_policy.check_marketplace_source(source)
+    assert ei.value.code == plugin_policy.MARKETPLACE_SOURCE_REFUSED
+    assert "non-ASCII" in ei.value.message
+
+
+@pytest.mark.parametrize("name,normalized,refused", [
+    ("claude-plugins-official", "github:evil/x", True),
+    ("Claude-Plugins-Official", "github:evil/x", True),
+    ("anthropic-plugin-directory", "https:gitlab.com/evil/x", True),
+    ("my-official-claude-tools", "github:evil/x", True),
+    ("claude-plugins-official", "https:github.com/evil/x/sub", True),
+    ("claude-plugins-official", "github:anthropics/claude-plugins-official", False),
+    ("claude-plugins-official", "https:github.com/anthropics/x/sub", False),
+    ("tools", "github:evil/x", False),
+    ("claude-plugins-official", None, True),
+])
+def test_check_marketplace_name(name: str, normalized: str | None, refused: bool) -> None:
+    if refused:
+        with pytest.raises(PolicyRefusal) as ei:
+            plugin_policy.check_marketplace_name(name, normalized)
+        assert ei.value.code == plugin_policy.MARKETPLACE_NAME_RESERVED and ei.value.http == 400
+    else:
+        plugin_policy.check_marketplace_name(name, normalized)
+
+
+def test_confirm_refuses_a_reserved_name_pointing_elsewhere(env) -> None:
+    """Final review, item 5: a session points claude-plugins-official at evil/x; the owner
+    is never asked to confirm an official-looking name for it. anthropics' own is fine."""
+    client, _, shared = env
+    _write_marketplace(shared, "claude-plugins-official", [], repo="evil/x")
+    _write_marketplace(shared, "official-claude-stuff", [], repo="evil/stuff")
+    for name in ("claude-plugins-official", "official-claude-stuff"):
+        r = _confirm(client, name)
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "PLUGIN_MARKETPLACE_NAME_RESERVED"
+    shown = {m["name"]: m["curation"] for m in client.get("/api/library/plugins", headers=_H).json()["marketplaces"]}
+    assert shown["claude-plugins-official"] == shown["official-claude-stuff"] == "unconfirmed"
+    _write_marketplace(shared, "claude-plugins-official", [], repo="anthropics/claude-plugins-official")
+    assert _confirm(client, "claude-plugins-official").status_code == 200
+
+
+def test_marketplace_add_never_confirms_a_reserved_name_a_host_reports(env) -> None:
+    """Item 5, add path: the name each host's CLI recorded is checked too."""
+    client, fleet, _ = env
+    fleet.reply = [{"host": "dobby", "outcome": "ok", "marketplace": "claude-plugins-official"},
+                   {"host": "rocky", "outcome": "ok", "marketplace": "evilmkt"}]
+    r = client.post("/api/library/marketplaces", json={"source": "evil/evilmkt", "confirm": True}, headers=_H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["marketplaces"] == ["evilmkt"] and body["ok"] is False
+    dobby = body["hosts"][0]
+    assert (dobby["outcome"], dobby["failureCode"]) == ("failed", "PLUGIN_MARKETPLACE_NAME_RESERVED")
+
+
+def test_zero_hosts_is_never_success(env) -> None:
+    """Final review, item 3: all() over no hosts was True."""
+    client, fleet, _ = env
+    fleet.reply = []
+    r = client.post("/api/library/plugins/good@mine/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 200 and r.json() == {"op": "install", "ok": False, "hosts": []}
+    r = client.delete("/api/library/plugins/good@mine", headers=_H)
+    assert r.json()["ok"] is False
+
+
+def test_cli_env_routes_the_config_dir_through_helper_env(shared: Path, monkeypatch) -> None:
+    """Final review, item 0: the config-dir pin comes from the canonical env builder
+    (writes back to the real shared base, no account lookup, no token)."""
+    from server.sessions import account_auth
+    seen: list[tuple] = []
+    real = account_auth.helper_env
+
+    def spy(config_dir, account=None, *, writes_back=False):
+        seen.append((config_dir, account, writes_back))
+        return real(config_dir, account, writes_back=writes_back)
+
+    monkeypatch.setattr(account_auth, "helper_env", spy)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    env = plugin_cli._env("n" * 32)
+    assert env["CLAUDE_CONFIG_DIR"] == str(shared)
+    assert seen == [(str(shared), "", True)]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
