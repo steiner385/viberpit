@@ -11,7 +11,7 @@ from sqlalchemy import select
 from viberpit import brand
 from server.auth.middleware import current_identity
 from server.config import get_settings
-from server.db import get_db
+from server.db import get_db, get_or_create_app_settings
 from server.db.models import AppSettings
 from server.hostname import self_host_name
 from server.library import scan
@@ -154,15 +154,6 @@ async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | 
     return (moved, failures, len(archived_ids))
 
 
-async def _get_or_create(db) -> AppSettings:
-    row = (await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
-    if row is None:
-        row = AppSettings(id="singleton")
-        db.add(row)
-        await db.flush()
-    return row
-
-
 def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
     return {
         "defaultPermissionMode": s.default_permission_mode,
@@ -207,7 +198,7 @@ async def read_output_style(path: str, _identity: str = Depends(current_identity
 
 @router.get("")
 async def get_settings_row(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
-    row = await _get_or_create(db)
+    row = await get_or_create_app_settings(db)
     return _to_dict(row, await read_global_cap(db))
 
 
@@ -218,7 +209,7 @@ async def put_settings_row(
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    row = await _get_or_create(db)
+    row = await get_or_create_app_settings(db)
     if body.defaultPermissionMode is not None:
         if body.defaultPermissionMode not in _VALID_MODES:
             raise HTTPException(status_code=422, detail="invalid defaultPermissionMode")

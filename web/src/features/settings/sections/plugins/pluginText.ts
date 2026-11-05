@@ -16,6 +16,8 @@ export const NO_HOSTS_COPY = 'No host answered — nothing was changed'
 export const SOURCE_CHANGED_COPY = 'The source changed since this page loaded — review it again'
 export const INSTALL_OFF_COPY =
   'Installing, updating and adding marketplaces is turned off on this server. Enable, disable, uninstall and remove still work.'
+/** `GET /library/plugins` failed: never shown as an empty list. */
+export const LOAD_FAILED_COPY = 'Couldn’t load installed plugins.'
 /** The Anthropic Directory: entries from it reach the client only when reviewed. */
 export const DIRECTORY_MARKETPLACE = 'anthropic-plugin-directory'
 

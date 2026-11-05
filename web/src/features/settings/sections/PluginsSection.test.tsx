@@ -34,6 +34,7 @@ vi.mock('@/api/client', () => {
 
 import PluginsSection from './PluginsSection'
 import { api, ApiRequestError } from '@/api/client'
+import { QK } from '@/api/hooks'
 import { SETTINGS_BY_ID } from '../settingsDefs'
 
 const ALPHA = {
@@ -60,7 +61,8 @@ const BROWSE = [
   { pluginId: 'hooky@m', name: 'hooky', description: '<b>bold</b> claims', marketplace: 'm', version: '2.0.0',
     reviewed: false, components: { hooks: 2, mcpServers: 1, lspServers: 0, agents: 0, skills: 3 }, installed: false },
   { pluginId: 'dir@anthropic-plugin-directory', name: 'dir', description: 'Reviewed one',
-    marketplace: 'anthropic-plugin-directory', version: null, reviewed: true, components: null, installed: false },
+    marketplace: 'anthropic-plugin-directory', version: null, reviewed: true, components: null, installed: false,
+    source: 'https://github.com/acme/dir @ 8ca22dba9a94' },
   { pluginId: 'alpha@m', name: 'alpha', description: 'Alpha plugin', marketplace: 'm', version: '1.0.0',
     reviewed: false, components: null, installed: true },
 ]
@@ -98,14 +100,26 @@ beforeEach(() => {
 
 function renderSection() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <PluginsSection />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  )
+  return {
+    qc,
+    ...render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <PluginsSection />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  }
 }
+
+/** A promise the test settles by hand, to hold a mutation in flight. */
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((r) => { resolve = r })
+  return { promise, resolve }
+}
+
+const LOAD_FAILED = 'Couldn’t load installed plugins.'
 
 describe('PluginsSection — installed plugins', () => {
   it('renders plugin rows with name', async () => {
@@ -207,6 +221,49 @@ describe('PluginsSection — installed plugins', () => {
     expect(await screen.findByText(/Uninstall alpha: No host answered — nothing was changed/)).toBeTruthy()
   })
 
+  it('a failed GET /library/plugins says so with Retry, never "No plugins installed" (#3312)', async () => {
+    let fail = true
+    const ok = vi.mocked(api.get).getMockImplementation()!
+    vi.mocked(api.get).mockImplementation((path: string) =>
+      path === '/library/plugins' && fail ? Promise.reject(new ApiRequestError(503, {})) : ok(path))
+    renderSection()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(LOAD_FAILED)
+    expect(screen.queryByText('No plugins installed.')).toBeNull()
+    fail = false
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('button', { name: /^alpha/ })).toBeTruthy()
+    expect(screen.queryByText(LOAD_FAILED)).toBeNull()
+  })
+
+  it('a failed refresh keeps the loaded rows and flags them stale (#3312)', async () => {
+    const ok = vi.mocked(api.get).getMockImplementation()!
+    const { qc } = renderSection()
+    await screen.findByRole('button', { name: /^alpha/ })
+    vi.mocked(api.get).mockImplementation((path: string) =>
+      path === '/library/plugins' ? Promise.reject(new ApiRequestError(500, {})) : ok(path))
+    await qc.refetchQueries({ queryKey: QK.libraryPlugins })
+    expect(await screen.findByText(/Couldn’t load installed plugins\. Showing the last loaded data/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^alpha/ })).toBeTruthy()
+  })
+
+  it('a plugin change invalidates detail and browse through the QK prefixes (#3312)', async () => {
+    vi.mocked(api.del).mockResolvedValue({ op: 'uninstall', ok: true, hosts: hosts(['dobby', 'ok']) })
+    const { qc } = renderSection()
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    await userEvent.click(await screen.findByRole('button', { name: 'Uninstall alpha' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Uninstall' }))
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: QK.libraryPluginAll }))
+    expect(spy).toHaveBeenCalledWith({ queryKey: QK.libraryPluginBrowseAll })
+  })
+
+  it('the plugin detail and browse keys extend their invalidation prefixes (#3312)', () => {
+    expect(QK.libraryPlugin('a@m').slice(0, QK.libraryPluginAll.length)).toEqual([...QK.libraryPluginAll])
+    const browseKey = QK.libraryPluginBrowse({ q: '', marketplace: '', offset: 0, limit: 20 })
+    expect(browseKey.slice(0, QK.libraryPluginBrowseAll.length)).toEqual([...QK.libraryPluginBrowseAll])
+    expect(QK.libraryPlugins.slice(0, QK.libraryPluginAll.length)).not.toEqual([...QK.libraryPluginAll])
+  })
+
   it('Uninstall asks first, then DELETEs and lists each host', async () => {
     vi.mocked(api.del).mockResolvedValue({ op: 'uninstall', ok: true, hosts: hosts(['dobby', 'ok'], ['rocky', 'ok']) })
     renderSection()
@@ -232,6 +289,19 @@ describe('PluginsSection — marketplaces', () => {
     expect(api.post).not.toHaveBeenCalled()
     await userEvent.click(within(review).getByRole('button', { name: 'Confirm and add' }))
     expect(api.post).toHaveBeenCalledWith('/library/marketplaces', { source: 'acme/tools', confirm: true })
+    expect(await screen.findByText(/Add acme\/tools: done on the host/)).toBeTruthy()
+  })
+
+  it('Cancel on the add review is disabled while the add is in flight (#3312)', async () => {
+    const pending = deferred<unknown>()
+    vi.mocked(api.post).mockReturnValue(pending.promise as never)
+    renderSection()
+    await userEvent.type(await screen.findByRole('textbox', { name: 'Marketplace source' }), 'acme/tools')
+    await userEvent.click(screen.getByRole('button', { name: 'Review source' }))
+    const review = screen.getByRole('group', { name: 'Review marketplace source' })
+    await userEvent.click(within(review).getByRole('button', { name: 'Confirm and add' }))
+    expect(within(review).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    pending.resolve({ op: 'marketplace_add', ok: true, marketplaces: ['tools'], hosts: hosts(['dobby', 'ok']) })
     expect(await screen.findByText(/Add acme\/tools: done on the host/)).toBeTruthy()
   })
 
@@ -340,11 +410,60 @@ describe('PluginsSection — browse and install', () => {
     expect(await within(dialog).findByText(/done on all 2 hosts/)).toBeTruthy()
   })
 
+  it('the marketplace filter falls back to all when its marketplace stops being confirmed (#3312)', async () => {
+    const ok = vi.mocked(api.get).getMockImplementation()!
+    const { qc } = renderSection()
+    await screen.findByText('hooky')
+    const filter = screen.getByRole('combobox', { name: 'Marketplace' })
+    await userEvent.selectOptions(filter, 'm')
+    await waitFor(() => expect(vi.mocked(api.get).mock.calls.some(([p]) =>
+      typeof p === 'string' && p.includes('marketplace=m'))).toBe(true))
+    // The marketplace's source changed: it is no longer a confirmed option.
+    vi.mocked(api.get).mockImplementation((path: string) => path === '/library/plugins'
+      ? Promise.resolve({ plugins: [ALPHA], installEnabled: true,
+        marketplaces: [{ ...MARKETS[0], normalizedSource: 'github:evil/m', curation: 'source_changed' }, MARKETS[1]] })
+      : ok(path))
+    await qc.refetchQueries({ queryKey: QK.libraryPlugins })
+    await waitFor(() => expect(filter).toHaveValue(''))
+    expect(within(filter).queryByRole('option', { name: 'm' })).toBeNull()
+    // The page now reads the unfiltered first page, not the vanished marketplace's.
+    const watched = qc.getQueryCache().findAll({ queryKey: QK.libraryPluginBrowseAll })
+      .filter((query) => query.getObserversCount() > 0)
+    expect(watched.map((query) => query.queryKey))
+      .toEqual([QK.libraryPluginBrowse({ q: '', marketplace: '', offset: 0, limit: 20 })])
+  })
+
+  it('the consent card cannot be cancelled or dismissed while the install is in flight (#3312)', async () => {
+    const pending = deferred<unknown>()
+    vi.mocked(api.post).mockReturnValue(pending.promise as never)
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: 'Install hooky' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Install plugin' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Install' }))
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' })
+    expect(cancel).toBeDisabled()
+    await userEvent.keyboard('{Escape}')
+    await userEvent.click(screen.getByTestId('dialog-backdrop'))
+    expect(screen.getByRole('dialog', { name: 'Install plugin' })).toBeTruthy()
+    pending.resolve({ op: 'install', ok: true, hosts: hosts(['dobby', 'ok']) })
+    expect(await within(dialog).findByText(/done on the host/)).toBeTruthy()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog', { name: 'Install plugin' })).toBeNull()
+  })
+
   it('an install with unknown contents says so on the consent card', async () => {
     renderSection()
     await userEvent.click(await screen.findByRole('button', { name: 'Install dir' }))
     const dialog = await screen.findByRole('dialog', { name: 'Install plugin' })
     expect(within(dialog).getByText('Contents unknown — inspect the marketplace before installing')).toBeTruthy()
+  })
+
+  it('a Directory install shows the reviewed repository the server sent (#3312)', async () => {
+    renderSection()
+    await userEvent.click(await screen.findByRole('button', { name: 'Install dir' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Install plugin' })
+    expect(within(dialog).getByText('https://github.com/acme/dir @ 8ca22dba9a94')).toBeTruthy()
+    expect(within(dialog).queryByText(/source not shown by this host/)).toBeNull()
   })
 })
 

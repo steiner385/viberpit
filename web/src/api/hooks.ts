@@ -82,6 +82,11 @@ import { isSessionsViewing, setSessionsViewing } from './sessionsViewing'
 import { reconcileSessions } from '@/session/reconcile'
 import { toast } from 'sonner'
 
+// Plugin detail/browse prefixes: the parametrised keys below spread from these, so an
+// invalidation by prefix can't drift from the keys it is meant to match.
+const LIBRARY_PLUGIN_ALL = ['library', 'plugin'] as const
+const LIBRARY_PLUGIN_BROWSE_ALL = ['library', 'browse'] as const
+
 // Query keys
 export const QK = {
   accounts: ['accounts'] as const,
@@ -118,9 +123,13 @@ export const QK = {
   openaiAddStatus: (name: string) => ['openai-add-status', name] as const,
   openaiReauthStatus: (name: string) => ['openai-reauth-status', name] as const,
   libraryPlugins: ['library', 'plugins'] as const,
-  libraryPlugin: (id: string) => ['library', 'plugin', id] as const,
+  /** Prefix of every `libraryPlugin(id)` key — invalidate all plugin details. */
+  libraryPluginAll: LIBRARY_PLUGIN_ALL,
+  libraryPlugin: (id: string) => [...LIBRARY_PLUGIN_ALL, id] as const,
+  /** Prefix of every `libraryPluginBrowse(q)` key — invalidate every browse page. */
+  libraryPluginBrowseAll: LIBRARY_PLUGIN_BROWSE_ALL,
   libraryPluginBrowse: (q: PluginBrowseQuery) =>
-    ['library', 'browse', q.q, q.marketplace, q.offset, q.limit] as const,
+    [...LIBRARY_PLUGIN_BROWSE_ALL, q.q, q.marketplace, q.offset, q.limit] as const,
   librarySkills: ['library', 'skills'] as const,
   libraryCommands: ['library', 'commands'] as const,
   libraryMcp: ['library', 'mcp'] as const,

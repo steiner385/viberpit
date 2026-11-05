@@ -9,20 +9,26 @@ import { useEffect, useState } from 'react'
 import { useLibraryPluginDetail, useLibraryPlugins, useTogglePlugin, useUninstallPlugin } from '@/api/pluginHooks'
 import type { LibraryMarketplace, LibraryPlugin } from '@/api/types'
 import { Button } from '@/ui/Button'
+import { QueryFailureBanner } from '@/ui/QueryFailureBanner'
 import { useConfirm } from '@/ui/useConfirm'
 import { BrowsePanel } from './plugins/BrowsePanel'
 import { ConsentDialog, type ConsentTarget } from './plugins/ConsentDialog'
 import { HostOutcomes, type OpRecord } from './plugins/HostOutcomes'
 import { MarketplacesPanel } from './plugins/MarketplacesPanel'
 import { useOpRecord } from './plugins/useOpRecord'
-import { INSTALL_OFF_COPY, clip, marketplaceSourceText, refusalMessage } from './plugins/pluginText'
+import { INSTALL_OFF_COPY, LOAD_FAILED_COPY, clip, marketplaceSourceText, refusalMessage } from './plugins/pluginText'
 
 export default function PluginsSection() {
-  const { data, isLoading } = useLibraryPlugins()
+  const { data, isLoading, isError, refetch } = useLibraryPlugins()
   const [consent, setConsent] = useState<ConsentTarget | null>(null)
   const uninstall = useOpRecord(useUninstallPlugin())
   const { confirm, dialog } = useConfirm()
   if (isLoading) return <div className="text-sm opacity-70 p-4">Loading…</div>
+  // A failed read is not "No plugins installed": say it failed and offer a retry.
+  const failure = isError && (
+    <QueryFailureBanner message={LOAD_FAILED_COPY} hasData={data !== undefined} onRetry={() => void refetch()} />
+  )
+  if (failure && data === undefined) return <div className="min-w-0">{failure}</div>
   const plugins = data?.plugins ?? []
   const marketplaces = data?.marketplaces ?? []
   // Absent on an older server: treat as on, the server still enforces the switch.
@@ -43,6 +49,7 @@ export default function PluginsSection() {
       <p className="text-xs opacity-60 mb-3">
         Plugins are shared across all accounts and installed on every host. Changes apply to newly started sessions.
       </p>
+      {failure && <div className="mb-3">{failure}</div>}
       {!installEnabled && (
         <p className="mb-3 rounded-md border border-edge p-2 text-sm" aria-label="Plugin installs off">{INSTALL_OFF_COPY}</p>
       )}

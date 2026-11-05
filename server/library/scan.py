@@ -147,6 +147,7 @@ def list_plugins() -> dict[str, Any]:
 # --------------------------------------------------------------------------- browse (D-16c)
 
 BROWSE_DESCRIPTION_CAP = 500
+_SOURCE_CAP = 300  # a Directory repository URL on the consent card
 BROWSE_LIMIT_MAX = 100
 _DIRECTORY_CACHE = "plugin-directory-cache-v2.json"
 # Parsed Directory cache keyed by the file's (mtime_ns, size): the file is 2.7 MB.
@@ -237,7 +238,8 @@ def _browse_components(cat: dict[str, Any] | None) -> dict[str, int] | None:
 
 def browse_entries(curated: Mapping[str, str]) -> list[dict[str, Any]]:
     """Every installable plugin: confirmed marketplaces whose source is unchanged
-    (``plugin_policy.check_curated``), minus command-source entries, plus REVIEWED
+    (``plugin_policy.check_curated``), minus command-source entries and entries whose
+    source fetches from a refused address (``entry_source_refusal``), plus REVIEWED
     Directory listings only. Unreviewed listings never leave here."""
     installed = set(installed_registry())
     catalog = _catalog()
@@ -253,13 +255,15 @@ def browse_entries(curated: Mapping[str, str]) -> list[dict[str, Any]]:
             continue
         for name, entry in sorted((marketplace_catalog(mkt, markets[mkt]) or {}).items()):
             pid = f"{name}@{mkt}"
-            if not valid_plugin_id(pid) or plugin_policy.is_command_source(entry):
+            if (not valid_plugin_id(pid) or plugin_policy.is_command_source(entry)
+                    or plugin_policy.entry_source_refusal(entry)):
                 continue
             out.append({
                 "pluginId": pid, "name": name, "description": _cap(entry.get("description")),
                 "marketplace": mkt, "version": entry.get("version") if isinstance(entry.get("version"), str) else None,
                 "reviewed": False, "components": _browse_components(catalog.get(pid)),
                 "installed": pid in installed,
+                "source": None,  # the marketplace's own: the UI shows its normalizedSource
             })
     for name, listing in sorted((directory_listings() or {}).items()):
         pid = f"{name}@{plugin_policy.DIRECTORY_MARKETPLACE}"
@@ -276,8 +280,25 @@ def browse_entries(curated: Mapping[str, str]) -> list[dict[str, Any]]:
             "version": release.get("version") if isinstance(release.get("version"), str) else None,
             "reviewed": True, "components": _browse_components(catalog.get(pid)),
             "installed": pid in installed,
+            "source": _directory_source(listing),
         })
     return out
+
+
+def _directory_source(listing: Mapping[str, Any]) -> str | None:
+    """What a Directory listing installs from, for the consent card: its repository URL
+    (``source.repository.url``, the shape every 2.1.318 listing carries) pinned to the
+    ``reviewed_commit`` when the listing names one; ``None`` when either is unreadable."""
+    src = listing.get("source")
+    repo = src.get("repository") if isinstance(src, Mapping) else None
+    url = repo.get("url") if isinstance(repo, Mapping) else None
+    if not isinstance(url, str) or not url.isascii() or not url.isprintable():
+        return None
+    url = url[:_SOURCE_CAP]
+    commit = repo.get("reviewed_commit") if isinstance(repo, Mapping) else None
+    if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{7,64}", commit):
+        return f"{url} @ {commit[:12]}"
+    return url
 
 
 def browse_page(entries: list[dict[str, Any]], *, q: str | None, marketplace: str | None,

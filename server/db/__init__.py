@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from server.aio import run_to_completion
 from server.config import get_settings
-from server.db.models import Automation, Base, DataBackfill, ProjectRepo, WorkItem
+from server.db.models import AppSettings, Automation, Base, DataBackfill, ProjectRepo, WorkItem
 from server.sessions.engine import AgentEngine
 
 log = logging.getLogger(__name__)
@@ -506,6 +506,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+async def get_or_create_app_settings(db: AsyncSession) -> AppSettings:
+    """THE ``AppSettings`` singleton row, inserted (and flushed) on first use."""
+    row = (await db.execute(sa_select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
+    if row is None:
+        row = AppSettings(id="singleton")
+        db.add(row)
+        await db.flush()
+    return row
 
 
 def dialect_insert(table_or_model):

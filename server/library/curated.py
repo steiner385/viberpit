@@ -41,8 +41,8 @@ def _decode(raw: str | None) -> dict[str, str]:
 
 
 async def _row(db):  # noqa: ANN202 — AppSettings
-    from server.api.settings import _get_or_create
-    return await _get_or_create(db)
+    from server.db import get_or_create_app_settings
+    return await get_or_create_app_settings(db)
 
 
 async def confirmed(db) -> dict[str, str]:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from server.db import db_session
+from server.db import db_session, get_or_create_app_settings
 from server.db.models import AppSettings
 
 EWMA_ALPHA = 0.3
@@ -26,20 +26,12 @@ def fold(prev_ewma: float | None, sample_ms: float) -> float:
     return EWMA_ALPHA * sample + (1 - EWMA_ALPHA) * prev_ewma
 
 
-async def _get_or_create(db) -> AppSettings:
-    row = (await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
-    if row is None:
-        row = AppSettings(id="singleton")
-        db.add(row)
-    return row
-
-
 async def record_duration(sample_ms: float) -> None:
     """Fold one measured compaction duration into the persisted EWMA.
 
     ``db_session()`` commits on clean exit, so no explicit commit is needed."""
     async with db_session() as db:
-        row = await _get_or_create(db)
+        row = await get_or_create_app_settings(db)
         row.compaction_ewma_ms = fold(row.compaction_ewma_ms, sample_ms)
         row.compaction_samples = (row.compaction_samples or 0) + 1
 

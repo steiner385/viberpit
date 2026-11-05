@@ -979,6 +979,9 @@ export interface PluginBrowseEntry {
   /** null = unknown: the consent card says so. */
   components: PluginComponentsSummary | null
   installed: boolean
+  /** What a Directory listing installs from (its reviewed repository, `@ <commit>` when
+   *  pinned); null for a marketplace entry, whose marketplace's own source is shown. */
+  source?: string | null
 }
 
 export interface PluginBrowseResponse {
