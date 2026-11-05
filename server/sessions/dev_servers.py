@@ -14,12 +14,15 @@ and the session match are ``memory_watch``'s (``scan_proc``, ``_subtree``,
    - **subtree**: it descends from a direct child of the daemon (a *root*) that is this
      session by ``--resume`` id or an EXACT cwd (:func:`root_session_of`) — or that is
      nobody's (the Codex app-server is one per account, shared by every thread; a
-     daemon helper), in which case the process's OWN cwd must match the session. A
-     process whose own cwd matches ANOTHER session is that session's, whatever its root. A root itself (the CLI, x11vnc, a proxy) is never a dev server,
+     daemon helper), in which case the process's OWN cwd must be inside the session's
+     MANAGED worktree (:func:`worktree_session_of`). A process whose own cwd matches
+     ANOTHER session is never claimed, whatever its root. A root itself (the CLI, x11vnc, a proxy) is never a dev server,
      and neither is anything below a non-shell direct child of a root whose command line
      names MCP (the session's MCP servers).
    - **escaped**: outside every root (``setsid``/``nohup`` reparent to pid 1), it must be
-     in the daemon's cgroup and its cwd must match the session.
+     in the daemon's cgroup and its cwd inside the session's MANAGED worktree.
+   A session whose cwd is not a managed worktree (``~``, a plain checkout) claims only
+   its own subtree. Every cwd is compared by realpath.
    ``match_session``'s cwd rule is made strict here: when another live session has the
    same cwd and no ``--resume`` id decides, the process is unattributed.
 3. Not a Chromium ``--remote-debugging-port`` (by command line).
@@ -39,6 +42,7 @@ here, because only the edge knows who is looking.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import html
 import ipaddress
 import logging
@@ -236,6 +240,38 @@ def session_of(info: ProcInfo | None, sessions: list[SessionKey]) -> str | None:
     return sid
 
 
+def _realpath(path: str | None) -> str:
+    return os.path.realpath(path) if path else ""
+
+
+def _inside(path: str, base: str) -> bool:
+    return path == base or path.startswith(base.rstrip("/") + "/")
+
+
+def managed_sessions(sessions: list[SessionKey], managed_bases: tuple[str, ...]
+                     ) -> list[SessionKey]:
+    """The sessions whose (realpath) cwd is a managed worktree: strictly under one of
+    ``managed_bases`` (``worktrees.worktrees_bases`` of the daemon's managed roots). Only
+    these may claim a process outside their own subtree — ``~``, a plain checkout or a
+    scratch dir never do."""
+    bases = [_realpath(b) for b in managed_bases if b]
+    return [s for s in sessions
+            if s.cwd and any(s.cwd != b and _inside(s.cwd, b) for b in bases)]
+
+
+def worktree_session_of(cwd: str | None, managed: list[SessionKey]) -> str | None:
+    """The managed session whose worktree contains ``cwd`` (realpath), deepest first;
+    None when none does or two sessions share the winning worktree."""
+    if not cwd:
+        return None
+    hits = [s for s in managed if _inside(cwd, s.cwd)]
+    if not hits:
+        return None
+    deepest = max(len(s.cwd) for s in hits)
+    best = [s for s in hits if len(s.cwd) == deepest]
+    return best[0].session_id if len(best) == 1 else None
+
+
 def root_session_of(info: ProcInfo | None, sessions: list[SessionKey]) -> str | None:
     """The session a daemon child (a *root*) is, trusted only on strong evidence: its
     ``--resume`` id, or a cwd EXACTLY one live session's. Never ``match_session``'s
@@ -258,13 +294,17 @@ def root_session_of(info: ProcInfo | None, sessions: list[SessionKey]) -> str | 
 
 
 def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
-                    daemon_pid: int) -> list[Candidate]:
+                    daemon_pid: int, managed_bases: tuple[str, ...] = ()) -> list[Candidate]:
     """Every listener attributed to ``session_id`` by the module rules 1–3. Reads only;
     probes nothing."""
     listeners = {ino: lst for ino, lst in fs.listeners().items()
                  if lst.port >= MIN_PORT and _bind_kind(lst.address) is not None}
     if not listeners or not any(s.session_id == session_id for s in sessions):
         return []
+    # Every cwd is compared by realpath: a session's recorded cwd may be a symlink.
+    sessions = [SessionKey(s.session_id, s.engine_session_id, _realpath(s.cwd))
+                for s in sessions]
+    managed = managed_sessions(sessions, managed_bases)
     rows = fs.scan()
     by_pid = {r.pid: r for r in rows}
     children: dict[int, list[ProcRow]] = {}
@@ -279,8 +319,14 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
 
     def info(pid: int) -> ProcInfo | None:
         if pid not in infos:
-            infos[pid] = fs.describe(pid)
+            pi = fs.describe(pid)
+            infos[pid] = (dataclasses.replace(pi, cwd=_realpath(pi.cwd))
+                          if pi is not None and pi.cwd else pi)
         return infos[pid]
+
+    def managed_owner(pid: int) -> str | None:
+        pi = info(pid)
+        return worktree_session_of(pi.cwd if pi is not None else None, managed)
 
     def owner(pid: int) -> str | None:
         if pid not in owners:
@@ -306,8 +352,8 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
         if root is None:
             if daemon_cgroup is None or fs.cgroup(pid) != daemon_cgroup:
                 continue
-            if owner(pid) != session_id:
-                continue
+            if managed_owner(pid) != session_id:
+                continue  # escaped: only a cwd inside the session's managed worktree
             eligible[pid], depth[pid] = (), 0
             continue
         if pid == root:
@@ -332,7 +378,7 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
         if _exe(branch_info, by_pid.get(branch)) not in _SHELLS and branch_info is not None \
                 and _MCP.search(" ".join(branch_info.cmdline)):
             continue  # one of the session's MCP servers
-        if root_owner is None and own != session_id:
+        if root_owner is None and managed_owner(pid) != session_id:
             continue  # a shared root (Codex app-server): the process's own cwd decides
         shells = []
         for p in chain[1:]:
@@ -489,7 +535,7 @@ class DevServerDetector:
 
     async def detect(self, session_id: str, sessions: list[SessionKey], *,
                      bg_commands: Callable[[], Awaitable[list[str]]],
-                     fresh: bool = False) -> list[dict]:
+                     fresh: bool = False, managed_bases: tuple[str, ...] = ()) -> list[dict]:
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
             now = self._clock()
@@ -502,14 +548,16 @@ class DevServerDetector:
             hit = self._cache.get(session_id)
             if hit is not None and not fresh:
                 return [dict(s) for s in hit[1]]
-            servers = await self._detect(session_id, sessions, bg_commands)
+            servers = await self._detect(session_id, sessions, bg_commands, managed_bases)
             self._cache[session_id] = (self._clock(), servers)
             return [dict(s) for s in servers]
 
     async def _detect(self, session_id: str, sessions: list[SessionKey],
-                      bg_commands: Callable[[], Awaitable[list[str]]]) -> list[dict]:
+                      bg_commands: Callable[[], Awaitable[list[str]]],
+                      managed_bases: tuple[str, ...]) -> list[dict]:
         cands = await asyncio.to_thread(find_candidates, session_id, sessions,
-                                        fs=self._fs, daemon_pid=self._daemon_pid)
+                                        fs=self._fs, daemon_pid=self._daemon_pid,
+                                        managed_bases=managed_bases)
         if not cands:
             return []
         probes = await asyncio.gather(*(self._probe(c.address, c.port) for c in cands))

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from server.aio import cancel_and_reap
 from server.sessions.desktop_session import probe_x11, socket_owner
-from server.sessions.adopt import _proc_lister, terminate_process_tree
+from server.sessions.adopt import _proc_lister, read_start_time, terminate_process_tree
 
 log = logging.getLogger("server.x11")
 
@@ -153,6 +153,7 @@ class DisplaySpec:
     # every Open), its auto profile, and a generation that retires a stale reaper.
     preview: object | None = None
     preview_profile: str | None = None
+    preview_start: int | None = None  # its /proc start time: guards against pid reuse
     preview_gen: int = 0
 
 
@@ -364,16 +365,19 @@ class X11Manager:
         spec = self._specs.get(session_id)
         if spec is None or spec.preview is None:
             return
-        proc, profile = spec.preview, spec.preview_profile
-        spec.preview, spec.preview_profile = None, None
+        proc, profile, start = spec.preview, spec.preview_profile, spec.preview_start
+        spec.preview, spec.preview_profile, spec.preview_start = None, None, None
         spec.preview_gen += 1  # retire its reaper before the kill wakes it
-        try:
-            pid = getattr(proc, "pid", None)
-            if pid:
-                await asyncio.to_thread(terminate_process_tree, pid)
-            await _terminate(proc, timeout=2.0)
-        except Exception:
-            log.exception("x11: preview browser kill failed session=%s", session_id)
+        # Signal only a process still running AND still the one launched: an exited
+        # (reaped) preview's pid may already name an unrelated process, and
+        # terminate_process_tree re-checks the recorded start time before each signal.
+        pid = getattr(proc, "pid", None)
+        if pid and getattr(proc, "returncode", None) is None and start is not None:
+            try:
+                if await asyncio.to_thread(terminate_process_tree, pid, start_time=start):
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)  # type: ignore[attr-defined]
+            except Exception:
+                log.exception("x11: preview browser kill failed session=%s", session_id)
         if proc in spec.browsers:
             spec.browsers.remove(proc)
         if profile is not None and profile in spec.browser_profiles:
@@ -392,6 +396,8 @@ class X11Manager:
             return
         spec.preview = spec.browsers[-1]
         spec.preview_profile = spec.browser_profiles[-1] if spec.browser_profiles else None
+        pid = getattr(spec.preview, "pid", None)
+        spec.preview_start = read_start_time(pid) if pid else None
         spec.preview_gen += 1
         if release_display:
             t = asyncio.create_task(

@@ -29,6 +29,7 @@ from unittest import mock
 from unittest.mock import patch
 
 import pytest
+import pytest_asyncio
 
 from server.ipc.client import DaemonClient, DaemonError
 from server.ipc.daemon import create_daemon_app
@@ -199,6 +200,11 @@ def host(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(proc=p, fs=fs, keys=keys, probe=probe)
 
 
+#: The managed worktree base(s) of the fake hosts: every /w/<x> session is a managed
+#: worktree; ~ and plain checkouts are not.
+_W = ("/w",)
+
+
 def _detector(host, **kw) -> ds.DevServerDetector:
     return ds.DevServerDetector(fs=host.fs, daemon_pid=100, probe=host.probe, **kw)
 
@@ -228,7 +234,7 @@ def test_socket_inodes_read_fd_links(host) -> None:
 
 @pytest.mark.asyncio
 async def test_detects_only_the_sessions_servers_and_probes_nothing_outside(host) -> None:
-    servers = await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg)
+    servers = await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
     by_port = {s["port"]: s for s in servers}
     assert sorted(by_port) == [3000, 5173, 5180, 5401, 8080]
     probed = {port for _, port in host.probe.calls}
@@ -242,7 +248,7 @@ async def test_detects_only_the_sessions_servers_and_probes_nothing_outside(host
 @pytest.mark.asyncio
 async def test_entry_shape_bind_and_detected_connect_address(host) -> None:
     servers = {s["port"]: s for s in
-               await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg)}
+               await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)}
     assert servers[5173] == {"port": 5173, "address": "127.0.0.1", "bind": "loopback",
                              "pid": 202, "label": "python -m http.server 5173",
                              "title": "Directory listing"}
@@ -256,8 +262,8 @@ async def test_entry_shape_bind_and_detected_connect_address(host) -> None:
 
 @pytest.mark.asyncio
 async def test_other_sessions_see_their_own_servers(host) -> None:
-    b = await _detector(host).detect(SID_B, host.keys, bg_commands=_no_bg)
-    c = await _detector(host).detect(SID_C, host.keys, bg_commands=_no_bg)
+    b = await _detector(host).detect(SID_B, host.keys, bg_commands=_no_bg, managed_bases=_W)
+    c = await _detector(host).detect(SID_C, host.keys, bg_commands=_no_bg, managed_bases=_W)
     assert [s["port"] for s in b] == [5300]
     # Codex: found under the shared app-server by the child's own cwd.
     assert [s["port"] for s in c] == [5400]
@@ -266,63 +272,116 @@ async def test_other_sessions_see_their_own_servers(host) -> None:
 @pytest.mark.asyncio
 async def test_two_sessions_sharing_a_cwd_attribute_nothing_by_cwd(host) -> None:
     keys = host.keys + _keys(("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "", "/w/a"))
-    servers = await _detector(host).detect(SID_A, keys, bg_commands=_no_bg)
+    servers = await _detector(host).detect(SID_A, keys, bg_commands=_no_bg, managed_bases=_W)
     ports = sorted(s["port"] for s in servers)
     # A's own CLI still matches by --resume; the cwd-only matches (the detached server
     # and the Codex child) are ambiguous and dropped.
     assert ports == [5173, 5180, 8080]
 
 
+_HOME_WT = "/home/u/GitHub/viberpit-sessions/worktrees"
+
+
 @pytest.fixture
 def home_host(tmp_path: Path) -> SimpleNamespace:
-    """Fix round 1: a live session A whose cwd is the home directory, two Codex
-    sessions under it sharing the account's app-server (cwd = the Codex home, also
-    under ~), and a daemon helper root whose cwd sits inside A's tree."""
+    """A live session A whose cwd is the home directory (not a managed worktree), two
+    Codex sessions in managed worktrees sharing the account's app-server (cwd = the
+    Codex home, under ~), and daemon helpers whose cwds sit under ~."""
     p = FakeProc(tmp_path / "proc")
     p.add(100, 1, ["/usr/bin/python3", "-m", "server.ipc"], cwd="/srv/viberpit")
-    p.add(200, 100, ["claude"], cwd="/home/u")  # A, no --resume: cwd-matched
+    p.add(200, 100, ["claude"], cwd="/home/u")  # A, no --resume: exact cwd
     p.add(201, 200, ["bash", "-c", "npm run dev"], cwd="/home/u")
     p.add(202, 201, ["node", "vite"], cwd="/home/u/site", sockets=(9001,))
     p.listen(9001, "127.0.0.1", 5173)
     p.add(600, 100, ["/usr/bin/codex", "app-server"], cwd="/home/u/.viberpit/codex/acct")
-    p.add(601, 600, ["bash", "-lc", "npm run dev"], cwd="/home/u/w/c1")
-    p.add(602, 601, ["node", "vite"], cwd="/home/u/w/c1", sockets=(9020,))
+    # Each Codex thread's server, inside its own managed worktree: that thread's.
+    p.add(601, 600, ["bash", "-lc", "npm run dev"], cwd=f"{_HOME_WT}/r/c1")
+    p.add(602, 601, ["node", "vite"], cwd=f"{_HOME_WT}/r/c1", sockets=(9020,))
     p.listen(9020, "127.0.0.1", 5400)
-    p.add(611, 600, ["bash", "-lc", "pnpm dev"], cwd="/home/u/w/c2")
-    p.add(612, 611, ["node", "next"], cwd="/home/u/w/c2", sockets=(9021,))
+    p.add(611, 600, ["bash", "-lc", "pnpm dev"], cwd=f"{_HOME_WT}/r/c2/web")
+    p.add(612, 611, ["node", "next"], cwd=f"{_HOME_WT}/r/c2/web", sockets=(9021,))
     p.listen(9021, "127.0.0.1", 5401)
-    # A Codex child with no session of its own below ~: A's by its own cwd.
+    # A Codex thread's server in ~/scratch: in no managed worktree → nobody's.
     p.add(621, 600, ["bash", "-lc", "python -m http.server"], cwd="/home/u/scratch")
     p.add(622, 621, ["python", "-m", "http.server", "5402"], cwd="/home/u/scratch",
           sockets=(9022,))
     p.listen(9022, "127.0.0.1", 5402)
-    # A daemon helper root (cwd inside A's tree, no --resume) whose worker serves
-    # from elsewhere: the helper is nobody's, so its child is not A's.
+    # An app-server child inheriting the Codex home: nobody's.
+    p.add(631, 600, ["bash", "-lc", "serve"], cwd="/home/u/.viberpit/codex/acct")
+    p.add(632, 631, ["node", "serve"], cwd="/home/u/.viberpit/codex/acct", sockets=(9023,))
+    p.listen(9023, "127.0.0.1", 5403)
+    # A daemon helper root whose worker serves from elsewhere: nobody's.
     p.add(700, 100, ["copilot2api", "--port", "0"], cwd="/home/u/.cache/viberpit")
     p.add(701, 700, ["bash", "-c", "worker"], cwd="/opt/proxy")
     p.add(702, 701, ["worker"], cwd="/opt/proxy", sockets=(9030,))
     p.listen(9030, "127.0.0.1", 5500)
-    keys = _keys((SID_A, "", "/home/u"), (SID_B, "", "/home/u/w/c1"),
-                 (SID_C, "", "/home/u/w/c2"))
-    probe = _Probe({5173: None, 5400: None, 5401: None, 5402: None, 5500: None})
+    # A helper child inheriting helper_cwd() (~/.cache/ccswitch/helper-cwd): nobody's.
+    p.add(710, 100, ["python3", "-m", "helper"], cwd="/home/u/.cache/ccswitch/helper-cwd")
+    p.add(711, 710, ["bash", "-c", "x"], cwd="/home/u/.cache/ccswitch/helper-cwd")
+    p.add(712, 711, ["node", "x"], cwd="/home/u/.cache/ccswitch/helper-cwd", sockets=(9031,))
+    p.listen(9031, "127.0.0.1", 5501)
+    # Escaped from every subtree, in the daemon's cgroup, cwd under ~: nobody's.
+    p.add(800, 1, ["node", "server.js"], cwd="/home/u/site", sockets=(9040,))
+    p.listen(9040, "127.0.0.1", 5600)
+    # Escaped, inside C1's managed worktree: C1's.
+    p.add(801, 1, ["node", "server.js"], cwd=f"{_HOME_WT}/r/c1/api", sockets=(9041,))
+    p.listen(9041, "127.0.0.1", 5601)
+    keys = _keys((SID_A, "", "/home/u"), (SID_B, "", f"{_HOME_WT}/r/c1"),
+                 (SID_C, "", f"{_HOME_WT}/r/c2"))
+    probe = _Probe({port: None for port in (5173, 5400, 5401, 5402, 5403, 5500, 5501,
+                                            5600, 5601)})
     return SimpleNamespace(fs=ds.ProcFs(str(p.root)), keys=keys, probe=probe)
 
 
 @pytest.mark.asyncio
 async def test_a_home_directory_session_never_claims_other_sessions_servers(home_host) -> None:
+    """Outside a session's own subtree, only a cwd inside a MANAGED worktree attributes:
+    ~ (not managed) claims nothing there, so nothing there is even probed."""
     det = ds.DevServerDetector(fs=home_host.fs, daemon_pid=100, probe=home_host.probe)
-    a = await det.detect(SID_A, home_host.keys, bg_commands=_no_bg)
-    assert sorted(s["port"] for s in a) == [5173, 5402]
-    assert {port for _, port in home_host.probe.calls} == {5173, 5402}
-    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg)
-    c = await det.detect(SID_C, home_host.keys, bg_commands=_no_bg)
-    assert [s["port"] for s in b] == [5400]
+    base = (_HOME_WT,)
+    a = await det.detect(SID_A, home_host.keys, bg_commands=_no_bg, managed_bases=base)
+    assert [s["port"] for s in a] == [5173]
+    assert {port for _, port in home_host.probe.calls} == {5173}
+    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg, managed_bases=base)
+    c = await det.detect(SID_C, home_host.keys, bg_commands=_no_bg, managed_bases=base)
+    assert sorted(s["port"] for s in b) == [5400, 5601]
     assert [s["port"] for s in c] == [5401]
+    probed = {port for _, port in home_host.probe.calls}
+    assert not probed & {5402, 5403, 5500, 5501, 5600}
+
+
+@pytest.mark.asyncio
+async def test_without_managed_bases_nothing_outside_a_subtree_attributes(home_host) -> None:
+    det = ds.DevServerDetector(fs=home_host.fs, daemon_pid=100, probe=home_host.probe)
+    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg, managed_bases=())
+    assert b == [] and home_host.probe.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_session_cwd_matches_through_realpath(tmp_path: Path) -> None:
+    base = tmp_path / "worktrees"
+    real = base / "repo" / "s1"
+    (real / "api").mkdir(parents=True)
+    link = tmp_path / "link-to-s1"
+    link.symlink_to(real)
+    p = FakeProc(tmp_path / "proc")
+    p.add(100, 1, ["python3"], cwd="/srv")
+    p.add(200, 100, ["claude"], cwd=str(real))  # the CLI reports the real path
+    p.add(201, 200, ["bash", "-c", "dev"], cwd=str(real))
+    p.add(202, 201, ["node"], cwd=str(real), sockets=(9001,))
+    p.listen(9001, "127.0.0.1", 5173)
+    p.add(300, 1, ["node", "escaped.js"], cwd=str(real / "api"), sockets=(9002,))
+    p.listen(9002, "127.0.0.1", 5174)
+    probe = _Probe({5173: None, 5174: None})
+    det = ds.DevServerDetector(fs=ds.ProcFs(str(p.root)), daemon_pid=100, probe=probe)
+    keys = [SessionKey(SID_A, "", str(link))]  # the record holds the symlink
+    servers = await det.detect(SID_A, keys, bg_commands=_no_bg, managed_bases=(str(base),))
+    assert sorted(s["port"] for s in servers) == [5173, 5174]
 
 
 @pytest.mark.asyncio
 async def test_unknown_session_lists_nothing_and_probes_nothing(host) -> None:
-    servers = await _detector(host).detect("nope", host.keys, bg_commands=_no_bg)
+    servers = await _detector(host).detect("nope", host.keys, bg_commands=_no_bg, managed_bases=_W)
     assert servers == [] and host.probe.calls == []
 
 
@@ -333,7 +392,7 @@ async def test_unknown_session_lists_nothing_and_probes_nothing(host) -> None:
 async def test_label_prefers_the_background_task_command(host) -> None:
     async def bg() -> list[str]:
         return ["cd site && python -m http.server 5173", "unrelated"]
-    servers = {s["port"]: s for s in await _detector(host).detect(SID_A, host.keys, bg_commands=bg)}
+    servers = {s["port"]: s for s in await _detector(host).detect(SID_A, host.keys, bg_commands=bg, managed_bases=_W)}
     assert servers[5173]["label"] == "cd site && python -m http.server 5173"
     assert servers[8080]["label"] == "node vite --host"
 
@@ -342,14 +401,15 @@ async def test_label_prefers_the_background_task_command(host) -> None:
 async def test_results_are_cached_briefly_and_fresh_rescans(host) -> None:
     now = [1000.0]
     det = _detector(host, clock=lambda: now[0])
-    await det.detect(SID_A, host.keys, bg_commands=_no_bg)
+    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
     n = len(host.probe.calls)
-    await det.detect(SID_A, host.keys, bg_commands=_no_bg)
+    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
     assert len(host.probe.calls) == n  # cached
-    await det.detect(SID_A, host.keys, bg_commands=_no_bg, fresh=True)
+    await det.detect(SID_A, host.keys, bg_commands=_no_bg, fresh=True,
+                                     managed_bases=_W)
     assert len(host.probe.calls) == 2 * n
     now[0] += ds.CACHE_TTL_S + 0.1
-    await det.detect(SID_A, host.keys, bg_commands=_no_bg)
+    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
     assert len(host.probe.calls) == 3 * n
 
 
@@ -418,6 +478,8 @@ async def test_real_proc_detects_http_server_and_not_a_raw_socket(tmp_path: Path
         port = raw_port = 0
         while not (port and raw_port):
             line = await asyncio.wait_for(asyncio.to_thread(root.stdout.readline), 10)
+            if not line:  # EOF: both children died before reporting their ports
+                pytest.fail(f"stand-in servers exited early (rc={root.poll()})")
             if line.startswith("RAW "):
                 raw_port = int(line.split()[1])
             elif line.startswith("Serving HTTP on"):  # "… port N (http://…/) …"
@@ -427,7 +489,8 @@ async def test_real_proc_detects_http_server_and_not_a_raw_socket(tmp_path: Path
         servers: list[dict] = []
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            servers = await det.detect(SID_A, keys, bg_commands=_no_bg, fresh=True)
+            servers = await det.detect(SID_A, keys, bg_commands=_no_bg, fresh=True,
+                                     managed_bases=_W)
             if any(s["port"] == port for s in servers):
                 break
             await asyncio.sleep(0.1)
@@ -438,7 +501,8 @@ async def test_real_proc_detects_http_server_and_not_a_raw_socket(tmp_path: Path
         assert raw_port not in ports
         # Another session (another worktree) sees none of it.
         other = await det.detect(SID_B, keys + [SessionKey(SID_B, "", str(tmp_path / "b"))],
-                                 bg_commands=_no_bg, fresh=True)
+                                 bg_commands=_no_bg, fresh=True,
+                                     managed_bases=_W)
         assert other == []
     finally:
         os.killpg(root.pid, 15)
@@ -554,12 +618,14 @@ def orch():
     found = [{"port": 5173, "address": "127.0.0.1", "bind": "loopback", "pid": 202,
               "label": "vite"}]
     calls: list[tuple] = []
+    bases: list[tuple[str, ...]] = []
 
-    async def detect(session_id, sessions, *, bg_commands, fresh=False):
+    async def detect(session_id, sessions, *, bg_commands, fresh=False, managed_bases=()):
         calls.append((session_id, [k.session_id for k in sessions], fresh))
+        bases.append(managed_bases)
         return [dict(s) for s in found]
     o._dev_server_detector().detect = detect  # type: ignore[method-assign]
-    return SimpleNamespace(o=o, found=found, calls=calls)
+    return SimpleNamespace(o=o, found=found, calls=calls, bases=bases)
 
 
 @pytest.mark.asyncio
@@ -570,6 +636,12 @@ async def test_orchestrator_dev_servers_names_this_host(orch) -> None:
     # No bind-all server: no tailnet IP is looked up.
     assert res == {"host": "rocky", "tailnetIp": None, "servers": orch.found}
     ip.assert_not_called()
+    # The managed worktree bases of the daemon's managed roots (worktrees.worktrees_bases).
+    from viberpit import worktrees
+    roots = await orch.o._managed_roots()
+    assert orch.bases[-1] == tuple(sorted({str(b) for r in roots
+                                           for b in worktrees.worktrees_bases(r)}))
+    assert orch.bases[-1] and all(b.endswith("/worktrees") for b in orch.bases[-1])
     assert orch.calls == [(SID_A, [SID_A], False)]
     with pytest.raises(KeyError):
         await orch.o.dev_servers("nope")
@@ -701,10 +773,12 @@ class _Browser:
         self.pid = _Browser._next_pid
         self.returncode: int | None = None
         self._exited = asyncio.Event()
+        self._loop = asyncio.get_running_loop()
 
     def exit(self, code: int = 0) -> None:
+        # May be called from the to_thread a process-tree kill runs in.
         self.returncode = code
-        self._exited.set()
+        self._loop.call_soon_threadsafe(self._exited.set)
 
     def terminate(self) -> None:
         self.exit(-15)
@@ -732,6 +806,7 @@ def real_x11(orch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 b.exit(-15)
         return True
     monkeypatch.setattr(x11manager, "terminate_process_tree", kill_tree)
+    monkeypatch.setattr(x11manager, "read_start_time", lambda pid: 1)  # fake pids
 
     async def spawn(*argv, **kw):
         proc = _Browser()
@@ -739,6 +814,7 @@ def real_x11(orch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             proc.exit()
         if argv[0] == "chromium":
             browsers.append(proc)
+            await asyncio.sleep(0)  # a real spawn yields: lets concurrent Opens interleave
         return proc
     mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24", max_browsers=6,
                      spawn=spawn, ready_check=lambda d, xa: True,
@@ -828,6 +904,101 @@ async def test_a_watched_native_preview_display_stays_while_viewed(real_x11) -> 
             break
         await asyncio.sleep(0.01)
     assert real_x11.mgr.display_for(SID_A) is None
+
+
+def test_terminate_process_tree_refuses_a_reused_pid() -> None:
+    """A recorded start time that no longer matches the pid (it exited and the pid was
+    reused) is never signalled; a matching one is."""
+    from server.sessions.adopt import terminate_process_tree
+    sent: list[tuple[int, int]] = []
+    assert terminate_process_tree(4242, killer=lambda pid, sig: sent.append((pid, sig)),
+                                  alive=lambda pid: True, grace=0.0, start_time=100,
+                                  read_start=lambda pid: 200) is False
+    assert sent == []
+    assert terminate_process_tree(4242, killer=lambda pid, sig: sent.append((pid, sig)),
+                                  alive=lambda pid: not sent, grace=0.0, start_time=100,
+                                  read_start=lambda pid: 100) is True
+    assert len(sent) == 1
+
+
+def test_read_start_time_reads_stat_field_22() -> None:
+    from server.sessions.adopt import read_start_time
+    with open(f"/proc/{os.getpid()}/stat") as fh:
+        expected = int(fh.read().rpartition(")")[2].split()[19])
+    assert read_start_time(os.getpid()) == expected
+    assert read_start_time(2**31 - 1) is None
+
+
+@pytest_asyncio.fixture
+async def sleeper_x11(tmp_path: Path):
+    """An X11Manager whose "chromium" is a real ``sleep`` child, killed for real."""
+    from server.sessions.x11manager import DisplayAllocator, X11Manager
+    procs: list = []
+
+    async def spawn(*argv, **kw):
+        if argv[0] == "chromium":
+            proc = await asyncio.create_subprocess_exec("sleep", "30")
+            procs.append(proc)
+            return proc
+        p = _Browser()
+        if argv[0] == "xauth":
+            p.exit()
+        return p
+    mgr = X11Manager(DisplayAllocator(100, 1, 6100), resolution="800x600x24", max_browsers=6,
+                     spawn=spawn, ready_check=lambda d, xa: True,
+                     vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display(SID_A)
+    try:
+        yield SimpleNamespace(mgr=mgr, procs=procs)
+    finally:
+        for proc in procs:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_stop_preview_never_signals_a_reused_pid(sleeper_x11) -> None:
+    """Security: the stored preview's pid now names a different process (simulated by a
+    start-time mismatch) — it is left alone."""
+    mgr = sleeper_x11.mgr
+    assert await mgr.launch_browser(SID_A, None)
+    mgr.track_preview(SID_A, release_display=False)
+    spec = mgr.display_for(SID_A)
+    spec.preview_start = (spec.preview_start or 0) + 1  # the pid was reused
+    await mgr.stop_preview(SID_A)
+    await asyncio.sleep(0.2)
+    assert sleeper_x11.procs[0].returncode is None  # not signalled
+    # Positive control: the genuine preview (start time matches) is killed.
+    assert await mgr.launch_browser(SID_A, None)
+    mgr.track_preview(SID_A, release_display=False)
+    await mgr.stop_preview(SID_A)
+    assert await asyncio.wait_for(sleeper_x11.procs[1].wait(), 5) is not None
+
+
+@pytest.mark.asyncio
+async def test_stop_preview_never_signals_an_exited_preview(sleeper_x11) -> None:
+    mgr = sleeper_x11.mgr
+    assert await mgr.launch_browser(SID_A, None)
+    mgr.track_preview(SID_A, release_display=False)
+    proc = sleeper_x11.procs[0]
+    proc.kill()
+    await proc.wait()  # exited and reaped: its pid is free for reuse
+    with patch("server.sessions.x11manager.terminate_process_tree") as kill:
+        await mgr.stop_preview(SID_A)
+    kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_opens_leave_exactly_one_tracked_preview(real_x11) -> None:
+    real_x11.o._records[SID_A].display_mode = DISPLAY_VIRTUAL
+    await real_x11.mgr.start_display(SID_A)
+    results = await asyncio.gather(*(real_x11.o.open_dev_server(SID_A, port=5173)
+                                     for _ in range(3)))
+    assert all(r["ok"] for r in results)
+    live = _live(real_x11.browsers)
+    assert len(live) == 1
+    assert real_x11.mgr.display_for(SID_A).preview is live[0]  # none untracked
 
 
 # ---------------------------------------------------------------- RPC / remote / fleet (RF 4)

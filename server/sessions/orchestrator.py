@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import time
 import uuid
+import weakref
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dataclass_replace
 from collections.abc import Awaitable, Coroutine, Iterable, Sequence
@@ -22115,8 +22116,12 @@ class SessionOrchestrator:
         async def bg_commands() -> list[str]:
             return [str(t.input.get("command")) for t in await self._open_background_work(session_id)
                     if isinstance(t.input.get("command"), str)]
-        return await self._dev_server_detector().detect(session_id, keys,
-                                                        bg_commands=bg_commands, fresh=fresh)
+        # Outside a session's own process subtree only a cwd inside its MANAGED worktree
+        # attributes: the bases come from the same managed roots as _ensure_session_cwd.
+        bases = tuple(sorted({str(b) for root in await self._managed_roots()
+                              for b in worktrees.worktrees_bases(root)}))
+        return await self._dev_server_detector().detect(
+            session_id, keys, bg_commands=bg_commands, fresh=fresh, managed_bases=bases)
 
     async def dev_servers(self, session_id: str) -> dict:
         """``{host, tailnetIp, servers}``: the dev servers this session started, detected
@@ -22151,29 +22156,41 @@ class SessionOrchestrator:
             raise _dev_servers.DevServerError(_dev_servers.DEV_SERVER_NOT_DETECTED)
         if session_id not in self._drivers:
             raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
-        x11 = self._x11
-        if x11 is None or await x11.start_display(session_id) is None:
-            raise _dev_servers.DevServerError(_dev_servers.PREVIEW_NO_DISPLAY)
-        if session_id not in self._drivers:
-            # Torn down while the display started: its teardown already ran, so this
-            # display is ours to reap.
-            await x11.stop_display(session_id)
-            raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
-        url = _dev_servers.server_url(server)
-        await x11.stop_preview(session_id)
-        x11.prune_browsers(session_id)  # the per-session cap counts live browsers only
-        res = await self.open_browser(session_id, url, force_virtual=True)
-        if not res.get("ok"):
-            spec = x11.display_for(session_id)
-            if native and spec is not None:
-                x11.prune_browsers(session_id)
-                if not spec.browsers:  # nothing left on a preview-only display
-                    await x11.stop_display(session_id)
-            raise _dev_servers.DevServerError(
-                _dev_servers.PREVIEW_NO_DISPLAY if res.get("reason") == "no_display"
-                else _dev_servers.PREVIEW_LAUNCH_FAILED)
-        x11.track_preview(session_id, release_display=native)
-        return {"ok": True, "port": port, "url": url}
+        # One Open at a time per session, from the display start to tracking the new
+        # preview: two concurrent Opens would otherwise both launch, leaving one
+        # Chromium no Open ever replaces. Weak values: the entry lives while in use.
+        locks: weakref.WeakValueDictionary[str, asyncio.Lock] | None = getattr(
+            self, "_preview_locks", None)
+        if locks is None:
+            locks = weakref.WeakValueDictionary()
+            self._preview_locks = locks
+        lock = locks.get(session_id)
+        if lock is None:
+            lock = locks[session_id] = asyncio.Lock()
+        async with lock:
+            x11 = self._x11
+            if x11 is None or await x11.start_display(session_id) is None:
+                raise _dev_servers.DevServerError(_dev_servers.PREVIEW_NO_DISPLAY)
+            if session_id not in self._drivers:
+                # Torn down while the display started: its teardown already ran, so this
+                # display is ours to reap.
+                await x11.stop_display(session_id)
+                raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
+            url = _dev_servers.server_url(server)
+            await x11.stop_preview(session_id)
+            x11.prune_browsers(session_id)  # the per-session cap counts live browsers only
+            res = await self.open_browser(session_id, url, force_virtual=True)
+            if not res.get("ok"):
+                spec = x11.display_for(session_id)
+                if native and spec is not None:
+                    x11.prune_browsers(session_id)
+                    if not spec.browsers:  # nothing left on a preview-only display
+                        await x11.stop_display(session_id)
+                raise _dev_servers.DevServerError(
+                    _dev_servers.PREVIEW_NO_DISPLAY if res.get("reason") == "no_display"
+                    else _dev_servers.PREVIEW_LAUNCH_FAILED)
+            x11.track_preview(session_id, release_display=native)
+            return {"ok": True, "port": port, "url": url}
 
     async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
         """Reconnect one MCP server in a live session. ``LookupError`` when not live,
