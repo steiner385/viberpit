@@ -48,14 +48,17 @@ import ipaddress
 import logging
 import os
 import re
+import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 
+from viberpit import worktrees
+
 from server.auth.identity import _self_tailscale_ips
 from server.sessions.adopt import ProcInfo, _read_proc
-from server.sessions.display_policy import (PREVIEW_LOCAL, PREVIEW_TAILNET,
+from server.sessions.display_policy import (PREVIEW_LOCAL, PREVIEW_NONE, PREVIEW_TAILNET,
                                             resolve_preview_route)
 from server.sessions.memory_watch import (ProcRow, SessionKey, _resume_arg, _subtree,
                                           match_session, scan_proc)
@@ -70,14 +73,20 @@ CACHE_TTL_S = 3.0
 EXPOSED_NOTE = "Also reachable from your network"
 #: The /proc pass takes ~20 ms; anything near this is a blocked read, not a slow host.
 SCAN_TIMEOUT_S = 5.0
+_SCAN_THREAD = "dev-servers-scan"
 
 DEV_SERVER_NOT_DETECTED = "DEV_SERVER_NOT_DETECTED"
+#: ``VIBERPIT_DEV_SERVER_DETECT_ENABLED`` is off on the owning host.
+DEV_SERVER_DETECT_DISABLED = "DEV_SERVER_DETECT_DISABLED"
 PREVIEW_SESSION_NOT_LIVE = "PREVIEW_SESSION_NOT_LIVE"
 PREVIEW_NO_DISPLAY = "PREVIEW_NO_DISPLAY"
 PREVIEW_LAUNCH_FAILED = "PREVIEW_LAUNCH_FAILED"
 #: Every refusal code; the remote edge rebuilds only these.
-DEV_SERVER_CODES = frozenset({DEV_SERVER_NOT_DETECTED, PREVIEW_SESSION_NOT_LIVE,
-                              PREVIEW_NO_DISPLAY, PREVIEW_LAUNCH_FAILED})
+DEV_SERVER_CODES = frozenset({DEV_SERVER_NOT_DETECTED, DEV_SERVER_DETECT_DISABLED,
+                              PREVIEW_SESSION_NOT_LIVE, PREVIEW_NO_DISPLAY,
+                              PREVIEW_LAUNCH_FAILED})
+#: ``open.reason`` of a ``none`` route: the owning host has no X11 for a ``vnc`` preview.
+NO_ROUTE_NO_DISPLAY = "host_no_display"
 
 _LISTEN = "0A"
 _SHELLS = frozenset({"bash", "sh", "dash", "zsh", "fish", "ksh"})
@@ -248,6 +257,22 @@ def _realpath(path: str | None) -> str:
 
 def _inside(path: str, base: str) -> bool:
     return path == base or path.startswith(base.rstrip("/") + "/")
+
+
+def managed_worktree_roots(sessions: list[SessionKey], repo_roots: Collection[str]
+                           ) -> frozenset[str]:
+    """The realpath cwds of the *sessions* that are exactly a managed session worktree
+    root (``worktrees.session_worktree_root``) under one of *repo_roots*. Stats every
+    session cwd, so it runs inside the bounded scan (:class:`DevServerDetector`)."""
+    out: set[str] = set()
+    for k in sessions:
+        if not k.cwd:
+            continue
+        real = os.path.realpath(k.cwd)
+        if any(str(worktrees.session_worktree_root(k.cwd, r) or "") == real
+               for r in repo_roots):
+            out.add(real)
+    return frozenset(out)
 
 
 def managed_sessions(sessions: list[SessionKey], managed_worktrees: frozenset[str]
@@ -499,16 +524,19 @@ def _ip_or_none(value: object) -> str | None:
 
 
 def open_route(server: dict, *, client_node: str | None, runner: str,
-               tailnet_ip: str | None) -> dict:
+               tailnet_ip: str | None, x11: bool = True) -> dict:
     """The ``open`` object for one entry, for this viewer (``display_policy`` decides).
 
     ``local-link`` is the detected address itself (``127.0.0.2`` is not ``localhost``).
     ``tailnet-link`` is the host's tailnet IP, never its MagicDNS name: Vite >= 6
-    refuses an unlisted ``Host`` name but accepts an IP literal. No valid IP → ``vnc``."""
+    refuses an unlisted ``Host`` name but accepts an IP literal. No valid IP → ``vnc``,
+    or ``{kind: "none", reason}`` when the owning host reports no X11 (``x11``)."""
     ip = _ip_or_none(tailnet_ip)
     kind = resolve_preview_route(client_node=client_node, runner=runner,
                                  exposed=server.get("bind") == "all",
-                                 tailnet_reachable=ip is not None)
+                                 tailnet_reachable=ip is not None, vnc_available=x11)
+    if kind == PREVIEW_NONE:
+        return {"kind": kind, "reason": NO_ROUTE_NO_DISPLAY}
     port = int(server["port"])
     if kind == PREVIEW_LOCAL:
         return {"kind": kind, "url": server_url(server)}
@@ -521,7 +549,15 @@ def open_route(server: dict, *, client_node: str | None, runner: str,
 
 class DevServerDetector:
     """Per-daemon detection with a short per-session cache. ``fs``, ``daemon_pid``,
-    ``probe`` and ``clock`` are injectable for tests."""
+    ``probe`` and ``clock`` are injectable for tests.
+
+    **One scan at a time per host.** The ``/proc`` pass and the session-cwd
+    ``realpath``s run on ONE dedicated daemon thread, never the loop's shared default
+    executor, bounded by ``scan_timeout``. A read blocked on a stalled mount cannot be
+    cancelled, so while that thread is still running no second one is started: every
+    poll answers at once with the session's last good result (``[]`` for a fresh
+    detection, which an Open must never trust stale). One stuck mount therefore costs
+    one thread, not one per poll."""
 
     def __init__(self, *, fs: ProcFs | None = None, daemon_pid: int | None = None,
                  probe: Callable[[str, int], Awaitable[ProbeResult | None]] | None = None,
@@ -534,12 +570,18 @@ class DevServerDetector:
         self._clock = clock
         self._ttl = ttl
         self._cache: dict[str, tuple[float, list[dict]]] = {}
+        self._last_good: dict[str, list[dict]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._scan_lock = asyncio.Lock()
+        self._scan_future: asyncio.Future[list[Candidate]] | None = None
 
     async def detect(self, session_id: str, sessions: list[SessionKey], *,
                      bg_commands: Callable[[], Awaitable[list[str]]],
                      fresh: bool = False,
-                     managed_worktrees: frozenset[str] = frozenset()) -> list[dict]:
+                     managed_worktrees: frozenset[str] = frozenset(),
+                     repo_roots: Collection[str] = ()) -> list[dict]:
+        """``managed_worktrees`` are already-resolved worktree roots; ``repo_roots`` are
+        resolved to more of them (:func:`managed_worktree_roots`) inside the scan."""
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
             now = self._clock()
@@ -549,29 +591,82 @@ class DevServerDetector:
                     stale = self._locks.get(sid)
                     if sid != session_id and stale is not None and not stale.locked():
                         self._locks.pop(sid, None)
+            live = {s.session_id for s in sessions}
+            for sid in [sid for sid in self._last_good if sid not in live]:
+                del self._last_good[sid]
             hit = self._cache.get(session_id)
             if hit is not None and not fresh:
                 return [dict(s) for s in hit[1]]
-            servers = await self._detect(session_id, sessions, bg_commands, managed_worktrees)
+            servers = await self._detect(session_id, sessions, bg_commands,
+                                         managed_worktrees, tuple(repo_roots), fresh=fresh)
             self._cache[session_id] = (self._clock(), servers)
             return [dict(s) for s in servers]
 
+    def _start_scan(self, fn: Callable[[], list[Candidate]]) -> asyncio.Future[list[Candidate]]:
+        """Run *fn* on a new daemon thread (a blocked one never holds up process exit)
+        and resolve the returned future on this loop."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[list[Candidate]] = loop.create_future()
+        # A scan that outlives its waiter may still fail: mark it retrieved.
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+
+        def settle(result: list[Candidate] | None, exc: BaseException | None) -> None:
+            if fut.done():
+                return
+            if exc is not None:
+                fut.set_exception(exc)
+            else:
+                fut.set_result(result or [])
+
+        def run() -> None:
+            result: list[Candidate] | None = None
+            exc: BaseException | None = None
+            try:
+                result = fn()
+            except Exception as e:  # noqa: BLE001 — handed to the awaiting poll
+                exc = e
+            try:
+                loop.call_soon_threadsafe(settle, result, exc)
+            except RuntimeError:
+                pass  # the loop closed while this read was blocked: nobody is waiting
+        threading.Thread(target=run, name=_SCAN_THREAD, daemon=True).start()
+        return fut
+
+    async def _scan(self, session_id: str, fn: Callable[[], list[Candidate]]
+                    ) -> list[Candidate] | None:
+        """The candidates, or None when the host's scan is stuck (this poll timed out,
+        or an earlier scan's thread is still blocked)."""
+        async with self._scan_lock:
+            fut = self._scan_future
+            if fut is not None and not fut.done():
+                return None  # never a second thread while one is blocked
+            fut = self._scan_future = self._start_scan(fn)
+            try:
+                return await asyncio.wait_for(asyncio.shield(fut), self._scan_timeout)
+            except TimeoutError:
+                log.info("dev_servers.scan_timeout session=%s after=%.1fs", session_id,
+                         self._scan_timeout)
+                return None
+
     async def _detect(self, session_id: str, sessions: list[SessionKey],
                       bg_commands: Callable[[], Awaitable[list[str]]],
-                      managed_worktrees: frozenset[str]) -> list[dict]:
-        try:
-            # Bounded: a /proc read that blocks (a stuck mount) must not hold this
-            # session's lock forever. The thread itself cannot be cancelled; it is
-            # abandoned and this poll answers "nothing detected".
-            cands = await asyncio.wait_for(
-                asyncio.to_thread(find_candidates, session_id, sessions, fs=self._fs,
-                                  daemon_pid=self._daemon_pid,
-                                  managed_worktrees=managed_worktrees),
-                self._scan_timeout)
-        except TimeoutError:
-            log.info("dev_servers.scan_timeout session=%s after=%.1fs", session_id,
-                     self._scan_timeout)
-            return []
+                      managed_worktrees: frozenset[str], repo_roots: tuple[str, ...], *,
+                      fresh: bool) -> list[dict]:
+        def scan() -> list[Candidate]:
+            managed = managed_worktrees
+            if repo_roots:
+                managed = managed | managed_worktree_roots(sessions, repo_roots)
+            return find_candidates(session_id, sessions, fs=self._fs,
+                                   daemon_pid=self._daemon_pid, managed_worktrees=managed)
+        cands = await self._scan(session_id, scan)
+        if cands is None:
+            return [] if fresh else [dict(s) for s in self._last_good.get(session_id, [])]
+        out = await self._entries(cands, bg_commands)
+        self._last_good[session_id] = out
+        return out
+
+    async def _entries(self, cands: list[Candidate],
+                       bg_commands: Callable[[], Awaitable[list[str]]]) -> list[dict]:
         if not cands:
             return []
         probes = await asyncio.gather(*(self._probe(c.address, c.port) for c in cands))

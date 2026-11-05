@@ -565,18 +565,10 @@ class SessionLeaseHeld(RuntimeError):
             f"second CLI for it (see #1379)")
 
 
-def _managed_worktree_roots(keys: list[SessionKey], repo_roots: set[str]) -> frozenset[str]:
-    """The realpath cwds of the sessions in *keys* that are exactly a managed session
-    worktree root under one of *repo_roots* (D-18 dev-server attribution)."""
-    out: set[str] = set()
-    for k in keys:
-        if not k.cwd:
-            continue
-        real = os.path.realpath(k.cwd)
-        if any(str(worktrees.session_worktree_root(k.cwd, r) or "") == real
-               for r in repo_roots):
-            out.add(real)
-    return frozenset(out)
+def _dev_server_detect_enabled() -> bool:
+    """The D-18 kill switch, read on the daemon that owns the session."""
+    from server.config import get_settings
+    return bool(get_settings().dev_server_detect_enabled)
 
 
 async def effective_repo_root(fallback: str) -> str:
@@ -22121,9 +22113,6 @@ class SessionOrchestrator:
         against the LIVE sessions only — a closed record has no process tree, and its
         cwd must not make a live session's cwd look shared — plus the session asked
         about, whose escaped servers can outlive its driver."""
-        from server.config import get_settings
-        if not get_settings().dev_server_detect_enabled:
-            return []
         keys = [k for k in self.session_keys()
                 if k.session_id in self._drivers or k.session_id == session_id]
 
@@ -22133,25 +22122,34 @@ class SessionOrchestrator:
         # Outside a session's own process subtree only a cwd inside its MANAGED worktree
         # attributes, and only a session whose cwd IS a worktree root has one
         # (worktrees.session_worktree_root over the same managed roots as
-        # _ensure_session_cwd). Off the loop: it resolves the session cwds.
-        roots = await self._managed_roots()
-        managed = await asyncio.to_thread(_managed_worktree_roots, keys, roots)
+        # _ensure_session_cwd). Resolved inside the detector's one bounded scan: it
+        # stats the session cwds, which can block on a stalled mount.
         return await self._dev_server_detector().detect(
             session_id, keys, bg_commands=bg_commands, fresh=fresh,
-            managed_worktrees=managed)
+            repo_roots=await self._managed_roots())
 
     async def dev_servers(self, session_id: str) -> dict:
-        """``{host, tailnetIp, servers}``: the dev servers this session started, detected
-        on this — the owning — host (D-18), the host's fleet name, which the edge compares
-        with the viewer's tailnet node to route "Open", and its tailnet IP (or None). ``KeyError`` for an unknown
-        session. Cached for a few seconds per session, so polling stays cheap."""
+        """``{host, enabled, x11, tailnetIp, servers}``: the dev servers this session
+        started, detected on this — the owning — host (D-18), the host's fleet name, which
+        the edge compares with the viewer's tailnet node to route "Open", and its tailnet
+        IP (or None). ``KeyError`` for an unknown session. Cached for a few seconds per
+        session, so polling stays cheap. ``enabled`` is the kill switch
+        (``VIBERPIT_DEV_SERVER_DETECT_ENABLED``): off, nothing is detected and the UI
+        hides the section. ``x11``: whether this host can show a ``vnc`` preview at all,
+        so the edge never offers one that always refuses."""
         self.record(session_id)
+        host = self_host_name()
+        x11 = self._x11 is not None
+        if not _dev_server_detect_enabled():
+            return {"host": host, "enabled": False, "x11": x11, "tailnetIp": None,
+                    "servers": []}
         servers = await self._detect_dev_servers(session_id, fresh=False)
         # ``tailnetIp``: this host's own tailnet address, for the edge's tailnet-link —
         # only needed (and only looked up) when a server is bound to every address.
         ip = (await asyncio.to_thread(_dev_servers.self_tailnet_ip)
               if any(s.get("bind") == "all" for s in servers) else None)
-        return {"host": self_host_name(), "tailnetIp": ip, "servers": servers}
+        return {"host": host, "enabled": True, "x11": x11, "tailnetIp": ip,
+                "servers": servers}
 
     async def open_dev_server(self, session_id: str, *, port: int) -> dict:
         """Open a detected dev server in the session's virtual display (D-18 "vnc").
@@ -22167,6 +22165,8 @@ class SessionOrchestrator:
         or sits unwatched for the VNC idle timeout (``X11Manager.track_preview``)."""
         rec = self.record(session_id)
         native = rec.display_mode == DISPLAY_NATIVE
+        if not _dev_server_detect_enabled():
+            raise _dev_servers.DevServerError(_dev_servers.DEV_SERVER_DETECT_DISABLED)
         servers = await self._detect_dev_servers(session_id, fresh=True)
         server = next((s for s in servers if s["port"] == port), None)
         if server is None:

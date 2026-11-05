@@ -155,9 +155,13 @@ async def move_preflight(orch, *, session_id: str, target: str | None, identity:
 
 # D-18 preview refusals: an undetected port is "not found"; the rest are a session or
 # host that cannot show one right now.
-_PREVIEW_HTTP = {"DEV_SERVER_NOT_DETECTED": 404}
+# Detection switched off is a feature that is not there: 404, as the house's disabled
+# features answer.
+_PREVIEW_HTTP = {"DEV_SERVER_NOT_DETECTED": 404, "DEV_SERVER_DETECT_DISABLED": 404}
 _PREVIEW_MESSAGE = {
     "DEV_SERVER_NOT_DETECTED": "That dev server is not running in this session any more.",
+    "DEV_SERVER_DETECT_DISABLED": "Dev server detection is switched off on this session's "
+                                  "host.",
     "PREVIEW_SESSION_NOT_LIVE": "This session is not running, so it has no display to open "
                                 "the dev server in.",
     "PREVIEW_NO_DISPLAY": "No virtual display is available for this session on its host.",

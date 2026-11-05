@@ -2332,7 +2332,9 @@ async def session_dev_servers(
     else ``vnc`` (``POST …/dev-servers/{port}/open``). The viewer's node comes from
     ``tailscale whois`` of the verified peer only; every URL is built here from detected
     data. Poll every few seconds at most: the daemon caches detection for
-    ``CACHE_TTL_S``. Unknown session 404; an old daemon 409 ``daemon_outdated``."""
+    ``CACHE_TTL_S``. A host without X11 gets ``{kind: "none", reason}`` instead of
+    ``vnc``; detection switched off answers ``enabled: false``. Unknown session 404; an
+    old daemon 409 ``daemon_outdated``."""
     try:
         found = await _get_orchestrator(request).dev_servers(session_id)
     except KeyError:
@@ -2340,6 +2342,8 @@ async def session_dev_servers(
     except DaemonError as exc:
         _raise_daemon_outdated_or_reraise(exc, "detect dev servers")
     host = str(found.get("host") or "")
+    if found.get("enabled") is False:  # the owning host's kill switch: hide the section
+        return {"host": host, "enabled": False, "servers": []}
     servers = [dict(s) for s in found.get("servers") or []]
     if not servers:
         return {"host": host, "servers": []}
@@ -2347,7 +2351,8 @@ async def session_dev_servers(
     client_node = await asyncio.to_thread(client_node_name, request)
     for s in servers:
         s["open"] = dev_server_routes.open_route(s, client_node=client_node, runner=host,
-                                                 tailnet_ip=found.get("tailnetIp"))
+                                                 tailnet_ip=found.get("tailnetIp"),
+                                                 x11=found.get("x11") is not False)
     return {"host": host, "servers": servers}
 
 
@@ -2363,7 +2368,8 @@ async def open_session_dev_server(
     started on demand on the session's host — also for a native session. Person-only
     (403 ``SESSION_CONTROL_HUMAN_ONLY``); audited ``session.preview_open``. 200
     ``{ok, port, url}``; 404 ``DEV_SERVER_NOT_DETECTED`` (the owning daemon re-detects:
-    only a port detected NOW opens); 409 ``PREVIEW_SESSION_NOT_LIVE`` /
+    only a port detected NOW opens); 404 ``DEV_SERVER_DETECT_DISABLED``; 409
+    ``PREVIEW_SESSION_NOT_LIVE`` /
     ``PREVIEW_NO_DISPLAY`` / ``PREVIEW_LAUNCH_FAILED``; 404 unknown session; 409
     ``daemon_outdated``; 422 a port outside 1024–65535."""
     try:

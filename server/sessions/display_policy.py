@@ -66,6 +66,8 @@ def resolve_display_mode(
 PREVIEW_LOCAL = "local-link"
 PREVIEW_TAILNET = "tailnet-link"
 PREVIEW_VNC = "vnc"
+#: No way to open it for this viewer: the session's host has no display for ``vnc``.
+PREVIEW_NONE = "none"
 
 
 def resolve_preview_route(
@@ -74,20 +76,24 @@ def resolve_preview_route(
     runner: str,
     exposed: bool,
     tailnet_reachable: bool,
+    vnc_available: bool = True,
 ) -> str:
-    """PREVIEW_LOCAL, PREVIEW_TAILNET or PREVIEW_VNC for one dev server and one viewer.
+    """PREVIEW_LOCAL, PREVIEW_TAILNET, PREVIEW_VNC or PREVIEW_NONE for one dev server and
+    one viewer.
 
     Rules, in order: a viewer whose tailnet node IS the session's host opens it in their
     own browser on loopback; a server bound to every address (``exposed``) on a host with
     a known tailnet name opens over the tailnet; anything else opens in the session's
-    virtual display. ``client_node`` must come from the verified peer
-    (``identity.client_node_name``), never from anything the client sends.
+    virtual display — or nowhere (PREVIEW_NONE) when that host has no X11
+    (``vnc_available``), since that route would always refuse. ``client_node`` must come
+    from the verified peer (``identity.client_node_name``), never from anything the
+    client sends.
     """
     if _is_local(client_node, runner):
         return PREVIEW_LOCAL
     if exposed and tailnet_reachable:
         return PREVIEW_TAILNET
-    return PREVIEW_VNC
+    return PREVIEW_VNC if vnc_available else PREVIEW_NONE
 
 
 def native_fallback(

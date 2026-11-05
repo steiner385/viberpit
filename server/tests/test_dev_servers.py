@@ -284,8 +284,19 @@ async def test_two_sessions_sharing_a_cwd_attribute_nothing_by_cwd(host) -> None
 _HOME_WT = "/home/u/GitHub/viberpit-sessions/worktrees"
 
 
+def _helper_cwd_under(home: str, tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Where ``helper_call.helper_cwd()`` puts a helper for a user whose home is *home*
+    — derived from the helper itself (run against a scratch ``$HOME``), never
+    re-spelled here."""
+    from server.sessions.helper_call import helper_cwd
+    monkeypatch.delenv("VIBERPIT_HELPER_CWD", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_home))
+    rel = Path(helper_cwd()).relative_to(tmp_home)
+    return f"{home}/{rel}"
+
+
 @pytest.fixture
-def home_host(tmp_path: Path) -> SimpleNamespace:
+def home_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """A live session A whose cwd is the home directory (not a managed worktree), two
     Codex sessions in managed worktrees sharing the account's app-server (cwd = the
     Codex home, under ~), and daemon helpers whose cwds sit under ~."""
@@ -317,10 +328,11 @@ def home_host(tmp_path: Path) -> SimpleNamespace:
     p.add(701, 700, ["bash", "-c", "worker"], cwd="/opt/proxy")
     p.add(702, 701, ["worker"], cwd="/opt/proxy", sockets=(9030,))
     p.listen(9030, "127.0.0.1", 5500)
-    # A helper child inheriting helper_cwd() (~/.cache/ccswitch/helper-cwd): nobody's.
-    p.add(710, 100, ["python3", "-m", "helper"], cwd="/home/u/.cache/ccswitch/helper-cwd")
-    p.add(711, 710, ["bash", "-c", "x"], cwd="/home/u/.cache/ccswitch/helper-cwd")
-    p.add(712, 711, ["node", "x"], cwd="/home/u/.cache/ccswitch/helper-cwd", sockets=(9031,))
+    # A helper child inheriting helper_cwd() (under ~/.cache): nobody's.
+    helper = _helper_cwd_under("/home/u", tmp_path / "home", monkeypatch)
+    p.add(710, 100, ["python3", "-m", "helper"], cwd=helper)
+    p.add(711, 710, ["bash", "-c", "x"], cwd=helper)
+    p.add(712, 711, ["node", "x"], cwd=helper, sockets=(9031,))
     p.listen(9031, "127.0.0.1", 5501)
     # Escaped from every subtree, in the daemon's cgroup, cwd under ~: nobody's.
     p.add(800, 1, ["node", "server.js"], cwd="/home/u/site", sockets=(9040,))
@@ -482,6 +494,76 @@ async def test_a_stuck_scan_times_out_empty_and_logs_info(host, caplog) -> None:
         release.set()
     assert any(r.levelno == logging.INFO and "dev_servers.scan_timeout" in r.getMessage()
                for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_scan_stuck_forever_holds_one_thread_and_polls_stay_prompt(host) -> None:
+    """Final review item 2: one stalled mount must not leak a thread per poll. While a
+    scan is blocked, no second one starts; every poll answers at once with the last
+    good result; and the shared default executor is never involved."""
+    import threading
+    block, entered = threading.Event(), []
+    now = [1000.0]
+
+    class _StuckFs(ds.ProcFs):
+        def listeners(self):
+            entered.append(threading.current_thread())
+            if len(entered) > 1:
+                block.wait()  # every scan after the first: a stalled mount, forever
+            return super().listeners()
+    det = ds.DevServerDetector(fs=_StuckFs(host.fs.root), daemon_pid=100, probe=host.probe,
+                               scan_timeout=0.2, clock=lambda: now[0])
+    try:
+        good = await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
+        assert [s["port"] for s in good] == [3000, 5173, 5180, 5401, 8080]
+        before = threading.active_count()
+        t0 = time.monotonic()
+        polls = []
+        for _ in range(20):
+            now[0] += ds.CACHE_TTL_S + 1  # never served from the cache
+            polls.append(await det.detect(SID_A, host.keys, bg_commands=_no_bg,
+                                          managed_worktrees=_MW))
+        elapsed = time.monotonic() - t0
+        assert len(entered) == 2  # the good scan, then ONE stuck scan — not 20
+        assert threading.active_count() - before <= 1
+        assert elapsed < 0.2 + 1.0  # one timeout, then every poll returns at once
+        assert all(p == good for p in polls)  # the last good answer meanwhile
+        assert entered[1] is not threading.main_thread()
+        # The loop's default executor is untouched and still serves other work.
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: 42), 2) == 42
+        # A fresh (Open) detection never trusts a stale answer.
+        assert await det.detect(SID_A, host.keys, bg_commands=_no_bg, fresh=True,
+                                managed_worktrees=_MW) == []
+    finally:
+        block.set()
+
+
+@pytest.mark.asyncio
+async def test_stuck_managed_root_resolution_is_inside_the_one_bounded_scan(
+        grouping_world, monkeypatch) -> None:
+    """Final review item 2: resolving the sessions' managed worktree roots stats their
+    cwds too, so it runs inside the same single bounded scan — never a separate
+    unbounded ``to_thread`` per poll."""
+    import threading
+    from viberpit import worktrees
+    block, calls = threading.Event(), []
+
+    def stuck(path, repo_root):
+        calls.append(path)
+        block.wait()
+        return None
+    monkeypatch.setattr(worktrees, "session_worktree_root", stuck)
+    o = grouping_world.o
+    o._dev_server_det._scan_timeout = 0.2
+    try:
+        t0 = time.monotonic()
+        for _ in range(20):
+            assert await asyncio.wait_for(o._detect_dev_servers(SID_B, fresh=True), 3) == []
+        assert time.monotonic() - t0 < 0.2 + 1.0
+        assert len(calls) == 1  # one thread, blocked on the first cwd
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: 42), 2) == 42
+    finally:
+        block.set()
 
 
 @pytest.mark.asyncio
@@ -651,6 +733,20 @@ def test_open_route(server, client_node, tailnet, expected) -> None:
                          tailnet_ip=tailnet) == expected
 
 
+@pytest.mark.parametrize("server,client_node,tailnet,expected", [
+    # Final review item 7: a host without X11 has no vnc route to offer.
+    (_LOOP, "phone", _IP, {"kind": "none", "reason": ds.NO_ROUTE_NO_DISPLAY}),
+    (_ALL, "phone", None, {"kind": "none", "reason": ds.NO_ROUTE_NO_DISPLAY}),
+    # The links do not need the host's display.
+    (_LOOP, "rocky", None, {"kind": "local-link", "url": "http://127.0.0.1:5173/"}),
+    (_ALL, "phone", _IP,
+     {"kind": "tailnet-link", "url": f"http://{_IP}:8080/", "note": ds.EXPOSED_NOTE}),
+])
+def test_open_route_without_x11_on_the_host(server, client_node, tailnet, expected) -> None:
+    assert ds.open_route(server, client_node=client_node, runner="rocky",
+                         tailnet_ip=tailnet, x11=False) == expected
+
+
 @pytest.mark.parametrize("own,expected", [
     (["fd7a:115c:a1e0::1", "100.101.102.103"], "100.101.102.103"),  # IPv4 preferred
     (["fd7a:115c:a1e0::1"], "fd7a:115c:a1e0::1"),
@@ -723,11 +819,11 @@ def orch():
     found = [{"port": 5173, "address": "127.0.0.1", "bind": "loopback", "pid": 202,
               "label": "vite"}]
     calls: list[tuple] = []
-    bases: list[frozenset[str]] = []
+    bases: list[set[str]] = []
 
-    async def detect(session_id, sessions, *, bg_commands, fresh=False, managed_worktrees=frozenset()):
+    async def detect(session_id, sessions, *, bg_commands, fresh=False, repo_roots=()):
         calls.append((session_id, [k.session_id for k in sessions], fresh))
-        bases.append(managed_worktrees)
+        bases.append(set(repo_roots))
         return [dict(s) for s in found]
     o._dev_server_detector().detect = detect  # type: ignore[method-assign]
     return SimpleNamespace(o=o, found=found, calls=calls, bases=bases)
@@ -739,10 +835,12 @@ async def test_orchestrator_dev_servers_names_this_host(orch) -> None:
             patch("server.sessions.dev_servers.self_tailnet_ip") as ip:
         res = await orch.o.dev_servers(SID_A)
     # No bind-all server: no tailnet IP is looked up.
-    assert res == {"host": "rocky", "tailnetIp": None, "servers": orch.found}
+    assert res == {"host": "rocky", "enabled": True, "x11": True, "tailnetIp": None,
+                   "servers": orch.found}
     ip.assert_not_called()
-    # /w/a is not under the daemon's managed roots: not a managed worktree.
-    assert orch.bases[-1] == frozenset()
+    # The managed worktrees are resolved from the same roots as _ensure_session_cwd,
+    # inside the detector's bounded scan.
+    assert orch.bases[-1] == await orch.o._managed_roots()
     assert orch.calls == [(SID_A, [SID_A], False)]
     with pytest.raises(KeyError):
         await orch.o.dev_servers("nope")
@@ -777,10 +875,28 @@ async def test_uds_daemon_reports_its_tailnet_ip(orch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dev_servers_kill_switch(orch, monkeypatch) -> None:
+async def test_dev_servers_kill_switch_says_it_is_off(orch, monkeypatch) -> None:
+    """Final review item 3: off is not "nothing detected" — the answer says so, and an
+    Open is refused with its own code, detecting nothing."""
     monkeypatch.setenv("VIBERPIT_DEV_SERVER_DETECT_ENABLED", "false")
     res = await orch.o.dev_servers(SID_A)
+    assert res["enabled"] is False
     assert res["servers"] == [] and orch.calls == []
+    with pytest.raises(ds.DevServerError) as ei:
+        await orch.o.open_dev_server(SID_A, port=5173)
+    assert ei.value.code == ds.DEV_SERVER_DETECT_DISABLED
+    assert orch.calls == [] and orch.o._x11.started == []
+    monkeypatch.setenv("VIBERPIT_DEV_SERVER_DETECT_ENABLED", "true")
+    assert (await orch.o.dev_servers(SID_A))["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_dev_servers_reports_whether_this_host_has_x11(orch) -> None:
+    """Final review item 7: the owning daemon says whether it can show a ``vnc`` preview
+    at all, so the edge never offers a route that always refuses."""
+    assert (await orch.o.dev_servers(SID_A))["x11"] is True
+    orch.o._x11 = None
+    assert (await orch.o.dev_servers(SID_A))["x11"] is False
 
 
 @pytest.mark.asyncio
@@ -1019,6 +1135,65 @@ async def test_a_watched_native_preview_display_stays_while_viewed(real_x11) -> 
     assert real_x11.mgr.display_for(SID_A) is None
 
 
+@pytest.mark.asyncio
+async def test_a_native_preview_display_is_released_only_after_a_whole_unwatched_timeout(
+        real_x11) -> None:
+    """Final review item 6: "idle" is unwatched for the WHOLE timeout, measured from the
+    last viewer's detach — not "no viewer at the moment the reaper ticks"."""
+    mgr = real_x11.mgr
+    mgr._vnc_idle_timeout_s = 0.4
+    t0 = time.monotonic()
+    assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    await mgr.attach(SID_A)
+    await asyncio.sleep(0.3 - (time.monotonic() - t0))
+    mgr.detach(SID_A)  # watched until t0+0.3
+    await asyncio.sleep(0.55 - (time.monotonic() - t0))
+    # The reaper ticked at ~t0+0.4 with nobody attached, but nobody has been unwatched
+    # for 0.4 s yet: the display stays.
+    assert mgr.display_for(SID_A) is not None
+    for _ in range(150):
+        if mgr.display_for(SID_A) is None:
+            break
+        await asyncio.sleep(0.01)
+    assert mgr.display_for(SID_A) is None
+    assert time.monotonic() - t0 >= 0.3 + 0.4
+
+
+@pytest.mark.asyncio
+async def test_stop_display_never_signals_a_reused_or_exited_browser_pid(sleeper_x11) -> None:
+    """Final review item 8: display teardown kills its browsers through the start-time
+    checked ``terminate_process_tree``, like ``stop_preview`` — never by pid alone."""
+    mgr = sleeper_x11.mgr
+    assert await mgr.launch_browser(SID_A, None)
+    assert await mgr.launch_browser(SID_A, None)
+    reused, genuine = sleeper_x11.procs
+    spec = mgr.display_for(SID_A)
+    assert spec.browser_starts[reused.pid] is not None
+    spec.browser_starts[reused.pid] += 1  # that pid now names another process
+    await mgr.stop_display(SID_A)
+    assert await asyncio.wait_for(genuine.wait(), 5) is not None  # positive control
+    await asyncio.sleep(0.2)
+    assert reused.returncode is None  # not signalled
+
+
+@pytest.mark.asyncio
+async def test_stop_display_never_signals_an_exited_browser(sleeper_x11, monkeypatch) -> None:
+    from server.sessions import x11manager
+    signalled: list[int] = []
+
+    def spy(pid, **kw):
+        signalled.append(pid)
+        return True
+    monkeypatch.setattr(x11manager, "terminate_process_tree", spy)
+    mgr = sleeper_x11.mgr
+    assert await mgr.launch_browser(SID_A, None)
+    proc = sleeper_x11.procs[0]
+    proc.kill()
+    await proc.wait()  # exited and reaped: its pid is free for reuse
+    await mgr.stop_display(SID_A)
+    assert signalled == []
+
+
 def test_terminate_process_tree_refuses_a_reused_pid() -> None:
     """A recorded start time that no longer matches the pid (it exited and the pid was
     reused) is never signalled; a matching one is."""
@@ -1163,6 +1338,11 @@ async def test_remote_forwards_and_rebuilds_errors() -> None:
             "DevServerError", ds.DEV_SERVER_NOT_DETECTED,
             {"code": ds.DEV_SERVER_NOT_DETECTED}))).open_dev_server(SID_A, port=1)
     assert ei.value.code == ds.DEV_SERVER_NOT_DETECTED
+    with pytest.raises(ds.DevServerError) as off:
+        await RemoteOrchestrator(_RecordingClient(error=DaemonError(
+            "DevServerError", ds.DEV_SERVER_DETECT_DISABLED,
+            {"code": ds.DEV_SERVER_DETECT_DISABLED}))).open_dev_server(SID_A, port=1)
+    assert off.value.code == ds.DEV_SERVER_DETECT_DISABLED
     with pytest.raises(DaemonError):  # an unknown code is never invented
         await RemoteOrchestrator(_RecordingClient(error=DaemonError(
             "DevServerError", "WAT", {"code": "WAT"}))).open_dev_server(SID_A, port=1)
@@ -1241,7 +1421,7 @@ _DETECTED = [dict(_LOOP), dict(_ALL)]
 
 
 def _route_client(*, host_name: str = "rocky", error: Exception | None = None,
-                  open_error: Exception | None = None):
+                  open_error: Exception | None = None, extra: dict | None = None):
     client, fake = _make_client()
     fake.dev_calls = []
 
@@ -1250,7 +1430,7 @@ def _route_client(*, host_name: str = "rocky", error: Exception | None = None,
         if error is not None:
             raise error
         return {"host": host_name, "tailnetIp": fake.tailnet_ip,
-                "servers": [dict(s) for s in _DETECTED]}
+                "servers": [dict(s) for s in _DETECTED], **(extra or {})}
 
     async def open_dev_server(sid, *, port):
         fake.dev_calls.append(("open_dev_server", sid, port))
@@ -1282,6 +1462,27 @@ def test_get_routes_open_per_viewer(viewer, tailnet, kinds) -> None:
     if "tailnet-link" in kinds:
         assert body["servers"][1]["open"]["url"] == f"http://{_IP}:8080/"
     assert fake.dev_calls == [("dev_servers", SID)]
+
+
+def test_get_says_detection_is_off() -> None:
+    """Final review item 3: the web hides the section on ``enabled: false``."""
+    client, fake = _route_client(extra={"enabled": False, "servers": []})
+    with patch.dict(os.environ, _ENV), patch(_NODE, return_value="phone"), client:
+        r = client.get(f"/api/sessions/{SID}/dev-servers", headers=_H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"host": "rocky", "enabled": False, "servers": []}
+
+
+def test_get_offers_no_vnc_route_from_a_host_without_x11() -> None:
+    """Final review item 7: ``vnc`` on a host with no X11 always 409s — offer
+    ``{kind: "none", reason}`` instead; a link that needs no display stays."""
+    client, _ = _route_client(extra={"x11": False})
+    with patch.dict(os.environ, _ENV), patch(_NODE, return_value="phone"), client:
+        r = client.get(f"/api/sessions/{SID}/dev-servers", headers=_H)
+    assert r.status_code == 200, r.text
+    assert [s["open"] for s in r.json()["servers"]] == [
+        {"kind": "none", "reason": ds.NO_ROUTE_NO_DISPLAY},
+        {"kind": "tailnet-link", "url": f"http://{_IP}:8080/", "note": ds.EXPOSED_NOTE}]
 
 
 def test_get_from_the_session_host_links_to_the_detected_address() -> None:
@@ -1377,6 +1578,7 @@ def test_post_open_is_person_only(monkeypatch) -> None:
 
 @pytest.mark.parametrize("error,status,code", [
     (ds.DevServerError(ds.DEV_SERVER_NOT_DETECTED), 404, ds.DEV_SERVER_NOT_DETECTED),
+    (ds.DevServerError(ds.DEV_SERVER_DETECT_DISABLED), 404, ds.DEV_SERVER_DETECT_DISABLED),
     (ds.DevServerError(ds.PREVIEW_SESSION_NOT_LIVE), 409, ds.PREVIEW_SESSION_NOT_LIVE),
     (ds.DevServerError(ds.PREVIEW_NO_DISPLAY), 409, ds.PREVIEW_NO_DISPLAY),
     (ds.DevServerError(ds.PREVIEW_LAUNCH_FAILED), 409, ds.PREVIEW_LAUNCH_FAILED),

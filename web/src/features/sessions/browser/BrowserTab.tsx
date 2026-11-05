@@ -26,6 +26,10 @@ const COPY = {
   connecting: 'Connecting…',
 }
 
+/** Waiting on a session display that is not there yet: first retry, and the cap. */
+const NODISPLAY_RETRY_MS = 5_000
+const NODISPLAY_RETRY_MAX_MS = 30_000
+
 interface Props {
   sessionId: string
   statusState: string
@@ -60,6 +64,8 @@ export function BrowserTab({
   const [emptyDismissed, setEmptyDismissed] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
   const clientRef = useRef<VncClient | null>(null)
+  // Consecutive no-display retries since the viewer last connected (see below).
+  const noDisplayAttempt = useRef(0)
   const isTouch = useViewport().coarsePointer
   const [keyboardOpen, setKeyboardOpen] = useState(false)
   const hiddenInputRef = useRef<HTMLInputElement>(null)
@@ -139,7 +145,10 @@ export function BrowserTab({
     const url = `${proto}://${location.host}/ws/vnc?session=${encodeURIComponent(sessionId)}`
     const c = new VncClient(url)
     clientRef.current = c
-    c.on('connect', () => setState('connected'))
+    c.on('connect', () => {
+      noDisplayAttempt.current = 0
+      setState('connected')
+    })
     c.on('reconnecting', () => setState('reconnecting'))
     c.on('disconnect', (s) => {
       // A preview-only display that is gone (closed, or reaped unwatched) is not an
@@ -156,6 +165,27 @@ export function BrowserTab({
     if (canvasRef.current) void c.connect(canvasRef.current)
     return () => c.disconnect()
   }, [sessionId, initialState, streaming, previewOnly, connectNonce])
+
+  // A session's own display (and the reauth panel's) is allocated lazily: it is
+  // absent while the session is idle and between driver swaps, so a 4404 here means
+  // "not yet", not "never". Wait for it: reconnect at once when the session's status
+  // changes (a prompt started it), else retry slowly (5 s, doubling to 30 s) for a
+  // swap the status never shows. A preview-only display is the exception: gone is
+  // gone until the next Open (handled in the disconnect listener above).
+  const lastStatus = useRef(statusState)
+  useEffect(() => {
+    const statusChanged = lastStatus.current !== statusState
+    lastStatus.current = statusState
+    if (state !== 'nodisplay' || previewOnly || initialState) return
+    if (statusChanged) noDisplayAttempt.current = 0
+    const delay = statusChanged ? 0
+      : Math.min(NODISPLAY_RETRY_MAX_MS, NODISPLAY_RETRY_MS * 2 ** noDisplayAttempt.current)
+    const t = setTimeout(() => {
+      noDisplayAttempt.current++
+      setConnectNonce((n) => n + 1)
+    }, delay)
+    return () => clearTimeout(t)
+  }, [state, statusState, previewOnly, initialState, connectNonce])
 
   // Opening the tab re-asks for the dev servers at once rather than showing the list
   // from the session's last turn end until the first poll tick. React Query's

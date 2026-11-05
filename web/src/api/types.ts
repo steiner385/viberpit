@@ -1323,6 +1323,8 @@ export type DevServerOpen =
   | { kind: 'local-link'; url: string }
   | { kind: 'tailnet-link'; url: string; note?: string }
   | { kind: 'vnc' }
+  /** No way to open it from this viewer: the session's host has no X11 for `vnc`. */
+  | { kind: 'none'; reason: string }
 
 /** One dev server the session started. `label` and `title` are untrusted text
  *  (a command line, a page's `<title>`): render them as text only. */

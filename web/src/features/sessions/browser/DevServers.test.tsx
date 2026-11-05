@@ -113,12 +113,26 @@ describe('DevServers', () => {
     ['DEV_SERVER_NOT_DETECTED', DEV_SERVERS_COPY.errors.DEV_SERVER_NOT_DETECTED],
     ['SESSION_CONTROL_HUMAN_ONLY', DEV_SERVERS_COPY.errors.SESSION_CONTROL_HUMAN_ONLY],
     ['daemon_outdated', DEV_SERVERS_COPY.errors.daemon_outdated],
+    ['DEV_SERVER_DETECT_DISABLED', DEV_SERVERS_COPY.errors.DEV_SERVER_DETECT_DISABLED],
   ])('a vnc Open refused with %s says so in plain words', async (code, copy) => {
+    expect(copy).toBeTruthy()
     stubFetch({ status: 409, body: { detail: { code, message: 'x' } } })
     const { onPreviewOpened } = renderList([server()])
     fireEvent.click(await screen.findByRole('button', { name: /open :5173/i }))
     expect(await screen.findByRole('alert')).toHaveTextContent(copy)
     expect(onPreviewOpened).not.toHaveBeenCalled()
+  })
+
+  it("a server the viewer has no way to open says so, with no Open button", async () => {
+    // The session's host has no X11, and the viewer is not on that host: no route.
+    renderList([
+      server({ open: { kind: 'none', reason: 'host_no_display' } }),
+      server({ port: 8080, bind: 'all', open: { kind: 'tailnet-link', url: 'http://100.1.2.3:8080/' } }),
+    ])
+    expect(await screen.findByText(DEV_SERVERS_COPY.unavailable)).toBeInTheDocument()
+    expect(DEV_SERVERS_COPY.unavailable).toBe('Not available from this device')
+    expect(screen.queryByRole('button', { name: /open :5173/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /open :8080/i })).toBeInTheDocument()
   })
 
   it('"no display" reads as no preview open', () => {

@@ -8,6 +8,7 @@ export const DEV_SERVERS_COPY = {
   failed: "Couldn't open the preview.",
   badLink: "Couldn't open this dev server.",
   unreachable: "Couldn't reach the server to open the preview.",
+  unavailable: 'Not available from this device',
   errors: {
     PREVIEW_NO_DISPLAY: "No preview open — this session's host has no display free for it.",
     PREVIEW_SESSION_NOT_LIVE: "This session isn't running. Send it a prompt to start it, then try again.",
@@ -15,5 +16,6 @@ export const DEV_SERVERS_COPY = {
     DEV_SERVER_NOT_DETECTED: "This dev server isn't running any more.",
     SESSION_CONTROL_HUMAN_ONLY: 'Only a person can open a preview.',
     daemon_outdated: "This session's host needs an update before it can open previews.",
+    DEV_SERVER_DETECT_DISABLED: "Dev server detection is switched off on this session's host.",
   } as Record<string, string>,
 }

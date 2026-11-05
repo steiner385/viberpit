@@ -2,7 +2,8 @@
  * The Browser tab's "Dev servers" section (D-18): the dev servers this session
  * started, each with an Open that goes to the VIEWER's display by the route the
  * server picked for this viewer — a link on this device (`local-link`), a link over
- * the tailnet (`tailnet-link`), or the session's virtual display (`vnc`).
+ * the tailnet (`tailnet-link`), or the session's virtual display (`vnc`) — or no
+ * Open at all (`none`) when the session's host has no display to show it in.
  *
  * The UI never builds or edits a URL: a link opens exactly the server's `url`, and
  * a `vnc` Open posts only the detected port. Labels and titles are untrusted text
@@ -44,6 +45,7 @@ export function DevServers({ sessionId, servers, refetch, notice, onPreviewOpene
 
   function open(s: DevServer) {
     setError(null)
+    if (s.open.kind === 'none') return
     if (s.open.kind === 'vnc') {
       openPreview.mutate(s.port, {
         onSuccess: onPreviewOpened,
@@ -91,20 +93,24 @@ export function DevServers({ sessionId, servers, refetch, notice, onPreviewOpene
                   )}
                   {s.bind === 'all' && <p className="text-xs text-ink-muted">{DEV_SERVERS_COPY.reachable}</p>}
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="min-h-target"
-                  aria-label={`Open :${s.port}${link ? ' in a new tab' : " in the session's browser"}`}
-                  iconLeft={link ? <ExternalLink size={14} aria-hidden="true" /> : <Monitor size={14} aria-hidden="true" />}
-                  loading={pending}
-                  // One Open at a time: the section has one error line per row and
-                  // the server replaces the previous preview anyway.
-                  disabled={openPreview.isPending && !pending}
-                  onClick={() => open(s)}
-                >
-                  Open
-                </Button>
+                {s.open.kind === 'none' ? (
+                  <span className="shrink-0 text-xs text-ink-muted">{DEV_SERVERS_COPY.unavailable}</span>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="min-h-target"
+                    aria-label={`Open :${s.port}${link ? ' in a new tab' : " in the session's browser"}`}
+                    iconLeft={link ? <ExternalLink size={14} aria-hidden="true" /> : <Monitor size={14} aria-hidden="true" />}
+                    loading={pending}
+                    // One Open at a time: the section has one error line per row and
+                    // the server replaces the previous preview anyway.
+                    disabled={openPreview.isPending && !pending}
+                    onClick={() => open(s)}
+                  >
+                    Open
+                  </Button>
+                )}
                 {error?.port === s.port && (
                   <p role="alert" className="basis-full text-xs text-danger">{error.copy}</p>
                 )}
