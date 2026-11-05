@@ -21,8 +21,9 @@ and the session match are ``memory_watch``'s (``scan_proc``, ``_subtree``,
      names MCP (the session's MCP servers).
    - **escaped**: outside every root (``setsid``/``nohup`` reparent to pid 1), it must be
      in the daemon's cgroup and its cwd inside the session's MANAGED worktree.
-   A session whose cwd is not a managed worktree (``~``, a plain checkout) claims only
-   its own subtree. Every cwd is compared by realpath.
+   A session whose cwd is not exactly a managed worktree root (``~``, a plain checkout,
+   a ``<clone>`` grouping dir) claims only its own subtree. Session cwds are compared
+   by realpath; process cwds as the kernel reports them (already canonical).
    ``match_session``'s cwd rule is made strict here: when another live session has the
    same cwd and no ``--resume`` id decides, the process is unattributed.
 3. Not a Chromium ``--remote-debugging-port`` (by command line).
@@ -42,7 +43,6 @@ here, because only the edge knows who is looking.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import html
 import ipaddress
 import logging
@@ -68,6 +68,8 @@ PROBE_TIMEOUT_S = 1.0
 #: to one ``/proc`` pass and one probe round per session however many viewers poll.
 CACHE_TTL_S = 3.0
 EXPOSED_NOTE = "Also reachable from your network"
+#: The /proc pass takes ~20 ms; anything near this is a blocked read, not a slow host.
+SCAN_TIMEOUT_S = 5.0
 
 DEV_SERVER_NOT_DETECTED = "DEV_SERVER_NOT_DETECTED"
 PREVIEW_SESSION_NOT_LIVE = "PREVIEW_SESSION_NOT_LIVE"
@@ -248,15 +250,13 @@ def _inside(path: str, base: str) -> bool:
     return path == base or path.startswith(base.rstrip("/") + "/")
 
 
-def managed_sessions(sessions: list[SessionKey], managed_bases: tuple[str, ...]
+def managed_sessions(sessions: list[SessionKey], managed_worktrees: frozenset[str]
                      ) -> list[SessionKey]:
-    """The sessions whose (realpath) cwd is a managed worktree: strictly under one of
-    ``managed_bases`` (``worktrees.worktrees_bases`` of the daemon's managed roots). Only
-    these may claim a process outside their own subtree — ``~``, a plain checkout or a
-    scratch dir never do."""
-    bases = [_realpath(b) for b in managed_bases if b]
-    return [s for s in sessions
-            if s.cwd and any(s.cwd != b and _inside(s.cwd, b) for b in bases)]
+    """The sessions whose (realpath) cwd IS a managed worktree root —
+    ``managed_worktrees``, from ``worktrees.session_worktree_root`` on the daemon. Only
+    these may claim a process outside their own subtree; ``~``, a plain checkout, a
+    scratch dir or a ``<clone>`` grouping dir above the worktrees never do."""
+    return [s for s in sessions if s.cwd and s.cwd in managed_worktrees]
 
 
 def worktree_session_of(cwd: str | None, managed: list[SessionKey]) -> str | None:
@@ -294,17 +294,20 @@ def root_session_of(info: ProcInfo | None, sessions: list[SessionKey]) -> str | 
 
 
 def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
-                    daemon_pid: int, managed_bases: tuple[str, ...] = ()) -> list[Candidate]:
+                    daemon_pid: int, managed_worktrees: frozenset[str] = frozenset()
+                    ) -> list[Candidate]:
     """Every listener attributed to ``session_id`` by the module rules 1–3. Reads only;
     probes nothing."""
     listeners = {ino: lst for ino, lst in fs.listeners().items()
                  if lst.port >= MIN_PORT and _bind_kind(lst.address) is not None}
     if not listeners or not any(s.session_id == session_id for s in sessions):
         return []
-    # Every cwd is compared by realpath: a session's recorded cwd may be a symlink.
+    # A session's recorded cwd may be a symlink: resolve it. A process cwd is NOT
+    # resolved — the kernel's /proc/<pid>/cwd link is already canonical, and a realpath
+    # would stat every component (a stalled FUSE mount would hang the scan).
     sessions = [SessionKey(s.session_id, s.engine_session_id, _realpath(s.cwd))
                 for s in sessions]
-    managed = managed_sessions(sessions, managed_bases)
+    managed = managed_sessions(sessions, managed_worktrees)
     rows = fs.scan()
     by_pid = {r.pid: r for r in rows}
     children: dict[int, list[ProcRow]] = {}
@@ -319,9 +322,7 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
 
     def info(pid: int) -> ProcInfo | None:
         if pid not in infos:
-            pi = fs.describe(pid)
-            infos[pid] = (dataclasses.replace(pi, cwd=_realpath(pi.cwd))
-                          if pi is not None and pi.cwd else pi)
+            infos[pid] = fs.describe(pid)
         return infos[pid]
 
     def managed_owner(pid: int) -> str | None:
@@ -524,7 +525,9 @@ class DevServerDetector:
 
     def __init__(self, *, fs: ProcFs | None = None, daemon_pid: int | None = None,
                  probe: Callable[[str, int], Awaitable[ProbeResult | None]] | None = None,
-                 clock: Callable[[], float] = time.monotonic, ttl: float = CACHE_TTL_S) -> None:
+                 clock: Callable[[], float] = time.monotonic, ttl: float = CACHE_TTL_S,
+                 scan_timeout: float = SCAN_TIMEOUT_S) -> None:
+        self._scan_timeout = scan_timeout
         self._fs = fs or ProcFs()
         self._daemon_pid = daemon_pid if daemon_pid is not None else os.getpid()
         self._probe = probe or probe_html
@@ -535,7 +538,8 @@ class DevServerDetector:
 
     async def detect(self, session_id: str, sessions: list[SessionKey], *,
                      bg_commands: Callable[[], Awaitable[list[str]]],
-                     fresh: bool = False, managed_bases: tuple[str, ...] = ()) -> list[dict]:
+                     fresh: bool = False,
+                     managed_worktrees: frozenset[str] = frozenset()) -> list[dict]:
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
             now = self._clock()
@@ -548,16 +552,26 @@ class DevServerDetector:
             hit = self._cache.get(session_id)
             if hit is not None and not fresh:
                 return [dict(s) for s in hit[1]]
-            servers = await self._detect(session_id, sessions, bg_commands, managed_bases)
+            servers = await self._detect(session_id, sessions, bg_commands, managed_worktrees)
             self._cache[session_id] = (self._clock(), servers)
             return [dict(s) for s in servers]
 
     async def _detect(self, session_id: str, sessions: list[SessionKey],
                       bg_commands: Callable[[], Awaitable[list[str]]],
-                      managed_bases: tuple[str, ...]) -> list[dict]:
-        cands = await asyncio.to_thread(find_candidates, session_id, sessions,
-                                        fs=self._fs, daemon_pid=self._daemon_pid,
-                                        managed_bases=managed_bases)
+                      managed_worktrees: frozenset[str]) -> list[dict]:
+        try:
+            # Bounded: a /proc read that blocks (a stuck mount) must not hold this
+            # session's lock forever. The thread itself cannot be cancelled; it is
+            # abandoned and this poll answers "nothing detected".
+            cands = await asyncio.wait_for(
+                asyncio.to_thread(find_candidates, session_id, sessions, fs=self._fs,
+                                  daemon_pid=self._daemon_pid,
+                                  managed_worktrees=managed_worktrees),
+                self._scan_timeout)
+        except TimeoutError:
+            log.info("dev_servers.scan_timeout session=%s after=%.1fs", session_id,
+                     self._scan_timeout)
+            return []
         if not cands:
             return []
         probes = await asyncio.gather(*(self._probe(c.address, c.port) for c in cands))

@@ -372,7 +372,14 @@ class X11Manager:
         # (reaped) preview's pid may already name an unrelated process, and
         # terminate_process_tree re-checks the recorded start time before each signal.
         pid = getattr(proc, "pid", None)
-        if pid and getattr(proc, "returncode", None) is None and start is not None:
+        running = getattr(proc, "returncode", None) is None
+        if running and start is None:
+            # Its start time could not be read at launch, so it cannot be signalled by
+            # pid safely. Keep it in spec.browsers: stop_display still reaps it.
+            log.info("x11: previous preview kept for display teardown session=%s "
+                     "(no start time recorded)", session_id)
+            return
+        if pid and running:
             try:
                 if await asyncio.to_thread(terminate_process_tree, pid, start_time=start):
                     await asyncio.wait_for(proc.wait(), timeout=5.0)  # type: ignore[attr-defined]

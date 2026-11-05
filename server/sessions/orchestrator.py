@@ -565,6 +565,20 @@ class SessionLeaseHeld(RuntimeError):
             f"second CLI for it (see #1379)")
 
 
+def _managed_worktree_roots(keys: list[SessionKey], repo_roots: set[str]) -> frozenset[str]:
+    """The realpath cwds of the sessions in *keys* that are exactly a managed session
+    worktree root under one of *repo_roots* (D-18 dev-server attribution)."""
+    out: set[str] = set()
+    for k in keys:
+        if not k.cwd:
+            continue
+        real = os.path.realpath(k.cwd)
+        if any(str(worktrees.session_worktree_root(k.cwd, r) or "") == real
+               for r in repo_roots):
+            out.add(real)
+    return frozenset(out)
+
+
 async def effective_repo_root(fallback: str) -> str:
     """DB AppSettings.repo_root → *fallback*. THE resolver for "where do managed
     worktrees live": the daemons (``SessionOrchestrator._effective_repo_root``) and the
@@ -22117,11 +22131,14 @@ class SessionOrchestrator:
             return [str(t.input.get("command")) for t in await self._open_background_work(session_id)
                     if isinstance(t.input.get("command"), str)]
         # Outside a session's own process subtree only a cwd inside its MANAGED worktree
-        # attributes: the bases come from the same managed roots as _ensure_session_cwd.
-        bases = tuple(sorted({str(b) for root in await self._managed_roots()
-                              for b in worktrees.worktrees_bases(root)}))
+        # attributes, and only a session whose cwd IS a worktree root has one
+        # (worktrees.session_worktree_root over the same managed roots as
+        # _ensure_session_cwd). Off the loop: it resolves the session cwds.
+        roots = await self._managed_roots()
+        managed = await asyncio.to_thread(_managed_worktree_roots, keys, roots)
         return await self._dev_server_detector().detect(
-            session_id, keys, bg_commands=bg_commands, fresh=fresh, managed_bases=bases)
+            session_id, keys, bg_commands=bg_commands, fresh=fresh,
+            managed_worktrees=managed)
 
     async def dev_servers(self, session_id: str) -> dict:
         """``{host, tailnetIp, servers}``: the dev servers this session started, detected

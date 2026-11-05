@@ -203,6 +203,8 @@ def host(tmp_path: Path) -> SimpleNamespace:
 #: The managed worktree base(s) of the fake hosts: every /w/<x> session is a managed
 #: worktree; ~ and plain checkouts are not.
 _W = ("/w",)
+#: The managed worktree roots of the fake host (each session's own cwd).
+_MW = frozenset({"/w/a", "/w/b", "/w/c"})
 
 
 def _detector(host, **kw) -> ds.DevServerDetector:
@@ -234,7 +236,7 @@ def test_socket_inodes_read_fd_links(host) -> None:
 
 @pytest.mark.asyncio
 async def test_detects_only_the_sessions_servers_and_probes_nothing_outside(host) -> None:
-    servers = await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
+    servers = await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
     by_port = {s["port"]: s for s in servers}
     assert sorted(by_port) == [3000, 5173, 5180, 5401, 8080]
     probed = {port for _, port in host.probe.calls}
@@ -248,7 +250,7 @@ async def test_detects_only_the_sessions_servers_and_probes_nothing_outside(host
 @pytest.mark.asyncio
 async def test_entry_shape_bind_and_detected_connect_address(host) -> None:
     servers = {s["port"]: s for s in
-               await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)}
+               await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)}
     assert servers[5173] == {"port": 5173, "address": "127.0.0.1", "bind": "loopback",
                              "pid": 202, "label": "python -m http.server 5173",
                              "title": "Directory listing"}
@@ -262,8 +264,8 @@ async def test_entry_shape_bind_and_detected_connect_address(host) -> None:
 
 @pytest.mark.asyncio
 async def test_other_sessions_see_their_own_servers(host) -> None:
-    b = await _detector(host).detect(SID_B, host.keys, bg_commands=_no_bg, managed_bases=_W)
-    c = await _detector(host).detect(SID_C, host.keys, bg_commands=_no_bg, managed_bases=_W)
+    b = await _detector(host).detect(SID_B, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
+    c = await _detector(host).detect(SID_C, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
     assert [s["port"] for s in b] == [5300]
     # Codex: found under the shared app-server by the child's own cwd.
     assert [s["port"] for s in c] == [5400]
@@ -272,7 +274,7 @@ async def test_other_sessions_see_their_own_servers(host) -> None:
 @pytest.mark.asyncio
 async def test_two_sessions_sharing_a_cwd_attribute_nothing_by_cwd(host) -> None:
     keys = host.keys + _keys(("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "", "/w/a"))
-    servers = await _detector(host).detect(SID_A, keys, bg_commands=_no_bg, managed_bases=_W)
+    servers = await _detector(host).detect(SID_A, keys, bg_commands=_no_bg, managed_worktrees=_MW)
     ports = sorted(s["port"] for s in servers)
     # A's own CLI still matches by --resume; the cwd-only matches (the detached server
     # and the Codex child) are ambiguous and dropped.
@@ -338,12 +340,12 @@ async def test_a_home_directory_session_never_claims_other_sessions_servers(home
     """Outside a session's own subtree, only a cwd inside a MANAGED worktree attributes:
     ~ (not managed) claims nothing there, so nothing there is even probed."""
     det = ds.DevServerDetector(fs=home_host.fs, daemon_pid=100, probe=home_host.probe)
-    base = (_HOME_WT,)
-    a = await det.detect(SID_A, home_host.keys, bg_commands=_no_bg, managed_bases=base)
+    base = frozenset({f"{_HOME_WT}/r/c1", f"{_HOME_WT}/r/c2"})
+    a = await det.detect(SID_A, home_host.keys, bg_commands=_no_bg, managed_worktrees=base)
     assert [s["port"] for s in a] == [5173]
     assert {port for _, port in home_host.probe.calls} == {5173}
-    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg, managed_bases=base)
-    c = await det.detect(SID_C, home_host.keys, bg_commands=_no_bg, managed_bases=base)
+    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg, managed_worktrees=base)
+    c = await det.detect(SID_C, home_host.keys, bg_commands=_no_bg, managed_worktrees=base)
     assert sorted(s["port"] for s in b) == [5400, 5601]
     assert [s["port"] for s in c] == [5401]
     probed = {port for _, port in home_host.probe.calls}
@@ -351,9 +353,9 @@ async def test_a_home_directory_session_never_claims_other_sessions_servers(home
 
 
 @pytest.mark.asyncio
-async def test_without_managed_bases_nothing_outside_a_subtree_attributes(home_host) -> None:
+async def test_without_managed_worktrees_nothing_outside_a_subtree_attributes(home_host) -> None:
     det = ds.DevServerDetector(fs=home_host.fs, daemon_pid=100, probe=home_host.probe)
-    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg, managed_bases=())
+    b = await det.detect(SID_B, home_host.keys, bg_commands=_no_bg, managed_worktrees=frozenset())
     assert b == [] and home_host.probe.calls == []
 
 
@@ -375,13 +377,116 @@ async def test_a_symlinked_session_cwd_matches_through_realpath(tmp_path: Path) 
     probe = _Probe({5173: None, 5174: None})
     det = ds.DevServerDetector(fs=ds.ProcFs(str(p.root)), daemon_pid=100, probe=probe)
     keys = [SessionKey(SID_A, "", str(link))]  # the record holds the symlink
-    servers = await det.detect(SID_A, keys, bg_commands=_no_bg, managed_bases=(str(base),))
+    servers = await det.detect(SID_A, keys, bg_commands=_no_bg, managed_worktrees=frozenset({str(real)}))
     assert sorted(s["port"] for s in servers) == [5173, 5174]
+
+
+@pytest.fixture
+def grouping_world(tmp_path: Path):
+    """A daemon over a /proc-shaped tree and a real managed-worktree layout:
+    ``<repo_root>/<ns>/worktrees/<clone>/<short id>``. Session G sits at the
+    ``<clone>`` GROUPING dir; session W at a real worktree root; an archived session's
+    ``nohup`` server escaped in a sibling worktree no live session owns."""
+    from viberpit import worktrees
+    repo_root = tmp_path.resolve() / "GitHub"
+    group = worktrees.worktrees_base(str(repo_root)) / "viberpit"
+    wt_w, wt_old = group / "aaaaaaaa", group / "deadbeef"
+    for d in (wt_w, wt_old):
+        d.mkdir(parents=True)
+    p = FakeProc(tmp_path / "proc")
+    p.add(100, 1, ["python3"], cwd="/srv")
+    p.add(300, 1, ["node", "server.js"], cwd=str(wt_old), sockets=(9001,))  # escaped
+    p.listen(9001, "127.0.0.1", 5173)
+    p.add(301, 1, ["node", "server.js"], cwd=str(wt_w / "api"), sockets=(9002,))
+    p.listen(9002, "127.0.0.1", 5174)
+    probe = _Probe({5173: None, 5174: None})
+    o = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
+                            usage_fn=lambda name: None)
+    for sid, cwd in ((SID_A, group), (SID_B, wt_w)):
+        o._records[sid] = _rec(sid, str(cwd))
+        o._drivers[sid] = mock.MagicMock()
+    o._dev_server_det = ds.DevServerDetector(fs=ds.ProcFs(str(p.root)), daemon_pid=100,
+                                             probe=probe)
+
+    async def roots():
+        return {str(repo_root)}
+
+    async def no_bg(_sid):
+        return []
+    o._managed_roots = roots  # type: ignore[method-assign]
+    o._open_background_work = no_bg  # type: ignore[method-assign]
+    return SimpleNamespace(o=o, probe=probe)
+
+
+def test_session_worktree_root_is_the_clone_and_id_level(tmp_path: Path) -> None:
+    from viberpit import worktrees
+    root = str(tmp_path.resolve())
+    base = worktrees.worktrees_base(root)
+    (base / "repo" / "abc" / "sub").mkdir(parents=True)
+    assert worktrees.session_worktree_root(str(base / "repo" / "abc"), root) == base / "repo" / "abc"
+    assert worktrees.session_worktree_root(str(base / "repo" / "abc" / "sub"), root) == \
+        base / "repo" / "abc"
+    assert worktrees.session_worktree_root(str(base / "repo"), root) is None  # grouping
+    assert worktrees.session_worktree_root(str(base), root) is None
+    assert worktrees.session_worktree_root(str(tmp_path), root) is None
+
+
+@pytest.mark.asyncio
+async def test_a_session_at_the_grouping_dir_claims_nothing_outside_its_subtree(
+        grouping_world) -> None:
+    """Fix round 3, item 1: only a session whose cwd IS a worktree root
+    (``<base>/<clone>/<id>``) is managed. A session at ``<base>/<clone>`` is not, so it
+    never claims an escaped server in a sibling worktree."""
+    o = grouping_world.o
+    g = await o._detect_dev_servers(SID_A, fresh=True)
+    assert g == []
+    assert grouping_world.probe.calls == []
+    w = await o._detect_dev_servers(SID_B, fresh=True)
+    assert [s["port"] for s in w] == [5174]  # its own worktree still works
+
+
+@pytest.mark.asyncio
+async def test_process_cwds_are_never_resolved(host, monkeypatch) -> None:
+    """Fix round 3, item 2: ``realpath`` stats every component, which can block on a
+    stalled FUSE mount. ``/proc/<pid>/cwd`` is already canonical, so only SESSION cwds
+    are resolved."""
+    resolved: list[str] = []
+    real = ds._realpath
+
+    def spy(path):
+        resolved.append(path)
+        return real(path)
+    monkeypatch.setattr(ds, "_realpath", spy)
+    await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
+    assert set(resolved) <= {k.cwd for k in host.keys}
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_scan_times_out_empty_and_logs_info(host, caplog) -> None:
+    import logging
+    import threading
+    caplog.set_level(logging.INFO, logger="server.sessions.dev_servers")
+    release = threading.Event()
+
+    class _StuckFs(ds.ProcFs):
+        def listeners(self):
+            release.wait(5)  # a stat on a stalled mount
+            return {}
+    det = ds.DevServerDetector(fs=_StuckFs(host.fs.root), daemon_pid=100, probe=host.probe,
+                               scan_timeout=0.1)
+    try:
+        t0 = time.monotonic()
+        assert await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW) == []
+        assert time.monotonic() - t0 < 2
+    finally:
+        release.set()
+    assert any(r.levelno == logging.INFO and "dev_servers.scan_timeout" in r.getMessage()
+               for r in caplog.records)
 
 
 @pytest.mark.asyncio
 async def test_unknown_session_lists_nothing_and_probes_nothing(host) -> None:
-    servers = await _detector(host).detect("nope", host.keys, bg_commands=_no_bg, managed_bases=_W)
+    servers = await _detector(host).detect("nope", host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
     assert servers == [] and host.probe.calls == []
 
 
@@ -392,7 +497,7 @@ async def test_unknown_session_lists_nothing_and_probes_nothing(host) -> None:
 async def test_label_prefers_the_background_task_command(host) -> None:
     async def bg() -> list[str]:
         return ["cd site && python -m http.server 5173", "unrelated"]
-    servers = {s["port"]: s for s in await _detector(host).detect(SID_A, host.keys, bg_commands=bg, managed_bases=_W)}
+    servers = {s["port"]: s for s in await _detector(host).detect(SID_A, host.keys, bg_commands=bg, managed_worktrees=_MW)}
     assert servers[5173]["label"] == "cd site && python -m http.server 5173"
     assert servers[8080]["label"] == "node vite --host"
 
@@ -401,15 +506,15 @@ async def test_label_prefers_the_background_task_command(host) -> None:
 async def test_results_are_cached_briefly_and_fresh_rescans(host) -> None:
     now = [1000.0]
     det = _detector(host, clock=lambda: now[0])
-    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
+    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
     n = len(host.probe.calls)
-    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
+    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
     assert len(host.probe.calls) == n  # cached
     await det.detect(SID_A, host.keys, bg_commands=_no_bg, fresh=True,
-                                     managed_bases=_W)
+                                     managed_worktrees=_MW)
     assert len(host.probe.calls) == 2 * n
     now[0] += ds.CACHE_TTL_S + 0.1
-    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_bases=_W)
+    await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
     assert len(host.probe.calls) == 3 * n
 
 
@@ -490,7 +595,7 @@ async def test_real_proc_detects_http_server_and_not_a_raw_socket(tmp_path: Path
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             servers = await det.detect(SID_A, keys, bg_commands=_no_bg, fresh=True,
-                                     managed_bases=_W)
+                                     managed_worktrees=_MW)
             if any(s["port"] == port for s in servers):
                 break
             await asyncio.sleep(0.1)
@@ -502,7 +607,7 @@ async def test_real_proc_detects_http_server_and_not_a_raw_socket(tmp_path: Path
         # Another session (another worktree) sees none of it.
         other = await det.detect(SID_B, keys + [SessionKey(SID_B, "", str(tmp_path / "b"))],
                                  bg_commands=_no_bg, fresh=True,
-                                     managed_bases=_W)
+                                     managed_worktrees=_MW)
         assert other == []
     finally:
         os.killpg(root.pid, 15)
@@ -618,11 +723,11 @@ def orch():
     found = [{"port": 5173, "address": "127.0.0.1", "bind": "loopback", "pid": 202,
               "label": "vite"}]
     calls: list[tuple] = []
-    bases: list[tuple[str, ...]] = []
+    bases: list[frozenset[str]] = []
 
-    async def detect(session_id, sessions, *, bg_commands, fresh=False, managed_bases=()):
+    async def detect(session_id, sessions, *, bg_commands, fresh=False, managed_worktrees=frozenset()):
         calls.append((session_id, [k.session_id for k in sessions], fresh))
-        bases.append(managed_bases)
+        bases.append(managed_worktrees)
         return [dict(s) for s in found]
     o._dev_server_detector().detect = detect  # type: ignore[method-assign]
     return SimpleNamespace(o=o, found=found, calls=calls, bases=bases)
@@ -636,12 +741,8 @@ async def test_orchestrator_dev_servers_names_this_host(orch) -> None:
     # No bind-all server: no tailnet IP is looked up.
     assert res == {"host": "rocky", "tailnetIp": None, "servers": orch.found}
     ip.assert_not_called()
-    # The managed worktree bases of the daemon's managed roots (worktrees.worktrees_bases).
-    from viberpit import worktrees
-    roots = await orch.o._managed_roots()
-    assert orch.bases[-1] == tuple(sorted({str(b) for r in roots
-                                           for b in worktrees.worktrees_bases(r)}))
-    assert orch.bases[-1] and all(b.endswith("/worktrees") for b in orch.bases[-1])
+    # /w/a is not under the daemon's managed roots: not a managed worktree.
+    assert orch.bases[-1] == frozenset()
     assert orch.calls == [(SID_A, [SID_A], False)]
     with pytest.raises(KeyError):
         await orch.o.dev_servers("nope")
@@ -987,6 +1088,24 @@ async def test_stop_preview_never_signals_an_exited_preview(sleeper_x11) -> None
     with patch("server.sessions.x11manager.terminate_process_tree") as kill:
         await mgr.stop_preview(SID_A)
     kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_preview_without_a_start_time_is_still_reaped(real_x11, monkeypatch) -> None:
+    """Fix round 3, item 3: no start time at track time (it could not be read) → the
+    preview cannot be safely signalled by pid, so it stays in ``spec.browsers`` for
+    ``stop_display`` to reap rather than being forgotten alive."""
+    from server.sessions import x11manager
+    monkeypatch.setattr(x11manager, "read_start_time", lambda pid: None)
+    real_x11.o._records[SID_A].display_mode = DISPLAY_VIRTUAL
+    await real_x11.mgr.start_display(SID_A)
+    assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    first = real_x11.browsers[-1]
+    assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    spec = real_x11.mgr.display_for(SID_A)
+    assert first in spec.browsers  # still tracked, though no longer the preview
+    await real_x11.mgr.stop_display(SID_A)
+    assert first.returncode is not None and _live(real_x11.browsers) == []
 
 
 @pytest.mark.asyncio
