@@ -226,6 +226,9 @@ METRICS_ARTIFACT = "viberpit-metrics"
 METRICS_FILE = "metrics.json"
 #: ``metrics.json`` is a handful of numbers; a bigger member is refused unread.
 _METRICS_MAX_BYTES = 1 << 20
+#: The whole artifact zip, per the listing's ``size_in_bytes``: anything bigger (or
+#: unsized) is refused before the download, so the daemon never buffers it.
+METRICS_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024
 
 
 class MetricsContractError(ValueError):
@@ -250,7 +253,7 @@ def _parse_metrics_zip(blob: bytes) -> dict:
         raise MetricsContractError(f"{METRICS_FILE}: bad zip: {exc}") from None
     try:
         doc = json.loads(raw)
-    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError, UnicodeDecodeError, deep nesting
         raise MetricsContractError(f"{METRICS_FILE}: bad JSON: {exc}") from None
     if not isinstance(doc, dict):
         raise MetricsContractError(f"{METRICS_FILE}: expected a JSON object")
@@ -265,14 +268,17 @@ def metrics_artifact(repo: str, run_id: int, *, run=None, run_bytes=None,
                      sleep=time.sleep) -> dict | None:
     """The parsed ``metrics.json`` of the run's ``viberpit-metrics`` artifact, or None
     when the run has no such artifact or it has expired. Raises
-    :class:`MetricsContractError` (a ``ValueError``, ``"metrics.json: <reason>"``) on a
-    bad zip or document; any other failure (gh, a garbled listing) propagates as is."""
+    :class:`MetricsContractError` (a ``ValueError``, ``"metrics.json: <reason>"``) on an
+    artifact the listing says is over 5 MiB (or does not size), or a bad zip or document; any other failure (gh, a garbled listing) propagates as is."""
     run = run or _run_gh_for(repo)
     data = _json(run(["api", f"repos/{repo}/actions/runs/{run_id}/artifacts"]))
     artifact = next((a for a in data.get("artifacts", [])
                      if a.get("name") == METRICS_ARTIFACT and not a.get("expired")), None)
     if artifact is None:
         return None
+    size = artifact.get("size_in_bytes")
+    if type(size) is not int or size > METRICS_ARTIFACT_MAX_BYTES:
+        raise MetricsContractError(f"{METRICS_FILE}: artifact larger than 5 MiB")
     run_bytes = run_bytes or _run_gh_bytes_for(repo)
     blob = _fetch_artifact_zip(
         run_bytes, ["api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"], sleep)

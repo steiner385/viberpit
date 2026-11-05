@@ -108,7 +108,7 @@ branch and on a daily schedule so it stays fresh.
 | `no viberpit-metrics artifact in the last 3 successful runs` | The workflow ran but did not upload the artifact, or it expired. |
 | `metric '<m>' missing` | `metrics.json` has no key `<m>`. |
 | `metric '<m>' is not a number` | The value is a string, boolean, null or other non-number. |
-| `metrics.json: <reason>` | The artifact is not a readable zip, has no `metrics.json`, is not JSON, or has the wrong `version` or `metrics` shape. |
+| `metrics.json: <reason>` | The artifact is over 5 MiB, is not a readable zip, has no `metrics.json` (or one over 1 MiB), is not JSON, or has the wrong `version` or `metrics` shape. |
 | `metrics artifact read failed` | GitHub refused or failed the artifact read. |
 | `workflow runs read failed: <reason>` | The run list could not be read, for example because the workflow file does not exist. |
 

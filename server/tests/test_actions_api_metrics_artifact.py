@@ -11,6 +11,7 @@ import pytest
 
 from server.github.actions_api import (
     METRICS_ARTIFACT,
+    METRICS_ARTIFACT_MAX_BYTES,
     METRICS_FILE,
     MetricsContractError,
     metrics_artifact,
@@ -54,7 +55,7 @@ def _read(fake: _Fake):
 
 def test_returns_parsed_metrics():
     fake = _Fake([{"id": 1, "name": "junit-python", "expired": False},
-                  {"id": 9, "name": METRICS_ARTIFACT, "expired": False}],
+                  {"id": 9, "name": METRICS_ARTIFACT, "expired": False, "size_in_bytes": 512}],
                  _zip(json.dumps(GOOD)))
     assert _read(fake) == GOOD
     assert fake.run_calls == [["api", "repos/o/r/actions/runs/7/artifacts"]]
@@ -80,7 +81,7 @@ def test_expired_artifact_returns_none():
     _zip(json.dumps([1, 2])),
 ])
 def test_bad_json_raises_value_error(blob):
-    fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False}], blob)
+    fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False, "size_in_bytes": 512}], blob)
     with pytest.raises(MetricsContractError, match=r"^metrics\.json: "):
         _read(fake)
 
@@ -100,6 +101,33 @@ def test_garbled_listing_is_not_a_contract_error():
     {**GOOD, "metrics": [1]},
 ])
 def test_wrong_version_raises(doc):
-    fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False}], _zip(json.dumps(doc)))
+    fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False, "size_in_bytes": 512}], _zip(json.dumps(doc)))
     with pytest.raises(MetricsContractError, match=r"^metrics\.json: "):
+        _read(fake)
+
+
+@pytest.mark.parametrize("size", [METRICS_ARTIFACT_MAX_BYTES + 1, None, "big", True])
+def test_oversized_or_unsized_artifact_is_refused_before_download(size):
+    """The listing's size is checked before the zip is fetched: a huge artifact is
+    never downloaded into the daemon, and an unsized one is refused the same way."""
+    entry = {"id": 9, "name": METRICS_ARTIFACT, "expired": False}
+    if size is not None:
+        entry["size_in_bytes"] = size
+    fake = _Fake([entry], _zip(json.dumps(GOOD)))
+    with pytest.raises(MetricsContractError, match=r"^metrics\.json: artifact larger than 5 MiB$"):
+        _read(fake)
+    assert fake.bytes_calls == []
+
+
+def test_artifact_at_the_size_limit_is_downloaded():
+    fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False,
+                   "size_in_bytes": METRICS_ARTIFACT_MAX_BYTES}], _zip(json.dumps(GOOD)))
+    assert _read(fake) == GOOD
+
+
+def test_deeply_nested_json_is_a_contract_error():
+    """json.loads raises RecursionError on deep nesting; that is the document's fault."""
+    fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False, "size_in_bytes": 512}],
+                 _zip("[" * 200_000 + "]" * 200_000))
+    with pytest.raises(MetricsContractError, match=r"^metrics\.json: bad JSON"):
         _read(fake)
