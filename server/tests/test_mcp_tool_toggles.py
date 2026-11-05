@@ -853,23 +853,98 @@ async def test_a_cancelled_apply_leaves_db_equal_cli_and_propagates(env) -> None
     assert _tools_of(servers)["tool_a"] == (True, "default")
 
 
+# Fix round 3 (minor): a timeout restores the DB and resends the pre-toggle rules once.
 @pytest.mark.asyncio
-async def test_a_timed_out_apply_is_not_enforced_until_the_next_compose(env, caplog) -> None:
+async def test_a_timed_out_apply_converges_when_the_resend_lands(env, caplog) -> None:
     caplog.set_level(logging.INFO)
     rec = await env.create()
     accepted = _track_accepted(env.control)
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_c", False, identity="u")
     env.control.replies = [_timeout_error()]
+    before = len(accepted)
+    with pytest.raises(fs.SettingsError) as ei:
+        await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+    assert ei.value.code == fs.SETTINGS_FAILED
+    assert await _db_overrides(rec.id) == {"probe": {"tool_c": False}}
+    # The timed-out object may have landed: the pre-toggle rules were resent once.
+    assert len(accepted) == before + 1
+    assert _cli_deny(accepted) == {"mcp__probe__tool_c"}
+    assert (await env.orch.mcp_status_for(rec.id))[0]["toolsEnforced"] is True
+    assert _no_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_apply_whose_resend_fails_is_not_enforced(env, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    rec = await env.create()
+    accepted = _track_accepted(env.control)
+    env.control.replies = [_timeout_error(), _timeout_error()]
     with pytest.raises(fs.SettingsError) as ei:
         await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
     assert ei.value.code == fs.SETTINGS_FAILED
     assert await _db_overrides(rec.id) == {}
     assert (await env.orch.mcp_status_for(rec.id))[0]["toolsEnforced"] is False
-    assert any("state unknown after a timed-out toggle" in r.getMessage()
+    assert any("state unknown after an interrupted toggle" in r.getMessage()
                and r.levelno == logging.INFO for r in caplog.records)
     assert _no_warnings(caplog) == []
     await env.orch.set_mcp_tool(rec.id, "probe", "tool_b", False, identity="u")
     assert (await env.orch.mcp_status_for(rec.id))[0]["toolsEnforced"] is True
     assert _cli_deny(accepted) == {"mcp__probe__tool_b"}
+
+
+# Fix round 3: a cancel during the forward write is protected too.
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_write_leaves_db_equal_cli_and_propagates(env) -> None:
+    import asyncio
+    rec = await env.create()
+    accepted = _track_accepted(env.control)
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_c", False, identity="u")
+    real = scope_store.set_session_tool_override
+    writing = asyncio.Event()
+
+    async def slow(*a, **k):
+        # The statement commits, then the call is still in flight when the cancel lands:
+        # its outcome is unknown to a caller that is simply cancelled.
+        result = await real(*a, **k)
+        writing.set()
+        await asyncio.sleep(0.05)
+        return result
+    with patch.object(scope_store, "set_session_tool_override", slow):
+        task = asyncio.create_task(env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False,
+                                                         identity="u"))
+        await writing.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert await _db_overrides(rec.id) == {"probe": {"tool_c": False}}
+    assert _cli_deny(accepted) == {"mcp__probe__tool_c"}
+    assert (await env.orch.mcp_status_for(rec.id))[0]["toolsEnforced"] is True
+    assert not env.orch._drivers[rec.id]._mcp_tool_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_a_double_cancel_during_compensation_still_converges(env) -> None:
+    import asyncio
+    rec = await env.create()
+    accepted = _track_accepted(env.control)
+    await env.orch.set_mcp_tool(rec.id, "probe", "tool_c", False, identity="u")
+    n = len(env.control.sent)
+    env.control.gate = asyncio.Event()
+    task = asyncio.create_task(env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False,
+                                                     identity="u"))
+    while len(env.control.sent) < n + 1:          # the apply is on the wire
+        await asyncio.sleep(0.005)
+    task.cancel()
+    while len(env.control.sent) < n + 2:          # the compensation's resend is on the wire
+        await asyncio.sleep(0.005)
+    task.cancel()                                  # a second cancel mid-compensation
+    await asyncio.sleep(0.02)
+    env.control.gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await _db_overrides(rec.id) == {"probe": {"tool_c": False}}
+    assert _cli_deny(accepted) == {"mcp__probe__tool_c"}
+    assert (await env.orch.mcp_status_for(rec.id))[0]["toolsEnforced"] is True
 
 
 # ---------------------------------------------------------------- RPC / remote / fleet / facade

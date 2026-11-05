@@ -2729,7 +2729,7 @@ class ClaudeAgentDriver:
             if desired is None:
                 raise self._settings_refused(SettingsError(
                     MCP_TOOLS_UNAVAILABLE, "no per-tool rules on this session"))
-            previous = await persist(enabled) if persist is not None else None
+            previous = await self._persist_tool_override(persist, enabled, desired)
             try:
                 await self._apply_tool_rules_locked(desired.with_override(server, tool, enabled))
             except BaseException as exc:
@@ -2738,6 +2738,28 @@ class ClaudeAgentDriver:
                     name=f"mcp-tool-undo:{self.session_id}")
                 raise
 
+    async def _persist_tool_override(self, persist, enabled: bool, desired) -> bool | None:
+        """The forward write of a live toggle, run to completion (``run_to_completion``)
+        so a cancel never abandons a statement mid-flight (#2726) and the value it
+        replaced is always known. A cancel that landed during it runs the same undo as a
+        cancelled apply — restore that value, resend the pre-toggle rules — and is then
+        re-raised. A write that failed on its own raises with nothing written."""
+        if persist is None:
+            return None
+        replaced: list[bool | None] = []
+
+        async def write() -> None:
+            replaced.append(await persist(enabled))
+        try:
+            await run_to_completion(write(), name=f"mcp-tool-write:{self.session_id}")
+        except asyncio.CancelledError as exc:
+            if replaced:
+                await run_to_completion(
+                    self._undo_tool_override(exc, desired, persist, replaced[0]),
+                    name=f"mcp-tool-undo:{self.session_id}")
+            raise
+        return replaced[0]
+
     async def _undo_tool_override(self, exc: BaseException, desired, persist,
                                   previous: bool | None) -> None:
         """Compensate a failed live toggle, still under ``_mcp_tool_lock`` (and run to
@@ -2745,27 +2767,23 @@ class ClaudeAgentDriver:
         wrote over, then make the CLI match.
 
         - A refusal (the CLI answered ``error``): nothing landed; the applied state stands.
-        - A timeout (``SETTINGS_FAILED``): it may have landed. The applied state is
-          unknown, so the session reads ``mcp_tools_enforced=False`` (INFO) until the next
-          successful compose.
-        - A cancellation: the write may be in flight. The desired rules are resent so the
-          CLI matches the restored DB; if that fails too, ``mcp_tools_enforced=False``.
+        - A timeout (``SETTINGS_FAILED``) or a cancellation: the write may have landed. The
+          pre-toggle rules are resent once so the CLI matches the restored DB; if that
+          resend fails too, the applied state is unknown and the session reads
+          ``mcp_tools_enforced=False`` (INFO) until the next successful compose.
 
         Never raises: the caller re-raises the original failure."""
         try:
             if persist is not None:
                 await persist(previous)
-            if isinstance(exc, asyncio.CancelledError):
+            if (isinstance(exc, asyncio.CancelledError)
+                    or getattr(exc, "code", None) == SETTINGS_FAILED):
                 try:
                     await self._apply_tool_rules_locked(desired)
                 except Exception:
                     self._mcp_tools_enforced = False
-                    log.info("mcp tool state unknown after a cancelled toggle session=%s",
+                    log.info("mcp tool state unknown after an interrupted toggle session=%s",
                              self.session_id)
-            elif getattr(exc, "code", None) == SETTINGS_FAILED:
-                self._mcp_tools_enforced = False
-                log.info("mcp tool state unknown after a timed-out toggle session=%s",
-                         self.session_id)
         except Exception:
             self._mcp_tools_enforced = False
             log.warning("mcp tool override not restored session=%s", self.session_id,
