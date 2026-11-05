@@ -125,6 +125,14 @@ def _live_tombstones(now: float, *, present: dict) -> frozenset[str]:
     return frozenset(k for k in _tombstones if k not in present)
 
 
+def purge_keys(store: dict, *, clock: Callable[[], float] = time.monotonic) -> frozenset[str]:
+    """The keys every account dir should purge right now: the live tombstones (purged within
+    :data:`TOMBSTONE_TTL_S`) that are not back in *store*. The public face of
+    :func:`_live_tombstones`, for the runner push (#3287): a runner that writes its own
+    account dirs gets the same drop set the edge's publish applies."""
+    return _live_tombstones(clock(), present=store)
+
+
 def reconcile_grants(*, clock: Callable[[], float] = time.monotonic) -> ReconcileResult:
     """Move grants to their servers' current keys and drop dead bundles; return the keys to
     purge from the account dirs: this tick's dropped keys and moved bundles' old keys (so

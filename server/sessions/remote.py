@@ -1498,9 +1498,23 @@ class RemoteOrchestrator:
             "codex_validate_model", account=account, model=model, effort=effort
         )
 
-    async def creds_sync(self, envelopes: list[dict], lease_s: float) -> dict:
-        """Push the primary's Claude credential envelopes to this runner (#2629)."""
-        return await self._client.call("creds_sync", envelopes=envelopes, lease_s=lease_s)
+    async def creds_sync(
+        self, envelopes: list[dict], lease_s: float,
+        mcp_bundles: dict | None = None, mcp_drop: list[str] | None = None,
+    ) -> dict:
+        """Push the primary's Claude credential envelopes to this runner (#2629), and with
+        them the shared MCP store's public view and the grant reconcile's purge keys (#3287).
+
+        The MCP fields go on the wire only when not None, so a caller with nothing to send
+        leaves the request exactly as an old daemon expects it. The response may carry
+        ``mcp_offers`` (a runner's terminal logins); an old runner returns none.
+        """
+        extra: dict = {}
+        if mcp_bundles is not None:
+            extra["mcp_bundles"] = mcp_bundles
+        if mcp_drop is not None:
+            extra["mcp_drop"] = mcp_drop
+        return await self._client.call("creds_sync", envelopes=envelopes, lease_s=lease_s, **extra)
 
     async def codex_invalidate_credentials(self, account: str) -> dict:
         """Drop this daemon's cached Codex credentials for an account."""

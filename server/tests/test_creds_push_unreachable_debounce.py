@@ -24,7 +24,7 @@ class _Runner:
     def __init__(self, *outcomes):
         self.outcomes = list(outcomes)
 
-    async def creds_sync(self, envelopes, lease_s):
+    async def creds_sync(self, envelopes, lease_s, **kw):
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
