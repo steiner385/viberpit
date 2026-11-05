@@ -1983,3 +1983,36 @@ async def test_a_failed_db_clock_read_keeps_the_placeholder(fleet, monkeypatch):
     monkeypatch.setattr(sm, "db_now", boom)
     await fx.f.stamp_started_at()
     assert fx.f.started_at == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_restore", [False, True])
+async def test_a_failed_finalize_after_a_move_is_its_own_one_warning_incident(
+        fleet, caplog, via_restore):
+    """Coordinator ruling: the move stands, but the source keeps a stale tree (a
+    twin-resume hazard) — exactly ONE WARNING naming the session, the source host and
+    the leftover path; the audit still says finalized: false. Both "moved" paths: the
+    plain saga and a failed restore that ended as moved."""
+    import logging
+    fx = fleet
+    fx.dobby.fail["finalize"] = RuntimeError("worktree remove failed")
+    if via_restore:
+        real_import = fx.rocky.transfer_import
+
+        async def late(sid, manifest=None, *, source=None, local=False):
+            await real_import(sid, manifest, source=source, local=local)
+            raise RuntimeError("edge gave up waiting")
+        fx.rocky.transfer_import = late
+    with caplog.at_level(logging.INFO):
+        if via_restore:
+            with pytest.raises(sm.MoveError) as ei:
+                await _move(fx)
+            assert ei.value.outcome == "moved"
+        else:
+            assert (await _move(fx))["outcome"] == "moved"
+    warnings = _move_warnings(caplog)
+    assert len(warnings) == 1, warnings
+    assert SID in warnings[0] and "source=dobby" in warnings[0]
+    assert "path=/wt/viberpit/5e55a0aa" in warnings[0]
+    audit = (await _audits())[-1]
+    assert audit["outcome"] == "moved" and audit["finalized"] is False

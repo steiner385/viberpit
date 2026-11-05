@@ -851,16 +851,24 @@ async def _await_import_marker(sid: str, target: str) -> bool:
 async def _finalize(fleet: Any, sid: str, source: str, target: str,
                     manifest: dict | None) -> dict:
     """Drop the source's copy (D4: only now that the target's driver has started). A
-    failure is audited but does not change the outcome: the session is live on the
-    target, and the leftover tree is stamped for another host so nothing resumes it."""
+    failure is audited (``finalized: false``) but does not change the outcome: the
+    session is live on the target."""
     try:
         return await _orch(fleet, source, MOVE_SOURCE_UNREACHABLE).transfer_finalize(
             sid, manifest, owner=target) or {}
     except Exception as exc:
-        # The move stands; the leftover tree is a disk leak stamped for another host,
-        # recorded in the audit (finalized: false) — INFO, not an incident.
-        log.info("session.move finalize on %s failed id=%s — the source worktree "
-                 "stays (stamped for %s)", source, sid, target, exc_info=True)
+        # Its own incident, and the ONE WARNING for it (coordinator ruling): the move
+        # stands, but a stale tree with this conversation's worktree is left on the
+        # source — a twin-resume hazard a person has to clear.
+        path = (manifest or {}).get("cwd")
+        if not path:
+            try:
+                path = (await _row(sid)).cwd
+            except Exception:
+                path = None
+        log.warning("session.move finalize failed id=%s source=%s path=%s — the moved "
+                    "session's old worktree is left on %s; remove it by hand",
+                    sid, source, path or "unknown", source, exc_info=True)
         return {"removed": False, "error": getattr(exc, "code", type(exc).__name__)}
 
 
