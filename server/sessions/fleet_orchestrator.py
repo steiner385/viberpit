@@ -265,6 +265,12 @@ _MOVE_BLOCKED: frozenset[str] = frozenset({
     "rename_session", "set_pr_autofix_paused", "set_auto_archive_opt_out",
     "dismiss_suspected_complete", "interrupt", "stop_subagent",
 })
+# Stopping a turn is refused only while a saga is LIVE (``_moving``): the session is
+# idle then, so there is nothing to stop, and the stop would race the export. A HELD
+# claim (a failed move, a dead edge's leftover, a host removed for good) can last
+# indefinitely, and a daemon-local automation may start a turn on the lease holder
+# meanwhile — refusing these then would leave that turn unstoppable (#3317).
+_SAGA_ONLY_BLOCKED: frozenset[str] = frozenset({"interrupt", "stop_subagent"})
 # A cached route whose host answers these with "no such session" is stale (the row
 # was restamped behind this edge's back, #1432): drop it, re-read the stamp, retry once.
 _NONE_MEANS_UNKNOWN: frozenset[str] = frozenset({"get_session", "ensure_driver"})
@@ -460,7 +466,8 @@ class FleetOrchestrator:
     def _make_per_session(self, name: str):
         async def _call(session_id, *a, **k):
             target = self._moving.get(session_id) or self._held.get(session_id)
-            if target is not None and name in _MOVE_BLOCKED:
+            if (target is not None and name in _MOVE_BLOCKED
+                    and (name not in _SAGA_ONLY_BLOCKED or session_id in self._moving)):
                 from server.sessions.session_move import SessionMoving
                 raise SessionMoving(session_id, target)
             cached = session_id in self._host_cache

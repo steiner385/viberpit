@@ -446,6 +446,27 @@ describe('SessionSocket update-pending queue', () => {
     expect(JSON.parse(ws.sent.at(-1)!)).toMatchObject({ type: 'prompt', replySource: 'suggested' })
   })
 
+  // #3317: a held "interrupt and post" (a session mid-move) used to come back from its
+  // retry as a plain prompt, queued behind whatever turn was running by then.
+  it('retries a refused interrupt-and-post as an interrupt, and a plain prompt as plain', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    sock.interruptAndPrompt('s1', 'stop and do this')
+    sock.prompt('s2', 'plain', [])
+    ws.sent.length = 0
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'stop and do this', reason: 'SESSION_MOVING', interrupt: true })
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's2', text: 'plain', reason: 'SESSION_MOVING' })
+    vi.advanceTimersByTime(SessionSocket.HELD_RETRY_BASE_MS)
+    const retried = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.type === 'prompt')
+    expect(retried).toEqual([
+      expect.objectContaining({ sessionId: 's1', text: 'stop and do this', interrupt: true }),
+      expect.not.objectContaining({ interrupt: expect.anything() }),
+    ])
+    expect(retried[1]).toMatchObject({ sessionId: 's2', text: 'plain' })
+  })
+
   it('preserves suggested provenance when buffered before sending', () => {
     const sock = new SessionSocket('/ws')
     sock.connect()

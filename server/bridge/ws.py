@@ -1932,6 +1932,20 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 log.warning("ws.work: %d chain(s) unfinished after %.0fs — cancelling",
                             len(pending), _WORK_DRAIN_TIMEOUT)
 
+        def _prompt_rejected(msg: dict, session_id: str, reason: str,
+                             **extra: str) -> dict:
+            """The one ``promptRejected`` frame: "this prompt was NOT delivered". It
+            echoes everything the browser needs to re-queue the prompt as it was
+            written — including ``interrupt``, or a held "interrupt and post" came back
+            from its retry as a plain prompt queued behind the turn (#3317)."""
+            return {"type": "promptRejected", "sessionId": session_id,
+                    **({"replySource": msg["replySource"]}
+                       if "replySource" in msg else {}),
+                    **({"interrupt": True} if msg.get("interrupt") is True else {}),
+                    "text": msg.get("text", ""),
+                    "attachmentIds": msg.get("attachmentIds"),
+                    "reason": reason, **extra}
+
         async def _refuse_saturated(msg_type: str, session_id: str, msg: dict) -> None:
             """Tell the client a frame was refused because the session's chain is full.
 
@@ -1943,12 +1957,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             log.warning("ws.work: session %s chain saturated — refusing %s",
                         session_id, msg_type)
             if msg_type == "prompt":
-                await _send({"type": "promptRejected", "sessionId": session_id,
-                             **({"replySource": msg["replySource"]}
-                                if "replySource" in msg else {}),
-                             "text": msg.get("text", ""),
-                             "attachmentIds": msg.get("attachmentIds"),
-                             "reason": "busy"})
+                await _send(_prompt_rejected(msg, session_id, "busy"))
                 return
             await _send({"type": "error", "code": "SESSION_BUSY",
                          "message": "This session has too many pending requests — "
@@ -1981,12 +1990,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             it on its held-retry backoff. INFO — a move is expected and short; a stuck
             one is the reconcile's WARNING, not every prompt's."""
             log.info("ws.prompt held session=%s: moving to %s", session_id, target)
-            await _send({"type": "promptRejected", "sessionId": session_id,
-                         **({"replySource": msg["replySource"]}
-                            if "replySource" in msg else {}),
-                         "text": msg.get("text", ""),
-                         "attachmentIds": msg.get("attachmentIds"),
-                         "reason": SESSION_MOVING, "movingTo": target})
+            await _send(_prompt_rejected(msg, session_id, SESSION_MOVING,
+                                         movingTo=target))
 
         async def _handle_prompt(msg: dict, session_id: str) -> None:
             """Resume-if-needed, then deliver one prompt.
@@ -2097,11 +2102,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # limiter in server/assistant/client.py).
                 log.warning("ws.prompt rate_limited session=%s identity=%s",
                             session_id, identity)
-                await _send({"type": "promptRejected", "sessionId": session_id,
-                             **({"replySource": msg["replySource"]}
-                                if "replySource" in msg else {}),
-                             "text": text, "attachmentIds": attachment_ids,
-                             "reason": "RATE_LIMITED"})
+                await _send(_prompt_rejected(msg, session_id, "RATE_LIMITED"))
                 return
             if assistant_record:
                 assistant_prompts_total.inc()
@@ -2246,11 +2247,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # never be silent.
                 log.warning("ws.prompt rejected session=%s reason=%s",
                             session_id, status)
-                await _send({"type": "promptRejected", "sessionId": session_id,
-                             **({"replySource": msg["replySource"]}
-                                if "replySource" in msg else {}),
-                             "text": text, "attachmentIds": attachment_ids,
-                             "reason": status})
+                await _send(_prompt_rejected(msg, session_id, status))
 
         async def _run_session_frame(msg: dict) -> None:
             """Dispatch one _CHAINED_FRAMES frame. Runs on the session's chain.
