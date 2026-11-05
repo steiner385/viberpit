@@ -1,6 +1,6 @@
 // A `GET /api/pm/projects/:slug/milestones` payload shaped from the KinDash
 // ladder (`server/tests/fixtures/milestones/ladder.yaml`): four milestones,
-// the household gate current. `web/e2e/milestones.spec.ts` inlines a copy
+// the household gate current. `web/e2e/fixtures/milestones.ts` inlines a copy
 // (Playwright cannot resolve the `@/` alias). Times are relative to load so
 // relative-age labels are deterministic enough for the assertions.
 import type { Milestone, MilestoneCondition, MilestoneNote, MilestoneNotes, MilestonesView } from '@/api/milestones'

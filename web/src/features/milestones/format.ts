@@ -11,6 +11,11 @@ export const MILESTONES_REFRESH_ID = 'milestones-refresh'
 /** The definition file a product adds to get a ladder; mirrors `server/pm/milestone_def.py:MILESTONES_PATH`. */
 export const MILESTONES_FILE = 'docs/product/milestones.yaml'
 
+/** Export PDF caps (spec M6): the print is one page, so past these it says "+N more"
+ *  and truncates, never paginates. Open leaves per card; open asks and decisions. */
+export const PRINT_OPEN_LEAVES_CAP = 4
+export const PRINT_NOTES_CAP = 6
+
 /** Glyph + text, never colour alone. The tone only tints the glyph. */
 export const STATUS_META: Record<ConditionStatus, { glyph: string; text: string; tone: Tone }> = {
   met: { glyph: '✔', text: 'Met', tone: 'success' },

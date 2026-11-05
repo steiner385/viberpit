@@ -45,7 +45,7 @@ export function ConditionRow({ condition: c, manage }: { condition: MilestoneCon
         <span aria-hidden="true" className={cn('w-3 shrink-0 text-center text-xs font-medium leading-5', TONE_TEXT[meta.tone])}>
           {meta.glyph}
         </span>
-        <span className="min-w-0 flex-1 text-ink">{c.label}</span>
+        <span data-print="clamp" className="min-w-0 flex-1 text-ink">{c.label}</span>
         {manage && c.kind === 'manual' && <TickControl condition={c} target={manage} />}
       </div>
       <div className="flex flex-wrap gap-x-2 pl-5 text-xs text-ink-muted">

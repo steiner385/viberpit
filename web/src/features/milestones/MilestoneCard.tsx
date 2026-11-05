@@ -13,16 +13,17 @@ import { cn } from '@/lib/utils'
 import { ConditionRow } from './ConditionRow'
 import { AdvanceDialog } from './AdvanceDialog'
 import { LeavesBar } from './LeavesBar'
+import { PrintMore } from './PrintStamp'
 import { StatusNoteEditor } from './StatusNoteEditor'
-import { milestoneTitle, statusLine } from './format'
+import { PRINT_OPEN_LEAVES_CAP, milestoneTitle, statusLine } from './format'
 
-/** Open leaves shown on a card before "+N more" (spec §9; print caps at 4 in Phase 2). */
+/** Open leaves shown on a card before "+N more" (spec §9); print shows fewer. */
 const OPEN_LEAVES_CAP = 6
 
-function LeafRow({ leaf }: { leaf: MilestoneLeaf }) {
+function LeafRow({ leaf, printHidden }: { leaf: MilestoneLeaf; printHidden: boolean }) {
   const title = leaf.title ?? leaf.ref
   return (
-    <li className="flex flex-wrap items-baseline gap-x-2 text-xs">
+    <li data-print={printHidden ? 'hide' : undefined} className="flex flex-wrap items-baseline gap-x-2 text-xs">
       {leaf.url
         ? <a href={leaf.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-ink hover:underline">{title}</a>
         : <span className="min-w-0 truncate text-ink">{title}</span>}
@@ -113,20 +114,23 @@ export function MilestoneCard({ milestone: m, slug, next, advance, currentRemove
           <LeavesBar leaves={m.leaves} />
           {open.length > 0 && (
             <ul aria-label="Open leaves" className="flex flex-col gap-1">
-              {open.slice(0, OPEN_LEAVES_CAP).map((l) => <LeafRow key={l.ref} leaf={l} />)}
+              {open.slice(0, OPEN_LEAVES_CAP).map((l, i) => (
+                <LeafRow key={l.ref} leaf={l} printHidden={i >= PRINT_OPEN_LEAVES_CAP} />
+              ))}
             </ul>
           )}
           <div className="flex flex-wrap gap-x-3 text-xs text-ink-muted">
             {hidden > 0 && (epicUrl
-              ? <a href={epicUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">+{hidden} more</a>
-              : <span>+{hidden} more</span>)}
+              ? <a data-print="screen" href={epicUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">+{hidden} more</a>
+              : <span data-print="screen">+{hidden} more</span>)}
+            <PrintMore count={open.length} cap={PRINT_OPEN_LEAVES_CAP} />
             {m.leaves.done > 0 && <span>{m.leaves.done} done</span>}
           </div>
         </div>
       )}
 
       {current && (
-        <div className="mt-auto flex flex-col gap-2 border-t border-edge pt-3">
+        <div data-print="hide" className="mt-auto flex flex-col gap-2 border-t border-edge pt-3">
           <Button type="button" size="sm" variant={m.gateSummary.ready ? 'primary' : 'secondary'}
             onClick={() => setAdvancing(true)}>
             {m.gateSummary.ready ? 'Advance' : 'Advance with override…'}

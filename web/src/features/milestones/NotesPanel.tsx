@@ -16,7 +16,8 @@ import { Input } from '@/ui/Input'
 import { SectionHeading } from '@/ui/SectionHeading'
 import { Select } from '@/ui/Select'
 import { Textarea } from '@/ui/Textarea'
-import { type LoadedView, milestoneTitle } from './format'
+import { PrintMore } from './PrintStamp'
+import { type LoadedView, PRINT_NOTES_CAP, milestoneTitle } from './format'
 
 const NOTE_GRID = 'grid gap-2 lg:grid-cols-2 2xl:grid-cols-1'
 
@@ -34,15 +35,17 @@ function actionsFor(n: MilestoneNote): NoteAction[] {
   return []
 }
 
-function NoteItem({ note: n, where, onAct, busy }: {
+function NoteItem({ note: n, where, onAct, busy, printHidden = false }: {
   note: MilestoneNote
   where: string
   onAct: (status: DecisionStatus | AskStatus) => void
   busy: boolean
+  /** Past the print cap: on screen, gone from the printed page. */
+  printHidden?: boolean
 }) {
   const actions = actionsFor(n)
   return (
-    <li className="flex min-w-0 flex-col gap-1 rounded-md border border-edge bg-surface p-3 text-sm">
+    <li data-print={printHidden ? 'hide' : undefined} className="flex min-w-0 flex-col gap-1 rounded-md border border-edge bg-surface p-3 text-sm">
       <p className="text-ink [overflow-wrap:anywhere]">
         {n.ref && <span className="mr-1.5 font-mono text-xs text-ink-muted">{n.ref}</span>}
         {/* Only an absolute http(s) link becomes an href (stored-XSS guard). */}
@@ -55,7 +58,7 @@ function NoteItem({ note: n, where, onAct, busy }: {
         {n.kind === 'decision' && n.status === 'proposed' && <> · <span className="font-medium text-warning">Proposed</span></>}
       </p>
       {actions.length > 0 && (
-        <div className="flex flex-wrap gap-2 pt-1">
+        <div data-print="hide" className="flex flex-wrap gap-2 pt-1">
           {actions.map((a) => (
             <Button key={a.status} type="button" size="sm" variant="secondary" disabled={busy}
               aria-label={`${a.label}: ${n.text}`} onClick={() => onAct(a.status)}>
@@ -161,8 +164,8 @@ export function NotesPanel({ kind, slug, view }: { kind: NoteKind; slug: string;
   const titles = new Map(view.milestones.map((m) => [m.key, milestoneTitle(m)]))
   const where = (n: MilestoneNote) => n.milestoneKey === null ? 'Whole ladder' : titles.get(n.milestoneKey) ?? n.milestoneKey
   const act = (n: MilestoneNote) => (status: DecisionStatus | AskStatus) => update.mutate({ id: n.id, status })
-  const item = (n: MilestoneNote) => (
-    <NoteItem key={n.id} note={n} where={where(n)} onAct={act(n)} busy={update.isPending} />
+  const item = (n: MilestoneNote, printHidden = false) => (
+    <NoteItem key={n.id} note={n} where={where(n)} onAct={act(n)} busy={update.isPending} printHidden={printHidden} />
   )
 
   const current = view.ladder.currentKey
@@ -194,13 +197,15 @@ export function NotesPanel({ kind, slug, view }: { kind: NoteKind; slug: string;
       </SectionHeading>
       {shown.length > 0
         // Stacked under the ladder below 2xl, two notes a row; beside it, a column (as Numbers).
-        ? <ul aria-label={kind === 'ask' ? 'Open asks' : 'Decisions'} className={NOTE_GRID}>{shown.map(item)}</ul>
+        ? <ul aria-label={kind === 'ask' ? 'Open asks' : 'Decisions'} className={NOTE_GRID}>{shown.map((n, i) => item(n, i >= PRINT_NOTES_CAP))}</ul>
         : <p className="text-sm text-ink-muted">{kind === 'ask' ? 'Nothing needs you.' : 'No decisions yet.'}</p>}
+      <PrintMore count={shown.length} cap={PRINT_NOTES_CAP} className="text-xs text-ink-muted" />
+      {/* The print is the live state: the collapsed history stays on screen. */}
       {folded.length > 0 && (
-        <details className="text-sm">
+        <details data-print="hide" className="text-sm">
           <summary className="cursor-pointer text-ink-muted">{foldedTitle} ({folded.length})</summary>
           <ul aria-label={kind === 'decision' ? 'Superseded decisions' : 'Resolved asks'}
-            className={`mt-2 opacity-75 ${NOTE_GRID}`}>{folded.map(item)}</ul>
+            className={`mt-2 opacity-75 ${NOTE_GRID}`}>{folded.map((n) => item(n))}</ul>
         </details>
       )}
       {error && <p role="alert" className="text-xs text-danger">{error}</p>}
