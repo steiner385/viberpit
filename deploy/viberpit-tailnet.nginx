@@ -1,6 +1,8 @@
 # ViberPit HTTPS vhost — tailnet-only (dobby.tail0dd570.ts.net)
 # Install: ln -sf /etc/nginx/sites-available/viberpit-tailnet /etc/nginx/sites-enabled/
 # Cert: provisioned by tailscale cert (see viberpit-cert-renew.service)
+# Needs: deploy/viberpit-log-formats.nginx in /etc/nginx/conf.d/ (defines viberpit_redacted;
+#        `nginx -t` fails loudly without it)
 
 server {
     listen 443 ssl;
@@ -30,6 +32,14 @@ server {
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 86400s;
     proxy_send_timeout 86400s;
+
+    # The one-tap MCP sign-in callback carries the provider's authorization code and
+    # state in its query string: log it without $args (format in viberpit-log-formats).
+    # No proxy_set_header here, so the server-level identity headers above still apply.
+    location = /api/mcp/oauth/callback {
+        access_log /var/log/nginx/access.log viberpit_redacted;
+        proxy_pass http://127.0.0.1:8787;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8787;

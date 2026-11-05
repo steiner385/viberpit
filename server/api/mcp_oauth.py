@@ -73,10 +73,11 @@ async def oauth_start(server: str = "", identity: str = Depends(current_identity
 
 @router.get("/callback")
 async def oauth_callback(request: Request, code: str | None = None, state: str | None = None,
-                         error: str | None = None, identity: str = Depends(current_identity),
+                         error: str | None = None, iss: str | None = None,
+                         identity: str = Depends(current_identity),
                          db=Depends(get_db)) -> RedirectResponse:  # noqa: ANN001
     try:
-        name = await one_tap.complete(identity, state=state, code=code, error=error,
+        name = await one_tap.complete(identity, state=state, code=code, error=error, iss=iss,
                                       orch_getter=lambda: request.app.state.sessions)
     except one_tap.PasteBack as exc:
         return _to_settings("pasteBack", exc.server)

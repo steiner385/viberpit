@@ -102,6 +102,7 @@ overwrites `X-Forwarded-For`, #3010):
 sudo install -m644 deploy/viberpit.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl restart viberpit.service
+sudo cp deploy/viberpit-log-formats.nginx /etc/nginx/conf.d/viberpit-log-formats.conf
 sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/viberpit-tailnet
 sudo nginx -t && sudo nginx -s reload
 ```
@@ -149,6 +150,7 @@ sudo tailscale cert \
     --cert-file /etc/viberpit/dobby.tail0dd570.ts.net.crt \
     --key-file  /etc/viberpit/dobby.tail0dd570.ts.net.key \
     dobby.tail0dd570.ts.net
+sudo cp deploy/viberpit-log-formats.nginx /etc/nginx/conf.d/viberpit-log-formats.conf
 sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/viberpit-tailnet
 sudo ln -sf /etc/nginx/sites-available/viberpit-tailnet /etc/nginx/sites-enabled/
 sudo nginx -t && sudo nginx -s reload

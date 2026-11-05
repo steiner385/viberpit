@@ -1,10 +1,12 @@
 """One-tap MCP sign-in on the edge (MCP auth overhaul phase 4).
 
-:func:`start` discovers the server, ensures a registered client and returns the provider's
-authorize URL, remembering ``{state: pending}`` in memory. :func:`complete` takes the
-provider's callback, consumes that state (single use, 10 min TTL, bound to the tailnet
-identity that started the flow), exchanges the code, writes the bundle to the shared store
-at the server's CLI key and schedules the post-login follow-through.
+:func:`start` discovers the server, ensures a registered client (inside one overall
+:data:`START_DEADLINE_S`) and returns the provider's authorize URL, remembering
+``{state: pending}`` in memory. :func:`complete` takes the provider's callback, consumes
+that state (single use, 10 min TTL, bound to the tailnet identity that started the flow),
+checks the response's ``iss`` against the authorization server the flow started at
+(RFC 9207), exchanges the code, writes the bundle to the shared store at the server's CLI
+key and schedules the post-login follow-through.
 
 Every failure maps to a redirect the routes build: :class:`PasteBack` (one-tap cannot sign
 in to this server; the existing paste-back flow can) or :class:`SignInFailed` with a code
@@ -26,6 +28,7 @@ from viberpit.mcp_oauth_client import (Client, Discovery, DiscoveryFailed, Excha
                                        RegistrationFailed, RegistrationUnsupported,
                                        authorize_url, choose_scope, discover, ensure_client,
                                        exchange_code, forget_client, new_state, pkce_pair)
+from viberpit.mcp_oauth_refresh import url_href
 
 from server.aio import cancel_and_reap
 from server.config import get_settings
@@ -39,6 +42,11 @@ log = logging.getLogger(__name__)
 CALLBACK_PATH = "/api/mcp/oauth/callback"
 STATE_TTL_S = 600.0
 MAX_PENDING = 100
+# Overall deadline for a start's discovery + registration. Each leg has its own HTTP
+# timeout, but a slow provider could chain probe + up to six metadata fetches + DCR to
+# ~2 min while the browser waits on the redirect; past this the tap falls back to
+# paste-back (the thread finishes on its own timeouts; its result is simply unused).
+START_DEADLINE_S = 30.0
 SIGN_IN_ERRORS = frozenset({"state_invalid", "denied", "exchange_failed",
                             "registration_failed", "not_configured"})
 
@@ -132,11 +140,14 @@ async def start(identity: str, server_name: str) -> str:
     if key is None:  # no knowable CLI key (no type/url, or a ${…} placeholder)
         raise PasteBack(server_name)
     try:
-        discovery = await asyncio.to_thread(discover, server["config"]["url"])
-        client = await asyncio.to_thread(ensure_client, discovery, f"{origin}{CALLBACK_PATH}")
-    except (DiscoveryFailed, RegistrationUnsupported, RegistrationFailed) as exc:
+        async with asyncio.timeout(START_DEADLINE_S):
+            discovery = await asyncio.to_thread(discover, server["config"]["url"])
+            client = await asyncio.to_thread(ensure_client, discovery,
+                                             f"{origin}{CALLBACK_PATH}")
+    except (DiscoveryFailed, RegistrationUnsupported, RegistrationFailed, TimeoutError) as exc:
         # No DCR is an expected provider shape (e.g. KinDash), not a fault: INFO, so a
-        # Fix-auth tap does not auto-file an issue. A refused or broken one is WARNING.
+        # Fix-auth tap does not auto-file an issue. A refused or broken one is WARNING,
+        # as is a provider too slow to finish discovery inside START_DEADLINE_S.
         level = logging.INFO if isinstance(exc, RegistrationUnsupported) else logging.WARNING
         log.log(level, "mcp one-tap: falling back to paste-back server=%s reason=%s",
                     server_name, type(exc).__name__)
@@ -164,13 +175,31 @@ async def _take(identity: str, state: str | None) -> _Pending:
     return pending
 
 
+def _check_issuer(pending: _Pending, iss: str | None) -> None:
+    """RFC 9207: a callback carrying ``iss`` must name the authorization server the flow
+    started at, and one from a server advertising
+    ``authorization_response_iss_parameter_supported`` must carry it. Either failure is
+    an authorization response that is not ours (mix-up), read as ``state_invalid``."""
+    if iss is None:
+        supported = pending.discovery.as_metadata.get(
+            "authorization_response_iss_parameter_supported")
+        if supported is True:
+            raise SignInFailed("state_invalid")
+        return
+    if url_href(iss) != pending.discovery.authorization_server:
+        raise SignInFailed("state_invalid")
+
+
 async def complete(identity: str, *, state: str | None, code: str | None, error: str | None,
-                   orch_getter: Callable[[], Any]) -> str:
+                   orch_getter: Callable[[], Any], iss: str | None = None) -> str:
     """Finish the sign-in the provider redirected back with; return the server name.
 
     The state is consumed before anything else, so a replay or a foreign identity's
-    callback is refused and writes nothing."""
+    callback is refused and writes nothing. The issuer is checked next (RFC 9207), on
+    error responses too, so a response from another authorization server never reads as
+    the user's refusal."""
     pending = await _take(identity, state)
+    _check_issuer(pending, iss)
     if error is not None:
         # Only the user's refusal reads as "denied"; any other provider error is a failed
         # sign-in. The provider's text is never reflected.

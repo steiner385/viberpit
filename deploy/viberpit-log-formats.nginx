@@ -1,0 +1,10 @@
+# ViberPit nginx log formats — http context (conf.d), shared by every vhost.
+# Install: sudo cp deploy/viberpit-log-formats.nginx /etc/nginx/conf.d/viberpit-log-formats.conf
+#
+# `combined` logs `$request`, i.e. the full request line including the query string. The
+# one-tap MCP sign-in callback (/api/mcp/oauth/callback) carries the provider's
+# authorization code and state in that query, and must never reach a log (uvicorn's own
+# access log already redacts it). This format logs the method and the path only.
+log_format viberpit_redacted '$remote_addr - $remote_user [$time_local] '
+                             '"$request_method $uri $server_protocol" '
+                             '$status $body_bytes_sent "$http_referer" "$http_user_agent"';

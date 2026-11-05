@@ -401,6 +401,28 @@ def _configured_client_id(server_name: object) -> str | None:
     return client_id if isinstance(client_id, str) and client_id else None
 
 
+def _auth_method(bundle: dict, client_id: object) -> str | None:
+    """The ``token_endpoint_auth_method`` the bundle's client was registered with: the
+    bundle's own ``tokenEndpointAuthMethod`` (written by the one-tap exchange), else the
+    cached registration for its authorization server when that is this very client (a
+    bundle from before the exchange recorded it). None when neither knows."""
+    method = bundle.get("tokenEndpointAuthMethod")
+    if isinstance(method, str) and method:
+        return method
+    issuer = _auth_server_url(bundle)
+    if not (isinstance(client_id, str) and client_id and issuer):
+        return None
+    try:
+        entry = creds.read_mcp_clients().get(url_href(issuer))
+    except Exception:
+        log.debug("mcp oauth client cache read failed", exc_info=True)
+        return None
+    if not (isinstance(entry, dict) and entry.get("client_id") == client_id):
+        return None
+    method = entry.get("token_endpoint_auth_method")
+    return method if isinstance(method, str) and method else None
+
+
 def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
                    fetch_json: FetchJson | None = None, now_ms: int | None = None) -> dict:
     """Run the ``refresh_token`` grant for *bundle*; return the refreshed bundle.
@@ -423,7 +445,7 @@ def refresh_bundle(bundle: dict, *, post_form: PostForm | None = None,
         form["resource"] = resource
     secret = bundle.get("clientSecret")
     extra, headers = client_auth(str(client_id or ""), secret if isinstance(secret, str) else None,
-                                 metadata)
+                                 metadata, _auth_method(bundle, client_id) if secret else None)
     form.update(extra)
     try:
         status, body = (post_form or default_post_form)(url, form, headers)

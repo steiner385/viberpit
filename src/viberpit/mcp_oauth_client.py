@@ -376,6 +376,11 @@ def exchange_code(discovery: Discovery, client: Client, *, code: str, verifier: 
     bundle["clientId"] = client.client_id
     if client.client_secret:
         bundle["clientSecret"] = client.client_secret
+        if client.token_endpoint_auth_method:
+            # So the refresher authenticates the way the exchange did: a confidential
+            # client registered as client_secret_post at a server that also lists basic
+            # would otherwise refresh with basic.
+            bundle["tokenEndpointAuthMethod"] = client.token_endpoint_auth_method
     bundle["redirectUri"] = client.redirect_uri
     bundle["discoveryState"] = {"authorizationServerUrl": discovery.authorization_server,
                                 "resourceMetadataUrl": discovery.prm_url,
