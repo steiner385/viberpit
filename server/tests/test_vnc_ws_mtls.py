@@ -60,6 +60,12 @@ class _FakeBrowserWS:
         return await self._recv_queue.get()
 
 
+def _route_to(endpoint, ssl_ctx):
+    async def _resolve(_session_id):
+        return endpoint, ssl_ctx
+    return _resolve
+
+
 def _extract_handler(router):
     """Pull the async handler coroutine out of the FastAPI router for direct invocation."""
     routes = router.routes
@@ -83,8 +89,7 @@ async def test_remote_branch_calls_daemon_ws_connect_with_correct_args(monkeypat
     ep = Endpoint("https", host="127.0.0.1", port=9443)
     router = mod.build_vnc_ws_router(
         get_x11=lambda: None,
-        get_daemon_endpoint=lambda: ep,
-        get_daemon_ssl=lambda: "SSLCTX",
+        get_daemon_route=_route_to(ep, "SSLCTX"),
     )
 
     handler = _extract_handler(router)
@@ -102,7 +107,7 @@ async def test_remote_branch_calls_daemon_ws_connect_with_correct_args(monkeypat
 
 @pytest.mark.asyncio
 async def test_local_branch_does_not_call_daemon_ws_connect(monkeypatch):
-    """In-process branch: daemon_ws_connect must NOT be called when get_daemon_endpoint() is None."""
+    """In-process branch: daemon_ws_connect must NOT be called when the daemon route is None."""
     called: list = []
 
     def _fake_connect(endpoint, path, ssl_ctx=None):
@@ -114,8 +119,6 @@ async def test_local_branch_does_not_call_daemon_ws_connect(monkeypatch):
     # x11 is None → handler closes with 4401 (not enabled) without touching daemon_ws_connect
     router = mod.build_vnc_ws_router(
         get_x11=lambda: None,
-        get_daemon_endpoint=lambda: None,
-        get_daemon_ssl=lambda: None,
     )
 
     handler = _extract_handler(router)

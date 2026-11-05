@@ -302,3 +302,18 @@ def test_build_unknown_platform_falls_back_to_auto(caplog):
 
 def test_build_passes_valid_platform():
     assert build_native_display(_S(native_browser_platform="x11"))._browser_platform == "x11"
+
+
+@pytest.mark.asyncio
+async def test_native_launch_puts_double_dash_before_the_url(tmp_path):
+    nd, spawned = _mk(tmp_path)
+    assert await nd.launch_browser("s1", "https://example.com") is None
+    argv, _ = spawned[0]
+    assert list(argv[-2:]) == ["--", "https://example.com"]
+
+
+@pytest.mark.asyncio
+async def test_native_launch_refuses_a_flag_shaped_url(tmp_path):
+    nd, spawned = _mk(tmp_path)
+    assert await nd.launch_browser("s1", "--remote-debugging-port=9222") == "launch_failed"
+    assert spawned == []

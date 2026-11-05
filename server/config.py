@@ -406,6 +406,10 @@ try:
         # Unset = one-tap off, every server signs in by paste-back. Never derived from
         # request headers. Invalid = unset + one ERROR (public_origin_or_none).
         public_origin: str | None = Field(default=None, alias="VIBERPIT_PUBLIC_ORIGIN")
+        # Extra browser origins admitted by the Origin allowlist (server/auth/origin.py),
+        # comma-separated ``scheme://host[:port]``. The public origin, same-origin requests
+        # to a configured or loopback hostname, and (VIBERPIT_DEV=1) Vite are always in.
+        allowed_origins: str = Field(default="", alias="VIBERPIT_ALLOWED_ORIGINS")
 
         @field_validator("public_origin", mode="before")
         @classmethod
@@ -793,6 +797,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         public_origin: str | None = dataclasses.field(
             default_factory=lambda: public_origin_or_none(os.environ.get("VIBERPIT_PUBLIC_ORIGIN"))
+        )
+        allowed_origins: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_ALLOWED_ORIGINS", "")
         )
         session_feedback_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3

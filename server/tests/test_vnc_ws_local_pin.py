@@ -52,6 +52,10 @@ def _route(router):
     raise AssertionError("/ws/vnc not mounted")
 
 
+async def _remote_route(_sid):
+    return "unix:///tmp/nonexistent.sock", None
+
+
 @pytest.fixture()
 def harness(monkeypatch):
     """Remote mode: a daemon endpoint is configured and every path is instrumented."""
@@ -69,8 +73,7 @@ def harness(monkeypatch):
 
     router = build_vnc_ws_router(
         lambda: remote,
-        lambda: "unix:///tmp/nonexistent.sock",   # remote mode is ON
-        lambda: None,
+        _remote_route,   # remote mode is ON
         lambda sid: local if sid == REAUTH_DISPLAY_KEY else None,
     )
     return _route(router), local, remote, proxied
@@ -114,8 +117,7 @@ async def test_reauth_falls_back_to_daemon_when_no_local_display(monkeypatch):
     monkeypatch.setattr(vnc_ws, "daemon_ws_connect", _fake_proxy)
     router = build_vnc_ws_router(
         lambda: _FakeX11(),
-        lambda: "unix:///tmp/nonexistent.sock",
-        lambda: None,
+        _remote_route,
         lambda sid: None,
     )
     await _route(router)(websocket=_FakeWS(REAUTH_DISPLAY_KEY), identity="pin@example.com")

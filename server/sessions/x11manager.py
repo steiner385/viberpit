@@ -30,6 +30,29 @@ def resolve_chromium() -> str | None:
     return None
 
 
+def is_browser_url(url: object) -> bool:
+    """THE check for a URL a managed Chromium may be opened on: an absolute ``http``/
+    ``https`` URL with a host, no whitespace or control characters. Anything else —
+    above all a ``--switch`` — is refused: Chromium parses a positional ``--…`` as a
+    command-line switch, some of which run a command."""
+    if not isinstance(url, str) or not url or any(c.isspace() or ord(c) < 0x20 for c in url):
+        return False
+    from viberpit.mcp_keys import url_origin  # noqa: PLC0415 — the one http(s) URL parser
+    return url_origin(url) is not None
+
+
+def browser_url_argv(url: str | None) -> list[str]:
+    """The argv tail that opens *url*: ``["--", url]`` (``--`` ends Chromium's switch
+    parsing, so the URL can never be read as a flag), ``[]`` for no URL. Raises
+    ``ValueError`` for a URL :func:`is_browser_url` refuses. Both launchers (virtual and
+    native) build their tail here."""
+    if not url:
+        return []
+    if not is_browser_url(url):
+        raise ValueError("browser URL must be an absolute http(s) URL")
+    return ["--", url]
+
+
 _WAYLAND_ENV = ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XDG_SESSION_TYPE")
 
 
@@ -407,6 +430,11 @@ class X11Manager:
         spec = self._specs.get(session_id)
         if spec is None or len(spec.browsers) >= self._max_browsers:
             return False
+        try:
+            url_tail = browser_url_argv(url)
+        except ValueError:
+            log.info("x11: refused a non-http(s) browser URL for session %s", session_id)
+            return False
         # --ozone-platform=x11 + no Wayland env: Chrome would otherwise auto-pick Wayland
         # and draw this "virtual" browser on the operator's real desktop (D2).
         argv = [self._chromium_cmd, "--ozone-platform=x11",
@@ -430,8 +458,7 @@ class X11Manager:
             auto_profile = tempfile.mkdtemp(prefix=f"viberpit-prof-{session_id}-", dir=self._run_dir)
             profile_dir = auto_profile
         argv.append(f"--user-data-dir={profile_dir}")
-        if url:
-            argv.append(url)
+        argv.extend(url_tail)
         env = {k: v for k, v in os.environ.items() if k not in _WAYLAND_ENV}
         env.update(DISPLAY=f":{spec.lease.display}", XAUTHORITY=spec.xauthority)
         try:

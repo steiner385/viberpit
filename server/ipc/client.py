@@ -784,6 +784,12 @@ class DaemonClient:
         raise AssertionError("unreachable")          # pragma: no cover
 
     @property
+    def ssl_context(self):
+        """The mTLS client context this client dials its daemon with (None over a unix
+        socket): a WS proxied to the same daemon (``daemon_ws_connect``) needs it too."""
+        return self._ssl
+
+    @property
     def epoch(self) -> str | None:
         """The daemon's current process epoch (from ``/info``), or ``None`` when the edge
         has not yet reached ``/info`` (reader not connected). Changes on a daemon restart.

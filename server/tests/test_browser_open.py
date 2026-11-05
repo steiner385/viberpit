@@ -2,6 +2,7 @@
 import os
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from server.app import create_app
@@ -128,3 +129,44 @@ def test_open_browser_launch_failed_detail():
     r = client.post("/api/sessions/S/browser/open", json={}, headers=_IDENTITY_HEADERS)
     assert r.status_code == 409
     assert r.json()["detail"] == "browser failed to start"
+
+
+# --- Hardening (D-18 spike §A.3): URL validation and a human-only gate ---------------
+
+@pytest.mark.parametrize("url", ["--remote-debugging-port=9222",
+                                 "--renderer-cmd-prefix=evil",
+                                 "file:///etc/passwd", "javascript:alert(1)", "localhost:5173"])
+def test_open_browser_refuses_a_non_http_url(url):
+    fake = FakeX11(ok=True)
+    client = _make_client(fake)
+    r = client.post("/api/sessions/S/browser/open", json={"url": url}, headers=_IDENTITY_HEADERS)
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "INVALID_URL"
+    assert fake.calls == []
+
+
+def test_open_browser_refuses_a_local_process_caller(monkeypatch):
+    """A process on the edge host asserting the identity header is not a person."""
+    from server.auth import identity
+    monkeypatch.setattr(identity, "attested_front_end_hop", lambda _conn: False)
+    fake = FakeX11(ok=True)
+    client = _make_client(fake)
+    with patch.dict(os.environ, {"VIBERPIT_RULES_TRUST_LOCAL_HOST": "false"}):
+        r = client.post("/api/sessions/S/browser/open", json={"url": "https://example.com"},
+                        headers=_IDENTITY_HEADERS)
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "SESSION_CONTROL_HUMAN_ONLY"
+    assert fake.calls == []
+
+
+def test_open_browser_refuses_a_token_caller():
+    from server.assistant.token import mint_token
+    fake = FakeX11(ok=True)
+    client = _make_client(fake)
+    with patch.dict(os.environ, _ENV_PATCH):
+        tok = mint_token("browsertest@example.com", "asst-1")
+        lc = TestClient(client.app, client=("127.0.0.1", 5000), raise_server_exceptions=False)
+        r = lc.post("/api/sessions/S/browser/open", json={"url": "https://example.com"},
+                    headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 403
+    assert fake.calls == []

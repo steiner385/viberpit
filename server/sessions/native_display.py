@@ -26,7 +26,8 @@ from collections.abc import Callable
 from typing import Literal, TypeGuard, cast
 
 from server.sessions.desktop_session import DesktopSession, DesktopUnavailable, resolve_desktop_session
-from server.sessions.x11manager import CHROMIUM_CANDIDATES, _terminate, resolve_chromium
+from server.sessions.x11manager import (CHROMIUM_CANDIDATES, _terminate, browser_url_argv,
+                                        resolve_chromium)
 
 log = logging.getLogger("server.sessions.native_display")
 
@@ -162,6 +163,12 @@ class NativeDisplay:
         procs = self._browsers.setdefault(session_id, [])
         if len(procs) >= self._max_browsers:
             return REASON_CAP
+        try:
+            url_tail = browser_url_argv(url)
+        except ValueError:
+            log.info("native display: refused a non-http(s) browser URL for session %s",
+                     session_id)
+            return REASON_LAUNCH_FAILED
         wayland = self._prefer_wayland(cur)
         argv = [self._chromium_cmd, "--disable-dev-shm-usage", "--no-first-run", "--new-window",
                 f"--ozone-platform={'wayland' if wayland else 'x11'}"]
@@ -172,8 +179,7 @@ class NativeDisplay:
         # throwaway profile per launch keeps ViberPit's windows ViberPit's.
         profile = tempfile.mkdtemp(prefix=f"viberpit-native-{session_id}-", dir=self._run_dir)
         argv.append(f"--user-data-dir={profile}")
-        if url:
-            argv.append(url)
+        argv.extend(url_tail)
         # Inherit the daemon env, but drop anything that could contradict the resolved
         # desktop (a stale inherited cookie or Wayland socket must never win).
         env = {k: v for k, v in os.environ.items() if k not in _STALE_ENV}
