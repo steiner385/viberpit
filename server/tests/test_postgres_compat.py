@@ -262,6 +262,7 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # ladder's project_id) come from _FK_LINKS.
     "milestones": {"key": "dtcheck"},
     "milestone_measurements": {"scope": "dtcheck", "key": "dtcheck"},
+    "milestone_notes": {"kind": "decision"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this
@@ -294,6 +295,7 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "milestone_ladders": {"project_id": "projects"},
     "milestones": {"ladder_id": "milestone_ladders"},
     "milestone_measurements": {"ladder_id": "milestone_ladders"},
+    "milestone_notes": {"ladder_id": "milestone_ladders"},
     "persona_features": {"persona_id": "personas", "feature_id": "features"},
     "work_items": {"feature_id": "features"},
     "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
