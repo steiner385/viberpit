@@ -1,0 +1,24 @@
+{
+  "_note": "Recorded 2026-11-05 from cairnea/KinDash (search, refs #20200 and #20234, epic #20191), trimmed to 3 of its 18 sub-issues; totalCount is set to the trimmed node count. Two leaves are synthetic: #29001 (an OPEN leaf with an OPEN closing PR, none existed live) and cairnea/kindash-infra#7 (a cross-repo leaf). Aliases match build_ladder_query on the mini ladder in test_pm_milestone_github.py.",
+  "data": {
+    "s0": {"issueCount": 1},
+    "repo0": {
+      "r0": {"__typename": "Issue", "state": "CLOSED", "url": "https://github.com/cairnea/KinDash/issues/20200"},
+      "r1": {"__typename": "PullRequest", "state": "MERGED", "url": "https://github.com/cairnea/KinDash/pull/20234"},
+      "e0": {
+        "url": "https://github.com/cairnea/KinDash/issues/20191",
+        "subIssues": {
+          "totalCount": 5,
+          "pageInfo": {"hasNextPage": false, "endCursor": "NQ"},
+          "nodes": [
+            {"number": 20195, "title": "docs(runbooks): launch phase runbooks skeleton; production launch checklist becomes phase-3", "url": "https://github.com/cairnea/KinDash/issues/20195", "state": "CLOSED", "repository": {"nameWithOwner": "cairnea/KinDash"}, "closedByPullRequestsReferences": {"nodes": [{"number": 20224, "url": "https://github.com/cairnea/KinDash/pull/20224", "state": "MERGED"}]}},
+            {"number": 20202, "title": "ci: persona and Maestro lanes become blocking after three consecutive greens", "url": "https://github.com/cairnea/KinDash/issues/20202", "state": "OPEN", "repository": {"nameWithOwner": "cairnea/KinDash"}, "closedByPullRequestsReferences": {"nodes": []}},
+            {"number": 20203, "title": "ci(e2e): evening Eastern clock pass with a @day-boundary spec", "url": "https://github.com/cairnea/KinDash/issues/20203", "state": "CLOSED", "repository": {"nameWithOwner": "cairnea/KinDash"}, "closedByPullRequestsReferences": {"nodes": [{"number": 20230, "url": "https://github.com/cairnea/KinDash/pull/20230", "state": "MERGED"}]}},
+            {"number": 29001, "title": "synthetic: open leaf with an open closing PR", "url": "https://github.com/cairnea/KinDash/issues/29001", "state": "OPEN", "repository": {"nameWithOwner": "cairnea/KinDash"}, "closedByPullRequestsReferences": {"nodes": [{"number": 29002, "url": "https://github.com/cairnea/KinDash/pull/29002", "state": "OPEN"}, {"number": 29003, "url": "https://github.com/cairnea/KinDash/pull/29003", "state": "MERGED"}]}},
+            {"number": 7, "title": "synthetic: cross-repo leaf", "url": "https://github.com/cairnea/kindash-infra/issues/7", "state": "OPEN", "repository": {"nameWithOwner": "cairnea/kindash-infra"}, "closedByPullRequestsReferences": {"nodes": []}}
+          ]
+        }
+      }
+    }
+  }
+}
