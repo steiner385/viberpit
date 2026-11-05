@@ -6254,9 +6254,11 @@ class SessionOrchestrator:
                     )
                     db.add(row)
             row_persisted = True
-            if human_prompt:
+            if human_prompt and defer_for_bridge:
                 # Durable proof a person typed this create-time command (D-16a S1): a
-                # rehydrate re-parks it only with this, and runs it as them.
+                # rehydrate re-parks it only with this, and runs it as them. Written only
+                # when it is actually PARKED: a command refused at spawn (attachments,
+                # more text) must leave nothing a restart could re-park and run.
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
                     await db.execute(sa_update(DbSession).where(
@@ -23600,6 +23602,8 @@ class SessionOrchestrator:
             # record that a person typed it into their create request — the caller's
             # word is not enough — and run as that creator (one-shot).
             identity = self._initial_command_identity.pop(session_id, None)
+            if identity is not None and not await self._consume_initial_command(session_id):
+                identity = None      # the proof could not be consumed: fail closed
         human = command_origin in cmd_catalog.HUMAN_COMMAND_ORIGINS and bool(identity)
         refused = cmd_catalog.app_command_refusal(name, human=human)
         if refused is None and (cmd.extra_lines or attachments):
@@ -23631,6 +23635,23 @@ class SessionOrchestrator:
         if result is not None:
             self._emit_command_result(d, session_id, result)
         return cmd_catalog.APP_COMMAND
+
+    async def _consume_initial_command(self, session_id: str) -> bool:
+        """Clear the row's ``initial_command_identity`` — the durable proof that lets a
+        rehydrate re-park a person's create-time app command — the moment that command
+        is taken up, whether it then runs or is refused. Without this, every restart
+        would re-park and re-run it (its turn-less row keeps a NULL engine_session_id),
+        e.g. turning fast mode back on after the user turned it off. False when the
+        write failed: the caller then refuses the command rather than risk a replay."""
+        try:
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                 .values(initial_command_identity=None))
+        except Exception as exc:
+            log.info("initial command proof not cleared session=%s: %r", session_id, exc)
+            return False
+        return True
 
     @staticmethod
     def _emit_command_result(d: Any, session_id: str, result: dict) -> None:

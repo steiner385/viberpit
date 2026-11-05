@@ -649,8 +649,9 @@ async def test_a_spawn_initial_app_command(env, human, attachments, parked) -> N
     # The creator is kept (in memory and on the row) only while the command waits.
     assert env.orch._initial_command_identity.get(rec.id) == (
         "u@example.com" if parked else None)
+    # Durable only when actually parked (round 4): a refused command leaves no proof.
     assert (await _row(rec.id)).initial_command_identity == (
-        "u@example.com" if human else None)
+        "u@example.com" if parked else None)
 
 
 class _FakeDriver:
@@ -1226,5 +1227,96 @@ async def test_a_persons_parked_initial_command_survives_a_restart_as_them(env) 
     try:
         assert orch2.pop_pending_initial_prompt(rec.id) == "/plan on"
         assert orch2._initial_command_identity[rec.id] == "alice@example.com"
+    finally:
+        await orch2.stop()
+
+
+# ── Fix round 4: a create-time app command is consumed once ──
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["/fast on", "/plan on"])
+async def test_a_persons_initial_command_runs_once_and_never_replays_after_a_restart(
+        env, text) -> None:
+    """It starts no turn, so its row keeps a NULL engine_session_id: without consuming
+    the proof, every restart re-parked and re-ran it as the creator — e.g. re-entering
+    plan mode, or toggling fast mode again, after the user had changed it back.
+    (`/fast` itself is run by the browser; server-side its run is the notice.)"""
+    from server.sessions.commands.catalog import APP_COMMAND, COMMAND_ORIGIN_CREATE
+    rec = await env.orch.create_session(
+        "Once", cwd=str(env.clone), model="opus", permission_mode="acceptEdits",
+        identity="alice@example.com", initial_prompt=text, initial_prompt_human=True)
+    assert (await _row(rec.id)).initial_command_identity == "alice@example.com"
+    prompt = env.orch.pop_pending_initial_prompt(rec.id)          # the bridge, on attach
+    runs = _emitted(env.orch._drivers[rec.id])
+    assert await env.orch.send_prompt(rec.id, prompt,
+                                      command_origin=COMMAND_ORIGIN_CREATE) == APP_COMMAND
+    assert len(runs) == 1 and runs[0]["ok"] is True                # ran once
+    row = await _row(rec.id)
+    assert row.initial_command_identity is None and row.engine_session_id is None
+    if text == "/plan on":
+        assert env.orch._drivers[rec.id].mode == "plan"
+        await env.orch.run_command(rec.id, "plan", "off", identity="alice@example.com")
+    await env.orch.stop()
+    orch2 = await _restart(env)
+    try:
+        assert orch2.pop_pending_initial_prompt(rec.id) is None   # nothing for an attach
+        assert rec.id not in orch2._initial_command_identity
+        driver = await orch2.ensure_driver(rec.id)
+        assert driver is not None
+        again = _emitted(driver)
+        # Even a replayed CREATE claim finds no proof: refused, nothing runs.
+        assert await orch2.send_prompt(rec.id, text,
+                                       command_origin=COMMAND_ORIGIN_CREATE) != APP_COMMAND
+        assert [r["ok"] for r in again] == [False]
+        assert driver.mode != "plan"
+    finally:
+        await orch2.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_initial_command_consumes_its_proof_too(env) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED, COMMAND_ORIGIN_CREATE
+    rec = await env.orch.create_session(
+        "Plan", cwd=str(env.clone), model="opus", permission_mode="full-auto",
+        identity="alice@example.com", initial_prompt="/plan on", initial_prompt_human=True)
+    env.orch.pop_pending_initial_prompt(rec.id)
+    # Taken up with more text than the command: refused — and still consumed.
+    assert await env.orch.send_prompt(rec.id, "/plan on\nmore",
+                                      command_origin=COMMAND_ORIGIN_CREATE) == APP_COMMAND_REFUSED
+    assert (await _row(rec.id)).initial_command_identity is None
+    assert rec.id not in env.orch._initial_command_identity
+
+
+@pytest.mark.asyncio
+async def test_a_proof_that_cannot_be_cleared_refuses_the_command(env) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED, COMMAND_ORIGIN_CREATE
+    rec = await env.orch.create_session(
+        "Plan", cwd=str(env.clone), model="opus", permission_mode="full-auto",
+        identity="alice@example.com", initial_prompt="/plan on", initial_prompt_human=True)
+    prompt = env.orch.pop_pending_initial_prompt(rec.id)
+    with patch.object(SessionOrchestrator, "_consume_initial_command", return_value=False):
+        assert await env.orch.send_prompt(
+            rec.id, prompt, command_origin=COMMAND_ORIGIN_CREATE) == APP_COMMAND_REFUSED
+    assert env.orch._drivers[rec.id].mode == "full-auto"
+
+
+@pytest.mark.asyncio
+async def test_a_command_refused_at_spawn_is_never_re_parked_after_a_restart(env) -> None:
+    """Round 4, item 2: a person's command sent WITH attachments is refused at spawn and
+    must leave no durable proof — else a restart re-parked the bare command and ran it."""
+    from server.sessions import attachments as _att
+    with patch.object(_att, "resolve_and_bind", side_effect=AssertionError("bound")):
+        rec = await env.orch.create_session(
+            "Attach", cwd=str(env.clone), model="opus", permission_mode="full-auto",
+            identity="alice@example.com", initial_prompt="/fast on",
+            attachment_ids=["att-1"], initial_prompt_human=True)
+    row = await _row(rec.id)
+    assert row.initial_command_identity is None and row.engine_session_id is None
+    await env.orch.stop()
+    orch2 = await _restart(env)
+    try:
+        assert orch2.pop_pending_initial_prompt(rec.id) is None
+        assert (await _row(rec.id)).fast_mode is not True
     finally:
         await orch2.stop()
