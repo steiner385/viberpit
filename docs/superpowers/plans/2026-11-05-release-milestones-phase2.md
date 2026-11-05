@@ -14,7 +14,7 @@
 
 **M9 "owner" is redefined.** The original definition, "the human logins in `trusted_authors` via `attention.owner_logins`", can't be checked. A caller is a tailnet identity (an email), while `trusted_authors` holds GitHub logins and user ids, and nothing maps one to the other. `owner_logins` is documented as display-only and "never a trust decision".
 
-The new definition: an owner action needs `actor_class(identity) == "person"` (`server/pm/holds.py`) **and** a direct human request, meaning `request.state.via` is not in `{"session", "assistant"}`. The tailnet allowlist already limits who reaches the app at all.
+The new definition: an owner action needs `actor_class(identity) == "person"` (`server/pm/holds.py`) **and** a direct human request, meaning `request.state.via == "api"`. It is an allowlist, so it fails closed. The tailnet allowlist already limits who reaches the app at all.
 
 The rule applies to:
 - override advance;
@@ -166,7 +166,7 @@ jobs:
 - `class MilestoneActionError(Exception)` carries `status: int`, `code: str` and `detail: dict`. Routes map it to `HTTPException(status, {"error": code, **detail})`.
 - `Actor(identity: str, via: str)`, plus:
   - `is_person(actor) -> bool`, defined as `holds.actor_class(identity) == "person"`;
-  - `is_owner(actor) -> bool`, defined as `is_person(actor) and actor.via not in {"session", "assistant"}` (spec amendment M9).
+  - `is_owner(actor) -> bool`, defined as `is_person(actor) and actor.via == "api"` (spec amendment M9; an allowlist, so it fails closed).
 - Every function takes an `AsyncSession` and an `Actor`, writes audit rows, and does **not** commit. The route commits.
   - `tick_condition(db, ladder, milestone_key, condition_key, *, actor, met: bool | None = None, value: float | None = None, evidence: str, url: str | None) -> MilestoneMeasurement`
     - The condition must exist in the ladder definition with `kind == "manual"`. Otherwise it returns 400 `not_manual` or 404 `unknown_condition`.
