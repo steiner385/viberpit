@@ -87,9 +87,10 @@ vi.mock('@/api/hooks', () => ({
   useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   // The Needs-you tab's hygiene notice.
   useProjectHealth: () => projectHealthQuery,
-  // The Overview's milestones line (MilestonesSummaryBlock).
-  useMilestones: () => milestonesQuery,
 }))
+
+// The Overview's milestones line (MilestonesSummaryBlock).
+vi.mock('@/api/milestones', () => ({ useMilestones: () => milestonesQuery }))
 
 vi.mock('@/api/pm', async (orig) => ({
   ...(await orig<typeof import('@/api/pm')>()),

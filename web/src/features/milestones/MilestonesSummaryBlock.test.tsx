@@ -5,7 +5,7 @@ import { MilestonesSummaryBlock } from './MilestonesSummaryBlock'
 import { ladderView } from './__fixtures__/ladder'
 
 const q = vi.hoisted(() => ({ data: undefined as unknown }))
-vi.mock('@/api/hooks', () => ({ useMilestones: () => q }))
+vi.mock('@/api/milestones', () => ({ useMilestones: () => q }))
 
 const mount = () => render(<MemoryRouter><MilestonesSummaryBlock productSlug="kindash" /></MemoryRouter>)
 

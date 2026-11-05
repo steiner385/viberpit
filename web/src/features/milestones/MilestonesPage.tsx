@@ -5,7 +5,8 @@
 // below it. Its own route rather than an 8th product tab (docs/PAGE-TABS.md §4).
 import { useEffect, useId, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useMilestones, useProject, useRefreshMilestones } from '@/api/hooks'
+import { useProject } from '@/api/hooks'
+import { useMilestones, useRefreshMilestones } from '@/api/milestones'
 import type { RefreshMilestonesResult } from '@/api/milestones'
 import { automationPath } from '@/features/delivery/deliveryNavState'
 import { ROADMAP } from '@/features/products/vocab'

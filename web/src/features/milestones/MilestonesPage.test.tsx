@@ -9,9 +9,9 @@ const q = vi.hoisted(() => ({
   project: { data: undefined as unknown },
   refresh: { mutate: vi.fn(), reset: vi.fn(), isPending: false, data: undefined as unknown },
 }))
-vi.mock('@/api/hooks', () => ({
+vi.mock('@/api/hooks', () => ({ useProject: () => q.project }))
+vi.mock('@/api/milestones', () => ({
   useMilestones: () => q.milestones,
-  useProject: () => q.project,
   useRefreshMilestones: () => q.refresh,
 }))
 

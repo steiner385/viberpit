@@ -2,7 +2,7 @@
 // "Milestones: <current> · n of m gate conditions met", linking to the page.
 // Renders nothing when the product has no ladder.
 import { Link } from 'react-router-dom'
-import { useMilestones } from '@/api/hooks'
+import { useMilestones } from '@/api/milestones'
 import { milestonesPath } from '@/features/roadmap/roadmapNavState'
 import { currentMilestone, gateLine, loadedView, milestoneTitle } from './format'
 

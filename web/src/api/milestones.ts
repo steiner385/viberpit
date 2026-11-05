@@ -1,10 +1,13 @@
 /**
- * Release-milestones API client (spec 2026-11-05 §9–§10). Plain fetchers here,
- * React Query hooks in `api/hooks.ts`. The types mirror the server's camelCase
+ * Release-milestones API client (spec 2026-11-05 §9–§10): fetchers, query key and React
+ * Query hooks. Kept out of `hooks.ts` so they ride the lazy Roadmap chunk, not the
+ * startup bundle (bundle budget; same precedent as `digest.ts`). The types mirror the server's camelCase
  * view model verbatim (`server/pm/milestone_view.py:build_milestones_view`,
  * served by `server/api/pm_milestones.py`).
  */
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiRequestError } from './client'
+import { PM_MUTATION_META } from './hooks'
 
 /** Read-time status (`server/pm/milestone_status.py`); `info` is a number with no target. */
 export type ConditionStatus = 'met' | 'unmet' | 'unknown' | 'info'
@@ -125,4 +128,35 @@ export async function refreshMilestones(slug: string): Promise<RefreshMilestones
     }
     throw err
   }
+}
+
+/** The one definition of the milestones query key. */
+export const milestonesKey = (slug: string) => ['pm', 'milestones', slug] as const
+
+/** A product's release-milestone ladder (spec 2026-11-05 §9). Polled every 60 s:
+ *  the daemon refreshes measurements on its own cadence, and the page's
+ *  "Updated N ago" must not freeze while it is open. Shared by the Milestones
+ *  page and the product Overview's summary line, so the two are one fetch. */
+export function useMilestones(slug: string | null) {
+  return useQuery<MilestonesView>({
+    queryKey: milestonesKey(slug ?? ''),
+    queryFn: () => fetchMilestones(slug as string),
+    enabled: slug !== null && slug !== '',
+    staleTime: 10_000,
+    refetchInterval: 60_000,
+  })
+}
+
+/** Ask the daemon's Milestones Refresh loop to re-measure now. A 202 is only a
+ *  request (the loop picks it up within a tick), so the view is invalidated to
+ *  pull the fresh stamp; a 429/409 resolves as an outcome the button renders. */
+export function useRefreshMilestones(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<RefreshMilestonesResult, ApiRequestError, void>({
+    mutationFn: () => refreshMilestones(slug),
+    onSuccess: (r) => {
+      if (r.refreshed) void qc.invalidateQueries({ queryKey: milestonesKey(slug) })
+    },
+    meta: PM_MUTATION_META,
+  })
 }

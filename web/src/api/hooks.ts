@@ -59,9 +59,6 @@ import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchHolds, fetchProject,
   type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type HoldsView, type MapChangesPointer,
 } from './roadmap'
-import {
-  fetchMilestones, refreshMilestones, type MilestonesView, type RefreshMilestonesResult,
-} from './milestones'
 import { fetchCapacity, fetchCapacityBinding, type CapacityReadout } from './capacity'
 import { FLEET_HOSTS_KEY, type FleetHost } from './fleet'
 import {
@@ -157,7 +154,6 @@ export const QK = {
   implementationPolicy: (slug: string) => ['pm', 'project', slug, 'implementation-policy'] as const,
   policyCoverage: (slug: string) => ['pm', 'project', slug, 'policy-coverage'] as const,
   health: (slug: string) => ['pm', 'health', slug] as const,
-  milestones: (slug: string) => ['pm', 'milestones', slug] as const,
   outcomes: (workItemId: string) => ['pm', 'outcomes', workItemId] as const,
   capacity: ['capacity'] as const,
   /** A session's worktree diff. Bare `(id)` is the prefix covering every
@@ -2585,34 +2581,6 @@ export function useProject(slug: string | null, { poll = true }: { poll?: boolea
     enabled: slug !== null && slug !== '',
     staleTime: 5_000,
     refetchInterval: poll ? 15_000 : false,
-  })
-}
-
-/** A product's release-milestone ladder (spec 2026-11-05 §9). Polled every 60 s:
- *  the daemon refreshes measurements on its own cadence, and the page's
- *  "Updated N ago" must not freeze while it is open. Shared by the Milestones
- *  page and the product Overview's summary line, so the two are one fetch. */
-export function useMilestones(slug: string | null) {
-  return useQuery<MilestonesView>({
-    queryKey: QK.milestones(slug ?? ''),
-    queryFn: () => fetchMilestones(slug as string),
-    enabled: slug !== null && slug !== '',
-    staleTime: 10_000,
-    refetchInterval: 60_000,
-  })
-}
-
-/** Ask the daemon's Milestones Refresh loop to re-measure now. A 202 is only a
- *  request (the loop picks it up within a tick), so the view is invalidated to
- *  pull the fresh stamp; a 429/409 resolves as an outcome the button renders. */
-export function useRefreshMilestones(slug: string) {
-  const qc = useQueryClient()
-  return useMutation<RefreshMilestonesResult, ApiRequestError, void>({
-    mutationFn: () => refreshMilestones(slug),
-    onSuccess: (r) => {
-      if (r.refreshed) void qc.invalidateQueries({ queryKey: QK.milestones(slug) })
-    },
-    meta: PM_MUTATION_META,
   })
 }
 

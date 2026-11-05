@@ -90,9 +90,10 @@ vi.mock('@/api/hooks', () => ({
   useRejectDecision: () => ({ mutate: vi.fn(), isPending: false }),
   // The product Overview's hygiene notice — no data, so it renders nothing.
   useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
-  // The product Overview's milestones line — no ladder, so it renders nothing.
-  useMilestones: () => ({ data: { ladder: null } }),
 }))
+
+// The product Overview's milestones line — no ladder, so it renders nothing.
+vi.mock('@/api/milestones', () => ({ useMilestones: () => ({ data: { ladder: null } }) }))
 
 vi.mock('@/api/pm', async (orig) => ({
   ...(await orig<typeof import('@/api/pm')>()),
