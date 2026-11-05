@@ -24770,10 +24770,15 @@ class SessionOrchestrator:
             return {"name": "plan", "render": "notice",
                     "data": {"text": "Plan mode is already on" if on
                              else "Plan mode is already off"}}
-        async with db_session() as db:
-            await session_actions.set_permission_mode(
-                self, db, session_id=session_id, mode="plan" if on else "default",
-                identity=identity)
+        try:
+            async with db_session() as db:
+                await session_actions.set_permission_mode(
+                    self, db, session_id=session_id, mode="plan" if on else "default",
+                    identity=identity)
+        except session_actions.ActionError as exc:
+            # Leaving plan widens the mode: human-only (#3291), like /effort.
+            return {"name": "plan", "render": "notice",
+                    "data": {"text": f"Plan mode unchanged — {exc.message}"}}
         return {"name": "plan", "render": "notice",
                 "data": {"text": "Plan mode on" if on else "Plan mode off"}}
 

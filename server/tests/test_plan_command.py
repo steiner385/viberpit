@@ -16,6 +16,9 @@ from server.tests.test_output_style import _Spy
 from server.tests.test_output_style import env as env  # noqa: F401 — fixture
 
 
+_U = "u@example.com"     # a person: leaving plan widens the mode, human-only (#3291)
+
+
 def _mode(env) -> str:
     return env.orch._drivers[env.rec.id].mode
 
@@ -38,10 +41,10 @@ class _ModeCalls:
 async def test_plan_off_after_on_returns_to_accept_edits(env) -> None:
     await env.orch.set_permission_mode(env.rec.id, "acceptEdits")
     assert _mode(env) == "acceptEdits"
-    on = await env.orch.run_command(env.rec.id, "plan", "on")
+    on = await env.orch.run_command(env.rec.id, "plan", "on", identity=_U)
     assert on is not None and on["render"] == "notice" and on["data"]["text"] == "Plan mode on"
     assert _mode(env) == "plan"
-    off = await env.orch.run_command(env.rec.id, "plan", "off")
+    off = await env.orch.run_command(env.rec.id, "plan", "off", identity=_U)
     assert off is not None and off["data"]["text"] == "Plan mode off"
     assert _mode(env) == "acceptEdits"
 
@@ -66,19 +69,31 @@ async def test_plan_on_inside_plan_changes_nothing(env) -> None:
     out = await env.orch.run_command(env.rec.id, "plan", "on")
     assert out is not None and out["data"]["text"] == "Plan mode is already on"
     assert calls.calls == []
-    await env.orch.run_command(env.rec.id, "plan", "off")   # the overlay is intact
+    await env.orch.run_command(env.rec.id, "plan", "off", identity=_U)   # overlay intact
     assert _mode(env) == "acceptEdits"
 
 
 @pytest.mark.asyncio
 async def test_bare_plan_toggles(env) -> None:
-    await env.orch.run_command(env.rec.id, "plan", "")
+    await env.orch.run_command(env.rec.id, "plan", "", identity=_U)
     assert _mode(env) == "plan"
-    await env.orch.run_command(env.rec.id, "plan", "")
+    await env.orch.run_command(env.rec.id, "plan", "", identity=_U)
     assert _mode(env) == "full-auto"
     bad = await env.orch.run_command(env.rec.id, "plan", "maybe")
     assert bad is not None and "Usage: /plan" in bad["data"]["text"]
     assert _mode(env) == "full-auto"
+
+
+@pytest.mark.asyncio
+async def test_plan_off_from_the_system_identity_is_refused_as_a_notice(env) -> None:
+    """#3291: leaving plan sends ``default``, which widens the mode, so an automated
+    caller gets a notice and the session stays in plan."""
+    await env.orch.run_command(env.rec.id, "plan", "on")      # tightening: open to all
+    assert _mode(env) == "plan"
+    out = await env.orch.run_command(env.rec.id, "plan", "off")
+    assert out is not None and out["render"] == "notice"
+    assert out["data"]["text"].startswith("Plan mode unchanged")
+    assert _mode(env) == "plan"
 
 
 @pytest.mark.asyncio
