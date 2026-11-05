@@ -400,6 +400,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         # D-16c: one Claude plugin/marketplace op on this host — an outcome dict of JSON
         # scalars ({outcome, failureCode?, message?, version?, marketplace?}).
         "plugin_op",
+        # D-16c follow-up (#3314): push reload_plugins into this host's live Claude sessions
+        "reload_plugins_live",
         "session_queue_move", "session_queue_cancel", "start_queued_now", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",

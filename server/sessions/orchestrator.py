@@ -22369,6 +22369,39 @@ class SessionOrchestrator:
         from server.library import plugin_cli
         return await asyncio.to_thread(plugin_cli.run_op, op, args)
 
+    async def reload_plugins_live(self, hold_on_cache_impact: bool = True) -> list[dict]:
+        """Push ``reload_plugins`` into every live session on THIS host (D-16c follow-up,
+        #3314): the ``reload_plugins_live`` RPC's body. One row per live session, sorted by
+        name; a failure in one session never affects the others."""
+        from server.sessions import plugin_reload
+
+        async def one(sid: str, driver: object, rec: SessionRecord) -> dict:
+            row: dict = {"sessionId": sid, "name": rec.name, "host": self_host_name()}
+            reload = getattr(driver, "reload_plugins", None)
+            if reload is None:  # a Codex driver: no such control request
+                return {**row, "outcome": "skipped"}
+            try:
+                res = await reload(hold_on_cache_impact=hold_on_cache_impact)
+            except plugin_reload.ReloadError as e:
+                if e.code == plugin_reload.RELOAD_BUSY:
+                    outcome = "busy"
+                elif e.code == plugin_reload.RELOAD_UNAVAILABLE:
+                    outcome = "skipped"
+                else:
+                    outcome = "failed"
+                log.info("plugin reload for session %s: %s (%s)", sid, outcome, e.code)
+                return {**row, "outcome": outcome, "failureCode": e.code, "message": e.message}
+            except Exception as e:  # noqa: BLE001 — isolate one session's failure
+                log.info("plugin reload for session %s failed: %s", sid, e)
+                return {**row, "outcome": "failed", "failureCode": "error_internal",
+                        "message": str(e)}
+            return {**row, **res}
+
+        live = [(sid, self._drivers[sid], rec) for sid in list(self._drivers.keys())
+                if (rec := self._records.get(sid)) is not None and sid in self._drivers]
+        rows = await asyncio.gather(*(one(*t) for t in live))
+        return sorted(rows, key=lambda r: r["name"])
+
     async def codex_invalidate_credentials(self, account: str) -> dict:
         """Drop cached Codex credentials for *account* and stop its app-server.
 
