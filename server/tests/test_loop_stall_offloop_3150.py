@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -128,6 +129,69 @@ def test_binary_probe_degrades_to_none(tmp_path, content):
     if content is not None:
         p.write_bytes(content)
     assert model_catalog._discover_from_binary(str(p)) is None
+
+
+_PICKER = b'["sonnet","opus","haiku","fable","best","sonnet[1m]","opus[1m]","fable[1m]","opusplan"]'
+_PICKER_LIST = ["default", "sonnet", "opus", "haiku", "fable", "best",
+                "sonnet[1m]", "opus[1m]", "fable[1m]", "opusplan"]
+
+
+@pytest.mark.parametrize("split", range(1, len(b'"opusplan"')))
+def test_binary_probe_finds_an_anchor_straddling_a_chunk_edge(monkeypatch, split):
+    """#3300: the chunked find overlaps chunks, so no split of the anchor is missed."""
+    from server.sessions import model_catalog
+
+    monkeypatch.setattr(model_catalog, "_SCAN_CHUNK", 64)
+    anchor_at = _PICKER.index(b'"opusplan"')
+    blob = b"x" * (64 * 3 - anchor_at - split) + _PICKER + b"tail"
+    assert blob.index(b'"opusplan"') + split == 64 * 3
+    assert model_catalog._scan_aliases(blob) == _PICKER_LIST
+
+
+def test_binary_probe_finds_an_array_longer_than_the_window(monkeypatch):
+    """#3300: the regex window grows until it reaches the array's opening bracket."""
+    from server.sessions import model_catalog
+
+    monkeypatch.setattr(model_catalog, "_WINDOW", 16)
+    many = ",".join(f'"sonnet-{i}"' for i in range(200)).encode()
+    arr = b'["sonnet",' + many + b',"opusplan"]'
+    got = model_catalog._scan_aliases(b"\x00junk[" + arr + b"\x00")
+    assert got is not None and got[:2] == ["default", "sonnet"]
+    assert got[-1] == "opusplan" and len(got) == 203
+
+
+def test_binary_probe_skips_a_stray_anchor_outside_any_array(monkeypatch):
+    from server.sessions import model_catalog
+
+    monkeypatch.setattr(model_catalog, "_SCAN_CHUNK", 32)
+    blob = b'x="opusplan";' + b"\x00" * 100 + _PICKER
+    assert model_catalog._scan_aliases(blob) == _PICKER_LIST
+
+
+def test_binary_scan_in_a_thread_does_not_stall_the_loop():
+    """#3300: off-loop is not enough — ``re`` holds the GIL for the whole scan.
+
+    The whole-file ``finditer`` this replaced delayed a concurrent 10 ms tick by
+    the full scan time (5–6 s on dobby's 338 MB binary). The filler is ``["``
+    pairs, which defeat the regex's literal-prefix fast path the way the real
+    binary's JS does.
+    """
+    from server.sessions import model_catalog
+
+    blob = b'["' * (32 * 1024 * 1024) + _PICKER
+
+    async def _run() -> tuple[list[str] | None, float]:
+        worst = 0.0
+        task = asyncio.ensure_future(asyncio.to_thread(model_catalog._scan_aliases, blob))
+        while not task.done():
+            t0 = time.monotonic()
+            await asyncio.sleep(0.01)
+            worst = max(worst, time.monotonic() - t0 - 0.01)
+        return await task, worst
+
+    got, worst = asyncio.run(_run())
+    assert got == _PICKER_LIST
+    assert worst < 0.1, f"loop tick delayed {worst * 1000:.0f} ms by the scan thread"
 
 
 def test_get_models_builds_the_catalog_off_the_loop(monkeypatch):

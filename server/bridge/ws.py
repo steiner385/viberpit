@@ -2315,7 +2315,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # header behind a proxy, the Authorization header cannot drift mid-
                 # socket, so there is nothing here for a per-frame re-check to catch.
                 if via != "cli":
-                    ident = verify_identity(websocket)
+                    # Off the loop: a header-less peer falls back to a blocking
+                    # `tailscale whois` (2 s timeout), here once per frame (#3300).
+                    ident = await asyncio.to_thread(verify_identity, websocket)
                     if ident is None or ident != identity:
                         await _close_once(websocket, 1008)
                         return
