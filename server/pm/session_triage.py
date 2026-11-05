@@ -56,6 +56,26 @@ class Advance(Arguments):
     expected_stage: str = Field(min_length=1)
 
 
+class MilestonesRead(Arguments):
+    product: str = Field(min_length=1)
+
+
+class MilestoneTick(Arguments):
+    product: str = Field(min_length=1)
+    milestone: str = Field(min_length=1)
+    condition: str = Field(min_length=1)
+    met: bool | None = None
+    value: float | None = None
+    evidence: str
+    url: str | None = None
+
+
+class MilestoneAdvance(Arguments):
+    """No override field (R3): an override is the owner's, in the web app."""
+    product: str = Field(min_length=1)
+    expected_current: str | None
+
+
 def _owner(ctx: SessionToolContext) -> str:
     identity = ctx.identity.strip()
     if not identity or actor_class(identity) != "person":
@@ -130,12 +150,16 @@ async def _needs_you(db: Any, args: NeedsYou, identity: str) -> dict:
 
 async def invoke(ctx: SessionToolContext, operation: str, raw: dict[str, Any]) -> Any:
     """Explicit allowlist of internal operations; no general-purpose API proxy."""
-    from server.api import pm, sdlc
+    from server.api import pm, pm_milestones, sdlc
+    from server.sessions.tools.milestone_note import milestone_tool_error, summarized
     models: dict[str, type[Arguments]] = {"roadmap_needs_you": NeedsYou, "roadmap_item": Item,
-              "roadmap_resolve": Resolve, "roadmap_hold": Hold, "roadmap_advance": Advance}
+              "roadmap_resolve": Resolve, "roadmap_hold": Hold, "roadmap_advance": Advance,
+              "roadmap_milestones": MilestonesRead, "roadmap_milestone_tick": MilestoneTick,
+              "roadmap_milestone_advance": MilestoneAdvance}
+    milestone_op = operation.startswith("roadmap_milestone")
     try:
         args = models[operation].model_validate(raw)
-        mutation = isinstance(args, (Resolve, Hold, Advance))
+        mutation = isinstance(args, (Resolve, Hold, Advance, MilestoneTick, MilestoneAdvance))
         identity = _owner(ctx) if mutation else ctx.identity
         request = _request(identity)
         async with db_session() as db:
@@ -190,7 +214,22 @@ async def invoke(ctx: SessionToolContext, operation: str, raw: dict[str, Any]) -
                 if ini.stage != args.expected_stage:
                     raise HTTPException(409, detail={"error": "stale_stage", "stage": ini.stage})
                 return await sdlc.advance_initiative(args.slug, identity=identity, db=db)
+            # Milestones: the Phase 2 routes hold every rule; the owner acts via="session".
+            if isinstance(args, MilestonesRead):
+                return summarized(await pm_milestones.get_milestones(
+                    args.product, _identity=identity, db=db), args.product)
+            if isinstance(args, MilestoneTick):
+                return summarized(await pm_milestones.put_condition_tick(
+                    args.product, args.milestone, args.condition, pm_milestones.TickBody(
+                        met=args.met, value=args.value, evidence=args.evidence, url=args.url),
+                    request, identity=identity, db=db), args.product)
+            if isinstance(args, MilestoneAdvance):
+                return summarized(await pm_milestones.advance_milestone(
+                    args.product, pm_milestones.AdvanceBody(expectedCurrent=args.expected_current),
+                    request, identity=identity, db=db), args.product)
     except ValidationError as exc:
         raise ToolArgError(str(exc)) from exc
     except HTTPException as exc:
+        if milestone_op:
+            raise milestone_tool_error(exc) from exc
         raise ToolArgError(f"{exc.status_code}: {json.dumps(exc.detail)}") from exc

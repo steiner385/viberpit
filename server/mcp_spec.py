@@ -24,8 +24,8 @@ from viberpit.brand import MCP_SERVER_NAME as SERVER_NAME
 from viberpit.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 from viberpit.brand import MCP_TOOL_PREFIXES, is_mcp_tool, mcp_tool_stem
 
-__all__ = ["MCP_PREFIX", "MCP_TOOL_PREFIXES", "SERVER_NAME", "ToolArgError", "ToolClass",
-           "ToolSpec", "annotation_for", "annotations_for", "is_mcp_tool",
+__all__ = ["MCP_PREFIX", "MCP_TOOL_PREFIXES", "SERVER_NAME", "Summarized", "ToolArgError",
+           "ToolClass", "ToolSpec", "annotation_for", "annotations_for", "is_mcp_tool",
            "mcp_tool_stem", "register_surface", "surfaces", "tool_err"]
 
 
@@ -57,6 +57,15 @@ class ToolSpec:
 class ToolArgError(ValueError):
     """An argument a handler rejects LOCALLY, before any side effect — so the model gets
     a corrective message and nothing downstream ever sees the call."""
+
+
+@dataclass(frozen=True)
+class Summarized:
+    """A handler result whose compact ``text`` summary the model should read FIRST,
+    ahead of the full ``data`` payload. The surface's result helper emits ``text`` as
+    the first content block and the usual JSON envelope around ``data`` after it."""
+    text: str
+    data: Any
 
 
 def tool_err(msg: str) -> dict[str, Any]:

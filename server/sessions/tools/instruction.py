@@ -59,6 +59,15 @@ _BLURBS: dict[str, str] = {
     "roadmap_resolve": "record the user's chosen proposal resolution with tool approval.",
     "roadmap_hold": "hold or release a roadmap item on the user's behalf.",
     "roadmap_advance": "approve the initiative stage the user has reviewed.",
+    "roadmap_milestones": ("read a product's release milestones: the current gate, "
+                           "open asks and what is upcoming."),
+    "roadmap_milestone_tick": ("record the user's answer, with evidence, for a manual "
+                               "milestone condition, with tool approval."),
+    "roadmap_milestone_advance": ("move the ladder to its next milestone once the user "
+                                  "confirms the gate is met, with tool approval."),
+    "roadmap_milestone_note": ("Record an owner decision or ask, update a note you created, "
+                               "set a milestone's status line, or refresh measurements — "
+                               "no approval card."),
     "session_context": ("how you were dispatched (repo, branch, origin, goal), a "
                         "scratchDir for run logs that survives daemon restarts, and the "
                         "marker that keeps the Backlog Runner off issues you file for "

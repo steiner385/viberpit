@@ -17,7 +17,7 @@ from server.sessions.tools.registry import SESSION_TOOL_SPECS
 from server.sessions.tools.tools import build_session_tools, mounted_tool_names
 
 SIGNALS = ("mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision",
-           "share_artifact", "rename_self", "request_model")
+           "share_artifact", "rename_self", "roadmap_milestone_note", "request_model")
 
 
 def _ctx(**kw):
@@ -58,13 +58,15 @@ def test_session_tool_specs_declares_all_nine_unconditionally():
                                        "rename_self",
                                        "roadmap_needs_you", "roadmap_item", "roadmap_resolve",
                                        "roadmap_hold", "roadmap_advance",
+                                       "roadmap_milestones", "roadmap_milestone_tick",
+                                       "roadmap_milestone_advance", "roadmap_milestone_note",
                                        "request_draft_ready"}
 
 
 def test_signalling_tools_are_absent_when_the_engine_cannot_keep_them():
     names = {t.name for t in build_session_tools(_ctx(signalling_tools=False))}
     assert names == {"session_context", "report_feedback",
-                     "roadmap_needs_you", "roadmap_item"}
+                     "roadmap_needs_you", "roadmap_item", "roadmap_milestones"}
 
 
 def test_request_model_is_declared_only_when_the_engine_can_honour_it():
