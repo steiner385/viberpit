@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from viberpit.quota import QuotaSnapshot
 from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable, reconstruct_create_session_error
+from server.sessions.commands.catalog import app_command_refusal, app_only_command
 from server.sessions.facade import rpc_deadline
 from server.sessions.engine import (
     EFFORT_UNCHANGED,
@@ -416,6 +417,12 @@ class RemoteDriver:
                 and self._head_seq is not None and src <= self._head_seq)
 
 
+class AppCommandGateUnavailable(RuntimeError):
+    """A create-time initial prompt is an app command (``/plan``, ``/fast``…) bound for a
+    host whose daemon predates the ``APP_ONLY`` gate (D-16a): it would reach the CLI as
+    plain text, so the launch is refused instead. ``str(exc)`` is the user-facing text."""
+
+
 class RemoteOrchestrator:
     #: How long a daemon's `/info` answer (engines, capabilities) is reused before
     #: re-asking. Short enough that a runner losing its Codex binary — or an upgrade
@@ -769,6 +776,14 @@ class RemoteOrchestrator:
             raise reconstructed from exc
 
     async def create_session(self, **kwargs) -> SessionRecord:
+        # Host selection has already happened, so this is the one point that knows the
+        # daemon: an app command in the initial prompt (a multi-line one included, which
+        # the edge's single-line guard misses) must not reach a daemon without the gate.
+        app_cmd = app_only_command(kwargs.get("initial_prompt"))
+        if app_cmd is not None and not await self.has_app_command_gate(""):
+            refusal = app_command_refusal(app_cmd.name, human=True, daemon_gate=False)
+            if refusal:
+                raise AppCommandGateUnavailable(refusal["data"]["text"])
         if "engine" in kwargs:
             engine = parse_agent_engine(kwargs["engine"])
             if engine is AgentEngine.CLAUDE_CODE:

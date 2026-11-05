@@ -1142,7 +1142,8 @@ async def test_remote_create_strips_the_flag_for_an_old_daemon() -> None:
                 engine_session_id=None, cols=80, rows=24, cwd=None).to_dict()}
 
     rec = await RemoteOrchestrator(_Old()).create_session(  # type: ignore[arg-type]
-        name="n", initial_prompt="/fast on", initial_prompt_human=True)
+        # A plain prompt: an app command on an old daemon is refused outright (D-16a).
+        name="n", initial_prompt="hello", initial_prompt_human=True)
     assert rec.id == "s" and "initial_prompt_human" not in calls[-1]
 
 
