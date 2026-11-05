@@ -4,7 +4,7 @@
 // the request's identity, never from the form.
 import { useId, useState } from 'react'
 import type { MilestoneCondition } from '@/api/milestones'
-import { NUMBERS_SCOPE, milestoneErrorText, useTickCondition } from '@/api/milestones'
+import { NOTE_TEXT_MAX, NUMBERS_SCOPE, milestoneErrorText, useTickCondition } from '@/api/milestones'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Dialog'
 import { Field } from '@/ui/Field'
@@ -88,7 +88,7 @@ export function TickDialog({ open, onClose, slug, scope, condition: c }: {
               </Field>
             )}
         <Field label="Evidence" htmlFor={`${id}-evidence`} required help="What shows this is true: a note, a date, who confirmed it.">
-          <Textarea id={`${id}-evidence`} rows={3} value={evidence} onChange={(e) => setEvidence(e.target.value)} />
+          <Textarea id={`${id}-evidence`} rows={3} maxLength={NOTE_TEXT_MAX} value={evidence} onChange={(e) => setEvidence(e.target.value)} />
         </Field>
         <Field label="Link (optional)" htmlFor={`${id}-url`}>
           <Input id={`${id}-url`} type="url" inputMode="url" placeholder="https://" value={url}

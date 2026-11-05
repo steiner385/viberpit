@@ -20,6 +20,7 @@ const SERVER_CODES = [
   'evidence_required', 'owner_required', 'too_long', 'text_required', 'bad_status', 'bad_kind',
   'unknown_note', 'nothing_to_update', 'ladder_complete', 'stale_current', 'no_milestones',
   'override_not_needed', 'gate_unmet', 'reason_too_short', 'override_requires_owner', 'no_ladder', 'bad_url',
+  'concurrent_update',
 ]
 
 function setup() {
@@ -49,6 +50,7 @@ describe('milestoneErrorCopy', () => {
   it('gives the brief copy for the owner and stale answers', () => {
     expect(milestoneErrorCopy('override_requires_owner')).toBe('Only the owner can override from the ViberPit app')
     expect(milestoneErrorCopy('stale_current')).toBe('Someone else advanced this ladder')
+    expect(milestoneErrorCopy('concurrent_update')).toBe('Someone else just changed this. Reload and try again.')
   })
 
   it('falls back for an unknown or missing code', () => {

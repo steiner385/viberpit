@@ -163,9 +163,11 @@ export async function refreshMilestones(slug: string): Promise<RefreshMilestones
 /** The scope a numbers-panel entry is ticked under; mirrors
  *  `server/pm/milestone_actions.py:NUMBERS_SCOPE`. */
 export const NUMBERS_SCOPE = 'numbers'
-/** Mirrors `milestone_actions.STATUS_NOTE_MAX`, `NOTE_TEXT_MAX`, `OVERRIDE_REASON_MIN`. */
+/** Mirrors `milestone_actions.STATUS_NOTE_MAX`, `NOTE_TEXT_MAX`, `NOTE_REF_MAX`, `OVERRIDE_REASON_MIN`.
+ *  A tick's evidence is capped at `NOTE_TEXT_MAX` too. */
 export const STATUS_NOTE_MAX = 200
 export const NOTE_TEXT_MAX = 500
+export const NOTE_REF_MAX = 20
 export const OVERRIDE_REASON_MIN = 10
 
 /** A manual tick: `met` for a gate condition, `value` for a numbers entry. */
@@ -236,6 +238,7 @@ const MILESTONE_ERROR_COPY: Record<string, string> = {
   nothing_to_update: 'There was nothing to change.',
   no_ladder: 'This product has no milestone ladder.',
   bad_url: 'A link must be a full web address that starts with http:// or https://.',
+  concurrent_update: 'Someone else just changed this. Reload and try again.',
 }
 
 export function milestoneErrorCopy(code: string | null): string {

@@ -73,6 +73,16 @@ describe('NotesPanel — Needs you', () => {
   })
 })
 
+describe('NotesPanel — Add limits', () => {
+  it('caps the reference and text at the server limits', () => {
+    render(<NotesPanel kind="ask" slug="kindash" view={view} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add an ask' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add a note' })
+    expect(within(dialog).getByLabelText(/Reference/)).toHaveAttribute('maxLength', '20')
+    expect(within(dialog).getByLabelText(/Text/)).toHaveAttribute('maxLength', '500')
+  })
+})
+
 describe('NotesPanel — Decisions', () => {
   it('lists locked then proposed, superseded collapsed', () => {
     render(<NotesPanel kind="decision" slug="kindash" view={view} />)

@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.audit import record_audit
@@ -47,6 +48,7 @@ _RESOLVED_ASK = frozenset({"done", "dropped"})
 NUMBERS_SCOPE = "numbers"
 STATUS_NOTE_MAX = 200
 NOTE_TEXT_MAX = 500
+NOTE_REF_MAX = 20
 OVERRIDE_REASON_MIN = 10
 # The one ``via`` an owner action may arrive on: a direct web/API request (the route
 # default). Fail closed, so a new ``via`` (mcp-external, internal, cli, …) is never owner.
@@ -172,20 +174,24 @@ async def tick_condition(
     proof = _clean(evidence)
     if proof is None:
         raise MilestoneActionError(400, "evidence_required")
+    if len(proof) > NOTE_TEXT_MAX:
+        raise MilestoneActionError(400, "too_long", {"max": NOTE_TEXT_MAX})
     link = _link(url)
 
+    # Locked so two re-ticks serialize; two FIRST ticks both read no row, and the
+    # unique constraint refuses the loser's insert at flush (409 below).
     row = (await db.execute(select(MilestoneMeasurement).where(
         MilestoneMeasurement.ladder_id == ladder.id,
         MilestoneMeasurement.scope == milestone_key,
-        MilestoneMeasurement.key == condition_key))).scalar_one_or_none()
+        MilestoneMeasurement.key == condition_key).with_for_update())).scalar_one_or_none()
     previous = None
+    created = row is None
     if row is not None:
         previous = {"value": row.value, "by": row.manual_by}
         if row.manual_by not in (None, actor.identity) and not is_owner(actor):
             raise MilestoneActionError(403, "owner_required", {"tickedBy": row.manual_by})
     else:
         row = MilestoneMeasurement(ladder_id=ladder.id, scope=milestone_key, key=condition_key)
-        db.add(row)
 
     now = _utcnow()
     reading_value: dict[str, Any] = {"met": met} if met is not None else {"n": value}
@@ -197,7 +203,14 @@ async def tick_condition(
     row.manual_by = actor.identity
     row.manual_evidence = proof
     row.manual_url = link
-    await db.flush()
+    try:
+        # The insert goes in a savepoint, so a lost race leaves the caller's
+        # transaction usable (begin_nested flushes earlier changes before it opens).
+        async with db.begin_nested():
+            if created:
+                db.add(row)
+    except IntegrityError:
+        raise MilestoneActionError(409, "concurrent_update") from None
     await _audit(db, "tick", actor, ladder, {
         "milestoneKey": milestone_key, "conditionKey": condition_key,
         "value": reading_value, "status": row.status, "evidence": proof, "url": link,
@@ -250,6 +263,9 @@ async def add_note(db: AsyncSession, ladder: MilestoneLadder, *, actor: Actor, k
     if kind not in NOTE_KINDS:
         raise MilestoneActionError(400, "bad_kind", {"allowed": list(NOTE_KINDS)})
     body = _note_text(text)
+    short_ref = _clean(ref)
+    if short_ref is not None and len(short_ref) > NOTE_REF_MAX:
+        raise MilestoneActionError(400, "too_long", {"max": NOTE_REF_MAX})
     link = _link(url)
     state = status if status is not None else _DEFAULT_STATUS[kind]
     _check_status(kind, state)
@@ -259,7 +275,7 @@ async def add_note(db: AsyncSession, ladder: MilestoneLadder, *, actor: Actor, k
             raise MilestoneActionError(404, "unknown_milestone", {"milestoneKey": milestone_key})
     now = _utcnow()
     note = MilestoneNote(ladder_id=ladder.id, milestone_key=milestone_key, kind=kind,
-                         ref=_clean(ref), text=body, url=link, status=state,
+                         ref=short_ref, text=body, url=link, status=state,
                          created_by=actor.identity, created_at=now, updated_at=now)
     if kind == "ask" and state in _RESOLVED_ASK:
         note.resolved_by, note.resolved_at = actor.identity, now

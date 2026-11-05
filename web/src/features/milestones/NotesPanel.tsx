@@ -7,7 +7,7 @@ import { useId, useState } from 'react'
 import type {
   AskStatus, DecisionStatus, MilestoneNote, NoteKind,
 } from '@/api/milestones'
-import { NOTE_TEXT_MAX, milestoneErrorText, useAddNote, useUpdateNote } from '@/api/milestones'
+import { NOTE_REF_MAX, NOTE_TEXT_MAX, milestoneErrorText, useAddNote, useUpdateNote } from '@/api/milestones'
 import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Dialog'
@@ -122,7 +122,7 @@ function AddNoteDialog({ onClose, slug, view, kind: initialKind }: {
             onChange={(e) => setText(e.target.value)} />
         </Field>
         <Field label="Reference (optional)" htmlFor={`${id}-ref`} help="A short handle, such as D3 or Q2.">
-          <Input id={`${id}-ref`} value={ref} onChange={(e) => setRef(e.target.value)} />
+          <Input id={`${id}-ref`} maxLength={NOTE_REF_MAX} value={ref} onChange={(e) => setRef(e.target.value)} />
         </Field>
         <Field label="Link (optional)" htmlFor={`${id}-url`}>
           <Input id={`${id}-url`} type="url" inputMode="url" placeholder="https://" value={url}

@@ -81,4 +81,9 @@ describe('TickDialog', () => {
     expect(q.tick.mutate).toHaveBeenCalledWith(
       expect.objectContaining({ met: true, evidence: 'newer notes', url: 'https://e.x/proof' }), expect.anything())
   })
+
+  it('caps the evidence at the server limit', () => {
+    render(<TickDialog open onClose={vi.fn()} slug="kindash" scope="friendly" condition={setup} />)
+    expect(screen.getByLabelText(/Evidence/)).toHaveAttribute('maxLength', '500')
+  })
 })

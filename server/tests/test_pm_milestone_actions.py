@@ -587,3 +587,67 @@ async def test_http_urls_and_blank_are_accepted(isolated_db):
         n = await add_note(db, lad, actor=OWNER, kind="ask", text="x",
                            url="https://e.x/" + "a" * (2000 - len("https://e.x/")))
         assert n.url is not None and len(n.url) == 2000
+
+
+# ---------------------------------------------------------------- final-review fixes
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_tick_is_409_concurrent_update(isolated_db):
+    """Two first ticks race: ours read no row, the other committed one before our
+    flush. The unique constraint refuses our insert; that is a 409, not a 500."""
+    await _seed()
+    async with db_session() as db:
+        lad = await _ladder(db)
+        real_execute = db.execute
+        raced = False
+
+        async def racing_execute(*args, **kwargs):
+            nonlocal raced
+            result = await real_execute(*args, **kwargs)
+            if not raced:
+                raced = True
+                async with db_session() as other:
+                    await tick_condition(other, await _ladder(other), "friendly", "setup",
+                                         actor=OTHER, met=True, evidence="first", url=None)
+                    await other.commit()
+            return result
+
+        db.execute = racing_execute  # type: ignore[method-assign]
+        e = await _err(tick_condition(db, lad, "friendly", "setup", actor=OWNER, met=False,
+                                      evidence="second", url=None))
+    assert (e.status, e.code) == (409, "concurrent_update")
+    async with db_session() as db:
+        rows = (await db.execute(select(MilestoneMeasurement).where(
+            MilestoneMeasurement.scope == "friendly",
+            MilestoneMeasurement.key == "setup"))).scalars().all()
+    assert [r.manual_evidence for r in rows] == ["first"]
+
+
+@pytest.mark.asyncio
+async def test_tick_evidence_is_capped(isolated_db):
+    from server.pm.milestone_actions import NOTE_TEXT_MAX
+    await _seed()
+    async with db_session() as db:
+        lad = await _ladder(db)
+        e = await _err(tick_condition(db, lad, "friendly", "setup", actor=OWNER, met=True,
+                                      evidence="x" * (NOTE_TEXT_MAX + 1), url=None))
+        assert (e.status, e.code, e.detail) == (400, "too_long", {"max": NOTE_TEXT_MAX})
+        row = await tick_condition(db, lad, "friendly", "setup", actor=OWNER, met=True,
+                                   evidence="x" * NOTE_TEXT_MAX, url=None)
+        assert row.manual_evidence is not None and len(row.manual_evidence) == NOTE_TEXT_MAX
+
+
+@pytest.mark.asyncio
+async def test_note_ref_is_capped(isolated_db):
+    from server.pm.milestone_actions import NOTE_REF_MAX
+    assert NOTE_REF_MAX == 20
+    await _seed()
+    async with db_session() as db:
+        lad = await _ladder(db)
+        e = await _err(add_note(db, lad, actor=OWNER, kind="decision", text="x",
+                                ref="D" * (NOTE_REF_MAX + 1)))
+        assert (e.status, e.code, e.detail) == (400, "too_long", {"max": NOTE_REF_MAX})
+        n = await add_note(db, lad, actor=OWNER, kind="decision", text="x",
+                           ref="  " + "D" * NOTE_REF_MAX + "  ")
+        assert n.ref == "D" * NOTE_REF_MAX
