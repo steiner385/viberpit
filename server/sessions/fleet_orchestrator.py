@@ -927,39 +927,76 @@ class FleetOrchestrator:
         return {"invalidated": invalidated, "failed": failed}
 
     async def push_credentials(self, lease_s: float = CREDS_LEASE_S) -> dict[str, dict[str, int]]:
-        """Mint the primary's Claude envelopes and push them to every runner (#2629).
+        """Mint the primary's Claude envelopes and push them to every runner (#2629), carrying
+        the shared MCP store's public view and purge keys with them (#3287).
 
         Returns ``{host: acks}``. A runner that is unreachable is skipped (its lease lapses on
         its own — that is the fail-closed path); one that acks a lower generation than was pushed
         is reported as a fleet warning, never an error.
+
+        The MCP view is the store read once per tick, every dict bundle reduced to
+        ``creds.public_view`` (no refresh token leaves the edge), plus ``grants.purge_keys``;
+        a store that cannot be read costs this tick its MCP fields only (the runner keeps its
+        cached view), never the envelope lease. A runner answering with ``mcp_offers`` (its
+        terminal logins) has them merged into the store under the ordinary policy; a merge
+        failure is a WARNING that leaves the acks untouched.
         """
         from viberpit import accounts as _accounts
+        from viberpit import creds
+        from server.mcp_health import grants
         from server.sessions.claude_authority import mint_envelopes
 
         envs = await asyncio.to_thread(mint_envelopes, _accounts._anthropic_account_names())
         wire = [{"account": e.account, "kind": e.kind, "token": e.token,
                  "expires_at": e.expires_at, "generation": e.generation} for e in envs]
         want = {e.account: e.generation for e in envs}
+        mcp: dict = {}  # the MCP fields, absent (not None) when the store could not be read
+        try:
+            store = await asyncio.to_thread(creds.read_shared_mcp)
+            mcp = {"mcp_bundles": {k: creds.public_view(v) for k, v in store.items()
+                                   if isinstance(v, dict)},
+                   "mcp_drop": sorted(grants.purge_keys(store))}
+        except Exception:  # noqa: BLE001 — the MCP view must never cost a runner its lease
+            log.warning("fleet.creds_sync mcp view unreadable; pushing envelopes only", exc_info=True)
 
         async def _one(name: str):
             try:
-                res = await self._router.get(name).creds_sync(wire, lease_s)
-                return name, res.get("acks", {}), None
+                res = await self._router.get(name).creds_sync(wire, lease_s, **mcp)
+                return name, res, None
             except Exception as e:  # noqa: BLE001 — one runner must not block the rest
                 return name, None, e
 
         out: dict[str, dict[str, int]] = {}
         targets = [n for n in await self._fanout_names() if n != self._primary]
-        for name, acks, exc in await asyncio.gather(*(_one(n) for n in targets)):
+        for name, res, exc in await asyncio.gather(*(_one(n) for n in targets)):
             if exc is not None:
                 await self._log_creds_push_failure(name, exc)
                 continue
             self._creds_unreachable.pop(name, None)
+            acks = res.get("acks", {})
             out[name] = acks
             behind = sorted(a for a, g in want.items() if acks.get(a, -1) < g)
             if behind:
                 log.warning("fleet.creds_sync host=%s behind on accounts=%s", name, behind)
+            offers = res.get("mcp_offers")
+            if isinstance(offers, dict) and offers:
+                await self._merge_runner_offers(name, offers)
         return out
+
+    @staticmethod
+    async def _merge_runner_offers(name: str, offers: dict) -> None:
+        """Merge a runner's offered MCP bundles into the shared store (#3287): the edge is the
+        single writer, so a terminal login made on a runner lands here under the store lock
+        with the same newer-wins policy as the edge's own dir capture. Logs keys, never
+        token values; a failure is a WARNING."""
+        from viberpit import creds
+
+        log.info("fleet.creds_sync host=%s offered mcp bundle(s) keys=%s", name, sorted(offers))
+        try:
+            await asyncio.to_thread(creds.merge_shared_mcp, offers)
+        except Exception:  # noqa: BLE001 — a merge failure must not affect the acks
+            log.warning("fleet.creds_sync host=%s mcp offer merge failed keys=%s",
+                        name, sorted(offers), exc_info=True)
 
     async def _log_creds_push_failure(self, name: str, exc: BaseException) -> None:
         """Log a failed push at the level its lease risk earns (#2757).

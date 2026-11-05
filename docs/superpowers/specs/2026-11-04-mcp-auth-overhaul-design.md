@@ -211,7 +211,7 @@ Each phase is a separate PR, and each ships value on its own:
 2. **Keying and a single writer:** §2 plus §1, including the duplicate-bundle migration. — plan: `docs/superpowers/plans/2026-11-04-mcp-auth-overhaul-phase2-keying-single-writer.md`
 3. **Heal and alert:** §4 plus the push half of §5. — plan: `docs/superpowers/plans/2026-11-04-mcp-auth-overhaul-phase3-heal-and-alert.md`
 4. **One-tap sign-in:** the OAuth client half of §5, with the paste-back fallback. — plan: `docs/superpowers/plans/2026-11-04-mcp-auth-overhaul-phase4-one-tap-sign-in.md`
-5. **Distribution off the mount:** §3 runners via `creds_sync`, plus §6 runner capture.
+5. **Distribution off the mount:** §3 runners via `creds_sync`, plus §6 runner capture. — plan: `docs/superpowers/plans/2026-11-05-mcp-auth-overhaul-phase5-runner-distribution.md`
 
 ## Calls made by the designer (not confirmed by Tony)
 

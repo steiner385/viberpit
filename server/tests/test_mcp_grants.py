@@ -211,6 +211,16 @@ def test_purged_keys_tombstoned_for_thirty_minutes(shared: Path, monkeypatch):  
     assert grants.reconcile_grants(clock=lambda: t0 + 31 * 60).drop == frozenset()
 
 
+def test_purge_keys_is_live_tombstones_minus_present():
+    """The public face of the tombstone set, for the runner push (#3287): unexpired keys
+    not back in the store it is given; an expired tombstone is forgotten."""
+    now = 1000.0
+    grants._tombstones.update({"a": now + 100, "b": now - 1})
+    assert grants.purge_keys({"a": {"accessToken": "x"}}, clock=lambda: now) == frozenset()
+    assert grants.purge_keys({}, clock=lambda: now) == frozenset({"a"})
+    assert "b" not in grants._tombstones
+
+
 def test_tombstone_not_returned_once_the_key_is_back_in_the_store(shared: Path):  # noqa: F811
     _write_servers({})
     grants._tombstones["back|1"] = 10_000.0

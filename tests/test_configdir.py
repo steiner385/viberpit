@@ -128,6 +128,60 @@ class TestComposeOnEnvelopeRunner(unittest.TestCase):
                 ce.reset_runner_store()
 
 
+class TestComposeOnWorkerPurgesPushedKeys(unittest.TestCase):
+    """#3287: a worker composes from the pushed MCP view and purges the keys pushed with it."""
+
+    def test_pushed_drop_keys_leave_the_dir(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            from viberpit.creds import write_json_secure
+            from viberpit.mcp_view_store import reset_runner_view, runner_view
+            write_json_secure(paths.slot_path("alpha"), {"accessToken": "A", "expiresAt": 9})
+            write_json_secure(paths.account_cfg_dir("alpha") / ".credentials.json",
+                              {"claudeAiOauth": {"accessToken": "A"},
+                               "mcpOAuth": {"moved": {"accessToken": "stale"},
+                                            "kept": {"accessToken": "k", "refreshToken": "r"}}})
+            reset_runner_view()
+            try:
+                with mock.patch.dict(os.environ, {"VIBERPIT_DAEMON_ROLE": "worker",
+                                                  "VIBERPIT_CLAUDE_CREDS_DIR": str(paths.root() / "ec")}):
+                    runner_view().sync({"live": {"accessToken": "L", "expiresAt": 9e12}}, ["moved", "kept"])
+                    cfg = configdir.compose("alpha")
+                    mcp = json.loads((cfg / ".credentials.json").read_text())["mcpOAuth"]
+                    self.assertEqual(mcp, {"live": {"accessToken": "L", "expiresAt": 9e12},
+                                           "kept": {"accessToken": "k", "refreshToken": "r"}})
+            finally:
+                reset_runner_view()
+
+
+    def test_a_login_the_view_has_not_caught_up_with_is_kept(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            from viberpit.creds import write_json_secure
+            from viberpit.mcp_view_store import reset_runner_view, runner_view
+            write_json_secure(paths.slot_path("alpha"), {"accessToken": "A", "expiresAt": 9})
+            login = {"accessToken": "fresh", "refreshToken": "MCP-REFRESH-SECRET", "expiresAt": 9e12}
+            write_json_secure(paths.account_cfg_dir("alpha") / ".credentials.json",
+                              {"claudeAiOauth": {"accessToken": "A"}, "mcpOAuth": {"k": login}})
+            reset_runner_view()
+            try:
+                with mock.patch.dict(os.environ, {"VIBERPIT_DAEMON_ROLE": "worker",
+                                                  "VIBERPIT_CLAUDE_CREDS_DIR": str(paths.root() / "ec")}):
+                    for view in ({"k": {"accessToken": "", "expiresAt": 0}},      # dead grant
+                                 {"k": {"accessToken": "older", "expiresAt": 1}}):  # not merged yet
+                        runner_view().sync(view, [])
+                        cfg = configdir.compose("alpha")
+                        self.assertEqual(json.loads((cfg / ".credentials.json").read_text())["mcpOAuth"],
+                                         {"k": login})
+                    runner_view().sync({"k": {"accessToken": "fresh", "expiresAt": 9e12}}, [])
+                    cfg = configdir.compose("alpha")
+                    data = (cfg / ".credentials.json").read_text()
+                    self.assertEqual(json.loads(data)["mcpOAuth"], {"k": {"accessToken": "fresh", "expiresAt": 9e12}})
+                    self.assertNotIn("MCP-REFRESH-SECRET", data)
+            finally:
+                reset_runner_view()
+
+
 # --- compose publishes the shared MCP store's public view (spec 2026-10-13) ----------------
 
 def _compose_with(dir_mcp, store_mcp):

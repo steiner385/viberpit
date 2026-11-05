@@ -160,8 +160,26 @@ def update_mcp_clients(update: Callable[[dict], dict], path: Path | None = None)
         return updated
 
 
+def pushed_drop_keys() -> frozenset[str]:
+    """The purge keys the authority pushed with the MCP view (#3287): on a worker, the grant
+    reconcile's live tombstones as of the last ``creds_sync``; empty on the edge, which gets
+    them from the reconcile directly. The one place the pushed drop set is read."""
+    if fleet_role.is_worker():
+        from .mcp_view_store import runner_view  # the view store imports public_view from here
+
+        return runner_view().drop_keys()
+    return frozenset()
+
+
 def read_shared_mcp() -> dict:
-    """The shared MCP store (``store/mcp.shared.json``), or ``{}`` when absent."""
+    """The shared MCP store: on a worker that has received a push, the authority's view as
+    pushed (#3287); the file (``store/mcp.shared.json``, or ``{}`` when absent) otherwise."""
+    if fleet_role.is_worker():
+        from .mcp_view_store import runner_view  # the view store imports public_view from here
+
+        pushed = runner_view().bundles()
+        if pushed is not None:
+            return pushed
     path = paths.shared_mcp_path()
     return read_json(path) if path.exists() else {}
 
@@ -200,17 +218,25 @@ def merge_shared_mcp(incoming: dict, *, authenticated_keys: set[str] | None = No
     if fleet_role.is_worker():
         update_shared_mcp(lambda store: store)  # log the once-per-process notice
         return 0
-    def merge(existing: dict) -> dict:
-        merged = dict(existing)
-        for key, new in incoming.items():
-            if not isinstance(new, dict):
-                continue
-            explicit = authenticated_keys is not None and key in authenticated_keys
-            if _mcp_bundle_replaces(existing.get(key), new, explicit=explicit):
-                merged[key] = new
-        return merged
+    return len(update_shared_mcp(
+        lambda existing: merge_mcp_bundles(existing, incoming, authenticated_keys=authenticated_keys)))
 
-    return len(update_shared_mcp(merge))
+
+def merge_mcp_bundles(existing: dict, incoming: dict, *,
+                      authenticated_keys: set[str] | None = None) -> dict:
+    """The per-key fold :func:`merge_shared_mcp` applies to the store. Pure.
+
+    Each dict bundle in *incoming* replaces its key in *existing* under
+    :func:`_mcp_bundle_replaces` (explicit for keys in *authenticated_keys*); non-dict values
+    are skipped. Returns a new dict; neither input is mutated."""
+    merged = dict(existing)
+    for key, new in incoming.items():
+        if not isinstance(new, dict):
+            continue
+        explicit = authenticated_keys is not None and key in authenticated_keys
+        if _mcp_bundle_replaces(existing.get(key), new, explicit=explicit):
+            merged[key] = new
+    return merged
 
 
 def public_view(bundle: dict) -> dict:
@@ -225,8 +251,33 @@ def _holds_refresh_token(blob: object) -> bool:
     return isinstance(blob, dict) and bool(blob.get("refreshToken"))
 
 
-def capture_cfg_mcp(dir_mcp: dict, *, drop: frozenset[str] = frozenset()) -> int:
-    """Offer a dir's MCP bundles to the shared store under the bundle policy (newer wins).
+def unmerged_offers(offers: dict, store: dict) -> frozenset[str]:
+    """Keys of *offers* that *store* has not caught up with: the ones the store policy
+    (:func:`merge_mcp_bundles`, not explicit) would still take. A runner keeps such a dir
+    copy — refresh token included — until a pushed view holds it, so a terminal login is
+    never stripped from the only place it exists before the edge has merged it (#3287)."""
+    merged = merge_mcp_bundles(store, offers)
+    # A copy the store already holds verbatim is never "ahead", even where the policy would
+    # take it again (it replaces an access-less bundle unconditionally): withholding it would
+    # leave a refresh token in the dir on every sync.
+    return frozenset(k for k, v in offers.items() if merged.get(k) is v and store.get(k) != v)
+
+
+def publishable_store(dir_mcp: dict, store: dict, *, drop: frozenset[str] = frozenset()) -> dict:
+    """*store* minus the keys *dir_mcp* is still ahead of: the part of the store a publish into
+    that dir may apply right now. Pure.
+
+    A dir copy the store has not caught up with is a login the authority has not merged yet
+    (on a worker, whose capture is a no-op, that is the ~60 s until the next push). Publishing
+    the store over it would replace the only refresh-token-bearing copy there is, so those keys
+    are withheld and the dir keeps its copy until a store that holds the login arrives. On the
+    edge the capture that precedes every publish makes this a no-op (#3287)."""
+    ahead = unmerged_offers(offerable_mcp(dir_mcp, store, drop=drop), store)
+    return {k: v for k, v in store.items() if k not in ahead} if ahead else store
+
+
+def offerable_mcp(dir_mcp: dict, store: dict, *, drop: frozenset[str] = frozenset()) -> dict:
+    """The bundles a dir would offer *store*: the rule behind :func:`capture_cfg_mcp`. Pure.
 
     Keeps a login made directly in a terminal ``claude`` under that dir, including one from a
     provider that issues no refresh token. A bundle without a refresh token is offered only
@@ -235,14 +286,20 @@ def capture_cfg_mcp(dir_mcp: dict, *, drop: frozenset[str] = frozenset()) -> int
     A refresh-less key in *drop* (one the grant reconcile just deleted or moved) is never
     offered: the dir's leftover copy would otherwise land back in the store as "a key the
     store lacks". A bundle holding a refresh token is offered even when its key is in *drop*:
-    a refresh token is never deleted. Returns the number of bundles offered (0 on a worker,
-    which never writes the store)."""
-    if fleet_role.is_worker():
-        return merge_shared_mcp({})
-    store = read_shared_mcp()
-    held = {k: v for k, v in dir_mcp.items()
+    a refresh token is never deleted. Non-dict values are never offered."""
+    return {k: v for k, v in dir_mcp.items()
             if isinstance(v, dict)
             and (_holds_refresh_token(v) or (k not in drop and k not in store))}
+
+
+def capture_cfg_mcp(dir_mcp: dict, *, drop: frozenset[str] = frozenset()) -> int:
+    """Offer a dir's MCP bundles to the shared store under the bundle policy (newer wins).
+
+    Which bundles are offered is :func:`offerable_mcp`'s rule. Returns the number of bundles
+    offered (0 on a worker, which never writes the store)."""
+    if fleet_role.is_worker():
+        return merge_shared_mcp({})
+    held = offerable_mcp(dir_mcp, read_shared_mcp(), drop=drop)
     if held:
         merge_shared_mcp(held)
         log.debug("mcp capture: offered %d bundle(s) keys=%s", len(held), sorted(held))
@@ -329,7 +386,11 @@ def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None,
     """The one dir <-> store MCP OAuth sync for ONE cfg dir's .credentials.json, in place.
 
     1. Capture: the dir's refresh-token-bearing bundles merge into the shared store.
-    2. Publish: the store's public view lands in the dir per :func:`publish_mcp`.
+    2. Publish: the store's public view lands in the dir per :func:`publish_mcp`, minus the
+       keys the dir is still ahead of (:func:`publishable_store`), so a login the authority
+       has not merged yet is never stripped from the only place it exists.
+
+    The keys the authority pushed as purged (:func:`pushed_drop_keys`) are always in *drop*.
 
     Refresh-less keys in *drop* are neither captured nor kept: they leave the dir. A bundle
     holding a refresh token is captured and kept whatever *drop* says.
@@ -347,8 +408,10 @@ def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None,
     current = read_json(path)
     existing = current.get("mcpOAuth")
     existing = existing if isinstance(existing, dict) else {}
+    drop = drop | pushed_drop_keys()
     capture_cfg_mcp(existing, drop=drop)
-    merged = publish_mcp(existing, read_shared_mcp(), server=server, drop=drop)
+    store = publishable_store(existing, read_shared_mcp(), drop=drop)
+    merged = publish_mcp(existing, store, server=server, drop=drop)
     if merged == existing:
         return False
     after = path.stat()
