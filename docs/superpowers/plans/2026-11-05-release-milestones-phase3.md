@@ -24,7 +24,7 @@ The assistant gets one read tool, `get_milestones`, which is one loopback GET.
   - A session may change only notes it created. Changing anything else stays owner-only, unchanged.
   - Ticks and advance stay person-only. They go through the card path, where the identity is the session's human owner and `via="session"`.
 - **R2.** `roadmap_milestone_note` is `ToolClass.SIGNAL`. The permission gate has no "no-card mutation" class, and `propose_decision` is the precedent for a SIGNAL roadmap write by a session. It is not a turn-ending signal.
-- **R3.** `roadmap_milestone_advance` has no override parameter. An override is owner-only through the web UI (M4/M10). The tool is added to `NEVER_RULED_TOOLS`, so "always allow" can never cover it, just like `roadmap_advance`.
+- **R3.** `roadmap_milestone_advance` has no override parameter. An override is owner-only through the web UI (M4/M10). `roadmap_milestone_tick` is never-ruled too (a tick is recorded as the person's answer and can unlock an advance). Both are added to `NEVER_RULED_TOOLS`, so "always allow" can never cover them, just like `roadmap_advance`.
 
 ## Global Constraints
 

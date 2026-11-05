@@ -40,7 +40,7 @@ declaration the session made on purpose.
 the operators who triage `session_feedback` rows into the backlog.
 
 **Desired outcome** — every coding session mounts an in-process `viberpit` MCP server with up to
-eleven tools (plus the nine roadmap tools: five for triage and four for release milestones,
+thirteen tools (plus the nine roadmap tools: five for triage and four for release milestones,
 below):
 
 | Tool | Class | Args | What it does |
@@ -531,7 +531,7 @@ follows it as the JSON envelope's `data`. A product with no ladder answers
 | Tool | Class | Args | Acts as |
 |---|---|---|---|
 | `roadmap_milestones` | READ | product | — (reads the view) |
-| `roadmap_milestone_tick` | MUTATION, card | product, milestone, condition, met \| value, evidence, url? | the human owner, `via="session"` |
+| `roadmap_milestone_tick` | MUTATION, card, never-ruled | product, milestone, condition, met \| value, evidence, url? | the human owner, `via="session"` |
 | `roadmap_milestone_advance` | MUTATION, card, never-ruled | product, expected_current | the human owner, `via="session"` |
 | `roadmap_milestone_note` | SIGNAL, no card | product, action (`add` \| `set_status` \| `status_line` \| `refresh`), kind?, text?, ref?, url?, milestone?, note_id?, status? | the session itself, `session:<id>` |
 
@@ -540,9 +540,10 @@ follows it as the JSON envelope's `data`. A product with no ladder answers
   unattributed session or `bypassPermissions`, and a `pm.session.delegate` row is written in
   the same transaction. A computed condition refuses a tick (`not_manual`).
 - **R3.** `roadmap_milestone_advance` has no override parameter. An unmet gate comes back as
-  `gate_unmet`, because an override is the owner's alone, in the web app (M4/M10). It is also in
-  `NEVER_RULED_TOOLS` under both brand prefixes, like `roadmap_advance`, so "Always allow" can
-  never cover it.
+  `gate_unmet`, because an override is the owner's alone, in the web app (M4/M10). Both it and
+  `roadmap_milestone_tick` (a tick is recorded as the person's answer and can unlock an advance)
+  are in `NEVER_RULED_TOOLS` under both brand prefixes, like `roadmap_advance`, so "Always
+  allow" can never cover either.
 - **R1/R2.** `roadmap_milestone_note` is a `SIGNAL`, following the `propose_decision` precedent.
   It raises no card, and it is not a turn signal, so it renders as an ordinary ToolCall card.
   Its actor is the session itself, never the owner, so an unattended session can record an ask

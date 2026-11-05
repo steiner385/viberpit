@@ -282,6 +282,7 @@ _CONTROL_TOOLS = [
     "mcp__viberpit__roadmap_resolve", "mcp__viberpit__roadmap_advance",
     _LEGACY + "roadmap_advance",
     "mcp__viberpit__roadmap_milestone_advance", _LEGACY + "roadmap_milestone_advance",
+    "mcp__viberpit__roadmap_milestone_tick", _LEGACY + "roadmap_milestone_tick",
 ]
 
 

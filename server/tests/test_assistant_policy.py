@@ -277,6 +277,10 @@ def test_operator_routes_not_matched_by_ordinary_allowlist(method, path):
     ("PATCH", "/api/pm/projects/acme-billing/milestones/m1"),
     ("POST", "/api/pm/projects/acme-billing/milestones/refresh"),
     ("GET", "/api/pm/projects/acme-billing/milestones/m1"),
+    ("POST", "/api/pm/projects/acme-billing/milestones/notes"),
+    ("PATCH", "/api/pm/projects/acme-billing/milestones/notes/n1"),
+    ("POST", "/api/pm/projects/acme-billing/milestones/advance"),
+    ("PUT", "/api/pm/projects/acme-billing/milestones/m1/conditions/c1"),
 ])
 def test_milestone_write_routes_not_allowlisted(method, path):
     assert route_allowed(method, path) is False

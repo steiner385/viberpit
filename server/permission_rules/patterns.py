@@ -63,6 +63,7 @@ NEVER_RULED_TOOLS = frozenset(
             "answer_question", "resolve_decision", "resolve_triage", "advance_initiative",
             "close_initiative",
             "roadmap_resolve", "roadmap_advance", "roadmap_milestone_advance",
+            "roadmap_milestone_tick",
         )
     }
 )  # fmt: skip
