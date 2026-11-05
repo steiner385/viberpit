@@ -10,7 +10,7 @@ product repo's YAML is the only definition, M2).
 
 Who may do what (M9, amended): every write needs a *person* identity, which includes a
 session or the assistant delegating for its human. An *owner* action additionally
-needs a direct request (``via`` not ``session``/``assistant``): override advance,
+needs a direct request (``via == "api"``; fail closed): override advance,
 re-ticking another person's tick, and resolving or editing another person's note.
 """
 from __future__ import annotations
@@ -49,7 +49,9 @@ NUMBERS_SCOPE = "numbers"
 STATUS_NOTE_MAX = 200
 NOTE_TEXT_MAX = 500
 OVERRIDE_REASON_MIN = 10
-DELEGATED_VIA = frozenset({"session", "assistant"})
+# The one ``via`` an owner action may arrive on: a direct web/API request (the route
+# default). Fail closed, so a new ``via`` (mcp-external, internal, cli, …) is never owner.
+OWNER_VIA = "api"
 
 
 class MilestoneActionError(Exception):
@@ -81,9 +83,10 @@ def is_person(actor: Actor) -> bool:
 
 
 def is_owner(actor: Actor) -> bool:
-    """A person making a direct request — never a delegated session/assistant call,
-    which carries the person's identity (M9/M10)."""
-    return is_person(actor) and actor.via not in DELEGATED_VIA
+    """A person making a direct request. Allowlisted, not denylisted: a delegated
+    session/assistant call carries the person's identity (M9/M10), and any other
+    ``via`` is refused too."""
+    return is_person(actor) and actor.via == OWNER_VIA
 
 
 def _require_person(actor: Actor) -> None:
@@ -312,14 +315,17 @@ async def advance(db: AsyncSession, ladder: MilestoneLadder, *, actor: Actor,
     ordered = sorted(rows, key=lambda m: (m.ordinal is None, m.ordinal or 0))
     current = next((m for m in ordered if m.state == "current"), None)
     current_key = current.key if current is not None else None
+    if current is None and any(m.state == "done" for m in ordered):
+        raise MilestoneActionError(409, "ladder_complete")
     if current_key != expected_current:
         raise MilestoneActionError(409, "stale_current", {"current": current_key})
     reason = _clean(override_reason)
 
+    # Sync renumbers only live rungs; a removed rung keeps a stale ordinal, so "next"
+    # is never "ordinal > current.ordinal" but the lowest live upcoming rung.
+    upcoming = next((m for m in ordered if m.removed_at is None and m.state == "upcoming"), None)
     if current is None:
-        if any(m.state == "done" for m in ordered):
-            raise MilestoneActionError(409, "ladder_complete")
-        first = next((m for m in ordered if m.removed_at is None), None)
+        first = upcoming
         if first is None:
             raise MilestoneActionError(409, "no_milestones")
         first.state, first.entered_at = "current", now
@@ -349,9 +355,7 @@ async def advance(db: AsyncSession, ladder: MilestoneLadder, *, actor: Actor,
     if overridden:
         current.exit_override = {"by": actor.identity, "reason": reason,
                                  "at": iso_utc(now), "unmet": unmet}
-    nxt = next((m for m in ordered if m.removed_at is None and m.state != "done"
-                and m.ordinal is not None and current.ordinal is not None
-                and m.ordinal > current.ordinal), None)
+    nxt = upcoming
     if nxt is not None:
         nxt.state, nxt.entered_at = "current", now
     await db.flush()

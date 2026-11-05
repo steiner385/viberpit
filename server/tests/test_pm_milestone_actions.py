@@ -49,6 +49,16 @@ async def _rows(db) -> dict[str, Milestone]:
     return {m.key: m for m in (await db.execute(select(Milestone))).scalars().all()}
 
 
+async def _mark_done(*keys: str) -> None:
+    """Rungs before the current one are ``done`` on a real ladder (``_seed`` leaves
+    every non-current rung ``upcoming``)."""
+    async with db_session() as db:
+        rows = await _rows(db)
+        for k in keys:
+            rows[k].state = "done"
+        await db.commit()
+
+
 async def _err(coro) -> MilestoneActionError:
     with pytest.raises(MilestoneActionError) as exc:
         await coro
@@ -384,6 +394,7 @@ async def test_advance_skips_removed_next(isolated_db):
 async def test_advance_last_completes_ladder(isolated_db):
     await _seed(current="public", measurements=[
         _met("public", k) for k in ("phase2-readout", "launch-day", "daily-watch")])
+    await _mark_done("household", "friendly", "community")
     async with db_session() as db:
         res = await advance(db, await _ladder(db), actor=OWNER, expected_current="public",
                             override_reason=None, now=_now())
@@ -397,6 +408,7 @@ async def test_advance_last_completes_ladder(isolated_db):
 async def test_advance_after_complete_409(isolated_db):
     await _seed(current="public", measurements=[
         _met("public", k) for k in ("phase2-readout", "launch-day", "daily-watch")])
+    await _mark_done("household", "friendly", "community")
     async with db_session() as db:
         await advance(db, await _ladder(db), actor=OWNER, expected_current="public",
                       override_reason=None, now=_now())
@@ -465,3 +477,73 @@ async def test_every_write_audited(isolated_db):
     assert adv.via == "api"
     assert adv.detail["from"] == "household" and adv.detail["to"] == "friendly"
     assert adv.detail["override"] is False and adv.detail["unmet"] == []
+
+
+async def _post_sync_ordinals(removed_current: str, ordinals: dict[str, int]) -> None:
+    """What pm-sync leaves after the current rung leaves the YAML: the removed current
+    rung keeps its stale ordinal, the live rungs are renumbered densely."""
+    async with db_session() as db:
+        for key, m in (await _rows(db)).items():
+            m.ordinal = ordinals[key]
+            if key == removed_current:
+                m.removed_at = _now()
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_advance_from_removed_current_goes_to_lowest_live_upcoming(isolated_db):
+    # household(0) friendly(1) community(2) public(3); friendly current, then deleted:
+    # sync renumbers the live rungs (community=1, public=2), friendly keeps 1.
+    await _seed(current="friendly")
+    await _post_sync_ordinals("friendly", {"household": 0, "friendly": 1, "community": 1,
+                                           "public": 2})
+    await _mark_done("household")
+    async with db_session() as db:
+        res = await advance(db, await _ladder(db), actor=OWNER, expected_current="friendly",
+                            override_reason="removed rung, moving on", now=_now())
+        rows = await _rows(db)
+    assert res.to_key == "community"
+    assert rows["community"].state == "current" and rows["public"].state == "upcoming"
+
+
+@pytest.mark.asyncio
+async def test_removed_current_with_highest_stale_ordinal_does_not_complete(isolated_db):
+    await _seed(current="friendly")
+    await _post_sync_ordinals("friendly", {"household": 0, "friendly": 5, "community": 1,
+                                           "public": 2})
+    await _mark_done("household")
+    async with db_session() as db:
+        res = await advance(db, await _ladder(db), actor=OWNER, expected_current="friendly",
+                            override_reason="removed rung, moving on", now=_now())
+        rows = await _rows(db)
+    # ordinal > 5 finds nothing; live upcoming rungs remain, so the ladder never completes
+    assert res.to_key == "community"
+    assert rows["community"].state == "current"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["mcp-external", "internal", "cli", ""])
+async def test_override_from_non_api_via_403(isolated_db, via):
+    """Owner is fail-closed: only a direct ``api`` request may override."""
+    await _seed()
+    async with db_session() as db:
+        e = await _err(advance(db, await _ladder(db), actor=Actor("owner@example.com", via),
+                               expected_current="household",
+                               override_reason="a perfectly long reason", now=_now()))
+    assert (e.status, e.code) == (403, "override_requires_owner")
+
+
+@pytest.mark.asyncio
+async def test_complete_ladder_409_whatever_expected_current(isolated_db):
+    await _seed(current="public", measurements=[
+        _met("public", k) for k in ("phase2-readout", "launch-day", "daily-watch")])
+    await _mark_done("household", "friendly", "community")
+    async with db_session() as db:
+        await advance(db, await _ladder(db), actor=OWNER, expected_current="public",
+                      override_reason=None, now=_now())
+        await db.commit()
+    for expected in ("public", "household", None):
+        async with db_session() as db:
+            e = await _err(advance(db, await _ladder(db), actor=OWNER,
+                                   expected_current=expected, override_reason=None, now=_now()))
+        assert (e.status, e.code) == (409, "ladder_complete"), expected
