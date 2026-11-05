@@ -33,7 +33,30 @@ describe('NotesPanel — Needs you', () => {
     expect(items[0]).toHaveTextContent('Phase 0 · Household gate')
     expect(items[1]).toHaveTextContent('Name the 3 to 5 friendly families')
     expect(items[1]).toHaveTextContent('Whole ladder')
-    expect(screen.queryByText('Pick a launch city')).toBeNull()
+    // A resolved ask is not open: it sits in the collapsed Resolved list instead.
+    expect(within(screen.getByRole('list', { name: 'Open asks' })).queryByText('Pick a launch city')).toBeNull()
+  })
+
+  it('collapses done and dropped asks under Resolved (N), each with Reopen', () => {
+    const asks = [...view.notes.asks, { ...view.notes.asks[0], id: 'a4', status: 'dropped' as const, text: 'Print flyers' }]
+    render(<NotesPanel kind="ask" slug="kindash" view={{ ...view, notes: { ...view.notes, asks } }} />)
+    const summary = screen.getByText('Resolved (2)')
+    expect(summary.closest('details')).not.toHaveAttribute('open')
+    const resolved = within(screen.getByRole('list', { name: 'Resolved asks' })).getAllByRole('listitem')
+    expect(resolved.map((li) => li.textContent)).toEqual([
+      expect.stringContaining('Pick a launch city'), expect.stringContaining('Print flyers'),
+    ])
+    expect(within(resolved[0]).queryByRole('button', { name: /^Done/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen: Pick a launch city' }))
+    expect(q.update.mutate).toHaveBeenCalledWith({ id: 'a3', status: 'open' })
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen: Print flyers' }))
+    expect(q.update.mutate).toHaveBeenCalledWith({ id: 'a4', status: 'open' })
+  })
+
+  it('shows no Resolved list when no ask is resolved', () => {
+    const asks = view.notes.asks.filter((n) => n.status === 'open')
+    render(<NotesPanel kind="ask" slug="kindash" view={{ ...view, notes: { ...view.notes, asks } }} />)
+    expect(screen.queryByText(/^Resolved/)).toBeNull()
   })
 
   it('Done and Drop resolve an ask', () => {
@@ -80,6 +103,25 @@ describe('NotesPanel — Add limits', () => {
     const dialog = screen.getByRole('dialog', { name: 'Add a note' })
     expect(within(dialog).getByLabelText(/Reference/)).toHaveAttribute('maxLength', '20')
     expect(within(dialog).getByLabelText(/Text/)).toHaveAttribute('maxLength', '500')
+  })
+})
+
+describe('NotesPanel — milestone picker', () => {
+  const options = () => within(within(screen.getByRole('dialog', { name: 'Add a note' })).getByLabelText(/Milestone/))
+    .getAllByRole('option').map((o) => o.getAttribute('value'))
+
+  it('offers every live milestone', () => {
+    render(<NotesPanel kind="ask" slug="kindash" view={view} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add an ask' }))
+    expect(options()).toContain('household')
+  })
+
+  it('leaves out a current milestone removed from the definition file', () => {
+    render(<NotesPanel kind="ask" slug="kindash" view={ladderView({ currentRemoved: true })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add an ask' }))
+    expect(options()).not.toContain('household')
+    expect(options()).toContain('')
+    expect(options()).toContain('friendly')
   })
 })
 

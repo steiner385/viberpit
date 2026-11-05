@@ -1,6 +1,6 @@
 // The side column's owner notes (spec 2026-11-05 §9, M11). One component, two
 // panels: **Needs you** (open asks, the current milestone's first, each with Done
-// and Drop) and **Decisions** (locked, then proposed; superseded collapsed). The
+// and Drop; done and dropped ones collapsed under Resolved, each with Reopen) and **Decisions** (locked, then proposed; superseded collapsed). The
 // page places them around Numbers: Needs you, Numbers, Decisions. Either panel
 // adds a note of either kind through the one Add dialog.
 import { useId, useState } from 'react'
@@ -24,7 +24,11 @@ type NoteAction = { label: string; status: DecisionStatus | AskStatus }
 
 /** The moves each note offers, by kind and status. */
 function actionsFor(n: MilestoneNote): NoteAction[] {
-  if (n.kind === 'ask') return n.status === 'open' ? [{ label: 'Done', status: 'done' }, { label: 'Drop', status: 'dropped' }] : []
+  if (n.kind === 'ask') {
+    return n.status === 'open'
+      ? [{ label: 'Done', status: 'done' }, { label: 'Drop', status: 'dropped' }]
+      : [{ label: 'Reopen', status: 'open' }]
+  }
   if (n.status === 'proposed') return [{ label: 'Lock', status: 'locked' }, { label: 'Supersede', status: 'superseded' }]
   if (n.status === 'locked') return [{ label: 'Supersede', status: 'superseded' }]
   return []
@@ -79,6 +83,10 @@ function AddNoteDialog({ onClose, slug, view, kind: initialKind }: {
   const [url, setUrl] = useState('')
   const [milestoneKey, setMilestoneKey] = useState('')
   const error = milestoneErrorText(add.error)
+  // The server refuses a note on a removed rung; the view keeps only the current
+  // one of those, flagged by `currentRemoved`.
+  const { currentKey, currentRemoved } = view.ladder
+  const pickable = view.milestones.filter((m) => !(currentRemoved && m.key === currentKey))
   const ready = text.trim() !== ''
 
   const close = () => {
@@ -131,7 +139,7 @@ function AddNoteDialog({ onClose, slug, view, kind: initialKind }: {
         <Field label="Milestone" htmlFor={`${id}-milestone`}>
           <Select id={`${id}-milestone`} value={milestoneKey} onChange={(e) => setMilestoneKey(e.target.value)}>
             <option value="">Whole ladder</option>
-            {view.milestones.map((m) => <option key={m.key} value={m.key}>{milestoneTitle(m)}</option>)}
+            {pickable.map((m) => <option key={m.key} value={m.key}>{milestoneTitle(m)}</option>)}
           </Select>
         </Field>
         {error && <p role="alert" className="text-sm text-danger">{error}</p>}
@@ -164,7 +172,11 @@ export function NotesPanel({ kind, slug, view }: { kind: NoteKind; slug: string;
     ? [...asks.filter((n) => current !== null && n.milestoneKey === current),
        ...asks.filter((n) => current === null || n.milestoneKey !== current)]
     : view.notes.decisions.filter((n) => n.status !== 'superseded')
-  const superseded = kind === 'decision' ? view.notes.decisions.filter((n) => n.status === 'superseded') : []
+  // Collapsed under the main list: superseded decisions, or resolved (done / dropped) asks.
+  const folded = kind === 'decision'
+    ? view.notes.decisions.filter((n) => n.status === 'superseded')
+    : view.notes.asks.filter((n) => n.status !== 'open')
+  const foldedTitle = kind === 'decision' ? 'Superseded' : 'Resolved'
   const title = kind === 'ask' ? 'Needs you' : 'Decisions'
 
   return (
@@ -184,10 +196,11 @@ export function NotesPanel({ kind, slug, view }: { kind: NoteKind; slug: string;
         // Stacked under the ladder below 2xl, two notes a row; beside it, a column (as Numbers).
         ? <ul aria-label={kind === 'ask' ? 'Open asks' : 'Decisions'} className={NOTE_GRID}>{shown.map(item)}</ul>
         : <p className="text-sm text-ink-muted">{kind === 'ask' ? 'Nothing needs you.' : 'No decisions yet.'}</p>}
-      {superseded.length > 0 && (
+      {folded.length > 0 && (
         <details className="text-sm">
-          <summary className="cursor-pointer text-ink-muted">Superseded ({superseded.length})</summary>
-          <ul aria-label="Superseded decisions" className={`mt-2 opacity-75 ${NOTE_GRID}`}>{superseded.map(item)}</ul>
+          <summary className="cursor-pointer text-ink-muted">{foldedTitle} ({folded.length})</summary>
+          <ul aria-label={kind === 'decision' ? 'Superseded decisions' : 'Resolved asks'}
+            className={`mt-2 opacity-75 ${NOTE_GRID}`}>{folded.map(item)}</ul>
         </details>
       )}
       {error && <p role="alert" className="text-xs text-danger">{error}</p>}
