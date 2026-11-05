@@ -2495,13 +2495,18 @@ async def set_session_permission_mode(
     request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
-) -> dict:
+):
     """Change a session's permission mode (HTTP twin of the WS `setPermissionMode`
-    frame)."""
+    frame). Widening the mode is human-only (#3291): a local process holding an
+    identity header is not the UI, so that write takes ``human_gate_via``."""
     orch = _get_orchestrator(request)
-    via = getattr(request.state, "via", None)
-    return await session_actions.set_permission_mode(
-        orch, db, session_id=session_id, mode=body.mode, identity=identity, via=via)
+    via = (human_gate_via(request) if session_actions.mode_needs_human(body.mode)
+           else getattr(request.state, "via", None))
+    try:
+        return await session_actions.set_permission_mode(
+            orch, db, session_id=session_id, mode=body.mode, identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
 
 
 @router.post("/{session_id}/model")
@@ -2517,7 +2522,9 @@ async def set_session_model(
     applies live (D-14): 400 ``SETTINGS_INVALID`` for a level the model does not accept,
     409 with another ``SETTINGS_CODES`` code when the CLI refused the write."""
     orch = _get_orchestrator(request)
-    via = getattr(request.state, "via", None)
+    # An effort change is human-only (#3291), so that write takes ``human_gate_via``.
+    via = (human_gate_via(request) if body.effort is not None
+           else getattr(request.state, "via", None))
     effort = body.effort if body.effort is not None else EFFORT_UNCHANGED
     try:
         return await session_actions.set_model(

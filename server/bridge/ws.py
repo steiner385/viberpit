@@ -127,6 +127,7 @@ _WS_ATTACH_DAEMON_UNAVAILABLE_LOG = LogThrottle()
 # from a browser on the edge host itself (no attested front-end hop, #2980).
 _EXPECTED_REFUSAL_CODES = frozenset({
     session_actions.RULE_HUMAN_ONLY_CODE,
+    session_actions.SESSION_CONTROL_HUMAN_ONLY_CODE,
     "ALWAYS_FORBIDDEN_VIA_ASSISTANT",
 })
 
@@ -2160,10 +2161,21 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         orchestrator, db, session_id=session_id, identity=identity)
             elif msg_type == "setPermissionMode":
                 mode = msg.get("mode", "")
-                async with db_session() as db:
-                    await session_actions.set_permission_mode(
-                        orchestrator, db, session_id=session_id, mode=mode,
-                        identity=identity)
+                try:
+                    async with db_session() as db:
+                        await session_actions.set_permission_mode(
+                            orchestrator, db, session_id=session_id, mode=mode,
+                            identity=identity,
+                            # Widening the mode is human-only (#3291): a local
+                            # process holding this socket is not the UI.
+                            via=(human_gate_via(websocket)
+                                 if session_actions.mode_needs_human(mode) else via))
+                except ActionError as exc:
+                    # A refusal must surface, not vanish into the chain's ERROR log.
+                    _rejection_log(exc)("ws.set_permission_mode rejected session=%s "
+                                        "identity=%s code=%s", session_id, identity, exc.code)
+                    await _send({"type": "error", "code": exc.code,
+                                 "message": exc.message, "sessionId": session_id})
             elif msg_type == "cancelQueued":
                 index = msg.get("index")
                 if isinstance(index, int) and not isinstance(index, bool):

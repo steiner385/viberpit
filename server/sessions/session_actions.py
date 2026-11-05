@@ -105,37 +105,36 @@ async def mcp_toggle(orch, db, *, session_id: str, server: str, enabled: bool, i
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 
-def require_human(identity: str, via: str | None) -> None:
+def require_human(identity: str, via: str | None, *,
+                  action: str = "manage always-allow rules and permission profiles",
+                  code: str = RULE_HUMAN_ONLY_CODE) -> None:
     """Standing rules widen what a session may do unattended, so only a person at the UI
     may create, edit, revoke or preview one, or write permission-profile patterns: no
     token-borne caller (assistant, external MCP, CLI, internal, session), no process on
     this host asserting an identity header (``identity.LOCAL_PROCESS_VIA``, #2980; callers
     take ``via`` from ``identity.human_gate_via``) and not the system sentinel (spec §4).
     ``identity.LOCAL_TRUSTED_VIA`` is that local caller under the operator's opt-in
-    (``VIBERPIT_RULES_TRUST_LOCAL_HOST``, spec 2026-10-14) and is admitted."""
+    (``VIBERPIT_RULES_TRUST_LOCAL_HOST``, spec 2026-10-14) and is admitted.
+
+    ``action``/``code`` name the change for the refusal: the same gate guards widening a
+    session's permission mode and its reasoning effort (#3291)."""
+    refusal = f"Only a person in the UI can {action}."
     if identity == SYSTEM_IDENTITY:
-        raise ActionError(
-            RULE_HUMAN_ONLY_CODE,
-            "Only a person in the UI can manage always-allow rules and permission profiles.",
-            403)
+        raise ActionError(code, refusal, 403)
     if via == LOCAL_TRUSTED_VIA:
         return
     if via == LOCAL_PROCESS_VIA:
         # A browser on the edge host itself lands here too: it is indistinguishable from
         # an agent session on that host, so say where the change CAN be made.
         raise ActionError(
-            RULE_HUMAN_ONLY_CODE,
+            code,
             "This request came from the ViberPit host itself, where an agent could send the "
-            "same one. Change always-allow rules and permission profiles from a browser on "
-            "another device on your tailnet (phone, laptop), or have the host's admin set "
-            "VIBERPIT_RULES_TRUST_LOCAL_HOST=true in the ViberPit environment file, which "
-            "lets agents on this host write them too.",
+            f"same one. To {action}, use a browser on another device on your tailnet (phone, "
+            "laptop), or have the host's admin set VIBERPIT_RULES_TRUST_LOCAL_HOST=true in "
+            "the ViberPit environment file, which lets agents on this host do it too.",
             403)
     if via is not None:
-        raise ActionError(
-            RULE_HUMAN_ONLY_CODE,
-            "Only a person in the UI can manage always-allow rules and permission profiles.",
-            403)
+        raise ActionError(code, refusal, 403)
 
 
 def rules_enabled() -> bool:
@@ -155,6 +154,20 @@ def _not_owned() -> ActionError:
         "message will deny it with your reply.",
         403,
     )
+
+
+# Permission modes any caller may switch a session INTO: they only take autonomy away,
+# so the assistant can still put a runaway session in plan mode or back to asking
+# (#3291). Every other mode widens what the session does unattended, and only a person
+# picks one (``require_human``).
+TIGHTENING_MODES = frozenset({"plan", "interactive"})
+SESSION_CONTROL_HUMAN_ONLY_CODE = "SESSION_CONTROL_HUMAN_ONLY"
+
+
+def mode_needs_human(mode: str) -> bool:
+    """True when switching a session into ``mode`` must come from a person (#3291).
+    Callers use it to compute ``identity.human_gate_via`` only on the writes it guards."""
+    return mode not in TIGHTENING_MODES
 
 
 async def _permission_refused(orch, session_id: str, perm_id: str) -> ActionError:
@@ -429,7 +442,12 @@ async def answer_question(
 async def set_permission_mode(
     orch, db, *, session_id: str, mode: str, identity: str, via: str | None = None,
 ) -> dict:
-    """Change the session's permission mode."""
+    """Change the session's permission mode. Widening it (anything but
+    ``TIGHTENING_MODES``) is human-only (#3291), so callers pass ``via`` from
+    ``identity.human_gate_via`` when ``mode_needs_human(mode)``."""
+    if mode_needs_human(mode):
+        require_human(identity, via, action="widen a session's permission mode",
+                      code=SESSION_CONTROL_HUMAN_ONLY_CODE)
     await orch.set_permission_mode(session_id, mode)
     await _audit(db, "permission_mode.change", identity,
                  {"sessionId": session_id, "mode": mode}, via)
@@ -455,7 +473,12 @@ async def set_model(
     settings (D-14; see ``set_model_for_session``) — refused as before when the
     ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch is off. A refused write is the
     ``SettingsError`` code: 400 ``SETTINGS_INVALID`` for a level the model does not
-    accept, 409 for the rest."""
+    accept, 409 for the rest.
+
+    Changing the effort is human-only (#3291): callers
+    pass ``via`` from ``identity.human_gate_via`` when they forward one. The model itself
+    stays open to the assistant — ``set_model_for_session``'s policy already parks an
+    upgrade for a person's approval."""
     from server.sessions.orchestrator import ModelBlockedError  # noqa: PLC0415
     from server.sessions.types import is_assistant  # noqa: PLC0415
 
@@ -480,8 +503,11 @@ async def set_model(
     # raw one raises "object SessionRecord can't be used in 'await' expression".
     from server.sessions.facade import _maybe_await  # noqa: PLC0415
 
-    rec = await _maybe_await(orch.get_session(session_id))
     effort_given = not isinstance(effort, _EffortUnchanged)
+    if effort_given:
+        require_human(identity, via, action="change a session's reasoning effort",
+                      code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    rec = await _maybe_await(orch.get_session(session_id))
     # With the VIBERPIT_FLAG_SETTINGS_ENABLED kill switch off, Claude has no live effort
     # channel: refused exactly as before D-14, with the code session creation uses.
     if (effort_given and rec is not None and rec.engine is AgentEngine.CLAUDE_CODE
