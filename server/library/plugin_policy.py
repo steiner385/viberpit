@@ -216,49 +216,54 @@ def _internal(addr: str) -> bool:
 
 
 def _check_host(host: str, *, resolve: bool) -> str | None:
-    """Why *host* is refused, else ``None``. Refuses every IP-literal spelling
+    """Why *host* is refused, else ``None`` (see :func:`_host_verdict`)."""
+    return _host_verdict(host, resolve=resolve)[0]
+
+
+def _host_verdict(host: str, *, resolve: bool) -> tuple[str | None, list[str]]:
+    """``(why, addresses)``: why *host* is refused, else ``None``, plus the addresses the
+    check saw (empty unless *resolve* and accepted) so a caller can pin the clone to them.
+    Refuses every IP-literal spelling
     (``127.1``, ``0x7f.1``, ``017700000001`` …), ``localhost`` and ``*.localhost``, and —
     a private-network suffix (``*.ts.net``, ``*.local`` … ``_INTERNAL_SUFFIXES``), and —
     when *resolve* — a name that resolves to a private, loopback, link-local, CGNAT
     (``100.64/10``, the tailnet), multicast, unspecified or reserved address, or does not
     resolve at all.
 
-    Residual: DNS rebinding. The name is resolved here and again by git when the CLI
-    clones, so a name that answers public now and internal later passes this check. The
-    check stops the plain case (a URL that names an internal service); closing rebinding
-    would need the clone to be pinned to the checked address, which the CLI does not offer.
+    The one DNS answer is also what :func:`resolved_pin` hands the clone, so the CLI's own
+    ``git clone`` cannot re-resolve the name to something internal (DNS rebinding).
     """
     lowered = host.lower().rstrip(".")
     if lowered == "localhost" or lowered.endswith(".localhost"):
-        return "localhost"
+        return "localhost", []
     if lowered.endswith(_INTERNAL_SUFFIXES):
-        return "a private-network name"
+        return "a private-network name", []
     if all(_NUMERIC_LABEL_RE.fullmatch(label) for label in lowered.split(".")):
-        return "an IP address"
+        return "an IP address", []
     try:
         ipaddress.ip_address(lowered)
-        return "an IP address"
+        return "an IP address", []
     except ValueError:
         pass
     try:
         socket.inet_aton(lowered)
-        return "an IP address"
+        return "an IP address", []
     except OSError:
         pass
     if not resolve:
-        return None
+        return None, []
     try:
         addrs = _resolve(lowered)
     except (OSError, UnicodeError):
-        return "a host that does not resolve"
+        return "a host that does not resolve", []
     if not addrs:
-        return "a host that does not resolve"
+        return "a host that does not resolve", []
     try:
         if any(_internal(a) for a in addrs):
-            return "a host on a private or internal network"
+            return "a host on a private or internal network", []
     except ValueError:
-        return "a host with an unreadable address"
-    return None
+        return "a host with an unreadable address", []
+    return None, addrs
 
 
 def _would_be_name(repo: str) -> str:
@@ -304,6 +309,11 @@ def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
     ``file:``, ssh and anything carrying whitespace or shell metacharacters are refused, as
     is a source whose name would impersonate an official marketplace from anyone but
     ``anthropics``. *resolve* does a blocking DNS lookup: call it off the event loop."""
+    return _checked_source(source, resolve=resolve)[0]
+
+
+def _checked_source(source: object, *, resolve: bool) -> tuple[str, list[str]]:
+    """:func:`check_marketplace_source` plus the addresses its one DNS lookup saw."""
     def refuse(why: str) -> PolicyRefusal:
         return PolicyRefusal(MARKETPLACE_SOURCE_REFUSED,
                              f"Marketplace source refused: {why}. Use a GitHub owner/repo "
@@ -324,7 +334,7 @@ def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
     m = _GITHUB_RE.fullmatch(source)
     if m:
         _guard_reserved(m["owner"], m["repo"])
-        return source
+        return source, []
     if not source.startswith("https://"):
         raise refuse("not a GitHub owner/repo or an https:// URL")
     parts = urlsplit(source)
@@ -333,13 +343,32 @@ def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
             or parts.query or parts.fragment or not _HOST_RE.fullmatch(host)
             or not _URL_PATH_RE.fullmatch(parts.path or "")):
         raise refuse("unsupported https URL")
-    why = _check_host(host, resolve=resolve)
+    why, addrs = _host_verdict(host, resolve=resolve)
     if why:
         raise refuse(f"it names {why}")
     segments = [s for s in parts.path.split("/") if s]
     owner = segments[0] if host.lower() == "github.com" and len(segments) >= 2 else ""
     _guard_reserved(owner, segments[-1])
-    return source
+    return source, addrs
+
+
+def resolved_pin(source: str) -> str | None:
+    """The libcurl ``CURLOPT_RESOLVE`` entry (``host:443:addr1,addr2``) that pins a clone of
+    *source* to the addresses the SSRF check saw, or ``None`` for ``owner/repo`` (GitHub's
+    own host, not a caller-chosen name). One DNS lookup serves the check and the pin.
+    Raises the same :class:`PolicyRefusal` as :func:`check_marketplace_source`. Blocking."""
+    checked, addrs = _checked_source(source, resolve=True)
+    if not checked.startswith("https://"):
+        return None
+    host = (urlsplit(checked).hostname or "").lower().rstrip(".")
+    return f"{host}:443:{','.join(sorted(set(addrs)))}"
+
+
+def pin_for_normalized(normalized: str | None) -> str | None:
+    """:func:`resolved_pin` for a normalized ``https:<host><path>`` source, else ``None``."""
+    if not normalized or not normalized.startswith("https:"):
+        return None
+    return resolved_pin("https://" + normalized[len("https:"):])
 
 
 # --------------------------------------------------------------------------- install policy

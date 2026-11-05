@@ -29,6 +29,7 @@ import logging
 import os
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Awaitable
@@ -119,7 +120,29 @@ def _config_dir_env() -> dict[str, str]:
     return {key: helper_env(str(paths.shared_base()), "", writes_back=True)[key]}
 
 
-def _env(nonce: str) -> dict[str, str]:
+def git_pin_config(pin: str) -> str:
+    """A git global config that resolves the pinned host to the checked addresses
+    (``http.curloptResolve``) and still includes the user's own ``~/.gitconfig`` so
+    credential helpers keep working. The CLI replaces ``GIT_CONFIG_COUNT``/``KEY``/``VALUE``
+    but leaves ``GIT_CONFIG_GLOBAL`` alone."""
+    return f"[include]\n\tpath = ~/.gitconfig\n[http]\n\tcurloptResolve = {pin}\n"
+
+
+def git_pin(op: str, args: dict[str, Any]) -> str | None:
+    """The DNS pin for *op*'s clone, else ``None``. ``marketplace_add`` pins its source,
+    ``marketplace_update`` the confirmed ``expected_source``. A ``PolicyRefusal`` (the host
+    now resolves internal) propagates. Blocking: one DNS lookup."""
+    if op == "marketplace_add":
+        return plugin_policy.resolved_pin(str(args.get("source")))
+    if op == "marketplace_update":
+        expected = args.get("expected_source")
+        return plugin_policy.pin_for_normalized(expected if isinstance(expected, str) else None)
+    return None
+
+
+def _env(nonce: str, *, git_pin: str | None = None) -> dict[str, str]:
+    """The CLI's env. With *git_pin*, ``GIT_CONFIG_GLOBAL`` names a temp file the caller
+    must remove (``run_op`` does, in a ``finally``)."""
     env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     env.update(_config_dir_env())
@@ -129,12 +152,18 @@ def _env(nonce: str) -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "NO_COLOR": "1",
     })
+    if git_pin is not None:
+        with tempfile.NamedTemporaryFile("w", prefix="viberpit-git-pin.", suffix=".gitconfig",
+                                         delete=False) as fh:
+            fh.write(git_pin_config(git_pin))
+        env["GIT_CONFIG_GLOBAL"] = fh.name
     return env
 
 
-def build_argv(binary: str, op: str, args: dict[str, Any]) -> list[str]:
+def build_argv(binary: str, op: str, args: dict[str, Any], *, resolve: bool = True) -> list[str]:
     """argv for *op*, re-validating every argument here (defense in depth: this runs on
-    the daemon, whatever the edge checked)."""
+    the daemon, whatever the edge checked). *resolve* False skips the DNS leg of the source
+    check for a caller that does it itself (``run_op``, via :func:`git_pin`)."""
     spec = _OPS.get(op)
     if spec is None:
         raise InvalidPluginOp(f"unknown plugin op {op!r}")
@@ -148,7 +177,7 @@ def build_argv(binary: str, op: str, args: dict[str, Any]) -> list[str]:
         raise InvalidPluginOp(f"invalid marketplace name {value!r}")
     if key == "source":
         try:
-            value = plugin_policy.check_marketplace_source(value)
+            value = plugin_policy.check_marketplace_source(value, resolve=resolve)
         except plugin_policy.PolicyRefusal as exc:
             raise InvalidPluginOp(exc.message) from None
     argv = [binary, "plugin", *words, value, *flags, "--json"]
@@ -298,22 +327,31 @@ def run_op(op: str, args: dict[str, Any]) -> dict[str, Any]:
     if binary is None:
         return _outcome("failed", "claude_not_found", "No claude binary resolves on this host.")
     try:
-        argv = build_argv(binary, op, args)
+        argv = build_argv(binary, op, args, resolve=False)  # git_pin below does the DNS
     except InvalidPluginOp as exc:
         log.info("plugin_cli.refused op=%s reason=%s", op, exc)
         return _outcome("failed", "invalid_args", str(exc))
     refused = host_policy(op, args)
     if refused is not None:
         return refused
-    nonce = secrets.token_hex(16)
     try:
-        rc, stdout = _run(argv, env=_env(nonce), cwd=_cwd(), timeout=CLI_TIMEOUT_S)
+        pin = git_pin(op, args)
+    except plugin_policy.PolicyRefusal as exc:
+        log.info("plugin_cli.pin_refused op=%s code=%s reason=%s", op, exc.code, exc.reason)
+        return _outcome("failed", exc.code, exc.message, reason=exc.reason)
+    nonce = secrets.token_hex(16)
+    env = _env(nonce, git_pin=pin)
+    try:
+        rc, stdout = _run(argv, env=env, cwd=_cwd(), timeout=CLI_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         log.info("plugin_cli.timeout op=%s", op)
         return _outcome("failed", "cli_timeout", f"claude plugin {op} exceeded {CLI_TIMEOUT_S:.0f}s.")
     except OSError as exc:
         log.warning("plugin_cli.spawn_failed op=%s error=%s", op, exc)
         return _outcome("failed", "cli_spawn_failed", str(exc))
+    finally:
+        if pin is not None:
+            Path(env["GIT_CONFIG_GLOBAL"]).unlink(missing_ok=True)
     out = parse_result(op, rc, stdout, nonce)
     log.info("plugin_cli.result op=%s outcome=%s code=%s", op, out["outcome"],
              out.get("failureCode"))

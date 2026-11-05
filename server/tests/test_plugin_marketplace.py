@@ -377,6 +377,121 @@ def test_run_op_pins_env_config_dir_and_cwd(shared: Path, monkeypatch: pytest.Mo
     assert seen["cwd"].endswith("helper-cwd") and seen["timeout"] == plugin_cli.CLI_TIMEOUT_S
 
 
+# --------------------------------------------------------------- DNS pin (D16c residual)
+
+def test_resolved_pin_for_https_sources_and_none_for_github(_dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.5", "140.82.112.4", "140.82.112.5"]
+    assert (plugin_policy.resolved_pin("https://Git.Example.com/m")
+            == "git.example.com:443:140.82.112.4,140.82.112.5")
+    assert plugin_policy.resolved_pin("acme/m") is None
+
+
+def test_resolved_pin_refuses_what_the_check_refuses(_dns) -> None:
+    _dns["evil.example.com"] = ["10.0.0.5"]
+    with pytest.raises(PolicyRefusal) as ei:
+        plugin_policy.resolved_pin("https://evil.example.com/m")
+    assert ei.value.code == plugin_policy.MARKETPLACE_SOURCE_REFUSED
+
+
+def test_resolved_pin_resolves_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(plugin_policy, "_resolve", lambda h: calls.append(h) or [PUBLIC_IP])
+    plugin_policy.resolved_pin("https://git.example.com/m")
+    assert calls == ["git.example.com"]
+
+
+def test_pin_for_normalized_only_pins_https(_dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.4"]
+    assert (plugin_policy.pin_for_normalized("https:git.example.com/m")
+            == "git.example.com:443:140.82.112.4")
+    assert plugin_policy.pin_for_normalized("github:o/r") is None
+    assert plugin_policy.pin_for_normalized(None) is None
+
+
+def test_git_pin_for_ops(_dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.4"]
+    pin = "git.example.com:443:140.82.112.4"
+    assert plugin_cli.git_pin("marketplace_add", {"source": "https://git.example.com/m"}) == pin
+    assert plugin_cli.git_pin("marketplace_add", {"source": "acme/m"}) is None
+    assert plugin_cli.git_pin("marketplace_update", {
+        "name": "m", "expected_source": "https:git.example.com/m"}) == pin
+    assert plugin_cli.git_pin("marketplace_update", {
+        "name": "m", "expected_source": "github:o/r"}) is None
+    assert plugin_cli.git_pin("install", {"plugin_id": "p@m"}) is None
+
+
+def test_env_git_pin_writes_a_global_config_that_includes_the_users(
+        shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert "GIT_CONFIG_GLOBAL" not in plugin_cli._env(N)
+    pin = "git.example.com:443:140.82.112.4"
+    env = plugin_cli._env(N, git_pin=pin)
+    path = Path(env["GIT_CONFIG_GLOBAL"])
+    try:
+        assert path.read_text() == plugin_cli.git_pin_config(pin) == (
+            f"[include]\n\tpath = ~/.gitconfig\n[http]\n\tcurloptResolve = {pin}\n")
+    finally:
+        path.unlink()
+
+
+def test_run_op_removes_the_pin_file_and_passes_it_to_the_cli(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, _dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.4"]
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv, *, env, cwd, timeout):
+        path = Path(env["GIT_CONFIG_GLOBAL"])
+        seen.update(path=path, text=path.read_text())
+        return 0, json.dumps({"outcome": "ok", "nonce": env["CLAUDE_CODE_RESULT_NONCE"]})
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
+    out = plugin_cli.run_op("marketplace_add", {"source": "https://git.example.com/m"})
+    assert out["outcome"] == "ok"
+    assert "curloptResolve = git.example.com:443:140.82.112.4" in seen["text"]
+    assert not seen["path"].exists()
+
+
+@pytest.mark.parametrize("exc", [subprocess.TimeoutExpired("git", 1), OSError("boom")])
+def test_run_op_removes_the_pin_file_when_the_cli_fails_to_run(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+    seen: dict[str, Path] = {}
+
+    def fake_run(argv, *, env, cwd, timeout):
+        seen["path"] = Path(env["GIT_CONFIG_GLOBAL"])
+        raise exc
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
+    out = plugin_cli.run_op("marketplace_add", {"source": "https://git.example.com/m"})
+    assert out["outcome"] == "failed" and not seen["path"].exists()
+
+
+def test_run_op_gives_a_github_add_no_pin(shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv, *, env, cwd, timeout):
+        seen["env"] = env
+        return 0, json.dumps({"outcome": "ok", "nonce": env["CLAUDE_CODE_RESULT_NONCE"]})
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
+    plugin_cli.run_op("marketplace_add", {"source": "acme/m"})
+    assert "GIT_CONFIG_GLOBAL" not in seen["env"]
+
+
+def test_marketplace_update_with_an_internal_source_is_refused_before_the_cli(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, _dns) -> None:
+    _write_marketplace(shared, "m", [], repo="o/r")
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", lambda *a, **k: pytest.fail("the CLI ran"))
+    monkeypatch.setattr(plugin_cli, "host_policy", lambda op, args: None)
+    _dns["git.example.com"] = ["10.0.0.5"]
+    out = plugin_cli.run_op("marketplace_update", {
+        "name": "m", "expected_source": "https:git.example.com/m"})
+    assert (out["outcome"], out["failureCode"]) == (
+        "failed", plugin_policy.MARKETPLACE_SOURCE_REFUSED)
+
+
 def _ok_runner(calls: list[list[str]] | None = None):
     def fake_run(argv, *, env, cwd, timeout):
         if calls is not None:
