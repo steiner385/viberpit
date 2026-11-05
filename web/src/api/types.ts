@@ -964,6 +964,23 @@ export interface McpServerState {
   scope: string | null
   /** 'oauth' when the server signs in through MCP OAuth (Reauth is offered); null/absent otherwise. */
   auth?: 'oauth' | null
+  /** The server's tools with their effective state (D-16b). Served by `GET /sessions/{id}/mcp` and
+   *  the toggle replies only — the live `mcpStatus` event omits it (absent). `null` is the
+   *  "unavailable" signal (Codex, a kill switch, a `toolCount`-only status): no switches. */
+  tools?: McpTool[] | null
+  /** False when the CLI could not apply the tool settings (every tool is on). Absent on `mcpStatus`. */
+  toolsEnforced?: boolean
+}
+
+/** One MCP tool as the server serves it (D-16b; `server/mcp_scope/resolve.py:tools_wire`). */
+export interface McpTool {
+  name: string
+  /** At most 300 chars; null when the server gave none. */
+  description: string | null
+  annotations: { readOnly: boolean | null; destructive: boolean | null; openWorld: boolean | null }
+  enabled: boolean
+  /** `session` when this session overrides the tool; `default` otherwise (always, in Settings). */
+  source: 'default' | 'session'
 }
 
 /** One observed (account, host, server) status row — from a live session or a probe. */
@@ -1005,7 +1022,14 @@ export interface LibraryMcpServer {
 }
 
 export interface McpScope {
-  servers: Record<string, { defaultEnabled: boolean }>
+  servers: Record<string, {
+    defaultEnabled: boolean
+    /** The last-seen tool list with each tool's Settings default (D-16b); null until a Test or a
+     *  live session has seen one. */
+    tools?: McpTool[] | null
+    /** When that list was seen (ISO); drives "Seen <relative time>". */
+    toolsSeenAt?: string | null
+  }>
   rules: { repo: string; server: string; enabled: boolean }[]
 }
 

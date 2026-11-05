@@ -213,6 +213,7 @@ class InProcessOrchestratorAdapter:
     async def undo_rewind(self, *a, **k): return await _maybe_await(self._orch.undo_rewind(*a, **k))
     async def set_fast_mode(self, *a, **k): return await _maybe_await(self._orch.set_fast_mode(*a, **k))
     async def set_output_style(self, *a, **k): return await _maybe_await(self._orch.set_output_style(*a, **k))
+    async def set_mcp_tool(self, *a, **k): return await _maybe_await(self._orch.set_mcp_tool(*a, **k))
     async def mcp_reconnect(self, *a, **k): return await _maybe_await(self._orch.mcp_reconnect(*a, **k))
     async def mcp_toggle(self, *a, **k): return await _maybe_await(self._orch.mcp_toggle(*a, **k))
     async def reconnect_mcp_everywhere(self, *a, **k): return await _maybe_await(self._orch.reconnect_mcp_everywhere(*a, **k))

@@ -5,7 +5,7 @@ import logging
 
 from server.config import get_settings
 from server.mcp_scope import store
-from server.mcp_scope.resolve import effective_disabled
+from server.mcp_scope.resolve import McpToolRules, effective_disabled
 from server.mcp_scope.servers import configured_server_keys
 from server.sessions.account_auth import account_store_io
 
@@ -33,3 +33,18 @@ async def disabled_for_session(*, repo: str | None, session_id: str | None) -> l
     except Exception:
         log.debug("mcp scope: rules unavailable repo=%s session=%s", repo, session_id, exc_info=True)
         return None
+
+
+async def tool_rules_for_session(session_id: str) -> McpToolRules | None:
+    """The per-tool rules a session's CLI start applies (D-16b): the Settings defaults and
+    the session's persisted overrides. None — the feature does not apply — when the
+    ``mcp_scope_enabled`` or ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch is off.
+
+    A failed read RAISES: unreadable is not "no rules". The driver retries it once and
+    then fails closed (``ClaudeAgentDriver._apply_mcp_tool_denies``: not enforced, a
+    notice, a WARNING), so a DB blip never silently turns every disabled tool on."""
+    from server.sessions.engine import flag_settings_enabled
+    if not get_settings().mcp_scope_enabled or not flag_settings_enabled():
+        return None
+    return McpToolRules(defaults=await store.tool_defaults(),
+                        overrides=await store.session_tool_overrides(session_id))

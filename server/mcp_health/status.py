@@ -27,6 +27,28 @@ _AUTH_FAILURE = re.compile(r"TOKEN_EXPIRED|invalid_token|\b401\b|Unauthorized", 
 _ERRORISH = re.compile(r"error|fail|expired|denied|invalid|unauthorized", re.IGNORECASE)
 _RESULT_TEXT_MAX = 20_000
 _NON_NAME = re.compile(r"[^A-Za-z0-9_-]")
+#: At most this many tools are kept per server, and each description is cut to
+#: ``TOOL_DESCRIPTION_MAX`` characters (D-16b), so a pathological server cannot bloat a
+#: payload. ``tool_count`` still reports the server's real count.
+TOOLS_MAX = 200
+TOOL_DESCRIPTION_MAX = 300
+
+
+@dataclass(frozen=True, slots=True)
+class McpTool:
+    """One tool of an MCP server as ``mcp_status`` lists it (D-16 spike §2.3), trimmed to
+    what ViberPit renders: the name, a capped description and the three hint annotations
+    (``None`` when the server does not say)."""
+    name: str
+    description: str | None = None
+    read_only: bool | None = None
+    destructive: bool | None = None
+    open_world: bool | None = None
+
+    def to_wire(self) -> dict:
+        return {"name": self.name, "description": self.description,
+                "annotations": {"readOnly": self.read_only, "destructive": self.destructive,
+                                "openWorld": self.open_world}}
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,10 +59,67 @@ class McpServerState:
     tool_count: int | None
     scope: str | None
     auth: str | None = None          # "oauth" when the account holds an OAuth bundle for it
+    # The server's tools (D-16b), or None when the reply carried no list: a ``liveReply``
+    # that fell back to ``toolCount`` only. Not on ``to_wire``: the live ``mcpStatus``
+    # event stays small; the session MCP endpoint serves them (``mcp_scope.resolve``).
+    tools: tuple[McpTool, ...] | None = None
 
     def to_wire(self) -> dict:
         return {"name": self.name, "status": self.status, "error": self.error,
                 "toolCount": self.tool_count, "scope": self.scope, "auth": self.auth}
+
+
+def _flag(v: object) -> bool | None:
+    return v if isinstance(v, bool) else None
+
+
+def sanitize_tools(raw: object) -> tuple[McpTool, ...] | None:
+    """The capped tool list of one ``mcp_status`` row, or None when it carries no list."""
+    if not isinstance(raw, list):
+        return None
+    out: list[McpTool] = []
+    for t in raw:
+        if len(out) >= TOOLS_MAX:
+            break
+        if not isinstance(t, dict) or not isinstance(t.get("name"), str) or not t["name"]:
+            continue
+        desc = t.get("description")
+        raw_ann = t.get("annotations")
+        ann: dict = raw_ann if isinstance(raw_ann, dict) else {}
+        out.append(McpTool(
+            name=t["name"],
+            description=desc[:TOOL_DESCRIPTION_MAX] if isinstance(desc, str) else None,
+            read_only=_flag(ann.get("readOnly")), destructive=_flag(ann.get("destructive")),
+            open_world=_flag(ann.get("openWorld"))))
+    return tuple(out)
+
+
+def tool_from_wire(d: object) -> McpTool | None:
+    """Rebuild a tool from its ``to_wire`` dict (the persisted last-seen list)."""
+    tools = sanitize_tools([d]) if isinstance(d, dict) else None
+    return tools[0] if tools else None
+
+
+_CLAUDE_AI_PREFIX = "claude.ai "
+_UNDERSCORES = re.compile(r"_+")
+
+
+def normalized_name(name: str) -> str:
+    """A server or tool name as the CLI spells it inside ``mcp__<server>__<tool>``: the
+    CLI's ``En`` (claude 2.1.318 @280040372) replaces ``[^a-zA-Z0-9_-]`` with ``_`` and,
+    for a ``claude.ai `` connector, also collapses ``_`` runs and trims one ``_`` at
+    each end. Probed: ``claude.ai My__Conn`` -> ``claude_ai_My_Conn``."""
+    out = _NON_NAME.sub("_", name)
+    if name.startswith(_CLAUDE_AI_PREFIX):
+        out = _UNDERSCORES.sub("_", out)
+        out = out[1:] if out.startswith("_") else out
+        out = out[:-1] if out.endswith("_") else out
+    return out
+
+
+def mcp_tool_rule(server: str, tool: str) -> str:
+    """The CLI tool name — and permission-rule pattern — of *server*'s *tool*."""
+    return f"mcp__{normalized_name(server)}__{normalized_name(tool)}"
 
 
 def redact_error(text: str | None) -> str | None:
@@ -119,9 +198,11 @@ def sanitize_statuses(raw: object, *, credentials: dict | None = None,
             reason = _auth_error(bundles, now)
             if reason is not None:
                 status, error = "needs-auth", reason
+        count = len(tools) if isinstance(tools, list) else s.get("toolCount")
         out.append(McpServerState(name=name, status=status, error=error,
-                                  tool_count=len(tools) if isinstance(tools, list) else None,
-                                  scope=scope, auth=auth))
+                                  tool_count=count if isinstance(count, int)
+                                  and not isinstance(count, bool) else None,
+                                  scope=scope, auth=auth, tools=sanitize_tools(tools)))
     return out
 
 
@@ -157,7 +238,7 @@ def server_for_tool(tool_name: str | None, server_names: list[str]) -> str | Non
     """The server an ``mcp__<normalized server>__<tool>`` name belongs to (longest match)."""
     if not tool_name or not tool_name.startswith("mcp__"):
         return None
-    hits = [n for n in server_names if tool_name.startswith(f"mcp__{_NON_NAME.sub('_', n)}__")]
+    hits = [n for n in server_names if tool_name.startswith(f"mcp__{normalized_name(n)}__")]
     return max(hits, key=len) if hits else None
 
 

@@ -3362,12 +3362,15 @@ export function useTestMcp() {
 }
 
 // useSessionMcp: live MCP server states of one session (404 when the session is not live).
-export function useSessionMcp(sessionId: string, enabled: boolean) {
+// `fresh` re-reads on mount even inside staleTime — an expanded tool list (D-16b) needs the
+// GET, because the live `mcpStatus` event carries no `tools`.
+export function useSessionMcp(sessionId: string, enabled: boolean, fresh = false) {
   return useQuery<{ servers: McpServerState[] }>({
     queryKey: ['session-mcp', sessionId],
     queryFn: () => api.get(`/sessions/${encodeURIComponent(sessionId)}/mcp`),
     enabled,
     staleTime: 15_000,
+    refetchOnMount: fresh ? 'always' : true,
     retry: false,
   })
 }

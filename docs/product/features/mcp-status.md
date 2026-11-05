@@ -21,6 +21,10 @@ links:
     - server/mcp_scope/resolve.py
     - server/mcp_scope/apply.py
     - server/mcp_scope/store.py
+    - server/sessions/flag_settings.py
+    - web/src/features/settings/sections/McpToolDefaults.tsx
+    - web/src/features/settings/sections/McpToolSwitchList.tsx
+    - web/src/features/sessions/McpServerList.tsx
     - web/src/features/settings/sections/McpScopeControl.tsx
     - src/viberpit/creds.py
     - web/src/features/settings/sections/McpSection.tsx
@@ -166,6 +170,19 @@ Plugin servers are keyed by the plugin manifest name (`plugin:Notion:notion`, no
 - Codex sessions are not supported (the toggle returns 409).
 - Committed `.mcp.json` servers are out of scope here (planned as sub-project 2b).
 
+## Per-tool switches
+
+Each connected server lists its tools with a switch, in two places. Claude sessions only; Codex and either kill switch (`VIBERPIT_MCP_SCOPE_ENABLED`, `VIBERPIT_FLAG_SETTINGS_ENABLED`) show "Tool list unavailable".
+
+- **Settings › MCP** — a `Tools (n)` disclosure next to Test sets the **default** for new and restarted sessions. The list is the last one seen (by Test or any live session), with "Seen 3m ago". A never-seen server says "Test the server to load its tools." A default applies at the next CLI start; running sessions keep what they started with.
+- **Session Context card** — a `Tools` disclosure on a connected server overrides the default for that session, **live**. A `Session` chip marks a tool whose state differs from the default by a session choice. Badges show the tool's `read-only` and `destructive` hints.
+
+**Mechanism** — a disabled tool is a flag-layer `permissions.deny` rule `mcp__<server>__<tool>` (names normalised exactly as the CLI does), sent with `apply_flag_settings` after `initialize` and before the first prompt, and re-sent on every CLI start (spawn, resume, daemon restart, rotation, `/clear`). It is never in the spawn `--settings`, so the session can lift it. `flag_settings.compose_permissions` is the single owner of the flag `permissions` key; any future permissions setting must go through it. A server that is off keeps its tool denies, so turning it back on never exposes a disabled tool.
+
+**Safety** — both directions of a toggle need a human sender (403 `SESSION_CONTROL_HUMAN_ONLY` otherwise). The override write, the live apply and any rollback happen under one per-session lock, so the stored override, the CLI and the panel agree even after a refusal, timeout or cancel. If the start-time apply fails twice, or a live write's state is unknown, the panel shows "Tool settings not applied — restart the session" (`toolsEnforced: false`) and every tool is treated as on.
+
+**Limits** — at most 200 tools per server and 300-character descriptions are kept. There is no per-repo level for tools. The `/mcp` command panel has no switches yet.
+
 ## Limits and switches
 
 - **Codex** sessions do not report MCP status yet; the readout is absent and the endpoints return an empty list. Planned in sub-project 4 of the MCP management series.
@@ -175,4 +192,4 @@ Plugin servers are keyed by the plugin manifest name (`plugin:Notion:notion`, no
 
 Table `mcp_server_status` (model `McpServerHealth`, migration `0078`), unique on `(account, host, server)`; each row is the latest observation. Columns: `status`, `error` (sanitized), `tool_count`, `scope`, `source` (`session` | `probe`), `session_id`, `observed_at` (`db_utc_now()`). It replaces the old cache-file reader for needs-auth, which was deleted.
 
-Scope adds tables `mcp_server_scope` (`server` PK, `default_enabled`, `updated_at`) and `mcp_repo_rule` (unique `(repo, server)`, `enabled`, `updated_at`), and the nullable column `sessions.mcp_overrides` (JSON `{server_key: bool}`), all in migration `0079`.
+Scope adds tables `mcp_server_scope` (`server` PK, `default_enabled`, `updated_at`) and `mcp_repo_rule` (unique `(repo, server)`, `enabled`, `updated_at`), and the nullable column `sessions.mcp_overrides` (JSON `{server_key: bool}`), all in migration `0079`. Migration `0103` adds the nullable JSON columns `mcp_server_scope.tool_defaults` (`{tool: enabled}`), `sessions.mcp_tool_overrides` (`{server: {tool: enabled}}`), `mcp_server_status.tools` and `tools_seen_at` (the last-seen list, written only from a connected observation).

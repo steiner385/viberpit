@@ -1,13 +1,12 @@
 import { useId, useState } from 'react'
 import { useGithubRepos } from '@/api/hooks'
 import { useDeleteMcpRepoRule, useMcpScope, useSetMcpDefault, useSetMcpRepoRule } from '@/api/mcpScopeHooks'
-import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { McpScope } from '@/api/types'
 import { Button } from '@/ui/Button'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Select } from '@/ui/Select'
-import { shortName } from './mcpStatus'
+import { isMcpScopeDisabled, shortName } from './mcpStatus'
 
 type Mode = 'on' | 'off'
 
@@ -19,7 +18,7 @@ type Mode = 'on' | 'off'
 export function McpScopeControl({ serverKey }: { serverKey: string }) {
   const scope = useMcpScope()
   if (scope.isError) {
-    if (apiErrorCode(scope.error) === 'mcp_scope_disabled') return null
+    if (isMcpScopeDisabled(scope.error)) return null
     return (
       <div className="mt-1 px-3 flex flex-wrap items-center gap-2">
         <p className="text-xs text-danger" role="alert">Couldn't load repo scope.</p>

@@ -498,4 +498,80 @@ describe('McpSection', () => {
       expect(window.location.search).toBe('')
     })
   })
+
+  describe('tool defaults (D-16b)', () => {
+    const ann = (over: Record<string, boolean | null> = {}) => ({ readOnly: null, destructive: null, openWorld: null, ...over })
+    const seenAt = new Date(Date.now() - 3 * 60_000).toISOString()
+
+    function withScope(servers: Record<string, unknown>) {
+      vi.mocked(api.get).mockImplementation((path: string) => {
+        if (path === '/library/mcp') return Promise.resolve({ servers: [srv('gh', 'stdio', []), srv('fresh', 'stdio', [])] })
+        if (path === '/library/mcp/scope') return Promise.resolve({ servers, rules: [] })
+        return otherGet(path)
+      })
+    }
+
+    it('a seen list expands to switches with badges and "Seen …"; toggling PUTs the tool default', async () => {
+      withScope({
+        gh: { defaultEnabled: true, toolsSeenAt: seenAt, tools: [
+          { name: 'list_issues', description: 'Lists issues', annotations: ann({ readOnly: true }), enabled: true, source: 'default' },
+          { name: 'delete_repo', description: null, annotations: ann({ destructive: true }), enabled: true, source: 'default' },
+        ] },
+        fresh: { defaultEnabled: true, toolsSeenAt: null, tools: null },
+      })
+      // The server's state after the PUT, as the re-read returns it.
+      vi.mocked(api.put).mockImplementation(async (_path: string, body: unknown) => {
+        const scope = (await vi.mocked(api.get)('/library/mcp/scope')) as { servers: { gh: { tools: { name: string; enabled: boolean }[] } } }
+        scope.servers.gh.tools.find((t) => t.name === 'delete_repo')!.enabled = (body as { enabled: boolean }).enabled
+        return undefined
+      })
+      renderSection()
+      const btn = await screen.findByRole('button', { name: 'Tools for gh' })
+      expect(btn).toHaveTextContent('Tools (2)')
+      await userEvent.click(btn)
+      const panel = screen.getByRole('group', { name: 'Tool defaults for gh' })
+      expect(panel.id).toBe(btn.getAttribute('aria-controls'))
+      expect(panel).toHaveTextContent('Defaults for new and restarted Claude sessions · Seen 3m ago')
+      expect(panel).toHaveTextContent('read-only')
+      expect(panel).toHaveTextContent('destructive')
+      expect(panel).not.toHaveTextContent('Session')
+      await userEvent.click(screen.getByRole('switch', { name: 'delete_repo enabled' }))
+      expect(api.put).toHaveBeenCalledWith('/library/mcp/gh/tools/delete_repo', { enabled: false })
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: 'delete_repo enabled' })).toHaveAttribute('aria-checked', 'false'))
+    })
+
+    it('no seen list: the hint sits beside Test, with no switches', async () => {
+      withScope({ gh: { defaultEnabled: true, tools: null, toolsSeenAt: null }, fresh: { defaultEnabled: true } })
+      renderSection()
+      const hints = await screen.findAllByText('Test the server to load its tools.')
+      expect(hints).toHaveLength(2)
+      expect(hints[0].parentElement).toContainElement(screen.getByRole('button', { name: 'Test gh' }))
+      expect(screen.queryByRole('button', { name: /^Tools for/ })).toBeNull()
+    })
+
+    it('a refused PUT keeps the switch and shows the server text', async () => {
+      withScope({
+        gh: { defaultEnabled: true, toolsSeenAt: seenAt, tools: [
+          { name: 'list_issues', description: null, annotations: ann(), enabled: true, source: 'default' },
+        ] },
+      })
+      vi.mocked(api.put).mockRejectedValue(new ApiRequestError(403, {
+        detail: { code: 'SESSION_CONTROL_HUMAN_ONLY', message: 'Only a person can change this.' },
+      }))
+      renderSection()
+      await userEvent.click(await screen.findByRole('button', { name: 'Tools for gh' }))
+      await userEvent.click(screen.getByRole('switch', { name: 'list_issues enabled' }))
+      expect(await screen.findByText('Only a person can change this.')).toHaveAttribute('role', 'alert')
+      expect(screen.getByRole('switch', { name: 'list_issues enabled' })).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('renders nothing while the scope feature is off', async () => {
+      mockServers([srv('gh', 'stdio', [])])
+      renderSection()
+      await screen.findByRole('button', { name: 'Test gh' })
+      expect(screen.queryByText('Test the server to load its tools.')).toBeNull()
+      expect(screen.queryByRole('button', { name: /^Tools for/ })).toBeNull()
+    })
+  })
 })

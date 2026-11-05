@@ -49,5 +49,46 @@ export function useToggleSessionMcp(sessionId: string) {
     mutationFn: ({ server, enabled }) =>
       api.post(`/sessions/${encodeURIComponent(sessionId)}/mcp/${encodeURIComponent(server)}/toggle`, { enabled }),
     onSuccess: (data) => qc.setQueryData(['session-mcp', sessionId], data),
+    // A refused or timed-out toggle may have changed `toolsEnforced`: re-read the panel.
+    onError: () => qc.invalidateQueries({ queryKey: ['session-mcp', sessionId] }),
+  })
+}
+
+// D-16b per-tool switches. Neither is optimistic: the switch shows the server's state, so a
+// refusal (403 human-only, 409 SETTINGS_FAILED, …) leaves it where it was and the caller shows
+// the server's error text.
+const toolPath = (server: string, tool: string) =>
+  `/mcp/${encodeURIComponent(server)}/tools/${encodeURIComponent(tool)}`
+
+// useSetMcpToolDefault: a tool's Settings default (new and restarted Claude sessions).
+export function useSetMcpToolDefault() {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { server: string; tool: string; enabled: boolean }>({
+    mutationFn: ({ server, tool, enabled }) => api.put(`/library${toolPath(server, tool)}`, { enabled }),
+    // The panel renders the refusal inline; a toast would say it twice.
+    meta: { suppressErrorToast: true },
+    onSuccess: (_data, { server, tool, enabled }) => {
+      // The PUT answers 204: write the accepted state into the cache, then re-read it.
+      qc.setQueryData<McpScope>(QK.mcpScope, (prev) => {
+        const entry = prev?.servers?.[server]
+        if (!prev || !entry?.tools) return prev
+        const tools = entry.tools.map((t) => (t.name === tool ? { ...t, enabled } : t))
+        return { ...prev, servers: { ...prev.servers, [server]: { ...entry, tools } } }
+      })
+      void qc.invalidateQueries({ queryKey: QK.mcpScope })
+    },
+  })
+}
+
+// useSetSessionMcpTool: a live session's override for one tool; the response is the fresh server list.
+export function useSetSessionMcpTool(sessionId: string) {
+  const qc = useQueryClient()
+  return useMutation<{ servers: McpServerState[] }, ApiRequestError, { server: string; tool: string; enabled: boolean }>({
+    mutationFn: ({ server, tool, enabled }) =>
+      api.post(`/sessions/${encodeURIComponent(sessionId)}${toolPath(server, tool)}`, { enabled }),
+    meta: { suppressErrorToast: true },
+    onSuccess: (data) => qc.setQueryData(['session-mcp', sessionId], data),
+    // A refused or timed-out toggle may have changed `toolsEnforced`: re-read the panel.
+    onError: () => qc.invalidateQueries({ queryKey: ['session-mcp', sessionId] }),
   })
 }

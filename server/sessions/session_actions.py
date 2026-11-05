@@ -102,6 +102,22 @@ async def mcp_toggle(orch, db, *, session_id: str, server: str, enabled: bool, i
     return {"servers": servers}
 
 
+async def set_mcp_tool(orch, db, *, session_id: str, server: str, tool: str, enabled: bool,
+                       identity: str, via: str | None = None) -> dict:
+    """Turn one MCP tool on or off in a live session (D-16b) and audit it as
+    ``session.mcp_tool``. Human-only in BOTH directions: enabling widens what the session
+    can do, and one rule for both is simpler — so callers pass ``via`` from
+    ``identity.human_gate_via``. A refusal (``SettingsError``, ``KeyError``) propagates
+    unaudited."""
+    require_human(identity, via, action="turn a session's MCP tools on or off",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    servers = await orch.set_mcp_tool(session_id, server, tool, enabled, identity=identity)
+    await _audit(db, "session.mcp_tool", identity,
+                 {"sessionId": session_id, "server": server, "tool": tool, "enabled": enabled},
+                 via)
+    return {"servers": servers}
+
+
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 

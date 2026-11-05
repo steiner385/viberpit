@@ -43,9 +43,19 @@ OUTPUT_STYLE_UNKNOWN = "OUTPUT_STYLE_UNKNOWN"
 #: Output styles were asked for on an engine without them (Codex), a kind that never
 #: takes one (the Assistant drawer), or a session whose CLI has not listed them yet.
 OUTPUT_STYLE_UNAVAILABLE = "OUTPUT_STYLE_UNAVAILABLE"
+#: An MCP tool (D-16b) that is not in the server's current tool list.
+MCP_TOOL_UNKNOWN = "MCP_TOOL_UNKNOWN"
+#: Per-tool switches were asked for where there are none: an engine without deny rules
+#: (Codex), a session that is not live, a kill switch off, or a server whose tool list
+#: is unknown (a ``toolCount``-only ``mcp_status`` reply).
+MCP_TOOLS_UNAVAILABLE = "MCP_TOOLS_UNAVAILABLE"
+#: Not a refusal code: the session notice posted when a CLI start could not apply the
+#: per-tool denies (D-16b fix round 1). Every MCP tool is then on until a restart.
+MCP_TOOLS_NOT_APPLIED = "MCP_TOOLS_NOT_APPLIED"
 SETTINGS_CODES = frozenset({SETTINGS_UNAVAILABLE, SETTINGS_REFUSED, SETTINGS_INVALID,
                             SETTINGS_FAILED, FAST_UNAVAILABLE, OUTPUT_STYLE_UNKNOWN,
-                            OUTPUT_STYLE_UNAVAILABLE})
+                            OUTPUT_STYLE_UNAVAILABLE, MCP_TOOL_UNKNOWN,
+                            MCP_TOOLS_UNAVAILABLE})
 
 #: Seconds to wait for one ``apply_flag_settings`` reply. It is a local settings write,
 #: answered in milliseconds; the SDK's 60 s default would hold a route for a minute.
@@ -55,6 +65,8 @@ SETTINGS_CONTROL_TIMEOUT_S = 15.0
 FAST_MODE_KEY = "fastMode"
 EFFORT_KEY = "effortLevel"
 OUTPUT_STYLE_KEY = "outputStyle"
+#: Owned by ``compose_permissions`` alone (D-16b); see its docstring.
+PERMISSIONS_KEY = "permissions"
 
 #: The CLI's own style name for "no style" (D-16 spike §3.1). A spawn never passes it.
 DEFAULT_OUTPUT_STYLE = "default"
@@ -212,3 +224,26 @@ def effort_levels(server_info: Mapping[str, Any] | None,
     row = model_entry(server_info, model)
     levels = row.get("supportedEffortLevels") if row is not None else None
     return [str(v) for v in levels] if isinstance(levels, list) else None
+
+
+def compose_permissions(rules: Any) -> dict[str, Any]:
+    """THE flag-layer ``permissions`` object ViberPit sends (D-16b), whole.
+
+    ``apply_flag_settings`` REPLACES a top-level key wholesale (D-16 spike §2.1, probe 3
+    step 8: a ``{permissions: {additionalDirectories}}`` patch dropped an applied
+    ``permissions.deny``). So this function owns every key of ``permissions``, and it is
+    the only code allowed to put ``permissions`` in a flag patch (the driver's
+    ``_send_permissions`` is the one sender; ``test_mcp_tool_toggles`` enforces both).
+    Any future ``permissions`` key — e.g. ``additionalDirectories`` for ``/add-dir`` —
+    must be added HERE, or each send silently drops the others.
+
+    Today it holds ``deny``: one ``mcp__<server>__<tool>`` rule per disabled tool of
+    *rules* (an ``mcp_scope.resolve.McpToolRules``). A server that is off at the server
+    level keeps its tool denies (a deny for an absent server is a no-op), so they are
+    already in force the moment it reconnects. An empty ``deny`` is a valid patch: it
+    restores every tool. It never goes into the spawn ``--settings``: spawn denies are a
+    floor no live patch can lift (§2.1)."""
+    from server.mcp_health.status import mcp_tool_rule
+    from server.mcp_scope.resolve import effective_disabled_tools
+    return {"deny": sorted({mcp_tool_rule(server, tool)
+                            for server, tool in effective_disabled_tools(rules)})}

@@ -1,4 +1,4 @@
-from server.mcp_health.status import McpServerState, redact_error, sanitize_statuses
+from server.mcp_health.status import McpServerState, McpTool, redact_error, sanitize_statuses
 from server.mcp_spec import SERVER_NAME
 from server.sessions import events as ev
 
@@ -8,7 +8,8 @@ def test_sanitize_drops_config_and_counts_tools():
                            "config": {"type": "http", "headers": {"Authorization": "Bearer s3cret"}},
                            "tools": [{"name": "a"}, {"name": "b"}]}]}
     [s] = sanitize_statuses(raw)
-    assert s == McpServerState("notion", "connected", None, 2, "user")
+    assert s == McpServerState("notion", "connected", None, 2, "user",
+                               tools=(McpTool("a"), McpTool("b")))
     assert "s3cret" not in repr(s) and "s3cret" not in str(s.to_wire())
 
 
