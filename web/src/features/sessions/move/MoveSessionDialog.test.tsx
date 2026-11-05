@@ -14,7 +14,8 @@ import { FLEET_HOSTS_KEY, type FleetHost } from '@/api/fleet'
 import type { MovePreflight } from '@/api/types'
 import MoveSessionDialog, { DIRTY_LIST_CAP, MOVE_UNKNOWN_COPY } from './MoveSessionDialog'
 import {
-  CARRY_DIRTY_COPY, MOVE_GENERIC_COPY, MOVE_REASON_CODES, MOVE_REASON_COPY, PUBLIC_REPO_COPY, moveReasonText,
+  CARRY_DIRTY_COPY, MOVE_GENERIC_COPY, MOVE_REASON_CODES, MOVE_REASON_COPY, PUBLIC_REPO_COPY,
+  UNPUSHED_PUBLIC_REPO_COPY, moveReasonText,
 } from './moveReasons'
 
 // `get` is the PREFLIGHT mock; the fleet list (refetched on mount) answers from `fleet`.
@@ -171,6 +172,18 @@ describe('MoveSessionDialog — a dirty tree', () => {
     await pick()
     expect(await screen.findByTestId('move-refusal')).toHaveTextContent(PUBLIC_REPO_COPY)
     expect(screen.queryByRole('checkbox', { name: CARRY_DIRTY_COPY })).toBeNull()
+    expect(moveButton()).toBeDisabled()
+  })
+
+  it('a clean tree with unpushed commits on a public repo: the push copy, Move stays off', async () => {
+    get.mockResolvedValue(preflight({
+      repoPrivate: false,
+      verdict: { ok: false, reason: 'MOVE_UNPUSHED_PUBLIC_REPO', message: 'server words', unpushedCommits: 2 },
+    }))
+    renderDialog()
+    await pick()
+    expect(await screen.findByTestId('move-refusal')).toHaveTextContent(UNPUSHED_PUBLIC_REPO_COPY)
+    expect(UNPUSHED_PUBLIC_REPO_COPY).toBe("This repository is public — push the session's commits to its branch before moving")
     expect(moveButton()).toBeDisabled()
   })
 

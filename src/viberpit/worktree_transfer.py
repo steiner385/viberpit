@@ -58,6 +58,11 @@ class WorktreeState:
     unpushed: tuple[str, ...]   # authored branches whose tip is not on origin at the same sha
     #: The first ``DIRTY_PATHS_CAP`` dirty paths, as ``git status --porcelain`` names them.
     dirty_paths: tuple[str, ...] = ()
+    #: Commits an export would push that no ``origin`` remote-tracking ref reaches (from
+    #: HEAD and the ``unpushed`` branches) — what a transfer ref newly exposes. Pushed
+    #: refs are deleted after import, but the commits stay fetchable by SHA, so on a
+    #: public repo the caller refuses a move with any (D-17 final review).
+    unpushed_commits: int = 0
 
 
 def head_ref(session_id: str) -> str:
@@ -102,7 +107,19 @@ def inspect(cwd: str) -> WorktreeState:
             unpushed.append(b)
     paths = tuple(_porcelain_path(ln) for ln in lines[:DIRTY_PATHS_CAP])
     return WorktreeState(dirty=bool(lines), dirty_files=len(lines), branch=branch,
-                         head_sha=head, unpushed=tuple(unpushed), dirty_paths=paths)
+                         head_sha=head, unpushed=tuple(unpushed), dirty_paths=paths,
+                         unpushed_commits=_count_unpushed(cwd, head, unpushed))
+
+
+def _count_unpushed(cwd: str, head: str, branches: list[str]) -> int:
+    """Commits reachable from *head* or *branches* but from no ``origin`` ref. A failed
+    count is reported as 1 (fail closed: the caller treats it as unpushed work)."""
+    tips = [head, *(f"refs/heads/{b}" for b in branches)]
+    r = _run(["git", "-C", cwd, "rev-list", "--count", *tips, "--not", "--remotes=origin"])
+    try:
+        return int(r.stdout.strip()) if r.returncode == 0 else 1
+    except ValueError:
+        return 1
 
 
 def _porcelain_path(line: str) -> str:
@@ -148,6 +165,11 @@ def export(cwd: str, session_id: str, *, carry_dirty: bool,
     no caller can WIP-commit bytes nobody vetted. With consent the edits become one
     WIP commit on top of HEAD, pushed as the transfer head; on a push failure that
     commit is undone (``reset --mixed``) so the worktree is exactly as found.
+
+    Committed-but-unpushed work gets the same rule when *vetted* is given: the caller's
+    visibility policy approved exactly the vetted state's ``unpushed_commits`` (none on a
+    public repo), so a tree with unpushed commits it did not see — a new commit, a moved
+    HEAD — is refused with ``unpushed_commits`` and nothing is pushed.
     """
     top = _repo_top(cwd)
     url = _origin_url(top)
@@ -163,6 +185,13 @@ def export(cwd: str, session_id: str, *, carry_dirty: bool,
                         or vetted.head_sha != state.head_sha):
         raise TransferError("dirty_worktree",
                             "the worktree changed since it was vetted; nothing was pushed")
+    if vetted is not None and state.unpushed_commits and (
+            not vetted.unpushed_commits or vetted.head_sha != state.head_sha
+            or state.unpushed_commits > vetted.unpushed_commits
+            or not set(state.unpushed) <= set(vetted.unpushed)):
+        raise TransferError("unpushed_commits",
+                            f"{state.unpushed_commits} unpushed commit(s) were not vetted; "
+                            "nothing was pushed")
     base_sha = state.head_sha
     head_sha = base_sha
     wip = False

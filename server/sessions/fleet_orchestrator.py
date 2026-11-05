@@ -260,6 +260,10 @@ _MOVE_BLOCKED: frozenset[str] = frozenset({
     "request_pr_fix", "unarchive", "x11_open_browser", "resolve_model_approval",
     "resume_interrupted", "certify_harvested_complete", "reload_session",
     "rotate_to_best", "set_account_pin", "generate_suggestions_now",
+    # Live-record writes on the source host: landed mid-move, they would be lost with
+    # the source's record (a worker forgets it) or race the target's import.
+    "rename_session", "set_pr_autofix_paused", "set_auto_archive_opt_out",
+    "dismiss_suspected_complete", "interrupt", "stop_subagent",
 })
 # A cached route whose host answers these with "no such session" is stale (the row
 # was restamped behind this edge's back, #1432): drop it, re-read the stamp, retry once.
@@ -337,7 +341,9 @@ class FleetOrchestrator:
         self._held: dict[str, str] = {}
         # When this edge process started (naive UTC). One edge per deployment: a move
         # claim older than this can belong to no live saga, so the reconcile treats it
-        # as stale at once instead of waiting out MOVE_STALE_S (D-17).
+        # as stale at once instead of waiting out MOVE_STALE_S (D-17). Claims are
+        # stamped with the DB's clock, so ``stamp_started_at`` replaces this local-clock
+        # placeholder with the DB's once, at startup, before the reconcile's first pass.
         from server.db.clock import naive_utc_now
         self.started_at = naive_utc_now()
         # session_id -> monotonic time the reconcile first saw the target holding the
@@ -552,6 +558,16 @@ class FleetOrchestrator:
             rec.moving_to = self._moving.get(rec.id) or self._held.get(rec.id)
         except Exception:  # pragma: no cover — frozen record types
             pass
+
+    async def stamp_started_at(self) -> None:
+        """Read ``started_at`` from the DB clock (the one ``move_started_at`` is written
+        with). Never raises: on a failed read the local-clock placeholder stays."""
+        from server.sessions.session_move import db_now
+        try:
+            self.started_at = await db_now()
+        except Exception:
+            log.info("fleet: DB clock read failed; started_at stays the edge's clock",
+                     exc_info=True)
 
     async def move_reconcile_loop(self) -> None:
         """Settle move claims a dead saga left behind (startup, then every minute)."""

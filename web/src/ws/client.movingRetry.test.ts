@@ -78,16 +78,39 @@ describe('SESSION_MOVING attach refusal', () => {
   it('gives up after the claim lifetime', () => {
     const { socket, s, attaches } = setup()
     const rounds = SessionSocket.MOVING_RETRY_WINDOW_MS / SessionSocket.MOVING_RETRY_MS
+    // A stuck move: the edge refuses every re-attach the client sends (and only those —
+    // a refusal is always the answer to an attach).
+    s._handleInbound(moving)
+    let seen = attaches().length
     for (let i = 0; i < rounds + 5; i++) {
-      s._handleInbound(moving)
       vi.advanceTimersByTime(SessionSocket.MOVING_RETRY_MS)
+      if (attaches().length > seen) {
+        seen = attaches().length
+        s._handleInbound(moving)
+      }
     }
     // One public attach plus at most one re-attach per retry interval inside the window.
     expect(attaches().length).toBeLessThanOrEqual(1 + rounds)
+    // Given up: nothing re-attaches on its own any more.
     const before = attaches().length
-    s._handleInbound(moving)
-    vi.advanceTimersByTime(SessionSocket.MOVING_RETRY_MS * 3)
+    vi.advanceTimersByTime(SessionSocket.MOVING_RETRY_WINDOW_MS)
     expect(attaches()).toHaveLength(before)
+    socket.destroy()
+  })
+
+  it('a refusal after the window gave up opens a fresh window (final review)', () => {
+    const { socket, s, attaches } = setup()
+    s._handleInbound(moving)
+    // The first window's deadline passes (a stuck move, or a long-gone one).
+    vi.advanceTimersByTime(SessionSocket.MOVING_RETRY_WINDOW_MS + SessionSocket.MOVING_RETRY_MS)
+    s._handleInbound(moving)                     // past the deadline: gives up, resets
+    const i = socket as unknown as { _movingRetryUntil: number }
+    expect(i._movingRetryUntil).toBe(0)
+    const before = attaches().length
+    // Later, the same session refuses again (a fresh attach during a new move).
+    s._handleInbound(moving)
+    vi.advanceTimersByTime(SessionSocket.MOVING_RETRY_MS)
+    expect(attaches()).toHaveLength(before + 1)
     socket.destroy()
   })
 

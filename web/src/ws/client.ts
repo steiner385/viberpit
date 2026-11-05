@@ -354,12 +354,18 @@ export class SessionSocket {
   /** The edge refused an attach with SESSION_MOVING: try again in MOVING_RETRY_MS,
    *  inside the window that began with the first such refusal. When the timer fires
    *  and the cached row's `movingTo` has cleared, that re-attach is the last one the
-   *  move needs — the window closes, and only a fresh refusal would open another. */
+   *  move needs — the window closes, and only a fresh refusal would open another.
+   *  A refusal past the window's end gives up AND closes the window: nothing re-attaches
+   *  on its own after that, but a later refusal (a fresh attach, a later move of the
+   *  same session) opens a new one instead of inheriting the expired deadline. */
   private _scheduleMovingRetry(sessionId: string) {
     if (sessionId !== this._activeSessionId || this._movingRetryTimer !== null) return
     const now = Date.now()
     if (this._movingRetryUntil === 0) this._movingRetryUntil = now + SessionSocket.MOVING_RETRY_WINDOW_MS
-    if (now >= this._movingRetryUntil) return
+    if (now >= this._movingRetryUntil) {
+      this._movingRetryUntil = 0
+      return
+    }
     this._movingRetryTimer = setTimeout(() => {
       this._movingRetryTimer = null
       if (this._activeSessionId !== sessionId) return

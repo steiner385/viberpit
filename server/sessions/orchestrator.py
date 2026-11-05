@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dataclass_replace
 from collections.abc import Awaitable, Coroutine, Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, TypeVar, cast
 
 if TYPE_CHECKING:
     from server.automations.backlog_grouping import RefreshSummary
@@ -583,6 +583,26 @@ async def effective_repo_root(fallback: str) -> str:
         log.debug("settings: repo_root read failed", exc_info=True)
         return fallback
     return val or fallback
+
+
+_CloseFn = TypeVar("_CloseFn", bound=Callable[..., Awaitable[None]])
+
+
+def _in_closing_window(fn: _CloseFn) -> _CloseFn:
+    """Hold the session id in ``self._closing`` for the whole call (D-17). close and
+    archive pop the record BEFORE persisting the terminal status; ensure_driver's
+    row fallback (``_load_unrehydrated_row``) must not rebuild it in that window.
+    A decorator, not a wrapper method, so the teardown body stays in the public
+    method (``test_all_three_driver_teardowns_route_through_one_helper`` reads it)."""
+    @functools.wraps(fn)
+    async def wrapper(self, session_id: str, *args, **kwargs) -> None:
+        closing: set[str] = self.__dict__.setdefault("_closing", set())
+        closing.add(session_id)
+        try:
+            await fn(self, session_id, *args, **kwargs)
+        finally:
+            closing.discard(session_id)
+    return cast(_CloseFn, wrapper)
 
 
 def _bg_task_wire(task) -> dict:
@@ -6825,16 +6845,9 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("session.scratch_cleanup_failed id=%s", session_id)
 
+    @_in_closing_window
     async def close_session(self, session_id: str) -> None:
         """Stop the driver, clean up the session worktree, mark the row ended."""
-        closing: set[str] = self.__dict__.setdefault("_closing", set())
-        closing.add(session_id)
-        try:
-            await self._close_session(session_id)
-        finally:
-            closing.discard(session_id)
-
-    async def _close_session(self, session_id: str) -> None:
         driver = await self._teardown_driver_state(session_id)
         if driver is not None:
             await self._close_automation_driver(driver, session_id)
@@ -22683,7 +22696,8 @@ class SessionOrchestrator:
 
     async def transfer_preflight(self, session_id: str) -> dict:
         """Read-only: what a move of *session_id* off this host would carry — the dirty
-        paths (capped), the repo's GitHub visibility (asked only when dirty), the live
+        paths (capped), the unpushed commits, the repo's GitHub visibility (asked only
+        when either would be pushed), the live
         background tasks that would stop — and whether its worktree is here at all
         (the crash reconcile's question)."""
         from viberpit import worktree_transfer as wtx
@@ -22699,17 +22713,17 @@ class SessionOrchestrator:
                      "present": present, "driverLive": driver is not None,
                      "turnActive": bool(getattr(driver, "turn_active", False)),
                      "pendingCard": self._has_live_card(session_id),
-                     "dirtyCount": 0, "dirtyPaths": [], "repo": None, "repoPrivate": None,
-                     "backgroundTasks": []}
+                     "dirtyCount": 0, "dirtyPaths": [], "unpushedCommits": 0, "repo": None,
+                     "repoPrivate": None, "backgroundTasks": []}
         if present:
             try:
                 state = await asyncio.to_thread(wtx.inspect, str(cwd))
             except wtx.TransferError:
                 state = None
-            if state is not None and state.dirty:
+            if state is not None and (state.dirty or state.unpushed_commits):
                 repo = await asyncio.to_thread(gitrepos.repo_at_path, str(cwd))
                 out.update(dirtyCount=state.dirty_files, dirtyPaths=list(state.dirty_paths),
-                           repo=repo,
+                           unpushedCommits=state.unpushed_commits, repo=repo,
                            repoPrivate=await asyncio.to_thread(gitrepos.repo_is_private, repo))
         if rec is not None and driver is not None:
             tasks = await self._open_background_work(session_id)
@@ -22769,13 +22783,16 @@ class SessionOrchestrator:
                 state = await asyncio.to_thread(wtx.inspect, rec.cwd)
             except wtx.TransferError as exc:
                 raise sm.MoveError(sm.MOVE_NOT_MANAGED, str(exc)) from exc
+            private: bool | None = None
+            if state.dirty or state.unpushed_commits:
+                repo = await asyncio.to_thread(gitrepos.repo_at_path, rec.cwd)
+                private = await asyncio.to_thread(gitrepos.repo_is_private, repo)
             if state.dirty:
                 dirty = {"dirtyCount": state.dirty_files, "dirtyPaths": list(state.dirty_paths)}
                 # Fail closed (revised D1): only GitHub's explicit "private" lets
                 # uncommitted bytes travel — a WIP commit on a public repo stays
                 # world-readable by SHA after its ref is deleted.
-                repo = await asyncio.to_thread(gitrepos.repo_at_path, rec.cwd)
-                if await asyncio.to_thread(gitrepos.repo_is_private, repo) is not True:
+                if private is not True:
                     raise sm.MoveError(sm.MOVE_DIRTY_PUBLIC_REPO,
                                        "Public repository: commit or discard the changes.",
                                        extra=dirty)
@@ -22783,6 +22800,12 @@ class SessionOrchestrator:
                     raise sm.MoveError(sm.MOVE_DIRTY_NEEDS_CONSENT,
                                        "Uncommitted changes need consent to travel.",
                                        extra=dirty)
+            if state.unpushed_commits and private is not True:
+                # Same exposure as a WIP commit: a transfer ref's commits stay fetchable
+                # by SHA after it is deleted. The vetted state passed to export below
+                # then refuses any unpushed commit that appears after this check.
+                raise sm.MoveError(sm.MOVE_UNPUSHED_PUBLIC_REPO, sm.UNPUSHED_PUBLIC_REPO_COPY,
+                                   extra={"unpushedCommits": state.unpushed_commits})
             tasks = await self._open_background_work(session_id) if driver is not None else []
             if tasks and not stop_background:
                 raise sm.MoveError(sm.MOVE_BACKGROUND_NEEDS_CONFIRM,
@@ -22807,8 +22830,9 @@ class SessionOrchestrator:
                 lambda: sm.transcript_marker(self.transcript_path(session_id)))
             try:
                 # Only the VETTED verdict may carry bytes (revised D1): a tree that got
-                # dirty after the visibility/consent checks above is refused by export
-                # (dirty_worktree → MOVE_EXPORT_FAILED → restore), never pushed.
+                # dirty — or gained unpushed commits — after the visibility/consent
+                # checks above is refused by export (dirty_worktree / unpushed_commits
+                # → MOVE_EXPORT_FAILED → restore), never pushed.
                 bundle = await asyncio.to_thread(
                     functools.partial(wtx.export, rec.cwd, session_id,
                                       carry_dirty=carry_dirty and state.dirty, vetted=state))
@@ -22857,7 +22881,9 @@ class SessionOrchestrator:
                 return
             if attempt + 1 < sm.TRANSCRIPT_ATTEMPTS:
                 await asyncio.sleep(sm.TRANSCRIPT_RETRY_S)
-        log.warning("session.move transcript stale id=%s want=%s", session_id, marker)
+        # INFO: the MoveError carries this to the edge, whose outcome line is the
+        # incident's one WARNING (a `restored` move is an expected recovery).
+        log.info("session.move transcript stale id=%s want=%s", session_id, marker)
         raise sm.MoveError(sm.MOVE_TRANSCRIPT_STALE,
                            "The conversation history here is behind the source's.")
 
@@ -22910,8 +22936,8 @@ class SessionOrchestrator:
             try:
                 await sm.clear_import_marker(session_id, me)
             except Exception:
-                log.warning("session.move could not clear the import marker id=%s — "
-                            "keeping this host's tree", session_id, exc_info=True)
+                log.info("session.move could not clear the import marker id=%s — "
+                         "keeping this host's tree", session_id, exc_info=True)
                 await self._close_for_transfer(session_id)
                 self._retarget_record(session_id, source or "")
                 return
@@ -22960,8 +22986,9 @@ class SessionOrchestrator:
             try:
                 await _abandon()
             except Exception:
-                log.warning("session.move could not undo a failed import id=%s",
-                            session_id, exc_info=True)
+                # INFO: the edge's outcome line (or the reconcile's) is the WARNING.
+                log.info("session.move could not undo a failed import id=%s",
+                         session_id, exc_info=True)
             raise
         # Import-complete evidence for the crash reconcile — the TRUE last step, outside
         # the try: once it may have committed, nothing can abandon this tree any more.
@@ -27816,20 +27843,9 @@ class SessionOrchestrator:
     # Archive / unarchive / permanent-delete
     # ------------------------------------------------------------------
 
+    @_in_closing_window
     async def archive_session(self, session_id: str, *, archived_by: str = "user",
                               context: dict | None = None) -> None:
-        """Archive a session (``_archive_session``). The id sits in ``_closing`` for the
-        whole call: the record is popped before ``archived`` is persisted, and
-        ensure_driver's row fallback must not rebuild it in that window."""
-        closing: set[str] = self.__dict__.setdefault("_closing", set())
-        closing.add(session_id)
-        try:
-            await self._archive_session(session_id, archived_by=archived_by, context=context)
-        finally:
-            closing.discard(session_id)
-
-    async def _archive_session(self, session_id: str, *, archived_by: str = "user",
-                               context: dict | None = None) -> None:
         """Archive a session: stop the driver and flip status='archived'. Nothing moves.
 
         The DB row is KEPT (status='archived') and the working directory STAYS IN

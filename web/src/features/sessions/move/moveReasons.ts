@@ -8,6 +8,9 @@ import { CODEX_STAYS_COPY } from '@/api/sessionMove'
 
 /** The exact copy the owner ruled on (revised D1): consent cannot fix a public repo. */
 export const PUBLIC_REPO_COPY = 'This repository is public — commit or stash your changes before moving'
+/** Committed-but-unpushed work on a public repo (final-review ruling): the transfer ref
+ *  would leave those commits fetchable by SHA. */
+export const UNPUSHED_PUBLIC_REPO_COPY = "This repository is public — push the session's commits to its branch before moving"
 /** D3: a running turn is never moved. */
 export const MID_TURN_COPY = 'Wait for the turn to finish or Interrupt first'
 /** The consent checkbox (D1) — exact copy. */
@@ -22,7 +25,8 @@ export const MOVE_REASON_CODES = [
   'MOVE_AWAITING_ANSWER', 'MOVE_HAS_CHILDREN', 'MOVE_IS_CHILD', 'MOVE_NOT_MANAGED_WORKTREE',
   'MOVE_UNKNOWN_HOST', 'MOVE_SAME_HOST', 'MOVE_TARGET_DISABLED', 'MOVE_TARGET_UNHEALTHY',
   'MOVE_TARGET_ENGINE', 'MOVE_TARGET_PLATFORM', 'MOVE_TARGET_FULL', 'MOVE_TARGET_UNAVAILABLE',
-  'MOVE_DIRTY_NEEDS_CONSENT', 'MOVE_DIRTY_PUBLIC_REPO', 'MOVE_BACKGROUND_NEEDS_CONFIRM',
+  'MOVE_DIRTY_NEEDS_CONSENT', 'MOVE_DIRTY_PUBLIC_REPO', 'MOVE_UNPUSHED_PUBLIC_REPO',
+  'MOVE_BACKGROUND_NEEDS_CONFIRM',
   'MOVE_SOURCE_UNREACHABLE', 'MOVE_EXPORT_FAILED', 'MOVE_RESTAMP_FAILED', 'MOVE_IMPORT_FAILED',
   'MOVE_TRANSCRIPT_STALE', 'MOVE_RESUME_FAILED', 'MOVE_LEASE_HELD', 'MOVE_PATH_MISMATCH',
   'MOVE_WORKTREE_MISSING', 'MOVE_NOT_STAMPED', 'MOVE_FINALIZE_REFUSED', 'SESSION_CONTROL_HUMAN_ONLY',
@@ -57,6 +61,7 @@ export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_TARGET_UNAVAILABLE: 'That host is not reachable right now.',
   MOVE_DIRTY_NEEDS_CONSENT: 'The worktree has uncommitted changes — tick the box to carry them.',
   MOVE_DIRTY_PUBLIC_REPO: PUBLIC_REPO_COPY,
+  MOVE_UNPUSHED_PUBLIC_REPO: UNPUSHED_PUBLIC_REPO_COPY,
   MOVE_BACKGROUND_NEEDS_CONFIRM: 'Confirm that the background tasks below may stop.',
   MOVE_SOURCE_UNREACHABLE: "The session's current host did not answer. Try again in a moment.",
   MOVE_EXPORT_FAILED: 'The worktree could not be pushed for the move.',

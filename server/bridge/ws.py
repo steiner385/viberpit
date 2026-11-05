@@ -625,6 +625,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         out_q: asyncio.Queue[dict] = asyncio.Queue()
         # session_id → live-stream task forwarding driver events into out_q
         live_tasks: dict[str, asyncio.Task] = {}
+        # D-17: sessions whose last wake this socket refused because they are between
+        # hosts (id → target). The prompt path reads it so a prompt that could not wake
+        # its session is HELD (promptRejected SESSION_MOVING) rather than failed.
+        moving_refusals: dict[str, str] = {}
 
         # Sessions this socket is VIEWING (attach seen, no detach yet) — independent
         # of live_tasks, which only holds sessions with a live forwarding task. The
@@ -942,8 +946,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # D-17: the session is between hosts. Expected and short — INFO, and
                 # the client shows "Moving to <host>…" and re-attaches.
                 log.info("ws.attach: session %s is moving to %s", session_id, exc.target)
+                moving_refusals[session_id] = exc.target
                 await _attach_failed(session_id, SESSION_MOVING,
-                                     f"Moving to {exc.target}…", auto)
+                                     _moving_message(exc), auto)
                 return None
             except Exception as exc:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
@@ -1869,6 +1874,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         await factory()
                     except asyncio.CancelledError:
                         raise
+                    except SessionMoving as exc:
+                        # D-17: any other chained frame (interrupt, a mode change, a
+                        # command…) refused because the session is between hosts.
+                        # Expected and short — INFO, and the browser hears why.
+                        log.info("ws.work refused session=%s op=%s: moving to %s",
+                                 session_id, label, exc.target)
+                        await _send_moving_error(exc)
                     except Exception:
                         log.exception("ws.work failed session=%s op=%s", session_id, label)
 
@@ -1953,6 +1965,29 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         # Chained frame handlers — run on the session's work chain, never inline
         # ------------------------------------------------------------------
 
+        def _moving_message(exc: SessionMoving) -> str:
+            return f"Moving to {exc.target}…"
+
+        async def _send_moving_error(exc: SessionMoving, **extra: str) -> None:
+            """The SESSION_MOVING banner for a refused non-prompt frame (D-17). The
+            client re-attaches on it once the move settles."""
+            await _send({"type": "error", "code": SESSION_MOVING,
+                         "message": _moving_message(exc),
+                         "sessionId": exc.session_id, "movingTo": exc.target, **extra})
+
+        async def _reject_moving_prompt(msg: dict, session_id: str, target: str) -> None:
+            """A prompt refused because its session is between hosts (D-17). The
+            established "NOT delivered" ack: the browser re-queues the text and re-sends
+            it on its held-retry backoff. INFO — a move is expected and short; a stuck
+            one is the reconcile's WARNING, not every prompt's."""
+            log.info("ws.prompt held session=%s: moving to %s", session_id, target)
+            await _send({"type": "promptRejected", "sessionId": session_id,
+                         **({"replySource": msg["replySource"]}
+                            if "replySource" in msg else {}),
+                         "text": msg.get("text", ""),
+                         "attachmentIds": msg.get("attachmentIds"),
+                         "reason": SESSION_MOVING, "movingTo": target})
+
         async def _handle_prompt(msg: dict, session_id: str) -> None:
             """Resume-if-needed, then deliver one prompt.
 
@@ -1984,8 +2019,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # send_prompt stays outside because it can block on a whole resuming
             # turn, which would keep this session's own auto re-attach out for the
             # duration.
+            moving_refusals.pop(session_id, None)
             async with _attach_lock(session_id):
                 live_ok = await _ensure_live(session_id)
+            if not live_ok and session_id in moving_refusals:
+                # The wake was refused because the session is between hosts (D-17):
+                # not a failure, a hold — the browser keeps the text and re-sends it
+                # once the move settles. The attach refusal above already logged INFO.
+                await _reject_moving_prompt(msg, session_id, moving_refusals.pop(session_id))
+                return
             if not live_ok:
                 # The receipt ack above promised "resuming"; retract it. The error
                 # frame _resume_driver_or_error already emitted says WHY, but it is
@@ -2072,6 +2114,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             try:
                 status = await orchestrator.send_prompt(
                     session_id, text, attachment_ids, **extra)
+            except SessionMoving as exc:
+                await _reject_moving_prompt(msg, session_id, exc.target)
+                return
             except DaemonUnavailable:
                 # A connect timeout / refused / wedged-daemon RPC failure lands
                 # here exactly like the SDK-stream-death race #1997 fixed for
@@ -2106,10 +2151,17 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 async with _attach_lock(session_id):
                     await _teardown_live_task(session_id)
                     rebuilt = await _ensure_live(session_id)
+                if not rebuilt and session_id in moving_refusals:
+                    await _reject_moving_prompt(msg, session_id,
+                                                moving_refusals.pop(session_id))
+                    return
                 if rebuilt:
                     try:
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
+                    except SessionMoving as exc:
+                        await _reject_moving_prompt(msg, session_id, exc.target)
+                        return
                     except DaemonUnavailable:
                         status = "unavailable"
             try:
@@ -2397,6 +2449,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     # commit — INSIDE this db_session block; only the ActionError is
                     # caught here, to render the WS-specific error frame afterward.
                     action_error: ActionError | None = None
+                    moving: SessionMoving | None = None
                     async with db_session() as db:
                         try:
                             await session_actions.resolve_permission(
@@ -2409,6 +2462,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                 message=deny_message)
                         except ActionError as exc:
                             action_error = exc
+                        except SessionMoving as exc:
+                            moving = exc
+                    if moving is not None:
+                        # D-17: refused at the edge, nothing reached a host — the card
+                        # is still pending wherever the session lands. INFO.
+                        log.info("ws.resolve_permission refused session=%s perm=%s: "
+                                 "moving to %s", session_id, perm_id, moving.target)
+                        await _send_moving_error(moving, permId=perm_id)
                     if action_error is not None:
                         # Same silent-drop shape as answerQuestion below: an
                         # unresolvable decision must surface, not 200-and-vanish.
@@ -2435,6 +2496,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     selected = msg.get("selected", [])
                     mode = msg.get("mode", "option")
                     action_error = None
+                    moving = None
                     async with db_session() as db:
                         try:
                             await session_actions.answer_question(
@@ -2443,6 +2505,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                 identity=identity, via=via)
                         except ActionError as exc:
                             action_error = exc
+                        except SessionMoving as exc:
+                            moving = exc
+                    if moving is not None:
+                        # D-17: same as permissionResponse above. questionId rides along
+                        # so the client undoes its optimistic "answered" (#2206).
+                        log.info("ws.answer_question refused session=%s qid=%s: "
+                                 "moving to %s", session_id, question_id, moving.target)
+                        await _send_moving_error(moving, questionId=question_id)
                     if action_error is not None:
                         # Never a silent no-op: an unresolvable answer (no such pending
                         # question, identity mismatch, no driver) used to return 200

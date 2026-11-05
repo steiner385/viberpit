@@ -62,6 +62,11 @@ MOVE_TARGET_PLATFORM = "MOVE_TARGET_PLATFORM"
 MOVE_TARGET_FULL = "MOVE_TARGET_FULL"
 MOVE_DIRTY_NEEDS_CONSENT = "MOVE_DIRTY_NEEDS_CONSENT"
 MOVE_DIRTY_PUBLIC_REPO = "MOVE_DIRTY_PUBLIC_REPO"
+#: Committed work no origin ref has, on a public (or unknown-visibility) repo: the
+#: transfer refs would leave it fetchable by SHA (D-17 final review ruling).
+MOVE_UNPUSHED_PUBLIC_REPO = "MOVE_UNPUSHED_PUBLIC_REPO"
+UNPUSHED_PUBLIC_REPO_COPY = ("This repository is public — push the session's commits to "
+                             "its branch before moving")
 MOVE_BACKGROUND_NEEDS_CONFIRM = "MOVE_BACKGROUND_NEEDS_CONFIRM"
 MOVE_SOURCE_UNREACHABLE = "MOVE_SOURCE_UNREACHABLE"
 MOVE_TARGET_UNAVAILABLE = "MOVE_TARGET_UNAVAILABLE"
@@ -183,6 +188,7 @@ class WorktreeFacts:
 
     dirty_count: int = 0
     dirty_paths: tuple[str, ...] = ()
+    unpushed_commits: int = 0
     repo_private: bool | None = None
     background_tasks: tuple[dict, ...] = ()
     #: A live permission / question / plan card (or a re-offered orphaned one) — not
@@ -193,6 +199,7 @@ class WorktreeFacts:
     def from_preflight(cls, d: dict) -> "WorktreeFacts":
         return cls(dirty_count=int(d.get("dirtyCount") or 0),
                    dirty_paths=tuple(d.get("dirtyPaths") or ()),
+                   unpushed_commits=int(d.get("unpushedCommits") or 0),
                    repo_private=d.get("repoPrivate"),
                    background_tasks=tuple(d.get("backgroundTasks") or ()),
                    pending_card=bool(d.get("pendingCard")))
@@ -298,6 +305,9 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
                 return _no(MOVE_DIRTY_NEEDS_CONSENT,
                            "The worktree has uncommitted changes; confirm carrying them.",
                            **dirty)
+        if facts.unpushed_commits and facts.repo_private is not True:
+            return _no(MOVE_UNPUSHED_PUBLIC_REPO, UNPUSHED_PUBLIC_REPO_COPY,
+                       unpushedCommits=facts.unpushed_commits)
         if facts.background_tasks and not stop_background:
             return _no(MOVE_BACKGROUND_NEEDS_CONFIRM,
                        "Background tasks will stop and be re-armed on the new host; "
@@ -697,22 +707,25 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
                 log.info("session.move_refused id=%s by=%s code=%s", sid, source, exc.code)
                 raise
             code = exc.code
-            outcome = await _restore(fleet, sid, source, target, None, ctx, restamped=False)
+            outcome, finalize = await _restore(fleet, sid, source, target, None, ctx,
+                                               restamped=False)
             raise MoveError(code, exc.message, extra=exc.extra, outcome=outcome) from exc
         except Exception as exc:
             code = MOVE_EXPORT_FAILED
-            outcome = await _restore(fleet, sid, source, target, None, ctx, restamped=False)
+            outcome, finalize = await _restore(fleet, sid, source, target, None, ctx,
+                                               restamped=False)
             raise MoveError(code, f"export on {source} failed: {exc}", outcome=outcome) from exc
         try:
             await _store_manifest(sid, manifest)
         except Exception:
-            log.warning("session.move could not store the manifest id=%s — a reconcile "
-                        "after an edge restart will work without it", sid, exc_info=True)
+            log.info("session.move could not store the manifest id=%s — a reconcile "
+                     "after an edge restart will work without it", sid, exc_info=True)
         try:
             await _restamp(sid, host=target, moved_from=source, moved_at=_NOW)
         except Exception as exc:
             code = MOVE_RESTAMP_FAILED
-            outcome = await _restore(fleet, sid, source, target, manifest, ctx, restamped=True)
+            outcome, finalize = await _restore(fleet, sid, source, target, manifest, ctx,
+                                               restamped=True)
             raise MoveError(code, f"restamp failed: {exc}", outcome=outcome) from exc
         fleet.note_host(sid, target)
         try:
@@ -720,9 +733,10 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
         except Exception as exc:
             code = exc.code if isinstance(exc, MoveError) else MOVE_IMPORT_FAILED
             msg = exc.message if isinstance(exc, MoveError) else f"import on {target} failed: {exc}"
-            log.warning("session.move import failed id=%s %s→%s code=%s: %s",
-                        sid, source, target, code, msg)
-            outcome = await _restore(fleet, sid, source, target, manifest, ctx, restamped=True)
+            log.info("session.move import failed id=%s %s→%s code=%s: %s",
+                     sid, source, target, code, msg)
+            outcome, finalize = await _restore(fleet, sid, source, target, manifest, ctx,
+                                               restamped=True)
             raise MoveError(code, msg, outcome=outcome) from exc
         outcome = OUTCOME_MOVED
         finalize = await _finalize(fleet, sid, source, target, manifest)
@@ -742,16 +756,23 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
             try:
                 await _abandon_claim(sid)
             except Exception:
-                log.warning("session.move could not mark the claim abandoned id=%s",
-                            sid, exc_info=True)
+                log.info("session.move could not mark the claim abandoned id=%s",
+                         sid, exc_info=True)
+            # THE one WARNING for this incident (each WARNING auto-files an issue): every
+            # step above logged INFO, and the reconcile that settles this claim starts
+            # its episode already warned.
             log.warning("session.move failed id=%s %s→%s code=%s — left to the reconcile",
                         sid, source, target, code)
+            _warned(fleet).add(sid)
         else:
+            # `restored` is an expected recovery: _restore logged it at INFO.
             try:
                 await _release_claim(sid)
             except Exception:
-                log.warning("session.move could not clear moving_to id=%s — the reconcile "
-                            "will", sid, exc_info=True)
+                # The reconcile settles the leftover claim; its first stuck-episode line
+                # is this incident's WARNING.
+                log.info("session.move could not clear moving_to id=%s — the reconcile "
+                         "will", sid, exc_info=True)
         await _audit(identity, via, {
             "sessionId": sid, "from": source, "to": target, "carryDirty": carry_dirty,
             "stopBackground": stop_background, "outcome": outcome, "code": code,
@@ -761,24 +782,28 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
 
 
 async def _restore(fleet: Any, sid: str, source: str, target: str, manifest: dict | None,
-                   ctx: _Context, *, restamped: bool) -> str:
+                   ctx: _Context, *, restamped: bool) -> tuple[str, dict | None]:
     """Put the session back on *source* after a failure past export: restamp back, then
     the source's own reuse-path import (its worktree is still there). If the source
     cannot take it back, the lease decides: a target that is driving it keeps it, and
-    the source's copy is finalized so nothing there can resume it."""
+    the source's copy is finalized so nothing there can resume it.
+
+    Returns ``(outcome, finalize)`` — the finalize result only on the "ended as moved"
+    path, so the audit records what really happened to the source's copy. Every line
+    here is INFO: the saga's outcome line is the incident's one WARNING."""
     if restamped:
         try:
             await _restamp(sid, host=source, moved_from=ctx.moved_from, moved_at=ctx.moved_at)
         except Exception:
-            log.warning("session.move restamp-back failed id=%s", sid, exc_info=True)
+            log.info("session.move restamp-back failed id=%s", sid, exc_info=True)
     fleet.note_host(sid, source)
     try:
         await _orch(fleet, source, MOVE_SOURCE_UNREACHABLE).transfer_import(
             sid, manifest, source=target, local=True)
         log.info("session.move restored id=%s on %s", sid, source)
-        return OUTCOME_RESTORED
+        return OUTCOME_RESTORED, None
     except Exception:
-        log.warning("session.move restore on %s failed id=%s", source, sid, exc_info=True)
+        log.info("session.move restore on %s failed id=%s", source, sid, exc_info=True)
     if await _await_import_marker(sid, target):
         # The target answered too late for the edge but finished: its driver started on
         # a verified transcript (the marker says so — a lease alone does not, it is
@@ -787,15 +812,14 @@ async def _restore(fleet: Any, sid: str, source: str, target: str, manifest: dic
         try:
             await _restamp(sid, host=target, moved_from=source, moved_at=_NOW)
         except Exception:
-            log.warning("session.move restamp to lease holder failed id=%s", sid,
-                        exc_info=True)
-            return OUTCOME_FAILED
+            log.info("session.move restamp to lease holder failed id=%s", sid,
+                     exc_info=True)
+            return OUTCOME_FAILED, None
         fleet.note_host(sid, target)
-        log.warning("session.move id=%s: restore failed but %s holds the lease — kept "
-                    "there", sid, target)
-        await _finalize(fleet, sid, source, target, manifest)
-        return OUTCOME_MOVED
-    return OUTCOME_FAILED
+        log.info("session.move id=%s: restore failed but %s holds the lease — kept "
+                 "there", sid, target)
+        return OUTCOME_MOVED, await _finalize(fleet, sid, source, target, manifest)
+    return OUTCOME_FAILED, None
 
 
 async def _import_marker(sid: str) -> str | None:
@@ -833,8 +857,10 @@ async def _finalize(fleet: Any, sid: str, source: str, target: str,
         return await _orch(fleet, source, MOVE_SOURCE_UNREACHABLE).transfer_finalize(
             sid, manifest, owner=target) or {}
     except Exception as exc:
-        log.warning("session.move finalize on %s failed id=%s — the source worktree "
-                    "stays (stamped for %s)", source, sid, target, exc_info=True)
+        # The move stands; the leftover tree is a disk leak stamped for another host,
+        # recorded in the audit (finalized: false) — INFO, not an incident.
+        log.info("session.move finalize on %s failed id=%s — the source worktree "
+                 "stays (stamped for %s)", source, sid, target, exc_info=True)
         return {"removed": False, "error": getattr(exc, "code", type(exc).__name__)}
 
 
@@ -850,16 +876,26 @@ async def _scan_claims() -> list:
             DbSession.moving_to.isnot(None)))).scalars().all())
 
 
+async def db_now() -> datetime:
+    """The database's current time (naive UTC) — the clock ``move_started_at`` is
+    written with (``_claim``). Every comparison against a claim's start reads this, never
+    the edge's own clock: a skewed edge would judge live claims stale or vice versa."""
+    from sqlalchemy import select as sa_select
+    from server.db import db_session
+    from server.db.clock import db_utc_now
+    async with db_session() as db:
+        return (await db.execute(sa_select(db_utc_now()))).scalar_one()
+
+
 async def reconcile_stale_moves(sessions: Any, *, older_than_s: float = MOVE_STALE_S
                                 ) -> list[str]:
     """Settle every claim older than *older_than_s* (or abandoned: no start time) that no
     live saga in this process owns. Every claim this edge is not running is also HELD —
     driver builds answer SESSION_MOVING — until it is settled. Returns the ids settled.
     Never raises."""
-    from server.db.clock import naive_utc_now
     fleet = _require_fleet(sessions)
-    cutoff = naive_utc_now() - timedelta(seconds=older_than_s)
     try:
+        cutoff = (await db_now()) - timedelta(seconds=older_than_s)
         rows = await _scan_claims()
     except Exception:
         log.warning("session.move reconcile: claim scan failed", exc_info=True)
@@ -1017,7 +1053,9 @@ async def _reconcile_one(fleet: Any, row) -> bool:
 
 
 async def reconcile_loop(sessions: Any, interval_s: float = MOVE_RECONCILE_INTERVAL_S) -> None:
-    """Run :func:`reconcile_stale_moves` at startup and then every *interval_s*."""
+    """Run :func:`reconcile_stale_moves` at startup and then every *interval_s*. The
+    edge's start time is read from the DB clock first, once (see ``db_now``)."""
+    await _require_fleet(sessions).stamp_started_at()
     while True:
         try:
             await reconcile_stale_moves(sessions)

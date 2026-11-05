@@ -69,6 +69,20 @@ class InspectTests(unittest.TestCase):
         st = wt.inspect(self.cwd)
         self.assertNotIn(self.info.branch, st.unpushed)
 
+    def test_unpushed_commits_counts_what_no_origin_ref_reaches(self) -> None:
+        # The per-session branch is unpushed by NAME, but its tip is origin/main's:
+        # a transfer ref would expose nothing new.
+        self.assertEqual(wt.inspect(self.cwd).unpushed_commits, 0)
+        (Path(self.cwd) / "a.txt").write_text("a\n")
+        _git("add", "-A", cwd=self.cwd)
+        _git("commit", "-q", "-m", "a", cwd=self.cwd)
+        (Path(self.cwd) / "b.txt").write_text("b\n")
+        _git("add", "-A", cwd=self.cwd)
+        _git("commit", "-q", "-m", "b", cwd=self.cwd)
+        self.assertEqual(wt.inspect(self.cwd).unpushed_commits, 2)
+        _git("push", "-q", "-u", "origin", self.info.branch, cwd=self.cwd)
+        self.assertEqual(wt.inspect(self.cwd).unpushed_commits, 0)
+
     def test_detached_head_has_no_branch(self) -> None:
         _git("checkout", "-q", "--detach", cwd=self.cwd)
         st = wt.inspect(self.cwd)
@@ -109,6 +123,37 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(b.base_sha, head)
         self.assertEqual(b.branch, self.info.branch)
         self.assertEqual(self._origin_ref(wt.head_ref("bbbb2222-0000")), head)
+
+    def _commit(self, name: str) -> None:
+        (Path(self.cwd) / name).write_text(name + "\n")
+        _git("add", "-A", cwd=self.cwd)
+        _git("commit", "-q", "-m", name, cwd=self.cwd)
+
+    def test_an_unpushed_commit_the_vetted_state_did_not_see_is_refused(self) -> None:
+        # D-17 final review: on a public repo the caller vets a state with no unpushed
+        # commits; one committed after that must never reach the transfer refs.
+        vetted = wt.inspect(self.cwd)
+        self.assertEqual(vetted.unpushed_commits, 0)
+        self._commit("late.txt")
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False, vetted=vetted)
+        self.assertEqual(ctx.exception.code, "unpushed_commits")
+        self.assertIsNone(self._origin_ref(wt.head_ref("bbbb2222-0000")))
+
+    def test_a_second_commit_after_vetting_is_refused_too(self) -> None:
+        self._commit("one.txt")
+        vetted = wt.inspect(self.cwd)              # approved: exactly this one commit
+        self._commit("two.txt")
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False, vetted=vetted)
+        self.assertEqual(ctx.exception.code, "unpushed_commits")
+        self.assertIsNone(self._origin_ref(wt.head_ref("bbbb2222-0000")))
+
+    def test_vetted_unpushed_commits_travel(self) -> None:
+        self._commit("one.txt")
+        vetted = wt.inspect(self.cwd)
+        b = wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False, vetted=vetted)
+        self.assertEqual(self._origin_ref(wt.head_ref("bbbb2222-0000")), b.head_sha)
 
     def test_dirty_without_consent_refuses_and_touches_nothing(self) -> None:
         (Path(self.cwd) / "x.txt").write_text("x\n")

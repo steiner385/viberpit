@@ -70,6 +70,9 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         rewind=True,
         # apply_flag_settings on the live client (D-14): fast mode and live effort.
         flag_settings=True,
+        # Move to host (D-17): history on the shared tree + resume by id from any cwd;
+        # the kill switch gates it at engine.move_supported, not here.
+        cross_host_transfer=True,
     )
 
     driver._engine_session_id = "native-1"

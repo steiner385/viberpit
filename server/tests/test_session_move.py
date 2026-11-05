@@ -138,6 +138,22 @@ def test_dirty_tree_rules(private, carry, code):
         assert v.extra["dirtyPaths"] == ["a", "b", "c"] and v.extra["dirtyCount"] == 3
 
 
+# Final review ruling: committed-but-unpushed work on a public repo never travels either.
+@pytest.mark.parametrize("private,code", [
+    (False, sm.MOVE_UNPUSHED_PUBLIC_REPO),
+    (None, sm.MOVE_UNPUSHED_PUBLIC_REPO),          # unknown visibility = public
+    (True, None),
+])
+def test_unpushed_commit_rules(private, code):
+    facts = sm.WorktreeFacts(unpushed_commits=2, repo_private=private)
+    v = _verdict(facts=facts)
+    assert v.code == code
+    if code is not None:
+        assert v.message == sm.UNPUSHED_PUBLIC_REPO_COPY
+        assert v.extra["unpushedCommits"] == 2
+    assert _verdict(facts=sm.WorktreeFacts(repo_private=private)).ok   # none: fine
+
+
 def test_background_tasks_need_a_confirm_that_lists_them():
     tasks = ({"kind": "monitor", "name": "Monitor", "description": "watch CI",
               "replayable": True},)
@@ -612,6 +628,29 @@ async def test_driver_building_calls_answer_session_moving_while_in_flight(fleet
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("rename_session", ("new name",)), ("set_pr_autofix_paused", (True,)),
+    ("set_auto_archive_opt_out", (True,)), ("dismiss_suspected_complete", ()),
+    ("interrupt", ()), ("stop_subagent", ("tu-1",)),
+])
+async def test_live_record_writes_answer_session_moving_while_in_flight(fleet, name, args):
+    """Final review: these write the source's live record (or its driver). Mid-move
+    they must get the clean SESSION_MOVING 409, not land on a record about to go."""
+    from server.sessions.fleet_orchestrator import _MOVE_BLOCKED, _PER_SESSION
+    assert name in _MOVE_BLOCKED and name in _PER_SESSION
+    fx = fleet
+    fx.rocky.gate = asyncio.Event()
+    task = asyncio.create_task(_move(fx))
+    while "import" not in fx.rocky.calls:
+        await asyncio.sleep(0.01)
+    with pytest.raises(sm.SessionMoving) as ei:
+        await getattr(fx.f, name)(SID, *args)
+    assert ei.value.code == sm.SESSION_MOVING
+    fx.rocky.gate.set()
+    await task
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_request_does_not_leave_a_half_moved_session(fleet):
     fx = fleet
     fx.rocky.gate = asyncio.Event()
@@ -970,6 +1009,57 @@ async def test_export_refuses_dirty_on_a_public_or_unknown_repo_even_with_consen
         await o.transfer_export(SID, target="rocky", carry_dirty=True)
     assert ei.value.code == sm.MOVE_DIRTY_PUBLIC_REPO
     assert _origin_refs(h.origin) == "" and o.closed == []
+
+
+def _commit_in(cwd: Path, name: str = "feature.py") -> None:
+    (cwd / name).write_text("x = 1\n")
+    _git("add", "-A", cwd=cwd)
+    _git("commit", "-q", "-m", name, cwd=cwd)
+
+
+@pytest.mark.parametrize("answer", [False, None])
+@pytest.mark.asyncio
+async def test_export_refuses_unpushed_commits_on_a_public_or_unknown_repo(
+        monkeypatch, two_hosts, visibility, answer):
+    h = two_hosts
+    visibility.answer = answer
+    o = await _source(monkeypatch, h)
+    _commit_in(h.cwd)
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_export(SID, target="rocky")
+    assert ei.value.code == sm.MOVE_UNPUSHED_PUBLIC_REPO
+    assert ei.value.extra == {"unpushedCommits": 1}
+    assert _origin_refs(h.origin) == "" and o.closed == []     # nothing touched
+    assert SID in o._drivers and o._records[SID].host == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_export_carries_unpushed_commits_on_a_private_repo(
+        monkeypatch, two_hosts, visibility):
+    h = two_hosts
+    o = await _source(monkeypatch, h)
+    _commit_in(h.cwd)
+    manifest = await o.transfer_export(SID, target="rocky")
+    assert manifest["bundle"]["headSha"] == _git("rev-parse", "HEAD", cwd=h.cwd)
+    assert _origin_refs(h.origin) != ""
+
+
+@pytest.mark.parametrize("answer,dirty", [(False, False), (None, True)])
+@pytest.mark.asyncio
+async def test_preflight_reports_unpushed_commits_and_visibility(
+        monkeypatch, two_hosts, visibility, answer, dirty):
+    h = two_hosts
+    visibility.answer = answer
+    o = await _source(monkeypatch, h)
+    o.orphaned_interaction = lambda sid: None
+    _commit_in(h.cwd)
+    if dirty:
+        (h.cwd / "wip.py").write_text("y\n")
+    report = await o.transfer_preflight(SID)
+    assert report["unpushedCommits"] == 1
+    assert report["repoPrivate"] is answer
+    facts = sm.WorktreeFacts.from_preflight(report)
+    assert facts.unpushed_commits == 1
 
 
 @pytest.mark.asyncio
@@ -1786,3 +1876,110 @@ async def test_a_source_resumed_after_an_edge_restart_never_runs_on_the_wip(
         await o.ensure_driver(SID)
     assert _git("rev-parse", "HEAD", cwd=h.cwd) == base
     assert (h.cwd / "wip.py").read_text() == "x\n"
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+# Final review fix wave
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+def _move_warnings(caplog) -> list[str]:
+    """WARNING+ lines from the move code on either side (edge saga, daemon halves)."""
+    import logging
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+            and r.name in ("server.sessions.session_move", "server.sessions.orchestrator")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [
+    RuntimeError("fetch failed"), sm.MoveError(sm.MOVE_TRANSCRIPT_STALE),
+])
+async def test_a_restored_move_logs_no_warning(fleet, caplog, exc):
+    """Item 2: `restored` is an expected recovery — INFO only, no auto-filed issue."""
+    import logging
+    fx = fleet
+    fx.rocky.fail["import"] = exc
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(sm.MoveError) as ei:
+            await _move(fx)
+    assert ei.value.outcome == "restored"
+    assert _move_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_move_logs_exactly_one_warning_including_its_reconcile(
+        fleet, caplog, monkeypatch):
+    """Item 2: import failed + restore failed + the claim bookkeeping failed + a stuck
+    reconcile pass — one incident, so exactly ONE WARNING: the saga's outcome line."""
+    import logging
+    fx = fleet
+    fx.rocky.fail["import"] = RuntimeError("boom")
+    fx.dobby.fail["restore"] = RuntimeError("source down too")
+
+    async def _abandon_fails(sid):
+        raise RuntimeError("db blip")
+    monkeypatch.setattr(sm, "_abandon_claim", _abandon_fails)
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(sm.MoveError) as ei:
+            await _move(fx)
+        assert ei.value.outcome == "failed"
+        monkeypatch.undo()
+        await _stale_claim(host="dobby")               # still stuck on the next pass
+        assert await sm.reconcile_stale_moves(fx.f) == []
+    warnings = _move_warnings(caplog)
+    assert len(warnings) == 1, warnings
+    assert warnings[0].startswith("session.move failed id=")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_that_ended_as_moved_audits_the_real_finalize(fleet):
+    """Item 4: the "restore failed but the target holds the lease" path finalizes the
+    source; the audit used to say finalized: false, recoveryRef: null regardless."""
+    fx = fleet
+    real_import = fx.rocky.transfer_import
+
+    async def late(sid, manifest=None, *, source=None, local=False):
+        await real_import(sid, manifest, source=source, local=local)
+        raise RuntimeError("edge gave up waiting")
+    fx.rocky.transfer_import = late
+    with pytest.raises(sm.MoveError) as ei:
+        await _move(fx)
+    assert ei.value.outcome == "moved"
+    audit = (await _audits())[-1]
+    assert audit["outcome"] == "moved"
+    assert audit["finalized"] is True
+    assert audit["recoveryRef"] == "refs/viberpit/recovery/5e55a0aa/x-forced"
+
+
+@pytest.mark.asyncio
+async def test_edge_started_at_is_read_from_the_db_clock(fleet, monkeypatch):
+    """Item 6: claims are stamped with db_utc_now(); the edge's start must be the same
+    clock, read once at startup — before the reconcile's first pass."""
+    from datetime import datetime
+    fx = fleet
+    fx.f.started_at = datetime(2000, 1, 1)           # a wildly skewed edge clock
+    db_time = await sm.db_now()
+    await fx.f.stamp_started_at()
+    assert abs((fx.f.started_at - db_time).total_seconds()) < 5
+
+    seen: list = []
+
+    async def first_pass(sessions, **_k):
+        seen.append(sessions.started_at)
+        raise asyncio.CancelledError
+    fx.f.started_at = datetime(2000, 1, 1)
+    monkeypatch.setattr(sm, "reconcile_stale_moves", first_pass)
+    with pytest.raises(asyncio.CancelledError):
+        await sm.reconcile_loop(fx.f)
+    assert seen and seen[0].year != 2000
+
+
+@pytest.mark.asyncio
+async def test_a_failed_db_clock_read_keeps_the_placeholder(fleet, monkeypatch):
+    fx = fleet
+    before = fx.f.started_at
+
+    async def boom():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(sm, "db_now", boom)
+    await fx.f.stamp_started_at()
+    assert fx.f.started_at == before
