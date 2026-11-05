@@ -39,6 +39,22 @@ def _age_s(measured_at: datetime | None, now: datetime) -> int | None:
     return None if at is None else max(0, int((now - at).total_seconds()))
 
 
+def _exit_override(raw: Any) -> dict[str, Any] | None:
+    """The stored override as ``{by, reason, at, unmet: [{key, status, value}]}``
+    (spec §7), or None when absent or malformed — never a raw blob."""
+    if not isinstance(raw, Mapping):
+        return None
+    by, reason, at = raw.get("by"), raw.get("reason"), raw.get("at")
+    if not (isinstance(by, str) and isinstance(reason, str) and isinstance(at, str)):
+        return None
+    unmet = raw.get("unmet")
+    return {
+        "by": by, "reason": reason, "at": at,
+        "unmet": [{"key": u.get("key"), "status": u.get("status"), "value": u.get("value")}
+                  for u in (unmet if isinstance(unmet, list) else []) if isinstance(u, Mapping)],
+    }
+
+
 def _condition(cond: Condition, row: Any | None, now: datetime) -> dict[str, Any]:
     m = cond.measure
     stored = (row.status if row is not None else None) or "unknown"
@@ -122,7 +138,7 @@ def build_milestones_view(
             "enteredAt": iso_utc(m.entered_at),
             "exitedAt": iso_utc(m.exited_at),
             "statusNote": m.status_note,
-            "exitOverride": m.exit_override,
+            "exitOverride": _exit_override(m.exit_override),
             "epics": [{"ref": r, "url": _ref_url(r)} for r in m.epics or []],
             "gate": gate,
             "gateSummary": {

@@ -77,7 +77,8 @@ LEAVES = [
 async def _seed(*, ladder_text: str | None = None, parse_error: str | None = None,
                 measurements: list[dict] | None = None, current: str = "household",
                 remove: tuple[str, ...] = (), with_ladder: bool = True,
-                refresh_requested_at: datetime | None = None) -> str:
+                refresh_requested_at: datetime | None = None,
+                exit_overrides: dict[str, object] | None = None) -> str:
     text = ladder_text or (FIXTURES / "ladder.yaml").read_text()
     ladder = parse_ladder(text, primary_repo=PRIMARY)
     definition = to_json(ladder)
@@ -103,7 +104,8 @@ async def _seed(*, ladder_text: str | None = None, parse_error: str | None = Non
                 refs=m["refs"], gate=m["gate"],
                 state="current" if m["key"] == current else "upcoming",
                 entered_at=_now() if m["key"] == current else None,
-                removed_at=_now() if m["key"] in remove else None))
+                removed_at=_now() if m["key"] in remove else None,
+                exit_override=(exit_overrides or {}).get(m["key"])))
         for row in measurements or []:
             db.add(MilestoneMeasurement(ladder_id=lad.id, **row))
         await db.flush()
@@ -222,6 +224,23 @@ def test_removed_milestones_hidden_unless_current(isolated_db):
     body = _get(isolated_db, remove=("household", "public"))
     assert [m["key"] for m in body["milestones"]] == ["household", "friendly", "community"]
     assert body["ladder"]["currentRemoved"] is True
+
+
+def test_exit_override_shape(isolated_db):
+    """``exitOverride`` is ``{by, reason, at, unmet: [{key, status, value}]}`` or null —
+    a malformed stored value reads null, never a raw blob."""
+    stored = {"by": "owner@example.com", "reason": "accepted the risk", "at": "2026-10-20T00:00:00Z",
+              "unmet": [{"key": "nightly", "status": "unmet", "value": {"n": 1}, "extra": 1}],
+              "stray": True}
+    body = _get(isolated_db, exit_overrides={"household": stored, "friendly": "just a string",
+                                             "community": {"by": "x"}})
+    by_key = {m["key"]: m for m in body["milestones"]}
+    assert by_key["household"]["exitOverride"] == {
+        "by": "owner@example.com", "reason": "accepted the risk", "at": "2026-10-20T00:00:00Z",
+        "unmet": [{"key": "nightly", "status": "unmet", "value": {"n": 1}}]}
+    assert by_key["friendly"]["exitOverride"] is None
+    assert by_key["community"]["exitOverride"] is None
+    assert by_key["public"]["exitOverride"] is None
 
 
 # ---------------------------------------------------------------- refresh

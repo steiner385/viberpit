@@ -46,10 +46,25 @@ describe('MilestoneCard', () => {
   })
 
   it('mutes a done milestone and shows its override', () => {
-    mount({ ...HOUSEHOLD, state: 'done', exitedAt: '2026-10-20T00:00:00Z', exitOverride: 'owner accepted the risk' })
+    mount({
+      ...HOUSEHOLD,
+      state: 'done',
+      exitedAt: '2026-10-20T00:00:00Z',
+      exitOverride: {
+        by: 'owner@example.com',
+        reason: 'owner accepted the risk',
+        at: '2026-10-20T00:00:00Z',
+        unmet: [{ key: 'nightly', status: 'unmet', value: { n: 1 } }],
+      },
+    })
     const card = screen.getByRole('listitem', { name: /Phase 0/ })
     expect(card).toHaveAttribute('data-state', 'done')
     expect(card).toHaveTextContent(/^.*Done · entered .* exited .*/)
-    expect(within(card).getByText(/owner accepted the risk/)).toBeInTheDocument()
+    expect(within(card).getByText('Advanced by override: owner accepted the risk')).toBeInTheDocument()
+  })
+
+  it('shows no override banner when a done milestone advanced cleanly', () => {
+    mount({ ...HOUSEHOLD, state: 'done', exitedAt: '2026-10-20T00:00:00Z', exitOverride: null })
+    expect(screen.queryByText(/Advanced by override/)).not.toBeInTheDocument()
   })
 })

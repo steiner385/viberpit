@@ -83,7 +83,7 @@ export function MilestoneCard({ milestone: m }: { milestone: Milestone }) {
       </header>
 
       {done && m.exitOverride && (
-        <Banner tone="warning" role="none" title="Advanced with an override">{m.exitOverride}</Banner>
+        <Banner tone="warning" role="none">Advanced by override: {m.exitOverride.reason}</Banner>
       )}
 
       {m.gate.length > 0

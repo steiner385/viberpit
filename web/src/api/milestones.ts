@@ -59,6 +59,14 @@ export interface MilestoneLeaves {
 
 export interface GateSummary { met: number; total: number; unknown: number; ready: boolean }
 
+/** An owner override recorded when a milestone advanced past an unmet gate (spec §7). */
+export interface MilestoneExitOverride {
+  by: string
+  reason: string
+  at: string
+  unmet: { key: string; status: string; value: unknown }[]
+}
+
 export interface Milestone {
   key: string
   label: string | null
@@ -69,7 +77,7 @@ export interface Milestone {
   enteredAt: string | null
   exitedAt: string | null
   statusNote: string | null
-  exitOverride: string | null
+  exitOverride: MilestoneExitOverride | null
   epics: MilestoneEpic[]
   gate: MilestoneCondition[]
   gateSummary: GateSummary
