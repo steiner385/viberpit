@@ -33,6 +33,7 @@ import json
 import logging
 import mmap
 import re
+import time
 
 from .claude_bin import resolve_claude_bin
 
@@ -69,8 +70,15 @@ _LABELS: dict[str, str] = {
 # Module-level cache populated on first catalog() call; cleared by refresh().
 _cache: list[str] | None = None
 
+# Match JSON arrays whose first element is a known alias tier.
 _ALIAS_ARRAY_RE = re.compile(
     rb'\["(?:default|sonnet|opus|haiku|fable|best)[^"]*"(?:,"[^"]+")*\]')
+_ANCHOR = b'"opusplan"'
+# Bytes per GIL-holding find(); the binary is ~340 MB, so ~85 yields per scan.
+_SCAN_CHUNK = 4 * 1024 * 1024
+# Regex window either side of an anchor hit; grows ×4 up to _MAX_WINDOW behind it.
+_WINDOW = 4 * 1024
+_MAX_WINDOW = 1024 * 1024
 
 
 def _label_for(alias: str) -> str:
@@ -101,10 +109,14 @@ def _discover_from_binary(binary_path: str) -> list[str] | None:
     Returns the alias list on success, or ``None`` if the binary cannot be read
     or the pattern is not found.
 
-    Scans a read-only ``mmap`` with a bytes regex rather than reading the ~250 MB
-    binary into memory and latin-1 decoding it into a str: under memory pressure
-    the read+decode took 11.6 s (#3150). Still blocking work — callers on the
-    event loop must go through ``asyncio.to_thread`` (see ``api/models.py``).
+    Scans a read-only ``mmap`` rather than reading the ~340 MB binary into memory
+    and latin-1 decoding it into a str: under memory pressure the read+decode took
+    11.6 s (#3150). Callers on the event loop must still go through
+    ``asyncio.to_thread`` (see ``api/models.py``), but off-loop alone is NOT
+    enough: a thread only helps if it releases the GIL, and ``re`` never does. A
+    whole-file ``finditer`` stalled the loop 5–6 s after every edge restart
+    (#3300), so ``_scan_aliases`` locates the anchor chunk by chunk, yielding the
+    GIL between chunks, and runs the regex only on a small window around each hit.
     """
     try:
         with open(binary_path, "rb") as f, \
@@ -118,27 +130,64 @@ def _discover_from_binary(binary_path: str) -> list[str] | None:
 
 
 def _scan_aliases(data) -> list[str] | None:
-    """The picker alias array in ``data`` (bytes-like), or None."""
-    # Match JSON arrays whose first element is a known alias tier.
-    # "opusplan" is our discriminating anchor — it only appears in the
-    # picker alias array, not in the many other alias-like contexts.
-    for m in _ALIAS_ARRAY_RE.finditer(data):
-        raw = m.group().decode("latin-1")
-        if "opusplan" not in raw:
+    """The picker alias array in ``data`` (bytes-like: ``bytes`` or ``mmap``), or None.
+
+    ``"opusplan"`` is the discriminating anchor — it only appears in the picker
+    alias array, not in the many other alias-like contexts. Each ``find`` covers
+    one ``_SCAN_CHUNK`` (≈1 ms even on cold pages) and ``time.sleep(0)`` between
+    chunks hands the GIL to the event loop thread (#3300).
+    """
+    size = len(data)
+    pos = 0
+    while pos < size:
+        # Overlap by len(anchor)-1 so an anchor straddling a chunk edge is found.
+        end = min(size, pos + _SCAN_CHUNK + len(_ANCHOR) - 1)
+        hit = data.find(_ANCHOR, pos, end)
+        if hit < 0:
+            pos += _SCAN_CHUNK
+            time.sleep(0)
             continue
-        try:
-            aliases: list = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(aliases, list) or not all(
-            isinstance(a, str) for a in aliases
-        ):
-            continue
-        # "default" is a special UI row not stored in the JS array itself.
-        if "default" not in aliases:
-            aliases = ["default"] + aliases
-        return aliases
+        aliases = _array_around(data, hit)
+        if aliases is not None:
+            return aliases
+        pos = hit + 1
     return None
+
+
+def _array_around(data, hit: int) -> list[str] | None:
+    """The alias array containing the anchor at ``hit``, or None.
+
+    Regexes a window around the hit rather than ``rfind``-ing the opening ``[``:
+    ``"sonnet[1m]"`` puts brackets inside the array itself. The window grows
+    while no match spans the hit, so an array longer than the first window (the
+    picker list only grows) is still found.
+    """
+    back = _WINDOW
+    while True:
+        start = max(0, hit - back)
+        stop = min(len(data), hit + len(_ANCHOR) + _WINDOW)
+        for m in _ALIAS_ARRAY_RE.finditer(data[start:stop]):
+            if start + m.start() <= hit and start + m.end() >= hit + len(_ANCHOR):
+                return _parse_alias_array(m.group())
+        if start == 0 or back >= _MAX_WINDOW:
+            return None
+        back *= 4
+
+
+def _parse_alias_array(match: bytes) -> list[str] | None:
+    raw = match.decode("latin-1")
+    if "opusplan" not in raw:
+        return None
+    try:
+        aliases: list = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
+        return None
+    # "default" is a special UI row not stored in the JS array itself.
+    if "default" not in aliases:
+        aliases = ["default"] + aliases
+    return aliases
 
 
 def _live_aliases() -> list[str]:

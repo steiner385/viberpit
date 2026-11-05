@@ -384,7 +384,9 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             return await _dispatch_internal_token(
                 request, call_next, auth_header[len("Bearer "):])
 
-        identity = verify_identity(request)
+        # Off the loop: with no identity header this spawns `tailscale whois`
+        # (2 s timeout), which stalled every connection behind it (#3300).
+        identity = await asyncio.to_thread(verify_identity, request)
         if identity is None:
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -560,7 +562,8 @@ async def require_ws_identity(websocket: WebSocket) -> str:
         websocket.state.via = "cli"
         return claims.identity
 
-    identity = verify_identity(websocket)  # WebSocket also has .headers
+    # WebSocket also has .headers; off the loop for the same whois reason (#3300).
+    identity = await asyncio.to_thread(verify_identity, websocket)
     if identity is None:
         await websocket.close(code=1008)
         raise HTTPException(status_code=403, detail="WebSocket: no valid identity")
