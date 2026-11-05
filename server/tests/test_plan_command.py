@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from server.sessions.commands.catalog import APP_COMMAND
+from server.sessions.commands.catalog import APP_COMMAND, APP_COMMAND_REFUSED
 from server.tests.test_output_style import _Spy
 from server.tests.test_output_style import env as env  # noqa: F401 — fixture
 
@@ -92,8 +92,18 @@ async def test_plan_on_a_detached_session_is_a_notice(env) -> None:
 @pytest.mark.asyncio
 async def test_plan_typed_as_a_prompt_never_reaches_the_cli(env) -> None:
     spy = _Spy(env.orch._drivers[env.rec.id])
-    assert await env.orch.send_prompt(env.rec.id, "/plan on") == APP_COMMAND
+    assert await env.orch.send_prompt(env.rec.id, "/plan on", command_origin="composer",
+                                      identity="u@example.com") == APP_COMMAND
     assert spy.prompts == [] and _mode(env) == "plan"
+
+
+@pytest.mark.asyncio
+async def test_an_automated_plan_off_never_leaves_plan_mode(env) -> None:
+    """S1: exiting plan mode is a privilege change — automated text cannot do it."""
+    await env.orch.run_command(env.rec.id, "plan", "on", identity="u@example.com")
+    for kw in ({}, {"origin": {"kind": "autopilot"}}):
+        assert await env.orch.send_prompt(env.rec.id, "/plan off", **kw) == APP_COMMAND_REFUSED
+    assert _mode(env) == "plan"
 
 
 @pytest.mark.asyncio

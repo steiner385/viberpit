@@ -1147,6 +1147,9 @@ class SessionOrchestrator:
         # The app-wide default output style (D-16a), cached for the sync spawn factory;
         # ``refresh_default_output_style`` re-reads it before every spawn.
         self._default_output_style: str | None = None
+        # Sessions whose initial prompt a person typed (create_session's
+        # ``initial_prompt_human``): the APP_ONLY gate's evidence at spawn (D-16a S1).
+        self._human_initial_prompts: set[str] = set()
         # In-flight spawns, keyed by session_id: a future resolved when
         # _spawn_session exits (registered driver or raised). _spawn_session
         # pre-seeds the record with status="idle" BEFORE driver.start() — seconds
@@ -4003,8 +4006,15 @@ class SessionOrchestrator:
         parent_session_id: str | None = None,
         queue_only: bool = False,
         platform: str | None = None,
+        initial_prompt_human: bool = False,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
+
+        *initial_prompt_human* (D-16a, security review S1): a person typed
+        *initial_prompt* into a create request (``POST /api/sessions`` from a Tailscale
+        user). Only then may an ``APP_ONLY`` command there (`/plan`, `/fast`, …) run;
+        from any other creator it is refused like any automated prompt. Held in memory
+        only, so a daemon restart before the spawn forgets it (fail closed).
 
         *platform* is the non-Linux platform an env-gated launch was routed for
         (host-platforms spec §3; the edge's ``FleetRouter.pick`` already chose a host
@@ -4101,6 +4111,8 @@ class SessionOrchestrator:
         if parent_session_id is not None:
             from server.automations.ownership import register_child_execution
             await register_child_execution(session_id, parent_session_id)
+        if initial_prompt_human:
+            self._human_initial_prompts.add(session_id)
 
         async def launch() -> SessionRecord:
             nonlocal cwd
@@ -6163,8 +6175,16 @@ class SessionOrchestrator:
             # The one shape that still waits is a bare slash command: it must execute
             # through the WS bridge's command dispatch (#943), which only exists on a
             # live socket, not be handed to the model as literal text.
+            human_prompt = session_id in getattr(self, "_human_initial_prompts", set())
+            getattr(self, "_human_initial_prompts", set()).discard(session_id)
             defer_for_bridge = self._initial_prompt_waits_for_attach(
                 initial_prompt, attachment_ids)
+            if (defer_for_bridge and not human_prompt
+                    and cmd_catalog.app_only_command(initial_prompt) is not None):
+                # An APP_ONLY command from a non-human creator is never parked for the
+                # bridge (which would run it as the first person to attach): it goes
+                # through send_prompt, which refuses it with a notice (D-16a S1).
+                defer_for_bridge = False
             if defer_for_bridge and initial_prompt:
                 self._pending_initial_prompt[session_id] = initial_prompt
                 log.info("session.initial_prompt_parked session=%s reason=slash_command",
@@ -6241,8 +6261,14 @@ class SessionOrchestrator:
             # engine-session-id callbacks land on a persisted row. No attach required.
             if not defer_for_bridge and (initial_prompt or attachment_ids):
                 delivery = await self.send_prompt(
-                    session_id, initial_prompt or "", attachment_ids)
-                if delivery not in ("sent", "draining", cmd_catalog.APP_COMMAND):
+                    session_id, initial_prompt or "", attachment_ids,
+                    command_origin=(cmd_catalog.COMMAND_ORIGIN_CREATE if human_prompt
+                                    else None),
+                    identity=identity if human_prompt else None)
+                if delivery == cmd_catalog.APP_COMMAND_REFUSED:
+                    log.info("session.create: initial prompt was a refused app command "
+                             "session=%s", session_id)
+                elif delivery not in ("sent", "draining", cmd_catalog.APP_COMMAND):
                     log.warning("session.create: initial prompt not delivered "
                                 "session=%s result=%s", session_id, delivery)
             return record
@@ -7668,6 +7694,10 @@ class SessionOrchestrator:
                         # Expected during every deploy (#2271): park it for after the drain.
                         await self._defer_nudge_past_drain(session_id, nudge)
                         self._complete_nudge_delivered(session_id, fingerprint)
+                    elif result == cmd_catalog.APP_COMMAND_REFUSED:
+                        # A composed nudge never runs an app command (D-16a S1).
+                        log.info("completion.nudge_refused sid=%s reason=app_command",
+                                 session_id)
                     elif result != "sent":
                         log.warning("completion.nudge_failed sid=%s reason=%s",
                                     session_id, result)
@@ -16560,9 +16590,14 @@ class SessionOrchestrator:
                     ctx.session_fence = self._lease_fences().get(session_id)
                 if not await self._autopilot_may_act(session_id, ctx, decision):
                     return False
-                ok = (await self.send_prompt(
-                    session_id, decision.prompt,
-                    origin={"kind": "autopilot"})) == "sent"
+                delivery = await self.send_prompt(
+                    session_id, decision.prompt, origin={"kind": "autopilot"})
+                if delivery == cmd_catalog.APP_COMMAND_REFUSED:
+                    # A composed prompt that opened with `/plan`, `/fast` … is refused,
+                    # never run (D-16a S1): autopilot did not act.
+                    log.info("autopilot.prompt_refused sid=%s reason=app_command",
+                             session_id)
+                ok = delivery == "sent"
         except StaleOwnership:
             # ensure_driver's automation fence found this session's tracked GitHub
             # target already transferred/released elsewhere (its PR merged and
@@ -21587,6 +21622,9 @@ class SessionOrchestrator:
                                                 origin={"kind": "completion"})
                 if result == "draining":
                     await self._defer_nudge_past_drain(session_id, nudge)
+                elif result == cmd_catalog.APP_COMMAND_REFUSED:
+                    log.info("completion.nudge_refused sid=%s reason=app_command",
+                             session_id)
                 elif result != "sent":
                     log.warning("completion.nudge_failed sid=%s reason=%s",
                                 session_id, result)
@@ -22252,6 +22290,8 @@ class SessionOrchestrator:
             return "skipped:assistant"
         if await self.ensure_driver(session_id, identity) is None:
             return "no_driver"
+        # RESUME_NUDGE is a fixed prose prompt, never an app command (D-16a): any other
+        # status, APP_COMMAND_REFUSED included, is passed back as-is.
         result = await self.send_prompt(session_id, RESUME_NUDGE, replayable=False)
         return "resumed" if result == "sent" else result
 
@@ -23393,7 +23433,9 @@ class SessionOrchestrator:
                           interrupt: bool = False,
                           context: PromptContext | None = None,
                           origin: PromptOrigin | None = None,
-                          replayable: bool = True) -> str:
+                          replayable: bool = True,
+                          command_origin: str | None = None,
+                          identity: str | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
         stop the in-flight turn and run this prompt next instead of queueing it.
         ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge
@@ -23411,10 +23453,19 @@ class SessionOrchestrator:
         A prompt whose first line is an ``APP_ONLY`` command (D-16a) never reaches the
         engine: it runs as that app command (``run_command``), its result is emitted to
         attached clients (``ev.CommandResult``), and the answer is ``APP_COMMAND``. This
-        is THE choke point every prompt path shares, so none can forward one."""
+        is THE choke point every prompt path shares, so none can forward one.
+
+        It runs only for a person: ``command_origin`` in
+        ``catalog.HUMAN_COMMAND_ORIGINS`` (the WS composer, an authenticated user's
+        ``POST /prompt``, a user-created session's initial prompt), attributed to
+        ``identity``. Any other sender — or none named — gets ``APP_COMMAND_REFUSED``
+        and a notice: automated text never changes plan mode or billing. So does a
+        command with more lines or attachments, which it could not take whole."""
         app_only = cmd_catalog.app_only_command(text)
         if app_only is not None:
-            return await self._run_app_only_prompt(session_id, *app_only)
+            return await self._run_app_only_prompt(
+                session_id, app_only, attachments=bool(attachment_ids),
+                command_origin=command_origin, identity=identity)
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -23505,26 +23556,61 @@ class SessionOrchestrator:
                 self._pending_prompt_preambles.pop(session_id, None)
         return "sent"
 
-    async def _run_app_only_prompt(self, session_id: str, name: str, args: str) -> str:
-        """Run an ``APP_ONLY`` command that arrived as a prompt (see ``send_prompt``)
-        and emit its result to the session's attached clients. Attributed to the
-        driver's identity (the user it is threaded to), else the system."""
+    async def _run_app_only_prompt(self, session_id: str, cmd: "cmd_catalog.AppOnlyPrompt",
+                                   *, attachments: bool, command_origin: str | None,
+                                   identity: str | None) -> str:
+        """Run (or refuse) an ``APP_ONLY`` command that arrived as a prompt — see
+        ``send_prompt``. Its result, or the refusal notice, is emitted to the session's
+        attached clients as ``ev.CommandResult``. Nothing ever reaches the engine.
+
+        Returns ``APP_COMMAND`` when it ran (a failure inside the command included: that
+        is an ``ok: false`` result, logged at INFO), ``APP_COMMAND_REFUSED`` when it was
+        refused, and ``no_driver`` when the session has no live driver — no stream to
+        answer on, and every caller already treats that as undelivered."""
+        name = cmd.name
         d = self._drivers.get(session_id)
-        who = getattr(d, "identity", None)
-        identity = who if isinstance(who, str) and who else SYSTEM_IDENTITY
-        log.info("send_prompt: app command routed, not sent session=%s name=%s",
-                 session_id, name)
+        if d is None:
+            log.info("send_prompt: app command not run, session not live session=%s "
+                     "name=%s", session_id, name)
+            return "no_driver"
+        refusal: str | None = None
+        if command_origin not in cmd_catalog.HUMAN_COMMAND_ORIGINS or not identity:
+            refusal = f"Slash commands from automation are not run: /{name}"
+        elif cmd.extra_lines or attachments:
+            dropped = " and ".join(part for part, on in (
+                ("the text after it", cmd.extra_lines), ("the attachments", attachments))
+                if on)
+            refusal = (f"/{name} wasn't run and nothing was sent: {dropped} can't go with "
+                       f"a slash command. Send the command on its own.")
+        if refusal is not None:
+            log.info("send_prompt: app command refused session=%s name=%s origin=%s "
+                     "extra_lines=%s attachments=%s", session_id, name, command_origin,
+                     cmd.extra_lines, attachments)
+            self._emit_command_result(d, session_id, {
+                "name": name, "render": "notice", "data": {"text": refusal}})
+            return cmd_catalog.APP_COMMAND_REFUSED
+        by = str(identity)          # non-empty: an anonymous sender was refused above
+        log.info("send_prompt: app command routed, not sent session=%s name=%s by=%s",
+                 session_id, name, by)
         try:
-            result = await self.run_command(session_id, name, args, identity=identity)
-        except KeyError:
-            result = None
-        if result is not None and d is not None:
-            try:
-                d.emit(ev.CommandResult(result=result))
-            except Exception:
-                log.info("app command result not emitted session=%s", session_id,
-                         exc_info=True)
+            result = await self.run_command(session_id, name, cmd.args, identity=by)
+        except Exception as exc:
+            # Same answer the WS `command` frame gives a failed command. Exception only:
+            # a CancelledError (a teardown, a SIGTERM drain) propagates untouched.
+            log.info("send_prompt: app command failed session=%s name=%s: %r",
+                     session_id, name, exc)
+            result = {"name": name, "ok": False, "error": "command failed"}
+        if result is not None:
+            self._emit_command_result(d, session_id, result)
         return cmd_catalog.APP_COMMAND
+
+    @staticmethod
+    def _emit_command_result(d: Any, session_id: str, result: dict) -> None:
+        try:
+            d.emit(ev.CommandResult(result=result))
+        except Exception:
+            log.info("app command result not emitted session=%s", session_id,
+                     exc_info=True)
 
     def _queue_prompt_preamble(self, session_id: str, text: str) -> None:
         """Prepend *text* to the session's next prompt (once). See send_prompt."""
@@ -23663,6 +23749,8 @@ class SessionOrchestrator:
                         child_id, parent_id, "its parent session has finished")
                 return
             drv = await self.ensure_driver(parent_id, SYSTEM_IDENTITY)
+            # `text` is a <child-session-notification> frame, never an app command
+            # (D-16a): the app-command statuses cannot come back here.
             result = "no_driver" if drv is None else await self.send_prompt(parent_id, text)
             if result == "sent":
                 log.info("child_notify.sent parent=%s child=%s status=%s",
@@ -23722,6 +23810,8 @@ class SessionOrchestrator:
         if await self.ensure_driver(child_session_id, identity) is None:
             raise _cs.ChildSessionLimit(f"could not attach child {child_session_id}; "
                                         "ask the user to open it")
+        # `text` opens with the <parent-session-message> frame, so it is never an app
+        # command (D-16a): send_prompt cannot answer APP_COMMAND / APP_COMMAND_REFUSED.
         result = await self.send_prompt(child_session_id, text, replayable=True)
         if result != "sent":
             raise _cs.ChildSessionLimit(

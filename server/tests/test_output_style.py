@@ -463,40 +463,109 @@ async def test_session_actions_set_output_style_audits_and_propagates_refusals(e
     assert [r.detail for r in rows] == [{"sessionId": env.rec.id, "style": "Learning"}]
 
 
-# Item 2 of fix round 1: every prompt path goes through orchestrator.send_prompt, which
-# routes an APP_ONLY first line to the app command. The CLI driver never sees it.
+# Every prompt path goes through orchestrator.send_prompt, which routes an APP_ONLY first
+# line to the app command — only for a person (fix round 2, S1) — and never to the CLI.
+HUMAN = {"command_origin": "composer", "identity": "u@example.com"}
 APP_ONLY_PROMPTS = ["/output-style Concise", "/output-style", "/fast on", "/effort high",
-                    "/plan on", "  /output-style Learning\nand more text"]
+                    "/plan on", "  /output-style Learning\n\n"]
+
+
+def _emitted(driver) -> list:
+    """Every CommandResult the orchestrator emits on *driver*, as wire dicts."""
+    from server.sessions.events import CommandResult
+    seen: list = []
+    real = driver.emit
+
+    def spy(e) -> None:
+        if isinstance(e, CommandResult):
+            seen.append(e.to_wire())
+        real(e)
+    driver.emit = spy                                           # type: ignore[method-assign]
+    return seen
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", APP_ONLY_PROMPTS)
-async def test_an_app_only_prompt_never_reaches_the_cli(env, text) -> None:
+async def test_a_persons_app_only_prompt_runs_and_never_reaches_the_cli(env, text) -> None:
     from server.sessions.commands.catalog import APP_COMMAND
-    from server.sessions.events import CommandResult
     driver = env.orch._drivers[env.rec.id]
-    spy = _Spy(driver)
-    emitted: list = []
-    real_emit = driver.emit
-
-    def spy_emit(e) -> None:
-        emitted.append(e)
-        real_emit(e)
-    driver.emit = spy_emit                                      # type: ignore[method-assign]
-    assert await env.orch.send_prompt(env.rec.id, text) == APP_COMMAND
+    spy, results = _Spy(driver), _emitted(driver)
+    assert await env.orch.send_prompt(env.rec.id, text, **HUMAN) == APP_COMMAND
     assert spy.prompts == []
-    results = [e for e in emitted if isinstance(e, CommandResult)]
-    assert len(results) == 1 and results[0].to_wire()["type"] == "commandResult"
-    assert results[0].to_wire()["render"] == "notice"
+    assert len(results) == 1 and results[0]["type"] == "commandResult"
+    assert results[0]["render"] == "notice" and results[0]["ok"] is True
+
+
+# S1: every non-human sender, and a call naming none, is refused — never run, never sent.
+NON_HUMAN_SENDS: dict[str, dict] = {
+    "default (no origin)": {},
+    "autopilot": {"origin": {"kind": "autopilot"}},
+    "completion nudge": {"origin": {"kind": "completion"}},
+    "assistant": {"origin": {"kind": "assistant"}},
+    "automation": {"origin": {"kind": "automation", "label": "PR Doctor"}},
+    "unknown origin": {"command_origin": "agent", "identity": "u@example.com"},
+    "human origin, no identity": {"command_origin": "composer"},
+}
 
 
 @pytest.mark.asyncio
-async def test_an_app_only_prompt_with_attachments_never_reaches_the_cli(env) -> None:
-    from server.sessions.commands.catalog import APP_COMMAND
-    spy = _Spy(env.orch._drivers[env.rec.id])
-    assert await env.orch.send_prompt(env.rec.id, "/output-style Concise",
-                                      ["att-1"]) == APP_COMMAND
-    assert spy.prompts == [] and env.control.patches == [{"outputStyle": "Concise"}]
+@pytest.mark.parametrize("sender", sorted(NON_HUMAN_SENDS))
+@pytest.mark.parametrize("text", ["/plan off", "/fast on", "/output-style Concise"])
+async def test_a_non_human_app_only_prompt_is_refused(env, sender, text, caplog) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED
+    caplog.set_level(logging.INFO)
+    await env.orch.run_command(env.rec.id, "plan", "on", identity="u@example.com")
+    driver = env.orch._drivers[env.rec.id]
+    spy, results = _Spy(driver), _emitted(driver)
+    sent_before = list(env.control.sent)
+    status = await env.orch.send_prompt(env.rec.id, text, **NON_HUMAN_SENDS[sender])
+    assert status == APP_COMMAND_REFUSED
+    assert spy.prompts == [] and env.control.sent == sent_before     # nothing ran
+    assert driver.mode == "plan" and (await _row(env.rec.id)).output_style is None
+    name = text.split()[0][1:]
+    assert [r["data"]["text"] for r in results] == [
+        f"Slash commands from automation are not run: /{name}"]
+    assert any("app command refused" in r.getMessage() and r.levelno == logging.INFO
+               for r in caplog.records)
+    assert _no_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,dropped", [
+    ("/plan\nnow write the migration", "the text after it"),
+    ("/output-style Concise\nand also this", "the text after it"),
+])
+async def test_an_app_command_with_more_lines_is_refused_whole(env, text, dropped) -> None:
+    """M1: `/plan\n<task>` must not toggle plan mode and silently drop the task."""
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED, app_only_command
+    driver = env.orch._drivers[env.rec.id]
+    spy, results = _Spy(driver), _emitted(driver)
+    assert app_only_command(text).extra_lines is True              # type: ignore[union-attr]
+    assert await env.orch.send_prompt(env.rec.id, text, **HUMAN) == APP_COMMAND_REFUSED
+    assert spy.prompts == [] and env.control.sent == [] and driver.mode == "full-auto"
+    assert len(results) == 1 and dropped in results[0]["data"]["text"]
+    assert "nothing was sent" in results[0]["data"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_an_app_command_with_attachments_is_refused_whole(env) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED
+    driver = env.orch._drivers[env.rec.id]
+    spy, results = _Spy(driver), _emitted(driver)
+    assert await env.orch.send_prompt(env.rec.id, "/output-style Concise", ["att-1"],
+                                      **HUMAN) == APP_COMMAND_REFUSED
+    assert spy.prompts == [] and env.control.patches == []
+    assert "the attachments" in results[0]["data"]["text"]
+
+
+def test_the_multi_line_rule_is_parse_command_lines() -> None:
+    """One rule: a prompt is a single command exactly when parse_command_line says so."""
+    from server.sessions.commands.catalog import app_only_command, parse_command_line
+    for text in ("/fast on", "/fast\n", "\n/fast on\n\n", "/fast\nmore", "/fast\n\nmore"):
+        cmd = app_only_command(text)
+        assert cmd is not None
+        assert cmd.extra_lines is (parse_command_line(text.strip()) is None)
+    assert app_only_command("/compact") is None and app_only_command("hello /fast") is None
 
 
 @pytest.mark.asyncio
@@ -507,59 +576,192 @@ async def test_an_ordinary_prompt_still_reaches_the_cli(env) -> None:
     assert spy.prompts == ["please use /output-style later", "/compact"]
 
 
+# M2: a command that raises answers ok:false (INFO), never escapes send_prompt.
 @pytest.mark.asyncio
-async def test_a_spawn_initial_prompt_with_attachments_never_reaches_the_cli(env) -> None:
-    """The spawn sends an initial prompt WITH attachments straight through send_prompt
-    (a bare one is parked for the bridge) — the choke point still catches it."""
+async def test_a_failing_app_command_answers_ok_false(env, caplog) -> None:
+    from server.sessions.commands.catalog import APP_COMMAND
+    caplog.set_level(logging.INFO)
+    driver = env.orch._drivers[env.rec.id]
+    results = _emitted(driver)
+    with patch.object(SessionOrchestrator, "set_permission_mode",
+                      side_effect=RuntimeError("db down")):
+        assert await env.orch.send_prompt(env.rec.id, "/plan on", **HUMAN) == APP_COMMAND
+    assert results == [{"type": "commandResult", "ok": False, "name": "plan",
+                        "error": "command failed"}]
+    assert _no_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_app_command_is_never_swallowed(env) -> None:
+    import asyncio
+    with patch.object(SessionOrchestrator, "set_permission_mode",
+                      side_effect=asyncio.CancelledError()):
+        with pytest.raises(asyncio.CancelledError):
+            await env.orch.send_prompt(env.rec.id, "/plan on", **HUMAN)
+
+
+# M4: no live driver — nothing runs, and the answer is not a delivery.
+@pytest.mark.asyncio
+async def test_an_app_command_on_a_session_without_a_driver_is_not_delivered(env) -> None:
+    env.orch._drivers.pop(env.rec.id)
+    assert await env.orch.send_prompt(env.rec.id, "/output-style Learning",
+                                      **HUMAN) == "no_driver"
+    assert (await _row(env.rec.id)).output_style is None
+
+
+# The spawn's initial prompt: only a person's create request may run an app command.
+class _RecordingSpawns(Spawns):
+    def __init__(self, control, sent) -> None:
+        super().__init__(control)
+        self.sent = sent
+
+    def __call__(self, *a, **k):
+        client = super().__call__(*a, **k)
+        real = client.query
+
+        async def query(prompt, *qa, **qk):
+            self.sent.append(prompt)
+            return await real(prompt, *qa, **qk)
+        client.query = query                                # type: ignore[method-assign]
+        return client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("human,attachments,parked", [
+    (False, None, False),          # automation / child dispatch: refused, never parked
+    (False, ["att-1"], False),
+    (True, ["att-1"], False),      # a person, but with attachments: refused whole (M1)
+    (True, None, True),            # a person's bare command: parked for the bridge
+])
+async def test_a_spawn_initial_app_command(env, human, attachments, parked) -> None:
     from server.sessions import attachments as _att
     sent: list = []
-
-    class _Recording(Spawns):
-        def __call__(self, *a, **k):
-            client = super().__call__(*a, **k)
-            real = client.query
-
-            async def query(prompt, *qa, **qk):
-                sent.append(prompt)
-                return await real(prompt, *qa, **qk)
-            client.query = query                                # type: ignore[method-assign]
-            return client
-
-    env.orch._sdk_factory = _Recording(env.control)
-    with patch.object(_att, "resolve_and_bind", side_effect=AssertionError("bound")):
-        rec = await env.orch.create_session("Spawned", cwd=str(env.clone), model="opus",
-                                            permission_mode="full-auto",
-                                            initial_prompt="/output-style Learning",
-                                            attachment_ids=["att-1"])
+    env.orch._sdk_factory = _RecordingSpawns(env.control, sent)
+    with patch.object(_att, "resolve_and_bind", side_effect=AssertionError("bound")), \
+            patch.object(SessionOrchestrator, "run_command",
+                         side_effect=RuntimeError("must not run at spawn")):
+        rec = await env.orch.create_session(
+            "Spawned", cwd=str(env.clone), model="opus", permission_mode="full-auto",
+            identity="u@example.com", initial_prompt="/fast on",
+            attachment_ids=attachments, initial_prompt_human=human)
     assert sent == []
-    assert (await _row(rec.id)).output_style == "Learning"
+    assert (rec.id in env.orch._pending_initial_prompt) is parked
+    assert rec.id not in env.orch._human_initial_prompts
 
 
 class _FakeDriver:
     """A live-looking driver that records what the CLI would be handed."""
     capabilities = ClaudeAgentDriver.capabilities
-    identity = "testuser@example.com"
+    identity = "first-attacher@example.com"      # pinned by _rethread_identity
     turn_active = False
     stream_ended = False
 
     def __init__(self) -> None:
         self.prompts: list = []
         self.emitted: list = []
+        self.mode = "full-auto"
 
     async def send_prompt(self, text, *a, **k):
         self.prompts.append(text)
+
+    async def set_permission_mode(self, mode):
+        self.mode = mode
 
     def emit(self, e) -> None:
         self.emitted.append(e)
 
 
-@pytest.mark.parametrize("path", ["rest", "automations"])
-def test_the_rest_and_automation_prompt_paths_route_app_commands(path) -> None:
-    """``POST /sessions/{id}/prompt`` and the automations attach both send through
-    ``resume_and_send_prompt`` → the orchestrator's send_prompt: an app command runs as
-    one, is not reported undelivered, and the CLI driver never sees it."""
+_BOB = {"Tailscale-User-Login": "bob@example.com"}
+
+
+def _rest(text: str, *, human_gate=None, headers=_H, fail: bool = False):
+    """POST /sessions/{id}/prompt against a fake live driver; returns (response, driver,
+    audit rows for permission_mode.change)."""
+    from server.db.models import AuditEvent
+    driver = _FakeDriver()
+
+    async def fake_ensure(self, session_id, identity=None):
+        return driver
+
+    async def audits():
+        async with db_session() as db:
+            return [(r.identity, r.detail) for r in (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "permission_mode.change"))).scalars().all()]
+
+    with patch.dict(os.environ, _ENV), _client(STYLES) as c, \
+            patch.object(SessionOrchestrator, "ensure_driver", fake_ensure), \
+            patch("server.api.sessions.human_gate_via", return_value=human_gate):
+        orch = c.app.state.sessions
+        getattr(orch, "_orch", orch)._drivers[SID] = driver
+        if fail:
+            with patch.object(SessionOrchestrator, "set_permission_mode",
+                              side_effect=RuntimeError("db down")):
+                r = c.post(f"/api/sessions/{SID}/prompt", json={"text": text}, headers=headers)
+        else:
+            r = c.post(f"/api/sessions/{SID}/prompt", json={"text": text}, headers=headers)
+        rows = c.portal.call(audits)
+    return r, driver, rows
+
+
+def test_rest_runs_a_persons_command_as_that_person() -> None:
+    """S2: the audit row names the sender, not the driver's pinned first attacher."""
+    r, driver, rows = _rest("/plan on", headers=_BOB)
+    assert r.status_code == 200, r.text
+    assert driver.prompts == [] and driver.mode == "plan"
+    assert rows == [("bob@example.com", {"sessionId": SID, "mode": "plan"})]
+
+
+def test_rest_refuses_an_unattested_local_caller() -> None:
+    r, driver, rows = _rest("/plan on", human_gate="local-process")
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "app_command_refused"
+    assert driver.prompts == [] and driver.mode == "full-auto" and rows == []
+
+
+def test_rest_refuses_a_command_with_more_text() -> None:
+    r, driver, _ = _rest("/plan on\nthen do the work")
+    assert r.status_code == 409 and driver.prompts == [] and driver.mode == "full-auto"
+
+
+def test_rest_a_failing_command_is_not_a_500() -> None:
+    r, driver, _ = _rest("/plan on", fail=True)
+    assert r.status_code == 200, r.text
+    assert driver.emitted[0].to_wire()["ok"] is False
+
+
+def test_the_assistant_token_path_is_refused() -> None:
+    """The assistant tool's POST /prompt carries via="assistant": not a person."""
+    from starlette.middleware.base import BaseHTTPMiddleware
+    driver = _FakeDriver()
+
+    async def fake_ensure(self, session_id, identity=None):
+        return driver
+
+    class _ViaAssistant(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            request.state.via = "assistant"
+            return await call_next(request)
+
+    with patch.dict(os.environ, _ENV):
+        orch = SessionOrchestrator(sdk_factory=Spawns(FakeControl()), poll_interval=9999.0,
+                                   usage_fn=lambda name: None)
+        app = create_app(orchestrator=orch)
+        app.add_middleware(_ViaAssistant)
+    orch._records[SID] = SessionRecord(id=SID, name="n", account="a",
+                                       engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
+                                       cols=80, rows=24, cwd=None)  # type: ignore[arg-type]
+    orch._drivers[SID] = driver  # type: ignore[assignment]
+    with patch.dict(os.environ, _ENV), TestClient(app, raise_server_exceptions=False) as c, \
+            patch.object(SessionOrchestrator, "ensure_driver", fake_ensure), \
+            patch("server.api.sessions.human_gate_via", return_value=None):
+        r = c.post(f"/api/sessions/{SID}/prompt", json={"text": "/plan off"}, headers=_H)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "app_command_refused"
+    assert driver.prompts == [] and driver.mode == "full-auto"
+
+
+def test_the_automations_attach_is_refused() -> None:
+    """M3: the automations attach shares resume_and_send_prompt without human=True."""
     from server.api.sessions import resume_and_send_prompt
-    from server.sessions.commands.catalog import APP_COMMAND
+    from server.sessions.commands.catalog import APP_COMMAND_REFUSED
     driver = _FakeDriver()
 
     async def fake_ensure(self, session_id, identity=None):
@@ -568,18 +770,9 @@ def test_the_rest_and_automation_prompt_paths_route_app_commands(path) -> None:
     with patch.dict(os.environ, _ENV), _client(STYLES) as c, \
             patch.object(SessionOrchestrator, "ensure_driver", fake_ensure):
         orch = c.app.state.sessions
-        orch_impl = getattr(orch, "_orch", orch)
-        orch_impl._drivers[SID] = driver
-        if path == "rest":
-            r = c.post(f"/api/sessions/{SID}/prompt", json={"text": "/fast on"},
-                       headers=_H)
-            assert r.status_code == 200, r.text
-        else:
-            _, delivery = c.portal.call(resume_and_send_prompt, orch, SID,
-                                        "/output-style\nmore", "u")
-            assert delivery == APP_COMMAND
-    assert driver.prompts == []
-    assert len(driver.emitted) == 1 and driver.emitted[0].to_wire()["type"] == "commandResult"
+        getattr(orch, "_orch", orch)._drivers[SID] = driver
+        _, delivery = c.portal.call(resume_and_send_prompt, orch, SID, "/fast on", "u")
+    assert delivery == APP_COMMAND_REFUSED and driver.prompts == []
 
 
 @pytest.mark.asyncio
@@ -908,3 +1101,41 @@ def test_settings_default_output_style_round_trips_and_validates(settings_client
     assert r.json()["defaultOutputStyle"] == "Terse"          # omitted: unchanged
     r = c.put("/api/settings", json={"defaultOutputStyle": None}, headers=_H)
     assert r.status_code == 200 and r.json()["defaultOutputStyle"] is None
+
+
+@pytest.mark.parametrize("text,gate,expected", [
+    ("/fast on", None, True),                  # a person's app command
+    ("/fast on", "local-process", False),      # an unattested local process
+    ("hello", None, False),                    # not an app command: never sent
+])
+def test_post_sessions_marks_a_persons_initial_app_command(text, gate, expected) -> None:
+    seen: list = []
+
+    async def fake_create(self, *a, **k):
+        seen.append(k.get("initial_prompt_human", False))
+        raise KeyError("stop here")
+
+    with patch.dict(os.environ, _ENV), _client() as c, \
+            patch.object(SessionOrchestrator, "create_session", fake_create), \
+            patch("server.api.sessions.human_gate_via", return_value=gate):
+        c.post("/api/sessions", json={"name": "x", "initialPrompt": text}, headers=_H)
+    assert seen == [expected]
+
+
+@pytest.mark.asyncio
+async def test_remote_create_strips_the_flag_for_an_old_daemon() -> None:
+    calls: list = []
+
+    class _Old:
+        async def call(self, method, *, timeout=None, **kw):
+            calls.append(kw)
+            if "initial_prompt_human" in kw:
+                raise DaemonError("TypeError", "create_session() got an unexpected keyword "
+                                  "argument 'initial_prompt_human'")
+            return {"session": SessionRecord(
+                id="s", name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id=None, cols=80, rows=24, cwd=None).to_dict()}
+
+    rec = await RemoteOrchestrator(_Old()).create_session(  # type: ignore[arg-type]
+        name="n", initial_prompt="/fast on", initial_prompt_human=True)
+    assert rec.id == "s" and "initial_prompt_human" not in calls[-1]

@@ -192,6 +192,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         extra: dict[str, object] = {"interrupt": True} if params.get("interrupt") is True else {}
         if params.get("context") is not None:
             extra["context"] = params["context"]
+        # The APP_ONLY gate (D-16a S1): who sent it. Absent = not a person = refused.
+        for key in ("command_origin", "identity"):
+            if isinstance(params.get(key), str):
+                extra[key] = params[key]
         status = await orch.send_prompt(params["session_id"], params["text"],
                                         params.get("images"), **extra)
         return {"status": status}

@@ -743,20 +743,37 @@ class RemoteOrchestrator:
                 r = await self._call_create_session(stripped)
                 if kwargs.get("autopilot_paused"):
                     await self.set_autopilot_paused(r["session"]["id"], True)
+            elif (exc.err_type == "TypeError" and "'initial_prompt_human'" in exc.message
+                    and "initial_prompt_human" in kwargs):
+                # Rolling upgrade: this daemon predates the D-16a APP_ONLY gate, so it
+                # has no app-command interception to authorize either. Create without
+                # the flag.
+                log.warning("daemon predates the app-command gate; creating without "
+                            "initial_prompt_human")
+                r = await self._call_create_session(
+                    {k: v for k, v in kwargs.items() if k != "initial_prompt_human"})
             else:
                 raise
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None, *,
                           interrupt: bool = False,
-                          context: PromptContext | None = None) -> str | None:
+                          context: PromptContext | None = None,
+                          command_origin: str | None = None,
+                          identity: str | None = None) -> str | None:
         # This is the hop the deployed edge actually takes (app.state.sessions is a
         # RemoteOrchestrator, or a FleetOrchestrator whose _make_per_session splats
         # **kwargs into one), so every optional send_prompt kwarg has to exist here or
         # it raises TypeError in production while every in-process test passes.
         # `context` is only forwarded when set: a newer edge talking to an older
         # daemon then sends the exact pre-chip payload.
-        extra = {"context": context} if context is not None else {}
+        extra: dict = {"context": context} if context is not None else {}
+        # The APP_ONLY gate's sender (D-16a S1), only when set: the daemon refuses an
+        # app command from any call that does not name a human origin.
+        if command_origin is not None:
+            extra["command_origin"] = command_origin
+        if identity is not None:
+            extra["identity"] = identity
         r = await self._client.call("send_prompt", session_id=session_id, text=text,
                                     images=images, interrupt=interrupt, **extra)
         return (r or {}).get("status")

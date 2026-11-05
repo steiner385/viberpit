@@ -62,7 +62,8 @@ from server.sessions import memory_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
-from server.sessions.commands.catalog import APP_COMMAND
+from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
+                                             COMMAND_ORIGIN_REST, app_only_command)
 from server.sessions.engine import (
     EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, parse_agent_engine)
 from server.sessions.model_policy import quota_model
@@ -1025,6 +1026,13 @@ async def create_session(
         _toggle_kwargs["autopilot_paused"] = True
     if body.autoArchive is False:
         _toggle_kwargs["auto_archive_opt_out_reason"] = AUTO_ARCHIVE_OPT_OUT_CREATE
+    # A person typed an app command (`/plan`, `/fast` …) as the initial prompt: only then
+    # may it run (D-16a S1). Sent only when True, like the toggles above; an Assistant /
+    # agent token (`via` set) or an unattested local process is not a person.
+    if (app_only_command(body.initialPrompt) is not None
+            and getattr(request.state, "via", None) is None
+            and human_gate_via(request) is None):
+        _toggle_kwargs["initial_prompt_human"] = True
 
     try:
         record = await orch.create_session(
@@ -1991,11 +1999,15 @@ def _resume_failed_detail(record: object) -> dict:
 
 
 async def resume_and_send_prompt(orch: Any, session_id: str, text: str, identity: str, *,
-                                 interrupt: bool = False) -> tuple[Any, str]:
+                                 interrupt: bool = False,
+                                 human: bool = False) -> tuple[Any, str]:
     """The one HTTP-side "deliver a prompt to a session" path: look it up (404),
     resume it if detached (409 when it can't be brought live), send. Returns the
     record and ``send_prompt``'s delivery result. Shared by the quick-resume route
-    and any API that hands a session text on the operator's behalf (#2936)."""
+    and any API that hands a session text on the operator's behalf (#2936).
+
+    *human* says a person sent *text* (D-16a S1): only then may an ``APP_ONLY``
+    command in it run, attributed to *identity*. Default False: refused."""
     record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
@@ -2011,7 +2023,10 @@ async def resume_and_send_prompt(orch: Any, session_id: str, text: str, identity
             status_code=status.HTTP_409_CONFLICT,
             detail=_resume_failed_detail(record),
         )
-    return record, await orch.send_prompt(session_id, text, interrupt=interrupt)
+    # Only for an app command, so every ordinary prompt's call is unchanged.
+    extra = ({"command_origin": COMMAND_ORIGIN_REST, "identity": identity}
+             if human and app_only_command(text) is not None else {})
+    return record, await orch.send_prompt(session_id, text, interrupt=interrupt, **extra)
 
 
 @router.post("/{session_id}/prompt")
@@ -2028,8 +2043,21 @@ async def send_session_prompt(
     path the WebSocket prompt flow uses — so one tap from the list gets a stalled
     session moving. 404 if unknown; 409 if the session exists but can't be resumed."""
     orch = _get_orchestrator(request)
+    # A person is behind this request only when no token recorded another sender
+    # (`via` is set for the Assistant, `ccas2:` agents, internal and session callers)
+    # and, for an app command, the human-only gate's local-process check agrees
+    # (human_gate_via reads /proc, so only for the rare prompt that needs it).
+    human = getattr(request.state, "via", None) is None and (
+        app_only_command(body.text) is None or human_gate_via(request) is None)
     record, delivery = await resume_and_send_prompt(orch, session_id, body.text, identity,
-                                                    interrupt=body.interrupt)
+                                                    interrupt=body.interrupt, human=human)
+    if delivery == APP_COMMAND_REFUSED:
+        # An app command this sender may not run, or one sent with more text: nothing
+        # ran and nothing reached the CLI (D-16a). The notice went to attached clients.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "code": "app_command_refused",
+            "message": "slash commands like /plan or /fast run only when a person sends "
+                       "them on their own; nothing was sent"})
     # APP_COMMAND (D-16a): the text was an app command (`/output-style …`) and ran as
     # one — the orchestrator's send_prompt never hands those to the CLI.
     if delivery not in ("sent", "draining", APP_COMMAND):

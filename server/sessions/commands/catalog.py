@@ -75,14 +75,44 @@ APP_ONLY = frozenset({"fast", "effort", "output-style", "plan"})
 #: Every prompt path (ws, ``POST /prompt``, automations, a spawn's initial prompt)
 #: sends through that one choke point, so none can forward an APP_ONLY name.
 APP_COMMAND = "app_command"
+#: ``send_prompt``'s answer when the prompt's first line was an ``APP_ONLY`` command
+#: that was NOT run: a non-human sender (automation, autopilot, the Assistant, a
+#: session's own tool), or text the command cannot take whole (more lines, or
+#: attachments). Nothing ran and nothing reached the engine; it is never a delivery.
+APP_COMMAND_REFUSED = "app_command_refused"
+
+#: Who is sending a prompt, for the APP_ONLY gate (D-16a, security review S1). Only a
+#: person may run `/plan off` (a privilege change) or `/fast on` (billing) by typing it:
+#: the WS composer, ``POST /sessions/{id}/prompt`` from a Tailscale user, and the
+#: initial prompt of a session a user created. Every other sender — and a call that
+#: names none — is refused (fail closed).
+COMMAND_ORIGIN_COMPOSER = "composer"
+COMMAND_ORIGIN_REST = "rest"
+COMMAND_ORIGIN_CREATE = "create"
+HUMAN_COMMAND_ORIGINS = frozenset({COMMAND_ORIGIN_COMPOSER, COMMAND_ORIGIN_REST,
+                                   COMMAND_ORIGIN_CREATE})
 
 
-def app_only_command(text: object) -> tuple[str, str] | None:
-    """``(name, args)`` when *text*'s first line is an ``APP_ONLY`` slash command."""
+@dataclass(frozen=True)
+class AppOnlyPrompt:
+    """A prompt whose first line is an ``APP_ONLY`` command. ``extra_lines`` is True
+    when more text follows it — decided by ``parse_command_line`` itself, the ONE
+    "multi-line is prose" rule, so the gate and the parser cannot disagree."""
+    name: str
+    args: str
+    extra_lines: bool
+
+
+def app_only_command(text: object) -> AppOnlyPrompt | None:
+    """The ``APP_ONLY`` command at the head of *text*, or None. Leading and trailing
+    blank lines are ignored; any other line makes ``extra_lines`` True."""
     if not isinstance(text, str):
         return None
-    parsed = parse_command_line(text.strip().split("\n", 1)[0].strip())
-    return parsed if parsed is not None and parsed[0] in APP_ONLY else None
+    stripped = text.strip()
+    head = parse_command_line(stripped.split("\n", 1)[0].strip())
+    if head is None or head[0] not in APP_ONLY:
+        return None
+    return AppOnlyPrompt(head[0], head[1], parse_command_line(stripped) is None)
 # Commands executed via a dedicated SDK method (not raw passthrough).
 CONTROL = {"model", "clear", "effort", "output-style", "plan"}
 # Interactive-only / auth / config commands that make no sense in this web UI.

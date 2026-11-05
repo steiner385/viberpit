@@ -73,7 +73,9 @@ from server.obs.context import bind_session, log_event
 from server.obs.logdedupe import LogThrottle, log_throttled
 from server.obs.metrics import assistant_mentions_total, assistant_prompts_total
 from server.obs.tasks import supervise
-from server.sessions.commands.catalog import APP_COMMAND, parse_command_line
+from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
+                                             COMMAND_ORIGIN_COMPOSER, app_only_command,
+                                             parse_command_line)
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.orchestrator import DriverStartTimeout, ENSURE_DRIVER_WORST_CASE_S
@@ -1961,7 +1963,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # prompt next instead of queueing it behind the turn. Only
             # forwarded when set so the plain contract is untouched.
             interrupt = msg.get("interrupt") is True
-            extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
+            extra: dict[str, bool | dict | str] = {"interrupt": True} if interrupt else {}
+            # The APP_ONLY gate (D-16a S1): a person at the composer may run `/plan`,
+            # `/fast` … by typing them, attributed to this socket's identity. A `ccas2:`
+            # token socket (via="cli": `viberpit ask`, an agent) is not a person. Only
+            # passed for an app command, so every ordinary prompt's call is unchanged.
+            if via != "cli" and app_only_command(text) is not None:
+                extra["command_origin"] = COMMAND_ORIGIN_COMPOSER
+                extra["identity"] = identity
             # The context chip (spec §4.5) and the per-identity prompt rate
             # limit (spec §4.6) both apply only to an assistant-kind session,
             # so both need the record's kind up front — a coding session
@@ -2082,6 +2091,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # sending it to the CLI, and its commandResult rides the live stream.
                 await _send({"type": "promptAck", "sessionId": session_id,
                              "stage": "delivered"})
+            elif status == APP_COMMAND_REFUSED:
+                # Refused, not delivered (D-16a): nothing ran and nothing was sent — the
+                # notice saying why rides the live stream. "failed" is terminal, so the
+                # browser keeps the text in its bubble and never auto-retries it (a
+                # promptRejected would re-send the same refused text on a backoff).
+                log.info("ws.prompt app command refused session=%s", session_id)
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "failed"})
             if status == "sent":
                 # The driver has the text: a turn starts next, or it queues
                 # behind a live one (the driver emits its own queue/status
