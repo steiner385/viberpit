@@ -91,9 +91,9 @@ No parallel "needs you", epic-progress, GitHub client or sync loop gets written.
 
 ## 5. The definition file (M2)
 
-**Path.** The default is `docs/product/milestones.yaml` on the default branch of the product's primary
-repo. A product can point elsewhere with the `milestones_path` key in `automation_policy`. There is one
-ladder per product; multiple concurrent ladders are a non-goal.
+**Path.** v1 reads the fixed path `docs/product/milestones.yaml` on the default branch of the product's
+primary repo (a configurable path was dropped in the plan; YAGNI). There is one ladder per product;
+multiple concurrent ladders are a non-goal.
 
 **Schema (v1).**
 
@@ -101,6 +101,7 @@ ladder per product; multiple concurrent ladders are a non-goal.
 version: 1
 title: Launch readiness                 # view heading
 spec: docs/sdlc/launch-readiness-ladder-household-to-public-self-serve/spec.md   # optional link
+start: household                        # optional: made current only when the ladder is first created
 milestones:                             # order = ladder order
   - key: household                      # stable id, [a-z0-9-]+, unique in file
     name: Household gate
@@ -237,8 +238,9 @@ batched GraphQL query (`subIssues(first:100)` with each child's state, title, ur
 `closedByPullRequestsReferences`). The leaf list is cached as the `value` of a per-milestone `leaves`
 measurement row. Each leaf is:
 - **done**: closed;
-- **in flight**: open, with an open PR whose closing references include it ("Fixes #N" and the like; a
-  bare "Refs #N" mention does not count);
+- **in flight**: open, with a PR in state OPEN among its closing references ("Fixes #N" and the like; a
+  bare "Refs #N" mention does not count). GitHub also returns merged closing PRs, so the state filter is
+  required;
 - **not started**: otherwise.
 
 An epic with more than 100 sub-issues is paginated. If the epic can't be read (wrong ref, no access),
@@ -255,9 +257,11 @@ its leaves and any `sub_issues` condition show as *unknown*, with the GitHub err
 
 ## 9. Web view and export
 
-**Where.** A new **Milestones** tab on the product page (`ProductDetail` `TABS`, `?tab=milestones`).
-It is hidden when the product has no ladder, and the Overview tile links to it. This follows the
-reuse-the-chassis rule: no new top-level nav.
+**Where.** Its own route, `/roadmap/:productSlug/milestones`, under the product, with no new top-level
+nav. The product Overview gets one summary block ("Milestones: <current> · n of m gate conditions met")
+that links to it, hidden when the product has no ladder. *Amended in the plan:* the product page already
+has 7 tabs, one past `docs/PAGE-TABS.md`'s 6-tab cap, and the standard says a page past six "is two
+objects that want two routes".
 
 **Layout: at a glance first.**
 1. **Header strip**: "You are here: Phase 0 · Household gate", "2 of 4 gate conditions met · 1 unknown",
