@@ -27,6 +27,7 @@ OTHER = Actor("other@example.com", "api")
 SESSION = Actor("owner@example.com", "session")
 ASSISTANT = Actor("owner@example.com", "assistant")
 AGENT = Actor("session:abc", "api")
+SYSTEM = Actor("automation:x", "api")
 
 
 def _now() -> datetime:
@@ -178,8 +179,8 @@ async def test_status_note_set_and_clear(isolated_db):
         assert m.status_note == "waiting on DPAs"
         e = await _err(set_status_note(db, lad, "household", actor=OWNER, text="x" * 201))
         assert (e.status, e.code) == (400, "too_long")
-        e = await _err(set_status_note(db, lad, "household", actor=AGENT, text="hi"))
-        assert (e.status, e.code) == (403, "person_required")
+        e = await _err(set_status_note(db, lad, "household", actor=SYSTEM, text="hi"))
+        assert (e.status, e.code) == (403, "person_or_session_required")
         e = await _err(set_status_note(db, lad, "nope", actor=OWNER, text="hi"))
         assert (e.status, e.code) == (404, "unknown_milestone")
         m = await set_status_note(db, lad, "household", actor=OWNER, text="")
@@ -213,8 +214,8 @@ async def test_add_decision_defaults_locked(isolated_db):
         e = await _err(add_note(db, lad, actor=OWNER, kind="decision", text="x",
                                 milestone_key="nope"))
         assert (e.status, e.code) == (404, "unknown_milestone")
-        e = await _err(add_note(db, lad, actor=AGENT, kind="decision", text="x"))
-        assert (e.status, e.code) == (403, "person_required")
+        e = await _err(add_note(db, lad, actor=SYSTEM, kind="decision", text="x"))
+        assert (e.status, e.code) == (403, "person_or_session_required")
 
 
 @pytest.mark.asyncio
@@ -651,3 +652,68 @@ async def test_note_ref_is_capped(isolated_db):
         n = await add_note(db, lad, actor=OWNER, kind="decision", text="x",
                            ref="  " + "D" * NOTE_REF_MAX + "  ")
         assert n.ref == "D" * NOTE_REF_MAX
+
+
+# ---------------------------------------------------------------- session actors (R1)
+
+
+@pytest.mark.asyncio
+async def test_session_actor_can_add_note(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        n = await add_note(db, await _ladder(db), actor=AGENT, kind="ask", text="Sign the DPA")
+    assert n.created_by == "session:abc"
+
+
+@pytest.mark.asyncio
+async def test_session_actor_can_set_status_note(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        m = await set_status_note(db, await _ladder(db), "household", actor=AGENT, text="on track")
+    assert m.status_note == "on track"
+
+
+@pytest.mark.asyncio
+async def test_session_can_resolve_own_ask(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        lad = await _ladder(db)
+        n = await add_note(db, lad, actor=AGENT, kind="ask", text="Sign the DPA")
+        n = await update_note(db, lad, n.id, actor=AGENT, status="done")
+    assert (n.status, n.resolved_by) == ("done", "session:abc")
+
+
+@pytest.mark.asyncio
+async def test_session_cannot_resolve_owners_ask(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        lad = await _ladder(db)
+        n = await add_note(db, lad, actor=OWNER, kind="ask", text="Sign the DPA")
+        e = await _err(update_note(db, lad, n.id, actor=AGENT, status="done"))
+    assert (e.status, e.code) == (403, "owner_required")
+
+
+@pytest.mark.asyncio
+async def test_session_actor_cannot_tick(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        e = await _err(tick_condition(db, await _ladder(db), "friendly", "setup", actor=AGENT,
+                                      met=True, evidence="done", url=None))
+    assert (e.status, e.code) == (403, "person_required")
+
+
+@pytest.mark.asyncio
+async def test_session_actor_cannot_advance(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        e = await _err(advance(db, await _ladder(db), actor=AGENT, expected_current="household",
+                               override_reason=None, now=_now()))
+    assert (e.status, e.code) == (403, "person_required")
+
+
+@pytest.mark.asyncio
+async def test_system_actor_cannot_add_note(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        e = await _err(add_note(db, await _ladder(db), actor=SYSTEM, kind="ask", text="x"))
+    assert (e.status, e.code) == (403, "person_or_session_required")

@@ -16,7 +16,7 @@ import { ladderView } from '@/features/milestones/__fixtures__/ladder'
 /** Every code the server raises — `grep MilestoneActionError server/pm/milestone_actions.py`
  *  plus `no_ladder` from the route wrapper. A new server code fails this list's test. */
 const SERVER_CODES = [
-  'person_required', 'unknown_milestone', 'unknown_condition', 'not_manual', 'bad_tick',
+  'person_required', 'person_or_session_required', 'unknown_milestone', 'unknown_condition', 'not_manual', 'bad_tick',
   'evidence_required', 'owner_required', 'too_long', 'text_required', 'bad_status', 'bad_kind',
   'unknown_note', 'nothing_to_update', 'ladder_complete', 'stale_current', 'no_milestones',
   'override_not_needed', 'gate_unmet', 'reason_too_short', 'override_requires_owner', 'no_ladder', 'bad_url',
