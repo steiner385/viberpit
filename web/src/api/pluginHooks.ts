@@ -4,7 +4,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClie
 import { api, type ApiRequestError } from './client'
 import { QK } from './hooks'
 import type {
-  LibraryPluginDetail, LibraryPluginsResponse, PluginBrowseQuery, PluginBrowseResponse, PluginOpResult,
+  LibraryPluginDetail, LibraryPluginsResponse, PluginBrowseQuery, PluginBrowseResponse, PluginOpResult, PluginReloadResult,
 } from './types'
 
 export function useLibraryPlugins() {
@@ -111,4 +111,11 @@ export function useUpdateMarketplace() {
 
 export function useRemoveMarketplace() {
   return usePluginOp<string>((name) => api.del(`/library/marketplaces/${encodeURIComponent(name)}`))
+}
+
+/** Reload plugins in every running session on every host. A started session whose tools
+ *  would change keeps them (its prompt cache), so `holdOnCacheImpact` is the default. */
+export function useReloadPlugins() {
+  return usePluginOp<{ holdOnCacheImpact: boolean }, PluginReloadResult>((body) =>
+    api.post('/library/plugins/reload', body))
 }

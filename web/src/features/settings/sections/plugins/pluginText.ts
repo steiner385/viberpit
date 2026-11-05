@@ -10,6 +10,11 @@ export const CONSENT_COPY =
   'Plugins run their own code — hooks and MCP servers — in every session on every host, including unattended automations. Install only plugins you trust.'
 /** Shown after an install or update succeeds — verbatim. */
 export const RESTART_COPY = 'Running sessions pick this up when they restart.'
+export const RELOAD_LABEL = 'Also reload running sessions now'
+export const RELOAD_HELP =
+  'A session that has started talking and whose tools would change keeps its plugins until it restarts, so its prompt cache is kept. Sessions mid-turn are skipped.'
+export const RELOAD_BUTTON = 'Reload running sessions'
+export const NO_SESSIONS_COPY = 'No running session to reload.'
 export const CONTENTS_UNKNOWN = 'Contents unknown — inspect the marketplace before installing'
 /** A fan-out no host answered: never success. */
 export const NO_HOSTS_COPY = 'No host answered — nothing was changed'

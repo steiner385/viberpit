@@ -651,10 +651,16 @@ class _Fleet:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.reply: list[dict] = [{"host": "dobby", "outcome": "ok"}]
+        self.reload_reply: list[dict] = [
+            {"host": "dobby", "sessionId": "s1", "name": "alpha", "outcome": "applied"}]
 
     async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
         self.calls.append((op, args))
         return [dict(h) for h in self.reply]
+
+    async def reload_plugins_everywhere(self, hold_on_cache_impact: bool = True) -> list[dict]:
+        self.calls.append(("reload", hold_on_cache_impact))  # type: ignore[arg-type]
+        return [dict(r) for r in self.reload_reply]
 
 
 def _write_marketplace(base: Path, name: str, plugins: list[dict], *, repo: str | None = None,
@@ -862,6 +868,7 @@ MUTATIONS = [
     ("post", "/api/library/marketplaces/mine/update", None),
     ("delete", "/api/library/marketplaces/mine", None),
     ("post", "/api/library/marketplaces/mine/confirm", {"source": "github:o/mine", "confirm": True}),
+    ("post", "/api/library/plugins/reload", {}),
 ]
 
 
@@ -920,6 +927,36 @@ def test_kill_switch(env, monkeypatch, method: str, url: str, body, blocked: boo
     browse = client.get("/api/library/plugins/browse", headers=_H).json()
     assert browse["plugins"] == [] and browse["installEnabled"] is False
     assert client.get("/api/library/plugins", headers=_H).json()["installEnabled"] is False
+
+
+def test_reload_route_fans_out_and_audits(env) -> None:
+    client, fleet, _ = env
+    r = client.post("/api/library/plugins/reload", json={"holdOnCacheImpact": False}, headers=_H)
+    assert r.status_code == 200
+    assert fleet.calls == [("reload", False)]
+    assert r.json() == {"op": "reload_plugins", "ok": True, "sessions": fleet.reload_reply}
+    events = [e for e in client.portal.call(_audit) if e[0] == "library_plugins_reloaded"]
+    assert events[0][1] == "owner@example.com"
+    assert events[0][2] == {"holdOnCacheImpact": False, "sessions": fleet.reload_reply}
+    client.post("/api/library/plugins/reload", json={}, headers=_H)
+    assert fleet.calls[-1] == ("reload", True)  # default holds on a cache impact
+
+
+def test_reload_route_ok_is_false_on_a_failed_row(env) -> None:
+    client, fleet, _ = env
+    fleet.reload_reply = [{"host": "dobby", "sessionId": "s1", "outcome": "applied"},
+                          {"host": "rocky", "outcome": "failed", "failureCode": "host_unreachable"}]
+    body = client.post("/api/library/plugins/reload", json={}, headers=_H).json()
+    assert body["ok"] is False and body["sessions"] == fleet.reload_reply
+    fleet.reload_reply = []
+    assert client.post("/api/library/plugins/reload", json={}, headers=_H).json()["ok"] is False
+
+
+def test_reload_is_not_behind_the_install_kill_switch(env, monkeypatch) -> None:
+    client, fleet, _ = env
+    monkeypatch.setenv("VIBERPIT_PLUGIN_INSTALL_ENABLED", "false")
+    r = client.post("/api/library/plugins/reload", json={}, headers=_H)
+    assert r.status_code == 200 and fleet.calls == [("reload", True)]
 
 
 def test_browse_lists_curated_and_reviewed_only(env) -> None:

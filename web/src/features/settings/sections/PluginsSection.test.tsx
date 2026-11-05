@@ -491,4 +491,62 @@ describe('PluginsSection — kill switch and engines', () => {
     await screen.findByText('hooky')
     expect(screen.queryByText(/codex/i)).toBeNull()
   })
+
+  describe('live reload of running sessions', () => {
+    const SESSIONS = [
+      { host: 'rocky', sessionId: 's2', name: 'worker-1', outcome: 'held' },
+      { host: 'dobby', sessionId: 's1', name: 'alpha-session', outcome: 'applied' },
+    ]
+    function answer(reload: unknown) {
+      vi.mocked(api.post).mockImplementation((path: string) => {
+        if (path === '/library/plugins/reload') return Promise.resolve(reload)
+        return Promise.resolve({ op: 'install', ok: true, hosts: hosts(['dobby', 'ok']) })
+      })
+    }
+
+    it('Install with "Also reload running sessions now" ticked posts the reload after the install and lists each session', async () => {
+      answer({ op: 'reload_plugins', ok: true, sessions: SESSIONS })
+      renderSection()
+      await userEvent.click(await screen.findByRole('button', { name: 'Install hooky' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Install plugin' })
+      await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Also reload running sessions now' }))
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Install' }))
+      const results = await within(dialog).findByRole('group', { name: 'Session results' })
+      expect(vi.mocked(api.post).mock.calls).toEqual([
+        ['/library/plugins/hooky%40m/install', { confirm: true }],
+        ['/library/plugins/reload', { holdOnCacheImpact: true }],
+      ])
+      const worker = within(results).getByText('worker-1').closest('li') as HTMLElement
+      expect(within(worker).getByText('held')).toBeTruthy()
+      const alpha = within(results).getByText('alpha-session').closest('li') as HTMLElement
+      expect(within(alpha).getByText('applied')).toBeTruthy()
+      expect(within(dialog).getByText(RESTART)).toBeTruthy()
+    })
+
+    it('the reload checkbox is off by default and nothing is reloaded when it stays off', async () => {
+      answer({ op: 'reload_plugins', ok: true, sessions: SESSIONS })
+      renderSection()
+      await userEvent.click(await screen.findByRole('button', { name: 'Install hooky' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Install plugin' })
+      const box = within(dialog).getByRole('checkbox', { name: 'Also reload running sessions now' }) as HTMLInputElement
+      expect(box.checked).toBe(false)
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Install' }))
+      await within(dialog).findByRole('group', { name: 'Host results' })
+      expect(vi.mocked(api.post).mock.calls.map(([path]) => path)).toEqual(['/library/plugins/hooky%40m/install'])
+      expect(within(dialog).queryByRole('group', { name: 'Session results' })).toBeNull()
+    })
+
+    it('the section button reloads running sessions and lists outcomes; zero sessions says so', async () => {
+      answer({ op: 'reload_plugins', ok: true, sessions: SESSIONS })
+      renderSection()
+      await screen.findByText('hooky')
+      await userEvent.click(screen.getByRole('button', { name: 'Reload running sessions' }))
+      const results = await screen.findByRole('group', { name: 'Session results' })
+      expect(within(results).getByText('worker-1')).toBeTruthy()
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith('/library/plugins/reload', { holdOnCacheImpact: true })
+      answer({ op: 'reload_plugins', ok: false, sessions: [] })
+      await userEvent.click(screen.getByRole('button', { name: 'Reload running sessions' }))
+      expect(await screen.findByText('No running session to reload.')).toBeTruthy()
+    })
+  })
 })

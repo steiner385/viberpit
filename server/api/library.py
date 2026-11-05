@@ -294,6 +294,26 @@ async def uninstall_plugin(plugin_id: str, request: Request,
     return out
 
 
+class ReloadBody(BaseModel):
+    holdOnCacheImpact: bool = True  # keep a started session's plugins when that would bust its cache
+
+
+@router.post("/plugins/reload")
+async def reload_plugins(body: ReloadBody, request: Request,
+                         identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    """Reload plugins in every running session on every host. Installs nothing, so it is
+    not behind the install kill switch; it is still human-only because it changes what
+    code a live session runs."""
+    via = _plugin_human_gate(request, identity)
+    orch = request.app.state.sessions  # captured lazily: the fleet replaces it after build
+    rows = await orch.reload_plugins_everywhere(hold_on_cache_impact=body.holdOnCacheImpact)
+    await record_audit(db=db, type="library_plugins_reloaded", identity=identity,
+                       detail={"holdOnCacheImpact": body.holdOnCacheImpact, "sessions": rows},
+                       via=via)
+    ok = bool(rows) and not any(r.get("outcome") == "failed" for r in rows)
+    return {"op": "reload_plugins", "ok": ok, "sessions": rows}
+
+
 async def _vetted_source(source: object) -> str:
     """``check_marketplace_source`` — including its blocking DNS check — off the loop."""
     try:
