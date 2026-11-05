@@ -48,11 +48,14 @@ class _Cli:
     """One throwaway stream-json CLI. ``ask`` writes one control request and waits for
     ITS reply before returning, so no two writes are ever in flight together."""
 
-    def __init__(self, binary: str, extra_args: list[str] | None = None) -> None:
+    def __init__(self, binary: str, extra_args: list[str] | None = None,
+                 cfg: str | None = None) -> None:
+        """``cfg``: a caller-owned, pre-populated config dir (never deleted by ``close``)."""
         self._root = tempfile.mkdtemp(prefix="d14-settings-contract.")
-        cwd, cfg, home = (os.path.join(self._root, n) for n in ("cwd", "cfg", "home"))
-        for p in (cwd, cfg, home):
+        cwd, own_cfg, home = (os.path.join(self._root, n) for n in ("cwd", "cfg", "home"))
+        for p in (cwd, home) + (() if cfg else (own_cfg,)):
             os.mkdir(p)
+        cfg = cfg or own_cfg
         env = {
             "PATH": _cli_path_env(binary),
             "HOME": home,
