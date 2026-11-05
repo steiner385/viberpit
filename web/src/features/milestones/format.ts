@@ -15,6 +15,20 @@ export const MILESTONES_FILE = 'docs/product/milestones.yaml'
  *  and truncates, never paginates. Open leaves per card; open asks and decisions. */
 export const PRINT_OPEN_LEAVES_CAP = 4
 export const PRINT_NOTES_CAP = 6
+/** Gate conditions per printed card, the ones that matter most first (`printGateOrder`). */
+export const PRINT_GATE_CAP = 4
+
+const PRINT_GATE_RANK: Record<ConditionStatus, number> = { unmet: 0, unknown: 1, info: 2, met: 3 }
+
+/** Each condition's printed position: unmet, then unknown, then met (stable within
+ *  a status). Index-aligned with `gate`; the screen keeps the definition order. */
+export function printGateOrder(gate: Pick<MilestoneCondition, 'status'>[]): number[] {
+  const rank = (s: ConditionStatus) => PRINT_GATE_RANK[s] ?? PRINT_GATE_RANK.unknown
+  const sorted = gate.map((_, i) => i).sort((a, b) => rank(gate[a].status) - rank(gate[b].status) || a - b)
+  const order: number[] = []
+  sorted.forEach((i, pos) => { order[i] = pos })
+  return order
+}
 
 /** Glyph + text, never colour alone. The tone only tints the glyph. */
 export const STATUS_META: Record<ConditionStatus, { glyph: string; text: string; tone: Tone }> = {

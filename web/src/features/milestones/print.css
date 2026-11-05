@@ -6,7 +6,8 @@
    Hooks (`data-print`), set by the milestone components:
      only    print-only (the "+N more" past a cap)    screen  screen-only
      hide    never printed                           head    the print header
-     clamp   a condition label, two lines at most     ladder / body / side / numbers  layout
+     clamp   a condition label or card title, two lines at most
+     line    a card's audience, one line     ladder / body / side / numbers  layout
 
    Content past the caps is truncated, never paginated (caps: format.ts). */
 
@@ -135,7 +136,19 @@
     line-clamp: 2;
     overflow: hidden;
   }
-  [data-milestones-print] [data-print="ladder"] li[data-status] { padding-block: 2px; gap: 0; }
+  /* The gate in print order (unmet, unknown, met; caps in MilestoneCard). The
+     screen's dividers follow DOM order, so print drops them. */
+  [data-milestones-print] [data-print="line"] {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  [data-milestones-print] [data-print="ladder"] li[data-status] {
+    order: var(--print-order, 0);
+    padding-block: 2px;
+    gap: 0;
+    border-width: 0;
+  }
   /* A condition's reading and each open leaf: one line, cut with an ellipsis. */
   [data-milestones-print] [data-print="ladder"] li[data-status] > div + div,
   [data-milestones-print] [aria-label="Open leaves"] > li {
@@ -155,15 +168,21 @@
   }
   [data-milestones-print] [data-print="side"] > section { break-inside: avoid; gap: 3px; }
   [data-milestones-print] [data-print="side"] ul { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  /* A note is one run of text: "ref text · where", ruled off from the next. */
+  /* A note is one run of text, "ref text · where", clamped to two lines (a note
+     runs to 500 characters) and ruled off from the next. The paragraphs dissolve
+     into the clamp box so the two lines are counted across both. */
   [data-milestones-print] [data-print="side"] li {
-    display: block;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
     padding: 2px 0;
     border-width: 0 0 1px;
     border-radius: 0;
     background: none;
   }
-  [data-milestones-print] [data-print="side"] li > p { display: inline; }
+  [data-milestones-print] [data-print="side"] li > p { display: contents; }
   [data-milestones-print] [data-print="side"] li > p + p::before { content: " · "; }
   [data-milestones-print] [data-print="numbers"] { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
   [data-milestones-print] [data-print="numbers"] > div { padding: 3px 6px; }

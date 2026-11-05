@@ -8,7 +8,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { MilestonesPage } from './MilestonesPage'
 import { PrintStamp } from './PrintStamp'
-import { HOUSEHOLD, ladderView, note } from './__fixtures__/ladder'
+import { HOUSEHOLD, cond, ladderView, note } from './__fixtures__/ladder'
 
 const q = vi.hoisted(() => ({
   milestones: { data: undefined as unknown, isLoading: false, isError: false, refetch: () => {} },
@@ -102,7 +102,32 @@ describe('MilestonesPage export', () => {
     )
     const light = tokens(indexCss.slice(indexCss.indexOf(':root {'), indexCss.indexOf('@media (prefers-color-scheme: dark)')))
     const print = tokens(printCss)
-    expect(Object.keys(print).length).toBeGreaterThan(20)
+    // Exactly the tokens a dark theme overrides: a new dark-only token must be
+    // restated here too, or it would leak into the print.
+    const darkStart = indexCss.indexOf(':root[data-theme="dark"] {')
+    const dark = tokens(indexCss.slice(darkStart, indexCss.indexOf('}', darkStart)))
+    expect(Object.keys(print).sort()).toEqual(Object.keys(dark).sort())
     for (const [k, v] of Object.entries(print)) expect(`--t-${k}: ${v}`).toBe(`--t-${k}: ${light[k]}`)
+  })
+
+  it('print caps the gate at 4, unmet first, then unknown, then met', () => {
+    const gate = [
+      cond({ key: 'g0', label: 'Met A', status: 'met' }),
+      cond({ key: 'g1', label: 'Unmet A', status: 'unmet' }),
+      cond({ key: 'g2', label: 'Met B', status: 'met' }),
+      cond({ key: 'g3', label: 'Unknown A', status: 'unknown' }),
+      cond({ key: 'g4', label: 'Met C', status: 'met' }),
+      cond({ key: 'g5', label: 'Unmet B', status: 'unmet' }),
+    ]
+    q.milestones.data = ladderView({}, { milestones: [{ ...HOUSEHOLD, gate }, ...ladderView().milestones.slice(1)] })
+    mount()
+    const card = screen.getByRole('listitem', { name: /Phase 0/ })
+    const rows = within(within(card).getByRole('list', { name: 'Gate' })).getAllByRole('listitem')
+    // The screen keeps the definition order; print reorders by `--print-order`.
+    expect(rows.map((r) => r.textContent?.match(/(Met|Unmet|Unknown) [A-C]/)?.[0]))
+      .toEqual(['Met A', 'Unmet A', 'Met B', 'Unknown A', 'Met C', 'Unmet B'])
+    expect(rows.map((r) => r.style.getPropertyValue('--print-order'))).toEqual(['3', '0', '4', '2', '5', '1'])
+    expect(rows.map((r) => r.getAttribute('data-print'))).toEqual([null, null, 'hide', null, 'hide', null])
+    expect(within(card).getByText('+2 more (2 met)')).toHaveAttribute('data-print', 'only')
   })
 })
